@@ -1313,6 +1313,28 @@ export const DispatchBacklogTaskSchema = z.object({
 });
 export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
 
+const PipelineRecoveryGuardSchema = z.object({
+  commissionId: z.string().min(1).max(512),
+  activeAttempt: z.number().int().min(1),
+  engineerRunId: z.string().min(1).max(512),
+  providerRevision: z.number().int().min(1),
+});
+
+/** Exact predecessor identity required by every Pipeline recovery mutation. */
+export const PipelineRetrySchema = z.object({ guard: PipelineRecoveryGuardSchema });
+export type PipelineRetry = z.infer<typeof PipelineRetrySchema>;
+
+export const PipelineAdoptSuccessorSchema = z.object({
+  guard: PipelineRecoveryGuardSchema,
+  candidateEngineerRunId: z.string().min(1).max(512),
+  candidateRevision: z.number().int().min(1),
+  candidateFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type PipelineAdoptSuccessor = z.infer<typeof PipelineAdoptSuccessorSchema>;
+
+export const PipelineSettlementSchema = z.object({ guard: PipelineRecoveryGuardSchema });
+export type PipelineSettlement = z.infer<typeof PipelineSettlementSchema>;
+
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),

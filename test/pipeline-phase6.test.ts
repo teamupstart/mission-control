@@ -28,12 +28,15 @@ import { TaskManager } from "../src/server/tasks.ts";
 import { pipelineCommissionLine } from "../src/web/pipelines/pipeline-run-model.ts";
 import {
   getTask as getDurableTask,
+  getPipelineCommission,
+  reservePipelineCommissionRetry,
   upsertPipelineCommissionAttempt,
 } from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
 import {
   bindPipelineCommissionAttempt,
   createPipelineCommission,
+  applyEngineerEvent,
 } from "../src/server/pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
 import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.ts";
@@ -1396,6 +1399,116 @@ test("commissioned requests sharing derived task identity reserve separate provi
     commissions[0]?.attempts[0]?.engineerRunId,
     commissions[1]?.attempts[0]?.engineerRunId,
   );
+});
+
+test("a lost retry reservation response retains one attempt and an explicit unknown outcome", async (t) => {
+  const taskId = "pipeline-retry-response-lost";
+  const repoRoot = "/repo/retry-response-lost";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    intent: "Recover without minting a duplicate",
+  }));
+  const created = createPipelineCommission({
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    capabilities: { supported: true, readiness: true, ownedAttempts: true },
+    id: "commission-retry-response-lost",
+    correlationId: "correlation-retry-response-lost",
+    launchKey: "initial-response-lost",
+  });
+  bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 1,
+    engineerRunId: "engineer-response-lost-1",
+    providerAttempt: 1,
+    attemptKey: "initial-response-lost",
+    previousEngineerRunId: null,
+    integrationOwner: created.id,
+  });
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-response-lost-1",
+    correlationId: created.correlationId,
+    attemptKey: "initial-response-lost",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot,
+    revision: 1,
+    ts: "2026-09-04T12:00:00.000Z",
+    type: "engineer_run_failed",
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  }).outcome, "stored");
+  const failed = getPipelineCommission(created.id)!;
+  const reserved = reservePipelineCommissionRetry({
+    guard: {
+      commissionId: failed.id,
+      activeAttempt: 1,
+      engineerRunId: "engineer-response-lost-1",
+      providerRevision: 1,
+    },
+    launchKey: "retry-response-lost",
+  });
+  assert.equal(reserved.ok, true);
+  if (!reserved.ok) return;
+  registry.upsertTask({
+    ...registry.getTask(taskId)!,
+    pipelineCommissionId: created.id,
+    status: "running",
+    updatedAt: Date.now(),
+  });
+  registry.initializePipelineCommissions([reserved.commission]);
+
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true, readiness: true, ownedAttempts: true } }),
+    readinessProbe: async () => ({ ok: true, value: {
+      status: "ready",
+      code: "ready",
+      summary: "Provider is ready",
+      checkedCapabilities: ["git", "gh"],
+      retryable: true,
+      remedy: null,
+      diagnostic: null,
+      fingerprint: "ready",
+    } }),
+    create: async () => ({ ok: false, error: "provider timed out", outcomeUnknown: true }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => assert.fail("an unknown reservation is never cancelled by guessing"),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      capabilities: { supported: true, readiness: true, ownedAttempts: true },
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  const held = registry.pipelineCommission(created.id)!;
+  assert.equal(held.attempts.length, 2);
+  assert.equal(held.attempts[1]?.engineerRunId, null);
+  assert.equal(held.recovery?.state, "provider_outcome_unknown");
+  assert.match(held.recovery?.error ?? "", /provider timed out/);
 });
 
 test("provider reservation is cancelled when managed host setup fails", async (t) => {

@@ -50,6 +50,8 @@ interface FakeEngineerRun {
   repoRoot: string;
   idea: string;
   state: string;
+  readinessRequired?: boolean;
+  integrationOwner?: string | null;
   events: Array<Record<string, unknown>>;
 }
 
@@ -95,6 +97,55 @@ export function appendConductorEngineerEvent(
 export function readConductorEngineerRuns(home: string): FakeEngineerRun[] {
   return (JSON.parse(readFileSync(conductorEngineerStatePath(home), "utf8")) as FakeEngineerState)
     .runs;
+}
+
+/** Create the exact next provider-owned attempt, as if another conductor client did it. */
+export function seedDirectConductorEngineerSuccessor(home: string): FakeEngineerRun {
+  const path = conductorEngineerStatePath(home);
+  const state = JSON.parse(readFileSync(path, "utf8")) as FakeEngineerState;
+  const previous = state.runs.at(-1);
+  if (!previous) throw new Error("the fake provider has no predecessor Engineer run");
+  const attempt = previous.attempt + 1;
+  const run: FakeEngineerRun = {
+    engineerRunId: `${previous.engineerRunId}-direct-${attempt}`,
+    correlationId: previous.correlationId,
+    attemptKey: `direct-successor-${attempt}`,
+    attempt,
+    previousEngineerRunId: previous.engineerRunId,
+    repoRoot: previous.repoRoot,
+    idea: previous.idea,
+    readinessRequired: previous.readinessRequired,
+    integrationOwner: previous.integrationOwner ?? null,
+    state: "authoring",
+    events: [],
+  };
+  const identity = {
+    schemaVersion: 1,
+    engineerRunId: run.engineerRunId,
+    correlationId: run.correlationId,
+    attemptKey: run.attemptKey,
+    attempt: run.attempt,
+    previousEngineerRunId: run.previousEngineerRunId,
+    repoRoot: run.repoRoot,
+  };
+  run.events.push({
+    ...identity,
+    revision: 1,
+    ts: new Date().toISOString(),
+    type: "engineer_run_created",
+    idea: run.idea,
+    readinessRequired: run.readinessRequired === true,
+    ...(run.integrationOwner ? { integrationOwner: run.integrationOwner } : {}),
+  });
+  run.events.push({
+    ...identity,
+    revision: 2,
+    ts: new Date().toISOString(),
+    type: "engineer_run_started",
+  });
+  state.runs.push(run);
+  writeFileSync(path, JSON.stringify(state, null, 2));
+  return run;
 }
 
 /** One record in the engine's own project registry. */
@@ -299,6 +350,21 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     engineerRetainedReviewWorktreesV1: engineerMode === "supported",
     engineerOwnedAttemptsV1: engineerMode === "supported",
   }) + "\\n");
+} else if (argv[0] === "engineer" && argv[1] === "readiness-probe") {
+  const repoRoot = flag("repo-root");
+  const ready = process.env.MC_E2E_CONDUCTOR_READINESS !== "blocked-until-marker" ||
+    existsSync(join(repoRoot, ".daemon", "READY"));
+  process.stdout.write(JSON.stringify({
+    status: ready ? "ready" : "blocked",
+    code: ready ? "ready" : "authentication_required",
+    summary: ready ? "Provider is ready" : "GitHub authentication is required",
+    checkedCapabilities: ["git", "gh"],
+    retryable: true,
+    remedy: ready ? null : "Authenticate GitHub, then check again",
+    diagnostic: ready ? null : "gh auth status failed",
+    fingerprint: ready ? "ready-probe-fingerprint" : "blocked-probe-fingerprint",
+  }) + "\\n");
+  if (!ready) process.exitCode = 1;
 } else if (argv[0] === "engineer" && argv[1] === "run-create") {
   if (!engineerLifecycleSupported) {
     process.stderr.write("Engineer lifecycle capability is unavailable\\n");

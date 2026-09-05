@@ -28,9 +28,13 @@ import {
   PIPELINE_COMMISSION_ATTEMPT_STATES,
   PIPELINE_COMMISSION_LIFECYCLES,
   PIPELINE_EVIDENCE_COMMIT_PROVENANCES,
+  PIPELINE_RECOVERY_STATES,
+  pipelineRecoveryIsActive,
   type PipelineCommission,
   type PipelineCommissionAttempt,
   type PipelineCommissionAttemptState,
+  type PipelineRecoveryGuard,
+  type PipelineRecoveryResultCode,
   type PipelineProviderId,
   type PipelineRun,
 } from "@shared/pipeline.ts";
@@ -7831,7 +7835,34 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
     typeof successor.state === "string" &&
     ["created", "authoring", "failed", "cancelled", "awaiting_spec_merge", "settled"]
       .includes(successor.state) &&
-    nullableString(successor.integrationOwner)
+    nullableString(successor.integrationOwner) &&
+    (successor.fingerprint === undefined || typeof successor.fingerprint === "string") &&
+    (successor.validation === undefined || ["valid", "invalid"].includes(successor.validation)) &&
+    (successor.validationReason === undefined || nullableString(successor.validationReason)) &&
+    (successor.branch === undefined || nullableString(successor.branch)) &&
+    (successor.planSlug === undefined || nullableString(successor.planSlug)) &&
+    (successor.handoff === undefined || successor.handoff === null || (
+      typeof successor.handoff === "object" && typeof successor.handoff.planSlug === "string" &&
+      typeof successor.handoff.branch === "string" && nullableString(successor.handoff.prUrl) &&
+      ["pr_opened", "local_commit"].includes(successor.handoff.outcome)
+    )) &&
+    (successor.evidenceCommit === undefined || nullableString(successor.evidenceCommit)) &&
+    (successor.evidenceCommitProvenance === undefined ||
+      successor.evidenceCommitProvenance === null ||
+      (typeof successor.evidenceCommitProvenance === "string" &&
+        (PIPELINE_EVIDENCE_COMMIT_PROVENANCES as readonly string[])
+          .includes(successor.evidenceCommitProvenance)))
+  );
+  const recovery = row.recovery;
+  const recoveryValid = recovery === undefined || recovery === null || (
+    typeof recovery === "object" && ["retry", "adoption"].includes(recovery.kind) &&
+    Number.isInteger(recovery.predecessorAttempt) &&
+    typeof recovery.predecessorEngineerRunId === "string" &&
+    Number.isInteger(recovery.predecessorProviderRevision) && Number.isInteger(recovery.attempt) &&
+    typeof recovery.state === "string" &&
+    (PIPELINE_RECOVERY_STATES as readonly string[]).includes(recovery.state) &&
+    nullableString(recovery.candidateFingerprint) && nullableString(recovery.error) &&
+    typeof recovery.startedAt === "number" && typeof recovery.updatedAt === "number"
   );
   const projectionDrift = row.projectionDrift;
   const projectionDriftValid = projectionDrift === undefined || projectionDrift === null || (
@@ -7869,6 +7900,7 @@ function validCommissionProjection(value: unknown): value is PipelineCommission 
     retentionValid &&
     retirementValid &&
     successorValid &&
+    recoveryValid &&
     projectionDriftValid &&
     nullableString(row.error) &&
     typeof row.createdAt === "number" &&
@@ -7919,6 +7951,7 @@ function fallbackCommission(row: {
     retention: null,
     retirement: null,
     successorCandidate: null,
+    recovery: null,
     projectionDrift: null,
     linkedRun: row.run_slug
       ? { provider: row.provider, repoRoot: row.repo_root, slug: row.run_slug }
@@ -8095,7 +8128,21 @@ function hydratePipelineCommission(
       failure: parsed.failure ?? null,
       retention: parsed.retention ?? null,
       retirement: parsed.retirement ?? null,
-      successorCandidate: parsed.successorCandidate ?? null,
+      successorCandidate: parsed.successorCandidate ? {
+        ...parsed.successorCandidate,
+        fingerprint: parsed.successorCandidate.fingerprint ?? "",
+        validation: parsed.successorCandidate.validation ?? "invalid",
+        validationReason: parsed.successorCandidate.validationReason === undefined
+          ? "Refresh this legacy successor before adoption."
+          : parsed.successorCandidate.validationReason,
+        branch: parsed.successorCandidate.branch ?? null,
+        planSlug: parsed.successorCandidate.planSlug ?? null,
+        handoff: parsed.successorCandidate.handoff ?? null,
+        evidenceCommit: parsed.successorCandidate.evidenceCommit ?? null,
+        evidenceCommitProvenance:
+          parsed.successorCandidate.evidenceCommitProvenance ?? null,
+      } : null,
+      recovery: parsed.recovery ?? null,
       projectionDrift: parsed.projectionDrift ?? null,
       authoringBranch: parsed.authoringBranch ?? parsed.handoff?.branch ?? null,
       planSlug: parsed.planSlug ?? parsed.handoff?.planSlug ?? null,
@@ -8286,6 +8333,295 @@ export function upsertPipelineCommissionAttempt(
       try { d.exec("ROLLBACK"); } catch {}
     }
     throw err;
+  }
+}
+
+export type PipelineRecoveryDbResult =
+  | { ok: true; commission: PipelineCommission; idempotent: boolean }
+  | { ok: false; code: PipelineRecoveryResultCode; error: string };
+
+function recoveryGuardMatches(
+  commission: PipelineCommission,
+  guard: PipelineRecoveryGuard,
+): boolean {
+  const attempt = commission.attempts.find((entry) => entry.attempt === guard.activeAttempt);
+  return commission.id === guard.commissionId && commission.activeAttempt === guard.activeAttempt &&
+    attempt?.engineerRunId === guard.engineerRunId &&
+    attempt.providerRevision === guard.providerRevision;
+}
+
+function sameRecoveryPredecessor(
+  commission: PipelineCommission,
+  guard: PipelineRecoveryGuard,
+  kind: "retry" | "adoption",
+): boolean {
+  const recovery = commission.recovery;
+  return recovery?.kind === kind && recovery.predecessorAttempt === guard.activeAttempt &&
+    recovery.predecessorEngineerRunId === guard.engineerRunId &&
+    recovery.predecessorProviderRevision === guard.providerRevision;
+}
+
+/** Reserve exactly one Mission Control retry under a serialized predecessor guard. */
+export function reservePipelineCommissionRetry(input: {
+  guard: PipelineRecoveryGuard;
+  launchKey: string;
+  now?: number;
+}): PipelineRecoveryDbResult {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const held = getPipelineCommission(input.guard.commissionId);
+    if (!held) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "stale_guard", error: "the Pipeline commission no longer exists" };
+    }
+    if (sameRecoveryPredecessor(held, input.guard, "retry")) {
+      if (ownsTransaction) d.exec("COMMIT");
+      return { ok: true, commission: held, idempotent: true };
+    }
+    if (!recoveryGuardMatches(held, input.guard)) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "stale_guard", error: "the failed Engineer attempt changed" };
+    }
+    const task = d.prepare(
+      `SELECT status, repo_root, pipeline_commission_id FROM tasks WHERE id = ?`,
+    ).get(held.taskId) as {
+      status: string;
+      repo_root: string;
+      pipeline_commission_id: string | null;
+    } | undefined;
+    if (!task || task.pipeline_commission_id !== held.id || task.repo_root !== held.repoRoot ||
+        !["running", "failed"].includes(task.status)) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "task_conflict", error: "the task no longer owns this Pipeline commission" };
+    }
+    const predecessor = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
+    if (held.lifecycle !== "failed" || predecessor?.state !== "failed" ||
+        held.failure?.retryable !== true) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "not_retryable", error: "the active Engineer failure is not retryable" };
+    }
+    if (!held.capabilities?.readiness || !held.capabilities.ownedAttempts) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "unsupported_provider", error: "the provider cannot safely reserve owned recovery attempts" };
+    }
+    if (held.successorCandidate || pipelineRecoveryIsActive(held.recovery)) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "recovery_in_flight", error: "another Pipeline successor already exists" };
+    }
+    const now = input.now ?? Date.now();
+    const attempt: PipelineCommissionAttempt = {
+      attempt: predecessor.attempt + 1,
+      origin: "mission_control",
+      launchKey: input.launchKey,
+      engineerRunId: null,
+      previousEngineerRunId: predecessor.engineerRunId,
+      providerRevision: 0,
+      state: "reserved",
+      terminalReason: null,
+      evidenceCommit: null,
+      evidenceCommitProvenance: null,
+      evidenceFrozenAt: null,
+      updatedAt: now,
+    };
+    const next: PipelineCommission = {
+      ...held,
+      lifecycle: "created",
+      attempts: [...held.attempts, attempt].slice(-MAX_PIPELINE_COMMISSION_ATTEMPTS),
+      activeAttempt: attempt.attempt,
+      steps: held.steps.map((step) => ({ ...step, state: "pending" })),
+      currentStep: null,
+      project: null,
+      authoringWorktree: null,
+      authoringBranch: null,
+      planSlug: null,
+      handoff: null,
+      readiness: null,
+      failure: null,
+      retention: null,
+      retirement: null,
+      successorCandidate: null,
+      projectionDrift: null,
+      linkedRun: null,
+      blocker: null,
+      error: null,
+      recovery: {
+        kind: "retry",
+        predecessorAttempt: predecessor.attempt,
+        predecessorEngineerRunId: predecessor.engineerRunId!,
+        predecessorProviderRevision: predecessor.providerRevision,
+        attempt: attempt.attempt,
+        state: "reserved",
+        candidateFingerprint: null,
+        error: null,
+        startedAt: now,
+        updatedAt: now,
+      },
+      updatedAt: now,
+    };
+    upsertPipelineCommissionAttempt(next, attempt);
+    if (ownsTransaction) d.exec("COMMIT");
+    return { ok: true, commission: next, idempotent: false };
+  } catch (error) {
+    if (ownsTransaction) {
+      try { d.exec("ROLLBACK"); } catch {}
+    }
+    throw error;
+  }
+}
+
+/** Insert a validated provider successor before its existing journal is replayed. */
+export function reservePipelineCommissionAdoption(input: {
+  guard: PipelineRecoveryGuard;
+  candidate: NonNullable<PipelineCommission["successorCandidate"]>;
+  now?: number;
+}): PipelineRecoveryDbResult {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const held = getPipelineCommission(input.guard.commissionId);
+    if (!held) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "stale_guard", error: "the Pipeline commission no longer exists" };
+    }
+    if (sameRecoveryPredecessor(held, input.guard, "adoption")) {
+      if (held.recovery?.candidateFingerprint !== input.candidate.fingerprint) {
+        if (ownsTransaction) d.exec("ROLLBACK");
+        return { ok: false, code: "candidate_changed", error: "the provider successor changed during adoption" };
+      }
+      if (ownsTransaction) d.exec("COMMIT");
+      return { ok: true, commission: held, idempotent: true };
+    }
+    if (!recoveryGuardMatches(held, input.guard)) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "stale_guard", error: "the failed Engineer attempt changed" };
+    }
+    const task = d.prepare(
+      `SELECT status, repo_root, pipeline_commission_id FROM tasks WHERE id = ?`,
+    ).get(held.taskId) as {
+      status: string;
+      repo_root: string;
+      pipeline_commission_id: string | null;
+    } | undefined;
+    if (!task || task.pipeline_commission_id !== held.id || task.repo_root !== held.repoRoot ||
+        !["running", "failed"].includes(task.status)) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "task_conflict", error: "the task no longer owns this Pipeline commission" };
+    }
+    const predecessor = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
+    const candidate = held.successorCandidate;
+    if (!predecessor?.engineerRunId || predecessor.state !== "failed" ||
+        !candidate || candidate.validation !== "valid") {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "lineage_mismatch", error: "no validated direct successor is available" };
+    }
+    if (candidate.fingerprint !== input.candidate.fingerprint ||
+        candidate.engineerRunId !== input.candidate.engineerRunId ||
+        candidate.providerRevision !== input.candidate.providerRevision) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return { ok: false, code: "candidate_changed", error: "the provider successor changed during adoption" };
+    }
+    const now = input.now ?? Date.now();
+    const attempt: PipelineCommissionAttempt = {
+      attempt: candidate.attempt,
+      origin: "provider_reconciled",
+      launchKey: candidate.attemptKey,
+      engineerRunId: candidate.engineerRunId,
+      previousEngineerRunId: candidate.previousEngineerRunId,
+      providerRevision: 0,
+      state: "reserved",
+      terminalReason: null,
+      evidenceCommit: candidate.evidenceCommit ?? null,
+      evidenceCommitProvenance: candidate.evidenceCommitProvenance ?? null,
+      evidenceFrozenAt: candidate.evidenceCommit ? now : null,
+      updatedAt: now,
+    };
+    const next: PipelineCommission = {
+      ...held,
+      lifecycle: "created",
+      attempts: [...held.attempts, attempt].slice(-MAX_PIPELINE_COMMISSION_ATTEMPTS),
+      activeAttempt: attempt.attempt,
+      steps: held.steps.map((step) => ({ ...step, state: "pending" })),
+      currentStep: null,
+      project: null,
+      authoringWorktree: null,
+      authoringBranch: null,
+      planSlug: null,
+      handoff: null,
+      readiness: null,
+      failure: null,
+      retention: null,
+      retirement: null,
+      projectionDrift: null,
+      linkedRun: null,
+      blocker: null,
+      error: null,
+      recovery: {
+        kind: "adoption",
+        predecessorAttempt: predecessor.attempt,
+        predecessorEngineerRunId: predecessor.engineerRunId,
+        predecessorProviderRevision: predecessor.providerRevision,
+        attempt: attempt.attempt,
+        state: "adoption_replaying",
+        candidateFingerprint: candidate.fingerprint ?? null,
+        error: null,
+        startedAt: now,
+        updatedAt: now,
+      },
+      updatedAt: now,
+    };
+    upsertPipelineCommissionAttempt(next, attempt);
+    if (ownsTransaction) d.exec("COMMIT");
+    return { ok: true, commission: next, idempotent: false };
+  } catch (error) {
+    if (ownsTransaction) {
+      try { d.exec("ROLLBACK"); } catch {}
+    }
+    throw error;
+  }
+}
+
+/** Advance only the bounded saga cursor for one already-reserved attempt. */
+export function updatePipelineCommissionRecovery(input: {
+  commissionId: string;
+  attempt: number;
+  state: NonNullable<PipelineCommission["recovery"]>["state"];
+  error?: string | null;
+  clearCandidate?: boolean;
+  now?: number;
+}): PipelineCommission | null {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const held = getPipelineCommission(input.commissionId);
+    const attempt = held?.attempts.find((entry) => entry.attempt === input.attempt);
+    if (!held?.recovery || held.recovery.attempt !== input.attempt || !attempt) {
+      if (ownsTransaction) d.exec("ROLLBACK");
+      return null;
+    }
+    const now = input.now ?? Date.now();
+    const next: PipelineCommission = {
+      ...held,
+      successorCandidate: input.clearCandidate ? null : held.successorCandidate,
+      recovery: {
+        ...held.recovery,
+        state: input.state,
+        error: input.error === undefined ? held.recovery.error : input.error?.slice(0, 500) ?? null,
+        updatedAt: now,
+      },
+      updatedAt: now,
+    };
+    upsertPipelineCommissionAttempt(next, attempt);
+    if (ownsTransaction) d.exec("COMMIT");
+    return next;
+  } catch (error) {
+    if (ownsTransaction) {
+      try { d.exec("ROLLBACK"); } catch {}
+    }
+    throw error;
   }
 }
 

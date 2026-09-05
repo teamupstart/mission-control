@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
   appendConductorEngineerEvent,
+  seedDirectConductorEngineerSuccessor,
   writeConductorProjects,
 } from "../fixtures/conductor.ts";
 import { expect, test } from "../fixtures/test.ts";
@@ -105,7 +106,7 @@ test("provider readiness blocks model launch and rechecks the same attempt", asy
   await dashboard.screenshot({ path: join(evidenceDir, "ready-after-recheck.png") });
 });
 
-test("typed failure and task drift outrank an idle host on every fleet surface", async ({
+test("typed failure refuses task completion and retries once on a fresh host", async ({
   dashboard,
   daemon,
 }) => {
@@ -191,12 +192,10 @@ test("typed failure and task drift outrank an idle host on every fleet surface",
   await expect(detail.locator(".badge")).toContainText("Provider authentication failed");
 
   const completed = await request(daemon, `/api/tasks/${taskId}/complete`, "POST", {
-    outcome: "Marked complete to expose lifecycle drift",
+    outcome: "Must not overwrite provider lifecycle",
   });
-  expect(completed.ok, await completed.text()).toBe(true);
-  await expect(rail.locator(".rail-state")).toHaveText("Task completed before Pipeline");
-  await expect(detail.locator(".badge")).toContainText("Task completed before Pipeline");
-  await expect(reviewStage).toHaveAttribute("aria-label", /1 Pipeline needs you/);
+  expect(completed.status, await completed.text()).toBe(409);
+  await expect(rail.locator(".rail-state")).toHaveText("Provider authentication failed");
 
   const boardAgain = await request(daemon, "/api/ui/config", "PUT", { layout: "board" });
   expect(boardAgain.ok, await boardAgain.text()).toBe(true);
@@ -207,9 +206,120 @@ test("typed failure and task drift outrank an idle host on every fleet surface",
   ).toBeVisible();
   await dashboard.getByRole("button", { name: /to answer/ }).click();
   inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
-  await expect(inbox).toContainText("Task completed before Pipeline");
-  await expect(inbox).toContainText("Mission Control marks the task done");
-  await dashboard.screenshot({ path: join(evidenceDir, "task-drift-attention.png") });
+  await expect(inbox).toContainText("Provider authentication failed");
+  await inbox.getByRole("button", { name: "Open Pipeline" }).click();
+  const recovery = dashboard.getByRole("region", { name: "Provider lifecycle" });
+  await expect(recovery.getByRole("button", { name: "Retry Engineer" })).toBeVisible();
+  const oldSessionId = sessionId;
+  await recovery.getByRole("button", { name: "Retry Engineer" }).click();
+  await expect.poll(async () => {
+    const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
+      id: string;
+      sessionId: string | null;
+      status: string;
+    }>;
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    return task?.sessionId && task.sessionId !== oldSessionId
+      ? { sessionId: task.sessionId, status: task.status }
+      : null;
+  }, { timeout: 60_000 }).toMatchObject({ sessionId: expect.any(String), status: "running" });
+  const attempts = dashboard.getByRole("group", { name: "Engineer attempts" });
+  await expect(attempts).toContainText("Attempt 1");
+  await expect(attempts).toContainText("Attempt 2");
+  await expect(attempts).toContainText("Mission Control attempt");
+  await expect.poll(async () => {
+    const sessions = await (await request(daemon, "/api/sessions")).json() as Array<{ id: string }>;
+    return sessions.some((session) => session.id === oldSessionId);
+  }, { timeout: 20_000 }).toBe(false);
+  await dashboard.screenshot({ path: join(evidenceDir, "retry-fresh-host.png") });
+});
+
+test("an exact direct provider successor is reviewed and adopted without rewriting attempt one", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeConductorProjects(daemon.home, [{ name: "demo-repo", path: daemon.repo }]);
+  mkdirSync(join(daemon.repo, ".daemon"), { recursive: true });
+  writeFileSync(join(daemon.repo, ".daemon", "READY"), "ready\n");
+  const configured = await request(daemon, "/api/pipelines/config", "PUT", {
+    enabled: true,
+    launchRuntime: "agent-sdk",
+    foremanMechanicalTriage: false,
+    repos: [{ provider: "ai-conductor", repoRoot: daemon.repo, enabled: true }],
+  });
+  expect(configured.ok, await configured.text()).toBe(true);
+  await dashboard.reload();
+
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("pipeline");
+  await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Adopt one exact successor");
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+
+  let taskId = "";
+  let predecessorSessionId = "";
+  await expect.poll(async () => {
+    const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
+      id: string;
+      intent: string;
+      sessionId: string | null;
+    }>;
+    const task = tasks.find((candidate) => candidate.intent === "Adopt one exact successor");
+    taskId = task?.id ?? "";
+    predecessorSessionId = task?.sessionId ?? "";
+    return predecessorSessionId || null;
+  }, { timeout: 60_000 }).toEqual(expect.any(String));
+
+  appendConductorEngineerEvent(daemon.home, "engineer_run_started");
+  appendConductorEngineerEvent(daemon.home, "engineer_run_failed", {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Choose retry or adopt the direct successor",
+    diagnostic: null,
+  });
+  seedDirectConductorEngineerSuccessor(daemon.home);
+
+  await dashboard.getByRole("button", { name: /to answer/ }).click();
+  const inbox = dashboard.getByRole("dialog", { name: "Attention inbox" });
+  await expect(inbox).toContainText("Provider failed");
+  await inbox.getByRole("button", { name: "Open Pipeline" }).click();
+  const lifecycle = dashboard.getByRole("region", { name: "Provider lifecycle" });
+  await lifecycle.getByText("Review successor attempt 2", { exact: true }).click();
+  await expect(lifecycle.getByRole("button", { name: "Adopt exact successor" })).toBeVisible({
+    timeout: 60_000,
+  });
+  const [adoptedResponse] = await Promise.all([
+    dashboard.waitForResponse((response) =>
+      response.url().endsWith(`/api/tasks/${taskId}/pipeline/successor/adopt`)),
+    lifecycle.getByRole("button", { name: "Adopt exact successor" }).click(),
+  ]);
+  expect(adoptedResponse.ok(), await adoptedResponse.text()).toBe(true);
+  const attempts = dashboard.getByRole("group", { name: "Engineer attempts" });
+  await expect(attempts).toContainText("Attempt 1");
+  await expect(attempts).toContainText("Attempt 2");
+  await expect(attempts).toContainText("Reconciled provider attempt");
+  await expect.poll(async () => {
+    const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
+      id: string;
+      sessionId: string | null;
+    }>;
+    return tasks.find((candidate) => candidate.id === taskId)?.sessionId;
+  }).toBeNull();
+  await expect(lifecycle.getByRole("button", { name: "Adopt exact successor" })).toHaveCount(0);
+  await expect(lifecycle.getByText("Recovery adoption replaying", { exact: true })).toHaveCount(0);
+  await expect.poll(async () => {
+    const sessions = await (await request(daemon, "/api/sessions")).json() as Array<{ id: string }>;
+    return sessions.some((session) => session.id === predecessorSessionId);
+  }, { timeout: 20_000 }).toBe(false);
+  const evidenceDir = join("e2e", ".artifacts", "pipeline-provider-readiness");
+  mkdirSync(evidenceDir, { recursive: true });
+  await dashboard.screenshot({ path: join(evidenceDir, "adopt-direct-successor.png") });
 });
 
 test.describe("mixed-version provider", () => {

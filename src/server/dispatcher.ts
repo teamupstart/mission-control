@@ -82,6 +82,7 @@ import {
   recordPipelineCommissionCancellationFailure,
 } from "./pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "./pipelines/providers.ts";
+import { updatePipelineCommissionRecovery } from "./db.ts";
 import type {
   PipelineEngineerLifecycle,
   PipelineEngineerRunSnapshot,
@@ -902,6 +903,9 @@ export class Dispatcher {
     let engineerRunId: string | null = null;
     let engineerCommissionId: string | null = null;
     let engineerLifecycle: PipelineEngineerLifecycle | null = null;
+    let engineerRecoveryAttempt: number | null = null;
+    let engineerProviderBound = false;
+    let engineerCreateOutcomeUnknown = false;
     try {
       const launch = await (this.deps.pipelineLaunch ?? pipelineTaskLaunch)(
         task.repoRoot,
@@ -947,6 +951,11 @@ export class Dispatcher {
       );
       if (!attempt) throw new Error("the Pipeline commission has no active Engineer attempt");
       const commissionId = commission.id;
+      if (commission.recovery?.attempt === attempt.attempt) {
+        engineerCommissionId = commissionId;
+        engineerRecoveryAttempt = attempt.attempt;
+        engineerLifecycle = lifecycle;
+      }
       let reserved: PipelineEngineerRunSnapshot | null = null;
       let reservationBound = false;
       this.registry.beginPipelineEngineerReservation(taskId);
@@ -973,6 +982,8 @@ export class Dispatcher {
             ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
             : null;
           if (!reserved) {
+            engineerCreateOutcomeUnknown = created.outcomeUnknown ||
+              (!inspected.ok && inspected.outcomeUnknown);
             throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
           }
         }
@@ -982,6 +993,13 @@ export class Dispatcher {
           reservedRun.correlationId !== commission.correlationId ? "correlationId" : null,
           reservedRun.repoRoot !== task.repoRoot ? "repoRoot" : null,
           reservedRun.attemptKey !== attempt.launchKey ? "attemptKey" : null,
+          reservedRun.attempt !== attempt.attempt ? "attempt" : null,
+          reservedRun.previousEngineerRunId !== attempt.previousEngineerRunId
+            ? "previousEngineerRunId"
+            : null,
+          engineerCapabilities.ownedAttempts && reservedRun.integrationOwner !== commission.id
+            ? "integrationOwner"
+            : null,
         ].filter((field): field is string => field !== null);
         if (mismatchedIdentity.length > 0) {
           throw new Error(
@@ -1001,8 +1019,21 @@ export class Dispatcher {
         engineerRunId = reservedRun.engineerRunId;
         engineerCommissionId = commissionId;
         engineerLifecycle = lifecycle;
+        engineerRecoveryAttempt = commission.recovery?.attempt === attempt.attempt
+          ? attempt.attempt
+          : null;
         this.registry.upsertPipelineCommission(commission);
+        if (engineerRecoveryAttempt !== null) {
+          const recovering = updatePipelineCommissionRecovery({
+            commissionId,
+            attempt: engineerRecoveryAttempt,
+            state: "provider_bound",
+            error: null,
+          });
+          if (recovering) this.registry.upsertPipelineCommission(recovering);
+        }
         reservationBound = true;
+        engineerProviderBound = true;
 
         // Consume the provider's current durable history before acting on any later snapshot.
         // This keeps a readiness revision from advancing the cursor past run-created ownership
@@ -1029,6 +1060,15 @@ export class Dispatcher {
           commission = checked.commission;
           const readiness = commission.readiness!;
           if (!readiness?.permitted) {
+            if (engineerRecoveryAttempt !== null) {
+              const blocked = updatePipelineCommissionRecovery({
+                commissionId,
+                attempt: engineerRecoveryAttempt,
+                state: "readiness_blocked",
+                error: readiness?.summary ?? "the provider did not permit Engineer host launch",
+              });
+              if (blocked) this.registry.upsertPipelineCommission(blocked);
+            }
             this.patch(taskId, {
               status: "running",
               sessionId: null,
@@ -1188,6 +1228,15 @@ export class Dispatcher {
             return;
           }
         }
+        if (engineerCommissionId && engineerRecoveryAttempt !== null) {
+          const launching = updatePipelineCommissionRecovery({
+            commissionId: engineerCommissionId,
+            attempt: engineerRecoveryAttempt,
+            state: "launching_host",
+            error: null,
+          });
+          if (launching) this.registry.upsertPipelineCommission(launching);
+        }
       }
       // Persist the exact host identity before launch. The driver can invoke MCP before
       // `start` returns, so assigning it afterward would create a valid-tool race window.
@@ -1255,6 +1304,15 @@ export class Dispatcher {
       // Cover both driver-binding orders, as ordinary embedded dispatch does. A bound
       // session is linked now; a later `bound` event sees Task.sessionId and links then.
       this.registry.bindTaskToWorkEpisode(taskId, session.id);
+      if (engineerCommissionId && engineerRecoveryAttempt !== null) {
+        const complete = updatePipelineCommissionRecovery({
+          commissionId: engineerCommissionId,
+          attempt: engineerRecoveryAttempt,
+          state: "complete",
+          error: null,
+        });
+        if (complete) this.registry.upsertPipelineCommission(complete);
+      }
       return;
     }
 
@@ -1284,6 +1342,28 @@ export class Dispatcher {
     // for tasks created before provider identity was known at launch.
       this.patch(taskId, { status: "running", sessionId: null });
     } catch (error) {
+      if (engineerCommissionId && engineerRecoveryAttempt !== null) {
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        const failed = updatePipelineCommissionRecovery({
+          commissionId: engineerCommissionId,
+          attempt: engineerRecoveryAttempt,
+          state: engineerProviderBound
+            ? "host_launch_failed"
+            : engineerCreateOutcomeUnknown
+              ? "provider_outcome_unknown"
+              : "provider_reservation_failed",
+          error: originalMessage,
+        });
+        if (failed) this.registry.upsertPipelineCommission(failed);
+        this.patch(taskId, {
+          status: "running",
+          error: engineerProviderBound
+            ? `${originalMessage} - provider Engineer run ${engineerRunId ?? "unknown"} remains ` +
+              "bound for an exact host-launch retry"
+            : originalMessage,
+        });
+        return;
+      }
       if (engineerRunId && engineerCommissionId && engineerLifecycle) {
         const failedRunId = engineerRunId;
         const failedCommissionId = engineerCommissionId;

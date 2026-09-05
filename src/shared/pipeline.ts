@@ -671,6 +671,141 @@ export interface PipelineCommissionSuccessorCandidate {
   providerRevision: number;
   state: Exclude<PipelineCommissionAttemptState, "reserved">;
   integrationOwner: string | null;
+  /** Stable hash of the inspected snapshot and its complete replay journal. */
+  fingerprint: string;
+  validation: "valid" | "invalid";
+  validationReason: string | null;
+  branch: string | null;
+  planSlug: string | null;
+  handoff: PipelineCommissionHandoff | null;
+  evidenceCommit: string | null;
+  evidenceCommitProvenance: PipelineEvidenceCommitProvenance | null;
+}
+
+/** Browser-supplied compare-and-swap identity for every recovery mutation. */
+export interface PipelineRecoveryGuard {
+  commissionId: PipelineCommissionId;
+  activeAttempt: number;
+  engineerRunId: string;
+  providerRevision: number;
+}
+
+export const PIPELINE_RECOVERY_STATES = [
+  "reserved",
+  "provider_bound",
+  "readiness_blocked",
+  "replacing_host",
+  "launching_host",
+  "host_launch_failed",
+  "provider_reservation_failed",
+  "provider_outcome_unknown",
+  "adoption_replaying",
+  "adoption_partial",
+  "complete",
+] as const;
+export type PipelineRecoveryState = (typeof PIPELINE_RECOVERY_STATES)[number];
+
+/** Bounded restart cursor for one retry or exact-successor adoption saga. */
+export interface PipelineCommissionRecovery {
+  kind: "retry" | "adoption";
+  predecessorAttempt: number;
+  predecessorEngineerRunId: string;
+  predecessorProviderRevision: number;
+  attempt: number;
+  state: PipelineRecoveryState;
+  candidateFingerprint: string | null;
+  error: string | null;
+  startedAt: number;
+  updatedAt: number;
+}
+
+/** Completed recovery metadata is retained as audit history, not as an active saga claim. */
+export function pipelineRecoveryIsActive(
+  recovery: PipelineCommissionRecovery | null | undefined,
+): recovery is PipelineCommissionRecovery {
+  return recovery != null && recovery.state !== "complete";
+}
+
+export const PIPELINE_RECOVERY_RESULT_CODES = [
+  "stale_guard",
+  "unsupported_provider",
+  "readiness_blocked",
+  "recovery_in_flight",
+  "not_retryable",
+  "candidate_changed",
+  "lineage_mismatch",
+  "repository_mismatch",
+  "handoff_mismatch",
+  "task_conflict",
+  "provider_outcome_unknown",
+  "provider_failure",
+  "host_launch_failure",
+] as const;
+export type PipelineRecoveryResultCode = (typeof PIPELINE_RECOVERY_RESULT_CODES)[number];
+
+export type PipelineRecoveryStateOutcome =
+  | { ok: true }
+  | {
+      ok: false;
+      code: PipelineRecoveryResultCode;
+      error: string;
+      outcomeUnknown?: true;
+    };
+
+/** One exhaustive operator-visible result for every durable recovery state. */
+export function pipelineRecoveryOutcomeFor(
+  recovery: PipelineCommissionRecovery,
+): PipelineRecoveryStateOutcome {
+  const state = recovery.state;
+  switch (state) {
+    case "complete":
+      return { ok: true };
+    case "readiness_blocked":
+      return {
+        ok: false,
+        code: "readiness_blocked",
+        error: recovery.error ?? "the provider did not permit Engineer host launch",
+      };
+    case "host_launch_failed":
+      return {
+        ok: false,
+        code: "host_launch_failure",
+        error: recovery.error ?? "the fresh Engineer host could not be launched",
+      };
+    case "provider_reservation_failed":
+      return {
+        ok: false,
+        code: "provider_failure",
+        error: recovery.error ?? "the provider refused the retry reservation",
+      };
+    case "provider_outcome_unknown":
+      return {
+        ok: false,
+        code: "provider_outcome_unknown",
+        error: recovery.error ?? "the provider reservation outcome is unknown",
+        outcomeUnknown: true,
+      };
+    case "adoption_partial":
+      return {
+        ok: false,
+        code: "lineage_mismatch",
+        error: recovery.error ?? "the provider successor journal could not be reconciled",
+      };
+    case "reserved":
+    case "provider_bound":
+    case "replacing_host":
+    case "launching_host":
+    case "adoption_replaying":
+      return {
+        ok: false,
+        code: "recovery_in_flight",
+        error: recovery.error ?? "the Pipeline recovery is still in flight",
+      };
+    default: {
+      const exhaustive: never = state;
+      throw new Error(`unsupported Pipeline recovery state: ${String(exhaustive)}`);
+    }
+  }
 }
 
 /** Provider evidence that contradicts an already-projected immutable lifecycle fact. */
@@ -714,12 +849,30 @@ export interface PipelineCommission {
   retention?: PipelineCommissionRetention | null;
   retirement?: EngineerRetirementEvidence | null;
   successorCandidate?: PipelineCommissionSuccessorCandidate | null;
+  recovery?: PipelineCommissionRecovery | null;
   projectionDrift?: PipelineCommissionProjectionDrift | null;
   linkedRun: PipelineRunLink | null;
   blocker: PipelineCommissionBlocker | null;
   error: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * Whether one incremental whole-object frame may replace the currently rendered commission.
+ *
+ * Recovery completion is terminal for its active attempt. EventSource reconnects and React
+ * StrictMode can leave an older frame buffered after a newer stream has delivered completion,
+ * so accepting that frame would resurrect the candidate and its operator action in the UI.
+ * A later immutable attempt remains a distinct cursor and is therefore allowed.
+ */
+export function pipelineCommissionFrameMayReplace(
+  current: PipelineCommission,
+  incoming: PipelineCommission,
+): boolean {
+  return current.activeAttempt !== incoming.activeAttempt ||
+    current.recovery?.state !== "complete" ||
+    incoming.recovery?.state === "complete";
 }
 
 export type PipelineCommissionAttentionKind =

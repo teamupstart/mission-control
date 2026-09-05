@@ -6,6 +6,7 @@ import {
   activePipelineRepos,
   pipelineConsoleAllowed,
   pipelineGrantAllowed,
+  pipelineRecoveryIsActive,
   pipelineRepoKey,
   pipelineRunKey,
   type PipelineAction,
@@ -54,6 +55,7 @@ import {
 } from "./ingest.ts";
 import { PIPELINE_PROVIDERS } from "./providers.ts";
 import { applyEngineerEvent, applyUnsupportedEngineerEvent } from "./commissions.ts";
+import { inspectPipelineSuccessor } from "./recovery.ts";
 import type {
   PipelineConsoleTarget,
   PipelineControlTarget,
@@ -1253,34 +1255,25 @@ async function refreshPipelineSuccessorCandidate(
   sink: PipelineProjectionSink,
   commission: PipelineCommission,
   lifecycle: PipelineEngineerLifecycle,
+  capabilities: PipelineEngineerCapabilities,
 ): Promise<PipelineCommission> {
   const active = commission.attempts.find((entry) => entry.attempt === commission.activeAttempt);
   if (!active?.engineerRunId) return commission;
   const terminal = ["failed", "cancelled", "settled"].includes(active.state);
   if (!terminal && !commission.successorCandidate) return commission;
-  const inspected = await lifecycle.inspectCorrelation({
-    repoRoot: commission.repoRoot,
-    correlationId: commission.correlationId,
-  });
-  if (!inspected.ok) return commission;
-  const successor = terminal
-    ? inspected.value.find((candidate) =>
-        candidate.attempt === active.attempt + 1 &&
-        candidate.previousEngineerRunId === active.engineerRunId &&
-        candidate.attemptKey !== active.launchKey)
-    : null;
-  const candidate = successor
-    ? {
-        engineerRunId: successor.engineerRunId,
-        attempt: successor.attempt,
-        previousEngineerRunId: successor.previousEngineerRunId!,
-        attemptKey: successor.attemptKey,
-        providerRevision: successor.eventRevision,
-        state: successor.state,
-        integrationOwner: successor.integrationOwner ?? null,
-      }
+  const candidate = terminal
+    ? await inspectPipelineSuccessor({ commission, lifecycle, capabilities })
     : null;
   const held = getPipelineCommission(commission.id) ?? commission;
+  // Recovery owns candidate identity once reserved. A watcher that began inspecting the
+  // predecessor before adoption must not republish that stale candidate after completion.
+  if (pipelineRecoveryIsActive(held.recovery)) return held;
+  const heldActive = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
+  if (held.activeAttempt !== active.attempt ||
+      heldActive?.engineerRunId !== active.engineerRunId ||
+      heldActive.providerRevision !== active.providerRevision) {
+    return held;
+  }
   if (JSON.stringify(held.successorCandidate ?? null) === JSON.stringify(candidate)) return held;
   const heldAttempt = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
   if (!heldAttempt) return held;
@@ -1386,7 +1379,12 @@ export async function refreshPipelineCommission(
     );
     return;
   }
-  commission = await refreshPipelineSuccessorCandidate(sink, commission, lifecycle);
+  commission = await refreshPipelineSuccessorCandidate(
+    sink,
+    commission,
+    lifecycle,
+    capability.value,
+  );
   if (commission.retirement || attempt.state === "failed") return;
   if (
     ["cancelled", "settled"].includes(attempt.state) &&

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import {
   PIPELINE_PROVIDER_INFO,
+  pipelineRecoveryIsActive,
   pipelineRunKeyOf,
   type PipelineCommission,
   type PipelineRun,
@@ -64,6 +65,10 @@ function EngineerAttempts({
           >
             <span className="pipelines-attempt-name">Attempt {attempt.attempt}</span>
             <span className="pipelines-attempt-line">{attempt.state}</span>
+            <small>
+              {attempt.origin === "provider_reconciled" ? "Reconciled provider attempt" :
+                attempt.origin === "mission_control" ? "Mission Control attempt" : "Initial attempt"}
+            </small>
             <small>{attempt.engineerRunId ?? "run reservation pending"}</small>
           </article>
         ))}
@@ -144,6 +149,12 @@ function ProviderLifecycle({
   canStart,
   starting,
   onStart,
+  recoveryBusy,
+  onRetry,
+  onRefreshSuccessor,
+  onAdoptSuccessor,
+  onAbandon,
+  onCancel,
   implementationActive,
 }: {
   commission: PipelineCommission;
@@ -152,6 +163,12 @@ function ProviderLifecycle({
   canStart: boolean;
   starting: boolean;
   onStart: () => void;
+  recoveryBusy: string | null;
+  onRetry: () => void;
+  onRefreshSuccessor: () => void;
+  onAdoptSuccessor: () => void;
+  onAbandon: () => void;
+  onCancel: () => void;
   implementationActive: boolean;
 }): React.JSX.Element {
   const readiness = commission.readiness ?? null;
@@ -206,6 +223,24 @@ function ProviderLifecycle({
               <pre>{failure.diagnostic}</pre>
             </details>
           )}
+          {failure.retryable && !commission.successorCandidate && (
+            <Tooltip label="Create the one permitted Engineer retry on a fresh host">
+              <button type="button" className="btn btn-primary" onClick={onRetry} disabled={recoveryBusy !== null}>
+                {recoveryBusy === "retry" ? "Retrying…" : "Retry Engineer"}
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip label="Close this failed commission without changing its attempt history">
+            <button type="button" className="btn" onClick={onAbandon} disabled={recoveryBusy !== null}>
+              {recoveryBusy === "abandon" ? "Abandoning…" : "Abandon commission"}
+            </button>
+          </Tooltip>
+        </div>
+      )}
+      {pipelineRecoveryIsActive(commission.recovery) && (
+        <div className="pipelines-lifecycle-fact" role="status">
+          <strong>Recovery {commission.recovery.state.replaceAll("_", " ")}</strong>
+          {commission.recovery.error && <p>{commission.recovery.error}</p>}
         </div>
       )}
       {commission.successorCandidate && (
@@ -218,9 +253,31 @@ function ProviderLifecycle({
             follows the active attempt and is not part of Mission Control history.
           </p>
           <p>
-            Review only. Adoption and retry remain unavailable until Pipeline recovery is enabled.
+            {commission.successorCandidate.validation === "valid"
+              ? "Identity, lineage, journal, workspace, and handoff evidence match."
+              : commission.successorCandidate.validationReason ?? "Refresh this successor before adoption."}
           </p>
+          {commission.successorCandidate.validation === "valid" ? (
+            <Tooltip label="Adopt this exact provider run and replay its immutable journal">
+              <button type="button" className="btn btn-primary" onClick={onAdoptSuccessor} disabled={recoveryBusy !== null}>
+                {recoveryBusy === "adopt" ? "Adopting…" : "Adopt exact successor"}
+              </button>
+            </Tooltip>
+          ) : (
+            <Tooltip label="Inspect the direct successor again without changing commission history">
+              <button type="button" className="btn btn-primary" onClick={onRefreshSuccessor} disabled={recoveryBusy !== null}>
+                {recoveryBusy === "refresh" ? "Refreshing…" : "Refresh successor evidence"}
+              </button>
+            </Tooltip>
+          )}
         </details>
+      )}
+      {!failure && !commission.handoff && commission.lifecycle !== "cancelled" && (
+        <Tooltip label="Cancel this active Pipeline commission">
+          <button type="button" className="btn" onClick={onCancel} disabled={recoveryBusy !== null}>
+            {recoveryBusy === "cancel" ? "Cancelling…" : "Cancel Pipeline"}
+          </button>
+        </Tooltip>
       )}
       {retirement ? (
         <p>Authoring workspace retired by the provider: {retirement.reason.replaceAll("_", " ")}.</p>
@@ -251,6 +308,12 @@ export function PipelineFeatureReader({
   canStartAfterReadiness = false,
   startingAfterReadiness = false,
   onStartAfterReadiness = () => undefined,
+  recoveryBusy = null,
+  onRetry = () => undefined,
+  onRefreshSuccessor = () => undefined,
+  onAdoptSuccessor = () => undefined,
+  onAbandon = () => undefined,
+  onCancel = () => undefined,
   onSelectRun,
 }: {
   activeCommission: PipelineCommission | null;
@@ -262,6 +325,12 @@ export function PipelineFeatureReader({
   canStartAfterReadiness?: boolean;
   startingAfterReadiness?: boolean;
   onStartAfterReadiness?: () => void;
+  recoveryBusy?: string | null;
+  onRetry?: () => void;
+  onRefreshSuccessor?: () => void;
+  onAdoptSuccessor?: () => void;
+  onAbandon?: () => void;
+  onCancel?: () => void;
   onSelectRun: (run: PipelineRun) => void;
 }): React.JSX.Element {
   const commissionError = activeCommission?.error?.trim() || null;
@@ -288,6 +357,12 @@ export function PipelineFeatureReader({
           canStart={canStartAfterReadiness}
           starting={startingAfterReadiness}
           onStart={onStartAfterReadiness}
+          recoveryBusy={recoveryBusy}
+          onRetry={onRetry}
+          onRefreshSuccessor={onRefreshSuccessor}
+          onAdoptSuccessor={onAdoptSuccessor}
+          onAbandon={onAbandon}
+          onCancel={onCancel}
           implementationActive={activeRun !== null}
         />
       )}

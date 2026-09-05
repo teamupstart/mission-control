@@ -12,9 +12,22 @@ import type {
   TaskKind,
   TaskPriority,
 } from "@shared/types.ts";
-import type { ReorderTask, TaskDependencyInput, UpdateTask } from "@shared/protocol.ts";
+import type {
+  PipelineAdoptSuccessor,
+  PipelineRetry,
+  ReorderTask,
+  TaskDependencyInput,
+  UpdateTask,
+} from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
-import { pipelineRunKeyOf, type PipelineRun, type PipelineRunLink } from "@shared/pipeline.ts";
+import {
+  pipelineRecoveryOutcomeFor,
+  pipelineRecoveryIsActive,
+  pipelineRunKeyOf,
+  type PipelineRecoveryResultCode,
+  type PipelineRun,
+  type PipelineRunLink,
+} from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
@@ -61,6 +74,7 @@ import {
   taskWorkEpisodeForTask,
   upsertTask as dbUpsertTask,
   workEpisodeRepoPrsForTask,
+  updatePipelineCommissionRecovery,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
@@ -96,6 +110,12 @@ import {
   checkPipelineCommissionReadiness,
   refreshPipelineCommission,
 } from "./pipelines/index.ts";
+import {
+  adoptPipelineSuccessor as adoptValidatedPipelineSuccessor,
+  completedPipelineAdoptionMatches,
+  pipelineRecoveryGuard,
+  preparePipelineRetry,
+} from "./pipelines/recovery.ts";
 
 /**
  * What a SATISFIED quorum records as the task's outcome: every pull request that landed, in
@@ -642,6 +662,16 @@ export type DispatchOutcome =
   | { ok: true; task: Task }
   | { ok: false; error: string; task?: Task };
 
+export type PipelineRecoveryOutcome =
+  | { ok: true; task: Task }
+  | {
+      ok: false;
+      code: PipelineRecoveryResultCode;
+      error: string;
+      task?: Task;
+      outcomeUnknown?: boolean;
+    };
+
 /** Whether the handover would take anything the caller has not already agreed to. */
 function needsResetConfirm(c: AssignResetConfirm): boolean {
   // `clearsContext` is deliberately NOT a trigger, though it IS reported. Every agent
@@ -703,6 +733,8 @@ export class TaskManager {
    * are exactly the awaits during which a second caller used to be able to walk in.
    */
   private readonly cleanupReservations = new Set<string>();
+  /** One in-process launcher per durable retry reservation. SQLite owns cross-request CAS. */
+  private readonly pipelineRecoveries = new Set<string>();
   /** One completion in flight per task, so two signals cannot both publish one archive. */
   private completing = new Map<string, Promise<Task | null>>();
   /** Tasks concluded from an agent's idleness, and so reversible. See `reopenIfWorkResumed`. */
@@ -756,6 +788,32 @@ export class TaskManager {
     // homes on disk. Reconcile every task that still holds resources by checking
     // whether its agent's terminal home survived (any backend, resolved by name).
     for (const t of registry.listTasks()) {
+      const recovery = t.pipelineCommissionId
+        ? registry.pipelineCommission(t.pipelineCommissionId)?.recovery
+        : null;
+      if (pipelineRecoveryIsActive(recovery)) {
+        const guard = {
+          commissionId: t.pipelineCommissionId!,
+          activeAttempt: recovery.predecessorAttempt,
+          engineerRunId: recovery.predecessorEngineerRunId,
+          providerRevision: recovery.predecessorProviderRevision,
+        };
+        if (recovery.kind === "retry") {
+          void this.retryPipelineAttempt(t.id, { guard });
+        } else {
+          const commission = registry.pipelineCommission(t.pipelineCommissionId!);
+          const candidate = commission?.successorCandidate;
+          if (candidate?.fingerprint) {
+            void this.adoptPipelineSuccessor(t.id, {
+              guard,
+              candidateEngineerRunId: candidate.engineerRunId,
+              candidateRevision: candidate.providerRevision,
+              candidateFingerprint: candidate.fingerprint,
+            });
+          }
+        }
+        continue;
+      }
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
       // terminal tasks only when they still hold resources to check/reclaim.
@@ -2371,6 +2429,16 @@ export class TaskManager {
     if (this.assigningTasks.has(id)) {
       return { ok: false, error: "task is being assigned", task: t };
     }
+    if (t.kind === "pipeline" && t.pipelineCommissionId) {
+      const commission = this.registry.pipelineCommission(t.pipelineCommissionId);
+      const guard = commission ? pipelineRecoveryGuard(commission) : null;
+      if (commission?.lifecycle === "failed" && guard) {
+        const recovered = await this.retryPipelineAttempt(id, { guard });
+        return recovered.ok
+          ? recovered
+          : { ok: false, error: recovered.error, task: recovered.task };
+      }
+    }
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
       if (!taskKindAllowsBacklog(t.kind)) {
         return { ok: false, error: TASK_KIND_BACKLOG_REFUSAL, task: t };
@@ -2465,6 +2533,219 @@ export class TaskManager {
     }
     void this.dispatcher.dispatch(id);
     return { ok: true, task };
+  }
+
+  /** Retire one predecessor through Registry's sole managed-session eviction path. */
+  private async stopPipelineEngineerHost(taskId: string, sessionId: string): Promise<void> {
+    await this.registry.replacePipelineEngineerHost(taskId, sessionId, async () => {
+      if (this.supervisor?.handleFor(sessionId)) await this.supervisor.stop(sessionId);
+    });
+  }
+
+  /** Reserve and launch the one Mission Control-owned successor to a retryable failure. */
+  async retryPipelineAttempt(id: string, input: PipelineRetry): Promise<PipelineRecoveryOutcome> {
+    const task = this.registry.getTask(id);
+    if (!task) return { ok: false, code: "task_conflict", error: "no such task" };
+    if (task.kind !== "pipeline" || task.pipelineCommissionId !== input.guard.commissionId) {
+      return { ok: false, code: "task_conflict", error: "task has no matching Pipeline commission", task };
+    }
+    const commission = this.registry.pipelineCommission(input.guard.commissionId);
+    if (!commission) {
+      return { ok: false, code: "stale_guard", error: "the Pipeline commission no longer exists", task };
+    }
+    const lifecycle = PIPELINE_PROVIDERS[commission.provider].engineerLifecycle;
+    if (!lifecycle) {
+      return { ok: false, code: "unsupported_provider", error: "the provider has no Engineer lifecycle", task };
+    }
+    const capability = await lifecycle.capability();
+    if (!capability.ok || !capability.value.supported) {
+      return {
+        ok: false,
+        code: capability.ok ? "unsupported_provider" : "provider_outcome_unknown",
+        error: capability.ok ? "the provider does not support Engineer recovery" : capability.error,
+        task,
+        ...(!capability.ok && capability.outcomeUnknown ? { outcomeUnknown: true } : {}),
+      };
+    }
+    const prepared = await preparePipelineRetry({
+      sink: this.registry,
+      commission,
+      guard: input.guard,
+      lifecycle,
+      capabilities: capability.value,
+    });
+    if (!prepared.ok) return { ...prepared, task };
+    const recoveryAttempt = prepared.commission.recovery?.attempt;
+    if (!recoveryAttempt) {
+      return { ok: false, code: "task_conflict", error: "the retry reservation was not retained", task };
+    }
+    if (prepared.commission.recovery?.state === "complete") {
+      return { ok: true, task: this.registry.getTask(id) ?? task };
+    }
+    const recoveryKey = `${prepared.commission.id}:${recoveryAttempt}`;
+    if (this.pipelineRecoveries.has(recoveryKey)) {
+      return { ok: false, code: "recovery_in_flight", error: "this Pipeline retry is already launching", task };
+    }
+    this.pipelineRecoveries.add(recoveryKey);
+
+    const replacing = updatePipelineCommissionRecovery({
+      commissionId: prepared.commission.id,
+      attempt: recoveryAttempt,
+      state: "replacing_host",
+      error: null,
+    });
+    if (replacing) this.registry.upsertPipelineCommission(replacing);
+    try {
+      if (task.sessionId) {
+        await this.stopPipelineEngineerHost(id, task.sessionId);
+      }
+      if (task.homeName) {
+        const stopped = await killHome(task.homeName);
+        if (!stopped.asked || !stopped.ok) {
+          throw new Error(stopped.error ?? `no terminal backend could stop ${task.homeName}`);
+        }
+        const current = this.registry.getTask(id);
+        if (current?.homeName === task.homeName) {
+          this.registry.upsertTask({
+            ...current,
+            homeName: null,
+            terminalResourceId: null,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = updatePipelineCommissionRecovery({
+        commissionId: prepared.commission.id,
+        attempt: recoveryAttempt,
+        state: "host_launch_failed",
+        error: message,
+      });
+      if (failed) this.registry.upsertPipelineCommission(failed);
+      this.pipelineRecoveries.delete(recoveryKey);
+      return { ok: false, code: "host_launch_failure", error: message, task: this.registry.getTask(id) ?? task };
+    }
+
+    await this.dispatcher.dispatch(id);
+    const current = this.registry.getTask(id) ?? task;
+    const latest = this.registry.pipelineCommission(prepared.commission.id);
+    this.pipelineRecoveries.delete(recoveryKey);
+    if (!latest?.recovery || latest.recovery.attempt !== recoveryAttempt) {
+      return {
+        ok: false,
+        code: "task_conflict",
+        error: "the retry recovery state changed during launch",
+        task: current,
+      };
+    }
+    const outcome = pipelineRecoveryOutcomeFor(latest.recovery);
+    return outcome.ok ? { ok: true, task: current } : { ...outcome, task: current };
+  }
+
+  /** Refresh review evidence for one direct provider successor without adopting it. */
+  async refreshPipelineSuccessor(id: string, input: PipelineRetry): Promise<PipelineRecoveryOutcome> {
+    const task = this.registry.getTask(id);
+    const commission = task?.pipelineCommissionId
+      ? this.registry.pipelineCommission(task.pipelineCommissionId)
+      : null;
+    if (!task || !commission) {
+      return { ok: false, code: "task_conflict", error: "no such Pipeline commission", ...(task ? { task } : {}) };
+    }
+    const before = pipelineRecoveryGuard(commission);
+    if (!before || JSON.stringify(before) !== JSON.stringify(input.guard)) {
+      return { ok: false, code: "stale_guard", error: "the failed Engineer attempt changed", task };
+    }
+    await refreshPipelineCommission(this.registry, commission);
+    const latest = this.registry.pipelineCommission(commission.id);
+    const after = latest ? pipelineRecoveryGuard(latest) : null;
+    if (!latest || !after || JSON.stringify(after) !== JSON.stringify(input.guard)) {
+      return { ok: false, code: "stale_guard", error: "the failed Engineer attempt changed during inspection", task };
+    }
+    return { ok: true, task: this.registry.getTask(id) ?? task };
+  }
+
+  /** Adopt one revalidated external successor before replaying any of its journal. */
+  async adoptPipelineSuccessor(id: string, input: PipelineAdoptSuccessor): Promise<PipelineRecoveryOutcome> {
+    const task = this.registry.getTask(id);
+    const commission = task?.pipelineCommissionId
+      ? this.registry.pipelineCommission(task.pipelineCommissionId)
+      : null;
+    if (!task || !commission) {
+      return { ok: false, code: "task_conflict", error: "no such Pipeline commission", ...(task ? { task } : {}) };
+    }
+    if (!completedPipelineAdoptionMatches(commission, input)) {
+      const lifecycle = PIPELINE_PROVIDERS[commission.provider].engineerLifecycle;
+      if (!lifecycle) {
+        return { ok: false, code: "unsupported_provider", error: "the provider has no Engineer lifecycle", task };
+      }
+      const capability = await lifecycle.capability();
+      if (!capability.ok || !capability.value.supported) {
+        return {
+          ok: false,
+          code: capability.ok ? "unsupported_provider" : "provider_outcome_unknown",
+          error: capability.ok ? "the provider does not support Engineer recovery" : capability.error,
+          task,
+        };
+      }
+      const adopted = await adoptValidatedPipelineSuccessor({
+        sink: this.registry,
+        commission,
+        guard: input.guard,
+        candidateEngineerRunId: input.candidateEngineerRunId,
+        candidateRevision: input.candidateRevision,
+        candidateFingerprint: input.candidateFingerprint,
+        lifecycle,
+        capabilities: capability.value,
+      });
+      if (!adopted.ok) return { ...adopted, task };
+    }
+    if (task.sessionId) {
+      try {
+        await this.stopPipelineEngineerHost(id, task.sessionId);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[pipelines] successor adopted, but the predecessor host could not be retired: ${detail.slice(0, 500)}`,
+        );
+      }
+    }
+    return { ok: true, task: this.registry.getTask(id) ?? task };
+  }
+
+  /** Settle a failed commission only when the browser still names its exact predecessor. */
+  async settlePipelineCommission(
+    id: string,
+    input: PipelineRetry,
+    action: "abandon" | "cancel",
+  ): Promise<PipelineRecoveryOutcome> {
+    const task = this.registry.getTask(id);
+    const commission = task?.pipelineCommissionId
+      ? this.registry.pipelineCommission(task.pipelineCommissionId)
+      : null;
+    const guard = commission ? pipelineRecoveryGuard(commission) : null;
+    if (!task || !commission || !guard || JSON.stringify(guard) !== JSON.stringify(input.guard)) {
+      return { ok: false, code: "stale_guard", error: "the Pipeline commission changed", ...(task ? { task } : {}) };
+    }
+    if (action === "cancel") {
+      const cancelled = await this.cancel(id);
+      return cancelled.ok
+        ? { ok: true, task: this.registry.getTask(id) ?? task }
+        : { ok: false, code: "task_conflict", error: cancelled.error ?? "Pipeline cancellation failed", task };
+    }
+    const abandoned = cancelPipelineCommission({
+      commissionId: commission.id,
+      reason: "Operator abandoned the failed Engineer commission",
+    });
+    this.registry.upsertPipelineCommission(abandoned);
+    this.registry.upsertTask({
+      ...task,
+      status: "failed",
+      sessionId: null,
+      error: "Pipeline commission abandoned by operator",
+      updatedAt: Date.now(),
+    });
+    return { ok: true, task: this.registry.getTask(id) ?? task };
   }
 
   /**
@@ -3729,6 +4010,20 @@ export class TaskManager {
     }
     const t = this.registry.getTask(id);
     if (!t) return;
+    if (t.kind === "pipeline" && t.pipelineCommissionId) {
+      const commission = this.registry.pipelineCommission(t.pipelineCommissionId);
+      const linkedKey = commission?.linkedRun ? pipelineRunKeyOf(commission.linkedRun) : null;
+      const processed = linkedKey
+        ? this.registry.listPipelineRuns().some(
+            (run) => pipelineRunKeyOf(run) === linkedKey && run.group === "processed",
+          )
+        : false;
+      if (!commission || !processed) {
+        throw new TaskStatusConflictError(
+          "Pipeline completion is provider-owned until its linked implementation run is processed",
+        );
+      }
+    }
     if (requireStopped && t.status !== "cancelled" && t.status !== "failed") {
       throw new TaskStatusConflictError(
         `task is ${t.status}, only a cancelled or failed task can be completed from a blocked dependent`,

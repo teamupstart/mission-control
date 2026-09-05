@@ -49,6 +49,7 @@ import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
+  pipelineCommissionFrameMayReplace,
   pipelineRunKey,
   pipelineRunKeyOf,
   pipelineCommissionKey,
@@ -1189,6 +1190,35 @@ export class Registry extends EventEmitter {
     return this.sessions.get(id);
   }
 
+  /**
+   * Detach and retire the failed Engineer host before a recovery launches its replacement.
+   * The existing eviction path remains the sole producer of session_remove.
+   */
+  async replacePipelineEngineerHost(
+    taskId: string,
+    sessionId: string,
+    stop: () => Promise<void>,
+  ): Promise<boolean> {
+    const task = this.tasks.get(taskId);
+    const session = this.sessions.get(sessionId);
+    if (!task || task.kind !== "pipeline" || task.sessionId !== sessionId || !session) {
+      return false;
+    }
+    this.upsertTask({ ...task, sessionId: null, updatedAt: Date.now() });
+    try {
+      await stop();
+    } catch (error) {
+      const held = this.tasks.get(taskId);
+      if (held?.sessionId === null) {
+        this.upsertTask({ ...held, sessionId, updatedAt: Date.now() });
+      }
+      throw error;
+    }
+    const current = this.sessions.get(sessionId);
+    if (current) this.beginEviction(current);
+    return true;
+  }
+
   beginManagedPipelineLaunch(taskId: string, sessionId: string, cwd: string): void {
     this.managedPipelineLaunches.set(sessionId, { taskId, sessionId, cwd });
   }
@@ -1935,6 +1965,7 @@ export class Registry extends EventEmitter {
   upsertPipelineCommission(commission: PipelineCommission): void {
     const key = pipelineCommissionKey(commission.id);
     const previous = this.pipelineCommissions.get(key);
+    if (previous && !pipelineCommissionFrameMayReplace(previous, commission)) return;
     this.pipelineCommissions.set(key, commission);
     if (commission.linkedRun) {
       const task = this.tasks.get(commission.taskId);

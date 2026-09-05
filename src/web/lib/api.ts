@@ -70,6 +70,8 @@ import type {
   UiConfigView,
   PipelinesConfigPatch,
   PipelineInstallerLaunchBody,
+  PipelineAdoptSuccessor,
+  PipelineRetry,
   SetupInstallerLaunchBody,
   TaskSourcesConfigPatch,
   ReorderTask,
@@ -1758,6 +1760,16 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/start`),
+  retryPipelineAttempt: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/retry`, input),
+  refreshPipelineSuccessor: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/successor/refresh`, input),
+  adoptPipelineSuccessor: (id: string, input: PipelineAdoptSuccessor) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/successor/adopt`, input),
+  abandonPipelineCommission: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
+  cancelPipelineCommission: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.

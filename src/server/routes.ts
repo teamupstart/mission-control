@@ -25,6 +25,9 @@ import {
   DetachReviewWaitSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
+  PipelineAdoptSuccessorSchema,
+  PipelineRetrySchema,
+  PipelineSettlementSchema,
   ResolveRepoSchema,
   TourDispatchSchema,
   EditWorkItemSchema,
@@ -6813,6 +6816,64 @@ export function buildApp(
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
+  });
+
+  const pipelineRecoveryResponse = (
+    c: Context,
+    result: Awaited<ReturnType<TaskManager["retryPipelineAttempt"]>>,
+  ) => {
+    if (result.ok) return c.json(result.task);
+    const status = result.error === "no such task"
+      ? 404
+      : result.code === "provider_outcome_unknown"
+        ? 504
+        : result.code === "provider_failure"
+          ? 502
+        : result.code === "host_launch_failure"
+          ? 500
+          : result.code === "readiness_blocked" || result.code === "unsupported_provider"
+            ? 422
+            : 409;
+    return c.json(
+      { error: result.error, code: result.code, ...(result.outcomeUnknown ? { outcomeUnknown: true } : {}) },
+      status,
+    );
+  };
+
+  app.post("/api/tasks/:id/pipeline/retry", async (c) => {
+    const parsed = await parseBody(c, PipelineRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(c, await tasks.retryPipelineAttempt(c.req.param("id"), parsed.data));
+  });
+
+  app.post("/api/tasks/:id/pipeline/successor/refresh", async (c) => {
+    const parsed = await parseBody(c, PipelineRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(c, await tasks.refreshPipelineSuccessor(c.req.param("id"), parsed.data));
+  });
+
+  app.post("/api/tasks/:id/pipeline/successor/adopt", async (c) => {
+    const parsed = await parseBody(c, PipelineAdoptSuccessorSchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(c, await tasks.adoptPipelineSuccessor(c.req.param("id"), parsed.data));
+  });
+
+  app.post("/api/tasks/:id/pipeline/abandon", async (c) => {
+    const parsed = await parseBody(c, PipelineSettlementSchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(
+      c,
+      await tasks.settlePipelineCommission(c.req.param("id"), parsed.data, "abandon"),
+    );
+  });
+
+  app.post("/api/tasks/:id/pipeline/cancel", async (c) => {
+    const parsed = await parseBody(c, PipelineSettlementSchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(
+      c,
+      await tasks.settlePipelineCommission(c.req.param("id"), parsed.data, "cancel"),
+    );
   });
 
   // Assign a backlog task to an already-running agent. A refusal here is a 409, not a

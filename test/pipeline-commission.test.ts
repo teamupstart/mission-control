@@ -989,7 +989,7 @@ test("startup does not resume a terminal recovery failure without operator actio
   assert.equal(getPipelineCommission(held.id)?.recovery?.state, "provider_outcome_unknown");
 });
 
-test("a thrown retry launch releases the in-process recovery reservation", async (t) => {
+test("a thrown retry launch persists failure and releases the in-process reservation", async (t) => {
   reset();
   const held = commission("task-1", { supported: true, readiness: true, ownedAttempts: true });
   db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
@@ -1047,8 +1047,24 @@ test("a thrown retry launch releases the in-process recovery reservation", async
     providerRevision: predecessor.providerRevision,
   };
 
-  await assert.rejects(manager.retryPipelineAttempt(held.taskId, { guard }), /simulated dispatch throw/);
-  await assert.rejects(manager.retryPipelineAttempt(held.taskId, { guard }), /simulated dispatch throw/);
+  const first = await manager.retryPipelineAttempt(held.taskId, { guard });
+  assert.equal(first.ok, false);
+  if (first.ok) assert.fail("the thrown launch must return a structured failure");
+  assert.equal(first.code, "host_launch_failure");
+  assert.match(first.error, /simulated dispatch throw/);
+  const recovery = getPipelineCommission(held.id)?.recovery;
+  assert.equal(recovery?.kind, "retry");
+  assert.equal(recovery?.predecessorAttempt, 1);
+  assert.equal(recovery?.predecessorEngineerRunId, guard.engineerRunId);
+  assert.equal(recovery?.predecessorProviderRevision, guard.providerRevision);
+  assert.equal(recovery?.attempt, 2);
+  assert.equal(recovery?.state, "host_launch_failed");
+  assert.equal(recovery?.error, "simulated dispatch throw");
+
+  const second = await manager.retryPipelineAttempt(held.taskId, { guard });
+  assert.equal(second.ok, false);
+  if (second.ok) assert.fail("the repeated launch must retain its structured failure");
+  assert.equal(second.code, "host_launch_failure");
   assert.equal(launches, 2, "the second operator call is not stranded as recovery_in_flight");
 });
 

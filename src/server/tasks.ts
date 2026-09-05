@@ -2668,6 +2668,10 @@ export class TaskManager {
               });
             }
           }
+          if (!authorized()) {
+            return pipelineRecoveryConsentFailure(this.registry.getTask(id) ?? task);
+          }
+          await this.dispatcher.dispatch(id);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const failed = updatePipelineCommissionRecovery({
@@ -2679,10 +2683,6 @@ export class TaskManager {
           if (failed) this.registry.upsertPipelineCommission(failed);
           return { ok: false, code: "host_launch_failure", error: message, task: this.registry.getTask(id) ?? task };
         }
-        if (!authorized()) {
-          return pipelineRecoveryConsentFailure(this.registry.getTask(id) ?? task);
-        }
-        await this.dispatcher.dispatch(id);
       }
       const current = this.registry.getTask(id) ?? task;
       const latest = this.registry.pipelineCommission(prepared.commission.id);

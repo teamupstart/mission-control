@@ -28,6 +28,9 @@ the Persona's provider override or the app-wide provider; then the Persona's mod
 unknown to an older build is reported and falls back through the shared provider ladder.
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
+Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
+Review v14 pins its seven snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
+the other six on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
 
 ### Importing a Persona from a file
 
@@ -150,7 +153,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 12 are preserved for bindings that already pin them, and version 13 is current. There is
+through 13 are preserved for bindings that already pin them, and version 14 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -266,14 +269,15 @@ action and changes only the new version's completion policy to `none`; version 1
 Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
 Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
 Slop Filter to stage 4; and version 13 keeps that graph while enabling criterion-mapped evidence
-preflight. Every earlier version remains in the
+preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
+with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 13 because it is current. Adopting the newer version on an
+take version 14 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -797,7 +801,8 @@ gap result remain visible after activation and restart.
 advisory behavior. An unavailable compaction result and model-suggested proof-class mismatch remain
 warnings rather than hard gaps. A null readiness value means historical data or an off-policy
 submission with no coverage; it never means ready. No-Mistakes Review v13 is the first built-in
-version that opts in; versions 1 through 12 remain byte-compatible and non-enforcing.
+version that opts in; v14 retains that policy while changing reviewer routing, and versions 1
+through 12 remain byte-compatible and non-enforcing.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all

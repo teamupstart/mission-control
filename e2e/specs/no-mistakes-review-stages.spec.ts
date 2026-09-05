@@ -52,6 +52,26 @@ test("the shipped No-Mistakes Review groups code review before evidence, docs, a
   await expect(pullRequest.locator(".wf-pipeline-stage-name")).toHaveText("Pull Request");
   await expect(pipeline.locator(".wf-pipeline-inspector")).toHaveCount(0);
 
+  await dashboard.getByRole("button", { name: /Version 14/ }).click();
+  const currentVersion = dashboard.locator(".workflow-version-detail");
+  await expect(currentVersion).toBeVisible();
+  const firstReviewer = currentVersion.locator("details.workflow-version-persona").first();
+  await firstReviewer.locator("summary").click();
+  await expect(firstReviewer.getByText("codex · gpt-5.6-terra")).toBeVisible();
+  const designReviewer = currentVersion
+    .locator("details.workflow-version-persona")
+    .filter({ hasText: "Code Design Reviewer" });
+  await designReviewer.locator("summary").click();
+  await expect(designReviewer.getByText("codex · gpt-5.6-sol")).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({
+      path: `${EVIDENCE}version-14-codex-models.png`,
+      fullPage: true,
+    });
+  }
+
   // Each three-member stage still has to FIT. A card that overflows its strip is drawn, passes
   // every membership assertion above, and is unreadable - which is the one fault no graph or
   // markup check can see.

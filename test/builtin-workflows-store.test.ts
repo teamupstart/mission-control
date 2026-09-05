@@ -429,7 +429,7 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
   // what actually sit in `workflow_bindings.workflow_version_id` on operators' machines and
   // are append-only for that reason.
   const store = new WorkflowStore(db, BUILTIN_PERSONAS);
-  for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+  for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
     const id = `builtin-workflow:no-mistakes-review@${version}`;
     assert.equal(builtinWorkflowVersionId("no-mistakes-review", version), id);
     const resolved = store.getWorkflowVersionById(id);
@@ -492,4 +492,16 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
     true,
   );
   assert.equal(v10.graph.nodes.some((node) => node.kind === "session_action"), true);
+  const v14 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@14")!;
+  const reviewers = v14.graph.nodes.filter((node) => node.kind === "persona");
+  assert.equal(reviewers.length, 7);
+  for (const node of reviewers) {
+    assert.equal(node.persona.runner, "codex");
+    assert.equal(
+      node.persona.model,
+      node.persona.sourcePersonaId === "builtin:code-design-reviewer"
+        ? "gpt-5.6-sol"
+        : "gpt-5.6-terra",
+    );
+  }
 });

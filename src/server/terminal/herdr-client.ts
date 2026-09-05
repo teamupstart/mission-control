@@ -710,8 +710,9 @@ export function createHerdrClient(
       method: "workspace.create",
       params: { label: spec.label, cwd: spec.cwd, focus: spec.focus },
       schema: WorkspaceCreatedSchema.refine(
-        ({ workspace }) => workspace.label === spec.label,
-        { message: "created workspace label did not match the request" },
+        ({ workspace, root_pane: rootPane }) =>
+          workspace.label === spec.label && rootPane.cwd === spec.cwd,
+        { message: "created workspace label or cwd did not match the request" },
       ),
       mutation: true,
       operation: `workspace create for ${spec.label}`,

@@ -301,7 +301,12 @@ test("confirmed command refusal rolls back only the created workspace", async ()
         type: "workspace_created",
         workspace: { workspace_id: "new-workspace", label: "work" },
         tab: { tab_id: "new-tab", workspace_id: "new-workspace", number: 1, label: "main" },
-        root_pane: { pane_id: "new-pane", workspace_id: "new-workspace", tab_id: "new-tab" },
+        root_pane: {
+          pane_id: "new-pane",
+          workspace_id: "new-workspace",
+          tab_id: "new-tab",
+          cwd: request.params.cwd,
+        },
       });
     } else if (request.method === "pane.send_input") refuse(socket, request.id, "command rejected");
     else reply(socket, request.id, { type: "ok" });
@@ -328,7 +333,12 @@ test("uncertain command delivery preserves the created workspace and outcome", a
         type: "workspace_created",
         workspace: { workspace_id: "new-workspace", label: "work" },
         tab: { tab_id: "new-tab", workspace_id: "new-workspace", number: 1, label: "main" },
-        root_pane: { pane_id: "new-pane", workspace_id: "new-workspace", tab_id: "new-tab" },
+        root_pane: {
+          pane_id: "new-pane",
+          workspace_id: "new-workspace",
+          tab_id: "new-tab",
+          cwd: request.params.cwd,
+        },
       });
     } else socket.write("malformed\n");
   });

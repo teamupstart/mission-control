@@ -145,26 +145,31 @@ test("workspace rename rejects a successful response for a different identity", 
   }
 });
 
-test("workspace creation rejects a successful response for a different label", async () => {
-  const fake = await fakeHerdrSocket((request, socket) => {
-    reply(socket, request.id, {
-      type: "workspace_created",
-      workspace: { workspace_id: "w1", label: "Another task" },
-      tab: { tab_id: "t1", workspace_id: "w1", number: 1, label: "main" },
-      root_pane: { pane_id: "p1", workspace_id: "w1", tab_id: "t1", cwd: "/repo" },
+test("workspace creation rejects a successful response for a different label or cwd", async () => {
+  for (const created of [
+    { label: "Another task", cwd: "/repo" },
+    { label: "Feature work", cwd: "/another-repo" },
+  ]) {
+    const fake = await fakeHerdrSocket((request, socket) => {
+      reply(socket, request.id, {
+        type: "workspace_created",
+        workspace: { workspace_id: "w1", label: created.label },
+        tab: { tab_id: "t1", workspace_id: "w1", number: 1, label: "main" },
+        root_pane: { pane_id: "p1", workspace_id: "w1", tab_id: "t1", cwd: created.cwd },
+      });
     });
-  });
-  try {
-    const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).createWorkspace({
-      label: "Feature work",
-      cwd: "/repo",
-      focus: true,
-    });
-    assert.equal(result.ok, false);
-    assert.equal(result.outcomeUnknown, true);
-    assert.match(result.error ?? "", /invalid response/);
-  } finally {
-    await fake.close();
+    try {
+      const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).createWorkspace({
+        label: "Feature work",
+        cwd: "/repo",
+        focus: true,
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.outcomeUnknown, true);
+      assert.match(result.error ?? "", /invalid response/);
+    } finally {
+      await fake.close();
+    }
   }
 });
 

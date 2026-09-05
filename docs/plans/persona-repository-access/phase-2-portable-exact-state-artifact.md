@@ -104,7 +104,6 @@ Implement one `WorkflowRepositoryArtifactService` with:
 ```ts
 prepare(input, signal): Promise<WorkflowRepositoryArtifactCandidate>
 promote(candidate, submissionId): Promise<WorkflowRepositoryProvisionalSnapshot>
-activate(submissionId): Promise<WorkflowRepositorySnapshot>
 discard(candidate): Promise<void>
 materialize(request: RepositoryMaterializationRequest, signal): Promise<RepositoryViewLease>
 verify(snapshot, signal): Promise<RepositoryArtifactVerification>
@@ -112,7 +111,9 @@ release(submissionId): Promise<void>
 reconcile(): Promise<RepositoryArtifactReconciliation>
 ```
 
-The service owns all filesystem paths and namespace checks. `RepositoryMaterializationRequest` carries submission id, workload id, Workflow attempt id, locator, and digest. Before filesystem access, the trusted workload supervisor validates those values against the active `PersonaWorkloadRequest`, and the artifact service independently verifies that the submission still has an active claim for the same ready digest/locator. A provisional, released, or mismatched claim fails closed and creates no materialization. `prepare` creates no durable artifact record or submission claim. `promote` is the only operation that may publish candidate bytes and creates only a provisional claim. `activate` is the only operation that may make that claim usable, in the same transaction that makes the submission runnable. Callers name submission identity and expected digest, never deletion paths.
+The service owns all filesystem paths and namespace checks. `RepositoryMaterializationRequest` carries submission id, workload id, Workflow attempt id, locator, and digest. Before filesystem access, the trusted workload supervisor validates those values against the active `PersonaWorkloadRequest`, and the artifact service independently verifies that the submission still has an active claim for the same ready digest/locator. A provisional, released, or mismatched claim fails closed and creates no materialization. `prepare` creates no durable artifact record or submission claim. `promote` is the only operation that may publish candidate bytes and creates only a provisional claim. There is deliberately no standalone claim-activation service call.
+
+Add one daemon-owned `WorkflowStore.commitRepositoryCaptureActivation(input)` method that owns a single SQLite transaction across the Workflow submission row and repository claim row. It verifies the submission is still `capturing`, the expected claim is `provisional`, and the joined digest-level artifact is `ready`; then it changes the claim to `active` and the submission to `running` together. A conflict or failure on either write rolls back both. No other method may activate a claim or mark a read-enabled submission running. Callers name submission identity and expected digest, never deletion paths.
 
 ## Implementation steps
 
@@ -198,12 +199,12 @@ For an activated caller in Phase 3:
 7. let `captureAndActivate` validate external artifact expectations and capture the already-reserved submission image/text evidence;
 8. discard the candidate on any guard or evidence failure;
 9. after those guards pass, atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's provisional claim in one database transaction;
-10. persist raw context and compact/check evidence readiness, then atomically activate the claim in the same transaction that allows the submission to become `running`;
+10. persist raw context and compact/check evidence readiness, then call the single `commitRepositoryCaptureActivation` owner to activate the claim and mark the submission `running` in one transaction;
 11. if any post-promotion step fails or is cancelled before that transaction commits, idempotently release the provisional claim and enqueue zero-claim cleanup before propagating the existing capture failure.
 
 If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent provisional claim instead of replacing them. Promotion consumes the pending marker only after the digest bytes and database ownership transition are established; discard removes only the exact marked candidate. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Startup reconciliation releases every provisional claim whose owning submission did not atomically reach `running`, including a crash after promotion and before application-level cleanup, and then applies the ordinary zero-claim deletion path. Never guess ownership or claim count from a directory name alone.
 
-Phase 2 tests invoke prepare, promote, activate, release, and discard directly, including the guarantee that preparation alone produces no durable row or claim and a provisional claim cannot materialize. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
+Phase 2 tests invoke prepare, promote, release, discard, and the dormant `commitRepositoryCaptureActivation` transaction directly, including the guarantee that preparation alone produces no durable row or claim, a provisional claim cannot materialize, and failure of either activation write rolls back both states. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
 
 ### 6. Materialize and verify without the original checkout
 
@@ -265,7 +266,7 @@ Fixtures must distinguish:
 - repository config/attributes defining clean, process, diff, textconv, smudge, hook, include, credential, and promisor behavior;
 - a live index with uncommon extensions or split-index behavior if supported by current Git;
 - source worktree mutation during each capture step;
-- database failure, rename/promotion failure, disk-full simulation, cancellation, digest corruption, missing object, daemon restart in every prepare/promote/activate/release/discard window, retention, and cleanup retry.
+- database failure, rename/promotion failure, disk-full simulation, cancellation, digest corruption, missing object, daemon restart in every prepare/promote/activation-commit/release/discard window, retention, and cleanup retry.
 
 Required proofs:
 
@@ -302,7 +303,7 @@ npm run smoke
 - Denied blob bodies are absent from the artifact, including history packs.
 - The artifact contains exactly the deterministic `RepositoryHistoryPolicyV1` retained prefix and all required allowed objects; boundary and out-of-range behavior passes the Phase 1 MCP contract after source removal.
 - Capture neither mutates the live index/worktree nor executes repository-configured programs.
-- Candidate marker publication, prepare/promote/activate/release/discard crash windows, digest ownership, provisional/active per-submission claims, zero-claim cleanup intent, and startup reconciliation are crash-safe and tested.
+- Candidate marker publication, prepare/promote/activation-commit/release/discard crash windows, digest ownership, provisional/active per-submission claims, zero-claim cleanup intent, and startup reconciliation are crash-safe and tested.
 - Releasing one of several provisional or active claims cannot delete shared bytes; releasing the final claim permits deletion only after the cleanup transaction rechecks zero unreleased claims.
 - Historical submissions and all existing active Workflow behavior are unchanged.
 - Operational logs/counts are bounded and contain no repository bodies.

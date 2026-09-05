@@ -72,7 +72,7 @@ From Phase 1:
 
 From Phase 2:
 
-- `WorkflowRepositoryArtifactService` prepare/promote/activate/release/discard and artifact/claim store API;
+- `WorkflowRepositoryArtifactService` prepare/promote/release/discard API plus the single `WorkflowStore.commitRepositoryCaptureActivation` transaction owner;
 - active submission claim joined to a ready digest-owned artifact, immutable digest/locator, exact layer identities, immutable retained-revision/frontier metadata, and typed failure codes;
 - optional stable-capture sealing seam;
 - digest ownership, per-submission claims, retention, and startup reconciliation.
@@ -188,7 +188,7 @@ If any Persona requires `read`:
 - preserve external-artifact expectation validation and reserved image/text evidence capture in their current order;
 - discard the candidate on expectation mismatch or reserved-evidence failure;
 - after those guards pass, promote the candidate and create a provisional submission claim before raw-context persistence, compaction, evidence-readiness checks, or activation;
-- atomically activate the provisional claim in the same transaction that marks the submission `running`; materialization rejects provisional claims;
+- call only `WorkflowStore.commitRepositoryCaptureActivation` to activate the provisional claim and mark the submission `running` in one transaction; a failure on either write rolls back both, and materialization rejects provisional claims;
 - on any post-promotion failure or cancellation, release the provisional claim before propagating capture failure, while startup reconciliation releases a stranded provisional claim whose submission never reached `running`;
 - require the artifact row to be `ready` before activating the claim and marking the submission `running`;
 - include the exact artifact digest in the access-enabled submission/workload identity while preserving existing evidence and repository fingerprints for access-off runs;
@@ -348,7 +348,7 @@ Cover:
 - exact dirty capture only when at least one frozen Persona needs access;
 - per-repository run checkout resolution matches `workflowCheckoutPath` and never seals a different session repository;
 - expectation mismatch and reserved-evidence failure discard the candidate without an artifact claim or raw-context write;
-- every raw-context, compaction, evidence-readiness, cancellation, and activation failure after promotion releases the provisional claim, and restart recovery releases a stranded provisional claim before zero-claim cleanup;
+- every raw-context, compaction, evidence-readiness, cancellation, and activation-commit failure after promotion releases the provisional claim; inject failures on each write and prove neither state commits alone; restart recovery releases a stranded provisional claim before zero-claim cleanup;
 - repository artifacts and handles leave reserved evidence coverage and evidence-readiness outcomes unchanged;
 - multiple read/search/glob/Git queries in one attempt;
 - denial recovery and pagination within the same provider session;

@@ -129,7 +129,7 @@
         <li>Built-in Personas are generated application data, not database rows, so local access needs a narrow sidecar override.</li>
         <li>Publication currently reuses a version by draft revision before resolving Persona snapshots, so access-only edits need a canonical graph fingerprint.</li>
         <li>Stable Workflow capture is the only safe checkout boundary; a clean detached check lease cannot represent staged, unstaged, and untracked state.</li>
-        <li>Workflow capture now resolves a checkout per repository run and validates external artifact expectations before raw-context persistence. Artifact candidates bind to that checkout, create only a provisional claim after the existing guards pass, and activate that claim atomically with the submission&#39;s running transition.</li>
+        <li>Workflow capture now resolves a checkout per repository run and validates external artifact expectations before raw-context persistence. Artifact candidates bind to that checkout and create only a provisional claim after the existing guards pass. One daemon-owned store method activates the claim and marks the submission running in the same SQLite transaction.</li>
         <li>Reserved image/text evidence and evidence-readiness policy remain independent. A repository artifact enables queries and cannot satisfy criterion-mapped evidence.</li>
         <li>The general headless <code>LlmRunner</code> has no MCP descriptor and must remain tool-less. Full session adapters provide the provider-specific launch patterns.</li>
         <li>Mission MCP includes task tools and credentials, so repository MCP is a separate bundle with no daemon credential.</li>
@@ -182,7 +182,7 @@
       </div>
       <div class="phase">
         <div class="num">2</div>
-        <div><strong>Portable exact-state artifact and lifecycle</strong><span class="meta">1,350-1,750 LOC. Exact HEAD/index/worktree capture, sparse objects, sensitive-blob omission, prepare/promote/activate/release/discard lifecycle, provisional and active claims, isolated materialization, zero-claim cleanup, and startup reconciliation.</span></div>
+        <div><strong>Portable exact-state artifact and lifecycle</strong><span class="meta">1,350-1,750 LOC. Exact HEAD/index/worktree capture, sparse objects, sensitive-blob omission, prepare/promote/release/discard lifecycle, single-transaction submission activation, provisional and active claims, isolated materialization, zero-claim cleanup, and startup reconciliation.</span></div>
       </div>
       <div class="phase">
         <div class="num">3</div>
@@ -239,7 +239,7 @@
           <thead><tr><th>Established by</th><th>Contract</th><th>Consumed by</th></tr></thead>
           <tbody>
             <tr><td>Phase 1</td><td>Closed operations, repository/history policy, canonical operation-instance and half-open line/raw-byte/old-new-diff evidence handles, compatibility-floor reader contract, view descriptor, budgets/cursors, workload protocol, executor, standalone MCP</td><td>Phases 2 and 3</td></tr>
-            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact retained history, provisional/active submission claims, atomic pending-candidate markers, immutable digest/locator, attempt-bound materialize/verify/activate/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
+            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact retained history, provisional/active claims, atomic pending-candidate markers, immutable digest/locator, attempt-bound materialize/verify/release/reconcile, single-transaction claim/submission activation, zero-claim cleanup</td><td>Phase 3</td></tr>
             <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query/handle audit paging, canonical same-attempt evidence validation, two-step rollout and write-preserving rollback</td><td>Future remote adapter</td></tr>
           </tbody>
         </table>

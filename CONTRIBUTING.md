@@ -1,15 +1,18 @@
 # Contributing to Mission Control
 
-Thank you for helping improve Mission Control. This guide covers the public contribution
-workflow and the clone-to-green path. Automated coding agents must also follow
-[AGENTS.md](AGENTS.md).
+Thank you for helping improve Mission Control. This guide covers public issue reporting,
+the clone-to-green path, and the pull request workflow for authorized repository
+collaborators. Automated coding agents must also follow [AGENTS.md](AGENTS.md).
 
 ## Ways to contribute
 
-- Search existing issues before filing a bug or proposing a feature.
-- Use the bug and feature request templates so maintainers receive enough context to respond.
-- Open an issue before starting a substantial behavior or architecture change. Focused fixes
-  and documentation improvements can go directly to a pull request.
+- Public users may open bug reports and feature requests through GitHub Issues.
+- Search existing issues first, then use the issue templates so maintainers receive enough
+  context to respond.
+- This repository does not accept external pull requests. If you have a proposed code or
+  documentation change, describe it in an issue for the maintainers to evaluate.
+- Pull requests are restricted to repository collaborators with write, maintain, or admin
+  access, such as authorized Upstart maintainers.
 - Do not report suspected vulnerabilities in a public issue. Follow the private process in
   [SECURITY.md](SECURITY.md).
 
@@ -72,7 +75,7 @@ preflight or add Chromium flags.
 `npm test` runs six test files concurrently by default. Set
 `MISSION_TEST_CONCURRENCY` to override that local worker count. CI uses ephemeral GitHub-hosted
 runners with an explicit worker and shard allocation so its behavior does not depend on the local
-fallback and fork pull requests never execute on shared self-hosted infrastructure.
+fallback and pull request jobs remain isolated from shared self-hosted infrastructure.
 
 ## Test layers
 
@@ -107,9 +110,12 @@ label, or placeholder.
   evidence. Put evidence under gitignored `e2e/.artifacts/<topic>/` and attach it
   to the pull request.
 
-## Submitting a change
+## Submitting a change as a repository collaborator
 
-1. Fork the repository and create a focused branch from the latest `main`.
+These steps apply only to authorized repository collaborators. Public issue reporters do not
+need to clone the repository or prepare an implementation.
+
+1. Create a focused branch from the latest `main`.
 2. Make one coherent change and add focused tests for behavior changes.
 3. Run the checks that cover the change. Documentation-only changes do not require the full
    runtime suite, but links, commands, and formatting must still be verified.
@@ -128,7 +134,7 @@ Mission Control are provided under the [Apache License 2.0](LICENSE), as describ
 of that license. You must have the right to submit the work. Do not include code, assets, or
 documentation whose license is incompatible with this repository.
 
-## Pull requests
+## Maintainer pull requests
 
 Before opening a pull request, run the checks that cover your change. At minimum, code changes
 are expected to pass `npm run typecheck`, `npm run lint`, and `npm test`. Changes to build or

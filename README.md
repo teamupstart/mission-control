@@ -413,9 +413,8 @@ the full verification path, use the setup guide below.
 ## CI runner allocation
 
 All Linux checks run on ephemeral GitHub-hosted `ubuntu-latest` runners. Pull requests execute
-contributor-controlled code, so the workflow does not route them to shared self-hosted runners.
-Run the checks locally before opening a pull request; GitHub may require a maintainer to approve
-the first workflow from a new contributor.
+branch code, so the workflow does not route them to shared self-hosted runners. Only authorized
+repository collaborators can open pull requests. Run the checks locally before opening one.
 
 The workflow keeps worker and shard counts explicit. Changes to that allocation are one capacity
 decision and should be benchmarked together.
@@ -483,11 +482,19 @@ structured events, never to fix a slow dispatch.
 Full behavior, including why the SDK is pinned to the same binary `MISSION_CODEX_BIN` names, is in
 [configuration](docs/configuration.md) and [models](docs/models.md).
 
+## Community participation
+
+Anyone may read, use, and fork the source under the Apache License 2.0, and public users may open
+bug reports or feature requests through GitHub Issues. This project does not accept external pull
+requests. GitHub restricts pull request creation to repository collaborators with write, maintain,
+or admin access, such as authorized Upstart maintainers. Describe proposed code or documentation
+changes in an issue for the maintainers to evaluate.
+
 ## Go deeper
 
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and local state fit together.
-- [Contributing](CONTRIBUTING.md) - public contribution workflow, clone-to-green setup, and test expectations.
+- [Contributing](CONTRIBUTING.md) - public issue workflow, collaborator development setup, and test expectations.
 - [Security policy](SECURITY.md) - supported versions, security posture, and private vulnerability reporting.
 
 ## Regenerate screenshots

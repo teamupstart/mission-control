@@ -125,8 +125,8 @@ CI reports thirty non-package checks. Two independent `dependencies` checks use 
 `gates` (typecheck and lint), Node.js 24 unit shards, and E2E depend only on the Node.js 24
 producer; Node.js 26 unit shards depend only on the Node.js 26 producer, so a failure in one
 release does not hide checks for the other. Unit tests, builds, bundle smoke, and fifteen E2E
-shards use ephemeral GitHub-hosted `ubuntu-latest` runners so fork pull requests never execute
-contributor-controlled code on shared self-hosted infrastructure. The shared unit steps live
+shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated
+from shared self-hosted infrastructure. The shared unit steps live
 in `.github/actions/run-unit-shard/action.yml`. The separate
 pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
 by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns

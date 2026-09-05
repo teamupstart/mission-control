@@ -45,8 +45,11 @@ test("public entry-point documentation has no legacy internal-only notice", () =
     assert.doesNotMatch(text, /internal repository|not licensed for public distribution/iu, rel);
   }
 
-  assert.match(repoFile("README.md"), /Apache License 2\.0/);
-  assert.match(repoFile("CONTRIBUTING.md"), /git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/);
+  const readme = repoFile("README.md");
+  const contributing = repoFile("CONTRIBUTING.md");
+
+  assert.match(readme, /Apache License 2\.0/);
+  assert.match(contributing, /git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/);
   assert.match(repoFile("SECURITY.md"), /upstart\.com\/lenders\/regulatory-compliance\/vulnerability-reporting/);
   assert.doesNotMatch(
     [
@@ -56,5 +59,9 @@ test("public entry-point documentation has no legacy internal-only notice", () =
     ].join("\n"),
     /github\.com\/teamupstart\/mission-control\/security\/advisories\/new/u,
   );
-  assert.match(repoFile("README.md"), /@anthropic-ai\/claude-agent-sdk/);
+  assert.match(readme, /@anthropic-ai\/claude-agent-sdk/);
+  assert.match(readme, /does not accept external pull\s+requests/iu);
+  assert.match(contributing, /Public users may open bug reports and feature requests/iu);
+  assert.match(contributing, /write, maintain, or admin\s+access/iu);
+  assert.doesNotMatch(contributing, /Fork the repository/iu);
 });

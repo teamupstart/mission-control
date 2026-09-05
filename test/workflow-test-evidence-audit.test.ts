@@ -353,6 +353,7 @@ const WINDOW = { scanLimit: 2000, truncated: false };
 function preflightRow(over: {
   runId: string;
   eventId: string;
+  submissionId?: string;
   kind?: TestEvidencePreflightEventRow["kind"];
   status?: "not_evaluated" | "ready" | "gaps" | "unavailable" | "overridden";
   policy?: "off" | "criterion_mapped_v1";
@@ -361,16 +362,17 @@ function preflightRow(over: {
   payload?: unknown;
 }): TestEvidencePreflightEventRow {
   const kind = over.kind ?? "evidence_readiness_evaluated";
+  const submissionId = over.submissionId ?? `${over.runId}-submission`;
   const markerPayload = kind === "evidence_preflight_refinement_reserved"
-    ? { round: 1, segment: 1 }
-    : { acknowledgedRisk: true };
+    ? { parentSubmissionId: submissionId, round: 1, segment: 1 }
+    : { submissionId, acknowledgedRisk: true };
   return {
     runId: over.runId,
     timestamp: 1000,
     eventId: over.eventId,
     kind,
     payload: over.payload ?? (kind === "evidence_readiness_evaluated" ? {
-      submissionKey: `${over.runId}-opaque`,
+      submissionKey: evidenceTelemetryKey("submission", submissionId),
       policy: over.policy ?? "criterion_mapped_v1",
       evaluatorVersion: over.evaluatorVersion === undefined
         ? "criterion_mapped_v1"
@@ -547,6 +549,33 @@ test("first Auditor acceptance excludes interceptions and keeps disagreement den
     total: 2,
     rate: 0,
   });
+});
+
+test("lifecycle outcomes apply only to their intercepted submission within a run", () => {
+  const aggregate = aggregateTestEvidenceAudit([], WINDOW, [
+    preflightRow({
+      runId: "run-repeat",
+      eventId: "later-gap",
+      submissionId: "later-submission",
+      status: "gaps",
+    }),
+    preflightRow({
+      runId: "run-repeat",
+      eventId: "earlier-refinement",
+      submissionId: "earlier-submission",
+      kind: "evidence_preflight_refinement_reserved",
+    }),
+    preflightRow({
+      runId: "run-repeat",
+      eventId: "earlier-override",
+      submissionId: "earlier-submission",
+      kind: "evidence_readiness_overridden",
+    }),
+  ], { truncated: false });
+
+  assert.deepEqual(aggregate.preflight.interceptions, { count: 1, total: 1, rate: 1 });
+  assert.deepEqual(aggregate.preflight.sameRoundRefinements, { count: 0, total: 1, rate: 0 });
+  assert.deepEqual(aggregate.preflight.overrides, { count: 0, total: 1, rate: 0 });
 });
 
 test("replayed preflight events are deduplicated and readiness snapshots survive split windows", () => {

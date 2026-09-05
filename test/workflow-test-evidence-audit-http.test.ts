@@ -26,6 +26,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { evidenceTelemetryKey } = await import("../src/server/workflows/test-evidence-audit.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 
 function app(workflows?: InstanceType<typeof WorkflowManager>) {
@@ -86,11 +87,13 @@ function auditPayload(over: {
 
 function preflightPayload(over: {
   status?: "ready" | "gaps" | "unavailable";
+  submissionId?: string;
   workflowVersion?: number;
 } = {}) {
   const status = over.status ?? "gaps";
+  const submissionId = over.submissionId ?? `preflight-${status}-${over.workflowVersion ?? 8}`;
   return {
-    submissionKey: `opaque-preflight-${status}-${over.workflowVersion ?? 8}`,
+    submissionKey: evidenceTelemetryKey("submission", submissionId),
     policy: "criterion_mapped_v1",
     evaluatorVersion: "criterion-mapped-v1",
     status,
@@ -131,11 +134,12 @@ test("the aggregate route reads events across every run and reports its own wind
   workflows.store.appendEvent(
     "run-a",
     "evidence_readiness_evaluated",
-    preflightPayload(),
+    preflightPayload({ submissionId: "run-a-gap" }),
     5,
     "readiness:run-a",
   );
   workflows.store.appendEvent("run-a", "evidence_preflight_refinement_reserved", {
+    parentSubmissionId: "run-a-gap",
     round: 1,
     segment: 1,
   }, 6, "refinement:run-a");
@@ -149,11 +153,12 @@ test("the aggregate route reads events across every run and reports its own wind
   workflows.store.appendEvent(
     "run-b",
     "evidence_readiness_evaluated",
-    preflightPayload({ status: "unavailable" }),
+    preflightPayload({ status: "unavailable", submissionId: "run-b-unavailable" }),
     25,
     "readiness:run-b",
   );
   workflows.store.appendEvent("run-b", "evidence_readiness_overridden", {
+    submissionId: "run-b-unavailable",
     acknowledgedRisk: true,
   }, 26, "override:run-b");
   workflows.store.appendEvent("run-b", "test_evidence_audit", auditPayload({

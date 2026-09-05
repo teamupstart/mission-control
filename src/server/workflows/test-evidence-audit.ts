@@ -371,6 +371,22 @@ function finishReadinessCategories<T extends string>(
       || left.category.localeCompare(right.category));
 }
 
+function preflightSubmissionCorrelationKey(runId: string, submissionKey: string): string {
+  return JSON.stringify([runId, submissionKey]);
+}
+
+function matchedLifecycleRunCount(
+  lifecycleSubmissionKeys: ReadonlySet<string>,
+  interceptedSubmissionRuns: ReadonlyMap<string, string>,
+): number {
+  const runs = new Set<string>();
+  for (const key of lifecycleSubmissionKeys) {
+    const runId = interceptedSubmissionRuns.get(key);
+    if (runId !== undefined) runs.add(runId);
+  }
+  return runs.size;
+}
+
 export function aggregateTestEvidenceAudit(
   rows: readonly TestEvidenceAuditEventRow[],
   window: { scanLimit: number; truncated: boolean },
@@ -501,8 +517,9 @@ export function aggregateTestEvidenceAudit(
 
   const seenEventIds = new Set<string>();
   const interceptedRuns = new Set<string>();
-  const refinedRuns = new Set<string>();
-  const overriddenRuns = new Set<string>();
+  const interceptedSubmissionRuns = new Map<string, string>();
+  const refinedSubmissionKeys = new Set<string>();
+  const overriddenSubmissionKeys = new Set<string>();
   const readinessSlices = new Map<string, {
     slice: TestEvidenceReadinessSlice;
     enforcing: number;
@@ -523,16 +540,32 @@ export function aggregateTestEvidenceAudit(
     if (row.eventId) seenEventIds.add(row.eventId);
     switch (row.kind) {
       case "evidence_preflight_refinement_reserved": {
-        const parsed = z.object({ round: z.number().int().positive(), segment: z.number().int().positive() })
-          .safeParse(row.payload);
+        const parsed = z.object({
+          parentSubmissionId: z.string().min(1),
+          round: z.number().int().positive(),
+          segment: z.number().int().positive(),
+        }).safeParse(row.payload);
         if (!parsed.success) preflightMalformed += 1;
-        else refinedRuns.add(row.runId);
+        else {
+          refinedSubmissionKeys.add(preflightSubmissionCorrelationKey(
+            row.runId,
+            evidenceTelemetryKey("submission", parsed.data.parentSubmissionId),
+          ));
+        }
         continue;
       }
       case "evidence_readiness_overridden": {
-        const parsed = z.object({ acknowledgedRisk: z.literal(true) }).safeParse(row.payload);
+        const parsed = z.object({
+          submissionId: z.string().min(1),
+          acknowledgedRisk: z.literal(true),
+        }).safeParse(row.payload);
         if (!parsed.success) preflightMalformed += 1;
-        else overriddenRuns.add(row.runId);
+        else {
+          overriddenSubmissionKeys.add(preflightSubmissionCorrelationKey(
+            row.runId,
+            evidenceTelemetryKey("submission", parsed.data.submissionId),
+          ));
+        }
         continue;
       }
       case "evidence_readiness_evaluated": {
@@ -549,6 +582,10 @@ export function aggregateTestEvidenceAudit(
         if (intercepted) {
           interceptions += 1;
           interceptedRuns.add(row.runId);
+          interceptedSubmissionRuns.set(
+            preflightSubmissionCorrelationKey(row.runId, record.submissionKey),
+            row.runId,
+          );
           const evaluationKey = row.eventId ?? `${row.runId}:${row.timestamp}:${index}`;
           addReadinessCategories(gapCounts, record.gapCodes, evaluationKey);
           addReadinessCategories(proofClassCounts, record.proofClasses, evaluationKey);
@@ -635,11 +672,11 @@ export function aggregateTestEvidenceAudit(
       truncated: preflightWindow.truncated,
       interceptions: rate(interceptions, enforcingEvaluations),
       sameRoundRefinements: rate(
-        [...interceptedRuns].filter((runId) => refinedRuns.has(runId)).length,
+        matchedLifecycleRunCount(refinedSubmissionKeys, interceptedSubmissionRuns),
         interceptedRunCount,
       ),
       overrides: rate(
-        [...interceptedRuns].filter((runId) => overriddenRuns.has(runId)).length,
+        matchedLifecycleRunCount(overriddenSubmissionKeys, interceptedSubmissionRuns),
         interceptedRunCount,
       ),
       unavailable: rate(unavailable, enforcingEvaluations),

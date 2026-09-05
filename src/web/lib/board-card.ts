@@ -54,6 +54,22 @@ export interface DisplayItem {
 
 export const DISPLAY_ITEMS = [
   {
+    /**
+     * The one entry here that governs a CAPABILITY and not just a fact.
+     *
+     * Unchecking it takes the keycap off every card AND stands the twelve chords down, so an
+     * operator who does not want them keeps ⌘0/⌘-/⌘= for whatever else they use those keys
+     * for. That coupling is deliberate and is why there is no second switch: an invisible
+     * shortcut that still fires is the one shape this control must not have. The chords
+     * themselves live in `lib/card-shortcuts.ts`.
+     */
+    id: "cardShortcut",
+    group: "card",
+    label: "Jump shortcut",
+    description:
+      "The ⌘1 … ⌘0, ⌘-, ⌘= keycap in the card's top corner, and the chord itself: press it to open that card's console. The keys are handed out down the board and across its columns, and move up as cards finish. While this is on the number row belongs to the board: in the desktop app page zoom keeps its View menu items but gives up ⌘0/⌘-/⌘=, and in a browser tab any key your browser keeps for selecting a tab or zooming stays the browser's. Unchecked, the keycaps go, the chords stand down, and those keys zoom again.",
+  },
+  {
     id: "goal",
     group: "card",
     label: "Goal",

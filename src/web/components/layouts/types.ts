@@ -261,6 +261,19 @@ export interface SessionViewProps {
   pipelineRunByKey?: ReadonlyMap<string, PipelineRun>;
   /** Durable authoring-to-shipment lifecycles keyed by commission id. */
   pipelineCommissionById?: ReadonlyMap<string, PipelineCommission>;
+  /**
+   * Which ⌘-number jump slot each visible Board card holds, as `sessionId -> chord`.
+   *
+   * App owns it because App owns the keystroke: the assignment is derived from the same
+   * ordered column arrays the arrow keys walk, so the key printed on a card and the key that
+   * opens it are one derivation rather than two that agree until a card changes tone. See
+   * `lib/card-shortcuts.ts`.
+   *
+   * EMPTY - never absent-meaning-everything - on the Console layout, and on a Board whose
+   * operator has switched the card item off. A layout arranges; it does not decide which
+   * cards get keys.
+   */
+  cardShortcutBySession?: ReadonlyMap<string, string>;
 }
 
 /** The run summary behind this session's member link, when both are on hand. */

@@ -20,10 +20,24 @@ import { formatChord, useKeybindingHints, useKeybindings } from "../lib/keybindi
  * a keycap on a 24px icon is bigger than the icon. The command bar is the other
  * exception - see `useKeybindingHints`.
  */
-export function Keycap({ action }: { action: ActionId }): React.JSX.Element | null {
+export function Keycap(
+  props:
+    | { action: ActionId }
+    /**
+     * A chord this component cannot look up, given directly.
+     *
+     * For the one kind of shortcut the rebindable registry does not hold: the Board card's
+     * ⌘1 … ⌘= jump keys, which address a POSITION rather than an action and so have no
+     * `ActionId` to resolve (see `lib/card-shortcuts.ts`). Everything else this component
+     * owns still applies, which is the whole reason the case lives here instead of in a
+     * hand-rolled `<kbd>` on the tile: the hint preference and the markup stay one fact,
+     * and turning keycaps off turns this one off too.
+     */
+    | { chord: string },
+): React.JSX.Element | null {
   const { bindings } = useKeybindings();
   const [show] = useKeybindingHints();
-  const chord = formatChord(bindings[action]);
+  const chord = formatChord("action" in props ? bindings[props.action] : props.chord);
   if (!show || !chord) return null;
   return <kbd className="kb-hint" aria-hidden="true">{chord}</kbd>;
 }

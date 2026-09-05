@@ -26913,6 +26913,33 @@ span.line-run-prov {
   align-items: center;
   gap: 8px;
 }
+/* The ⌘-number jump keycap, last in the head and so in the card's top-right corner.
+   `.tile-name` above it is `flex: 1`, which is what puts this against the right edge
+   without a margin - and the shared `.kb-hint` rule is already `flex: none`, so a long
+   session name ellipsises rather than squeezing the key. */
+.tile-head .kb-hint {
+  position: relative;
+  z-index: 1;
+  /* The shared `.kb-hint` weight, deliberately unmodified at rest. An earlier pass muted
+     this one on the theory that twelve of them would read as a column of chips down the
+     board; on the real board they read as unreadable instead, and the whole gesture is
+     "look at the card, press the number" - a keycap you have to hover to read is a keycap
+     you would rather have clicked past. Consistency is also the honest signal here: this
+     IS the same kind of thing as the chord on a button face.
+
+     It rides ABOVE `.tile-open`, the transparent button stretched over the whole tile. That
+     button takes no pointer events, so this is not about clicks: it is z-order, and without
+     it the keycap sits under the card's focus outline on the selected tile. `1` is the layer
+     the marks row and the workflow disclosure already claim for the same reason. */
+  letter-spacing: 0.2px;
+}
+/* Brighter on the card you are pointing at or have the cursor on, which is the card about
+   to be opened - by this key or by Enter. */
+.tile:hover .tile-head .kb-hint,
+.tile.selected .tile-head .kb-hint {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 38%, var(--border));
+}
 .tile-name {
   flex: 1;
   min-width: 0;

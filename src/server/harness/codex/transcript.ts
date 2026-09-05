@@ -16,7 +16,8 @@ import {
 // This file used to say `messages: null` was its whole point - that a rollout carried the
 // model, the reasoning effort and a token count and nothing renderable as conversation.
 // That was a claim about the format, and it was wrong: a rollout's `event_msg` records
-// carry `user_message` / `agent_message` verbatim, and its tool calls arrive as separate
+// carry the conversation's prose verbatim - as `user_message` / `agent_message`, or as
+// `item_completed` (see `itemProse`) - and its tool calls arrive as separate
 // records that accumulate into a turn of their own. Hence `parseBatch` rather than `parse` -
 // a run of calls is several records and one turn, so the grouping needs the whole window
 // rather than a line at a time - and hence
@@ -86,6 +87,54 @@ function cappedInput(value: unknown): string | undefined {
 }
 
 /**
+ * The prose of an `event_msg/item_completed` item, or null when it carries none.
+ *
+ * Codex CLI 0.153.4 moved a conversation's prose out of `event_msg/user_message` and
+ * `event_msg/agent_message` and into `event_msg/item_completed`, whose `item.type` is
+ * `UserMessage` or `AgentMessage`. Its tool calls did NOT move - they are still
+ * `response_item/custom_tool_call`, read further down unchanged - and that asymmetry is the
+ * whole shape of the regression: a session rendered its folded run of commands and not one
+ * word on either side of it, which reads like an agent that ran fourteen things in silence.
+ *
+ * Both spellings are read, and both stay read. This is NOT a rename to follow: 0.153.4
+ * writes the older records for a subagent thread (`thread_source: guardian_review`), so
+ * measured against `~/.codex/sessions` the two shapes sit side by side under one
+ * `cli_version`, and a reader that accepted only the new names would be the same defect
+ * facing the other way.
+ *
+ * The content element's `type` is `Text` on an agent item and `text` on a user one. The text
+ * is therefore taken from the FIELD rather than gated on the element type - a reader that
+ * trusted that casing would drop exactly half of every conversation. Parts concatenate and
+ * trim, which is what Claude's reader already does with its own text blocks.
+ *
+ * An item with no prose returns null rather than an empty turn, and the caller drops it.
+ * That covers `Reasoning`, `CommandExecution` and `FileChange`, which are the same work the
+ * `response_item` records already describe, and it matters beyond tidiness: an empty
+ * assistant turn would absorb the tool calls that follow it into a run whose id does not
+ * start with `tool:`, which is the one thing `joinCodexBatches` cannot rejoin across a
+ * window seam.
+ */
+function itemProse(
+  item: Record<string, unknown>,
+): { role: "user" | "assistant"; text: string; id: string | null } | null {
+  const kind = item.type;
+  if (kind !== "UserMessage" && kind !== "AgentMessage") return null;
+  let text = "";
+  for (const part of Array.isArray(item.content) ? item.content : []) {
+    if (!part || typeof part !== "object") continue;
+    const value = (part as Record<string, unknown>).text;
+    if (typeof value === "string") text += value;
+  }
+  text = text.trim();
+  if (!text) return null;
+  return {
+    role: kind === "UserMessage" ? "user" : "assistant",
+    text,
+    id: typeof item.id === "string" && item.id ? item.id : null,
+  };
+}
+
+/**
  * Distinguishes one parse from the next in the ids synthesized below.
  *
  * A window read parses head and tail as two separate batches and then de-dupes the
@@ -129,6 +178,25 @@ export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
         ts,
       });
       currentAssistant = null;
+      continue;
+    }
+    // The 0.153.4 spelling, beside the older one rather than instead of it - the two test
+    // different record types and neither shadows the other. Both branches build the same
+    // `TranscriptMessage`, so everything downstream - the tool-run grouping below,
+    // `joinCodexBatches`, the browser's fold - cannot tell which shape a session was
+    // recorded in, which is the point.
+    if (rec.type === "event_msg" && p.type === "item_completed") {
+      const prose = itemProse((p.item ?? {}) as Record<string, unknown>);
+      if (!prose) continue;
+      const msg: TranscriptMessage = {
+        id: prose.id ?? id,
+        role: prose.role,
+        text: prose.text,
+        tools: [],
+        ts,
+      };
+      out.push(msg);
+      currentAssistant = prose.role === "assistant" ? msg : null;
       continue;
     }
     if (rec.type === "event_msg" && (p.type === "user_message" || p.type === "agent_message")) {
@@ -218,6 +286,13 @@ export function latestCodexNarration(lines: string[]): string | null {
     if (rec.type !== "event_msg") continue;
     if (p.type === "task_started") { active = true; narration = null; }
     else if (p.type === "agent_message" && active) narration = typeof p.message === "string" ? p.message : narration;
+    // The 0.153.4 spelling of the same thing. Both AgentMessage phases narrate - a
+    // `commentary` preamble is the running turn's most recent word about itself just as much
+    // as a `final_answer` is, and the older `agent_message` record it replaced carried both.
+    else if (p.type === "item_completed" && active) {
+      const prose = itemProse((p.item ?? {}) as Record<string, unknown>);
+      if (prose?.role === "assistant") narration = prose.text;
+    }
     else if (p.type === "task_complete" || p.type === "turn_aborted") { active = false; narration = null; }
   }
   return active ? narration : null;

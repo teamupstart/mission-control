@@ -30,9 +30,8 @@ process.env.HARNESS_HOME = join(home, "state");
 process.env.CODEX_HOME = join(home, "codex");
 
 const { HARNESSES, harnessFor, sessionMessages } = await import("../src/server/harness/index.ts");
-const { codexTranscript, joinCodexBatches, parseCodexMessages } = await import(
-  "../src/server/harness/codex/transcript.ts"
-);
+const { codexTranscript, joinCodexBatches, latestCodexNarration, parseCodexMessages } =
+  await import("../src/server/harness/codex/transcript.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { GOAL_UNSUPPORTED } = await import("../src/shared/goal.ts");
@@ -143,6 +142,161 @@ test("Codex projects an interrupted rollout turn as the same visible marker Clau
       ts: Date.parse(interruptedAt),
     },
   ]);
+});
+
+/**
+ * Codex CLI 0.153.4's rollout, whose prose moved and whose tool calls did not.
+ *
+ * `event_msg/user_message` and `event_msg/agent_message` became `event_msg/item_completed`
+ * carrying an `item` typed `UserMessage` or `AgentMessage`; `response_item/custom_tool_call`
+ * stayed exactly where it was. That asymmetry is what made the regression so hard to read
+ * from the dashboard: a session drew its folded run of commands and not one word around it.
+ *
+ * Every field below is measured against `~/.codex/sessions`, including the two that look
+ * like typos and are not: the content element's `type` is `Text` on the agent item and
+ * `text` on the user one, and the item's own `id` is the only stable identity either
+ * carries, since the `item_completed` PAYLOAD has no `id` for the parser's usual lookup to
+ * find.
+ */
+const item = (
+  kind: "UserMessage" | "AgentMessage",
+  id: string,
+  text: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  type: "item_completed",
+  thread_id: "01a06f07-ed2b-7b30-812e-caa650ac1b5a",
+  item: {
+    type: kind,
+    id,
+    content: [
+      kind === "AgentMessage"
+        ? { type: "Text", text }
+        : { type: "text", text, text_elements: [] },
+    ],
+    ...extra,
+  },
+});
+
+test("Codex reads a conversation out of item_completed records, beside an unchanged run", () => {
+  const ts = new Date(1000).toISOString();
+  const messages = parseCodexMessages([
+    { type: "event_msg", timestamp: ts, payload: item("UserMessage", "um-1", "ASK") },
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: item("AgentMessage", "msg-1", "on it", { phase: "commentary" }),
+    },
+    // The records 0.153.4 writes AROUND the prose and beside every command. None is
+    // renderable as a turn, and a reader that projected them would draw an empty bubble
+    // between every pair of commands - so they are pinned as dropped, not merely untested.
+    { type: "response_item", timestamp: ts, payload: { type: "reasoning", summary: [] } },
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: { type: "item_completed", item: { type: "Reasoning", id: "r-1" } },
+    },
+    { type: "response_item", timestamp: ts, payload: { type: "custom_tool_call", call_id: "a", name: "exec", arguments: "ls" } },
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: { type: "item_completed", item: { type: "CommandExecution", id: "c-1" } },
+    },
+    { type: "response_item", timestamp: ts, payload: { type: "custom_tool_call", call_id: "b", name: "exec", arguments: "pwd" } },
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: { type: "item_completed", item: { type: "FileChange", id: "f-1" } },
+    },
+    {
+      type: "event_msg",
+      timestamp: ts,
+      payload: item("AgentMessage", "msg-2", "done", { phase: "final_answer" }),
+    },
+  ]);
+
+  assert.deepEqual(messages, [
+    { id: "um-1", role: "user", text: "ASK", tools: [], ts: 1000 },
+    { id: "msg-1", role: "assistant", text: "on it", tools: [], ts: 1000 },
+    {
+      id: "tool:a",
+      role: "assistant",
+      text: "",
+      tools: [{ name: "exec", input: "ls" }, { name: "exec", input: "pwd" }],
+      ts: 1000,
+    },
+    { id: "msg-2", role: "assistant", text: "done", tools: [], ts: 1000 },
+  ]);
+
+  // The claim the ids carry, and the reason the run's is `tool:a` above: the run is a turn
+  // of its own, so `joinCodexBatches` can still rejoin it when a window seam splits it. An
+  // empty-prose item absorbed into that run would have taken its own id along and silently
+  // cost the scroll-back that repair.
+  assert.deepEqual(
+    joinCodexBatches([messages[2]!], [{ ...messages[2]!, id: "tool:b" }]),
+    { earlier: [{ ...messages[2]!, tools: [...messages[2]!.tools, ...messages[2]!.tools] }], later: [] },
+  );
+});
+
+test("both Codex prose spellings read the same, in one file and in one turn", () => {
+  // 0.153.4 writes BOTH: a top-level thread gets `item_completed`, and a subagent thread
+  // (`thread_source: guardian_review`) still gets `agent_message`, under that one
+  // `cli_version`. So this is not a migration with a cutoff to move past - it is two live
+  // spellings, and dropping either one is the same defect facing the other way.
+  const ts = new Date(2000).toISOString();
+  const messages = parseCodexMessages([
+    { type: "event_msg", timestamp: ts, payload: { type: "user_message", message: "OLD ASK" } },
+    { type: "event_msg", timestamp: ts, payload: item("AgentMessage", "msg-new", "new prose") },
+    { type: "event_msg", timestamp: ts, payload: { type: "agent_message", message: "old prose" } },
+    { type: "event_msg", timestamp: ts, payload: item("UserMessage", "um-new", "NEW ASK") },
+  ]);
+
+  assert.deepEqual(
+    messages.map((m) => [m.role, m.text]),
+    [
+      ["user", "OLD ASK"],
+      ["assistant", "new prose"],
+      ["assistant", "old prose"],
+      ["user", "NEW ASK"],
+    ],
+  );
+});
+
+test("Codex narration follows the running turn's prose in either spelling", () => {
+  const line = (payload: Record<string, unknown>): string =>
+    JSON.stringify({ timestamp: new Date(3000).toISOString(), type: "event_msg", payload });
+
+  // A running turn's most recent word about itself. `commentary` counts as much as
+  // `final_answer` does: it is the preamble a person watches a working session by, and the
+  // `agent_message` record it replaced carried both phases undifferentiated.
+  assert.equal(
+    latestCodexNarration([
+      line({ type: "task_started" }),
+      line(item("AgentMessage", "msg-1", "reading the registry", { phase: "commentary" })),
+      line({ type: "item_completed", item: { type: "CommandExecution", id: "c-1" } }),
+    ]),
+    "reading the registry",
+  );
+
+  // Finished turns narrate nothing, in the new spelling exactly as in the old.
+  assert.equal(
+    latestCodexNarration([
+      line({ type: "task_started" }),
+      line(item("AgentMessage", "msg-1", "reading the registry")),
+      line({ type: "task_complete" }),
+    ]),
+    null,
+  );
+
+  // A user's own item is not narration, however recently it arrived.
+  assert.equal(
+    latestCodexNarration([
+      line({ type: "task_started" }),
+      line(item("AgentMessage", "msg-1", "reading the registry")),
+      line(item("UserMessage", "um-1", "actually, stop")),
+    ]),
+    "reading the registry",
+  );
 });
 
 test("a window seam rejoins one split run but never welds a run onto prose", () => {

@@ -189,7 +189,7 @@ Extend `captureStableWorkflowContext` with an optional injected candidate-prepar
 For an activated caller in Phase 3:
 
 1. sample the existing boundary;
-2. create a candidate under a private pending namespace;
+2. allocate a random candidate id under a bounded private pending namespace and atomically write a daemon-owned marker containing candidate id, expected root kind, creation time, and capture nonce before artifact bytes;
 3. build objects, classifications, manifest, and digest;
 4. resample HEAD, index/status, repository identity, and existing transcript/session boundary;
 5. discard the candidate and retry if any boundary changed;
@@ -199,7 +199,7 @@ For an activated caller in Phase 3:
 9. after those guards pass, atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's active claim in one database transaction;
 10. only then persist raw context, compact/check evidence readiness, and allow the submission to become `running`.
 
-If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent claim instead of replacing them. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Never guess ownership or claim count from a directory name alone.
+If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent claim instead of replacing them. Promotion consumes the pending marker only after the digest bytes and database ownership transition are established; discard removes only the exact marked candidate. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Never guess ownership or claim count from a directory name alone.
 
 Phase 2 tests invoke prepare, promote, and discard directly, including the guarantee that preparation alone produces no durable row or claim. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
 
@@ -226,7 +226,7 @@ Integrate with `src/server/workflows/retention.ts` and `WorkflowManager` startup
 - run-family retention or explicit deletion atomically moves that submission's claim through release state and enqueues digest cleanup only when the transaction observes no other active claim;
 - cleanup claims the zero-reference artifact, rechecks the absence of active submission claims in the deletion transaction, and abandons deletion if a concurrent capture acquired a claim;
 - failed deletion remains durable and retryable;
-- startup removes abandoned pending candidates and orphaned materializations only when their dedicated namespace and ownership marker are proven;
+- startup scans only immediate children of the bounded daemon-owned pending namespace. After a restart no unpromoted candidate can have a durable consumer, so it removes every well-formed candidate whose atomic marker, containment, root kind, and candidate id agree; malformed or unowned entries are quarantined/reported rather than recursively deleted. Periodic reconciliation uses the in-memory active-candidate registry and never removes a candidate still owned by a live capture;
 - startup repairs ready-row/missing-artifact, artifact/no-row, claim/no-artifact, and zero-claim cleanup mismatches conservatively without deleting bytes referenced by any active claim;
 - never recurse-delete a user-supplied path, worktree, repository root, or Git common directory.
 
@@ -263,7 +263,7 @@ Fixtures must distinguish:
 - repository config/attributes defining clean, process, diff, textconv, smudge, hook, include, credential, and promisor behavior;
 - a live index with uncommon extensions or split-index behavior if supported by current Git;
 - source worktree mutation during each capture step;
-- database failure, rename/promotion failure, disk-full simulation, cancellation, digest corruption, missing object, daemon restart, retention, and cleanup retry.
+- database failure, rename/promotion failure, disk-full simulation, cancellation, digest corruption, missing object, daemon restart in every prepare/promote/discard window, retention, and cleanup retry.
 
 Required proofs:
 
@@ -279,6 +279,7 @@ Required proofs:
 - two submissions can claim the same digest; releasing either claim preserves bytes and materialization for the other, while releasing the final claim permits retryable cleanup;
 - concurrent claim/release and cleanup races recheck the active-claim invariant and never prematurely delete shared bytes;
 - cleanup removes only proven zero-claim artifacts and survives partial failure/restart;
+- a crash after prepare returns but before promote/discard leaves no durable row or claim, and the next startup removes only that atomically marked pending candidate while preserving malformed, unowned, and live periodic candidates;
 - default-unused capture seam leaves all existing Workflow fingerprints and behavior unchanged.
 
 Run focused tests with the suite preamble, then:
@@ -298,7 +299,7 @@ npm run smoke
 - Denied blob bodies are absent from the artifact, including history packs.
 - The artifact contains exactly the deterministic `RepositoryHistoryPolicyV1` retained prefix and all required allowed objects; boundary and out-of-range behavior passes the Phase 1 MCP contract after source removal.
 - Capture neither mutates the live index/worktree nor executes repository-configured programs.
-- Candidate promotion, digest ownership, per-submission claims, zero-claim cleanup intent, and restart reconciliation are crash-safe and tested.
+- Candidate marker publication, prepare/promote/discard crash windows, digest ownership, per-submission claims, zero-claim cleanup intent, and startup reconciliation are crash-safe and tested.
 - Releasing one of several active claims cannot delete shared bytes; releasing the final claim permits deletion only after the cleanup transaction rechecks zero active claims.
 - Historical submissions and all existing active Workflow behavior are unchanged.
 - Operational logs/counts are bounded and contain no repository bodies.

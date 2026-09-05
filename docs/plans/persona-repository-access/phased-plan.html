@@ -239,7 +239,7 @@
           <thead><tr><th>Established by</th><th>Contract</th><th>Consumed by</th></tr></thead>
           <tbody>
             <tr><td>Phase 1</td><td>Closed operations, repository and history policy, retained-set/boundary semantics, metadata-only evidence handles with line/byte/diff ranges, evidence protocol capability, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
-            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact policy-retained history prefix, independent submission claims, immutable digest/locator, exact layer ids, attempt-bound materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
+            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact policy-retained history prefix, independent submission claims, atomic pending-candidate markers and startup cleanup, immutable digest/locator, exact layer ids, attempt-bound materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
             <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query/handle audit paging, same-attempt line/byte/diff evidence validation, mixed-version rollout gate</td><td>Future remote adapter</td></tr>
           </tbody>
         </table>
@@ -274,6 +274,7 @@
         <li>Repository bodies stay inside the workload; SQLite, logs, exports, SSE, and browser receive safe metadata only.</li>
         <li>Repository evidence references contain only <code>operationId</code> and opaque <code>evidenceHandleId</code>; daemon-owned metadata proves the exact returned path and discriminated line, byte, or diff range without storing quotes or excerpts.</li>
         <li>Materialization is bound to the active submission, workload, and Workflow attempt before artifact paths are opened.</li>
+        <li>A crash before candidate promote/discard cannot leak unbounded snapshots: startup removes only contained pending entries with a valid atomic daemon marker, and quarantines malformed or unowned paths.</li>
         <li>Mixed-version read-enabled dispatch fails before provider launch or durable verdict write; rollback after repository citations restores the verified pre-migration database recovery point.</li>
         <li>Built-in overrides affect future operator-published versions, never shipped built-in versions.</li>
         <li>The local executor is a conformance implementation for a future remote adapter, not a hidden selection of remote infrastructure.</li>
@@ -289,7 +290,7 @@ npm run build
 npm run smoke
 # Phase 3
 npm run test:e2e</code></pre>
-      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, attempt-bound materialization, metadata-only same-attempt evidence handles with exact line/byte/diff ranges, mixed-version fail-closed behavior plus legacy-reader recovery-copy compatibility, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
+      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, crash-safe pending-candidate cleanup, attempt-bound materialization, metadata-only same-attempt evidence handles with exact line/byte/diff ranges, mixed-version fail-closed behavior plus legacy-reader recovery-copy compatibility, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
     </section>
   </div>
   <p class="footer">Source of truth: phased-plan.md. Detailed implementation instructions live in the three linked phase Markdown files.</p>

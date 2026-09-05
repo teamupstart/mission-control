@@ -144,6 +144,7 @@ Independent review work inside a phase may run in parallel, but each phase is on
 - `WorkflowRepositoryArtifactService.prepare`, `promote`, `discard`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points. Preparation creates no durable claim; promotion is the only operation that may create one. Materialization accepts only an active-request-bound request and revalidates the submission's ready digest/locator claim before filesystem access.
 - The artifact contains original commit/tree identities and all allowed blobs for the exact policy-retained revision prefix, but no sensitive blob bodies. Denied entries remain visible only as classified metadata; source-base objects outside the prefix remain diff-only.
 - Capture candidates use a dedicated namespace under Mission Control state, never the repository worktree or common Git directory as durable storage.
+- Each pending candidate publishes an atomic daemon-owned marker before artifact bytes. Startup removes only immediate contained candidates whose marker identity and root kind agree; malformed or unowned entries are quarantined/reported, and periodic cleanup preserves candidates in the live in-memory registry.
 - A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no active claim remains before removing bytes. Startup reconciliation deletes only zero-claim paths whose digest ownership is proven.
 - Historical submissions without an artifact claim row remain valid prompt-only submissions. An access-enabled Phase 3 attempt requires an active claim joined to a ready artifact and never reconstructs from a live checkout.
 
@@ -239,7 +240,7 @@ After Phase 3, the implementation must re-prove these cross-phase properties:
 1. An access-off Persona produces the same prompt, provider options, capture fingerprints, and verdict behavior as `main` before the feature.
 2. An access-enabled Persona cannot return a verdict without a verified artifact and functioning repository MCP.
 3. Claude and Codex expose the same eight operations and use the same security and audit path.
-4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted.
+4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted, and a crash before candidate promote/discard leaves no unbounded pending artifact.
 5. No sensitive blob body appears in the artifact, MCP response for a denied operation, audit database, run export, logs, or browser.
 6. History selection is deterministic at both ceilings; the three `git_show` patch cases, frontier log/blame behavior, and `revision_out_of_range` denial work after source removal and are identical for Claude and Codex.
 7. Repository evidence handles validate one same-attempt returned item and exact line, byte, or diff range without any response body, excerpt, quote, or provider-supplied path entering daemon state.

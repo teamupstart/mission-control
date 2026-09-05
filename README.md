@@ -74,7 +74,7 @@ guided review that walks the agent through one thread at a time. A terminal in t
 is one click away in the terminal or multiplexer you actually use.
 
 Read more in [Sessions and conversations](docs/sessions.md) and
-[the file review UI](docs/ui.md#comment-on-a-line).
+[the file review UI](docs/ui.md#walk-the-agent-through-your-review).
 
 ## Dispatch and task types
 

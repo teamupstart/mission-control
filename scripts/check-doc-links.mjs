@@ -100,10 +100,10 @@ function withoutCode(markdown) {
       continue;
     }
 
-    visible.push(maskInlineCode(line));
+    visible.push(line);
   }
 
-  return visible.join("\n");
+  return maskInlineCode(visible.join("\n"));
 }
 
 function destinations(markdown) {

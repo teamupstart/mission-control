@@ -4,6 +4,7 @@ import {
   pipelineRecoveryIsActive,
   pipelineRunKeyOf,
   type PipelineCommission,
+  type PipelineRecoveryOperation,
   type PipelineRun,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
@@ -163,7 +164,7 @@ function ProviderLifecycle({
   canStart: boolean;
   starting: boolean;
   onStart: () => void;
-  recoveryBusy: string | null;
+  recoveryBusy: PipelineRecoveryOperation | null;
   onRetry: () => void;
   onRefreshSuccessor: () => void;
   onAdoptSuccessor: () => void;
@@ -325,7 +326,7 @@ export function PipelineFeatureReader({
   canStartAfterReadiness?: boolean;
   startingAfterReadiness?: boolean;
   onStartAfterReadiness?: () => void;
-  recoveryBusy?: string | null;
+  recoveryBusy?: PipelineRecoveryOperation | null;
   onRetry?: () => void;
   onRefreshSuccessor?: () => void;
   onAdoptSuccessor?: () => void;

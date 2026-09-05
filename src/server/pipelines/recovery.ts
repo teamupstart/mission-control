@@ -20,6 +20,7 @@ import { configuredGitHubRepositories, fetchPr, parsePrUrl } from "../inspector/
 import { applyEngineerEvent, parseEngineerEvent } from "./commissions.ts";
 import type { PipelineEngineerLifecycle, PipelineEngineerRunSnapshot } from "./types.ts";
 import { resolvePipelineEvidenceCommit } from "./workspace.ts";
+import { PIPELINE_RECOVERY_CONSENT_WITHDRAWN } from "./config.ts";
 
 export type PipelineRecoveryResult =
   | { ok: true; commission: PipelineCommission; idempotent: boolean }
@@ -35,6 +36,8 @@ interface PipelineAdoptionIdentity {
   candidateRevision: number;
   candidateFingerprint: string;
 }
+
+const CONSENT_WITHDRAWN = PIPELINE_RECOVERY_CONSENT_WITHDRAWN;
 
 function fail(
   code: PipelineRecoveryResultCode,
@@ -88,7 +91,9 @@ export async function preparePipelineRetry(input: {
   guard: PipelineRecoveryGuard;
   lifecycle: PipelineEngineerLifecycle;
   capabilities: PipelineEngineerCapabilities;
+  authorized: () => boolean;
 }): Promise<PipelineRecoveryResult> {
+  if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
   if (!input.capabilities.readiness || !input.capabilities.ownedAttempts ||
       !input.lifecycle.readinessProbe) {
     return fail("unsupported_provider", "the provider does not expose safe owned-attempt recovery");
@@ -100,6 +105,7 @@ export async function preparePipelineRetry(input: {
     recovery.predecessorProviderRevision === input.guard.providerRevision;
   if (!resumesReservedRetry) {
     const checked = await input.lifecycle.readinessProbe({ repoRoot: input.commission.repoRoot });
+    if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
     if (!checked.ok) {
       return fail(
         checked.outcomeUnknown ? "provider_outcome_unknown" : "readiness_blocked",
@@ -116,6 +122,7 @@ export async function preparePipelineRetry(input: {
         : checked.value.summary);
     }
   }
+  if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
   const reserved = reservePipelineCommissionRetry({
     guard: input.guard,
     launchKey: randomUUID(),
@@ -185,16 +192,20 @@ function stateFromEvents(events: readonly EngineerLifecycleEvent[]): PipelineEng
 async function validatePullRequest(
   repoRoot: string,
   handoff: PipelineCommissionHandoff,
+  authorized: () => boolean,
 ): Promise<string | null> {
+  if (!authorized()) return CONSENT_WITHDRAWN;
   if (!handoff.prUrl) return "the provider reported a pull request handoff without a URL";
   const parsed = parsePrUrl(handoff.prUrl);
   if (!parsed) return "the provider handoff pull request URL is invalid";
   const repositories = await configuredGitHubRepositories(repoRoot);
+  if (!authorized()) return CONSENT_WITHDRAWN;
   if (!repositories.some((repo) => repo.owner.toLowerCase() === parsed.owner.toLowerCase() &&
       repo.repo.toLowerCase() === parsed.repo.toLowerCase())) {
     return "the provider handoff pull request belongs to another repository";
   }
   const fetched = await fetchPr(repoRoot, parsed.owner, parsed.repo, parsed.number);
+  if (!authorized()) return CONSENT_WITHDRAWN;
   if (!fetched.ok || !fetched.value) {
     return `the provider handoff pull request could not be verified: ${fetched.ok ? "missing response" : fetched.error}`;
   }
@@ -207,8 +218,9 @@ async function validatePullRequest(
 export async function inspectPipelineSuccessor(input: {
   commission: PipelineCommission;
   lifecycle: PipelineEngineerLifecycle;
-  capabilities: PipelineEngineerCapabilities;
+  authorized: () => boolean;
 }): Promise<PipelineCommissionSuccessorCandidate | null> {
+  if (!input.authorized()) return null;
   const active = input.commission.attempts.find(
     (entry) => entry.attempt === input.commission.activeAttempt,
   );
@@ -219,6 +231,7 @@ export async function inspectPipelineSuccessor(input: {
     repoRoot: input.commission.repoRoot,
     correlationId: input.commission.correlationId,
   });
+  if (!input.authorized()) return null;
   if (!inspected.ok) return null;
   const predecessor = inspected.value.find((run) => run.attempt === active.attempt);
   const successors = inspected.value.filter((run) =>
@@ -242,6 +255,7 @@ export async function inspectPipelineSuccessor(input: {
     return invalidCandidate(successor, noEvents, "the provider successor does not preserve integration ownership");
   }
   const replay = await input.lifecycle.replay({ engineerRunId: successor.engineerRunId, afterRevision: 0 });
+  if (!input.authorized()) return null;
   if (!replay.ok) return invalidCandidate(successor, noEvents, `the provider successor journal could not be replayed: ${replay.error}`);
   const known: EngineerLifecycleEvent[] = [];
   for (const raw of replay.value) {
@@ -300,11 +314,17 @@ export async function inspectPipelineSuccessor(input: {
       return invalidCandidate(successor, known, "the provider successor handoff lacks immutable workspace evidence", evidence);
     }
     const resolved = await resolvePipelineEvidenceCommit(input.commission.repoRoot, branch);
+    if (!input.authorized()) return null;
     if (resolved !== evidenceCommit.toLowerCase()) {
       return invalidCandidate(successor, known, "the provider successor branch does not resolve to its durable commit", evidence);
     }
     if (handoff.outcome === "pr_opened") {
-      const prError = await validatePullRequest(input.commission.repoRoot, handoff);
+      const prError = await validatePullRequest(
+        input.commission.repoRoot,
+        handoff,
+        input.authorized,
+      );
+      if (!input.authorized()) return null;
       if (prError) return invalidCandidate(successor, known, prError, evidence);
     }
   }
@@ -324,8 +344,9 @@ export async function adoptPipelineSuccessor(input: {
   candidateRevision: number;
   candidateFingerprint: string;
   lifecycle: PipelineEngineerLifecycle;
-  capabilities: PipelineEngineerCapabilities;
+  authorized: () => boolean;
 }): Promise<PipelineRecoveryResult> {
+  if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
   const held = getPipelineCommission(input.commission.id) ?? input.commission;
   if (completedPipelineAdoptionMatches(held, input)) {
     return { ok: true, commission: held, idempotent: true };
@@ -345,8 +366,9 @@ export async function adoptPipelineSuccessor(input: {
     : await inspectPipelineSuccessor({
         commission: held,
         lifecycle: input.lifecycle,
-        capabilities: input.capabilities,
+        authorized: input.authorized,
       });
+  if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
   if (!candidate) return fail("lineage_mismatch", "the provider no longer reports a direct successor");
   if (candidate.engineerRunId !== input.candidateEngineerRunId ||
       candidate.providerRevision !== input.candidateRevision ||
@@ -356,15 +378,20 @@ export async function adoptPipelineSuccessor(input: {
   if (candidate.validation !== "valid") {
     return fail("lineage_mismatch", candidate.validationReason ?? "the provider successor could not be validated");
   }
+  if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
   const reserved = reservePipelineCommissionAdoption({ guard: input.guard, candidate });
   if (!reserved.ok) return reserved;
   input.sink.upsertPipelineCommission(reserved.commission);
   let commission = getPipelineCommission(reserved.commission.id) ?? reserved.commission;
   const attempt = commission.attempts.find((entry) => entry.attempt === commission.activeAttempt)!;
+  // Replay the complete journal after the durable reservation, then fence it against the
+  // exact fingerprint the operator reviewed. The same captured events are applied below,
+  // leaving no second provider-read window in which unseen events could enter adoption.
   const replay = await input.lifecycle.replay({
     engineerRunId: candidate.engineerRunId,
-    afterRevision: attempt.providerRevision,
+    afterRevision: 0,
   });
+  if (!input.authorized()) return fail("task_conflict", CONSENT_WITHDRAWN);
   if (!replay.ok) {
     const partial = updatePipelineCommissionRecovery({
       commissionId: commission.id,
@@ -379,12 +406,50 @@ export async function adoptPipelineSuccessor(input: {
       replay.outcomeUnknown,
     );
   }
+  const adoptedEvents: EngineerLifecycleEvent[] = [];
   for (const raw of replay.value) {
     const parsed = parseEngineerEvent(raw);
     if (!parsed.ok || !parsed.known) {
+      const partial = updatePipelineCommissionRecovery({
+        commissionId: commission.id,
+        attempt: candidate.attempt,
+        state: "adoption_partial",
+        error: "the adopted journal contains an unsupported event schema",
+      });
+      if (partial) input.sink.upsertPipelineCommission(partial);
       return fail("lineage_mismatch", "the adopted journal contains an unsupported event schema");
     }
-    const event = parsed.event;
+    adoptedEvents.push(parsed.event);
+  }
+  const created = adoptedEvents[0];
+  const replayFingerprint = created?.type === "engineer_run_created"
+    ? fingerprint({
+        schemaVersion: 1,
+        capability: "engineerLifecycleEventsV1",
+        engineerRunId: candidate.engineerRunId,
+        correlationId: commission.correlationId,
+        attemptKey: candidate.attemptKey,
+        attempt: candidate.attempt,
+        previousEngineerRunId: candidate.previousEngineerRunId,
+        repoRoot: commission.repoRoot,
+        idea: created.idea,
+        eventRevision: candidate.providerRevision,
+        state: candidate.state,
+        integrationOwner: candidate.integrationOwner,
+      }, adoptedEvents)
+    : null;
+  if (replayFingerprint !== candidate.fingerprint) {
+    const error = "the provider successor changed after review; abandon this adoption and inspect again";
+    const partial = updatePipelineCommissionRecovery({
+      commissionId: commission.id,
+      attempt: candidate.attempt,
+      state: "adoption_partial",
+      error,
+    });
+    if (partial) input.sink.upsertPipelineCommission(partial);
+    return fail("candidate_changed", error);
+  }
+  for (const event of adoptedEvents) {
     const applied = applyEngineerEvent(event);
     if (!["stored", "duplicate", "stale"].includes(applied.outcome)) {
       const partial = updatePipelineCommissionRecovery({

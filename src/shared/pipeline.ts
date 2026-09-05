@@ -743,6 +743,9 @@ export const PIPELINE_RECOVERY_RESULT_CODES = [
 ] as const;
 export type PipelineRecoveryResultCode = (typeof PIPELINE_RECOVERY_RESULT_CODES)[number];
 
+/** Recovery operation currently owned by one browser interaction. */
+export type PipelineRecoveryOperation = "retry" | "refresh" | "adopt" | "abandon" | "cancel";
+
 export type PipelineRecoveryStateOutcome =
   | { ok: true }
   | {

@@ -143,14 +143,7 @@ function retainedCommit(value: unknown): value is string {
 function parseReadiness(value: unknown): PipelineEngineerRunSnapshot["readiness"] {
   if (value === null) return null;
   const row = record(value);
-  if (!row || !["ready", "blocked", "inconclusive"].includes(String(row.status)) ||
-      !boundedString(row.code, ENGINEER_EVENT_LIMITS.identityChars) ||
-      !boundedString(row.summary, 240) ||
-      !Array.isArray(row.checkedCapabilities) ||
-      row.checkedCapabilities.length < 1 || row.checkedCapabilities.length > 32 ||
-      row.checkedCapabilities.some((entry) => !boundedString(entry, 64)) ||
-      typeof row.retryable !== "boolean" || !stringOrNull(row.remedy, 512) ||
-      !stringOrNull(row.diagnostic, 2048) || !boundedString(row.fingerprint, 128) ||
+  if (!row || parseReadinessEvidence(row) === null ||
       typeof row.permitted !== "boolean" || !timestamp(row.checkedAt)) return null;
   return row as unknown as PipelineEngineerRunSnapshot["readiness"];
 }

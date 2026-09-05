@@ -301,9 +301,10 @@ async function validateLive(
       return { ok: false, reason: "identity_conflict" };
     }
   }
-  if (attempt.evidenceCommit && attempt.evidenceCommit !== head) {
+  const frozenCommit = attempt.evidenceCommit?.toLowerCase() ?? null;
+  if (frozenCommit && frozenCommit !== head) {
     if (attempt.evidenceFrozenAt !== null) return { ok: false, reason: "identity_conflict" };
-    if (!(await git(repoRoot, ["merge-base", "--is-ancestor", attempt.evidenceCommit, head])).ok) {
+    if (!(await git(repoRoot, ["merge-base", "--is-ancestor", frozenCommit, head])).ok) {
       return { ok: false, reason: "identity_conflict" };
     }
   }

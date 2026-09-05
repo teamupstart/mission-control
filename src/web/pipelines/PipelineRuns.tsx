@@ -9,6 +9,7 @@ import {
   type PipelineConsole,
   type PipelineRun,
   type PipelineCommission,
+  type PipelineRecoveryOperation,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
@@ -71,7 +72,7 @@ export function PipelineRuns({
   const { repos, refresh } = usePipelineRepos(true);
   const [checkingCommissionId, setCheckingCommissionId] = useState<string | null>(null);
   const [startingCommissionId, setStartingCommissionId] = useState<string | null>(null);
-  const [recoveryBusy, setRecoveryBusy] = useState<string | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState<PipelineRecoveryOperation | null>(null);
   const [readinessError, setReadinessError] = useState<string | null>(null);
   const sections = useMemo(() => pipelineRail(runs, repos ?? []), [runs, repos]);
 

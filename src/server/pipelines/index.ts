@@ -45,7 +45,7 @@ import {
   upsertPipelineCommissionAttempt,
 } from "../db.ts";
 import { unref } from "../util/timers.ts";
-import { getPipelinesConfig } from "./config.ts";
+import { getPipelinesConfig, pipelineRepoConsented } from "./config.ts";
 import {
   forgetPipelineIngest,
   isPipelineIngestLive,
@@ -270,6 +270,9 @@ export async function pipelineTaskLaunch(
     };
   }
   const capability = await lifecycle.capability();
+  if (!pipelineRepoConsented(repo.provider, repoRoot)) {
+    return { ok: false, error: "conductor is not enabled for this repository" };
+  }
   if (!capability.ok) {
     return { ok: false, error: `could not verify Engineer lifecycle support: ${capability.error}` };
   }
@@ -336,22 +339,8 @@ export async function readPipelineRunDetail(
   repoRoot: string,
   slug: string,
 ): Promise<PipelineRunDetail | null> {
-  if (!isPipelineRepoConsented(provider, repoRoot)) return null;
+  if (!pipelineRepoConsented(provider, repoRoot)) return null;
   return PIPELINE_PROVIDERS[provider].readRunDetail(repoRoot, slug);
-}
-
-/**
- * Whether the operator consents to this repository being observed, right now.
- *
- * Read from the config on every call rather than cached, which is the whole point: every
- * caller is asking across an await or a timer, at the far side of a window in which the
- * answer can have changed. A snapshot taken when the work was scheduled is the bug this
- * predicate exists to stop, so there is deliberately nothing here to hold onto.
- */
-function isPipelineRepoConsented(provider: PipelineProviderId, repoRoot: string): boolean {
-  return activePipelineRepos(getPipelinesConfig()).some(
-    (repo) => repo.provider === provider && repo.repoRoot === repoRoot,
-  );
 }
 
 /**
@@ -367,11 +356,6 @@ function isPipelineRepoConsented(provider: PipelineProviderId, repoRoot: string)
  * without this the loopback API would spawn an engine CLI with a `cwd` of anywhere on the
  * machine. Consent is what turns a path into one this daemon may run something in.
  */
-function consented(provider: PipelineProviderId, repoRoot: string): boolean {
-  return activePipelineRepos(getPipelinesConfig()).some(
-    (repo) => repo.provider === provider && repo.repoRoot === repoRoot,
-  );
-}
 
 /**
  * Whether the projection holds this run, for a verb that names one.
@@ -421,7 +405,7 @@ function refuseControl(
   // repository that does not exist must answer identically, or the loopback API answers
   // questions about the operator's filesystem for anything that can reach it. The same rule
   // `GET /api/pipelines/run` states.
-  if (!consented(provider, repoRoot)) {
+  if (!pipelineRepoConsented(provider, repoRoot)) {
     return { ok: false, status: 404, error: "no such pipeline repository" };
   }
   if (slug !== null && !projecting(provider, repoRoot, slug)) {
@@ -977,7 +961,7 @@ async function runPipelineRepoPass(
   // checks what it is about to START, `forgetPipelineRepo` clears what is QUEUED, and this
   // catches the pass that was already past both. A tick's pass is the case neither of the
   // others can see.
-  if (!isPipelineRepoConsented(provider, repoRoot)) return;
+  if (!pipelineRepoConsented(provider, repoRoot)) return;
 
   const seen = new Set<string>();
   let halted = 0;
@@ -1255,30 +1239,41 @@ async function refreshPipelineSuccessorCandidate(
   sink: PipelineProjectionSink,
   commission: PipelineCommission,
   lifecycle: PipelineEngineerLifecycle,
-  capabilities: PipelineEngineerCapabilities,
+  refreshExisting: boolean,
 ): Promise<PipelineCommission> {
-  const active = commission.attempts.find((entry) => entry.attempt === commission.activeAttempt);
-  if (!active?.engineerRunId) return commission;
-  const terminal = ["failed", "cancelled", "settled"].includes(active.state);
-  if (!terminal && !commission.successorCandidate) return commission;
-  const candidate = terminal
-    ? await inspectPipelineSuccessor({ commission, lifecycle, capabilities })
-    : null;
   const held = getPipelineCommission(commission.id) ?? commission;
-  // Recovery owns candidate identity once reserved. A watcher that began inspecting the
-  // predecessor before adoption must not republish that stale candidate after completion.
+  // Recovery owns candidate identity once reserved. Check before provider I/O so a watcher
+  // never revalidates evidence that it must discard after the recovery completes.
   if (pipelineRecoveryIsActive(held.recovery)) return held;
-  const heldActive = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
-  if (held.activeAttempt !== active.attempt ||
-      heldActive?.engineerRunId !== active.engineerRunId ||
-      heldActive.providerRevision !== active.providerRevision) {
-    return held;
+  const active = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
+  if (!active?.engineerRunId) return held;
+  const terminal = ["failed", "cancelled", "settled"].includes(active.state);
+  if (!terminal && !held.successorCandidate) return held;
+  // Automatic ticks discover a successor once. Explicit operator refresh is the boundary
+  // that spends provider replay, git, and GitHub verification again for an existing candidate.
+  if (held.successorCandidate && !refreshExisting) return held;
+  const candidate = terminal
+    ? await inspectPipelineSuccessor({
+        commission: held,
+        lifecycle,
+        authorized: () => pipelineRepoConsented(held.provider, held.repoRoot),
+      })
+    : null;
+  const latest = getPipelineCommission(commission.id) ?? held;
+  // Recovery or consent can change across provider, git, and GitHub awaits. Neither stale
+  // result is permitted to write candidate state back into the projection.
+  if (pipelineRecoveryIsActive(latest.recovery) ||
+      !pipelineRepoConsented(latest.provider, latest.repoRoot)) return latest;
+  const latestActive = latest.attempts.find((entry) => entry.attempt === latest.activeAttempt);
+  if (latest.activeAttempt !== active.attempt ||
+      latestActive?.engineerRunId !== active.engineerRunId ||
+      latestActive.providerRevision !== active.providerRevision) {
+    return latest;
   }
-  if (JSON.stringify(held.successorCandidate ?? null) === JSON.stringify(candidate)) return held;
-  const heldAttempt = held.attempts.find((entry) => entry.attempt === held.activeAttempt);
-  if (!heldAttempt) return held;
-  const next = { ...held, successorCandidate: candidate, updatedAt: Date.now() };
-  upsertPipelineCommissionAttempt(next, heldAttempt);
+  if (JSON.stringify(latest.successorCandidate ?? null) === JSON.stringify(candidate)) return latest;
+  if (!latestActive) return latest;
+  const next = { ...latest, successorCandidate: candidate, updatedAt: Date.now() };
+  upsertPipelineCommissionAttempt(next, latestActive);
   sink.upsertPipelineCommission(next);
   return next;
 }
@@ -1356,21 +1351,20 @@ export async function checkPipelineCommissionReadiness(
 export async function refreshPipelineCommission(
   sink: PipelineProjectionSink,
   commission: PipelineCommission,
+  options: { refreshSuccessor?: boolean } = {},
 ): Promise<void> {
   const attempt = commission.attempts.find(
     (entry) => entry.attempt === commission.activeAttempt,
   );
   if (!attempt?.engineerRunId) return;
-  const consented = activePipelineRepos(getPipelinesConfig()).some(
-    (repo) => repo.provider === commission.provider && repo.repoRoot === commission.repoRoot,
-  );
-  if (!consented) return;
+  if (!pipelineRepoConsented(commission.provider, commission.repoRoot)) return;
   const lifecycle = PIPELINE_PROVIDERS[commission.provider].engineerLifecycle;
   if (!lifecycle) {
     replayError(sink, commission, "provider does not expose Engineer lifecycle replay");
     return;
   }
   const capability = await lifecycle.capability();
+  if (!pipelineRepoConsented(commission.provider, commission.repoRoot)) return;
   if (!capability.ok || !capability.value.supported) {
     replayError(
       sink,
@@ -1383,7 +1377,7 @@ export async function refreshPipelineCommission(
     sink,
     commission,
     lifecycle,
-    capability.value,
+    options.refreshSuccessor ?? false,
   );
   if (commission.retirement || attempt.state === "failed") return;
   if (
@@ -1394,6 +1388,7 @@ export async function refreshPipelineCommission(
     engineerRunId: attempt.engineerRunId,
     afterRevision: attempt.providerRevision,
   });
+  if (!pipelineRepoConsented(commission.provider, commission.repoRoot)) return;
   if (!replay.ok) {
     replayError(sink, commission, replay.error);
     return;

@@ -47,7 +47,7 @@ const { refreshPipelineCommission, restorePipelineProjection } = await import(
   "../src/server/pipelines/index.ts"
 );
 const { PIPELINE_PROVIDERS } = await import("../src/server/pipelines/providers.ts");
-const { adoptPipelineSuccessor, preparePipelineRetry } = await import(
+const { adoptPipelineSuccessor, pipelineRecoveryGuard, preparePipelineRetry } = await import(
   "../src/server/pipelines/recovery.ts"
 );
 const { Registry } = await import("../src/server/registry.ts");
@@ -141,6 +141,7 @@ function completedRetryFollowedByFailure(): PipelineCommission {
     remedy: "Retry",
     diagnostic: null,
   })).outcome, "stored");
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
   const predecessor = getPipelineCommission(held.id)!.attempts[0]!;
   const reserved = reservePipelineCommissionRetry({
     guard: {
@@ -800,6 +801,7 @@ test("retry preflight writes nothing when blocked and the durable guard reserves
     commission: failed,
     guard,
     capabilities: failed.capabilities!,
+    authorized: () => true,
     lifecycle: {
       capability: async () => ({ ok: true, value: failed.capabilities! }),
       readinessProbe: async () => ({ ok: true, value: {
@@ -841,6 +843,7 @@ test("retry preflight writes nothing when blocked and the durable guard reserves
     commission: first.commission,
     guard: currentGuard,
     capabilities: failed.capabilities!,
+    authorized: () => true,
     lifecycle: {
       capability: async () => ({ ok: true, value: failed.capabilities! }),
       readinessProbe: async () => {
@@ -855,6 +858,255 @@ test("retry preflight writes nothing when blocked and the durable guard reserves
   });
   assert.equal(resumed.ok, true);
   assert.equal(repeatedProbe, false, "restart resumes the durable reservation without a second preflight");
+});
+
+test("withdrawn repository consent blocks recovery before provider calls or writes", async (t) => {
+  reset();
+  const held = commission("task-1", { supported: true, readiness: true, ownedAttempts: true });
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  })).outcome, "stored");
+  const failed = getPipelineCommission(held.id)!;
+  const registry = new Registry();
+  registry.initializePipelineCommissions([failed]);
+  registry.upsertTask({
+    ...loadActiveTasks().find((entry) => entry.id === held.taskId)!,
+    kind: "pipeline",
+    status: "running",
+    pipelineCommissionId: held.id,
+    updatedAt: Date.now(),
+  });
+  setPipelinesConfig({ enabled: true, repos: [] });
+  let providerCalls = 0;
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  });
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => {
+      providerCalls += 1;
+      return { ok: true, value: failed.capabilities! };
+    },
+    readinessProbe: async () => assert.fail("withdrawn consent must block readiness"),
+    create: async () => assert.fail("withdrawn consent must block create"),
+    inspectCorrelation: async () => assert.fail("withdrawn consent must block inspection"),
+    replay: async () => assert.fail("withdrawn consent must block replay"),
+    cancel: async () => assert.fail("withdrawn consent must block cancellation"),
+  };
+  const predecessor = failed.attempts[0]!;
+  const guard = {
+    commissionId: failed.id,
+    activeAttempt: predecessor.attempt,
+    engineerRunId: predecessor.engineerRunId!,
+    providerRevision: predecessor.providerRevision,
+  };
+  const manager = new TaskManager(registry);
+
+  const retried = await manager.retryPipelineAttempt(held.taskId, { guard });
+  const adopted = await manager.adoptPipelineSuccessor(held.taskId, {
+    guard,
+    candidateEngineerRunId: "unconsented-successor",
+    candidateRevision: 1,
+    candidateFingerprint: "unconsented-fingerprint",
+  });
+
+  assert.equal(retried.ok, false);
+  assert.equal(adopted.ok, false);
+  assert.equal(providerCalls, 0);
+  assert.equal(getPipelineCommission(held.id)?.attempts.length, 1);
+  assert.equal(getPipelineCommission(held.id)?.recovery, null);
+});
+
+test("startup does not resume a terminal recovery failure without operator action", async (t) => {
+  reset();
+  const held = commission("task-1", { supported: true, readiness: true, ownedAttempts: true });
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  })).outcome, "stored");
+  const predecessor = getPipelineCommission(held.id)!.attempts[0]!;
+  const reserved = reservePipelineCommissionRetry({
+    guard: {
+      commissionId: held.id,
+      activeAttempt: predecessor.attempt,
+      engineerRunId: predecessor.engineerRunId!,
+      providerRevision: predecessor.providerRevision,
+    },
+    launchKey: "terminal-recovery",
+  });
+  assert.equal(reserved.ok, true);
+  if (!reserved.ok) return;
+  const terminal = updatePipelineCommissionRecovery({
+    commissionId: held.id,
+    attempt: 2,
+    state: "provider_outcome_unknown",
+    error: "provider outcome is unknown",
+  })!;
+  db.prepare(`UPDATE tasks SET status = 'backlog' WHERE id = ?`).run(held.taskId);
+  const registry = new Registry();
+  registry.initializePipelineCommissions([terminal]);
+  registry.upsertTask({
+    ...loadActiveTasks().find((entry) => entry.id === held.taskId)!,
+    kind: "pipeline",
+    status: "backlog",
+    pipelineCommissionId: held.id,
+    updatedAt: Date.now(),
+  });
+  let providerCalls = 0;
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  });
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => {
+      providerCalls += 1;
+      return { ok: true, value: held.capabilities! };
+    },
+    readinessProbe: async () => assert.fail("terminal recovery must not probe readiness"),
+    create: async () => assert.fail("terminal recovery must not create a run"),
+    inspectCorrelation: async () => assert.fail("terminal recovery must not inspect"),
+    replay: async () => assert.fail("terminal recovery must not replay"),
+    cancel: async () => assert.fail("terminal recovery must not cancel"),
+  };
+
+  new TaskManager(registry);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(providerCalls, 0);
+  assert.equal(getPipelineCommission(held.id)?.recovery?.state, "provider_outcome_unknown");
+});
+
+test("a thrown retry launch releases the in-process recovery reservation", async (t) => {
+  reset();
+  const held = commission("task-1", { supported: true, readiness: true, ownedAttempts: true });
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  })).outcome, "stored");
+  const failed = getPipelineCommission(held.id)!;
+  const registry = new Registry();
+  registry.initializePipelineCommissions([failed]);
+  registry.upsertTask({
+    ...loadActiveTasks().find((entry) => entry.id === held.taskId)!,
+    kind: "pipeline",
+    status: "running",
+    pipelineCommissionId: held.id,
+    updatedAt: Date.now(),
+  });
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  });
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: held.capabilities! }),
+    readinessProbe: async () => ({ ok: true, value: {
+      status: "ready",
+      code: "ready",
+      summary: "Provider is ready",
+      checkedCapabilities: ["git"],
+      retryable: true,
+      remedy: null,
+      diagnostic: null,
+      fingerprint: "ready",
+    } }),
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+  };
+  const manager = new TaskManager(registry);
+  let launches = 0;
+  (manager as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher.dispatch = async () => {
+    launches += 1;
+    throw new Error("simulated dispatch throw");
+  };
+  const predecessor = failed.attempts[0]!;
+  const guard = {
+    commissionId: failed.id,
+    activeAttempt: predecessor.attempt,
+    engineerRunId: predecessor.engineerRunId!,
+    providerRevision: predecessor.providerRevision,
+  };
+
+  await assert.rejects(manager.retryPipelineAttempt(held.taskId, { guard }), /simulated dispatch throw/);
+  await assert.rejects(manager.retryPipelineAttempt(held.taskId, { guard }), /simulated dispatch throw/);
+  assert.equal(launches, 2, "the second operator call is not stranded as recovery_in_flight");
+});
+
+test("abandon retires the managed Engineer host before clearing task ownership", async () => {
+  reset();
+  const held = commission();
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  })).outcome, "stored");
+  const failed = getPipelineCommission(held.id)!;
+  const registry = new Registry();
+  registry.initializePipelineCommissions([failed]);
+  const session = registry.registerSdkSession({
+    id: "sdk:abandoned-engineer",
+    agent: "codex",
+    name: "Abandoned Engineer",
+    cwd: repo,
+    agentSessionId: "abandoned-engineer",
+    gitBranch: null,
+    gitRoot: repo,
+    repoRoot: repo,
+  });
+  registry.upsertTask({
+    ...loadActiveTasks().find((entry) => entry.id === held.taskId)!,
+    kind: "pipeline",
+    status: "running",
+    sessionId: session.id,
+    pipelineCommissionId: held.id,
+    updatedAt: Date.now(),
+  });
+  const stopped: string[] = [];
+  const manager = new TaskManager(registry, undefined, {
+    handleFor: () => ({}),
+    stop: async (sessionId: string) => {
+      stopped.push(sessionId);
+    },
+  } as never);
+  const predecessor = failed.attempts[0]!;
+  const result = await manager.settlePipelineCommission(held.taskId, {
+    guard: {
+      commissionId: failed.id,
+      activeAttempt: predecessor.attempt,
+      engineerRunId: predecessor.engineerRunId!,
+      providerRevision: predecessor.providerRevision,
+    },
+  }, "abandon");
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(stopped, [session.id]);
+  assert.equal(registry.getTask(held.taskId)?.sessionId, null);
+  assert.equal(registry.getTask(held.taskId)?.status, "failed");
 });
 
 test("a completed recovery does not block a retry after the successor later fails", () => {
@@ -1393,12 +1645,16 @@ test("correlation inspection projects one direct successor for review without ap
       previousEngineerRunId: current.engineerRunId,
     },
   ];
+  let replayCalls = 0;
   const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
   PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
     capability: async () => ({ ok: true, value: { supported: true, ownedAttempts: true } }),
     create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
     inspectCorrelation: async () => ({ ok: true, value: [current, successor] }),
-    replay: async () => ({ ok: true, value: successorEvents }),
+    replay: async () => {
+      replayCalls += 1;
+      return { ok: true, value: successorEvents };
+    },
     cancel: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
   };
   try {
@@ -1414,6 +1670,10 @@ test("correlation inspection projects one direct successor for review without ap
     assert.equal(projected.successorCandidate?.validation, "valid");
     assert.match(projected.successorCandidate?.fingerprint ?? "", /^[0-9a-f]{64}$/);
     assert.deepEqual(loadPipelineCommissions()[0]?.successorCandidate, projected.successorCandidate);
+    await refreshPipelineCommission(registry, projected);
+    assert.equal(replayCalls, 1, "automatic ticks reuse existing successor evidence");
+    await refreshPipelineCommission(registry, projected, { refreshSuccessor: true });
+    assert.equal(replayCalls, 2, "explicit refresh revalidates successor evidence");
     db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
     const predecessor = projected.attempts[0]!;
     const adopted = await adoptPipelineSuccessor({
@@ -1429,7 +1689,7 @@ test("correlation inspection projects one direct successor for review without ap
       candidateRevision: successor.eventRevision,
       candidateFingerprint: projected.successorCandidate!.fingerprint!,
       lifecycle: PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle,
-      capabilities: { supported: true, ownedAttempts: true },
+      authorized: () => true,
     });
     assert.equal(adopted.ok, true);
     const reconciled = getPipelineCommission(held.id)!;
@@ -1444,6 +1704,104 @@ test("correlation inspection projects one direct successor for review without ap
   } finally {
     PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
   }
+});
+
+test("adoption refuses journal events appended after the reviewed successor fingerprint", async (t) => {
+  reset();
+  const held = commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: null,
+    diagnostic: null,
+  })).outcome, "stored");
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
+  const predecessor = {
+    schemaVersion: 1 as const,
+    capability: "engineerLifecycleEventsV1" as const,
+    engineerRunId: "run-task-1",
+    correlationId: "correlation-task-1",
+    attemptKey: "launch-task-1",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot: repo,
+    idea: "Intent task-1",
+    eventRevision: 1,
+    state: "failed" as const,
+  };
+  const successor = {
+    ...predecessor,
+    engineerRunId: "run-task-1-changing-successor",
+    attemptKey: "changing-successor",
+    attempt: 2,
+    previousEngineerRunId: predecessor.engineerRunId,
+    eventRevision: 2,
+    state: "authoring" as const,
+  };
+  const reviewedEvents = [
+    event("engineer_run_created", 1, {
+      engineerRunId: successor.engineerRunId,
+      attemptKey: successor.attemptKey,
+      attempt: 2,
+      previousEngineerRunId: predecessor.engineerRunId,
+      idea: successor.idea,
+    }),
+    event("engineer_run_started", 2, {
+      engineerRunId: successor.engineerRunId,
+      attemptKey: successor.attemptKey,
+      attempt: 2,
+      previousEngineerRunId: predecessor.engineerRunId,
+    }),
+  ];
+  const appended = event("engineer_step_started", 3, {
+    engineerRunId: successor.engineerRunId,
+    attemptKey: successor.attemptKey,
+    attempt: 2,
+    previousEngineerRunId: predecessor.engineerRunId,
+    step: "explore",
+    stepAttempt: 1,
+  });
+  let replayCalls = 0;
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  });
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true } }),
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [predecessor, successor] }),
+    replay: async () => ({
+      ok: true,
+      value: ++replayCalls < 3 ? reviewedEvents : [...reviewedEvents, appended],
+    }),
+    cancel: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+  };
+  const registry = new Registry();
+  registry.initializePipelineCommissions([held]);
+  await refreshPipelineCommission(registry, getPipelineCommission(held.id)!);
+  const reviewed = getPipelineCommission(held.id)!;
+  const guard = pipelineRecoveryGuard(reviewed)!;
+  const candidate = reviewed.successorCandidate!;
+
+  const adopted = await adoptPipelineSuccessor({
+    sink: registry,
+    commission: reviewed,
+    guard,
+    candidateEngineerRunId: candidate.engineerRunId,
+    candidateRevision: candidate.providerRevision,
+    candidateFingerprint: candidate.fingerprint,
+    lifecycle: PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle,
+    authorized: () => true,
+  });
+
+  assert.equal(adopted.ok, false);
+  if (!adopted.ok) assert.equal(adopted.code, "candidate_changed");
+  const rejected = getPipelineCommission(held.id)!;
+  assert.equal(rejected.recovery?.state, "adoption_partial");
+  assert.equal(rejected.attempts[1]?.providerRevision, 0, "unreviewed events are never applied");
 });
 
 test("a completed adoption stays successful and exact when predecessor cleanup is retried", async (t) => {

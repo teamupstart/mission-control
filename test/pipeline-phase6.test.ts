@@ -1258,6 +1258,7 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
     field: "correlationId" | "repoRoot" | "attemptKey";
     value: string;
   } = { field: "correlationId", value: "foreign-correlation" };
+  const cancelledRunIds: string[] = [];
   const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
   PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
     capability: async () => ({ ok: true, value: { supported: true } }),
@@ -1280,7 +1281,25 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
     }),
     inspectCorrelation: async () => ({ ok: true, value: [] }),
     replay: async () => ({ ok: true, value: [] }),
-    cancel: async () => assert.fail("a mismatched provider reservation is not owned locally"),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId,
+          correlationId: "cancelled-mismatched-run",
+          attemptKey: "cancelled-mismatched-run",
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot: "/repo/cancelled-mismatched-run",
+          idea: "cancelled mismatched run",
+          eventRevision: 2,
+          state: "cancelled",
+        },
+      };
+    },
   };
   t.after(() => {
     PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
@@ -1320,6 +1339,11 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
       null,
     );
   }
+  assert.deepEqual(cancelledRunIds, [
+    "engineer-mismatched-correlationId",
+    "engineer-mismatched-repoRoot",
+    "engineer-mismatched-attemptKey",
+  ]);
   assert.equal(supervisor.starts.length, 0);
 });
 
@@ -2869,6 +2893,17 @@ test("only the processed provider projection settles an adopted Pipeline task", 
 
 test("adopting an already-processed provider projection settles through the ordinary path", () => {
   const { registry, tasks, target, targetLink, host, task } = managedAdoptionFixture();
+  const commission = createPipelineCommission({
+    taskId: task.id,
+    provider: target.provider,
+    repoRoot: target.repoRoot,
+  });
+  registry.initializePipelineCommissions([commission]);
+  registry.upsertTask({
+    ...task,
+    pipelineCommissionId: commission.id,
+    updatedAt: Date.now(),
+  });
   registry.initializePipelineRuns([{
     ...target,
     group: "processed",
@@ -2876,9 +2911,13 @@ test("adopting an already-processed provider projection settles through the ordi
     prUrl: "https://github.com/example/demo/pull/77",
   }]);
 
-  const adopted = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  const adopted = tasks.adoptPipelineRun(registry.getTask(task.id)!, targetLink, {
+    kind: "managed",
+    session: host,
+  });
 
   assert.equal(adopted.ok, true);
+  assert.equal(registry.pipelineCommission(commission.id)?.linkedRun, null);
   assert.equal(registry.getTask(task.id)?.status, "done");
   assert.equal(registry.getTask(task.id)?.outcomeUrl, "https://github.com/example/demo/pull/77");
 });

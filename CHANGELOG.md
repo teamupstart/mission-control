@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/teamupstart/mission-control/compare/v1.7.0...v1.7.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* **deps:** resolve open security advisories ([#906](https://github.com/teamupstart/mission-control/issues/906)) ([1997994](https://github.com/teamupstart/mission-control/commit/19979948e9b4a4fb49880fa4a680cca1bb9fd127))
+
 ## [1.7.0](https://github.com/teamupstart/mission-control/compare/v1.6.0...v1.7.0) (2026-09-05)
 
 

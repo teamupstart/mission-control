@@ -374,13 +374,21 @@ that repo becomes the seed instead.
 
 Leave **Title** blank and the daemon names the task for you: a fresh, tool-less Claude call on
 Haiku, using the Agent SDK transport by default, summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
-not the top of your first paragraph. It runs *before* dispatch and the dispatch waits on
-it, because the title supplies the git branch and the launched session's name (including a
-terminal home name on the terminal runtime), and later task-title edits do not propagate
-to either. The card appears immediately under a title taken from your first line and
-updates to the model's a beat later. If `claude` is
+not the top of your first paragraph. The title supplies the git branch and the launched
+session's name (including a terminal home name on the terminal runtime), and later
+task-title edits do not propagate to either. The card appears immediately under a title
+taken from your first line and updates to the model's a beat later; the launch does not
+wait on the model, so a dispatch starts under the first-line title and the model's rename
+lands on the running session. If `claude` is
 missing, logged out, or slow, that first-line title just stands - nothing breaks, and the
 dispatch still goes.
+
+Either way, the name is the *work*, not your request for it. The framing a dictated task
+carries - "We should", "I want", "Can you", "Please" - and a leading "Implement" are
+dropped from both tiers, so "Implement Herdr Multiplexer" is carded as "Herdr Multiplexer"
+and "We should implement the Herdr multiplexer" as "The Herdr Multiplexer". That is the
+sixty-character budget and the branch name spent on what the task is rather than on words
+every other card in the column also has. A title you type yourself is never rewritten.
 
 The new session then shows up in the fleet like any other, with an **intent chip** for the
 task it is running. A terminal-runtime session stays out of the way until you click

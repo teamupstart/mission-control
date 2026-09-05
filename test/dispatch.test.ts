@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { slugify, sessionLabel, deriveTitle } from "../src/server/dispatcher.ts";
 import { DispatchSchema } from "../src/shared/protocol.ts";
-import { fullTaskTitle, TITLE_DETAIL_MAX_CHARS } from "../src/shared/title.ts";
+import { fullTaskTitle, stripTitlePreamble, TITLE_DETAIL_MAX_CHARS } from "../src/shared/title.ts";
 
 test("slugify produces tmux-safe, bounded slugs", () => {
   assert.equal(slugify("Fix the Login Bug!"), "fix-the-login-bug");
@@ -44,6 +44,57 @@ test("deriveTitle takes the first non-empty line, title-cased, capped at 60", ()
   const long = "x".repeat(80);
   assert.equal(deriveTitle(long).length, 60); // 59 + ellipsis
   assert.ok(deriveTitle(long).endsWith("…"));
+});
+
+test("a generated title names the work, not the request for it", () => {
+  // The operator's own two examples, which is what this exists for: a card says what the task
+  // IS, and the framing it was dictated in is the part every card in the column shares.
+  assert.equal(stripTitlePreamble("Implement Herdr Multiplexer"), "Herdr Multiplexer");
+  assert.equal(
+    stripTitlePreamble("We should implement the Herdr multiplexer"),
+    "The Herdr multiplexer",
+    "a stacked preamble loses all of it, not the outermost layer",
+  );
+
+  // The rest of the framing an operator dictates in.
+  assert.equal(stripTitlePreamble("I want to add a dark mode toggle"), "Add a dark mode toggle");
+  assert.equal(stripTitlePreamble("I need the parser to stop hanging"), "The parser to stop hanging");
+  assert.equal(
+    stripTitlePreamble("Can you please fix the flaky worktree cleanup"),
+    "Fix the flaky worktree cleanup",
+  );
+  assert.equal(stripTitlePreamble("Let's migrate the registry comparators"), "Migrate the registry comparators");
+  assert.equal(
+    stripTitlePreamble("I'd like you to remove the second eviction path"),
+    "Remove the second eviction path",
+  );
+  // Stranded punctuation goes with the phrase that stranded it.
+  assert.equal(stripTitlePreamble("  we should   implement:  the parser  "), "The parser");
+
+  // What must survive untouched. The verbs the prompt asks for each say something their object
+  // cannot, so none of them is preamble.
+  assert.equal(stripTitlePreamble("Fix flaky worktree cleanup on Reset"), "Fix flaky worktree cleanup on Reset");
+  assert.equal(stripTitlePreamble("Add a dark mode toggle"), "Add a dark mode toggle");
+  // Only whole leading words match: `implementation` is not `implement`, and `implements` is a
+  // Java keyword whose object does not name the work on its own.
+  assert.equal(stripTitlePreamble("Implementation of the parser is wrong"), "Implementation of the parser is wrong");
+  assert.equal(stripTitlePreamble("implements Cloneable in the adapter"), "implements Cloneable in the adapter");
+  assert.equal(stripTitlePreamble("Weather report widget"), "Weather report widget");
+  // A title that is NOTHING but preamble is still the only name the task has - `title` is
+  // NOT NULL, and a blank card is worse than a vague one.
+  assert.equal(stripTitlePreamble("Implement"), "Implement");
+  assert.equal(stripTitlePreamble("Please"), "Please");
+
+  // And the heuristic tier - the title the card carries while the model is still answering, and
+  // the one it keeps forever when no provider is reachable - is held to the same rule from the
+  // same definition, then title-cased as before.
+  assert.equal(deriveTitle("we should implement the Herdr multiplexer\nmore detail"), "The Herdr Multiplexer");
+  assert.equal(deriveTitle("Implement Herdr Multiplexer"), "Herdr Multiplexer");
+  // The 60-char budget is spent on the name rather than on the framing: unstripped, this cut
+  // at "...the flaky worktree" and lost the part that says which cleanup.
+  const framed = "We should implement a fix for the flaky worktree cleanup on Reset";
+  assert.equal(deriveTitle(framed), "A Fix for the Flaky Worktree Cleanup on Reset");
+  assert.ok(!deriveTitle(framed).endsWith("…"));
 });
 
 test("fullTaskTitle recovers only a shortened generated fallback", () => {

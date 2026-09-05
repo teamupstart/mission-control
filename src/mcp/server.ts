@@ -335,7 +335,15 @@ server.registerTool(
       "validity is checked locally; Git and the repository host enforce push and pull-request " +
       "authority later. Returns the new task id and canonical repository set.",
     inputSchema: {
-      title: z.string().min(1).max(200).describe("Specific task title shown on the backlog card"),
+      title: z
+        .string()
+        .min(1)
+        .max(200)
+        .describe(
+          "Specific task title shown on the backlog card. Name the work, not the request for it: " +
+            "no \"Implement\", \"We should\" or \"I want\" framing - \"Herdr Multiplexer\", not " +
+            "\"Implement Herdr Multiplexer\"",
+        ),
       intent: z
         .string()
         .min(1)

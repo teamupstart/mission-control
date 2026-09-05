@@ -40,6 +40,9 @@ case "$(cat ${modeFile} 2>/dev/null)" in
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp
   # onto the card, which would leave it blank.
   blank) printf %s '{"result":"{\\"title\\":\\"   \\"}"}' ;;
+  # A reply that keeps the request framing anyway. The prompt asks for the work's name and not
+  # the ask for it; this is the reply where that instruction did not take.
+  framed) printf %s '{"result":"{\\"title\\":\\"We should implement the Herdr multiplexer\\"}"}' ;;
   # The model fences its JSON even when told not to (observed on a real probe), so the fake
   # does too - that keeps the parse ladder inside what this test covers rather than mocked.
   *) printf %s '{"result":"\`\`\`json\\n{\\"title\\":\\"Fix flaky worktree cleanup\\"}\\n\`\`\`"}' ;;
@@ -47,7 +50,7 @@ esac
 `,
 );
 chmodSync(fake, 0o755);
-const setMode = (m: "good" | "crash" | "blank" | "hang"): void => writeFileSync(modeFile, m);
+const setMode = (m: "good" | "crash" | "blank" | "hang" | "framed"): void => writeFileSync(modeFile, m);
 const callCount = (): number =>
   existsSync(callsFile) ? readFileSync(callsFile, "utf8").split("\n").filter(Boolean).length : 0;
 setMode("good");
@@ -93,6 +96,20 @@ test("an untitled dispatch is named by the model, not by its first line", async 
   assert.match(t.title, /^Hey, Can You Take/);
 
   await until(() => tasks.get(t.id)?.title === "Fix flaky worktree cleanup", "the model's title");
+});
+
+test("a model reply that keeps the framing still reaches the card naming the work", async () => {
+  // The prompt asks for the work's name rather than the ask for it, and a prompt is guidance -
+  // so the convention is also enforced on the reply, through the same shared definition the
+  // heuristic tier uses. Driven end to end rather than at the schema: what matters is the string
+  // the registry writes and the card shows.
+  setMode("framed");
+  const tasks = new TaskManager(new Registry());
+  const t = create(tasks, "hey, the herd view needs a multiplexer");
+  assert.match(t.title, /^Hey, the Herd View/);
+
+  await until(() => tasks.get(t.id)?.title === "The Herdr multiplexer", "the stripped model title");
+  setMode("good");
 });
 
 test("an explicit title is used verbatim and never spawns a model", async () => {
@@ -322,6 +339,17 @@ test("a Foreman backlog launch leaves the task's own model alone, pinned or not"
   });
   await tasks.dispatch(explicit.id, { defaultModel: "claude-haiku-4-5" });
   assert.equal(registry.getTask(explicit.id)?.model, "claude-opus-4-8", "a real pin is untouched");
+});
+
+test("the framing is dropped before the clamp, so the budget buys the name", async () => {
+  const { TitleSchema } = await import("../src/server/task-title.ts");
+  // 64 characters as the model wrote it, 45 once the framing goes. Stripped AFTER the clamp this
+  // would have been cut at "...the flaky worktree" and lost the part that says which cleanup.
+  const framed = "We should implement a fix for the flaky worktree cleanup on Reset";
+  const r = TitleSchema.safeParse({ title: framed });
+  assert.ok(r.success);
+  assert.equal(r.data.title, "A fix for the flaky worktree cleanup on Reset");
+  assert.ok(!r.data.title.endsWith("…"), "nothing was clamped away once the framing went");
 });
 
 test("a long model title is clamped at a word boundary, not rejected", async () => {

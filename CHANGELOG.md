@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.7.0](https://github.com/teamupstart/mission-control/compare/v1.6.0...v1.7.0) (2026-09-05)
+
+
+### Features
+
+* **board:** jump to a card's console with the number row ([#903](https://github.com/teamupstart/mission-control/issues/903)) ([319f5a6](https://github.com/teamupstart/mission-control/commit/319f5a65865169dad22267d3035fdfcc57be054c))
+* **harness:** discover Codex models from the installed CLI ([#894](https://github.com/teamupstart/mission-control/issues/894)) ([c74978e](https://github.com/teamupstart/mission-control/commit/c74978e356a479ce99beb0420a33821d71184070))
+* **pipelines:** consume provider lifecycle evidence ([#902](https://github.com/teamupstart/mission-control/issues/902)) ([677072a](https://github.com/teamupstart/mission-control/commit/677072a588a26fadff6bd31ff16aae6b2886b638))
+* **terminal:** strengthen multiplexer correlation ([#907](https://github.com/teamupstart/mission-control/issues/907)) ([91ba884](https://github.com/teamupstart/mission-control/commit/91ba88457a6d2fd16f6cdc675b643b380d1e9ff8))
+* **tours:** rework Set up this machine as the first-run tour ([#896](https://github.com/teamupstart/mission-control/issues/896)) ([24a361c](https://github.com/teamupstart/mission-control/commit/24a361cd72f718e5d68ea0d5a79351b35f34196c))
+* **updates:** build the update while the app stays open ([#900](https://github.com/teamupstart/mission-control/issues/900)) ([8c09369](https://github.com/teamupstart/mission-control/commit/8c09369f9175a1b796dc77af2900d1dc413105d6))
+* **workflows:** enforce criterion-mapped evidence preflight ([#893](https://github.com/teamupstart/mission-control/issues/893)) ([36d33b6](https://github.com/teamupstart/mission-control/commit/36d33b63605c27da08ba918dd8b98ab7c2c994a3))
+
+
+### Bug Fixes
+
+* **jira:** accept structured Claude tool results ([#904](https://github.com/teamupstart/mission-control/issues/904)) ([9a592b3](https://github.com/teamupstart/mission-control/commit/9a592b32ff2fe851754c28e729111d7588740525))
+* **runtime:** resolve version-manager shim paths ([#901](https://github.com/teamupstart/mission-control/issues/901)) ([5cad888](https://github.com/teamupstart/mission-control/commit/5cad8887fd4c013be31bc1d158bd13a807d43329))
+* **workflows:** bypass command queue for spent checks ([#897](https://github.com/teamupstart/mission-control/issues/897)) ([10f0505](https://github.com/teamupstart/mission-control/commit/10f0505d09dc049ce0056f642fcb285ef45ae259))
+* **workflows:** read legacy command evidence ([#895](https://github.com/teamupstart/mission-control/issues/895)) ([41c2cd6](https://github.com/teamupstart/mission-control/commit/41c2cd6985cd7f2ba8d1941ef7b1847bed6b38e5))
+
 ## [1.6.0](https://github.com/teamupstart/mission-control/compare/v1.5.0...v1.6.0) (2026-09-04)
 
 

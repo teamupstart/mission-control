@@ -392,8 +392,11 @@ worktree cleanup" is carded as "Look at the flaky worktree cleanup"; the comma i
 distinguishes a greeting from a word in the name, which is why "Hi-fidelity mockups" keeps
 its "Hi". Since the card's title is what the branch and the terminal home are cut from, that
 is the sixty-character budget and the branch name spent on what the task is rather than on
-words every other card in the column also has. A title you type yourself is never rewritten,
-and framing this list does not name survives on both.
+words every other card in the column also has. A title you type yourself is never rewritten.
+
+These lists are not exhaustive, and framing they do not name is kept: an unpunctuated "hey can
+you look at the parser" is still carded, branched and named in full. What gets dropped is the
+framing named above, on both tiers.
 
 The new session then shows up in the fleet like any other, with an **intent chip** for the
 task it is running. A terminal-runtime session stays out of the way until you click

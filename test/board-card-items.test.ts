@@ -176,6 +176,39 @@ test("'this tile is showing the expanded ladder' is decided in exactly one place
   );
 });
 
+test("the expand chord is registered only when the panel it drives actually exists", () => {
+  // The disclosure panel is drawn under `shown("workflow") && workflowRun` (the render site
+  // below owns that condition); the registration guard used to read only `workflowDetails`,
+  // which is a WEAKER question. An operator who hides `Workflow` itself but leaves
+  // `Workflow details` on would still have this session's `v` chord registered - the key
+  // would claim the session and toggle state for a panel that is never mounted, silently
+  // eating the keypress. Worse, `App` treats an unregistered session as unclaimed and falls
+  // through to something else for it; a session wrongly registered here loses that fallback
+  // too, for no visible benefit.
+  //
+  // So the registration must agree with the render site: available only when BOTH the panel
+  // and the details item are on.
+  const tile = code("web/components/layouts/SessionTile.tsx");
+
+  assert.match(
+    tile,
+    /const workflowDisclosureAvailable = shown\("workflow"\) && workflowDetails;/,
+    "SessionTile no longer derives the registration guard from both the panel and the item",
+  );
+  assert.match(
+    tile,
+    /if \(!workflowRunId \|\| !workflowDisclosureAvailable \|\| !registerWorkflowDisclosure\) return;/,
+    "the registration effect no longer guards on the combined availability",
+  );
+  // The render site's own condition, unmoved - this is the ground truth the guard above has
+  // to agree with, not a second copy of it.
+  assert.match(
+    tile,
+    /\{shown\("workflow"\) && workflowRun && \(/,
+    "the panel's own render condition has moved or changed shape",
+  );
+});
+
 test("switching the workflow details item off clears the expansion instead of hiding it", () => {
   // The bug this guards is a SPRINGBACK, and it is invisible in the collapsed frame that
   // unchecking the box produces: masking an open panel and closing it look identical until

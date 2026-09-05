@@ -200,21 +200,23 @@ export function SessionTile({
   // is what makes the settings preview honest - the preview mounts one tile with a slot and
   // no board behind it, so unchecking the box has to be visible from the tile's own side.
   const jump = shown("cardShortcut") ? shortcutChord : null;
-  // The expand chord drives the same transition as the disclosure button, so it is offered on
-  // exactly the same condition. Registering it while the button is switched off would leave a
-  // key that silently expanded a panel with no control to close it again - and `App` treats an
-  // unregistered session as unclaimed, which is the honest answer for a card with no
-  // disclosure at all.
   const workflowDetails = shown("workflowDetails");
+  // The expand chord drives the same transition as the disclosure button, so it is offered on
+  // exactly the same condition THE PANEL is drawn under. Registering it while the button is
+  // switched off, or while `workflow` itself is hidden and the panel below never mounts at
+  // all, would leave a key that claims the session and toggles state nobody can see - and
+  // `App` treats an unregistered session as unclaimed, which is the honest answer for a card
+  // with no disclosure at all.
+  const workflowDisclosureAvailable = shown("workflow") && workflowDetails;
   useEffect(() => {
-    if (!workflowRunId || !workflowDetails || !registerWorkflowDisclosure) return;
+    if (!workflowRunId || !workflowDisclosureAvailable || !registerWorkflowDisclosure) return;
     registerWorkflowDisclosure(session.id, { toggle: toggleWorkflowExpanded });
     return () => registerWorkflowDisclosure(session.id, null);
   }, [
     registerWorkflowDisclosure,
     session.id,
     toggleWorkflowExpanded,
-    workflowDetails,
+    workflowDisclosureAvailable,
     workflowRunId,
   ]);
   /*

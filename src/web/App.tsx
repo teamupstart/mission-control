@@ -3389,6 +3389,8 @@ export function App(): React.JSX.Element {
         <UpdateBanner
           snapshot={desktopUpdates.snapshot}
           onApply={desktopUpdates.apply}
+          onInstall={desktopUpdates.install}
+          onCancel={desktopUpdates.cancel}
           onDefer={desktopUpdates.defer}
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}

@@ -2738,6 +2738,46 @@ body {
   gap: 8px;
   flex: none;
 }
+/* The update's own progress rail. Determinate, because the install script reports the stage it
+   reached and a bar that cannot say how far along it is is the old experience in a new shape.
+   The moving stripe lives INSIDE the fill rather than sweeping the whole rail: the two long
+   stages hold the value still for a minute or more, so the bar has to look alive without
+   lying about how much of it is filled. */
+.app-banner-progress {
+  overflow: hidden;
+  width: min(420px, 100%);
+  height: 6px;
+  margin: 8px 0 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.app-banner-progress-fill {
+  display: block;
+  height: 100%;
+  min-width: 6px;
+  border-radius: inherit;
+  /* The stripe is white over the accent, so it reads as a highlight in either theme. */
+  background:
+    repeating-linear-gradient(
+      115deg,
+      color-mix(in srgb, #fff 20%, transparent) 0 6px,
+      transparent 6px 12px
+    ),
+    var(--working);
+  background-size: 24px 100%, 100% 100%;
+  animation: app-banner-progress-stripe 900ms linear infinite;
+  transition: width 320ms ease;
+}
+@keyframes app-banner-progress-stripe {
+  to { background-position: 24px 0, 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-banner-progress-fill {
+    animation: none;
+    transition: none;
+  }
+}
+
 .app-banner-error {
   border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
   background: color-mix(in oklab, var(--danger) 9%, var(--panel));

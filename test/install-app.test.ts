@@ -20,11 +20,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,7 +42,9 @@ import {
   stagingPaths,
   swapAppBundle,
   packagedVersionProblem,
+  isolateStagedBundle,
   parseArgs,
+  stagedVersionProblem,
   parseRemote,
   plistVersion,
   receiptReleaseTag,
@@ -49,6 +53,7 @@ import {
   resolveTargetRef,
 } from "../scripts/install-app.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
+import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 
 const FORK = "someone-else/ai-harness";
 
@@ -368,7 +373,16 @@ test("the packaged app is verified against the source tree before the swap", () 
 
 test("install arguments parse, and an unknown one stops the install", () => {
   assert.deepEqual(parseArgs(["--dry-run", "--ref", "v1.2.3", "--from-origin"]), {
-    options: { ref: "v1.2.3", fromOrigin: true, dryRun: true, appsDir: "/Applications" },
+    options: {
+      ref: "v1.2.3",
+      fromOrigin: true,
+      dryRun: true,
+      appsDir: "/Applications",
+      progress: false,
+      stageOnly: false,
+      fromStaged: null,
+      stagedRevision: null,
+    },
     help: false,
     problem: null,
   });
@@ -376,6 +390,274 @@ test("install arguments parse, and an unknown one stops the install", () => {
   assert.equal(parseArgs(["--wat"]).problem, "unknown argument: --wat");
   assert.equal(parseArgs(["--help"]).help, true);
   assert.equal(parseArgs(["--apps-dir", "/tmp/apps"]).options.appsDir, "/tmp/apps");
+});
+
+test("the two halves of an update are selected by flags, and never both at once", () => {
+  // The app builds with `--stage-only` while it is still open, and the detached helper
+  // installs that bundle with `--from-staged` after it quits. An older install script has
+  // neither, and says so in the words `stagingUnsupported` looks for.
+  const staged = parseArgs(["--stage-only", "--progress", "--ref", "v1.2.4"]);
+  assert.equal(staged.problem, null);
+  assert.equal(staged.options.stageOnly, true);
+  assert.equal(staged.options.progress, true);
+  assert.equal(staged.options.fromStaged, null);
+
+  const install = parseArgs([
+    "--from-staged",
+    "/state/app-src/release/mac-arm64/Mission Control.app",
+    "--staged-revision",
+    "8675309-1700000000000",
+  ]);
+  assert.equal(install.problem, null);
+  assert.equal(
+    install.options.fromStaged,
+    "/state/app-src/release/mac-arm64/Mission Control.app",
+  );
+  assert.equal(install.options.stageOnly, false);
+  // The pin the app took when it verified that bundle, checked again in the instant before the
+  // swap because the app cannot look any later than its own quit.
+  assert.equal(install.options.stagedRevision, "8675309-1700000000000");
+  assert.equal(parseArgs(["--staged-revision"]).problem, "--staged-revision needs a value");
+  assert.equal(parseArgs(["--from-staged", "/tmp/a.app"]).options.stagedRevision, null);
+
+  assert.equal(parseArgs(["--from-staged"]).problem, "--from-staged needs a value");
+  assert.equal(
+    parseArgs(["--stage-only", "--from-staged", "/tmp/a.app"]).problem,
+    "--stage-only and --from-staged cannot be combined",
+  );
+});
+
+test("a staged bundle is refused unless its version is the one the ref names", () => {
+  // The second half of an update runs minutes after the first, against a bundle in the shared
+  // updater-owned clone. `--from-staged` used to read the bundle's version and install it
+  // whatever it was, so a clone rebuilt at another ref in between would be installed under a
+  // receipt naming the tag the person actually accepted.
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "v1.2.4" }), null);
+  assert.match(
+    String(stagedVersionProblem({ stagedVersion: "1.5.0", ref: "v1.2.4" })),
+    /staged app is version 1\.5\.0 but v1\.2\.4 was requested/,
+  );
+  assert.match(
+    String(stagedVersionProblem({ stagedVersion: null, ref: "v1.2.4" })),
+    /could not read the staged app's version/,
+  );
+  // A ref that names no version states no expectation, exactly as `receiptReleaseTag` treats
+  // the same refs: a branch or a sha carries no version to compare.
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "origin/main" }), null);
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: "9f2c1ab" }), null);
+  assert.equal(stagedVersionProblem({ stagedVersion: "1.2.4", ref: null }), null);
+});
+
+test(
+  "the real staged install refuses a bundle replaced after it was pinned",
+  // The script refuses a non-Apple-silicon host before it reaches anything this asserts, which
+  // is correct - a macOS bundle cannot be installed on a Linux runner - so this one case runs
+  // where the product runs. The rules it exercises (`stagedVersionProblem`,
+  // `stagedRevisionProblem`) are covered on every platform by the tests above; what only this
+  // can prove is that the swap path CALLS them.
+  { skip: process.platform !== "darwin" || process.arch !== "arm64" },
+  async (t) => {
+  // Asserted by running `install-app.mjs` rather than its predicates, because the defect this
+  // guards is a missing CALL: the pure rule can be perfect while nothing consults it. The app
+  // takes this pin when the build is verified and cannot look again after it quits, so the
+  // script is the last reader before the swap.
+  const root = await mkdtemp(join(tmpdir(), "mission-staged-pin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bundle = join(root, "staged", "Mission Control.app");
+  const appsDir = join(root, "apps");
+  const stateDirectory = join(root, "state");
+  await mkdir(join(bundle, "Contents"), { recursive: true });
+  await mkdir(appsDir, { recursive: true });
+  await mkdir(stateDirectory, { recursive: true });
+  await writeFile(
+    join(bundle, "Contents", "Info.plist"),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0">',
+      "<dict><key>CFBundleShortVersionString</key><string>9.9.9</string></dict>",
+      "</plist>",
+    ].join("\n"),
+  );
+
+  const run = (revision: string): { code: number | null; output: string } => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(process.cwd(), "scripts", "install-app.mjs"),
+        "--from-staged",
+        bundle,
+        "--ref",
+        "v9.9.9",
+        "--staged-revision",
+        revision,
+        "--apps-dir",
+        appsDir,
+      ],
+      { encoding: "utf8", env: { ...process.env, MISSION_HOME: stateDirectory } },
+    );
+    return { code: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  };
+
+  const pinned = stagedBundleRevision(statSync(bundle));
+  assert.ok(pinned, "the staged bundle should have an identity to pin");
+
+  // A pin that does not match what is there - the shape a rebuild of the shared clone leaves,
+  // same version and all.
+  const refused = run("1-1");
+  assert.equal(refused.code, 1);
+  assert.match(refused.output, /replaced after it was prepared/);
+  assert.deepEqual(readdirSync(appsDir), [], "nothing may reach the apps dir");
+  assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), false);
+
+  // The bundle the app actually verified still installs, so the guard is not simply refusing.
+  const installed = run(pinned!);
+  assert.equal(installed.code, 0, installed.output);
+  assert.equal(existsSync(join(appsDir, "Mission Control.app")), true);
+  assert.equal(existsSync(join(stateDirectory, "install-receipt.json")), true);
+  },
+);
+
+test("isolating a verified bundle never damages a build that is not ours", () => {
+  // The whole transaction, with its mutations injected, because the case that matters cannot be
+  // provoked from outside: another builder replacing the bundle in the microsecond between the
+  // pin check and the rename, and then recreating the path so the restore cannot land.
+  const bundle = "/state/app-src/release/mac-arm64/Mission Control.app";
+  const isolated = "/state/staged-install-4242";
+  const moved = `${isolated}/Mission Control.app`;
+  const pinned = "42-1700000000000";
+
+  const record = (revisions: Record<string, string | null>, over: Partial<{ move: (from: string, to: string) => void }> = {}) => {
+    const acted: string[] = [];
+    const ops = {
+      revision: (path: string) => revisions[path] ?? null,
+      remove: (path: string) => acted.push(`remove:${path}`),
+      makeDirectory: (path: string) => acted.push(`mkdir:${path}`),
+      move: (from: string, to: string) => {
+        acted.push(`move:${from}->${to}`);
+        if (over.move) over.move(from, to);
+      },
+    };
+    return { ops, acted };
+  };
+
+  // The ordinary case: pin matches, bundle comes out of the clone, and it is ours to clean up.
+  {
+    const { ops, acted } = record({ [bundle]: pinned, [moved]: pinned });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.deepEqual(result, {
+      sourceBundle: moved,
+      problem: null,
+      keepIsolated: false,
+      rescued: null,
+      inPlace: null,
+    });
+    assert.deepEqual(acted, [`remove:${isolated}`, `mkdir:${isolated}`, `move:${bundle}->${moved}`]);
+  }
+
+  // Fails the pin before anything is touched: it is somebody else's build, and it stays put.
+  {
+    const { ops, acted } = record({ [bundle]: "someone-elses" });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, null);
+    assert.match(String(result.problem), /replaced after it was prepared/);
+    assert.equal(result.keepIsolated, false);
+    assert.deepEqual(acted, [], "nothing may be moved or removed on this path");
+  }
+
+  // The race, recovered: what came across is not what was checked, and it goes back.
+  {
+    const { ops, acted } = record({ [bundle]: pinned, [moved]: "arrived-mid-rename" });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, null);
+    assert.match(String(result.problem), /replaced after it was prepared/);
+    assert.equal(result.keepIsolated, false);
+    assert.equal(result.rescued, null);
+    assert.ok(acted.includes(`move:${moved}->${bundle}`), acted.join(", "));
+  }
+
+  // The race, unrecoverable - the other builder already recreated the path, so the restore
+  // cannot land. The moved directory is then the only copy of THEIR build: it is kept, and its
+  // location reported, rather than cleaned up.
+  {
+    const { ops } = record(
+      { [bundle]: pinned, [moved]: "arrived-mid-rename" },
+      {
+        move: (_from, to) => {
+          if (to === bundle) throw new Error("ENOTEMPTY: directory not empty");
+        },
+      },
+    );
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, null);
+    assert.match(String(result.problem), /replaced after it was prepared/);
+    assert.equal(result.keepIsolated, true, "the other build must not be deleted");
+    assert.equal(result.rescued, moved, "and a person must be told where it is");
+  }
+
+  // A rename that cannot cross filesystems falls back to installing in place, which is what
+  // this script always did. The pin was already checked; only the window stays open.
+  {
+    const { ops, acted } = record(
+      { [bundle]: pinned },
+      {
+        move: () => {
+          throw new Error("EXDEV: cross-device link not permitted");
+        },
+      },
+    );
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: pinned,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, bundle);
+    assert.equal(result.problem, null);
+    assert.equal(result.keepIsolated, false);
+    assert.match(String(result.inPlace), /EXDEV/);
+    assert.ok(acted.filter((entry) => entry === `remove:${isolated}`).length >= 1);
+  }
+
+  // No pin means nobody staged this: a plain `make install` leaves its build in `release/`,
+  // where a developer expects to find it.
+  {
+    const { ops, acted } = record({ [bundle]: pinned });
+    const result = isolateStagedBundle({
+      bundle,
+      isolated,
+      expectedRevision: null,
+      bundleName: "Mission Control.app",
+      ops,
+    });
+    assert.equal(result.sourceBundle, bundle);
+    assert.equal(result.problem, null);
+    assert.deepEqual(acted, []);
+  }
 });
 
 test("a missing install directory stops the install before the copy invents one", () => {

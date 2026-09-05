@@ -732,8 +732,14 @@ export function createHerdrClient(
         : result;
     },
     renameWorkspace: (workspaceId, label) => mutate({
-      method: "workspace.rename", params: { workspace_id: workspaceId, label }, schema: WorkspaceInfoSchema,
-      mutation: true, operation: `workspace rename for ${workspaceId}`,
+      method: "workspace.rename",
+      params: { workspace_id: workspaceId, label },
+      schema: WorkspaceInfoSchema.refine(
+        ({ workspace }) => workspace.workspace_id === workspaceId && workspace.label === label,
+        { message: "renamed workspace identity did not match the request" },
+      ),
+      mutation: true,
+      operation: `workspace rename for ${workspaceId}`,
     }),
     closeWorkspace: (workspaceId) => mutate({
       method: "workspace.close", params: { workspace_id: workspaceId }, schema: OkSchema,

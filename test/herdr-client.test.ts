@@ -125,6 +125,26 @@ test("agent focus rejects a successful response for a different pane", async () 
   }
 });
 
+test("workspace rename rejects a successful response for a different identity", async () => {
+  for (const workspace of [
+    { workspace_id: "w2", label: "Renamed" },
+    { workspace_id: "w1", label: "Another name" },
+  ]) {
+    const fake = await fakeHerdrSocket((request, socket) => {
+      reply(socket, request.id, { type: "workspace_info", workspace });
+    });
+    try {
+      const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN)
+        .renameWorkspace("w1", "Renamed");
+      assert.equal(result.ok, false);
+      assert.equal(result.outcomeUnknown, true);
+      assert.match(result.error ?? "", /invalid response/);
+    } finally {
+      await fake.close();
+    }
+  }
+});
+
 test("duplicate, unknown, and schema-mismatched response ids terminally fail a written mutation", async () => {
   for (const kind of ["duplicate", "unknown", "schema"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {

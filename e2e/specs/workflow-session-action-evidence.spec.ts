@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { displayItemsShowing } from "../fixtures/display-items.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -189,8 +190,13 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   await expect(dashboard.locator("article.wf-run-action")).toBeVisible();
   await shoot(dashboard, "05-run-waiting-on-action");
 
-  // 5. The Board ladder, where the same run is read as one vertical chain.
-  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  // 5. The Board ladder, where the same run is read as one vertical chain. The disclosure
+  //    that opens it is a Display item that ships OFF, so it is asked for here as a
+  //    precondition; `board-card-workflow-details.spec.ts` owns the default and the checkbox.
+  await api(daemon, "/api/ui/config", {
+    layout: "board",
+    hiddenDisplayItems: displayItemsShowing("workflowDetails"),
+  }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();
   await dashboard.getByRole("button", { name: "Show full workflow" }).click();

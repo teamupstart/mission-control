@@ -76,6 +76,23 @@ const RESUME_DELAY_MS = Math.max(
  * the same bytes it always did.
  */
 const RECORDED_EFFORT = process.env.MC_E2E_CODEX_EFFORT ?? null;
+/**
+ * Write prose as `item_completed` records rather than `user_message` / `agent_message`.
+ *
+ * Codex CLI 0.153.4 moved the rollout records that carry a conversation. A top-level
+ * thread no longer writes `event_msg/user_message` and `event_msg/agent_message`; it writes
+ * `event_msg/item_completed` carrying an `item` whose `type` is `UserMessage` or
+ * `AgentMessage`. Its tool calls are UNCHANGED - still `response_item/custom_tool_call` -
+ * which is what made the regression this flag exists for so confusing to meet: a session
+ * rendered its run of commands and nothing else, because only the prose records had moved.
+ *
+ * A FLAG rather than the default, and it will stay one, because both shapes are live in the
+ * SAME CLI version: 0.153.4 still writes the old records for a subagent thread (measured
+ * against `~/.codex/sessions` - `thread_source: guardian_review`), so a reader that handles
+ * only the new names is the same bug facing the other way. Off, this file writes the bytes
+ * it always did, and every other spec keeps covering the old shape for real.
+ */
+const ITEM_EVENTS = process.env.MC_E2E_CODEX_ITEM_EVENTS === "1";
 const CONTEXT_WINDOW = 272_000;
 const LATE_CHILD_THREAD_ID = `01999999-1111-7000-8000-${String(process.pid).padStart(12, "0").slice(-12)}`;
 const SEE_WORK_TOUR_MARKER = "[Mission Control See the work tour demo]";
@@ -361,8 +378,39 @@ function appendRolloutEvent(payload) {
   );
 }
 
+/** Distinguishes one `item_completed` item from the next, as a real rollout's ids do. */
+let itemSeq = 0;
+
+/**
+ * One prose record, in whichever of Codex's two shapes `ITEM_EVENTS` selects.
+ *
+ * The content element's `type` really does differ in case between the two items -
+ * `AgentMessage` writes `Text`, `UserMessage` writes `text` - so both are reproduced
+ * verbatim here. A fake that spelled them alike would let a reader that gates on the
+ * element type pass, and real Codex would still drop half the conversation.
+ */
 function appendRollout(type, message) {
-  appendRolloutEvent({ type, message });
+  if (!ITEM_EVENTS) {
+    appendRolloutEvent({ type, message });
+    return;
+  }
+  const agent = type === "agent_message";
+  appendRolloutEvent({
+    type: "item_completed",
+    thread_id: THREAD_ID,
+    item: agent
+      ? {
+          type: "AgentMessage",
+          id: `msg-${THREAD_ID}-${itemSeq++}`,
+          content: [{ type: "Text", text: message }],
+          phase: "commentary",
+        }
+      : {
+          type: "UserMessage",
+          id: `um-${THREAD_ID}-${itemSeq++}`,
+          content: [{ type: "text", text: message, text_elements: [] }],
+        },
+  });
 }
 
 /**

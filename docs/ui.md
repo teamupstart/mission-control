@@ -708,18 +708,34 @@ available:
   a recurring mission, an ensemble - are always drawn, because no preference should be able
   to make a session that needs you look like one that does not; each of them already draws
   nothing when it has nothing to say. Nor are the things that *are* the card: the tone
-  spine, the name, the agent dot and the **held** tag. The **defaults draw exactly the facts
-  the previous release drew**, so upgrading states nothing new about a session; the one new
-  fact, the **worktree**, starts off. The [**jump shortcut**](#jumping-straight-to-a-session)
-  is the exception and ships on, because it is not a fact about the session but the keycap
-  for a key that opens it - and a chord nobody can see is a chord nobody presses. That one
-  item covers both fleet layouts: the card's keycap and the Console rail's.
-  Switched on, the worktree prints the checkout's directory name in the
-  branch row with the whole path on hover - the leaf rather than the path, because a pool
-  worktree path is sixty characters of bookkeeping and that row is two cells sharing one
-  line. The choice is per browser and stored through the daemon, so it survives a reload;
-  a second dashboard tab already open picks it up on its next load rather than live, which
-  is true of every Display preference.
+  spine, the name, the agent dot and the **held** tag. The defaults are **today's card, not
+  everything this build knows how to draw**, so upgrading puts no new fact on any card. Two
+  items start off: the **worktree**, which no card drew before, and **Workflow details**,
+  which is the one item that used to be unconditional (see the next point). The
+  [**jump shortcut**](#jumping-straight-to-a-session) is the one exception and ships ON,
+  because it is not a fact about the session but the keycap for a key that opens it - and a
+  chord nobody can see is a chord nobody presses. That one item covers both fleet layouts:
+  the card's keycap and the Console rail's. Switch the worktree on and it prints the
+  checkout's directory name in the branch row with the whole path on hover - the leaf rather
+  than the path, because a pool worktree path is sixty characters of bookkeeping and that row
+  is two cells sharing one line. The choice is per browser and stored through the daemon, so
+  it survives a reload; a second dashboard tab already open picks it up on its next load
+  rather than live, which is true of every Display preference.
+- **A card under review states its progress, not its reasons.** That is what **Workflow
+  details** governs. Unchecked, a card with a
+  bound run draws the run's name and state, its whole stage track, which stage it is on and
+  how much repair budget is left - and stops there. Checked, it adds the sentence naming what
+  objected or what the run is waiting on, and the **Show full workflow** control (and its
+  <kbd>v</kbd> chord) that opens the whole actionable ladder inside the tile. The reasoning
+  is column height: on a full board that sentence and that control are a paragraph of
+  somebody else's reading per card, and the run's complete evidence was never further away
+  than the card's own link into Runs. It ships off on an **upgrade** too, not just for a
+  fresh profile: the stored list of hidden items is your own answer and is never merged with
+  a newer default, so this item is added to it once, on the first read after upgrading -
+  after which checking the box sticks. Your other choices in this panel are untouched.
+  **Workflow** and **Workflow progress bar** are separate items and are unaffected - the
+  first removes the panel entirely, the second trades the whole stage track for the single
+  consequential rung.
 - **The same panel governs the conversation header.** Under **Conversation header** in that
   checklist sit the console detail's two facts above the transcript - the session's
   **working directory** and its **Git branch**. Both ship visible, so nothing moves until you
@@ -1368,7 +1384,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
 | <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
-| <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
+| <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |

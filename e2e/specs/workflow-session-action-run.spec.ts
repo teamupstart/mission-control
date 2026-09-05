@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { displayItemsShowing } from "../fixtures/display-items.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -400,7 +401,12 @@ test("Board workflow controls expand in place and open the exact run", async ({
     })
     .toBe("awaiting_send");
 
-  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  // The disclosure below is a Display item that ships OFF, so it is asked for as a
+  // precondition; `board-card-workflow-details.spec.ts` owns the default and the checkbox.
+  await api(daemon, "/api/ui/config", {
+    layout: "board",
+    hiddenDisplayItems: displayItemsShowing("workflowDetails"),
+  }, "PUT");
   await dashboard.setViewportSize({ width: 1440, height: 900 });
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();
@@ -438,7 +444,11 @@ test("Board workflow controls expand in place and open the exact run", async ({
   // The compact workflow panel is the direct route to this durable run, while the separate
   // disclosure control above remains the in-place route. Return to Board to prove the click
   // neither drills into session detail nor lands on a merely related run in the Runs list.
-  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  // The details precondition is restated because this PUT replaces the whole config patch.
+  await api(daemon, "/api/ui/config", {
+    layout: "board",
+    hiddenDisplayItems: displayItemsShowing("workflowDetails"),
+  }, "PUT");
   await dashboard.reload();
   const workflowRunLink = dashboard.getByRole("link", {
     name: /Open E2E action run preview v\d+ workflow run/,

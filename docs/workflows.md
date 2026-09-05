@@ -928,16 +928,24 @@ A published version whose graph cannot be expressed as stages keeps the existing
 here and links to the Runs page, where its read-only graph remains available.
 
 The Board overview also keeps a compact **active-rung preview** inside each bound session tile.
-It names the consequential stage and its members, and keeps the first objection, GitHub Inspector wait,
-or uncertain-delivery warning in view. A stage carried forward from an earlier round never takes
-that slot - it is finished work, so the preview keeps naming whatever is actually running - and the
-tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
+It names the consequential stage and its members. A stage carried forward from an earlier round
+never takes that slot - it is finished work, so the preview keeps naming whatever is actually
+running - and the tile instead carries one line counting them,
+**✓ 2 stages carried from Round 1 · evidence 1**.
 Click the compact preview to open that exact run's complete evidence and timeline.
-**Show full workflow** expands that tile in place into the same actionable ladder;
+
+How much of the run's REASONING that tile carries is the operator's choice, through
+**Workflow details** in [Settings → Display → Session display](ui.md#layout-console-or-board-in-settings). It ships **off**,
+and off a card is a progress reading: the run's name and state, its stage track, the stage it is
+on, and its repair-round budget. Switched on, the tile also keeps the first objection, GitHub
+Inspector wait, or uncertain-delivery warning in view, and gains the disclosure control -
+**Show full workflow** expands that tile in place into the same actionable ladder, and
 **Collapse workflow** returns to the preview. Press <kbd>v</kbd> on the selected tile to toggle
-those same controls without opening the session detail. These controls do
-not open the session or leave the Board. **Open run** inside the expanded ladder reaches the same
-run as the compact preview.
+those same controls without opening the session detail; the chord is unclaimed while the item is
+off, so it never expands a panel with no control to close it. None of these controls opens the
+session or leaves the Board. **Open run** inside the expanded ladder reaches the same run as the
+compact preview. The session's own **Workflows** tab is unaffected by the preference: it has a
+whole pane of height to spend, and always draws the full ladder.
 
 Clicking the expanded ladder's own background - anywhere that is not one of its controls - reads
 in two steps. The first click selects that tile, and only selects it: the ladder stays open and

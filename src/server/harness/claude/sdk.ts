@@ -331,6 +331,8 @@ class ClaudeSdkSession implements SdkSessionHandle {
   private turns = new TurnStream();
   private query: ClaudeSdkQuery | null = null;
   private queryPump: Promise<void> | null = null;
+  /** The current query ended after an auth failure but remains the stale recovery source. */
+  private queryEnded = false;
   private relaunch: (
     prompt: AsyncIterable<ClaudeSdkUserMessage>,
     resume: string,
@@ -658,7 +660,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   async stop(): Promise<void> {
     if (this.stopped) return;
-    if (!this.query) {
+    if (!this.query || this.queryEnded) {
       this.finish("Mission Control stopped this session.");
       return;
     }
@@ -739,6 +741,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   attach(query: ClaudeSdkQuery): void {
     this.query = query;
+    this.queryEnded = false;
     const pump = this.pump(query);
     this.queryPump = pump;
     void pump.catch((error) => {
@@ -919,6 +922,16 @@ class ClaudeSdkSession implements SdkSessionHandle {
       if (this.recoveringQuery === query && !this.stopped) {
         this.recoveringQuery = null;
         if (this.query === query) this.query = null;
+      } else if (
+        this.authenticationFailed &&
+        this.agentSessionId !== null &&
+        this.query === query &&
+        !this.stopped
+      ) {
+        // Authentication can terminate the SDK stream before the operator finishes login.
+        // Keep the ended query as the stale recovery source so the next turn can replace it;
+        // stop() recognizes queryEnded and still emits the terminal session event directly.
+        this.queryEnded = true;
       } else {
         this.finish(reason);
       }
@@ -929,6 +942,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
     if (this.stopped && this.query === null) return;
     this.stopped = true;
     this.query = null;
+    this.queryEnded = false;
     this.turns.close();
     for (const [id, held] of this.pending) {
       held.resolve({ behavior: "deny", message: "this session ended" });

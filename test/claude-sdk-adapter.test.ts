@@ -674,6 +674,90 @@ test("an authentication failure reloads credentials by resuming on the next turn
   await handle.stop();
 });
 
+test("a failed authentication recovery remains resumable for a later turn", async () => {
+  const starts: Harnessed[] = [];
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        query.end();
+      })();
+      return query;
+    },
+  };
+
+  const failAuthentication = (query: FakeQuery): void => {
+    query.emit({
+      type: "assistant",
+      session_id: "agent-auth-retry",
+      error: "authentication_failed",
+      message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+    });
+    query.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      session_id: "agent-auth-retry",
+      errors: ["Not logged in · Please run /login"],
+    });
+  };
+
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  starts[0]!.query.emit(INIT("agent-auth-retry"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  failAuthentication(starts[0]!.query);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  assert.equal(await handle.send({ text: "retry before login completes" }), "started");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts.length, 2);
+  assert.equal(starts[1]!.options.resume, "agent-auth-retry");
+  failAuthentication(starts[1]!.query);
+  starts[1]!.query.end();
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await handle.send({ text: "continue after login completes" }), "started");
+  const retryEvents = await collect(
+    handle.events,
+    (event) => event.kind === "state" && event.state === "working",
+  );
+  assert.equal(
+    retryEvents.some((event) => event.kind === "exited"),
+    false,
+    "an ended authentication-failed replacement must remain recoverable",
+  );
+  assert.equal(starts.length, 3);
+  assert.equal(starts[2]!.options.resume, "agent-auth-retry");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts[2]!.turns[0]?.message.content, "continue after login completes");
+
+  starts[2]!.query.emit(INIT("agent-auth-retry"));
+  starts[2]!.query.emit({
+    type: "result",
+    subtype: "success",
+    session_id: "agent-auth-retry",
+  });
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  failAuthentication(starts[2]!.query);
+  starts[2]!.query.end();
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  await new Promise((resolve) => setImmediate(resolve));
+  const terminal = collect(handle.events, (event) => event.kind === "exited");
+  await handle.stop();
+  const stopped = await terminal;
+  assert.equal(
+    stopped.some((event) => event.kind === "exited"),
+    true,
+    "stopping an ended authentication-failed query must still end the session",
+  );
+});
+
 test("overlapping sends share one authentication recovery and one resumed subprocess", async () => {
   const starts: Harnessed[] = [];
   let observeStaleClose!: () => void;

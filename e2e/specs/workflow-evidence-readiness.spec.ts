@@ -188,6 +188,100 @@ function stageLaterPacket(
   });
 }
 
+function seedOutcomeAnalytics(daemon: DaemonHandle): void {
+  const readiness = (
+    submissionKey: string,
+    status: "ready" | "gaps" | "unavailable",
+    workflowVersion: number,
+  ) => ({
+    submissionKey,
+    policy: "criterion_mapped_v1",
+    evaluatorVersion: "criterion-mapped-v1",
+    status,
+    round: 1,
+    segment: 0,
+    refinementReason: null,
+    criteriaCount: 1,
+    mappedClaimCount: 1,
+    warningCount: 0,
+    gapCount: status === "gaps" ? 1 : 0,
+    gapCodes: status === "gaps" ? [{ category: "missing_rendered_output", count: 1 }] : [],
+    proofClasses: status === "gaps" ? [{ category: "visual", count: 1 }] : [],
+    missingRoles: status === "gaps" ? [{ category: "rendered_output", count: 1 }] : [],
+    override: false,
+    workflowId: "analytics-workflow",
+    workflowVersion,
+    repositoryScope: "repository",
+  });
+  const audit = (
+    submissionKey: string,
+    outcome: "pass" | "fail",
+    readinessStatus: "ready" | "overridden",
+    workflowVersion: number,
+    digest: string,
+  ) => ({
+    nodeId: "test-auditor",
+    submissionKey,
+    workflowId: "analytics-workflow",
+    workflowVersion,
+    guidance: {
+      personaId: "builtin:test-evidence-auditor",
+      revision: workflowVersion,
+      digest,
+    },
+    round: 1,
+    segment: 0,
+    firstSubmission: true,
+    firstAuditorAttempt: true,
+    readinessSnapshot: {
+      policy: "criterion_mapped_v1",
+      evaluatorVersion: "criterion-mapped-v1",
+      status: readinessStatus,
+    },
+    outcome,
+    rejectionCategories: outcome === "fail" ? ["visual_artifact"] : [],
+    evidenceReadiness: {
+      imageCount: 0,
+      textArtifactCount: 0,
+      checkCount: 1,
+      checkOmittedBytes: 0,
+      transcriptMessageCount: 1,
+      transcriptTruncated: false,
+      transcriptOmittedHeadBytes: 0,
+      transcriptMiddleOmitted: false,
+    },
+    downstreamProofRequests: [],
+    possibleDownstreamProofOverreach: false,
+  });
+  withDaemonDb(daemon, (db) => {
+    const insert = db.prepare(
+      `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const events: Array<[string, string, number, string, unknown]> = [
+      ["e2e-readiness-ready", "analytics-ready", 10, "evidence_readiness_evaluated",
+        readiness("opaque-ready", "ready", 13)],
+      ["e2e-audit-ready", "analytics-ready", 11, "test_evidence_audit",
+        audit("opaque-ready", "fail", "ready", 13, "aaaaaaaaaaaa")],
+      ["e2e-readiness-override", "analytics-override", 20, "evidence_readiness_evaluated",
+        readiness("opaque-override", "gaps", 12)],
+      ["e2e-override", "analytics-override", 21, "evidence_readiness_overridden",
+        { acknowledgedRisk: true }],
+      ["e2e-audit-override", "analytics-override", 22, "test_evidence_audit",
+        audit("opaque-override", "pass", "overridden", 12, "bbbbbbbbbbbb")],
+      ["e2e-readiness-refined", "analytics-refined", 30, "evidence_readiness_evaluated",
+        readiness("opaque-refined", "gaps", 13)],
+      ["e2e-refinement", "analytics-refined", 31, "evidence_preflight_refinement_reserved",
+        { round: 1, segment: 1 }],
+      ["e2e-readiness-unavailable", "analytics-unavailable", 40,
+        "evidence_readiness_evaluated", readiness("opaque-unavailable", "unavailable", 13)],
+    ];
+    for (const event of events) {
+      insert.run(event[0], event[1], event[2], event[3], JSON.stringify(event[4]));
+    }
+  });
+}
+
 test("criterion readiness waits, repairs in the same round, and records an operator override", async ({
   dashboard,
   daemon,
@@ -417,4 +511,44 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   );
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "05-durable-operator-override", readiness);
+});
+
+test("Test evidence readiness separates preflight outcomes from first Auditor acceptance", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedOutcomeAnalytics(daemon);
+  await dashboard.setViewportSize({ width: 1440, height: 1600 });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  const card = dashboard.locator('[data-anchor="workflows/test-evidence"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("First Auditor attempt accepted 50% (1 of 2 first Auditor attempts)");
+  await expect(card).toContainText("Preflight interceptions");
+  await expect(card).toContainText("50% (2 of 4 enforcing evaluations)");
+  await expect(card).toContainText("Same-round refinements");
+  await expect(card).toContainText("50% (1 of 2 intercepted runs)");
+  await expect(card).toContainText("Operator overrides");
+  await expect(card).toContainText("Readiness unavailable");
+  await expect(card).toContainText("25% (1 of 4 enforcing evaluations)");
+  await expect(card).toContainText("Post-ready Auditor rejection");
+  await expect(card).toContainText("100% (1 of 1 first Auditor attempts on ready packets)");
+  await expect(card).toContainText("Post-override Auditor rejection");
+  await expect(card).toContainText("0% (0 of 1 first Auditor attempts on overridden packets)");
+  await expect(card).toContainText("Visual proof class");
+  await expect(card).toContainText("Missing Rendered output role");
+  await expect(card).toContainText("v13 · guidance aaaaaaaa");
+  await expect(card).toContainText("v12 · guidance bbbbbbbb");
+  await expect(card).toContainText("v13 · evaluator criterion-mapped-v1");
+  await expect(card).toContainText(
+    "An interception is not an acceptance: the Auditor remains the semantic authority.",
+  );
+  await card.scrollIntoViewIfNeeded();
+  await capture(dashboard, "06-outcome-analytics-desktop", card);
+
+  await dashboard.setViewportSize({ width: 900, height: 1600 });
+  await expect(card).toBeVisible();
+  const cardBox = await card.boundingBox();
+  expect(cardBox, "analytics card must have a rendered box at constrained width").not.toBeNull();
+  expect(cardBox!.width, "analytics card must fit the constrained viewport").toBeLessThan(900);
+  await capture(dashboard, "07-outcome-analytics-constrained", card);
 });

@@ -4,14 +4,21 @@ import type {
   PersonaSnapshot,
   PersonaVerdict,
   WorkflowContextSnapshot,
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceReadinessResult,
+  WorkflowNodeAttempt,
   WorkflowSubmission,
 } from "../src/shared/workflow.ts";
 import {
   aggregateTestEvidenceAudit,
+  evidenceReadinessEvaluatedEvent,
+  evidenceTelemetryKey,
   guidanceDigest,
+  isFirstCompletedTestEvidenceAuditorAttempt,
   testEvidenceAuditEvent,
   testEvidenceRequestCategories,
   type TestEvidenceAuditEventRow,
+  type TestEvidencePreflightEventRow,
 } from "../src/server/workflows/test-evidence-audit.ts";
 
 const persona: PersonaSnapshot = {
@@ -73,7 +80,11 @@ const submission = {
 } satisfies WorkflowSubmission;
 
 /** Only the two identifiers the event may carry; the guidance digest comes from the persona. */
-const version = { workflowId: "workflow-review", version: 8 };
+const version = {
+  workflowId: "workflow-review",
+  version: 8,
+  evidenceReadinessPolicy: "criterion_mapped_v1" as const,
+};
 
 const verdict: PersonaVerdict = {
   verdict: "fail",
@@ -95,6 +106,8 @@ test("Test Evidence telemetry classifies readiness gaps and flags downstream pro
   const event = testEvidenceAuditEvent({
     persona,
     nodeId: "auditor",
+    attemptId: "attempt-1",
+    firstAuditorAttempt: true,
     submission,
     context,
     verdict,
@@ -103,9 +116,10 @@ test("Test Evidence telemetry classifies readiness gaps and flags downstream pro
     version,
   });
   assert.ok(event);
-  assert.equal(event.possibleDownstreamProofOverreach, true);
-  assert.deepEqual(event.downstreamProofRequests, [{ term: "remote_ci", explicitInIntent: false }]);
-  assert.deepEqual(event.evidenceReadiness, {
+  const payload = event.payload as Record<string, unknown>;
+  assert.equal(payload.possibleDownstreamProofOverreach, true);
+  assert.deepEqual(payload.downstreamProofRequests, [{ term: "remote_ci", explicitInIntent: false }]);
+  assert.deepEqual(payload.evidenceReadiness, {
     imageCount: 0,
     textArtifactCount: 0,
     checkCount: 0,
@@ -121,6 +135,8 @@ test("an explicit human request for downstream proof is recorded without an over
   const event = testEvidenceAuditEvent({
     persona,
     nodeId: "auditor",
+    attemptId: "attempt-2",
+    firstAuditorAttempt: true,
     submission,
     context: {
       ...context,
@@ -132,8 +148,9 @@ test("an explicit human request for downstream proof is recorded without an over
     version,
   });
   assert.ok(event);
-  assert.equal(event.possibleDownstreamProofOverreach, false);
-  assert.deepEqual(event.downstreamProofRequests, [{ term: "remote_ci", explicitInIntent: true }]);
+  const payload = event.payload as Record<string, unknown>;
+  assert.equal(payload.possibleDownstreamProofOverreach, false);
+  assert.deepEqual(payload.downstreamProofRequests, [{ term: "remote_ci", explicitInIntent: true }]);
 });
 
 /**
@@ -148,6 +165,8 @@ test("the event carries workflow and guidance identity without carrying guidance
   const event = testEvidenceAuditEvent({
     persona,
     nodeId: "auditor",
+    attemptId: "attempt-3",
+    firstAuditorAttempt: true,
     submission,
     context,
     verdict,
@@ -156,18 +175,109 @@ test("the event carries workflow and guidance identity without carrying guidance
     version,
   });
   assert.ok(event);
-  assert.equal(event.workflowId, "workflow-review");
-  assert.equal(event.workflowVersion, 8);
-  assert.deepEqual(event.guidance, {
+  const payload = event.payload as Record<string, unknown>;
+  assert.equal(payload.workflowId, "workflow-review");
+  assert.equal(payload.workflowVersion, 8);
+  assert.deepEqual(payload.guidance, {
     personaId: "builtin:test-evidence-auditor",
     revision: 1,
     digest: guidanceDigest("Review evidence."),
   });
   // The digest is identity, never prose: the guidance text itself must not be recoverable
   // from, or present anywhere in, a durable telemetry event.
-  assert.doesNotMatch(JSON.stringify(event), /Review evidence\./);
-  assert.match(String(event.guidance && (event.guidance as { digest: string }).digest), /^[0-9a-f]{12}$/);
+  assert.doesNotMatch(JSON.stringify(payload), /Review evidence\./);
+  assert.doesNotMatch(JSON.stringify(payload), /"submissionId"/);
+  assert.doesNotMatch(JSON.stringify(payload), /"submission"/);
+  assert.match(String(payload.guidance && (payload.guidance as { digest: string }).digest), /^[0-9a-f]{12}$/);
   assert.notEqual(guidanceDigest("Review evidence."), guidanceDigest("Review evidence, strictly."));
+});
+
+test("readiness evaluation telemetry is bounded, opaque, and replay-stable", () => {
+  const readiness: WorkflowEvidenceReadinessResult = {
+    evaluatorVersion: "criterion_mapped_v1",
+    status: "gaps",
+    criteria: [{
+      criterionId: "criterion-secret",
+      criterion: "Private criterion text must not enter telemetry",
+      material: true,
+      matchedClientCriterionId: "claim-secret",
+      authorProofClass: "visual",
+      suggestedProofClass: "integration",
+      links: [],
+      gaps: ["missing_execution", "missing_rendered_output"],
+      warnings: ["model_proof_class_disagreement"],
+    }],
+    gapCodes: ["missing_execution", "missing_rendered_output"],
+    warningCodes: ["model_proof_class_disagreement"],
+    unavailableReason: null,
+  };
+  const coverage: WorkflowEvidenceCoverageClaim[] = [{
+    clientCriterionId: "claim-secret",
+    criterion: "Private criterion text must not enter telemetry",
+    proofClass: "visual",
+    repositoryScope: "repo-01",
+    links: [],
+  }];
+  const first = evidenceReadinessEvaluatedEvent({ submission, readiness, coverage, version });
+  const replay = evidenceReadinessEvaluatedEvent({ submission, readiness, coverage, version });
+  const distinct = evidenceReadinessEvaluatedEvent({
+    submission: { ...submission, id: "submission-2" },
+    readiness,
+    coverage,
+    version,
+  });
+  assert.equal(first.eventId, replay.eventId);
+  assert.notEqual(first.eventId, distinct.eventId);
+  assert.deepEqual(first.payload, {
+    submissionKey: evidenceTelemetryKey("submission", submission.id),
+    policy: "criterion_mapped_v1",
+    evaluatorVersion: "criterion_mapped_v1",
+    status: "gaps",
+    round: 1,
+    segment: 0,
+    refinementReason: null,
+    criteriaCount: 1,
+    mappedClaimCount: 1,
+    warningCount: 1,
+    gapCount: 2,
+    gapCodes: [
+      { category: "missing_execution", count: 1 },
+      { category: "missing_rendered_output", count: 1 },
+    ],
+    proofClasses: [{ category: "visual", count: 1 }],
+    missingRoles: [
+      { category: "execution", count: 1 },
+      { category: "rendered_output", count: 1 },
+    ],
+    override: false,
+    workflowId: "workflow-review",
+    workflowVersion: 8,
+    repositoryScope: "repository",
+  });
+  const serialized = JSON.stringify(first.payload);
+  assert.doesNotMatch(serialized, /Private criterion|criterion-secret|claim-secret|submissionId/);
+  assert.doesNotMatch(serialized, /"submission"/);
+});
+
+test("durable completed attempt history ignores infrastructure retries", () => {
+  const attempt = (
+    id: string,
+    state: WorkflowNodeAttempt["state"],
+    candidate: PersonaSnapshot | null = persona,
+  ) => ({ id, state, persona: candidate }) as WorkflowNodeAttempt;
+  assert.equal(isFirstCompletedTestEvidenceAuditorAttempt([
+    attempt("infra-1", "error"),
+    attempt("infra-2", "error"),
+    attempt("semantic-1", "completed"),
+  ], "semantic-1"), true);
+  assert.equal(isFirstCompletedTestEvidenceAuditorAttempt([
+    attempt("semantic-1", "completed"),
+    attempt("semantic-2", "completed"),
+  ], "semantic-2"), false);
+  assert.equal(isFirstCompletedTestEvidenceAuditorAttempt([
+    attempt("other", "completed", { ...persona, name: "Other", sourcePersonaId: "other" }),
+    attempt("semantic-1", "completed"),
+  ], "semantic-1"), true);
 });
 
 // --- the aggregate --------------------------------------------------------------------
@@ -191,6 +301,8 @@ function row(over: {
   digest?: string;
   personaId?: string;
   revision?: number;
+  firstAuditorAttempt?: boolean | null;
+  readinessStatus?: "not_evaluated" | "ready" | "gaps" | "unavailable" | "overridden";
 } = {}): TestEvidenceAuditEventRow {
   const round = over.round ?? 1;
   const segment = over.segment ?? 0;
@@ -199,7 +311,7 @@ function row(over: {
     timestamp: over.timestamp ?? 1000,
     payload: {
       nodeId: "auditor",
-      submissionId: "submission",
+      submissionKey: "111111111111111111111111",
       workflowId: "workflow-review",
       workflowVersion: over.workflowVersion ?? 8,
       guidance: {
@@ -210,6 +322,14 @@ function row(over: {
       round,
       segment,
       firstSubmission: round === 1 && segment === 0,
+      ...(over.firstAuditorAttempt === null
+        ? {}
+        : { firstAuditorAttempt: over.firstAuditorAttempt ?? round === 1 }),
+      readinessSnapshot: {
+        policy: "criterion_mapped_v1",
+        evaluatorVersion: "criterion_mapped_v1",
+        status: over.readinessStatus ?? "ready",
+      },
       outcome: over.outcome ?? "pass",
       rejectionCategories: over.rejectionCategories ?? [],
       evidenceReadiness: {
@@ -230,6 +350,60 @@ function row(over: {
 
 const WINDOW = { scanLimit: 2000, truncated: false };
 
+function preflightRow(over: {
+  runId: string;
+  eventId: string;
+  kind?: TestEvidencePreflightEventRow["kind"];
+  status?: "not_evaluated" | "ready" | "gaps" | "unavailable" | "overridden";
+  policy?: "off" | "criterion_mapped_v1";
+  workflowVersion?: number;
+  evaluatorVersion?: string | null;
+  payload?: unknown;
+}): TestEvidencePreflightEventRow {
+  const kind = over.kind ?? "evidence_readiness_evaluated";
+  const markerPayload = kind === "evidence_preflight_refinement_reserved"
+    ? { round: 1, segment: 1 }
+    : { acknowledgedRisk: true };
+  return {
+    runId: over.runId,
+    timestamp: 1000,
+    eventId: over.eventId,
+    kind,
+    payload: over.payload ?? (kind === "evidence_readiness_evaluated" ? {
+      submissionKey: `${over.runId}-opaque`,
+      policy: over.policy ?? "criterion_mapped_v1",
+      evaluatorVersion: over.evaluatorVersion === undefined
+        ? "criterion_mapped_v1"
+        : over.evaluatorVersion,
+      status: over.status ?? "ready",
+      round: 1,
+      segment: 0,
+      refinementReason: null,
+      criteriaCount: 1,
+      mappedClaimCount: 1,
+      warningCount: 0,
+      gapCount: over.status === "gaps" ? 2 : 0,
+      gapCodes: over.status === "gaps"
+        ? [
+            { category: "missing_execution", count: 1 },
+            { category: "missing_rendered_output", count: 1 },
+          ]
+        : [],
+      proofClasses: over.status === "gaps" ? [{ category: "visual", count: 1 }] : [],
+      missingRoles: over.status === "gaps"
+        ? [
+            { category: "execution", count: 1 },
+            { category: "rendered_output", count: 1 },
+          ]
+        : [],
+      override: false,
+      workflowId: "workflow-review",
+      workflowVersion: over.workflowVersion ?? 13,
+      repositoryScope: "repository",
+    } : markerPayload),
+  };
+}
+
 /**
  * The case a fresh install is in, and the one a rate must not lie about.
  *
@@ -245,9 +419,14 @@ test("the aggregate over no events reports no readings rather than zero readings
   assert.equal(aggregate.malformed, 0);
   assert.equal(aggregate.oldestAt, null);
   assert.equal(aggregate.newestAt, null);
+  assert.deepEqual(aggregate.firstAuditorAttemptAccepted, { count: 0, total: 0, rate: null });
+  assert.equal(aggregate.firstAuditorAttemptKnown, 0);
+  assert.equal(aggregate.firstAuditorAttemptUnknown, 0);
   assert.deepEqual(aggregate.firstSubmissionAccepted, { count: 0, total: 0, rate: null });
   assert.deepEqual(aggregate.attemptFailures, { count: 0, total: 0, rate: null });
   assert.deepEqual(aggregate.possibleOverreach, { count: 0, total: 0, rate: null });
+  assert.deepEqual(aggregate.postReadyAuditorRejections, { count: 0, total: 0, rate: null });
+  assert.deepEqual(aggregate.preflight.interceptions, { count: 0, total: 0, rate: null });
   assert.deepEqual(aggregate.readiness.withoutImages, { count: 0, total: 0, rate: null });
   assert.equal(aggregate.readiness.checkOmittedBytes, 0);
   assert.deepEqual(aggregate.slices, []);
@@ -294,6 +473,100 @@ test("the aggregate measures first-pass acceptance, attempt failures and attempt
   assert.equal(share("focused_execution"), 1 / 3);
   assert.equal(share("downstream_proof"), 0);
   assert.equal(share("other"), 1 / 3);
+});
+
+test("first Auditor acceptance excludes interceptions and keeps disagreement denominators distinct", () => {
+  const auditRows = [
+    row({
+      runId: "run-ready",
+      segment: 2,
+      firstAuditorAttempt: true,
+      readinessStatus: "ready",
+      outcome: "fail",
+    }),
+    row({
+      runId: "run-ready",
+      round: 2,
+      firstAuditorAttempt: false,
+      readinessStatus: "ready",
+      outcome: "pass",
+    }),
+    row({
+      runId: "run-override",
+      firstAuditorAttempt: true,
+      readinessStatus: "overridden",
+      outcome: "fail",
+    }),
+    row({ runId: "run-legacy", firstAuditorAttempt: null, outcome: "pass" }),
+  ];
+  const readinessRows = [
+    preflightRow({ runId: "run-ready", eventId: "ready-gap", status: "gaps" }),
+    preflightRow({
+      runId: "run-ready",
+      eventId: "ready-refinement",
+      kind: "evidence_preflight_refinement_reserved",
+    }),
+    preflightRow({ runId: "run-ready", eventId: "ready-final", status: "ready" }),
+    preflightRow({ runId: "run-override", eventId: "override-gap", status: "gaps" }),
+    preflightRow({
+      runId: "run-override",
+      eventId: "override-marker",
+      kind: "evidence_readiness_overridden",
+    }),
+    preflightRow({ runId: "run-unavailable", eventId: "unavailable", status: "unavailable" }),
+    preflightRow({ runId: "run-off", eventId: "off-gap", status: "gaps", policy: "off" }),
+  ];
+  const aggregate = aggregateTestEvidenceAudit(
+    auditRows,
+    WINDOW,
+    readinessRows,
+    { truncated: false },
+  );
+  assert.deepEqual(aggregate.firstAuditorAttemptAccepted, { count: 0, total: 2, rate: 0 });
+  assert.equal(aggregate.firstAuditorAttemptKnown, 3);
+  assert.equal(aggregate.firstAuditorAttemptUnknown, 1);
+  assert.deepEqual(aggregate.postReadyAuditorRejections, { count: 1, total: 1, rate: 1 });
+  assert.deepEqual(aggregate.postOverrideAuditorRejections, { count: 1, total: 1, rate: 1 });
+  assert.equal(aggregate.preflight.evaluations, 5);
+  assert.equal(aggregate.preflight.enforcingEvaluations, 4);
+  assert.deepEqual(aggregate.preflight.interceptions, { count: 2, total: 4, rate: 0.5 });
+  assert.deepEqual(aggregate.preflight.sameRoundRefinements, { count: 1, total: 2, rate: 0.5 });
+  assert.deepEqual(aggregate.preflight.overrides, { count: 1, total: 2, rate: 0.5 });
+  assert.deepEqual(aggregate.preflight.unavailable, { count: 1, total: 4, rate: 0.25 });
+  assert.deepEqual(aggregate.preflight.proofClasses, [{
+    category: "visual",
+    occurrences: 2,
+    affectedEvaluations: { count: 2, total: 2, rate: 1 },
+  }]);
+  assert.deepEqual(aggregate.preflight.missingRoles.map((item) => item.category), [
+    "execution",
+    "rendered_output",
+  ]);
+  assert.deepEqual(aggregate.slices[0]?.firstAuditorAttemptAccepted, {
+    count: 0,
+    total: 2,
+    rate: 0,
+  });
+});
+
+test("replayed preflight events are deduplicated and readiness snapshots survive split windows", () => {
+  const evaluated = preflightRow({ runId: "run-1", eventId: "same", status: "gaps" });
+  const aggregate = aggregateTestEvidenceAudit([
+    row({
+      runId: "run-1",
+      firstAuditorAttempt: true,
+      readinessStatus: "ready",
+      outcome: "fail",
+    }),
+  ], WINDOW, [evaluated, { ...evaluated }], { truncated: true });
+  assert.equal(aggregate.preflight.evaluations, 1);
+  assert.deepEqual(aggregate.preflight.interceptions, { count: 1, total: 1, rate: 1 });
+  assert.equal(aggregate.preflight.truncated, true);
+  assert.deepEqual(
+    aggregate.postReadyAuditorRejections,
+    { count: 1, total: 1, rate: 1 },
+    "the Auditor event's activation snapshot keeps disagreement measurable when its readiness event is outside the window",
+  );
 });
 
 test("evidence readiness adoption is measured over first submissions only", () => {

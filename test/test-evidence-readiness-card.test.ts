@@ -34,6 +34,9 @@ const EMPTY: TestEvidenceAuditAggregate = {
   scanLimit: 2000,
   oldestAt: null,
   newestAt: null,
+  firstAuditorAttemptAccepted: { count: 0, total: 0, rate: null },
+  firstAuditorAttemptKnown: 0,
+  firstAuditorAttemptUnknown: 0,
   firstSubmissionAccepted: { count: 0, total: 0, rate: null },
   attemptFailures: { count: 0, total: 0, rate: null },
   rejectionCategories: [
@@ -51,6 +54,23 @@ const EMPTY: TestEvidenceAuditAggregate = {
     transcriptOmittedHeadBytes: 0,
   },
   possibleOverreach: { count: 0, total: 0, rate: null },
+  postReadyAuditorRejections: { count: 0, total: 0, rate: null },
+  postOverrideAuditorRejections: { count: 0, total: 0, rate: null },
+  preflight: {
+    evaluations: 0,
+    enforcingEvaluations: 0,
+    malformed: 0,
+    truncated: false,
+    interceptions: { count: 0, total: 0, rate: null },
+    sameRoundRefinements: { count: 0, total: 0, rate: null },
+    overrides: { count: 0, total: 0, rate: null },
+    unavailable: { count: 0, total: 0, rate: null },
+    gapCodes: [],
+    proofClasses: [],
+    missingRoles: [],
+    slices: [],
+    slicesOmitted: 0,
+  },
   slices: [],
   slicesOmitted: 0,
 };
@@ -63,6 +83,8 @@ const MEASURED: TestEvidenceAuditAggregate = {
   attemptsPerRun: 5 / 3,
   oldestAt: 10,
   newestAt: 50,
+  firstAuditorAttemptAccepted: { count: 1, total: 3, rate: 1 / 3 },
+  firstAuditorAttemptKnown: 5,
   firstSubmissionAccepted: { count: 1, total: 3, rate: 1 / 3 },
   attemptFailures: { count: 3, total: 5, rate: 3 / 5 },
   rejectionCategories: [
@@ -80,6 +102,38 @@ const MEASURED: TestEvidenceAuditAggregate = {
     transcriptOmittedHeadBytes: 900,
   },
   possibleOverreach: { count: 1, total: 5, rate: 1 / 5 },
+  postReadyAuditorRejections: { count: 1, total: 2, rate: 0.5 },
+  postOverrideAuditorRejections: { count: 1, total: 1, rate: 1 },
+  preflight: {
+    evaluations: 5,
+    enforcingEvaluations: 4,
+    malformed: 0,
+    truncated: false,
+    interceptions: { count: 2, total: 4, rate: 0.5 },
+    sameRoundRefinements: { count: 1, total: 2, rate: 0.5 },
+    overrides: { count: 1, total: 2, rate: 0.5 },
+    unavailable: { count: 1, total: 4, rate: 0.25 },
+    gapCodes: [],
+    proofClasses: [{
+      category: "visual",
+      occurrences: 2,
+      affectedEvaluations: { count: 2, total: 2, rate: 1 },
+    }],
+    missingRoles: [{
+      category: "rendered_output",
+      occurrences: 2,
+      affectedEvaluations: { count: 2, total: 2, rate: 1 },
+    }],
+    slices: [{
+      workflowId: "workflow-review",
+      workflowVersion: 13,
+      evaluatorVersion: "criterion_mapped_v1",
+      evaluations: 4,
+      interceptions: { count: 2, total: 4, rate: 0.5 },
+      unavailable: { count: 1, total: 4, rate: 0.25 },
+    }],
+    slicesOmitted: 0,
+  },
   slices: [
     {
       workflowId: "workflow-review",
@@ -88,6 +142,8 @@ const MEASURED: TestEvidenceAuditAggregate = {
       personaRevision: 1,
       guidanceDigest: "aaaaaaaaaaaa",
       attempts: 4,
+      firstAuditorAttemptAccepted: { count: 0, total: 2, rate: 0 },
+      firstAuditorAttemptUnknown: 0,
       firstSubmissionAccepted: { count: 0, total: 2, rate: 0 },
       attemptFailures: { count: 3, total: 4, rate: 0.75 },
     },
@@ -98,6 +154,8 @@ const MEASURED: TestEvidenceAuditAggregate = {
       personaRevision: 2,
       guidanceDigest: "bbbbbbbbbbbb",
       attempts: 1,
+      firstAuditorAttemptAccepted: { count: 1, total: 1, rate: 1 },
+      firstAuditorAttemptUnknown: 0,
       firstSubmissionAccepted: { count: 1, total: 1, rate: 1 },
       attemptFailures: { count: 0, total: 1, rate: 0 },
     },
@@ -176,9 +234,9 @@ test("a one-attempt guidance row is described in the singular", () => {
       { ...MEASURED.slices[1]!, attempts: 2 },
     ],
   });
-  assert.match(html, /1 attempt · first pass/);
+  assert.match(html, /1 attempt · first Auditor/);
   assert.doesNotMatch(html, /1 attempts/);
-  assert.match(html, /2 attempts · first pass/);
+  assert.match(html, /2 attempts · first Auditor/);
 });
 
 test("one unreadable attempt is described in the singular", () => {
@@ -191,7 +249,7 @@ test("one unreadable attempt is described in the singular", () => {
 
 test("the card reads out every number the report's rollout criterion is written in", () => {
   const html = render(MEASURED);
-  assert.match(html, /First-pass acceptance 33% \(1 of 3 first submissions\)/);
+  assert.match(html, /First Auditor attempt accepted 33% \(1 of 3 first Auditor attempts\)/);
   assert.match(html, /target at least 70%/);
   assert.match(html, /Attempts that failed/);
   assert.match(html, /60% \(3 of 5 attempts\)/);
@@ -199,6 +257,13 @@ test("the card reads out every number the report's rollout criterion is written 
   assert.match(html, /target at most 1\.5 · over target/);
   assert.match(html, /Possible later-stage overreach/);
   assert.match(html, /20% \(1 of 5 attempts\)/);
+  assert.match(html, /Preflight interceptions.*50% \(2 of 4 enforcing evaluations\)/s);
+  assert.match(html, /Same-round refinements.*50% \(1 of 2 intercepted runs\)/s);
+  assert.match(html, /Operator overrides.*50% \(1 of 2 intercepted runs\)/s);
+  assert.match(html, /Readiness unavailable.*25% \(1 of 4 enforcing evaluations\)/s);
+  assert.match(html, /Post-ready Auditor rejection.*50% \(1 of 2 first Auditor attempts on ready packets\)/s);
+  assert.match(html, /Post-override Auditor rejection.*100% \(1 of 1 first Auditor attempts on overridden packets\)/s);
+  assert.match(html, /Historical first-submission acceptance/);
   // Every rejection category, including the one at zero: a missing row would read as a
   // reason the classifier does not know about.
   assert.match(html, /No reviewer-visible UI artifact.*67% \(2 of 3 failing attempts\)/s);
@@ -208,6 +273,9 @@ test("the card reads out every number the report's rollout criterion is written 
   assert.match(html, /First submissions with no image.*67% \(2 of 3 first submissions\)/s);
   assert.match(html, /First submissions with no text artifact.*100% \(3 of 3 first submissions\)/s);
   assert.match(html, /4000 from Checks, 900 from transcript heads/);
+  assert.match(html, /Visual proof class.*2 occurrences/s);
+  assert.match(html, /Missing Rendered output role.*2 occurrences/s);
+  assert.match(html, /Category counts overlap/);
   // The before/after comparison the identity fields exist for.
   assert.match(html, /v8 · guidance aaaaaaaa/);
   assert.match(html, /v10 · guidance bbbbbbbb/);
@@ -217,6 +285,44 @@ test("the card reads out every number the report's rollout criterion is written 
     render(MEASURED, [{ id: "workflow-review", name: "Review" }]),
     /Review · v8 · guidance aaaaaaaa/,
   );
+});
+
+test("preflight activity without a first Auditor attempt reports No data, never acceptance", () => {
+  const html = render({
+    ...MEASURED,
+    attempts: 0,
+    runs: 0,
+    attemptsPerRun: null,
+    malformed: 0,
+    firstAuditorAttemptAccepted: { count: 0, total: 0, rate: null },
+    firstAuditorAttemptKnown: 0,
+    firstSubmissionAccepted: { count: 0, total: 0, rate: null },
+    attemptFailures: { count: 0, total: 0, rate: null },
+    rejectionCategories: EMPTY.rejectionCategories,
+    possibleOverreach: { count: 0, total: 0, rate: null },
+    slices: [],
+  });
+  assert.match(html, /First Auditor attempt accepted · No data/);
+  assert.match(html, /Preflight interceptions.*50% \(2 of 4 enforcing evaluations\)/s);
+  assert.doesNotMatch(html, /interception accepted/i);
+});
+
+test("malformed Auditor telemetry stays unreadable when valid preflight telemetry exists", () => {
+  const html = render({
+    ...EMPTY,
+    malformed: 3,
+    preflight: {
+      ...EMPTY.preflight,
+      evaluations: 1,
+      enforcingEvaluations: 1,
+      interceptions: { count: 0, total: 1, rate: 0 },
+      unavailable: { count: 0, total: 1, rate: 0 },
+    },
+  });
+  assert.match(html, /No Test Evidence Auditor attempt could be read back/);
+  assert.match(html, /3 recorded attempts\s+could not be read back/);
+  assert.doesNotMatch(html, /First Auditor attempt accepted/);
+  assert.doesNotMatch(html, /No Test Evidence Auditor attempt has been recorded yet/);
 });
 
 test("a capped window and unreadable rows are stated instead of quietly narrowing the rates", () => {

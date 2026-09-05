@@ -6,6 +6,19 @@ function repoFile(rel: string): string {
   return readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
 }
 
+function topLevelYamlSequence(yml: string, key: string): string[] {
+  const lines = yml.split("\n");
+  const start = lines.findIndex((line) => line === `${key}:`);
+  assert.notEqual(start, -1, `missing top-level ${key} sequence`);
+
+  const block = lines.slice(start + 1).findIndex((line) => /^\S/u.test(line));
+  const end = block === -1 ? lines.length : start + 1 + block;
+  return lines
+    .slice(start + 1, end)
+    .map((line) => line.match(/^\s+-\s+(.+?)\s*$/u)?.[1])
+    .filter((entry): entry is string => entry !== undefined);
+}
+
 test("package metadata declares Apache-2.0 without enabling npm publication", () => {
   const manifest = JSON.parse(repoFile("package.json")) as {
     private?: boolean;
@@ -23,10 +36,10 @@ test("package metadata declares Apache-2.0 without enabling npm publication", ()
 });
 
 test("the packaged application includes its license and attribution notice", () => {
-  const yml = repoFile("electron-builder.yml");
+  const files = topLevelYamlSequence(repoFile("electron-builder.yml"), "files");
 
-  assert.match(yml, /^\s*-\s*LICENSE\s*$/m);
-  assert.match(yml, /^\s*-\s*NOTICE\s*$/m);
+  assert.ok(files.includes("LICENSE"), "LICENSE must be in electron-builder's files sequence");
+  assert.ok(files.includes("NOTICE"), "NOTICE must be in electron-builder's files sequence");
 });
 
 test("fork pull requests cannot execute on shared self-hosted runners", () => {
@@ -49,6 +62,12 @@ test("public entry-point documentation has no legacy internal-only notice", () =
   const contributing = repoFile("CONTRIBUTING.md");
 
   assert.match(readme, /Apache License 2\.0/);
+  assert.equal(
+    readme.match(/git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/gu)?.length,
+    2,
+    "both README setup paths must clone the public repository",
+  );
+  assert.equal(readme.match(/^cd mission-control$/gmu)?.length, 2, "both README setup paths must enter mission-control");
   assert.match(contributing, /git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/);
   assert.match(repoFile("SECURITY.md"), /upstart\.com\/lenders\/regulatory-compliance\/vulnerability-reporting/);
   assert.doesNotMatch(

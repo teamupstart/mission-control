@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
+import { mkSession } from "./helpers/session-fixture.ts";
 
 import {
   assignCardShortcuts,
@@ -21,7 +26,7 @@ import {
 } from "../src/web/lib/keybindings.ts";
 
 /**
- * The Board card's ⌘1 … ⌘= jump keys: how a slot is handed out, and what a keypress
+ * The fleet's ⌘1 … ⌘= jump keys: how a slot is handed out, and what a keypress
  * addresses.
  *
  * Pure over the column arrays App already builds, which is why this lives here rather than
@@ -133,19 +138,20 @@ test("each slot prints and announces itself", () => {
 
 test("a slot cannot be bound to an action, and says which reservation refused it", () => {
   // The jump arm runs AHEAD of the action dispatch, so an action bound to ⌘4 would keep
-  // working in the Console, on every other page and with the card item off, and silently stop
-  // working on the Board. "Works in some layouts and not others" is the one promise the
-  // shortcut table makes, so the table refuses the chord rather than accepting one it cannot
-  // honour - which is exactly why `Enter` is reserved.
+  // working on every other page and with the display item off, and silently stop working on
+  // Fleet - on either of its layouts, now that the Console rail prints and answers the same
+  // keys. "Works in some places and not others" is the one promise the shortcut table makes,
+  // so the table refuses the chord rather than accepting one it cannot honour - which is
+  // exactly why `Enter` is reserved.
   for (const chord of CARD_SHORTCUT_CHORDS) {
     assert.equal(isReservedChord(chord), true, `${chord} can still be bound to an action`);
-    assert.equal(reservedChordReason(chord), "the Board's card jump shortcuts");
+    assert.equal(reservedChordReason(chord), "the fleet's session jump shortcuts");
     // Reported to the operator naming the RIGHT reservation. "grid navigation" was true of
     // every reservation when that sentence was written, and over one of these it would send
     // somebody hunting for an arrow key they never pressed.
     assert.equal(
       bindingValidationError(resolveKeybindings({}), "diff", chord),
-      `${formatChord(chord)} is reserved for the Board's card jump shortcuts.`,
+      `${formatChord(chord)} is reserved for the fleet's session jump shortcuts.`,
     );
   }
   // And the older reservation still reports as itself rather than being relabelled.
@@ -215,6 +221,38 @@ test("the keydown handler reads the live numbering, not a paint-old copy of it",
     !/\bcardShortcuts\b/.test(deps),
     "`cardShortcuts` is back in the keydown listener's dependencies",
   );
+});
+
+test("a rail row prints its slot on the state line, beside the state word", () => {
+  // The markup shape the Console rail's placement rests on, which the browser spec then
+  // MEASURES. Both, because they fail differently: a keycap rendered into `.rail-meta` or
+  // after the state word would still lay out plausibly and pass a "the rail has a keycap"
+  // assertion, and only the DOM order says which of the state line's two ends it is on.
+  const row = renderToStaticMarkup(createElement(RailRow, {
+    session: mkSession({ name: "Alpha", state: "idle", stateConfirmed: true }),
+    selected: false,
+    onSelect: () => {},
+    shortcutChord: cardShortcutChord("3"),
+  }));
+
+  const line = /<span class="rail-state-line">([\s\S]*?)<\/span><span class="rail-meta">/
+    .exec(row)?.[1];
+  assert.ok(line, "the rail row no longer draws a state line");
+  assert.match(line, /^<kbd class="kb-hint" aria-hidden="true">⌘3<\/kbd>/, "the keycap is not first on the state line");
+  assert.match(line, /⌘3[\s\S]*rail-state">idle</, "the keycap is drawn after the state word");
+  // Announced on the row, which is the control the chord drives - the keycap itself is
+  // `aria-hidden`, as every keycap in this app is.
+  assert.match(row, /aria-keyshortcuts="Meta\+3"/);
+
+  // And a row holding no slot draws no keycap and announces no chord, rather than an empty
+  // element the `gap` above would keep a hole for.
+  const bare = renderToStaticMarkup(createElement(RailRow, {
+    session: mkSession({ name: "Alpha", state: "idle", stateConfirmed: true }),
+    selected: false,
+    onSelect: () => {},
+  }));
+  assert.doesNotMatch(bare, /kb-hint/);
+  assert.doesNotMatch(bare, /aria-keyshortcuts/);
 });
 
 test("no rebindable action ships with a chord these twelve would shadow", () => {

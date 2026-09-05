@@ -474,7 +474,7 @@ if (argv[0] === "--version") {
   process.stdout.write(
     product.preflight === "gh-version"
       ? "gh version 2.98.0 (fake)\\n"
-      : "gh version 2.99.0 (fake)\\n",
+      : "gh version 2.101.0 (fake)\\n",
   );
 } else if (command.startsWith("auth status")) {
   preflightRefusal("gh-auth");

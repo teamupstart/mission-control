@@ -10,6 +10,8 @@ This phase does not enable repository access for Personas. Phase 3 activates con
 
 Estimated gross non-test implementation: **1,350-1,750 lines**.
 
+Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The exact-state artifact design remains valid. Current capture ordering requires a two-step candidate lifecycle: prepare inside the stable repository boundary, then promote and claim only after the manager's external-artifact and reserved-evidence guards pass.
+
 ## Entry criteria and direct dependencies
 
 - Phase 1 has merged.
@@ -43,7 +45,7 @@ This phase does not:
 
 ## Repository findings and inherited contracts
 
-- `WorkflowManager.captureAndActivate` creates the submission row before evidence capture and calls `captureStableWorkflowContext` while the run and submission are `capturing`. This provides a real submission id for ownership.
+- `WorkflowManager.captureAndActivate` creates the submission row before evidence capture and calls `captureStableWorkflowContext` while the run and submission are `capturing`. It now validates external artifact expectations and captures reserved image/text evidence before raw-context persistence. Candidate preparation may occur during stable capture, but claim creation must wait for those later guards.
 - `captureStableWorkflowContext` already retries a candidate when the checkout boundary changes. Exact-state sealing must participate in the same before/after sample rather than opening a second race window.
 - The existing prompt evidence persists before context compaction and marks the submission `running` only after the final context fingerprint. Repository artifact readiness must be committed before that transition for access-enabled submissions in Phase 3.
 - `workflowRepositoryFingerprint` is the existing answer to whether repository work changed, but it is derived from bounded prompt evidence. The artifact digest is the stronger exact-state identity and must not replace historical access-off fingerprints.
@@ -78,7 +80,7 @@ Add a server-owned `WorkflowRepositoryArtifact` domain type with:
 - state (`creating`, `ready`, `cleanup_pending`, `failed`) and timestamps;
 - last verification and cleanup error metadata.
 
-Add a `WorkflowRepositorySnapshotClaim` domain type with submission id, artifact digest, claim state (`active`, `release_pending`, `released`), and created/released timestamps. A submission has at most one active claim. Artifact bytes and locator belong to the digest-level record, never to an individual claim. Define `WorkflowRepositorySnapshot` as the validated join of one active claim and its ready artifact for callers that need the complete effective snapshot.
+Add a `WorkflowRepositorySnapshotClaim` domain type with submission id, artifact digest, claim state (`provisional`, `active`, `release_pending`, `released`), and created/activated/released timestamps. A submission has at most one unreleased claim. Artifact bytes and locator belong to the digest-level record, never to an individual claim. Define `WorkflowRepositorySnapshot` as the validated join of one active claim and its ready artifact for callers that need the complete effective snapshot. A provisional claim protects promoted bytes during capture finalization but cannot authorize materialization.
 
 The locator is opaque outside the artifact service. Shared workload requests carry it because a future executor must receive an artifact reference, but no provider or MCP request accepts or returns a host path.
 
@@ -100,14 +102,18 @@ A directory artifact is acceptable as the local representation if its canonical 
 Implement one `WorkflowRepositoryArtifactService` with:
 
 ```ts
-seal(input, signal): Promise<WorkflowRepositorySnapshot>
-materialize(locator, digest, signal): Promise<RepositoryViewLease>
+prepare(input, signal): Promise<WorkflowRepositoryArtifactCandidate>
+promote(candidate, submissionId): Promise<WorkflowRepositoryProvisionalSnapshot>
+discard(candidate): Promise<void>
+materialize(request: RepositoryMaterializationRequest, signal): Promise<RepositoryViewLease>
 verify(snapshot, signal): Promise<RepositoryArtifactVerification>
 release(submissionId): Promise<void>
 reconcile(): Promise<RepositoryArtifactReconciliation>
 ```
 
-The service owns all filesystem paths and namespace checks. Callers name submission identity and expected digest, never deletion paths.
+The service owns all filesystem paths and namespace checks. `RepositoryMaterializationRequest` carries submission id, workload id, Workflow attempt id, locator, and digest. Before filesystem access, the trusted workload supervisor validates those values against the active `PersonaWorkloadRequest`, and the artifact service independently verifies that the submission still has an active claim for the same ready digest/locator. A provisional, released, or mismatched claim fails closed and creates no materialization. `prepare` creates no durable artifact record or submission claim. `promote` is the only operation that may publish candidate bytes and creates only a provisional claim. There is deliberately no standalone claim-activation service call.
+
+Add one daemon-owned `WorkflowStore.commitRepositoryCaptureActivation(input)` method that owns a single SQLite transaction across the Workflow submission row and repository claim row. It verifies the submission is still `capturing`, the expected claim is `provisional`, and the joined digest-level artifact is `ready`; then it changes the claim to `active` and the submission to `running` together. A conflict or failure on either write rolls back both. No other method may activate a claim or mark a read-enabled submission running. Callers name submission identity and expected digest, never deletion paths.
 
 ## Implementation steps
 
@@ -116,8 +122,8 @@ The service owns all filesystem paths and namespace checks. Callers name submiss
 In `src/server/db.ts`, create additive tables and indexes for artifact metadata, durable claims, and retryable cleanup. A representative shape is:
 
 - `workflow_repository_artifacts`, unique by content digest, with format/policy versions, locator token, layer ids, manifest metadata, state, counts, errors, and timestamps;
-- `workflow_repository_snapshot_claims`, unique by `submission_id`, referencing artifact digest with active/release state and timestamps;
-- `workflow_repository_artifact_cleanup`, keyed by artifact digest with requested/attempted timestamps and last error, valid only while no active claim exists.
+- `workflow_repository_snapshot_claims`, unique by `submission_id`, referencing artifact digest with provisional/active/release state and timestamps;
+- `workflow_repository_artifact_cleanup`, keyed by artifact digest with requested/attempted timestamps and last error, valid only while no provisional or active claim exists.
 
 Use foreign keys and existing deletion/retention policy deliberately. Historical submissions have no row and continue to parse. Add every new column to both fresh schema and `migrate()` where applicable, and create indexes beside the migration that introduces their columns.
 
@@ -178,23 +184,27 @@ Build the artifact object set explicitly. Verify that every nonsensitive blob re
 
 Do not use a normal `git bundle` or a traversal mode that implicitly closes over every reachable blob. The artifact is intentionally sparse and bounded. Phase 1's path-scoped, retained-set-aware operations are the only reader.
 
-### 5. Seal atomically inside stable capture
+### 5. Prepare inside stable capture and promote after capture guards
 
-Extend `captureStableWorkflowContext` with an optional injected sealing callback or candidate transaction that defaults to absent and therefore changes no current caller.
+Extend `captureStableWorkflowContext` with an optional injected candidate-preparation callback that defaults to absent and therefore changes no current caller. The callback receives the exact checkout resolved for the per-repository Workflow run and returns an unclaimed candidate.
 
 For an activated caller in Phase 3:
 
 1. sample the existing boundary;
-2. create a candidate under a private pending namespace;
+2. allocate a random candidate id under a bounded private pending namespace and atomically write a daemon-owned marker containing candidate id, expected root kind, creation time, and capture nonce before artifact bytes;
 3. build objects, classifications, manifest, and digest;
 4. resample HEAD, index/status, repository identity, and existing transcript/session boundary;
 5. discard the candidate and retry if any boundary changed;
-6. atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's active claim in one database transaction;
-7. only then allow the submission to become `running`.
+6. return the unclaimed candidate with the stable prompt context;
+7. let `captureAndActivate` validate external artifact expectations and capture the already-reserved submission image/text evidence;
+8. discard the candidate on any guard or evidence failure;
+9. after those guards pass, atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's provisional claim in one database transaction;
+10. persist raw context and compact/check evidence readiness, then call the single `commitRepositoryCaptureActivation` owner to activate the claim and mark the submission `running` in one transaction;
+11. if any post-promotion step fails or is cancelled before that transaction commits, idempotently release the provisional claim and enqueue zero-claim cleanup before propagating the existing capture failure.
 
-If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent claim instead of replacing them. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Never guess ownership or claim count from a directory name alone.
+If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent provisional claim instead of replacing them. Promotion consumes the pending marker only after the digest bytes and database ownership transition are established; discard removes only the exact marked candidate. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Startup reconciliation releases every provisional claim whose owning submission did not atomically reach `running`, including a crash after promotion and before application-level cleanup, and then applies the ordinary zero-claim deletion path. Never guess ownership or claim count from a directory name alone.
 
-Phase 2 tests invoke this seam directly. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
+Phase 2 tests invoke prepare, promote, release, discard, and the dormant `commitRepositoryCaptureActivation` transaction directly, including the guarantee that preparation alone produces no durable row or claim, a provisional claim cannot materialize, and failure of either activation write rolls back both states. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
 
 ### 6. Materialize and verify without the original checkout
 
@@ -202,6 +212,7 @@ Implement the Phase 1 materializer:
 
 - resolve an opaque locator only inside the dedicated artifact root;
 - canonicalize and containment-check every artifact path;
+- accept only an active-request-bound `RepositoryMaterializationRequest` and reject submission, workload, attempt, locator, or digest mismatch before opening artifact paths;
 - verify outer digest, canonical manifest, format/policy/history-policy versions, retained-set counts/frontier metadata, and every listed component before use;
 - construct a private Git object directory and allowed worktree/index view in a fresh attempt-scoped directory;
 - disable object fetching, alternates outside the artifact, hooks, config includes, credential helpers, and network;
@@ -215,11 +226,11 @@ Materialization must succeed after the source worktree and its Git common direct
 Integrate with `src/server/workflows/retention.ts` and `WorkflowManager` startup/periodic ownership:
 
 - artifact bytes are owned by a digest-level record; each submission has an independent durable claim and all retries of that submission reuse it;
-- run-family retention or explicit deletion atomically moves that submission's claim through release state and enqueues digest cleanup only when the transaction observes no other active claim;
-- cleanup claims the zero-reference artifact, rechecks the absence of active submission claims in the deletion transaction, and abandons deletion if a concurrent capture acquired a claim;
+- run-family retention, explicit deletion, or failed activation atomically moves that submission's claim through release state and enqueues digest cleanup only when the transaction observes no other provisional or active claim;
+- cleanup claims the zero-reference artifact, rechecks the absence of provisional or active submission claims in the deletion transaction, and abandons deletion if a concurrent capture acquired a claim;
 - failed deletion remains durable and retryable;
-- startup removes abandoned pending candidates and orphaned materializations only when their dedicated namespace and ownership marker are proven;
-- startup repairs ready-row/missing-artifact, artifact/no-row, claim/no-artifact, and zero-claim cleanup mismatches conservatively without deleting bytes referenced by any active claim;
+- startup scans only immediate children of the bounded daemon-owned pending namespace. After a restart no unpromoted candidate can have a durable consumer, so it removes every well-formed candidate whose atomic marker, containment, root kind, and candidate id agree; malformed or unowned entries are quarantined/reported rather than recursively deleted. Periodic reconciliation uses the in-memory active-candidate registry and never removes a candidate still owned by a live capture;
+- startup repairs ready-row/missing-artifact, artifact/no-row, claim/no-artifact, stranded provisional claims, and zero-claim cleanup mismatches conservatively without deleting bytes referenced by any provisional or active claim;
 - never recurse-delete a user-supplied path, worktree, repository root, or Git common directory.
 
 Expose structured logs and status counts for active snapshots, bytes, seal/verify/materialize latency, failures by code, cleanup backlog, and orphan observations. Do not log file bodies, sensitive paths, or raw manifests.
@@ -255,13 +266,14 @@ Fixtures must distinguish:
 - repository config/attributes defining clean, process, diff, textconv, smudge, hook, include, credential, and promisor behavior;
 - a live index with uncommon extensions or split-index behavior if supported by current Git;
 - source worktree mutation during each capture step;
-- database failure, rename/promotion failure, disk-full simulation, cancellation, digest corruption, missing object, daemon restart, retention, and cleanup retry.
+- database failure, rename/promotion failure, disk-full simulation, cancellation, digest corruption, missing object, daemon restart in every prepare/promote/activation-commit/release/discard window, retention, and cleanup retry.
 
 Required proofs:
 
 - the original worktree and index hashes are unchanged after success and failure;
 - reconstructed HEAD/index/worktree layer diffs and status match the captured fixture exactly;
 - an artifact still works after source checkout/common-dir deletion;
+- stale or cross-attempt materialization requests and mismatched submission, workload, locator, or digest values fail before a lease or filesystem view is created;
 - denied blob bodies and known secret markers do not appear anywhere under the artifact root;
 - Phase 1 MCP operations succeed for allowed content and deny sensitive content against the real artifact;
 - retained revision selection is deterministic across repeated capture, stops before the first commit or byte overflow without holes, includes every allowed blob needed in range, and records identical boundary metadata in the descriptor and manifest;
@@ -270,6 +282,8 @@ Required proofs:
 - two submissions can claim the same digest; releasing either claim preserves bytes and materialization for the other, while releasing the final claim permits retryable cleanup;
 - concurrent claim/release and cleanup races recheck the active-claim invariant and never prematurely delete shared bytes;
 - cleanup removes only proven zero-claim artifacts and survives partial failure/restart;
+- a crash after prepare returns but before promote/discard leaves no durable row or claim, and the next startup removes only that atomically marked pending candidate while preserving malformed, unowned, and live periodic candidates;
+- a raw-context, compaction, evidence-readiness, cancellation, or activation failure after promotion releases the provisional claim, while a crash in that interval is reconciled from provisional claim plus submission state without retaining an unusable artifact;
 - default-unused capture seam leaves all existing Workflow fingerprints and behavior unchanged.
 
 Run focused tests with the suite preamble, then:
@@ -289,8 +303,8 @@ npm run smoke
 - Denied blob bodies are absent from the artifact, including history packs.
 - The artifact contains exactly the deterministic `RepositoryHistoryPolicyV1` retained prefix and all required allowed objects; boundary and out-of-range behavior passes the Phase 1 MCP contract after source removal.
 - Capture neither mutates the live index/worktree nor executes repository-configured programs.
-- Candidate promotion, digest ownership, per-submission claims, zero-claim cleanup intent, and restart reconciliation are crash-safe and tested.
-- Releasing one of several active claims cannot delete shared bytes; releasing the final claim permits deletion only after the cleanup transaction rechecks zero active claims.
+- Candidate marker publication, prepare/promote/activation-commit/release/discard crash windows, digest ownership, provisional/active per-submission claims, zero-claim cleanup intent, and startup reconciliation are crash-safe and tested.
+- Releasing one of several provisional or active claims cannot delete shared bytes; releasing the final claim permits deletion only after the cleanup transaction rechecks zero unreleased claims.
 - Historical submissions and all existing active Workflow behavior are unchanged.
 - Operational logs/counts are bounded and contain no repository bodies.
 - The phase pull request records any deviation and reasoning.

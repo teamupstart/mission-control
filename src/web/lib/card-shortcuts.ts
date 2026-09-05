@@ -1,9 +1,18 @@
 /**
- * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= - jump straight into a Board card's console.
+ * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= - jump straight into a fleet session's console.
  *
- * The board answers "which of these needs me" at a glance and then charges an arrow-key
+ * The fleet answers "which of these needs me" at a glance and then charges an arrow-key
  * walk, or a mouse, to act on the answer. These twelve chords are the missing half: the
- * card you already read is one keystroke from its open conversation.
+ * card - or the rail row - you already read is one keystroke from its open conversation.
+ *
+ * BOTH fleet layouts, off ONE assignment. `App` derives the map from the ordered column
+ * arrays the arrow keys walk and hands it to whichever layout is mounted, so the Board
+ * card's keycap (`SessionTile`, top-right corner) and the Console rail's (`RailRow`, left of
+ * the state word) are the same twelve keys against the same twelve sessions. The rail IS
+ * those columns read end to end - it is what a board column morphs into on drill-in, from the
+ * same `orderSessions` result - so switching layout re-draws the numbering rather than
+ * renumbering the fleet. A per-layout assignment could only be a second opinion about one
+ * order, and its symptom would be a key that opens its neighbour.
  *
  * POSITIONAL, not persistent. A slot belongs to a place on the board, never to a session,
  * so the numbering is handed out fresh from the live order on every render - a completed
@@ -16,8 +25,8 @@
  * to one action and lets an operator rebind it; these twelve address a POSITION, so there
  * is no per-chord action to name in a settings row and nothing an operator could
  * meaningfully rebind - ⌘4 means "the fourth card" or it means nothing. They are switched
- * on and off as a whole, with the keycap they print, through the Board card's own display
- * registry (`board-card.ts`, item `cardShortcut`).
+ * on and off as a whole, with the keycaps they print on both layouts, through the Board
+ * card's own display registry (`board-card.ts`, item `cardShortcut`).
  *
  * They are RESERVED from that registry all the same, and `CARD_SHORTCUT_CHORDS` is what
  * `reservedChordReason` reads to do it. App's jump arm runs ahead of the action dispatch, so
@@ -104,7 +113,8 @@ export const CARD_SHORTCUT_CHORDS: readonly string[] = CARD_SHORTCUT_KEYS.map(ca
  * Takes the SAME `boardColumns` arrays the arrow keys walk - a column per tone, already
  * narrowed to what is on screen - so the numbering crosses statuses exactly as a reader's
  * eye does: the first card in **needs you** is ⌘1 and the count carries on into **working**
- * and **idle** rather than restarting per column. A session a folded repository frame is
+ * and **idle** rather than restarting per column. Read end to end that is also the Console
+ * rail top to bottom, which is why one pass serves both layouts. A session a folded repository frame is
  * hiding is not in those arrays and so claims no slot, which is the same rule navigation
  * follows: a chord must not open a card nobody can see.
  *

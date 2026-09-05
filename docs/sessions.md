@@ -1323,7 +1323,7 @@ unresolved. An effective amendment or replacement updates the Goal and advances 
 version, while steering changes only the latest focus.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
-and model are selected in **Settings → [Models](models.md#models-what-the-apps-own-model-work-runs-on)**;
+and model are selected in **Settings → [Models](models.md)**;
 out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
 Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
 the last durable objective stays visible and the unresolved instruction remains ahead of later

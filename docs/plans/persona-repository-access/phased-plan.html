@@ -94,6 +94,7 @@
     <div class="eyebrow">Approved implementation sequence</div>
     <h1>Persona repository access</h1>
     <p class="lead">Three serial merge units deliver a workload-local repository MCP, a portable exact-state artifact, and the complete Persona and Workflow experience without exposing repository bodies to Mission Control.</p>
+    <p><strong>Revalidated 2026-09-04:</strong> reconciled with <code>origin/main</code> at <code>3459720f</code> (<code>v1.7.1</code>). The architecture and three-phase sequence remain valid with the current integration amendments below.</p>
     <div class="links">
       <a href="plan.html">Approved source plan</a>
       <a href="phased-plan.md">Markdown phase index</a>
@@ -128,11 +129,15 @@
         <li>Built-in Personas are generated application data, not database rows, so local access needs a narrow sidecar override.</li>
         <li>Publication currently reuses a version by draft revision before resolving Persona snapshots, so access-only edits need a canonical graph fingerprint.</li>
         <li>Stable Workflow capture is the only safe checkout boundary; a clean detached check lease cannot represent staged, unstaged, and untracked state.</li>
+        <li>Workflow capture now resolves a checkout per repository run and validates external artifact expectations before raw-context persistence. Artifact candidates bind to that checkout and create only a provisional claim after the existing guards pass. One daemon-owned store method activates the claim and marks the submission running in the same SQLite transaction.</li>
+        <li>Reserved image/text evidence and evidence-readiness policy remain independent. A repository artifact enables queries and cannot satisfy criterion-mapped evidence.</li>
         <li>The general headless <code>LlmRunner</code> has no MCP descriptor and must remain tool-less. Full session adapters provide the provider-specific launch patterns.</li>
         <li>Mission MCP includes task tools and credentials, so repository MCP is a separate bundle with no daemon credential.</li>
         <li>A normal Git bundle would include sensitive reachable blobs. The portable artifact must be a sparse object set that preserves commit/tree identities but omits denied blob bodies.</li>
         <li>History pagination cannot define artifact retention. <code>RepositoryHistoryPolicyV1</code> retains one deterministic all-parent prefix capped before 2,048 commits or 512 MiB of additional allowed historical blobs.</li>
         <li>Workflow events and LLM calls are already paged. Query audits need an independent bounded page and compact summary.</li>
+        <li>Evidence has eight stable quote/path/line-shaped kinds. Repository handles append one protocol-gated branch without changing those shapes. Daemon-owned metadata binds operation instance and kind to canonical half-open 1-based line, 0-based raw-byte, or independent old/new diff coordinates.</li>
+        <li>Imported and plugin-managed Personas carry provenance. New imports default access to <code>none</code>, while reimport and synchronization preserve operator-owned access.</li>
       </ul>
     </section>
 
@@ -177,11 +182,11 @@
       </div>
       <div class="phase">
         <div class="num">2</div>
-        <div><strong>Portable exact-state artifact and lifecycle</strong><span class="meta">1,350-1,750 LOC. Exact HEAD/index/worktree capture, sparse objects, sensitive-blob omission, digest ownership, per-submission claims, isolated materialization, zero-claim cleanup, and startup reconciliation.</span></div>
+        <div><strong>Portable exact-state artifact and lifecycle</strong><span class="meta">1,350-1,750 LOC. Exact HEAD/index/worktree capture, sparse objects, sensitive-blob omission, prepare/promote/release/discard lifecycle, single-transaction submission activation, provisional and active claims, isolated materialization, zero-claim cleanup, and startup reconciliation.</span></div>
       </div>
       <div class="phase">
         <div class="num">3</div>
-        <div><strong>Persona and Workflow integration</strong><span class="meta">1,500-1,900 LOC. Custom and built-in settings, publication fingerprint, conditional capture, workload/event/audit durability, engine retries, evidence validation, Persona Editor, run detail, docs, and E2E.</span></div>
+        <div><strong>Persona and Workflow integration</strong><span class="meta">1,500-1,900 LOC. Custom and built-in settings, publication fingerprint, per-run conditional capture ordered after existing guards, workload/event/audit durability, provenance-safe import, evidence validation, Persona Editor, run detail, docs, and E2E.</span></div>
       </div>
     </section>
 
@@ -233,9 +238,9 @@
         <table>
           <thead><tr><th>Established by</th><th>Contract</th><th>Consumed by</th></tr></thead>
           <tbody>
-            <tr><td>Phase 1</td><td>Closed operations, repository and history policy, retained-set/boundary semantics, metadata-only evidence handles, view descriptor, budgets/cursors, workload request/events/result, executor dispatch/reconcile/cancel, standalone MCP</td><td>Phases 2 and 3</td></tr>
-            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact policy-retained history prefix, independent submission claims, immutable digest/locator, exact layer ids, seal/materialize/verify/release/reconcile, zero-claim cleanup</td><td>Phase 3</td></tr>
-            <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query/handle audit paging, same-attempt metadata-only evidence validation</td><td>Future remote adapter</td></tr>
+            <tr><td>Phase 1</td><td>Closed operations, repository/history policy, canonical operation-instance and half-open line/raw-byte/old-new-diff evidence handles, compatibility-floor reader contract, view descriptor, budgets/cursors, workload protocol, executor, standalone MCP</td><td>Phases 2 and 3</td></tr>
+            <tr><td>Phase 2</td><td>Digest-owned sparse artifact, exact retained history, provisional/active claims, atomic pending-candidate markers, immutable digest/locator, attempt-bound materialize/verify/release/reconcile, single-transaction claim/submission activation, zero-claim cleanup</td><td>Phase 3</td></tr>
+            <tr><td>Phase 3</td><td>Resolved/frozen Persona access, graph fingerprint, one workload per attempt, event idempotency, query/handle audit paging, canonical same-attempt evidence validation, two-step rollout and write-preserving rollback</td><td>Future remote adapter</td></tr>
           </tbody>
         </table>
       </div>
@@ -264,10 +269,13 @@
         <li>All twelve required design areas have one explicit owner and all consumers follow direct or transitive prerequisites.</li>
         <li>Access-off behavior retains the historical prompt, provider options, fingerprints, and verdict path.</li>
         <li>Read-enabled attempts never reconstruct from the live checkout or degrade to prompt-only review.</li>
-        <li>Shared artifact bytes survive release of any submission claim until the final active claim is atomically released and cleanup rechecks zero references.</li>
+        <li>Shared artifact bytes survive release of any submission claim until the final provisional or active claim is atomically released and cleanup rechecks zero references.</li>
         <li>History selection is deterministic at both ceilings; in-range queries work after source removal, and boundary or out-of-range behavior is provider-neutral and auditable.</li>
         <li>Repository bodies stay inside the workload; SQLite, logs, exports, SSE, and browser receive safe metadata only.</li>
-        <li>Repository evidence references contain only <code>operationId</code> and opaque <code>evidenceHandleId</code>; daemon-owned metadata proves the exact returned path/range without storing quotes or excerpts.</li>
+        <li>Repository evidence references contain only daemon-minted <code>operationId</code> and opaque <code>evidenceHandleId</code>; daemon-owned metadata binds operation kind and item identity to canonical half-open line, raw-byte, or old/new diff coordinates without storing quotes or excerpts.</li>
+        <li>Materialization is bound to the active submission, workload, and Workflow attempt before artifact paths are opened.</li>
+        <li>A crash before candidate promote/discard cannot leak unbounded snapshots. A failure after promotion releases its provisional claim, and startup reconciles a crash-stranded claim whose submission never reached <code>running</code>.</li>
+        <li>A writer-disabled compatibility floor lands before citation writers. Mixed versions fail before provider launch or durable verdict write, and normal rollback preserves repository citations plus unrelated live writes without restoring the whole database.</li>
         <li>Built-in overrides affect future operator-published versions, never shipped built-in versions.</li>
         <li>The local executor is a conformance implementation for a future remote adapter, not a hidden selection of remote infrastructure.</li>
       </ul>
@@ -282,7 +290,7 @@ npm run build
 npm run smoke
 # Phase 3
 npm run test:e2e</code></pre>
-      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, metadata-only same-attempt evidence handles, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
+      <p>Final cross-phase proof covers access-off byte identity, no-verdict-without-repository, provider parity, deterministic bounded history after source checkout deletion, crash-safe pending and provisional-claim cleanup, attempt-bound materialization, canonical same-attempt half-open line/raw-byte/old-new-diff evidence handles, compatibility-floor fencing and write-preserving rollback, exact dirty state, absence of sensitive blobs and bodies, and idempotent event replay.</p>
     </section>
   </div>
   <p class="footer">Source of truth: phased-plan.md. Detailed implementation instructions live in the three linked phase Markdown files.</p>

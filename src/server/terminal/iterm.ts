@@ -96,8 +96,10 @@ end encodeField
 `;
 
 // `title` was added to iTerm2's AppleScript tab object after the long-standing
-// session `name` property. Keep the newer, exact tab-title behavior when it is
-// available, while allowing discovery and naming to work on older dictionaries.
+// session `name` property. Its getter works in 3.6.11, but its declared setter
+// raises an Objective-C KVC exception and leaves the Apple Event hanging instead
+// of entering an AppleScript `on error` block. Naming through the current session
+// is the working contract across old and current dictionaries.
 const TAB_TITLE_HANDLERS = `
 on readItermTabTitle(terminalTab)
   tell application id "${BUNDLE_ID}"
@@ -115,11 +117,7 @@ end readItermTabTitle
 
 on setItermTabTitle(terminalTab, requestedTitle)
   tell application id "${BUNDLE_ID}"
-    try
-      set title of terminalTab to requestedTitle
-    on error
-      set name of current session of terminalTab to requestedTitle
-    end try
+    set name of current session of terminalTab to requestedTitle
   end tell
 end setItermTabTitle
 `;
@@ -133,7 +131,9 @@ tell application id "${BUNDLE_ID}"
     set activeWindowId to id of current window as text
   end try
   repeat with terminalWindow in windows
+    set terminalTabIndex to 0
     repeat with terminalTab in tabs of terminalWindow
+      set terminalTabIndex to terminalTabIndex + 1
       set terminalTabTitle to my readItermTabTitle(terminalTab)
       repeat with terminalSession in sessions of terminalTab
         set sessionCwd to ""
@@ -142,9 +142,9 @@ tell application id "${BUNDLE_ID}"
         end try
         set activeFlag to "0"
         try
-          if ((id of terminalWindow as text) is activeWindowId and (index of terminalTab) is (index of current tab of terminalWindow) and (id of terminalSession as text) is (id of current session of terminalTab as text)) then set activeFlag to "1"
+          if ((id of terminalWindow as text) is activeWindowId and (id of terminalSession as text) is (id of current session of current tab of terminalWindow as text)) then set activeFlag to "1"
         end try
-        set outputText to outputText & my encodeField(id of terminalSession) & "${US}" & my encodeField(index of terminalTab) & "${US}" & my encodeField(id of terminalWindow) & "${US}" & my encodeField(terminalTabTitle) & "${US}" & my encodeField(name of terminalWindow) & "${US}" & my encodeField(tty of terminalSession) & "${US}" & my encodeField(sessionCwd) & "${US}" & activeFlag & "${RS}"
+        set outputText to outputText & my encodeField(id of terminalSession) & "${US}" & my encodeField(terminalTabIndex) & "${US}" & my encodeField(id of terminalWindow) & "${US}" & my encodeField(terminalTabTitle) & "${US}" & my encodeField(name of terminalWindow) & "${US}" & my encodeField(tty of terminalSession) & "${US}" & my encodeField(sessionCwd) & "${US}" & activeFlag & "${RS}"
       end repeat
     end repeat
   end repeat
@@ -202,6 +202,11 @@ export function itermEmulator(exec: TerminalExec = defaultExec): TerminalEmulato
     );
   };
 
+  const retitle = (target: EmulatorTarget, title: string) => command(
+    `${TAB_TITLE_HANDLERS}\n${targetScript(target, `  my setItermTabTitle(targetTab, ${appleScriptString(title)})`)}`,
+    "iTerm2 could not rename that tab",
+  );
+
   return {
     id: "iterm",
     label: "iTerm2",
@@ -252,33 +257,43 @@ export function itermEmulator(exec: TerminalExec = defaultExec): TerminalEmulato
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
         const argv = shellCommand(spec.argv);
-        const launch = `${spec.cwd ? `cd -- ${shellCommand([spec.cwd])} && ` : ""}exec ${argv}`;
-        const script = `${TAB_TITLE_HANDLERS}
-tell application id "${BUNDLE_ID}"
+        const innerLaunch = `${spec.cwd ? `cd -- ${shellCommand([spec.cwd])} && ` : ""}exec ${argv}`;
+        // iTerm2 tokenizes `command` as a direct command line; it does not evaluate shell
+        // operators itself. Make the shell boundary explicit so `cd`, `&&`, and `exec`
+        // establish the requested worktree and argv instead of becoming arguments to a
+        // short-lived command that leaves iTerm2's "session ended" warning behind.
+        const launch = shellCommand(["/bin/sh", "-c", innerLaunch]);
+        const script = `tell application id "${BUNDLE_ID}"
   set newWindow to create window with default profile command ${appleScriptString(launch)}
   set newTab to current tab of newWindow
-  if ${appleScriptString(spec.title)} is not "" then my setItermTabTitle(newTab, ${appleScriptString(spec.title)})
   set newSession to current session of newTab
-  return id of newSession & "${US}" & (index of newTab as text)
+  return id of newSession
 end tell`;
         const result = await osa(script, ACTION_TIMEOUT_MS);
         if (result.code !== 0) {
           return { ...actionResult(result, "iTerm2 could not open a window"), target: null };
         }
-        const [paneIdRaw, tabId = ""] = result.stdout.trim().split(US);
-        const paneId = normalizeItermSessionId(paneIdRaw);
+        const paneId = normalizeItermSessionId(result.stdout.trim());
+        const target = paneId ? { paneId, tabId: "1" } : null;
+
+        // iTerm2 exposes a tab index and writable title in its dictionary, but querying or
+        // mutating either through the object returned by `create window` hangs or errors on
+        // 3.6.11. Re-find the tab by the session's stable ID in a separate Apple Event, the
+        // same path every later retitle uses. Once creation returned, the window is open;
+        // a best-effort title failure must not report the launch as failed and invite a
+        // duplicate window or settle an SDK handoff whose terminal successor is alive.
+        if (target && spec.title) {
+          await retitle(target, spec.title);
+        }
         return {
           ok: true,
           outcomeUnknown: false,
-          target: paneId ? { paneId, tabId } : null,
+          target,
         };
       },
     },
 
-    retitle: (target, title) => command(
-      `${TAB_TITLE_HANDLERS}\n${targetScript(target, `  my setItermTabTitle(targetTab, ${appleScriptString(title)})`)}`,
-      "iTerm2 could not rename that tab",
-    ),
+    retitle,
 
     names: PLAIN_NAMES,
   };

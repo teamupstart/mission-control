@@ -85,6 +85,25 @@ The spec must never spend model tokens: agent binaries are redirected to the fak
 agents in `e2e/fixtures/fake-agents.ts`. Do not add `data-testid`; select by role,
 label, or placeholder.
 
+## Continuous integration
+
+The main CI workflow reports thirty non-package checks on a pull request:
+
+- Two Node-specific dependency producers and the shared `gates` check run on GitHub-hosted
+  `ubuntu-latest`. The dependency producers cache exact lockfile-keyed `node_modules` trees for
+  Node.js 24 and 26; `gates` runs typecheck and lint against the Node.js 24 tree.
+- Six Node.js 24 unit shards and six Node.js 26 unit shards run on the `frontend-platform`
+  `ubuntu-8cpu-32ram-300ssd` runner with eight test workers. Every shard also builds and smoke-tests
+  its own bundles, so either supported Node release can expose a runtime-only failure.
+- Fifteen Node.js 24 end-to-end shards run independently on the `frontend-platform`
+  `ubuntu-4cpu-32ram-150ssd` runner with four Playwright workers. Each shard builds the dashboard
+  and daemon it drives, and fake agents ensure the suite spends no model tokens.
+
+The three-minute test-step objective is a performance target, not a timeout; slower failures keep
+their diagnostics. The release-only macOS package job remains on `macos-14`, and a separate
+pull-request-title workflow keeps squash subjects parseable by Release Please. Treat runner group,
+labels, worker counts, and shard counts as one capacity decision and benchmark them together.
+
 ## Working well in this repository
 
 - Inspect `git status` before editing and keep unrelated work out of your change.
@@ -105,11 +124,9 @@ the expected bar is `npm run typecheck`, `npm run lint`, and `npm test`. Changes
 build or runtime surfaces also need `npm run build` and `npm run smoke`; UI changes
 also need `npm run test:e2e` with a matching spec.
 
-CI defines three jobs and reports eight checks: `gates` (typecheck and lint), `unit (node 24)`
-and `unit (node 26)` (tests, build, and smoke), and five `e2e` shards (the browser suite, on
-Node 24 only). Lint is a CI job, so it no longer passes silently when it is skipped locally.
-See [the CI runner allocation](README.md#ci-runner-allocation) before changing runner labels,
-worker counts, or shard counts.
+Lint is a CI gate, so it does not pass silently when skipped locally. See
+[Continuous integration](#continuous-integration) before changing runner labels, worker counts,
+or shard counts.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

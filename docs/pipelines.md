@@ -417,7 +417,7 @@ their outcome and return - including the refusal an operator most needs to read.
 A run in flight shows the **running total** its event ledger has reported so far, tailed by
 byte offset across passes and daemon restarts. When the feature ships, that estimate is
 replaced by the engine's own committed figure from `.docs/shipped/<slug>.md`, and the same
-figure enters Mission Control's [spend ledger](cost-and-usage.md) as **automation** spend under
+figure enters Mission Control's [spend ledger](sessions.md#cost-telemetry) as **automation** spend under
 the role `ai-conductor pipelines`.
 
 Three decisions behind that, each of which had a plausible alternative:

@@ -206,7 +206,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "budget",
       // The jump keys, which are the one item in that checklist an operator is likely to
       // hunt for by the KEY rather than by the item's name - "cmd 1" is what somebody types
-      // who wants to know where the numbers on their cards came from, or to stop ⌘- zooming
+      // who wants to know where the numbers on their cards or rail rows came from, or to stop ⌘- zooming
       // something else. They land on the panel that switches the whole thing off, because
       // there is no per-chord row anywhere to send them to.
       "jump",
@@ -535,12 +535,13 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "workflow-test-evidence",
     label: "Test evidence readiness",
     description:
-      "First-pass acceptance, rejection reasons and evidence adoption for the Test Evidence Auditor.",
+      "First Auditor acceptance, preflight interceptions, refinements, overrides and disagreements.",
     category: "workflows",
     anchor: "workflows/test-evidence",
     keywords: [
       "test evidence", "auditor", "readiness", "rejection", "first pass", "screenshot",
-      "artifact", "evidence", "overreach", "telemetry",
+      "artifact", "evidence", "overreach", "telemetry", "override", "interception",
+      "refinement", "unavailable", "disagreement", "evaluator",
     ],
     kind: "jump",
     backup: backupNotApplicable("derived-status"),

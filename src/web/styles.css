@@ -24136,6 +24136,31 @@ span.line-run-prov {
   color: var(--tone-color, var(--neutral));
   white-space: nowrap;
 }
+/* Room enough for the states a quiet fleet is made of - "working", "idle", "starting",
+   "exited" - so the ⌘-number keycap to their left lands in a COLUMN down the rail rather
+   than stepping in and out with the length of the word beside it.
+
+   A min-width and not a width: "needs an answer" and "3 to review" are honest labels and take
+   the room they need, which moves that row's key and no other. `em`, so it tracks the label's
+   own size rather than pinning a pixel count the density rungs would outgrow.
+
+   Only on a line that HAS a key. With the display item off there is no column to line up, and
+   reserving the width anyway would open a gap between a held pill and the state word it
+   qualifies - a cost paid on every row of a rail that had nothing to gain by it. */
+.rail-state-line:has(.kb-hint) .rail-state {
+  min-width: 4.2em;
+  text-align: right;
+}
+/* The jump keycap, first on the state line and so left of the state word.
+   Deliberately NOT restyled from the shared `.kb-hint` at rest: the whole gesture is "read the
+   row, press the number", and a key that had to be hovered to be read would be one you would
+   rather have clicked past. Brighter on the row under the cursor or on the selection, which is
+   the row the key is about to open - the same pairing the Board card draws. */
+.rail-row:hover .rail-state-line .kb-hint,
+.rail-row.selected .rail-state-line .kb-hint {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 38%, var(--border));
+}
 /* The row-sized held mark: the tile's and the card's pill, at rail density. The spine
    recolours through `--tone-color` below, so the row reads held even collapsed to a sliver. */
 .rail-held {

@@ -33,7 +33,9 @@ const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { WorkflowEngine } = await import("../src/server/workflows/engine.ts");
-const { guidanceDigest } = await import("../src/server/workflows/test-evidence-audit.ts");
+const { evidenceTelemetryKey, guidanceDigest } = await import(
+  "../src/server/workflows/test-evidence-audit.ts"
+);
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { runSupervisedCheck } = await import("../src/server/workflows/check-supervisor.ts");
 const { liveCheckGroupCount } = await import("../src/server/workflows/check-group.ts");
@@ -1280,9 +1282,10 @@ test("a downstream Persona receives frozen Check evidence in its prompt and inpu
   });
   const auditEvent = store.listEvents("run-check-evidence")
     .find((item) => item.kind === "test_evidence_audit")!;
+  assert.equal(auditEvent.eventId, `audit:${evidenceTelemetryKey("attempt", auditor.id)}`);
   assert.deepEqual(auditEvent.payload, {
     nodeId: "auditor",
-    submissionId: "submission-check-evidence",
+    submissionKey: evidenceTelemetryKey("submission", "submission-check-evidence"),
     // The two identifiers a guidance-revision comparison is made of, asserted from the
     // engine rather than from the pure builder: the version is only reachable here, and a
     // telemetry event that cannot name which guidance produced it cannot be compared to the
@@ -1298,6 +1301,12 @@ test("a downstream Persona receives frozen Check evidence in its prompt and inpu
     round: 1,
     segment: 0,
     firstSubmission: true,
+    firstAuditorAttempt: true,
+    readinessSnapshot: {
+      policy: "off",
+      evaluatorVersion: null,
+      status: "not_evaluated",
+    },
     outcome: "pass",
     rejectionCategories: [],
     evidenceReadiness: {

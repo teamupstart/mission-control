@@ -196,10 +196,12 @@ test("a refused first submission reaches the readiness panel as a rate an operat
   await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
   const card = readinessCard(dashboard);
 
-  // The headline the scout report's rollout criterion is written in, with its target beside
-  // it - one first submission, refused, so acceptance is zero over a population of one.
+  // The semantic headline, with its target beside it - one first Auditor attempt, refused,
+  // so acceptance is zero over a population of one.
   await expect(
-    card.getByText("First-pass acceptance 0% (0 of 1 first submissions) · target at least 70%"),
+    card.getByText(
+      "First Auditor attempt accepted 0% (0 of 1 first Auditor attempts) · target at least 70%",
+    ),
   ).toBeVisible();
 
   const attempts = card.getByRole("group", { name: "Attempts" });
@@ -216,9 +218,11 @@ test("a refused first submission reaches the readiness panel as a rate an operat
   await expect(reasons.locator("p").filter({ hasText: "Other" }))
     .toContainText("0% (0 of 1 failing attempts)");
 
-  // Evidence readiness adoption - the zero-image, zero-artifact first packet the report
-  // measured, now visible on a running install.
-  const readiness = card.getByRole("group", { name: "Evidence readiness on first submissions" });
+  // Historical packet shape - the zero-image, zero-artifact first packet the report
+  // measured, now visible on a running install and separate from preflight outcomes.
+  const readiness = card.getByRole("group", {
+    name: "Historical packet shape on first submissions",
+  });
   await expect(readiness.getByText("First submissions with no image")).toBeVisible();
   await expect(readiness.getByText("First submissions with no text artifact")).toBeVisible();
   await expect(readiness.getByText("100% (1 of 1 first submissions)").first()).toBeVisible();
@@ -259,7 +263,7 @@ test("two workflows sharing the auditor draw two rows an operator can tell apart
   // Both are the same auditor at the same guidance, which is precisely why the workflow name
   // is the only thing separating them.
   await expect(slices.locator("p").filter({ hasText: "E2E readiness alpha" }))
-    .toContainText("1 attempt · first pass 0% (0 of 1 first submissions)");
+    .toContainText("1 attempt · first Auditor 0% (0 of 1 first Auditor attempts)");
   await expect(slices.getByText("persona")).toHaveCount(0);
 
   await shoot(card, "two-workflows");

@@ -1662,15 +1662,36 @@ It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
 ### Test evidence readiness
 
-**Settings → Workflows → Test evidence readiness** aggregates the `test_evidence_audit` events
-above across every retained run and refreshes on the same tick as Workflow health. It reports
-first-pass acceptance (round 1, segment 0), the failure rate over all auditor attempts, auditor
-attempts per run, the possible-overreach rate, each rejection category's share of the failing
-attempts, and evidence-readiness adoption on first submissions: how many carried no image, no text
-artifact, and no upstream Check, how many had a truncated transcript, and how many bytes Check
-retention and transcript head-clipping dropped. Attempts are also broken down by workflow version,
-Persona and guidance digest, which is what makes a guidance revision comparable with the one
-before it. The Persona *revision* is not part of that grouping: the digest identifies the exact
+**Settings → Workflows → Test evidence readiness** reads two separate, newest-first windows across
+every retained run and refreshes on the same tick as Workflow health. The Auditor window contains
+up to 2,000 `test_evidence_audit` events. Its headline is the acceptance rate among each run's first
+completed Test Evidence Auditor attempt. Infrastructure retries do not enter that denominator, and
+packets intercepted by structural preflight are not counted as Auditor passes. The historical
+round-1, segment-0 first-submission acceptance remains visible as a separate measure so its meaning
+does not change under the new denominator. Older events that predate durable first-attempt identity
+are counted as unknown and excluded from the headline.
+
+The independent preflight window contains up to 2,000 readiness evaluations, refinement
+reservations and overrides. Interception and unavailable rates use enforcing
+`criterion_mapped_v1` evaluations as their denominator. Same-round refinement and override rates
+use distinct intercepted runs as their denominator. The panel also reports rejection among first
+Auditor attempts whose captured packet was structurally ready, and separately among those admitted
+by an operator override. These disagreement measures preserve Test Evidence Auditor as the semantic
+authority: preflight checks structure and proof-role coverage, while the Auditor decides whether
+the evidence is relevant and sufficient. Proof-class, missing-role and gap-code frequencies are
+drawn only from intercepted evaluations and are never treated as acceptance.
+
+The panel retains the all-attempt failure rate, attempts per run, possible-overreach rate, each
+rejection category's share of failing attempts, and historical evidence adoption on first
+submissions: how many carried no image, no text artifact, and no upstream Check, how many had a
+truncated transcript, and how many bytes Check retention and transcript head-clipping dropped.
+Auditor attempts are broken down by workflow version, Persona and guidance digest. Preflight
+evaluations are broken down by workflow version and readiness evaluator version. The workflow
+version is the immutable policy snapshot, including whether criterion-mapped readiness was off or
+enforcing; the evaluator version identifies the structural implementation. Neither breakdown is a
+policy-tuning recommendation, and a first sample does not change guidance or thresholds.
+
+The Persona *revision* is not part of the Auditor grouping: the digest identifies the exact
 guidance bytes, so a Persona edit that left the guidance alone keeps its attempts in the same row
 rather than halving the population behind two identically labelled ones. A row reports the newest
 revision seen carrying its guidance, and is labelled with the workflow's name from the live
@@ -1680,16 +1701,18 @@ apart. A Persona is named on the row only when it is not the built-in auditor.
 
 It is advisory and strictly read-only. It re-runs no Persona, rewrites no verdict, gates nothing,
 and holds no state; the Persona's published judgment is unaffected by anything shown here. Only
-counts, durable enums and identifiers cross the wire - never prompt, diff, transcript, guidance,
-verdict or session content.
+counts, bounded enums, versions and opaque correlation keys cross the wire - never criterion text,
+captions, commands, file paths, prompt, diff, transcript, guidance, verdict, override reason or
+session content.
 
 An empty population is reported as **no reading**, never as 0%, so a fleet that has never run the
-auditor cannot be mistaken for one whose first-pass acceptance is zero. The aggregate reads the
-newest 2,000 events (`GET /api/workflows/test-evidence-audit`, optional `limit`); when older
-attempts fall outside that window, or an event cannot be read back, the panel says so rather than
-presenting a partial history as the whole one. A window whose events could not be read back at
-all is distinguished from one with no events: an auditor that has never run and telemetry that
-cannot be decoded lead to opposite conclusions, so neither borrows the other's wording.
+auditor cannot be mistaken for one whose first-attempt acceptance is zero. Each aggregate window
+uses the requested `limit` (`GET /api/workflows/test-evidence-audit`, newest 2,000 by default).
+Auditor and preflight truncation are reported independently. When older events fall outside either
+window, or an event cannot be read back, the panel says so rather than presenting a partial history
+as the whole one. A window whose Auditor events could not be read back at all is distinguished from
+one with no Auditor events: an auditor that has never run and telemetry that cannot be decoded lead
+to opposite conclusions, so neither borrows the other's wording.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and

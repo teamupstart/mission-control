@@ -535,12 +535,13 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     id: "workflow-test-evidence",
     label: "Test evidence readiness",
     description:
-      "First-pass acceptance, rejection reasons and evidence adoption for the Test Evidence Auditor.",
+      "First Auditor acceptance, preflight interceptions, refinements, overrides and disagreements.",
     category: "workflows",
     anchor: "workflows/test-evidence",
     keywords: [
       "test evidence", "auditor", "readiness", "rejection", "first pass", "screenshot",
-      "artifact", "evidence", "overreach", "telemetry",
+      "artifact", "evidence", "overreach", "telemetry", "override", "interception",
+      "refinement", "unavailable", "disagreement", "evaluator",
     ],
     kind: "jump",
     backup: backupNotApplicable("derived-status"),

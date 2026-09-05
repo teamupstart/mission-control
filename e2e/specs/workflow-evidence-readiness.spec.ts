@@ -8,6 +8,15 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { workflowCommandEvidenceContent } from "../../src/shared/workflow.ts";
+import type {
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceReadinessResult,
+  WorkflowSubmission,
+} from "../../src/shared/workflow.ts";
+import {
+  evidenceReadinessEvaluatedEvent,
+  evidenceTelemetryKey,
+} from "../../src/server/workflows/test-evidence-audit.ts";
 
 const EVIDENCE = artifactsDir("workflow-evidence-readiness");
 
@@ -184,6 +193,171 @@ function stageLaterPacket(
       generation,
       now,
       now,
+    );
+  });
+}
+
+function readiness(
+  submissionId: string,
+  status: "ready" | "gaps" | "unavailable",
+  workflowVersion: number,
+): ReturnType<typeof evidenceReadinessEvaluatedEvent>["payload"] {
+  const gaps = status === "gaps" ? ["missing_rendered_output" as const] : [];
+  const evaluated: WorkflowEvidenceReadinessResult = {
+    evaluatorVersion: "criterion_mapped_v1",
+    status,
+    criteria: [{
+      criterionId: "analytics-criterion",
+      criterion: "The analytics state is reviewer-visible",
+      material: true,
+      matchedClientCriterionId: "analytics-claim",
+      authorProofClass: status === "gaps" ? "visual" : null,
+      suggestedProofClass: null,
+      links: [],
+      gaps,
+      warnings: [],
+    }],
+    gapCodes: gaps,
+    warningCodes: [],
+    unavailableReason: status === "unavailable" ? "fixture unavailable" : null,
+  };
+  const submission = {
+    id: submissionId,
+    runId: `run-${submissionId}`,
+    round: 1,
+    segment: 0,
+    parentSubmissionId: null,
+    continuationNodeId: null,
+    continuationNodeAttemptId: null,
+    mode: "full_workflow",
+    triggerSource: "manual",
+    triggerKey: `trigger-${submissionId}`,
+    evidenceFingerprint: `fingerprint-${submissionId}`,
+    context: {},
+    evidence: {},
+    prHeadSha: null,
+    status: "running",
+    createdAt: 1,
+    updatedAt: 1,
+    completedAt: null,
+  } satisfies WorkflowSubmission;
+  const coverage = [{
+    clientCriterionId: "analytics-claim",
+    criterion: "The analytics state is reviewer-visible",
+    proofClass: "visual",
+    repositoryScope: "repo-01",
+    links: [],
+  }] satisfies WorkflowEvidenceCoverageClaim[];
+  return evidenceReadinessEvaluatedEvent({
+    submission,
+    readiness: evaluated,
+    coverage,
+    version: {
+      workflowId: "analytics-workflow",
+      version: workflowVersion,
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+    },
+  }).payload;
+}
+
+function seedOutcomeAnalytics(daemon: DaemonHandle): void {
+  const audit = (
+    submissionId: string,
+    outcome: "pass" | "fail",
+    readinessStatus: "ready" | "overridden",
+    workflowVersion: number,
+    digest: string,
+  ) => ({
+    nodeId: "test-auditor",
+    submissionKey: evidenceTelemetryKey("submission", submissionId),
+    workflowId: "analytics-workflow",
+    workflowVersion,
+    guidance: {
+      personaId: "builtin:test-evidence-auditor",
+      revision: workflowVersion,
+      digest,
+    },
+    round: 1,
+    segment: 0,
+    firstSubmission: true,
+    firstAuditorAttempt: true,
+    readinessSnapshot: {
+      policy: "criterion_mapped_v1",
+      evaluatorVersion: "criterion-mapped-v1",
+      status: readinessStatus,
+    },
+    outcome,
+    rejectionCategories: outcome === "fail" ? ["visual_artifact"] : [],
+    evidenceReadiness: {
+      imageCount: 0,
+      textArtifactCount: 0,
+      checkCount: 1,
+      checkOmittedBytes: 0,
+      transcriptMessageCount: 1,
+      transcriptTruncated: false,
+      transcriptOmittedHeadBytes: 0,
+      transcriptMiddleOmitted: false,
+    },
+    downstreamProofRequests: [],
+    possibleDownstreamProofOverreach: false,
+  });
+  const legacyAudit = (...args: Parameters<typeof audit>) => {
+    const payload: ReturnType<typeof audit> & { firstAuditorAttempt?: boolean } = audit(...args);
+    delete payload.firstAuditorAttempt;
+    return payload;
+  };
+  withDaemonDb(daemon, (db) => {
+    const insert = db.prepare(
+      `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const events: Array<[string, string, number, string, unknown]> = [
+      ["e2e-readiness-ready", "analytics-ready", 10, "evidence_readiness_evaluated",
+        readiness("opaque-ready", "ready", 13)],
+      ["e2e-audit-ready", "analytics-ready", 11, "test_evidence_audit",
+        audit("opaque-ready", "fail", "ready", 13, "aaaaaaaaaaaa")],
+      ["e2e-readiness-override", "analytics-override", 20, "evidence_readiness_evaluated",
+        readiness("override-submission", "gaps", 12)],
+      ["e2e-override", "analytics-override", 21, "evidence_readiness_overridden",
+        { submissionId: "override-submission", acknowledgedRisk: true }],
+      ["e2e-audit-override", "analytics-override", 22, "test_evidence_audit",
+        audit("override-submission", "pass", "overridden", 12, "bbbbbbbbbbbb")],
+      ["e2e-readiness-refined", "analytics-refined", 30, "evidence_readiness_evaluated",
+        readiness("refined-submission", "gaps", 13)],
+      ["e2e-refinement", "analytics-refined", 31, "evidence_preflight_refinement_reserved",
+        { parentSubmissionId: "refined-submission", round: 1, segment: 1 }],
+      ["e2e-readiness-unavailable", "analytics-unavailable", 40,
+        "evidence_readiness_evaluated", readiness("unavailable-submission", "unavailable", 13)],
+      ["e2e-audit-legacy-1", "analytics-legacy-1", 50, "test_evidence_audit",
+        legacyAudit("legacy-submission-1", "pass", "ready", 13, "cccccccccccc")],
+      ["e2e-audit-legacy-2", "analytics-legacy-2", 51, "test_evidence_audit",
+        legacyAudit("legacy-submission-2", "pass", "ready", 13, "cccccccccccc")],
+    ];
+    for (const event of events) {
+      insert.run(event[0], event[1], event[2], event[3], JSON.stringify(event[4]));
+    }
+  });
+}
+
+function seedUnreadableAuditorWithValidPreflight(daemon: DaemonHandle): void {
+  withDaemonDb(daemon, (db) => {
+    const insert = db.prepare(
+      `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    insert.run(
+      "e2e-readiness-with-unreadable-auditor",
+      "analytics-mixed-window",
+      10,
+      "evidence_readiness_evaluated",
+      JSON.stringify(readiness("mixed-window-submission", "ready", 13)),
+    );
+    insert.run(
+      "e2e-unreadable-auditor",
+      "analytics-mixed-window",
+      11,
+      "test_evidence_audit",
+      JSON.stringify({ malformed: true }),
     );
   });
 }
@@ -417,4 +591,62 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   );
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "05-durable-operator-override", readiness);
+});
+
+test("Test evidence readiness separates preflight outcomes from first Auditor acceptance", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedOutcomeAnalytics(daemon);
+  await dashboard.setViewportSize({ width: 1440, height: 1600 });
+  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  const card = dashboard.locator('[data-anchor="workflows/test-evidence"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("First Auditor attempt accepted 50% (1 of 2 first Auditor attempts)");
+  await expect(card).toContainText("target at least 70%");
+  await expect(card).toContainText(
+    "2 legacy attempts have no first-Auditor identity and are excluded from the headline.",
+  );
+  await expect(card).toContainText("Preflight interceptions");
+  await expect(card).toContainText("50% (2 of 4 enforcing evaluations)");
+  await expect(card).toContainText("Same-round refinements");
+  await expect(card).toContainText("50% (1 of 2 intercepted runs)");
+  await expect(card).toContainText("Operator overrides");
+  await expect(card).toContainText("Readiness unavailable");
+  await expect(card).toContainText("25% (1 of 4 enforcing evaluations)");
+  await expect(card).toContainText("Post-ready Auditor rejection");
+  await expect(card).toContainText("100% (1 of 1 first Auditor attempts on ready packets)");
+  await expect(card).toContainText("Post-override Auditor rejection");
+  await expect(card).toContainText("0% (0 of 1 first Auditor attempts on overridden packets)");
+  await expect(card).toContainText("Visual proof class");
+  await expect(card).toContainText("Missing Rendered output role");
+  await expect(card).toContainText("v13 · guidance aaaaaaaa");
+  await expect(card).toContainText("v12 · guidance bbbbbbbb");
+  await expect(card).toContainText("v13 · evaluator criterion_mapped_v1");
+  await expect(card).toContainText(
+    "An interception is not an acceptance: the Auditor remains the semantic authority.",
+  );
+  await card.scrollIntoViewIfNeeded();
+  await capture(dashboard, "06-outcome-analytics-desktop", card);
+
+  await dashboard.setViewportSize({ width: 900, height: 1600 });
+  await expect(card).toBeVisible();
+  const cardBox = await card.boundingBox();
+  expect(cardBox, "analytics card must have a rendered box at constrained width").not.toBeNull();
+  expect(cardBox!.width, "analytics card must fit the constrained viewport").toBeLessThan(900);
+  await capture(dashboard, "07-outcome-analytics-constrained", card);
+});
+
+test("valid preflight outcomes remain visible when Auditor telemetry is unreadable", async ({
+  dashboard,
+  daemon,
+}) => {
+  seedUnreadableAuditorWithValidPreflight(daemon);
+  await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  const card = dashboard.locator('[data-anchor="workflows/test-evidence"]');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText("No Test Evidence Auditor attempt could be read back");
+  await expect(card).toContainText("Preflight outcomes");
+  await expect(card).toContainText("0% (0 of 1 enforcing evaluations)");
+  await expect(card).not.toContainText("No Test Evidence Auditor attempt has been recorded yet");
 });

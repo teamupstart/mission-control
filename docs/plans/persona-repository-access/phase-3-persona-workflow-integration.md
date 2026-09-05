@@ -8,6 +8,8 @@ Operators can configure custom Personas and local built-in overrides, publish im
 
 Estimated gross non-test implementation: **1,500-1,900 lines**.
 
+Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The vertical slice remains valid. Its integration must preserve per-repository run checkout resolution, external artifact expectation validation, reserved submission evidence, evidence-readiness policy, the current append-only evidence kinds, and imported Persona provenance.
+
 ## Entry criteria and direct dependencies
 
 - Phase 2 has merged, which transitively includes Phase 1.
@@ -48,12 +50,14 @@ This phase does not:
 - `PersonaEditor.save` currently returns immediately for built-ins. The access control needs an independent draft/CAS/save path instead of making general built-in fields writable.
 - `publishWorkflow` currently checks `(workflow_id, source_draft_revision)` before projecting Personas. It must project the resolved graph and hash it before deciding idempotency.
 - Built-in workflow graphs compile without database access. They always freeze `none`. A local built-in override applies only when an operator-owned workflow is published from the resolved catalog.
-- `captureAndActivate` already owns the transition from `capturing` to `running`. A read-enabled submission cannot cross that boundary until its artifact row is ready.
+- `captureAndActivate` already owns the transition from `capturing` to `running`. It resolves the checkout per repository run, validates external artifact expectations, captures reserved image/text evidence, compacts context, and applies evidence-readiness policy. A read-enabled submission cannot cross that boundary until those existing guards pass and its artifact row is ready.
 - `WorkflowEngine.runAttempt` is the current one-shot Persona call and `handleInfrastructureFailure` is the retry ladder. Replace only the read-enabled arm; the `none` arm must remain byte-identical.
 - Running attempts and LLM calls are already interrupted/recovered on daemon restart. Workload reconciliation must occur before scheduling a replacement.
 - Workflow events and LLM calls are paged. Repository audit rows need a dedicated bounded page and compact summary.
 - `WorkflowRunDetail` is browser-safe and detail-only. Compact `WorkflowRunSummary` travels over SSE for every run and must not carry per-query rows.
 - Phase 2 exposes conditional capture and artifact lifecycle but intentionally has no production caller.
+- Evidence currently uses eight stable identifiers with one quote/path/line-shaped object. The new metadata-only repository handle must be a ninth appended discriminated-union branch, not optional fields added to every existing branch.
+- Imported and plugin-managed Personas now have provenance and reimport/synchronization paths. Repository access is operator-owned state: new imports default to `none`, while reimport and synchronization preserve an existing value.
 
 ## Contracts inherited from earlier phases
 
@@ -68,7 +72,7 @@ From Phase 1:
 
 From Phase 2:
 
-- `WorkflowRepositoryArtifactService` and artifact/claim store API;
+- `WorkflowRepositoryArtifactService` prepare/promote/release/discard API plus the single `WorkflowStore.commitRepositoryCaptureActivation` transaction owner;
 - active submission claim joined to a ready digest-owned artifact, immutable digest/locator, exact layer identities, immutable retained-revision/frontier metadata, and typed failure codes;
 - optional stable-capture sealing seam;
 - digest ownership, per-submission claims, retention, and startup reconciliation.
@@ -109,7 +113,9 @@ In `src/shared/protocol.ts`:
 - add a dedicated repository-access mutation schema carrying `expectedAccessRevision` and the closed mode;
 - default missing `PersonaSnapshot.repositoryAccess` to `none`;
 - extend run-detail/query-audit schemas additively;
-- append a metadata-only `repository` evidence kind containing required `operationId` and opaque `evidenceHandleId`, with no quote, excerpt, or free-form path/range field.
+- append a metadata-only `repository` evidence kind containing required `operationId` and opaque `evidenceHandleId`, with no quote, excerpt, or free-form path/range field;
+- refactor `EvidenceRef`, `WorkflowEvidenceRefSchema`, `EvidenceInputSchema`, verdict normalization, audit helpers, and renderers to a discriminated union. Preserve the exact identifiers and wire shape of `diff`, `transcript`, `standard`, `goal`, `decision`, `check`, `image`, and `artifact`;
+- add a required repository-evidence protocol capability to read-enabled workload dispatch and terminal results so a mixed-version executor or parser fails before provider launch or verdict persistence.
 
 In `src/server/db.ts`:
 
@@ -133,7 +139,7 @@ In `WorkflowStore` and `PersonaManager`:
 - general built-in update, archive, reimport, runner, model, and guidance guards remain unchanged;
 - catalog reads overlay the built-in sidecar exactly once and return the access revision separately;
 - registry/SSE `persona_upsert` carries the resolved `PersonaView` through its existing event;
-- imported/plugin Personas default to `none` unless an explicit future import contract says otherwise.
+- new imported/plugin Personas default to `none`; reimport and plugin synchronization preserve the current operator-owned access value and provenance rather than resetting it from the source definition.
 
 Add a dedicated route, for example `PATCH /api/personas/:id/repository-access`, using the shared schema for custom and built-in Personas. Return current state on CAS conflict using the existing Persona conflict conventions.
 
@@ -177,13 +183,21 @@ Before capture, inspect the immutable workflow version. If no executable Persona
 
 If any Persona requires `read`:
 
-- pass Phase 2's sealer into the stable capture boundary with the already-created submission id;
-- require the artifact row to be `ready` before marking the submission `running`;
+- resolve the same checkout used by `workflowCheckoutPath` for that repository run;
+- pass Phase 2's candidate preparer into the stable capture boundary without creating a durable claim;
+- preserve external-artifact expectation validation and reserved image/text evidence capture in their current order;
+- discard the candidate on expectation mismatch or reserved-evidence failure;
+- after those guards pass, promote the candidate and create a provisional submission claim before raw-context persistence, compaction, evidence-readiness checks, or activation;
+- call only `WorkflowStore.commitRepositoryCaptureActivation` to activate the provisional claim and mark the submission `running` in one transaction; a failure on either write rolls back both, and materialization rejects provisional claims;
+- on any post-promotion failure or cancellation, release the provisional claim before propagating capture failure, while startup reconciliation releases a stranded provisional claim whose submission never reached `running`;
+- require the artifact row to be `ready` before activating the claim and marking the submission `running`;
 - include the exact artifact digest in the access-enabled submission/workload identity while preserving existing evidence and repository fingerprints for access-off runs;
 - reuse one durable submission claim and its digest across all read-enabled Personas and retries;
 - never seal again from a moved live checkout after the submission is active.
 
 Capture/seal failures occur before a Persona attempt exists. Retry the stable capture/seal operation within its bounded capture policy, then block visibly as `repository_capture_unavailable` if no exact artifact can be established. The operator may resubmit when the checkout is stable. Do not manufacture a Persona attempt or prompt-only review without a snapshot.
+
+Repository artifacts and repository evidence handles are not reserved submission evidence. They must not satisfy criterion coverage, alter evidence reservations, replace captured image/text artifacts, or weaken the current evidence-readiness block.
 
 After a ready artifact exists, materialization, digest, MCP, workload, event, provider, or audit failures are Persona infrastructure failures and use the normal attempt retry ladder.
 
@@ -194,7 +208,7 @@ Persist enough state for local and future remote executors:
 - workload id, node attempt id, request/idempotency key, executor identity, snapshot digest, protocol version, state, deadline, cancellation generation, accepted/terminal timestamps, highest contiguous sequence, last error, and transport diagnostics;
 - ordered workload events with payload equality hash and ingestion timestamp;
 - query audit rows with operation id/kind, safe path display or query hash, timing, outcome/denial/error including history-boundary and out-of-range results, item/byte counts, truncation, cursor presence, and cancellation state;
-- evidence-handle rows keyed by unpredictable opaque id, binding one actually returned item to snapshot/workload/operation identity, item ordinal, canonical approved path and exact returned line/diff range, policy version, and truncation state.
+- evidence-handle rows keyed by unpredictable opaque id, binding one actually returned item to snapshot digest, workload id, Workflow attempt id, daemon-minted operation-instance id, separate closed operation kind, item ordinal, canonical approved path, policy version, truncation state, and one canonical half-open returned range: `line` uses 1-based `startLine`/`endLineExclusive` over LF-delimited text, `byte` uses 0-based `startByte`/`endByteExclusive` over immutable raw blob bytes with `encoding: "raw"`, and `diff` stores independent 1-based half-open old/new line intervals with equal bounds for an empty side.
 
 The daemon is the only database writer. The MCP writes a safe local journal; the workload supervisor emits safe events; the engine/store validates and persists them. Neither event type nor table stores result bodies, excerpts, quotes, or provider-supplied path/range assertions.
 
@@ -224,13 +238,13 @@ Append the Phase 1 metadata-only `repository` evidence kind without renaming or 
 
 For every repository evidence reference:
 
-- operation id belongs to the same workload and node attempt;
-- the handle record exists in the authenticated event stream and belongs to the same snapshot, workload, operation, and returned item;
-- the operation completed successfully and the stored handle metadata names one canonical allowed path and exact range that was actually returned;
+- operation-instance id belongs to the same workload and node attempt and its stored operation kind matches the referenced operation;
+- the handle record exists in the authenticated event stream and belongs to the same snapshot digest, workload, attempt, operation instance, and returned item ordinal;
+- the operation completed successfully and the stored handle metadata names one canonical allowed path and the exact canonical half-open line, raw-byte, or old/new diff interval that was actually returned;
 - a truncated item supports only its stored returned range;
 - fabricated, duplicate-conflicting, denied, failed, cancelled, omitted, cross-attempt, or unrelated handles cannot support a verdict.
 
-The engine and UI resolve the approved display path/range from daemon-owned handle metadata, never from provider text. They do not reconstruct or persist the excerpt. Ordinary reviewer prose remains the existing bounded/scrubbed final verdict and is not represented as a verified repository quote.
+The engine and UI resolve the approved display path and discriminated line, byte, or diff range from daemon-owned handle metadata, never from provider text. They do not reconstruct or persist the excerpt. Ordinary reviewer prose remains the existing bounded/scrubbed final verdict and is not represented as a verified repository quote.
 
 Access-off verdicts retain the existing evidence union and validation behavior. Prompt construction for access-off is byte-identical. The access-enabled prompt explains the repository MCP capability, pagination, security boundaries, bounded retained-history range, boundary/out-of-range responses, and metadata-only evidence handle form without telling the provider it has shell or filesystem access.
 
@@ -295,6 +309,9 @@ Document the local MCP as an in-workload repository query service, not a network
 - New database tables and fields are additive/idempotent; fresh and upgraded schemas converge.
 - Query audit paging is bounded and optional to newer clients.
 - No artifact or response body is stored in SQLite, SSE, logs, run export, or browser state.
+- Repository citations are enabled only when daemon, executor, and verdict parser advertise the same repository-evidence protocol capability. A mismatch is an infrastructure failure before provider launch or durable verdict write.
+- Deployment is two-step. First ship a writer-disabled compatibility-floor build that adds a hard `user_version > CURRENT_DATABASE_SCHEMA_VERSION` startup refusal and can parse, preserve, and render the repository evidence branch as unsupported metadata without launching repository workloads. Enable Phase 3 citation writers only after the sole daemon owning each state home and every configured executor report that floor or newer.
+- A capability mismatch, reader below the compatibility floor, or unknown newer database schema fails before provider launch or durable verdict write. Normal rollback disables repository dispatch/writes and runs the compatibility-floor build against the live additive schema, preserving repository citations and unrelated writes. The pre-migration recovery point is disaster recovery only, never routine rollback. Any exceptional downgrade below the floor must stop the daemon, copy and verify the live database, export repository-owned rows for idempotent replay, transactionally remove only repository-owned references/state, preserve all unrelated post-migration writes, and lower the schema marker only after a frozen-target-reader verification succeeds.
 
 ## Tests and verification
 
@@ -311,7 +328,7 @@ Add/extend:
 - `test/workflow-db.test.ts`
 - a focused repository-access migration parity suite
 
-Cover custom create/update/CAS conflict, built-in override create/update/conflict, immutable field rejection, `none` defaults, historical JSON, snapshot freshness, graph fingerprint backfill, identical republish, access-only republish, built-in version immutability, repeated migration, and row-schema/domain round trips.
+Cover custom create/update/CAS conflict, built-in override create/update/conflict, immutable field rejection, `none` defaults, imported Persona defaults, reimport/plugin-sync preservation, provenance retention, historical JSON, snapshot freshness, graph fingerprint backfill, identical republish, access-only republish, built-in version immutability, repeated migration, and row-schema/domain round trips.
 
 ### Engine, executor, and integration
 
@@ -329,10 +346,16 @@ Add/extend:
 Cover:
 
 - exact dirty capture only when at least one frozen Persona needs access;
+- per-repository run checkout resolution matches `workflowCheckoutPath` and never seals a different session repository;
+- expectation mismatch and reserved-evidence failure discard the candidate without an artifact claim or raw-context write;
+- every raw-context, compaction, evidence-readiness, cancellation, and activation-commit failure after promotion releases the provisional claim; inject failures on each write and prove neither state commits alone; restart recovery releases a stranded provisional claim before zero-claim cleanup;
+- repository artifacts and handles leave reserved evidence coverage and evidence-readiness outcomes unchanged;
 - multiple read/search/glob/Git queries in one attempt;
 - denial recovery and pagination within the same provider session;
 - retained-history recovery within the same provider session, covering the true-root patch, retained-first-parent patch, omitted-first-parent `history_boundary` with no patch, frontier log/blame truncation, and out-of-range denial with the same result and audit semantics for Claude and Codex;
-- same-attempt metadata-only evidence validation, including a successful handle, exact truncated range, fabricated id, cross-attempt reuse, operation mismatch, conflicting duplicate event, and rejection of quote/excerpt fields;
+- same-attempt metadata-only evidence validation, including successful 1-based half-open line ranges, 0-based half-open raw-byte ranges, independent old/new diff intervals with empty sides, exact truncated ranges for each discriminator, fabricated id, cross-attempt reuse, operation-instance/kind mismatch, conflicting duplicate event, and rejection of quote/excerpt fields;
+- discriminated evidence schema compatibility for all eight existing kinds plus the appended repository branch;
+- mixed-version tests proving a reader below the compatibility floor, unknown newer schema, or capability-mismatched executor/parser cannot launch a read-enabled provider or persist a repository citation, while old eight-kind verdicts remain readable by current schemas; a frozen compatibility-floor reader preserves repository citations without executing them; feature-disable rollback keeps unrelated post-migration writes; and the exceptional targeted downgrade/replay path is lossless and verified by a frozen target reader;
 - Claude/Codex parity and image preservation;
 - missing/corrupt artifact, failed materialization, MCP crash, provider crash, malformed verdict, audit failure, event duplicate/gap, timeout, cumulative budget, cancellation, late result, daemon restart, executor loss, retry exhaustion, and manual resubmit;
 - proof that every read-enabled failure avoids prompt-only execution;
@@ -352,7 +375,7 @@ Cover:
 6. repeat capability parity for Codex;
 7. observe denial and truncation/pagination in the audit summary without response bodies;
 8. observe retained-history boundary and out-of-range outcomes without omitted commit metadata;
-9. submit a verdict with a returned evidence handle and see only its approved path/range metadata, never an excerpt;
+9. submit verdicts with returned line-window, byte-window, and diff evidence handles and see only their approved path/range metadata, never an excerpt;
 10. remove/corrupt the artifact or fail MCP and see retry then blocked state, never a verdict;
 11. reload and see persisted audit/retry state;
 12. render a historical old run as no repository access.
@@ -377,7 +400,7 @@ Perform desktop and narrow-width visual QA of the Persona control, Version Histo
 - Operators can configure custom and built-in Persona access with correct CAS and immutable built-in fields.
 - Publication freezes access and creates a new version for access-only changes while identical publish remains idempotent.
 - Historical data parses as `none` and existing behavior remains unchanged.
-- Read-enabled submission capture produces one ready exact artifact before attempts start.
+- Read-enabled submission capture promotes one ready exact artifact only after external-artifact and reserved-evidence guards pass and before attempts start.
 - One attempt means one provider session with multiple MCP queries and one validated verdict.
 - Claude and Codex have equivalent operations, limits, denials, cancellation, and audit metadata.
 - Repository response bodies, evidence excerpts, and quote fields remain inside the workload; repository evidence references persist only validated handle metadata.

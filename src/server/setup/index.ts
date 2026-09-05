@@ -76,9 +76,9 @@ function ghVersionAtLeast(versionOutput: string, minimum: string): boolean | nul
 }
 
 async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
-  const path = await deps.resolveBinPath(deps.ghBin());
-  if (!path) return { state: "missing" };
-  const result = await deps.runCommand(path, ["--version"]);
+  const status = await present(deps.ghBin(), deps);
+  if (status.state !== "satisfied") return status;
+  const result = await deps.runCommand(status.evidence, ["--version"]);
   const atLeast = result.outcomeUnknown || result.code === null
     ? null
     : ghVersionAtLeast(result.stdout, GH_MINIMUM_VERSION);
@@ -86,10 +86,10 @@ async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
     return {
       state: "needs-setup",
       why: `The installed GitHub CLI is older than the required ${GH_MINIMUM_VERSION}. Upgrade it to keep GitHub operations working.`,
-      evidence: path,
+      evidence: status.evidence,
     };
   }
-  return { state: "satisfied", evidence: path };
+  return status;
 }
 
 async function ghAuthStatus(deps: SetupDeps): Promise<SetupStatus> {

@@ -8,7 +8,15 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { workflowCommandEvidenceContent } from "../../src/shared/workflow.ts";
-import { evidenceTelemetryKey } from "../../src/server/workflows/test-evidence-audit.ts";
+import type {
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceReadinessResult,
+  WorkflowSubmission,
+} from "../../src/shared/workflow.ts";
+import {
+  evidenceReadinessEvaluatedEvent,
+  evidenceTelemetryKey,
+} from "../../src/server/workflows/test-evidence-audit.ts";
 
 const EVIDENCE = artifactsDir("workflow-evidence-readiness");
 
@@ -193,27 +201,63 @@ function readiness(
   submissionId: string,
   status: "ready" | "gaps" | "unavailable",
   workflowVersion: number,
-): Record<string, unknown> {
-  return {
-    submissionKey: evidenceTelemetryKey("submission", submissionId),
-    policy: "criterion_mapped_v1",
-    evaluatorVersion: "criterion-mapped-v1",
+): ReturnType<typeof evidenceReadinessEvaluatedEvent>["payload"] {
+  const gaps = status === "gaps" ? ["missing_rendered_output" as const] : [];
+  const evaluated: WorkflowEvidenceReadinessResult = {
+    evaluatorVersion: "criterion_mapped_v1",
     status,
+    criteria: [{
+      criterionId: "analytics-criterion",
+      criterion: "The analytics state is reviewer-visible",
+      material: true,
+      matchedClientCriterionId: "analytics-claim",
+      authorProofClass: status === "gaps" ? "visual" : null,
+      suggestedProofClass: null,
+      links: [],
+      gaps,
+      warnings: [],
+    }],
+    gapCodes: gaps,
+    warningCodes: [],
+    unavailableReason: status === "unavailable" ? "fixture unavailable" : null,
+  };
+  const submission = {
+    id: submissionId,
+    runId: `run-${submissionId}`,
     round: 1,
     segment: 0,
-    refinementReason: null,
-    criteriaCount: 1,
-    mappedClaimCount: 1,
-    warningCount: 0,
-    gapCount: status === "gaps" ? 1 : 0,
-    gapCodes: status === "gaps" ? [{ category: "missing_rendered_output", count: 1 }] : [],
-    proofClasses: status === "gaps" ? [{ category: "visual", count: 1 }] : [],
-    missingRoles: status === "gaps" ? [{ category: "rendered_output", count: 1 }] : [],
-    override: false,
-    workflowId: "analytics-workflow",
-    workflowVersion,
-    repositoryScope: "repository",
-  };
+    parentSubmissionId: null,
+    continuationNodeId: null,
+    continuationNodeAttemptId: null,
+    mode: "full_workflow",
+    triggerSource: "manual",
+    triggerKey: `trigger-${submissionId}`,
+    evidenceFingerprint: `fingerprint-${submissionId}`,
+    context: {},
+    evidence: {},
+    prHeadSha: null,
+    status: "running",
+    createdAt: 1,
+    updatedAt: 1,
+    completedAt: null,
+  } satisfies WorkflowSubmission;
+  const coverage = [{
+    clientCriterionId: "analytics-claim",
+    criterion: "The analytics state is reviewer-visible",
+    proofClass: "visual",
+    repositoryScope: "repo-01",
+    links: [],
+  }] satisfies WorkflowEvidenceCoverageClaim[];
+  return evidenceReadinessEvaluatedEvent({
+    submission,
+    readiness: evaluated,
+    coverage,
+    version: {
+      workflowId: "analytics-workflow",
+      version: workflowVersion,
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+    },
+  }).payload;
 }
 
 function seedOutcomeAnalytics(daemon: DaemonHandle): void {
@@ -578,7 +622,7 @@ test("Test evidence readiness separates preflight outcomes from first Auditor ac
   await expect(card).toContainText("Missing Rendered output role");
   await expect(card).toContainText("v13 · guidance aaaaaaaa");
   await expect(card).toContainText("v12 · guidance bbbbbbbb");
-  await expect(card).toContainText("v13 · evaluator criterion-mapped-v1");
+  await expect(card).toContainText("v13 · evaluator criterion_mapped_v1");
   await expect(card).toContainText(
     "An interception is not an acceptance: the Auditor remains the semantic authority.",
   );

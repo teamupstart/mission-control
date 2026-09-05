@@ -136,19 +136,20 @@ test("'this tile is showing the expanded ladder' is decided in exactly one place
   // Two states have to agree about one thing: the tile's outer `workflow-expanded` class,
   // which reserves the layout space, and the disclosure panel's inner `is-expanded`, which
   // decides whether the ladder or the peek is drawn. They live in different files, and both
-  // depend on the raw disclosure state AND on the `workflowDetails` item - which an operator
-  // can switch off while a tile is already expanded.
+  // depend on the raw disclosure state AND on `workflowDisclosureAvailable` - which folds in
+  // both `workflow` and `workflowDetails`, either of which an operator can switch off while a
+  // tile is already expanded.
   //
   // Written twice they are two decisions. Change the condition in one and the tile reserves
-  // height for a panel that has collapsed, which is not a failure any assertion on either
-  // file alone would catch - so the invariant is that the conjunction exists ONCE, in the
-  // host, and the panel is handed the answer.
+  // height for a panel that has collapsed (or never existed), which is not a failure any
+  // assertion on either file alone would catch - so the invariant is that the conjunction
+  // exists ONCE, in the host, and the panel is handed the answer.
   const tile = code("web/components/layouts/SessionTile.tsx");
   const ladder = code("web/workflows/WorkflowLadder.tsx");
 
   assert.match(
     tile,
-    /const workflowVisiblyExpanded = workflowExpanded && workflowDetails;/,
+    /const workflowVisiblyExpanded = workflowExpanded && workflowDisclosureAvailable;/,
     "SessionTile no longer owns the resolved expansion state",
   );
   assert.match(
@@ -157,8 +158,11 @@ test("'this tile is showing the expanded ladder' is decided in exactly one place
     "SessionTile hands the disclosure something other than the resolved expansion state",
   );
   assert.ok(
-    !/workflowExpanded && workflowDetails/.test(
-      tile.replace("const workflowVisiblyExpanded = workflowExpanded && workflowDetails;", ""),
+    !/workflowExpanded && workflowDisclosureAvailable/.test(
+      tile.replace(
+        "const workflowVisiblyExpanded = workflowExpanded && workflowDisclosureAvailable;",
+        "",
+      ),
     ),
     "SessionTile derives the resolved expansion state more than once",
   );
@@ -209,12 +213,14 @@ test("the expand chord is registered only when the panel it drives actually exis
   );
 });
 
-test("switching the workflow details item off clears the expansion instead of hiding it", () => {
+test("switching Workflow OR Workflow details off clears the expansion instead of hiding it", () => {
   // The bug this guards is a SPRINGBACK, and it is invisible in the collapsed frame that
-  // unchecking the box produces: masking an open panel and closing it look identical until
+  // unchecking either box produces: masking an open panel and closing it look identical until
   // the box is checked again, at which point a masked tile reopens into the full ladder with
-  // no click while a neighbour that was never expanded stays shut. Checking that box offers
-  // the ability to expand; it must not restore an expansion.
+  // no click while a neighbour that was never expanded stays shut. Checking either box back on
+  // offers the ability to expand; it must not restore an expansion. `workflow` going off is
+  // the sharper case - the panel does not just collapse, it stops existing, so a leftover
+  // `workflowExpanded=true` would reserve `.workflow-expanded` layout space for nothing at all.
   //
   // A source scan, because no layer in `test/` can drive it. `renderToStaticMarkup` runs no
   // effects, this repo has no jsdom, and today's routing (`AppPageShell` mounts one page
@@ -223,11 +229,12 @@ test("switching the workflow details item off clears the expansion instead of hi
   // fix, is that the transition RESETS rather than relying on that routing accident.
   const tile = code("web/components/layouts/SessionTile.tsx");
 
-  // The reset itself: an effect on the item alone, clearing the raw disclosure state.
+  // The reset itself: an effect on the combined availability, clearing the raw disclosure
+  // state whenever EITHER input that composes it goes false.
   assert.match(
     tile,
-    /useEffect\(\(\) => \{\s*if \(!workflowDetails\) setWorkflowExpanded\(false\);\s*\}, \[workflowDetails\]\);/,
-    "SessionTile no longer clears the expanded state when the details item goes off",
+    /useEffect\(\(\) => \{\s*if \(!workflowDisclosureAvailable\) setWorkflowExpanded\(false\);\s*\}, \[workflowDisclosureAvailable\]\);/,
+    "SessionTile no longer clears the expanded state when the panel becomes unavailable",
   );
   // And it is its own effect rather than folded into the run-keyed one, which answers the
   // different question "this is a different run now" and would drop the reset the moment
@@ -241,7 +248,7 @@ test("switching the workflow details item off clears the expansion instead of hi
   // to close it, in the render before the effect runs - so this is both, not either.
   assert.match(
     tile,
-    /const workflowVisiblyExpanded = workflowExpanded && workflowDetails;/,
+    /const workflowVisiblyExpanded = workflowExpanded && workflowDisclosureAvailable;/,
     "the synchronous mask was dropped in favour of the reset alone",
   );
 });

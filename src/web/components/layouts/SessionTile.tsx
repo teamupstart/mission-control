@@ -220,15 +220,17 @@ export function SessionTile({
     workflowRunId,
   ]);
   /*
-   * Switching the details item OFF closes the panel for good, rather than merely hiding it.
+   * Switching EITHER `workflowDetails` or `workflow` itself OFF closes the panel for good,
+   * rather than merely hiding it.
    *
-   * `workflowVisiblyExpanded` below already masks an open panel the instant the item goes
+   * `workflowVisiblyExpanded` below already masks an open panel the instant either item goes
    * false, and that mask is what stops a frame of ladder from being drawn with no control
-   * left to close it. But masking is not settling: the raw `workflowExpanded` would still be
-   * true underneath, so switching the item back ON would spring the tile open into the full
-   * ladder with no click - and one tile would reopen while its neighbour, never expanded,
-   * stayed shut. Checking that box offers the ABILITY to expand. It must not restore an
-   * expansion nobody asked for a second time.
+   * left to close it (or, for `workflow`, with no panel to draw at all). But masking is not
+   * settling: the raw `workflowExpanded` would still be true underneath, so switching the item
+   * back ON would spring the tile open into the full ladder with no click - and one tile would
+   * reopen while its neighbour, never expanded, stayed shut. Checking either box back on
+   * offers the ABILITY to expand. It must not restore an expansion nobody asked for a second
+   * time.
    *
    * Separate from the run-keyed reset above because it answers a different question. That one
    * means "this is a different run now"; this one means "you have put this control away".
@@ -240,25 +242,28 @@ export function SessionTile({
    * planned follow-up, either of which delivers the flip to a tile that is still mounted.
    */
   useEffect(() => {
-    if (!workflowDetails) setWorkflowExpanded(false);
-  }, [workflowDetails]);
+    if (!workflowDisclosureAvailable) setWorkflowExpanded(false);
+  }, [workflowDisclosureAvailable]);
   /*
    * Whether this tile is VISIBLY showing the expanded ladder - the single owner of that fact.
    *
    * `workflowExpanded` is the raw disclosure state and says nothing on its own: the operator
-   * can switch the details item off while a tile is already expanded, and the panel has to
-   * close rather than sit open with no control to shut it. That resolution is ONE rule, and
-   * this is the only place both of its inputs live, so it is settled here and handed down
-   * already resolved. The disclosure component is told the answer rather than the two facts,
-   * because the outer tile's `workflow-expanded` class - which reserves the layout space - and
-   * the inner panel's `is-expanded` content state have to be the same decision. Two separately
-   * written AND expressions would be two decisions, and the first change to the condition
-   * would strand a reserved-but-empty tile behind a collapsed panel.
+   * can switch `workflowDetails` OR `workflow` itself off while a tile is already expanded,
+   * and the panel has to close rather than sit open with no control to shut it - or, for
+   * `workflow`, with nothing left to show at all. That resolution is ONE rule, and this is the
+   * only place all of its inputs live, so it is settled here and handed down already resolved.
+   * The disclosure component is told the answer rather than the facts, because the outer
+   * tile's `workflow-expanded` class - which reserves the layout space - and the inner panel's
+   * `is-expanded` content state have to be the same decision. Two separately written AND
+   * expressions would be two decisions, and the first change to the condition would strand a
+   * reserved-but-empty tile behind a collapsed (or absent) panel.
    *
-   * `workflowDetails` still travels on its own, because the disclosure ROW's visibility is a
-   * genuinely different question: it is drawn whenever the item is on, expanded or not.
+   * `workflowDetails` still travels on its own past this point, because the disclosure ROW's
+   * visibility is a genuinely different question: it is drawn whenever the item is on,
+   * expanded or not - and by the time it is asked, `workflow` is already known to be shown,
+   * since the row lives inside the panel that condition gates.
    */
-  const workflowVisiblyExpanded = workflowExpanded && workflowDetails;
+  const workflowVisiblyExpanded = workflowExpanded && workflowDisclosureAvailable;
 
   return (
     <div

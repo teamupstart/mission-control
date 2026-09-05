@@ -2620,6 +2620,16 @@ export class TaskManager {
       return { ok: false, code: "recovery_in_flight", error: "this Pipeline retry is already launching", task };
     }
     this.pipelineRecoveries.add(recoveryKey);
+    const persistHostFailure = (error: string, expectedState?: "replacing_host"): void => {
+      const failed = updatePipelineCommissionRecovery({
+        commissionId: prepared.commission.id,
+        attempt: recoveryAttempt,
+        ...(expectedState ? { expectedState } : {}),
+        state: "host_launch_failed",
+        error,
+      });
+      if (failed) this.registry.upsertPipelineCommission(failed);
+    };
     try {
       if (!authorized()) {
         return pipelineRecoveryConsentFailure(task);
@@ -2651,10 +2661,12 @@ export class TaskManager {
             const replaced = await this.stopPipelineEngineerHost(id, task.sessionId);
             const current = this.registry.getTask(id);
             if (!replaced && current?.sessionId) {
+              const error = "the Pipeline task changed host ownership before recovery replacement";
+              persistHostFailure(error, "replacing_host");
               return {
                 ok: false,
                 code: "task_conflict",
-                error: "the Pipeline task changed host ownership before recovery replacement",
+                error,
                 task: current,
               };
             }
@@ -2691,23 +2703,19 @@ export class TaskManager {
             launchCommission.recovery.attempt !== recoveryAttempt ||
             launchCommission.recovery.state !== "replacing_host"
           ) {
+            const error = "the Pipeline task or recovery ownership changed before host launch";
+            persistHostFailure(error, "replacing_host");
             return {
               ok: false,
               code: "task_conflict",
-              error: "the Pipeline task or recovery ownership changed before host launch",
+              error,
               task: launchTask ?? task,
             };
           }
           await this.dispatcher.dispatch(id);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const failed = updatePipelineCommissionRecovery({
-            commissionId: prepared.commission.id,
-            attempt: recoveryAttempt,
-            state: "host_launch_failed",
-            error: message,
-          });
-          if (failed) this.registry.upsertPipelineCommission(failed);
+          persistHostFailure(message);
           return { ok: false, code: "host_launch_failure", error: message, task: this.registry.getTask(id) ?? task };
         }
       }

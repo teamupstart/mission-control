@@ -8587,6 +8587,7 @@ export function reservePipelineCommissionAdoption(input: {
 export function updatePipelineCommissionRecovery(input: {
   commissionId: string;
   attempt: number;
+  expectedState?: NonNullable<PipelineCommission["recovery"]>["state"];
   state: NonNullable<PipelineCommission["recovery"]>["state"];
   error?: string | null;
   clearCandidate?: boolean;
@@ -8598,7 +8599,10 @@ export function updatePipelineCommissionRecovery(input: {
   try {
     const held = getPipelineCommission(input.commissionId);
     const attempt = held?.attempts.find((entry) => entry.attempt === input.attempt);
-    if (!held?.recovery || held.recovery.attempt !== input.attempt || !attempt) {
+    if (
+      !held?.recovery || held.recovery.attempt !== input.attempt || !attempt ||
+      (input.expectedState !== undefined && held.recovery.state !== input.expectedState)
+    ) {
       if (ownsTransaction) d.exec("ROLLBACK");
       return null;
     }

@@ -860,6 +860,21 @@ test("retry preflight writes nothing when blocked and the durable guard reserves
   });
   assert.equal(resumed.ok, true);
   assert.equal(repeatedProbe, false, "restart resumes the durable reservation without a second preflight");
+
+  const replacing = updatePipelineCommissionRecovery({
+    commissionId: held.id,
+    attempt: 2,
+    expectedState: "reserved",
+    state: "replacing_host",
+  });
+  assert.equal(replacing?.recovery?.state, "replacing_host");
+  assert.equal(updatePipelineCommissionRecovery({
+    commissionId: held.id,
+    attempt: 2,
+    expectedState: "reserved",
+    state: "complete",
+  }), null, "a stale recovery writer cannot overwrite the current saga state");
+  assert.equal(getPipelineCommission(held.id)?.recovery?.state, "replacing_host");
 });
 
 test("withdrawn repository consent blocks recovery before provider calls or writes", async (t) => {
@@ -1178,6 +1193,9 @@ test("retry aborts when another host takes task ownership during preflight", asy
   assert.equal(launches, 0);
   assert.equal(stops, 0);
   assert.equal(registry.getTask(held.taskId)?.sessionId, replacementHost.id);
+  const recovery = registry.pipelineCommission(held.id)?.recovery;
+  assert.equal(recovery?.state, "host_launch_failed");
+  assert.match(recovery?.error ?? "", /changed host ownership/);
 });
 
 test("abandon retires the managed Engineer host before clearing task ownership", async () => {

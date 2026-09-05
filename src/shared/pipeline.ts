@@ -726,6 +726,33 @@ export function pipelineRecoveryIsActive(
   return recovery != null && recovery.state !== "complete";
 }
 
+/** A retry may be resumed only after a conclusive, operator-actionable stop. */
+export function pipelineRetryRecoveryIsResumable(
+  recovery: PipelineCommissionRecovery | null | undefined,
+): recovery is PipelineCommissionRecovery & { kind: "retry" } {
+  if (recovery?.kind !== "retry") return false;
+  const state = recovery.state;
+  switch (state) {
+    case "readiness_blocked":
+    case "host_launch_failed":
+    case "provider_reservation_failed":
+      return true;
+    case "reserved":
+    case "provider_bound":
+    case "replacing_host":
+    case "launching_host":
+    case "provider_outcome_unknown":
+    case "adoption_replaying":
+    case "adoption_partial":
+    case "complete":
+      return false;
+    default: {
+      const exhaustive: never = state;
+      throw new Error(`unsupported Pipeline recovery state: ${String(exhaustive)}`);
+    }
+  }
+}
+
 export const PIPELINE_RECOVERY_RESULT_CODES = [
   "stale_guard",
   "unsupported_provider",

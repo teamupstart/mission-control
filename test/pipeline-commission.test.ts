@@ -38,6 +38,7 @@ const {
   MAX_PIPELINE_COMMISSION_ATTEMPTS,
   pipelineCommissionFrameMayReplace,
   pipelineRecoveryOutcomeFor,
+  pipelineRetryRecoveryIsResumable,
 } = await import(
   "../src/shared/pipeline.ts"
 );
@@ -1175,6 +1176,22 @@ test("readiness-blocked recovery returns an explicit refusal instead of false su
   assert.deepEqual(
     pipelineRecoveryOutcomeFor({ ...recovery, state: "complete", error: null }),
     { ok: true },
+  );
+  assert.equal(
+    pipelineRetryRecoveryIsResumable({ ...recovery, state: "readiness_blocked" }),
+    true,
+  );
+  assert.equal(
+    pipelineRetryRecoveryIsResumable({ ...recovery, state: "host_launch_failed" }),
+    true,
+  );
+  assert.equal(
+    pipelineRetryRecoveryIsResumable({ ...recovery, state: "provider_reservation_failed" }),
+    true,
+  );
+  assert.equal(
+    pipelineRetryRecoveryIsResumable({ ...recovery, state: "provider_outcome_unknown" }),
+    false,
   );
 });
 

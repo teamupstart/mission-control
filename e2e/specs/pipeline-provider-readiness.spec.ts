@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { DaemonHandle } from "../fixtures/daemon.ts";
@@ -211,7 +211,17 @@ test("typed failure refuses task completion and retries once on a fresh host", a
   const recovery = dashboard.getByRole("region", { name: "Provider lifecycle" });
   await expect(recovery.getByRole("button", { name: "Retry Engineer" })).toBeVisible();
   const oldSessionId = sessionId;
+  const codexBin = join(daemon.home, "fake-bin", "fake-codex");
+  chmodSync(codexBin, 0o644);
   await recovery.getByRole("button", { name: "Retry Engineer" }).click();
+  await expect(recovery.getByText("Recovery host launch failed", { exact: true })).toBeVisible();
+  await expect(recovery).toContainText("EACCES");
+  await expect(recovery.getByRole("button", { name: "Resume Engineer" })).toBeVisible();
+  await expect(recovery.getByRole("button", { name: "Start Engineer" })).toHaveCount(0);
+  await dashboard.mouse.move(0, 0);
+  await dashboard.screenshot({ path: join(evidenceDir, "retry-host-launch-failed.png") });
+  chmodSync(codexBin, 0o755);
+  await recovery.getByRole("button", { name: "Resume Engineer" }).click();
   await expect.poll(async () => {
     const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
       id: string;

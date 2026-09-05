@@ -3,7 +3,9 @@ import type { Task } from "@shared/types.ts";
 import {
   PIPELINE_DAEMON_ACTIONS,
   pipelineGrantAllowed,
+  pipelineRecoveryIsActive,
   pipelineRepoKey,
+  pipelineRetryRecoveryIsResumable,
   pipelineRunKeyOf,
   type PipelineAction,
   type PipelineConsole,
@@ -158,6 +160,7 @@ export function PipelineRuns({
   const canStartAfterReadiness = activeCommission?.readiness?.permitted === true &&
     checkingCommissionId === null &&
     activeCommission.lifecycle === "created" &&
+    !pipelineRecoveryIsActive(activeCommission.recovery) &&
     activeTask?.status === "running" &&
     !activeTask.sessionId;
   const activeAttempt = activeCommission?.attempts.find(
@@ -172,20 +175,29 @@ export function PipelineRuns({
         providerRevision: activeAttempt.providerRevision,
       }
     : null;
+  const retryGuard = activeCommission && pipelineRetryRecoveryIsResumable(activeCommission.recovery)
+    ? {
+        commissionId: activeCommission.id,
+        activeAttempt: activeCommission.recovery.predecessorAttempt,
+        engineerRunId: activeCommission.recovery.predecessorEngineerRunId,
+        providerRevision: activeCommission.recovery.predecessorProviderRevision,
+      }
+    : recoveryGuard;
   const recover = async (
     action: "retry" | "refresh" | "adopt" | "abandon" | "cancel",
   ): Promise<void> => {
-    if (!activeCommission || !recoveryGuard || recoveryBusy) return;
+    const actionGuard = action === "retry" ? retryGuard : recoveryGuard;
+    if (!activeCommission || !actionGuard || recoveryBusy) return;
     setRecoveryBusy(action);
     setReadinessError(null);
     const candidate = activeCommission.successorCandidate;
     let result: Awaited<ReturnType<typeof api.retryPipelineAttempt>>;
     switch (action) {
       case "retry":
-        result = await api.retryPipelineAttempt(activeCommission.taskId, { guard: recoveryGuard });
+        result = await api.retryPipelineAttempt(activeCommission.taskId, { guard: actionGuard });
         break;
       case "refresh":
-        result = await api.refreshPipelineSuccessor(activeCommission.taskId, { guard: recoveryGuard });
+        result = await api.refreshPipelineSuccessor(activeCommission.taskId, { guard: actionGuard });
         break;
       case "adopt":
         if (!candidate?.fingerprint) {
@@ -194,17 +206,17 @@ export function PipelineRuns({
           return;
         }
         result = await api.adoptPipelineSuccessor(activeCommission.taskId, {
-          guard: recoveryGuard,
+          guard: actionGuard,
           candidateEngineerRunId: candidate.engineerRunId,
           candidateRevision: candidate.providerRevision,
           candidateFingerprint: candidate.fingerprint,
         });
         break;
       case "abandon":
-        result = await api.abandonPipelineCommission(activeCommission.taskId, { guard: recoveryGuard });
+        result = await api.abandonPipelineCommission(activeCommission.taskId, { guard: actionGuard });
         break;
       case "cancel":
-        result = await api.cancelPipelineCommission(activeCommission.taskId, { guard: recoveryGuard });
+        result = await api.cancelPipelineCommission(activeCommission.taskId, { guard: actionGuard });
         break;
     }
     if (!result.ok) setReadinessError(result.error ?? "Pipeline recovery could not be completed");

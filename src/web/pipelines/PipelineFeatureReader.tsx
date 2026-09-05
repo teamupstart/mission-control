@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import {
   PIPELINE_PROVIDER_INFO,
   pipelineRecoveryIsActive,
+  pipelineRetryRecoveryIsResumable,
   pipelineRunKeyOf,
   type PipelineCommission,
   type PipelineRecoveryOperation,
@@ -242,6 +243,13 @@ function ProviderLifecycle({
         <div className="pipelines-lifecycle-fact" role="status">
           <strong>Recovery {commission.recovery.state.replaceAll("_", " ")}</strong>
           {commission.recovery.error && <p>{commission.recovery.error}</p>}
+          {pipelineRetryRecoveryIsResumable(commission.recovery) && (
+            <Tooltip label="Resume the reserved Engineer retry on a fresh host">
+              <button type="button" className="btn btn-primary" onClick={onRetry} disabled={recoveryBusy !== null}>
+                {recoveryBusy === "retry" ? "Resuming…" : "Resume Engineer"}
+              </button>
+            </Tooltip>
+          )}
         </div>
       )}
       {commission.successorCandidate && (

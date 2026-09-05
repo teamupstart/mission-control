@@ -299,7 +299,8 @@ const ensureAgent = (pane) => {
   pane.shell_pid = child.pid;
   return child.pid;
 };
-const ok = (socket, id, result = { type: "ok" }) => socket.write(JSON.stringify({ id, result }) + "\\n");
+// Stable Herdr closes a non-subscription connection after its first response.
+const ok = (socket, id, result = { type: "ok" }) => socket.end(JSON.stringify({ id, result }) + "\\n");
 const server = createServer((socket) => {
   let buffer = "";
   socket.on("data", (chunk) => {

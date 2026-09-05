@@ -697,8 +697,14 @@ export function createHerdrClient(
       mutation: true, operation: `bracket-aware paste to ${paneId}`,
     }),
     focusAgent: (paneId) => mutate({
-      method: "agent.focus", params: { target: paneId }, schema: AgentFocusedSchema,
-      mutation: true, operation: `agent focus for ${paneId}`,
+      method: "agent.focus",
+      params: { target: paneId },
+      schema: AgentFocusedSchema.refine(
+        (focused) => focused.type !== "agent_info" || focused.agent.pane_id === paneId,
+        { message: "focused pane id did not match the request" },
+      ),
+      mutation: true,
+      operation: `agent focus for ${paneId}`,
     }),
     createWorkspace: (spec) => one({
       method: "workspace.create",

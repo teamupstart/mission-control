@@ -108,6 +108,23 @@ test("application refusals are confirmed while malformed post-write mutation res
   }
 });
 
+test("agent focus rejects a successful response for a different pane", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    reply(socket, request.id, {
+      type: "agent_info",
+      agent: { pane_id: "w1:p2" },
+    });
+  });
+  try {
+    const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).focusAgent("w1:p1");
+    assert.equal(result.ok, false);
+    assert.equal(result.outcomeUnknown, true);
+    assert.match(result.error ?? "", /invalid response/);
+  } finally {
+    await fake.close();
+  }
+});
+
 test("duplicate, unknown, and schema-mismatched response ids terminally fail a written mutation", async () => {
   for (const kind of ["duplicate", "unknown", "schema"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {

@@ -9,6 +9,11 @@ import type {
   PipelineDaemonState,
   PipelineInstallerCandidate,
   PipelineInstallerRuntime,
+  PipelineEngineerCapabilities,
+  PipelineCommissionReadiness,
+  EngineerFailureEvidence,
+  PipelineCommissionRetention,
+  EngineerRetirementEvidence,
   PipelineProbe,
   PipelineProviderId,
   PipelineRepoRegistrationResult,
@@ -142,6 +147,12 @@ export interface PipelineEngineerRunSnapshot {
   idea: string;
   eventRevision: number;
   state: Exclude<PipelineCommissionAttemptState, "reserved">;
+  readinessRequired?: boolean;
+  integrationOwner?: string | null;
+  readiness?: PipelineCommissionReadiness | null;
+  failure?: EngineerFailureEvidence | null;
+  retention?: PipelineCommissionRetention | null;
+  retirement?: EngineerRetirementEvidence | null;
 }
 
 export type PipelineEngineerResult<T> =
@@ -150,12 +161,17 @@ export type PipelineEngineerResult<T> =
 
 /** Optional provider-sanctioned Engineer lifecycle surface. Dispatch remains inactive in Phase 2. */
 export interface PipelineEngineerLifecycle {
-  capability(): Promise<PipelineEngineerResult<{ supported: boolean }>>;
+  capability(): Promise<PipelineEngineerResult<PipelineEngineerCapabilities>>;
   create(input: {
     repoRoot: string;
     idea: string;
     correlationId: string;
     attemptKey: string;
+    integrationOwner?: string;
+  }): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot>>;
+  readiness?(input: {
+    engineerRunId: string;
+    repoRoot: string;
   }): Promise<PipelineEngineerResult<PipelineEngineerRunSnapshot>>;
   inspectCorrelation(input: {
     repoRoot: string;

@@ -56,8 +56,9 @@ function deps(
   mux: Multiplexer,
   emu: TerminalEmulator,
   installed: HomeDeps["installed"] = () => true,
+  second?: Multiplexer,
 ): HomeDeps {
-  return { ...fakeTerminals(mux, emu), installed };
+  return { ...fakeTerminals(mux, emu, second), installed };
 }
 
 /** A machine with a terminal emulator and no multiplexer at all - the tab-dispatch shape. */
@@ -133,6 +134,39 @@ test("a launch that fails reports the backend's own words, not ours", async () =
   );
 
   assert.deepEqual(r, { ok: false, error: "duplicate session: api" });
+});
+
+test("background homes preserve selection across backend fallback", async () => {
+  const opened: Array<{ backend: string; select: boolean }> = [];
+  const first = fakeMultiplexer({
+    sessions: sessions({
+      spawnDetached: async (spec) => {
+        opened.push({ backend: "tmux", select: spec.select });
+        return FAIL("tmux unavailable");
+      },
+    }),
+  });
+  const second = fakeMultiplexer({
+    id: "cmux",
+    label: "cmux",
+    sessions: sessions({
+      spawnDetached: async (spec) => {
+        opened.push({ backend: "cmux", select: spec.select });
+        return OK;
+      },
+    }),
+  });
+
+  const result = await launchHome(
+    SPEC,
+    deps(first, fakeEmulator(), () => true, second),
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(opened, [
+    { backend: "tmux", select: false },
+    { backend: "cmux", select: false },
+  ]);
 });
 
 test("held names come from the pane list, matched exactly", async () => {

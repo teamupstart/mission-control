@@ -62,6 +62,7 @@ import {
   WORKFLOW_LLM_PURPOSES,
   WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_RUN_SPENT_PHASES,
+  WORKFLOW_SUBMISSION_REFINEMENT_REASONS,
   WORKFLOW_TRIGGER_MODES,
   LEGACY_WORKFLOW_RESUMPTION_POLICY,
   DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
@@ -77,6 +78,7 @@ import {
   personasForDisplay,
   sessionActionSnapshotOf,
   sessionActionsForDisplay,
+  workflowEvidenceReadinessPolicyEnforces,
   workflowsForDisplay,
   type WorkflowTriggerSource,
   type WorkflowCompletionKind,
@@ -95,6 +97,7 @@ import {
   type WorkflowEvidenceCoverageClaim,
   type WorkflowEvidenceReadinessPolicy,
   type WorkflowEvidenceReadinessResult,
+  type WorkflowSubmissionReadinessOverride,
 } from "@shared/workflow.ts";
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import type {
@@ -335,6 +338,7 @@ export const WORKFLOW_TABLES = [
   "workflow_deliveries",
   "workflow_llm_calls",
   "workflow_events",
+  "workflow_submission_readiness_overrides",
   "workflow_binding_claims",
   "workflow_evidence_owners",
   "workflow_evidence_scope_generations",
@@ -1001,6 +1005,69 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
   };
 }
 
+type WorkflowSubmissionOrigin =
+  | { kind: "root" }
+  | {
+      kind: "session_action";
+      segment: number;
+      parentSubmissionId: string;
+      nodeId: string;
+      nodeAttemptId: string;
+    }
+  | {
+      kind: "evidence_preflight";
+      segment: number;
+      parentSubmissionId: string;
+    };
+
+interface WorkflowSubmissionOriginColumns {
+  segment: number;
+  parentSubmissionId: string | null;
+  continuationNodeId: string | null;
+  continuationNodeAttemptId: string | null;
+  refinementReason: "session_action" | "evidence_preflight" | null;
+}
+
+function workflowSubmissionOriginColumns(
+  origin: WorkflowSubmissionOrigin,
+): WorkflowSubmissionOriginColumns {
+  switch (origin.kind) {
+    case "root":
+      return {
+        segment: 0,
+        parentSubmissionId: null,
+        continuationNodeId: null,
+        continuationNodeAttemptId: null,
+        refinementReason: null,
+      };
+    case "session_action":
+      if (
+        origin.segment <= 0
+        || !origin.parentSubmissionId
+        || !origin.nodeId
+        || !origin.nodeAttemptId
+      ) throw new Error("A session-action origin requires complete positive-segment provenance");
+      return {
+        segment: origin.segment,
+        parentSubmissionId: origin.parentSubmissionId,
+        continuationNodeId: origin.nodeId,
+        continuationNodeAttemptId: origin.nodeAttemptId,
+        refinementReason: origin.kind,
+      };
+    case "evidence_preflight":
+      if (origin.segment <= 0 || !origin.parentSubmissionId) {
+        throw new Error("An evidence-preflight origin requires parent provenance and a positive segment");
+      }
+      return {
+        segment: origin.segment,
+        parentSubmissionId: origin.parentSubmissionId,
+        continuationNodeId: null,
+        continuationNodeAttemptId: null,
+        refinementReason: origin.kind,
+      };
+  }
+}
+
 const WorkflowSubmissionRowSchema = z.object({
   id: nonempty,
   run_id: nonempty,
@@ -1011,6 +1078,7 @@ const WorkflowSubmissionRowSchema = z.object({
   parent_submission_id: nullableText.optional().default(null),
   continuation_node_id: nullableText.optional().default(null),
   continuation_node_attempt_id: nullableText.optional().default(null),
+  refinement_reason: z.enum(WORKFLOW_SUBMISSION_REFINEMENT_REASONS).nullable().optional().default(null),
   mode: WorkflowSubmissionModeSchema,
   trigger_source: WorkflowTriggerSourceSchema,
   trigger_key: nonempty,
@@ -1035,26 +1103,82 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
   // a child segment with no parent looks like an ordinary repair round, and a segment-zero
   // row carrying a parent claims a continuation that never happened.
   const segment = row.segment ?? 0;
-  const provenance = [
-    row.parent_submission_id ?? null,
-    row.continuation_node_id ?? null,
-    row.continuation_node_attempt_id ?? null,
-  ];
-  if (segment === 0 ? provenance.some((v) => v !== null) : provenance.some((v) => v === null)) {
+  // Rows written before refinement_reason existed are Phase 1 action continuations. Infer
+  // that one historical shape so an upgrade does not make durable child segments unreadable.
+  // Evidence-preflight rows are new and always persist their explicit reason.
+  const parentSubmissionId = row.parent_submission_id ?? null;
+  const continuationNodeId = row.continuation_node_id ?? null;
+  const continuationNodeAttemptId = row.continuation_node_attempt_id ?? null;
+  const reason = row.refinement_reason ?? (
+    segment > 0
+      && parentSubmissionId !== null
+      && continuationNodeId !== null
+      && continuationNodeAttemptId !== null
+      ? "session_action"
+      : null
+  );
+  let origin: WorkflowSubmissionOrigin | null = null;
+  switch (reason) {
+    case null:
+      if (
+        segment === 0
+        && parentSubmissionId === null
+        && continuationNodeId === null
+        && continuationNodeAttemptId === null
+      ) origin = { kind: "root" };
+      break;
+    case "session_action":
+      if (
+        segment > 0
+        && parentSubmissionId !== null
+        && continuationNodeId !== null
+        && continuationNodeAttemptId !== null
+      ) {
+        origin = {
+          kind: reason,
+          segment,
+          parentSubmissionId,
+          nodeId: continuationNodeId,
+          nodeAttemptId: continuationNodeAttemptId,
+        };
+      }
+      break;
+    case "evidence_preflight":
+      if (
+        segment > 0
+        && parentSubmissionId !== null
+        && continuationNodeId === null
+        && continuationNodeAttemptId === null
+      ) {
+        origin = {
+          kind: reason,
+          segment,
+          parentSubmissionId,
+        };
+      }
+      break;
+    default: {
+      const unhandledReason: never = reason;
+      return unhandledReason;
+    }
+  }
+  if (!origin) {
     throw new WorkflowRowError(
       "workflow_submissions",
       row.id,
-      "continuation provenance must be present exactly when segment is nonzero",
+      "refinement provenance does not match the segment reason",
     );
   }
+  const provenance = workflowSubmissionOriginColumns(origin);
   return {
     id: row.id,
     runId: row.run_id,
     round: row.round,
-    segment,
-    parentSubmissionId: row.parent_submission_id ?? null,
-    continuationNodeId: row.continuation_node_id ?? null,
-    continuationNodeAttemptId: row.continuation_node_attempt_id ?? null,
+    segment: provenance.segment,
+    parentSubmissionId: provenance.parentSubmissionId,
+    continuationNodeId: provenance.continuationNodeId,
+    continuationNodeAttemptId: provenance.continuationNodeAttemptId,
+    refinementReason: provenance.refinementReason,
     mode: row.mode,
     triggerSource: row.trigger_source,
     triggerKey: row.trigger_key,
@@ -1148,11 +1272,15 @@ const WorkflowEvidenceStagingRowSchema = z.object({
       message: "Only command evidence carries inline content, and command evidence must carry it",
     });
   }
-  if ((row.source_kind === "command") !== (row.command_exit_code !== null)) {
+  // Command evidence existed before exit status gained a dedicated column. Those rows still
+  // carry the status in their integrity-checked inline artifact, but NULL is the only honest
+  // structured value for a field their writer never recorded. New writes remain strict in
+  // stageWorkflowEvidence, while non-command rows may never claim command status.
+  if (row.source_kind !== "command" && row.command_exit_code !== null) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["command_exit_code"],
-      message: "Only command evidence carries an exit code, and command evidence must carry it",
+      message: "Only command evidence carries an exit code",
     });
   }
   if (row.source_kind === "command" && row.inline_content !== null) {
@@ -1586,6 +1714,7 @@ const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string | null> = {
   // a pull-request handoff - and overwriting either with a phase of its own would report a
   // review that was never re-delivered, on a run whose whole problem is that nothing moved.
   parked_repair_reminder: null,
+  evidence_readiness: "evidence_readiness",
 };
 
 /**
@@ -1599,6 +1728,7 @@ const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string | null> = {
  */
 const DELIVERY_RUN_STATUS: Partial<Record<WorkflowDeliveryKind, WorkflowRun["status"]>> = {
   session_action: "waiting_for_action",
+  evidence_readiness: "waiting_for_evidence_readiness",
 };
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
@@ -1679,6 +1809,7 @@ export function parseWorkflowLlmCallRow(value: unknown): WorkflowLlmCall {
 
 const WorkflowEventRowSchema = z.object({
   id: positive,
+  event_id: nullableText.optional().default(null),
   run_id: nonempty,
   ts: integer,
   event_kind: nonempty.max(200),
@@ -1689,6 +1820,7 @@ export function parseWorkflowEventRow(value: unknown): WorkflowEvent {
   const row = parseShape("workflow_events", WorkflowEventRowSchema, value);
   return {
     id: row.id,
+    eventId: row.event_id ?? null,
     runId: row.run_id,
     timestamp: row.ts,
     kind: row.event_kind,
@@ -1700,6 +1832,33 @@ export function parseWorkflowEventRow(value: unknown): WorkflowEvent {
       WorkflowJsonSchema,
       WORKFLOW_LIMITS.eventPayloadBytes,
     ),
+  };
+}
+
+const WorkflowReadinessOverrideRowSchema = z.object({
+  id: nonempty,
+  submission_id: nonempty,
+  request_id: nonempty.max(200),
+  actor: z.literal("operator"),
+  reason: nonempty.max(WORKFLOW_LIMITS.readinessOverrideReason),
+  acknowledged_risk: z.union([z.literal(0), z.literal(1)]),
+  created_at: integer,
+});
+
+function parseWorkflowReadinessOverrideRow(value: unknown): WorkflowSubmissionReadinessOverride {
+  const row = parseShape(
+    "workflow_submission_readiness_overrides",
+    WorkflowReadinessOverrideRowSchema,
+    value,
+  );
+  return {
+    id: row.id,
+    submissionId: row.submission_id,
+    requestId: row.request_id,
+    actor: row.actor,
+    reason: row.reason,
+    acknowledgedRisk: row.acknowledged_risk === 1,
+    createdAt: row.created_at,
   };
 }
 
@@ -1991,23 +2150,10 @@ export interface WorkflowRunInsert {
   externalExpectation?: WorkflowCaptureExpectation;
 }
 
-export interface WorkflowSubmissionInsert {
+interface WorkflowSubmissionInsertBase {
   id: string;
   runId: string;
   round: number;
-  /**
-   * Server-owned and absent from every caller outside the continuation transaction.
-   *
-   * An API client never chooses a segment. Omitting it means zero, which is the only value
-   * an initial or repair submission may have, and the continuation transaction is the one
-   * place that computes `parent.segment + 1`.
-   */
-  segment?: number;
-  continuation?: {
-    parentSubmissionId: string;
-    nodeId: string;
-    nodeAttemptId: string;
-  };
   triggerSource: WorkflowTriggerSource;
   triggerKey: string;
   /** Shared by sibling repository submissions created for one completion boundary. */
@@ -2020,6 +2166,13 @@ export interface WorkflowSubmissionInsert {
   status?: WorkflowSubmission["status"];
   now: number;
 }
+
+type WorkflowSubmissionInsert = WorkflowSubmissionInsertBase & {
+  /** Server-owned origin. The variant derives the complete persisted provenance tuple. */
+  origin: WorkflowSubmissionOrigin;
+};
+
+type WorkflowRootSubmissionInsert = WorkflowSubmissionInsertBase;
 
 export interface WorkflowStagedEvidenceWrite {
   id: string;
@@ -3770,18 +3923,6 @@ export class WorkflowStore {
       if (workflow.draftRevision !== expectedDraftRevision) {
         return { ok: false, reason: "revision_conflict", current: workflow };
       }
-      if (workflow.evidenceReadinessPolicy !== "off") {
-        return {
-          ok: false,
-          reason: "validation",
-          current: workflow,
-          diagnostics: [{
-            severity: "error",
-            code: "evidence_readiness_not_enforced",
-            message: "Criterion-mapped readiness cannot be published until enforcement is available",
-          }],
-        };
-      }
       // BOTH catalogs read inside this transaction, and the snapshots below are taken from
       // these exact lists. Re-reading either after validation would open the window this
       // whole method exists to close: an action archived between the two reads would pass
@@ -5173,7 +5314,7 @@ export class WorkflowStore {
 
   createInitialSubmission(
     run: WorkflowRunInsert,
-    submission: Omit<WorkflowSubmissionInsert, "runId" | "round">,
+    submission: Omit<WorkflowRootSubmissionInsert, "runId" | "round">,
   ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.submissionByTrigger(submission.triggerKey);
@@ -5202,6 +5343,7 @@ export class WorkflowStore {
         ...submission,
         runId: run.id,
         round: 1,
+        origin: { kind: "root" },
       });
       if (run.externalExpectation) {
         this.appendEvent(run.id, "external_expectation_pinned", {
@@ -5223,14 +5365,14 @@ export class WorkflowStore {
   }
 
   createRepairSubmission(
-    input: WorkflowSubmissionInsert,
+    input: WorkflowRootSubmissionInsert,
   ): { run: WorkflowRun; submission: WorkflowSubmission; idempotent: boolean } {
     return transaction(this.db, () => {
       const existing = this.submissionByTrigger(input.triggerKey);
       if (existing) {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
-      this.insertSubmissionInTransaction(input);
+      this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       const updated = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
@@ -5354,6 +5496,7 @@ export class WorkflowStore {
           id: input.submissionId,
           runId: input.runId,
           round: 1,
+          origin: { kind: "root" },
           triggerSource: "foreman",
           triggerKey,
           evidenceGroupKey: input.evidenceGroupKey,
@@ -5373,6 +5516,7 @@ export class WorkflowStore {
             id: input.submissionId,
             runId: run.id,
             round: latest.round + 1,
+            origin: { kind: "root" },
             triggerSource: "foreman",
             triggerKey,
             evidenceGroupKey: input.evidenceGroupKey,
@@ -5868,6 +6012,7 @@ export class WorkflowStore {
         id: input.id,
         runId: run.id,
         round: latest.round + 1,
+        origin: { kind: "root" },
         triggerSource: "manual",
         triggerKey: input.triggerKey,
         context: {
@@ -6075,8 +6220,9 @@ export class WorkflowStore {
         id: input.submissionId,
         runId: parent.runId,
         round: parent.round,
-        segment: parent.segment + 1,
-        continuation: {
+        origin: {
+          kind: "session_action",
+          segment: parent.segment + 1,
           parentSubmissionId: parent.id,
           nodeId: attempt.nodeId,
           nodeAttemptId: attempt.id,
@@ -7182,9 +7328,10 @@ export class WorkflowStore {
           const inspectorOnly =
             version?.completionPolicy.kind === "inspector"
             && version.completionPolicy.onFindings === "inspector_only";
-          const nextStatus = delivery.kind === "inspector_feedback" && inspectorOnly
-            ? "waiting_for_new_head"
-            : "waiting_for_session";
+          const nextStatus = DELIVERY_RUN_STATUS[delivery.kind]
+            ?? (delivery.kind === "inspector_feedback" && inspectorOnly
+              ? "waiting_for_new_head"
+              : "waiting_for_session");
           this.setRunState(
             delivery.runId,
             nextStatus,
@@ -7210,7 +7357,7 @@ export class WorkflowStore {
   replaceUncertainDeliveryWithRepair(
     deliveryId: string,
     requestId: string,
-    input: WorkflowSubmissionInsert,
+    input: WorkflowRootSubmissionInsert,
   ): {
     delivery: WorkflowDelivery;
     run: WorkflowRun;
@@ -7246,7 +7393,7 @@ export class WorkflowStore {
       }
       const latest = this.latestSubmission(run.id);
       if (!latest || input.round !== latest.round + 1) return null;
-      this.insertSubmissionInTransaction(input);
+      this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
       const runChanged = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
@@ -7284,15 +7431,196 @@ export class WorkflowStore {
     });
   }
 
+  listReadinessOverrides(runId: string): WorkflowSubmissionReadinessOverride[] {
+    return (this.db.prepare(
+      `SELECT o.*
+         FROM workflow_submission_readiness_overrides o
+         JOIN workflow_submissions s ON s.id = o.submission_id
+        WHERE s.run_id = ?
+        ORDER BY o.created_at ASC, o.id ASC`,
+    ).all(runId) as unknown[]).map(parseWorkflowReadinessOverrideRow);
+  }
+
+  reserveEvidenceReadinessRefinement(input: {
+    id: string;
+    runId: string;
+    waitingSubmissionId: string;
+    triggerKey: string;
+    manualRetry: boolean;
+    now: number;
+  }):
+    | { ok: true; submission: WorkflowSubmission; idempotent: boolean }
+    | { ok: false; reason: "not_waiting" | "no_change" | "delivery_in_flight" | "request_conflict" } {
+    return transaction(this.db, () => {
+      const existing = this.submissionByTrigger(input.triggerKey);
+      if (existing) {
+        return existing.runId === input.runId
+            && existing.parentSubmissionId === input.waitingSubmissionId
+            && existing.refinementReason === "evidence_preflight"
+            && existing.triggerSource === (input.manualRetry ? "manual" : "session")
+          ? { ok: true, submission: existing, idempotent: true }
+          : { ok: false, reason: "request_conflict" };
+      }
+      const run = this.getRun(input.runId);
+      const parent = this.getSubmission(input.waitingSubmissionId);
+      const latest = run ? this.latestSubmission(run.id) : null;
+      if (
+        !run
+        || !parent
+        || parent.runId !== run.id
+        || latest?.id !== parent.id
+        || run.status !== "waiting_for_evidence_readiness"
+        || parent.status !== "waiting_for_evidence_readiness"
+      ) return { ok: false, reason: "not_waiting" };
+      const binding = this.getBinding(run.bindingId);
+      if (!binding) return { ok: false, reason: "not_waiting" };
+      const generation = this.workflowEvidenceGeneration(
+        binding.noteKey,
+        binding.repoRoot || binding.sessionCwd || "",
+      );
+      if (generation <= (parent.stagedImageGeneration ?? 0)) {
+        return { ok: false, reason: "no_change" };
+      }
+      const inFlight = this.db.prepare(
+        `SELECT 1 FROM workflow_deliveries
+          WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
+            AND state IN ('sending', 'uncertain') LIMIT 1`,
+      ).get(run.id, parent.id);
+      if (inFlight) return { ok: false, reason: "delivery_in_flight" };
+      this.db.prepare(
+        `UPDATE workflow_deliveries
+            SET state = 'cancelled', error = 'superseded_by_evidence', updated_at = ?
+          WHERE run_id = ? AND submission_id = ? AND kind = 'evidence_readiness'
+            AND state = 'prepared'`,
+      ).run(input.now, run.id, parent.id);
+      this.insertSubmissionInTransaction({
+        id: input.id,
+        runId: run.id,
+        round: parent.round,
+        origin: {
+          kind: "evidence_preflight",
+          segment: parent.segment + 1,
+          parentSubmissionId: parent.id,
+        },
+        triggerSource: input.manualRetry ? "manual" : "session",
+        triggerKey: input.triggerKey,
+        context: {},
+        evidence: {},
+        mode: parent.mode,
+        now: input.now,
+      });
+      this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'capturing', current_phase = 'evidence_readiness_capture',
+                gate_state_json = NULL, updated_at = ?, completed_at = NULL
+          WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
+      ).run(input.now, run.id);
+      this.appendEvent(run.id, "evidence_preflight_refinement_reserved", {
+        parentSubmissionId: parent.id,
+        submissionId: input.id,
+        round: parent.round,
+        segment: parent.segment + 1,
+        generation,
+        manualRetry: input.manualRetry,
+      }, input.now, `readiness-refinement:${input.id}`);
+      return { ok: true, submission: this.mustSubmission(input.id), idempotent: false };
+    });
+  }
+
+  overrideEvidenceReadiness(input: {
+    id: string;
+    runId: string;
+    submissionId: string;
+    requestId: string;
+    reason: string;
+    acknowledgedRisk: true;
+    now: number;
+  }):
+    | { ok: true; override: WorkflowSubmissionReadinessOverride; idempotent: boolean }
+    | { ok: false; reason: "not_found" | "conflict" | "policy_off" | "request_conflict" } {
+    const normalizedReason = input.reason.trim();
+    if (!normalizedReason || normalizedReason.length > WORKFLOW_LIMITS.readinessOverrideReason) {
+      return { ok: false, reason: "conflict" };
+    }
+    return transaction(this.db, () => {
+      const priorRow = this.db.prepare(
+        `SELECT o.*, s.run_id
+           FROM workflow_submission_readiness_overrides o
+           JOIN workflow_submissions s ON s.id = o.submission_id
+          WHERE o.request_id = ?`,
+      ).get(input.requestId) as (Record<string, unknown> & { run_id?: string }) | undefined;
+      if (priorRow) {
+        const prior = parseWorkflowReadinessOverrideRow(priorRow);
+        return prior.submissionId === input.submissionId
+            && priorRow.run_id === input.runId
+            && prior.reason === normalizedReason
+            && prior.acknowledgedRisk === input.acknowledgedRisk
+          ? { ok: true, override: prior, idempotent: true }
+          : { ok: false, reason: "request_conflict" };
+      }
+      const run = this.getRun(input.runId);
+      const submission = this.getSubmission(input.submissionId);
+      if (!run || !submission || submission.runId !== run.id) return { ok: false, reason: "not_found" };
+      const version = this.getWorkflowVersionById(run.workflowVersionId);
+      if (!workflowEvidenceReadinessPolicyEnforces(version?.evidenceReadinessPolicy)) {
+        return { ok: false, reason: "policy_off" };
+      }
+      const latest = this.latestSubmission(run.id);
+      if (
+        run.status !== "waiting_for_evidence_readiness"
+        || submission.status !== "waiting_for_evidence_readiness"
+        || latest?.id !== submission.id
+      ) return { ok: false, reason: "conflict" };
+      this.db.prepare(
+        `INSERT INTO workflow_submission_readiness_overrides (
+           id, submission_id, request_id, actor, reason, acknowledged_risk, created_at
+         ) VALUES (?, ?, ?, 'operator', ?, 1, ?)`,
+      ).run(input.id, input.submissionId, input.requestId, normalizedReason, input.now);
+      const readiness = submission.readiness
+        ? { ...submission.readiness, status: "overridden" as const }
+        : null;
+      this.db.prepare(
+        `UPDATE workflow_submissions
+            SET status = 'running', readiness_json = ?, updated_at = ?
+          WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
+      ).run(readiness ? JSON.stringify(readiness) : null, input.now, submission.id);
+      this.db.prepare(
+        `UPDATE workflow_runs
+            SET status = 'running', current_phase = 'activating', gate_state_json = NULL,
+                updated_at = ?, completed_at = NULL
+          WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
+      ).run(input.now, run.id);
+      const row = this.db.prepare(
+        `SELECT * FROM workflow_submission_readiness_overrides WHERE id = ?`,
+      ).get(input.id);
+      return { ok: true, override: parseWorkflowReadinessOverrideRow(row), idempotent: false };
+    });
+  }
+
   appendEvent(
     runId: string,
     kind: string,
     payload: WorkflowJson,
     now = Date.now(),
+    eventId?: string,
   ): WorkflowEvent {
+    const payloadJson = JSON.stringify(payload);
+    if (eventId) {
+      if (eventId.length > 200) throw new Error("Workflow event id exceeds 200 characters");
+      const existing = this.db.prepare(
+        `SELECT * FROM workflow_events WHERE event_id = ?`,
+      ).get(eventId);
+      if (existing) {
+        const parsed = parseWorkflowEventRow(existing);
+        if (parsed.runId !== runId || parsed.kind !== kind || JSON.stringify(parsed.payload) !== payloadJson) {
+          throw new Error(`Workflow event replay conflict for ${eventId}`);
+        }
+        return parsed;
+      }
+    }
     const result = this.db.prepare(
-      `INSERT INTO workflow_events (run_id, ts, event_kind, payload_json) VALUES (?, ?, ?, ?)`,
-    ).run(runId, now, kind, JSON.stringify(payload));
+      `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json) VALUES (?, ?, ?, ?, ?)`,
+    ).run(eventId ?? null, runId, now, kind, payloadJson);
     const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
     workflowLog("info", { run: runId, event: kind });
     return parseWorkflowEventRow(row);
@@ -7720,6 +8048,10 @@ export class WorkflowStore {
           this.db.prepare(`DELETE FROM workflow_llm_calls WHERE run_id = ?`).run(runId);
           this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
           this.db.prepare(
+            `DELETE FROM workflow_submission_readiness_overrides
+              WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+          ).run(runId);
+          this.db.prepare(
             `DELETE FROM workflow_edge_receipts
               WHERE submission_id IN (
                 SELECT id FROM workflow_submissions WHERE run_id = ?
@@ -8049,6 +8381,7 @@ export class WorkflowStore {
       submissions,
       evidenceImages: this.runSubmissionImageGroups(id, submissions),
       evidenceCoverage: this.runSubmissionCoverageGroups(id, submissions),
+      readinessOverrides: this.listReadinessOverrides(id),
       attempts,
       receipts: this.listReceiptsForRun(id),
       deliveries: this.listDeliveries(id),
@@ -8134,7 +8467,9 @@ export class WorkflowStore {
         this.db.prepare(
           `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
                   completed_at = COALESCE(completed_at, ?)
-            WHERE run_id = ? AND status IN ('capturing', 'running')`,
+            WHERE run_id = ? AND status IN (
+              'capturing', 'running', 'waiting_for_evidence_readiness'
+            )`,
         ).run(now, now, active.id);
         this.db.prepare(
           `UPDATE workflow_llm_calls
@@ -8167,7 +8502,9 @@ export class WorkflowStore {
         this.db.prepare(
           `UPDATE workflow_submissions SET status = 'cancelled', updated_at = ?,
                   completed_at = COALESCE(completed_at, ?)
-            WHERE run_id = ? AND status IN ('capturing', 'running')`,
+            WHERE run_id = ? AND status IN (
+              'capturing', 'running', 'waiting_for_evidence_readiness'
+            )`,
         ).run(now, now, active.id);
         this.db.prepare(
           `UPDATE workflow_llm_calls
@@ -8288,6 +8625,10 @@ export class WorkflowStore {
             WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
         ).run(runId);
         this.db.prepare(`DELETE FROM workflow_deliveries WHERE run_id = ?`).run(runId);
+        this.db.prepare(
+          `DELETE FROM workflow_submission_readiness_overrides
+            WHERE submission_id IN (SELECT id FROM workflow_submissions WHERE run_id = ?)`,
+        ).run(runId);
         this.db.prepare(`DELETE FROM workflow_events WHERE run_id = ?`).run(runId);
         this.enqueueRunImageCleanupInTransaction(runId, Date.now());
         this.deleteRunImageRowsInTransaction(runId);
@@ -8398,7 +8739,7 @@ export class WorkflowStore {
     // round. An action asks it to perform one instruction, and the daemon's own observer
     // owns what happens next - re-arming here would let the session's completion signal
     // open a repair round that competes with the continuation segment for the same turn.
-    if (delivery.kind === "session_action") return null;
+    if (delivery.kind === "session_action" || delivery.kind === "evidence_readiness") return null;
     if (this.rearmDrainCompletionForDelivery(delivery, now)) return "drain";
     return null;
   }
@@ -8438,30 +8779,25 @@ export class WorkflowStore {
   }
 
   private insertSubmissionInTransaction(input: WorkflowSubmissionInsert): void {
-    const segment = input.segment ?? 0;
-    // The same all-or-nothing rule the row parser enforces, asserted before the write so a
-    // caller that supplied half a continuation fails here rather than leaving a row that
-    // reads as an ordinary repair round.
-    if ((segment > 0) !== Boolean(input.continuation)) {
-      throw new Error("A continuation segment requires exactly one parent attempt provenance");
-    }
+    const provenance = workflowSubmissionOriginColumns(input.origin);
     this.db.prepare(
       `INSERT INTO workflow_submissions (
          id, run_id, round, segment, parent_submission_id, continuation_node_id,
-         continuation_node_attempt_id, mode, trigger_source, trigger_key, evidence_group_key,
+         continuation_node_attempt_id, refinement_reason, mode, trigger_source, trigger_key, evidence_group_key,
          staged_image_generation, evidence_fingerprint, context_json, evidence_json,
          readiness_json, pr_head_sha,
          status, created_at, updated_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?,
                  CASE WHEN ? IN ('completed', 'cancelled', 'failed') THEN ? ELSE NULL END)`,
     ).run(
       input.id,
       input.runId,
       input.round,
-      segment,
-      input.continuation?.parentSubmissionId ?? null,
-      input.continuation?.nodeId ?? null,
-      input.continuation?.nodeAttemptId ?? null,
+      provenance.segment,
+      provenance.parentSubmissionId,
+      provenance.continuationNodeId,
+      provenance.continuationNodeAttemptId,
+      provenance.refinementReason,
       input.mode ?? "full_workflow",
       input.triggerSource,
       input.triggerKey,

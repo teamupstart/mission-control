@@ -150,7 +150,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 11 are preserved for bindings that already pin them, and version 12 is current. There is
+through 12 are preserved for bindings that already pin them, and version 13 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -175,9 +175,9 @@ slots.
 
 Behind it are the seven built-in Personas wired the way they were written to compose. Intent
 Conformance Judge is stage 2, the cheap gate: there is no point spending deeper reviews on a
-change that has already drifted from what was asked. In versions 11 and 12, Code Risk Reviewer, Code
+change that has already drifted from what was asked. In versions 11 through 13, Code Risk Reviewer, Code
 Quality Judge and Code Design Reviewer are stage 3, running **in parallel on the same
-submission** and aggregating at an All-pass Join. In version 12, Test Evidence Auditor,
+submission** and aggregating at an All-pass Join. In versions 12 and 13, Test Evidence Auditor,
 Documentation Steward and Slop Filter are stage 4, also running in parallel and aggregating at
 their own All-pass Join. Every fail returns to the session for repair, and the Pull Request action
 does not run until both stages pass.
@@ -212,9 +212,9 @@ continuation captured. End still means the authored graph succeeded - and by the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 12 preserve that verified publication
-contract. Versions 10 through 12 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in version 12.
+would ask for one the run already has. Versions 9 through 13 preserve that verified publication
+contract. Versions 10 through 13 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 and 13.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -264,14 +264,16 @@ complete the default trigger; version 7 changes only the immutable
 stage and sets its missing-PR policy to `wait`; version 9 adds Code Quality Judge before that
 action and changes only the new version's completion policy to `none`; version 10 runs Code
 Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
-Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; and version 12 adds
-Slop Filter to stage 4 without changing the publication contract. Every earlier version remains in the
+Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
+Slop Filter to stage 4; and version 13 keeps that graph while enabling criterion-mapped evidence
+preflight. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
-Code Quality Judge stage unchanged, version 10 its two-member stage 3, and version 11 its
-two-member stage 4. New bindings take version 12 because it is current. Adopting the newer version on an
+Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
+two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
+take version 13 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -782,11 +784,20 @@ and persists a deterministic readiness result with `ready`, `gaps`, or `unavaila
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
 
-Phase 1 keeps `evidenceReadinessPolicy` at `off` for every built-in, new, and duplicated
-workflow. Publishing refuses a non-off draft until the enforcement lifecycle exists. Coverage
-under `off` still produces advisory readiness, but readiness never changes activation and
-workflow execution remains non-blocking. A null readiness value means historical data or an
-off-policy submission with no coverage; it never means ready.
+Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
+result before the engine creates any Persona or Check attempt. A structural gap parks the run at
+`waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
+original immutable submission inspectable. Newly staged evidence resumes as a child segment in the
+same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
+The operator may instead continue through the run detail after entering a reason and acknowledging
+that Test Evidence Auditor can still reject the packet. That append-only override and the original
+gap result remain visible after activation and restart.
+
+`off` remains the default for author-created and duplicated workflows and preserves Phase 1's
+advisory behavior. An unavailable compaction result and model-suggested proof-class mismatch remain
+warnings rather than hard gaps. A null readiness value means historical data or an off-policy
+submission with no coverage; it never means ready. No-Mistakes Review v13 is the first built-in
+version that opts in; versions 1 through 12 remain byte-compatible and non-enforcing.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all

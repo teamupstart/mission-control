@@ -21,9 +21,11 @@ import {
   pipelineCommissionBlocker,
   pipelineCommissionLine,
   pipelineEyebrow,
+  pipelineFeatureProgress,
   pipelineKickbackRule,
   pipelineLeadRun,
   pipelinePhaseStatus,
+  pipelinePhaseMeter,
   pipelineRail,
   pipelineRunForCommission,
   pipelineRunLine,
@@ -427,6 +429,128 @@ test("a synthetic commission run retains unknown provider steps after the canoni
     { name: "future_review", state: "in_progress" },
     { name: "future_ship", state: "pending" },
   ]);
+});
+
+test("Engineer progress never borrows BUILD or SHIP work before implementation exists", () => {
+  const projected = pipelineRunForCommission(commission({
+    lifecycle: "authoring",
+    handoff: null,
+    linkedRun: null,
+    currentStep: "plan",
+    steps: ENGINEER_STEP_NAMES.map((name) => ({
+      name,
+      state: name === "plan" ? "in_progress" : "pending",
+    })),
+  }));
+  const meter = pipelinePhaseMeter(projected);
+  assert.equal(projected.steps.some((step) => ["build", "finish"].includes(step.name)), false);
+  assert.equal(meter?.segments.find((segment) => segment.phase === "BUILD")?.total, 0);
+  assert.equal(meter?.segments.find((segment) => segment.phase === "SHIP")?.total, 0);
+
+  const blocked = commission({
+    lifecycle: "created",
+    handoff: null,
+    linkedRun: null,
+    readinessRequired: true,
+    readiness: {
+      status: "blocked",
+      code: "authentication_required",
+      summary: "GitHub authentication is required",
+      checkedCapabilities: ["git", "gh"],
+      retryable: true,
+      remedy: "Authenticate GitHub",
+      diagnostic: "gh auth status failed",
+      fingerprint: "blocked-v1",
+      permitted: false,
+      checkedAt: "2026-09-04T12:00:00.000Z",
+    },
+  });
+  assert.equal(pipelineCommissionLine(blocked), "GitHub authentication is required");
+  assert.equal(pipelineRunForCommission(blocked).group, "halted");
+});
+
+test("feature progress keeps completed Engineer work beside gated and active implementation", () => {
+  const handedOff = commission({
+    lifecycle: "awaiting_spec_merge",
+    handoff: {
+      planSlug: "add-widgets",
+      branch: "plan/add-widgets",
+      prUrl: "https://github.com/example/repo/pull/1",
+      outcome: "pr_opened",
+    },
+    steps: ENGINEER_STEP_NAMES.map((name) => ({
+      name,
+      state: name === "prd" ? "skipped" as const : "done" as const,
+    })),
+  });
+  const gated = pipelineFeatureProgress(handedOff, null);
+  assert.deepEqual(gated.segments.map((segment) => segment.kind), ["engineer", "implementation"]);
+  assert.equal(gated.segments[0]?.finished, gated.segments[0]?.total);
+  assert.equal(gated.segments[0]?.degraded, true);
+  assert.equal(gated.segments[1]?.total, null);
+  assert.match(gated.count, /Engineer 13\/13 · Implementation gated/);
+
+  const implementation = run({
+    steps: [
+      { name: "worktree", state: "done" },
+      { name: "build", state: "in_progress" },
+      { name: "finish", state: "pending" },
+    ],
+    lastStep: "build",
+  });
+  const active = pipelineFeatureProgress(handedOff, implementation);
+  assert.equal(active.segments.length, 2);
+  assert.equal(active.segments[0]?.finished, 13);
+  assert.deepEqual(active.segments[1], {
+    kind: "implementation",
+    label: "Implementation",
+    tone: "running",
+    finished: 1,
+    total: 3,
+    weight: 3,
+    current: true,
+    degraded: false,
+    detail: "Implementation: 1 of 3 steps finished. BUILD · Build · step 2 of 3",
+  });
+
+  const html = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [implementation],
+    commissions: [handedOff],
+    selectedCommissionId: handedOff.id,
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+  assert.equal(html.match(/class="tpm-seg/g)?.length, 2);
+  assert.match(html, /Engineer 13\/13 · Implementation 1\/3/);
+});
+
+test("legacy provider lifecycle is explicit and offers no Phase 4 recovery action", () => {
+  const legacy = commission({
+    lifecycle: "authoring",
+    capabilities: undefined,
+    integrationOwner: undefined,
+    readinessRequired: undefined,
+    readiness: undefined,
+    failure: undefined,
+    retention: undefined,
+    retirement: undefined,
+    successorCandidate: undefined,
+  });
+  const html = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [],
+    commissions: [legacy],
+    selectedCommissionId: legacy.id,
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+  assert.match(html, /Ownership legacy provider/);
+  assert.match(html, /Legacy provider - no readiness gate advertised/);
+  assert.doesNotMatch(html, />Retry Engineer</);
+  assert.doesNotMatch(html, />Check again</);
 });
 
 test("only explicit current commission blockers synthesize a recoverable halt", () => {

@@ -67,6 +67,20 @@ export function projectPipelineWorkspace(input: {
   const implementationPath = input.linkedRun?.worktree ?? null;
   const reportedPath = implementationPath ?? input.commission.authoringWorktree ??
     input.task.pipelineWorkspacePath ?? null;
+  if (!implementationPath && input.commission.retirement) {
+    return {
+      view: view(input.commission, attempt, {
+        kind: "authoring",
+        availability: "retired",
+        reportedPath: input.commission.retirement.worktreePath,
+        branch: input.commission.retirement.branch,
+        reason: "provider_retired",
+        capabilities: attempt.evidenceCommit ? READ_ONLY : NONE,
+      }),
+      liveRoot: null,
+      commission: input.commission,
+    };
+  }
   if (!active || input.commission.lifecycle === "unsupported") {
     return {
       view: view(input.commission, attempt, {
@@ -335,6 +349,21 @@ export async function resolvePipelineWorkspace(input: {
   const kind = implementationPath ? "implementation" : "authoring";
   const reportedPath = implementationPath ?? authoringPath;
   const expectedBranch = kind === "authoring" ? commission.authoringBranch : null;
+  if (kind === "authoring" && commission.retirement) {
+    const evidenceAvailable = await objectExists(commission.repoRoot, attempt.evidenceCommit);
+    return {
+      view: view(commission, attempt, {
+        kind,
+        availability: "retired",
+        reportedPath: commission.retirement.worktreePath,
+        branch: commission.retirement.branch,
+        reason: "provider_retired",
+        capabilities: evidenceAvailable ? READ_ONLY : NONE,
+      }),
+      liveRoot: null,
+      commission,
+    };
+  }
   if (commission.lifecycle === "unsupported") {
     const evidenceAvailable = await objectExists(commission.repoRoot, attempt.evidenceCommit);
     return {

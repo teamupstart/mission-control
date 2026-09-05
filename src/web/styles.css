@@ -344,8 +344,21 @@
  * supported seam for the same amber frame used by the Joyride comparison. Lift the target
  * above Driver's z-index 10000 SVG and restore some luminance so dark native surfaces read
  * as the foreground lesson instead of another dimmed panel. The popover remains far above
- * both at Driver's z-index 1000000000. */
-body.driver-active .driver-active-element:not(#driver-dummy-element) {
+ * both at Driver's z-index 1000000000.
+ *
+ * The `aria-controls` half is not a belt-and-braces duplicate of the class. Driver adds the
+ * class with `classList.add`, and React OWNS `className` on any target whose classes are
+ * derived from state - the Settings gear carries `is-active` on the Settings route. A stop
+ * whose own `prepare` changes that state (Set up this machine leaves Settings for the fleet
+ * to point at the gear) schedules a React commit that runs after Driver's add and rewrites
+ * the attribute, taking the frame with it - deterministically, not as a race. Driver wires
+ * `aria-controls="driver-popover-content"` onto the same element in the same call and clears
+ * it on the same transition, and nothing in the app renders that value, so it survives the
+ * commit that the class does not. Interaction deliberately still keys off Driver's own
+ * class: a stop that wants its target clickable says `interactive`, and a stripped class
+ * leaving a spotlight inert is the safe direction to fail. */
+body.driver-active .driver-active-element:not(#driver-dummy-element),
+body.driver-active [aria-controls="driver-popover-content"]:not(#driver-dummy-element) {
   position: relative !important;
   z-index: 10001 !important;
   -webkit-app-region: no-drag;
@@ -2725,6 +2738,46 @@ body {
   gap: 8px;
   flex: none;
 }
+/* The update's own progress rail. Determinate, because the install script reports the stage it
+   reached and a bar that cannot say how far along it is is the old experience in a new shape.
+   The moving stripe lives INSIDE the fill rather than sweeping the whole rail: the two long
+   stages hold the value still for a minute or more, so the bar has to look alive without
+   lying about how much of it is filled. */
+.app-banner-progress {
+  overflow: hidden;
+  width: min(420px, 100%);
+  height: 6px;
+  margin: 8px 0 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.app-banner-progress-fill {
+  display: block;
+  height: 100%;
+  min-width: 6px;
+  border-radius: inherit;
+  /* The stripe is white over the accent, so it reads as a highlight in either theme. */
+  background:
+    repeating-linear-gradient(
+      115deg,
+      color-mix(in srgb, #fff 20%, transparent) 0 6px,
+      transparent 6px 12px
+    ),
+    var(--working);
+  background-size: 24px 100%, 100% 100%;
+  animation: app-banner-progress-stripe 900ms linear infinite;
+  transition: width 320ms ease;
+}
+@keyframes app-banner-progress-stripe {
+  to { background-position: 24px 0, 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-banner-progress-fill {
+    animation: none;
+    transition: none;
+  }
+}
+
 .app-banner-error {
   border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
   background: color-mix(in oklab, var(--danger) 9%, var(--panel));
@@ -17475,6 +17528,22 @@ button.wf-carried.is-link:focus-visible {
 .wf-coverage-ledger h5 { margin: 0; }
 .wf-evidence-links { display: flex; flex-wrap: wrap; gap: 5px; }
 .wf-evidence-readiness .wf-run-card { gap: 6px; }
+
+.wf-readiness-override {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--attention) 7%, transparent);
+}
+.wf-readiness-override label { display: grid; gap: 6px; }
+.wf-readiness-override textarea { min-height: 76px; resize: vertical; }
+.wf-readiness-override .wf-checkbox-label {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
 
 .wf-image-ledger { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .wf-image-record {

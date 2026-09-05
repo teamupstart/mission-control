@@ -160,12 +160,14 @@ test("the Library and Setup tour targets are declared, namespaced, and their own
   // Every tour owns its targets, and no target belongs to two tours.
   const seeWork = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "see-work");
   const setup = TOUR_TARGET_IDS.filter((id) => tourTargetOwner(id) === "setup");
-  // Setup reads one family at a time, so it names the rail and the selected pane rather than
-  // individual families - only one family's rows are mounted at once.
+  // Setup names the PATH to the panel - the gear, the rail row, the dependency list, and
+  // Re-check - so two of its four targets are outside the panel altogether. It names no
+  // family: only the chosen family's rows are ever mounted, and the tour hands the panel over
+  // rather than reading the families one at a time.
   assert.deepEqual(setup, [
-    "setup:panel",
-    "setup:rail",
-    "setup:pane",
+    "setup:settings-gear",
+    "setup:settings-tab",
+    "setup:dependencies",
     "setup:recheck",
   ]);
   assert.ok(setup.every((id) => tourTargetScope(id) === "page"));

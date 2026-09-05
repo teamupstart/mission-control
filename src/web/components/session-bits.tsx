@@ -19,10 +19,10 @@ import {
   fmtUsd,
   repoLeaf,
   sessionTitleDetail,
-  stateDisplay,
+  type StateDisplay,
 } from "../lib/format.ts";
 import type { BacklogTaskNoticeView } from "../lib/backlog-copy.ts";
-import { useInterrupting } from "../lib/interrupting.ts";
+import { useSessionRuntimeDisplay } from "../lib/interrupting.ts";
 import { formatScheduledFor } from "../lib/schedules.ts";
 import { api } from "../lib/api.ts";
 import { Keycap } from "./Keycap.tsx";
@@ -172,6 +172,7 @@ export function workflowRunTone(run: WorkflowRunSummary): WorkflowRunTone {
     "waiting_for_pr",
     "waiting_for_inspector",
     "waiting_for_new_head",
+    "waiting_for_evidence_readiness",
   ].includes(run.status)) return "waiting";
   if (run.status === "blocked") return "blocked";
   if (run.status === "failed" || run.status === "cancelled") return "failed";
@@ -184,6 +185,7 @@ export function workflowRunLabel(run: WorkflowRunSummary): string {
   if (run.gate === "waiting_pr") return "Waiting for PR";
   if (run.gate === "waiting_inspector") return "GitHub Inspector gate";
   if (run.gate === "findings") return "GitHub Inspector findings";
+  if (run.status === "waiting_for_evidence_readiness") return "Evidence preflight";
   if (tone === "waiting") return "Review changes";
   if (tone === "blocked") return "Workflow blocked";
   if (tone === "failed") return run.status === "cancelled" ? "Preview cancelled" : "Preview failed";
@@ -1733,14 +1735,17 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
 export function StateBadge({
   session,
   onOpenReviews,
+  display,
 }: {
   session: Session;
   onOpenReviews?: () => void;
+  display?: StateDisplay;
 }): React.JSX.Element {
   // The transient stop lives beside the durable state rather than replacing it: one badge,
   // and the same one, so a card never grows a second place that says what a session is
   // doing. The Console detail draws this component, so it follows.
-  const st = stateDisplay(session, useInterrupting(session.id));
+  const runtimeState = useSessionRuntimeDisplay(session);
+  const st = display ?? runtimeState;
   if (session.pendingReviews > 0 && onOpenReviews) {
     return (
       <Tooltip

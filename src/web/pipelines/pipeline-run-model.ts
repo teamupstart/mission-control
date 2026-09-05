@@ -1,9 +1,9 @@
 import {
+  ENGINEER_STEP_NAMES,
   PIPELINE_HALT_CLASS_INFO,
   PIPELINE_KICKBACK_TARGETS,
   PIPELINE_PHASES,
   PIPELINE_RUN_GROUPS,
-  PIPELINE_STEPS,
   pipelineRepoKey,
   pipelineStepInfo,
   sortByPipelineStep,
@@ -624,20 +624,18 @@ export function pipelineCommissionBlocker(
 /** One shared run-shaped view for Board, Console, and Runs commission progress. */
 export function pipelineRunForCommission(
   commission: PipelineCommission,
-  linkedRun: PipelineRun | null = null,
 ): PipelineRun {
-  if (linkedRun) return linkedRun;
   const blocker = pipelineCommissionBlocker(commission);
   const engineer = new Map(commission.steps.map((step) => [step.name, step.state]));
-  const canonical = new Set(PIPELINE_STEPS[commission.provider].map((step) => step.name));
-  const steps = [...PIPELINE_STEPS[commission.provider].map((step) => ({
-    name: step.name,
-    state:
-      engineer.get(step.name) ??
-      (step.name === "worktree" && (commission.authoringWorktree || commission.handoff)
-        ? "done"
-        : "pending"),
-  })), ...commission.steps.filter((step) => !canonical.has(step.name))];
+  const canonical = new Set<string>(["worktree", ...ENGINEER_STEP_NAMES]);
+  const steps = [
+    {
+      name: "worktree",
+      state: commission.authoringWorktree || commission.handoff ? "done" as const : "pending" as const,
+    },
+    ...ENGINEER_STEP_NAMES.map((name) => ({ name, state: engineer.get(name) ?? "pending" as const })),
+    ...commission.steps.filter((step) => !canonical.has(step.name)),
+  ];
   return {
     provider: commission.provider,
     repoRoot: commission.repoRoot,
@@ -648,13 +646,15 @@ export function pipelineRunForCommission(
     steps,
     lastStep: commission.currentStep,
     halt:
-      commission.lifecycle === "failed" && commission.error
-        ? { class: "unclassified", reason: commission.error }
+      commission.lifecycle === "failed" && (commission.failure?.summary || commission.error)
+        ? { class: "unclassified", reason: commission.failure?.summary ?? commission.error! }
+        : commission.readiness?.permitted === false
+          ? { class: "needs-human", reason: commission.readiness.summary }
         : blocker
           ? { class: "unclassified", reason: blocker.reason }
         : null,
     group:
-      commission.lifecycle === "failed" || blocker
+      commission.lifecycle === "failed" || commission.readiness?.permitted === false || blocker
         ? "halted"
         : commission.lifecycle === "awaiting_spec_merge"
           ? "waiting"
@@ -667,6 +667,100 @@ export function pipelineRunForCommission(
   };
 }
 
+export interface PipelineFeatureProgressSegment {
+  kind: "engineer" | "implementation";
+  label: string;
+  tone: PipelineStatusTone;
+  finished: number;
+  total: number | null;
+  weight: number;
+  current: boolean;
+  degraded: boolean;
+  detail: string;
+}
+
+export interface PipelineFeatureProgressView {
+  segments: PipelineFeatureProgressSegment[];
+  caption: string;
+  captionTone: PipelineStatusTone;
+  count: string;
+  halt: PipelinePhaseMeterView["halt"];
+}
+
+/** One truthful bar across provider-owned Engineer authoring and later implementation. */
+export function pipelineFeatureProgress(
+  commission: PipelineCommission,
+  linkedRun: PipelineRun | null,
+): PipelineFeatureProgressView {
+  const engineerRun = pipelineRunForCommission(commission);
+  const engineerMeter = pipelinePhaseMeter(engineerRun)!;
+  const engineerNames = new Set<string>(["worktree", ...ENGINEER_STEP_NAMES]);
+  const engineerSteps = engineerRun.steps.filter((step) => engineerNames.has(step.name));
+  const engineerTotal = engineerSteps.length;
+  const handedOff = commission.handoff !== null;
+  const engineerFinished = handedOff
+    ? engineerTotal
+    : engineerSteps.filter((step) => step.state === "done" || step.state === "skipped").length;
+  const skipped = engineerSteps.filter((step) => step.state === "skipped").length;
+  const engineerCurrent = !handedOff;
+  const engineerTone: PipelineStatusTone = handedOff
+    ? "passed"
+    : engineerMeter.captionTone;
+  const unknownEngineerSteps = commission.steps.filter((step) => !engineerNames.has(step.name));
+  const segments: PipelineFeatureProgressSegment[] = [{
+    kind: "engineer",
+    label: "Engineer",
+    tone: engineerTone,
+    finished: engineerFinished,
+    total: engineerTotal,
+    weight: engineerTotal,
+    current: engineerCurrent,
+    degraded: handedOff && skipped > 0,
+    detail: [
+      `Engineer: ${engineerFinished} of ${engineerTotal} steps finished.`,
+      handedOff ? "Specification handoff is complete." : `Current state: ${pipelineCommissionLine(commission)}.`,
+      skipped > 0 ? `${skipped} provider-recorded step${skipped === 1 ? " was" : "s were"} skipped.` : "",
+      unknownEngineerSteps.length > 0
+        ? `${unknownEngineerSteps.length} provider step${unknownEngineerSteps.length === 1 ? " is" : "s are"} outside this build's canonical Engineer vocabulary.`
+        : "",
+    ].filter(Boolean).join(" "),
+  }];
+
+  let implementationMeter: PipelinePhaseMeterView | null = null;
+  if (handedOff) {
+    implementationMeter = linkedRun ? pipelinePhaseMeter(linkedRun) : null;
+    const total = implementationMeter?.total ?? (linkedRun ? 0 : null);
+    const finished = implementationMeter?.done ?? 0;
+    const complete = total !== null && total > 0 && finished === total;
+    segments.push({
+      kind: "implementation",
+      label: "Implementation",
+      tone: complete ? "passed" : implementationMeter?.captionTone ?? "stopped",
+      finished,
+      total,
+      weight: Math.max(1, total ?? 1),
+      current: true,
+      degraded: false,
+      detail: implementationMeter
+        ? `Implementation: ${finished} of ${total} steps finished. ${pipelineEyebrow(linkedRun!)}`
+        : linkedRun
+          ? `Implementation is linked, but the provider has not reported any implementation steps. ${pipelineEyebrow(linkedRun)}`
+          : "Implementation is gated until the specification merges and the provider links its run.",
+    });
+  }
+
+  const implementation = segments.find((segment) => segment.kind === "implementation");
+  return {
+    segments,
+    caption: pipelineCommissionLine(commission, linkedRun),
+    captionTone: implementation?.tone ?? engineerMeter.captionTone,
+    count: implementation
+      ? `Engineer ${engineerFinished}/${engineerTotal} · Implementation ${implementation.total === null ? "gated" : `${implementation.finished}/${implementation.total}`}`
+      : `${engineerFinished}/${engineerTotal}`,
+    halt: implementationMeter?.halt ?? engineerMeter.halt,
+  };
+}
+
 /** Lifecycle copy shared by every commission projection. */
 export function pipelineCommissionLine(
   commission: PipelineCommission,
@@ -675,8 +769,9 @@ export function pipelineCommissionLine(
   if (linkedRun) return pipelineEyebrow(linkedRun);
   const attempt = commission.attempts.find((entry) => entry.attempt === commission.activeAttempt);
   if (commission.lifecycle === "cancelled") return "Engineer cancelled";
-  if (commission.lifecycle === "failed") return "Engineer failed";
+  if (commission.lifecycle === "failed") return commission.failure?.summary ?? "Engineer failed";
   if (commission.lifecycle === "unsupported") return "Engineer unsupported";
+  if (commission.readiness?.permitted === false) return commission.readiness.summary;
   if (commission.lifecycle === "awaiting_spec_merge" || commission.handoff) {
     return "Awaiting spec merge";
   }

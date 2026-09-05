@@ -1,6 +1,7 @@
 import type { MissionRoute } from "../workflows/useWorkflowRoute.ts";
 import { tourContent } from "./content.ts";
 import type { TourId } from "./contracts.ts";
+import type { TourTargetId } from "./target-registry.ts";
 
 /**
  * What a tour looks like before it starts.
@@ -38,6 +39,22 @@ export interface TourEntry {
    * leave dialog while no tour is running and the ordinary route flow owns the answer.
    */
   entryRoute: MissionRoute;
+  /**
+   * Where the tour LEAVES the operator, when handing a page over is the point of it.
+   *
+   * Omitted by a tour that only demonstrates, and therefore owes back the page, asset, and
+   * control it borrowed. Declared by one whose last stop is somewhere to start working: Set
+   * up this machine ends on Setup because installing what this machine is missing is the
+   * next thing to do, and replaying the snapshot would take that page away again.
+   *
+   * Everything else in the snapshot - layout, selection, Board drill-in, filter, the open
+   * Line drawer - is still restored either way. This replaces the route alone.
+   *
+   * `focus` is the control to land on when the invoking one did not survive the move. The
+   * automatic first-run tour has no invoker at all, and a keyboard operator would otherwise
+   * be left at the document root on a page they did not ask for.
+   */
+  exit?: { route: MissionRoute; focus: TourTargetId };
 }
 
 const SEE_WORK_TITLE = tourContent("see-work").title;
@@ -98,15 +115,16 @@ const SETUP_ENTRY: TourEntry = {
   id: "setup",
   title: SETUP_TITLE,
   settings: {
-    tooltip: "Tour the machine Setup panel and learn what each status and remedy means",
+    tooltip: "Find Setup from the gear, then install the dependencies you will use",
     ariaLabel: `Start ${SETUP_TITLE} tour`,
     heading: SETUP_TITLE,
-    hint: "Tour the machine Setup panel",
+    // Short enough not to ellipsize in the rail row that draws it.
+    hint: "Find and use Setup",
   },
   palette: {
     rowId: "command:setup-tour",
     title: `Start ${SETUP_TITLE} tour`,
-    detail: "Walk through required tools, status evidence, remedies, and Re-check.",
+    detail: "Four stops: the gear, Setup in the rail, what to install, and Re-check.",
     keywords: [
       "tour",
       "onboarding",
@@ -119,7 +137,10 @@ const SETUP_ENTRY: TourEntry = {
     ],
     hint: "Start the guided machine Setup tour.",
   },
-  entryRoute: { page: "settings", category: "setup" },
+  // The fleet, not the page this tour is about: its first stop points at the gear, which
+  // reads "Settings" from everywhere except the Settings page itself.
+  entryRoute: { page: "fleet" },
+  exit: { route: { page: "settings", category: "setup" }, focus: "setup:recheck" },
 };
 
 /** Every tour Mission Control offers, in the order its entry points list them. */
@@ -132,6 +153,16 @@ export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
   }
   return entries;
 })();
+
+/**
+ * The one tour a fresh profile receives automatically, before it has asked for anything.
+ *
+ * Setup, because nothing else in the product works until this machine has the tools the work
+ * needs, and an operator who has never seen the panel cannot be expected to find it. Named
+ * here rather than written into the effect that starts it, so the automatic tour and the
+ * manual ones are drawn from the same registry.
+ */
+export const FIRST_RUN_TOUR: TourId = "setup";
 
 export function tourEntry(id: TourId): TourEntry {
   const entry = TOUR_ENTRIES.find((candidate) => candidate.id === id);

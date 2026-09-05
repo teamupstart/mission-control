@@ -6,7 +6,8 @@
 //
 // Run this on a Codex version bump, commit the result, and read the diff: it is the only
 // place the app-server protocol is described, so a field that moved shows up here or
-// nowhere. The adapter (`harness/codex/sdk.ts`) is its only consumer.
+// nowhere. Two modules consume it: the driver (`harness/codex/sdk.ts`) and the model
+// catalog probe beside it (`harness/codex/model-catalog.ts`).
 //
 // ## Why this script exists rather than `generate-ts --out src/...`
 //
@@ -65,6 +66,12 @@ const ROOTS = [
   "v2/FileChangeRequestApprovalResponse",
   "v2/ToolRequestUserInputParams",
   "v2/ToolRequestUserInputResponse",
+  // The catalog probe in `harness/codex/model-catalog.ts`. It validates the response
+  // structurally, because the row is untrusted input, but it takes the params type and a
+  // `Pick` of the row's fields from here - so a renamed field fails the build instead of
+  // silently emptying the model picker.
+  "v2/ModelListParams",
+  "v2/ModelListResponse",
 ];
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -143,14 +150,15 @@ try {
 // DO NOT EDIT. Run \`node scripts/codex-app-server-bindings.mjs\` against the pinned
 // binary instead, and read the diff.
 //
-// The subset of \`codex app-server generate-ts\` that \`harness/codex/sdk.ts\` speaks - the
-// transitive closure of the roots declared in that script, concatenated. Each declaration
-// below is the generator's own output, byte for byte, with only its per-file header and
-// its now-redundant \`import type\` lines removed.
+// The subset of \`codex app-server generate-ts\` that \`harness/codex/sdk.ts\` and its
+// sibling \`harness/codex/model-catalog.ts\` speak - the transitive closure of the roots
+// declared in that script, concatenated. Each declaration below is the generator's own
+// output, byte for byte, with only its per-file header and its now-redundant
+// \`import type\` lines removed.
 //
 // The protocol is EXPERIMENTAL upstream. Drift is absorbed by regenerating on a version
-// bump, which is safe precisely because the adapter is the only consumer and it fails to
-// compile when a field it reads moves.
+// bump, which is safe precisely because those two modules are the only consumers and they
+// fail to compile when a field they read moves.
 
 /** The Codex build these bindings were generated from. */
 export const CODEX_APP_SERVER_BINDINGS_VERSION = ${JSON.stringify(stamp)};

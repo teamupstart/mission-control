@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +21,7 @@ import {
   productConsentScriptPath,
   writeProductConsentBin,
   ghPullRequestsPath,
+  codexCatalogControlPath,
   piCatalogControlPath,
   writeFakeAgents,
 } from "./fake-agents.ts";
@@ -247,10 +249,14 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
   const piOnLoginShellOnly = extraEnv.MC_E2E_PI_LOGIN_SHELL_ONLY === "1";
+  const piOnVersionManagerShimOnly =
+    extraEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY === "1";
   const codexOnDaemonPathOnly = extraEnv.MC_E2E_CODEX_ON_DAEMON_PATH_ONLY === "1";
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
+  const versionManagerPiBin = join(home, "tool-data", "mise-shims", "pi");
+  const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
@@ -268,6 +274,13 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       '#!/bin/sh\nprintf \'__MISSION_PATH__%s__MISSION_PATH__\' "$MC_E2E_LOGIN_SHELL_PATH"\n',
     );
     chmodSync(loginShell, 0o755);
+  }
+  if (piOnVersionManagerShimOnly) {
+    mkdirSync(dirname(versionManagerPiBin), { recursive: true });
+    copyFileSync(bins.pi, versionManagerPiBin);
+    chmodSync(versionManagerPiBin, 0o755);
+    mkdirSync(versionManagerRuntimeBin, { recursive: true });
+    symlinkSync(process.execPath, join(versionManagerRuntimeBin, "node"));
   }
   if (conductorNodeVersion !== undefined) {
     writeConductorNodeRuntime(home, conductorNodeVersion);
@@ -397,6 +410,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // Re-read on every prompt-free Pi catalog probe so a spec can move from live discovery
     // to failure across a daemon restart without ever allowing a launch-shaped invocation.
     MC_E2E_PI_CATALOG_CONTROL: piCatalogControlPath(home),
+    // The same seam for Codex's `model/list` probe, re-read per request.
+    MC_E2E_CODEX_CATALOG_CONTROL: codexCatalogControlPath(home),
     // Where that fake reads its scripted pull requests from. Set for every daemon so a spec
     // only has to write the file; absent content simply means "no pull requests anywhere",
     // which is what every spec that does not script one already expects.
@@ -459,6 +474,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     isolatedEnv.MC_E2E_LOGIN_SHELL_PATH =
       `${dirname(loginPiBin)}${delimiter}${dirname(process.execPath)}${delimiter}/usr/bin${delimiter}/bin`;
     delete isolatedEnv.MC_E2E_PI_LOGIN_SHELL_ONLY;
+  } else if (piOnVersionManagerShimOnly) {
+    isolatedEnv.MISSION_PI_BIN = "pi";
+    isolatedEnv.PATH = `${versionManagerRuntimeBin}${delimiter}/usr/bin${delimiter}/bin`;
+    isolatedEnv.SHELL = join(home, "missing-login-shell");
+    isolatedEnv.MISE_SHIMS_DIR = dirname(versionManagerPiBin);
+    delete isolatedEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY;
   } else if (conductorNodeVersion !== undefined) {
     // Setup forces a login-shell PATH refresh before inspecting installer prerequisites.
     // Keep that refresh inside the same controlled fake Node runtime as the daemon's

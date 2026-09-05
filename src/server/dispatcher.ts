@@ -70,9 +70,12 @@ import { hasBin, resolveBinPath, run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 import { preparePiLaunch } from "./harness/pi/launch.ts";
-import { pipelineTaskLaunch } from "./pipelines/index.ts";
 import {
-  appendPipelineCommissionAttempt,
+  checkPipelineCommissionReadiness,
+  pipelineTaskLaunch,
+  refreshPipelineCommission,
+} from "./pipelines/index.ts";
+import {
   bindPipelineCommissionAttempt,
   cancelPipelineCommission,
   createPipelineCommission,
@@ -912,6 +915,7 @@ export class Dispatcher {
       if (!lifecycle) {
         throw new Error("the pipeline provider lost Engineer lifecycle support before launch");
       }
+      const engineerCapabilities = launch.capabilities ?? { supported: true };
       let commission = task.pipelineCommissionId
         ? this.registry.pipelineCommission(task.pipelineCommissionId)
         : null;
@@ -923,6 +927,7 @@ export class Dispatcher {
           taskId,
           provider: launch.provider,
           repoRoot: task.repoRoot,
+          capabilities: engineerCapabilities,
         });
         this.patch(taskId, { pipelineCommissionId: commission.id, pipelineRun: null });
         this.registry.upsertPipelineCommission(commission);
@@ -931,8 +936,7 @@ export class Dispatcher {
           (attempt) => attempt.attempt === commission!.activeAttempt,
         );
         if (active && ["failed", "cancelled"].includes(active.state)) {
-          commission = appendPipelineCommissionAttempt({ commissionId: commission.id });
-          this.registry.upsertPipelineCommission(commission);
+          throw new Error("Retry Engineer is not available until Pipeline recovery is enabled");
         } else if (active?.state === "settled" || commission.lifecycle === "awaiting_spec_merge") {
           throw new Error("the Pipeline specification is already awaiting merge and cannot restart Engineer");
         }
@@ -952,6 +956,9 @@ export class Dispatcher {
           idea: task.intent,
           correlationId: commission.correlationId,
           attemptKey: attempt.launchKey,
+          ...(engineerCapabilities.ownedAttempts
+            ? { integrationOwner: commission.id }
+            : {}),
         });
         if (created.ok) {
           reserved = created.value;
@@ -988,12 +995,48 @@ export class Dispatcher {
           providerAttempt: reservedRun.attempt,
           attemptKey: reservedRun.attemptKey,
           previousEngineerRunId: reservedRun.previousEngineerRunId,
+          integrationOwner: reservedRun.integrationOwner,
+          readinessRequired: reservedRun.readinessRequired,
         });
         engineerRunId = reservedRun.engineerRunId;
         engineerCommissionId = commissionId;
         engineerLifecycle = lifecycle;
         this.registry.upsertPipelineCommission(commission);
         reservationBound = true;
+
+        // Consume the provider's current durable history before acting on any later snapshot.
+        // This keeps a readiness revision from advancing the cursor past run-created ownership
+        // evidence when create returned an already-existing idempotent reservation.
+        await refreshPipelineCommission(this.registry, commission);
+        commission = this.registry.pipelineCommission(commission.id) ?? commission;
+
+        if (engineerCapabilities.readiness) {
+          const projectedAttempt = commission.attempts.find(
+            (candidate) => candidate.attempt === commission!.activeAttempt,
+          );
+          if (
+            !projectedAttempt ||
+            projectedAttempt.providerRevision < reservedRun.eventRevision
+          ) {
+            throw new Error("the provider Engineer reservation history is not available");
+          }
+          const checked = await checkPipelineCommissionReadiness(
+            this.registry,
+            commission,
+            lifecycle,
+          );
+          if (!checked.ok) throw new Error(checked.error);
+          commission = checked.commission;
+          const readiness = commission.readiness!;
+          if (!readiness?.permitted) {
+            this.patch(taskId, {
+              status: "running",
+              sessionId: null,
+              error: readiness?.summary ?? "the provider did not permit Engineer host launch",
+            });
+            return;
+          }
+        }
 
         // A cancellation requested before the provider returned an id must use the same
         // fail-closed path as a cancellation requested one tick later. Publish the id, then

@@ -1,12 +1,30 @@
 // Browser-safe update contracts. This module is consumed by Electron today and by the
 // renderer in Phase 3, so it must not import any node: modules.
 
+import type { UpdatePrepareStage } from "./update-stages.mjs";
+
+export {
+  UPDATE_PREPARE_STAGES,
+  UPDATE_PROGRESS_MARKER,
+  UPDATE_STAGED_MARKER,
+  isUpdatePrepareStage,
+  parseUpdateProgressLine,
+  updatePrepareProgress,
+} from "./update-stages.mjs";
+export type {
+  UpdatePrepareProgress,
+  UpdatePrepareStage,
+  UpdateProgressLine,
+} from "./update-stages.mjs";
+
 export const UPDATE_PHASES = [
   "disabled",
   "idle",
   "checking",
   "up-to-date",
   "available",
+  "preparing",
+  "ready",
   "applying",
   "error",
 ] as const;
@@ -39,8 +57,46 @@ export type UpdateSnapshot =
       publishedAt: string;
       checkedAt: number;
     })
+  /**
+   * The new version is being built while this app keeps running.
+   *
+   * The build touches only the updater-owned clone, so nothing about it needs the app gone -
+   * and the app is the only thing that can show a person it is happening at all. `stage` is
+   * what the install script last reported, and is the whole of what a surface needs: it names
+   * the step and, through `updatePrepareProgress`, places the bar.
+   */
+  | (SnapshotBase & {
+      phase: "preparing";
+      currentVersion: string;
+      newVersion: string;
+      releaseTag: string;
+      stage: UpdatePrepareStage;
+      /**
+       * Cancel was pressed and the build is being torn down.
+       *
+       * Still `preparing`, because the work is still happening - the difference is that it is
+       * now shutting down, nothing new can start until it has, and there is nothing left to
+       * cancel. The offer comes back when the process group is actually gone.
+       */
+      cancelling: boolean;
+    })
+  /** Built and verified, waiting for the person to accept the restart that installs it. */
+  | (SnapshotBase & {
+      phase: "ready";
+      currentVersion: string;
+      newVersion: string;
+      releaseTag: string;
+      stagedAt: number;
+    })
+  /**
+   * The seconds between accepting the restart and this process going away.
+   *
+   * Everything long has already happened: the detached helper waits for this process to exit,
+   * swaps the bundle it was handed, and relaunches.
+   */
   | (SnapshotBase & {
       phase: "applying";
+      currentVersion: string;
       newVersion: string;
       stage: "starting" | "handed-off";
     })

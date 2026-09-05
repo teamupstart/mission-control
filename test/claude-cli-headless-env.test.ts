@@ -55,7 +55,7 @@ fi
 if [ "$stream_output" = "1" ]; then
   printf '%s\\n' \\
     '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"mcp__plugin_example__search","input":{"query":"exact"}}]}}' \\
-    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}' \\
+    '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"model-facing text"}]},"tool_use_result":{"content":"model-facing text","structuredContent":{"rows":[{"id":1}],"pageInfo":{"hasNextPage":false}}}}' \\
     '{"type":"result","result":"model summary"}'
 else
   printf '{"tmuxPane":"%s","weztermPane":"%s","itermSession":"%s","marker":"%s"}' \\
@@ -70,7 +70,8 @@ process.env.MISSION_CLAUDE_BIN = fakeBin;
 // `claude-cli.ts`; importing the registry statically would freeze the real binary before this
 // test's fake exists and make a supposedly isolated test spend a model call.
 const { overlayKeyFromEnv } = await import("../src/server/registry.ts");
-const { runClaudeText, runClaudeToolTrace } = await import("../src/server/claude-cli.ts");
+const { parseClaudeToolTrace, runClaudeText, runClaudeToolTrace } =
+  await import("../src/server/claude-cli.ts");
 
 function argv(): string[] {
   return readFileSync(runArgs, "utf8").split("\n").slice(0, -1);
@@ -174,6 +175,38 @@ test("a tool trace retains provider output separately from Claude's summary", as
       output: { rows: [{ id: 1 }], pageInfo: { hasNextPage: false } },
     },
   ]);
+});
+
+test("a tool trace still accepts Claude Code's direct structured output", () => {
+  const trace = parseClaudeToolTrace([
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "toolu_direct",
+          name: "mcp__plugin_example__search",
+          input: { query: "exact" },
+        }],
+      },
+    }),
+    JSON.stringify({
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_direct",
+          content: "model-facing text",
+        }],
+      },
+      tool_use_result: { rows: [{ id: 1 }], pageInfo: { hasNextPage: false } },
+    }),
+  ].join("\n"));
+
+  assert.deepEqual(trace.toolCalls[0]?.output, {
+    rows: [{ id: 1 }],
+    pageInfo: { hasNextPage: false },
+  });
 });
 
 test("a pre-aborted signal prevents a headless Claude process from spawning", async () => {

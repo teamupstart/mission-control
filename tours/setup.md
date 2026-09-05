@@ -1,31 +1,21 @@
 # Set up this machine
 
-## Setup in one place
-<!-- stage: overview -->
+## Settings live behind the gear
+<!-- stage: settings -->
 
-This panel is Mission Control's current reading of the external tools and configuration it can use on this machine.
+Everything about this machine is one click away from the gear in the top bar. Next opens it.
 
-## Read by family
-<!-- stage: families -->
+## Open Setup
+<!-- stage: setup -->
 
-Dependencies are grouped by the work they unlock. Start with required rows, then choose which recommended or optional tools fit how you work.
+Setup is the first machine-level category in the Settings rail. Next selects it.
 
-## Trust each status
-<!-- stage: statuses -->
+## Install what you will use
+<!-- stage: dependencies -->
 
-Ready names the evidence Mission Control found. Missing means it found nothing, Needs setup means the tool exists but is not usable yet, and Unknown means the check itself could not finish.
+Setup reports every external tool Mission Control can use on this machine, grouped by the work it unlocks. Install or configure the ones you expect to use, and skip the rest. An incomplete row names what it unlocks and offers a link, a copyable command, or a visible-terminal action, and nothing here is installed for you.
 
-## Follow a remedy
-<!-- stage: remedies -->
-
-An incomplete row explains its impact and offers a link, a copyable command, or a visible-terminal action. The tour points at these controls but never runs one.
-
-## Check again when ready
+## Re-check once they are installed
 <!-- stage: recheck -->
 
-After installing or configuring a tool, use Re-check to take one fresh reading. Setup does not poll or silently change while you are reading it.
-
-## You know where to return
-<!-- stage: close -->
-
-Setup stays in the Settings rail, and this tour stays available both there and in the command palette.
+Once a tool is installed or configured, Re-check takes one fresh reading and confirms it. This tour ends here and leaves you on Setup.

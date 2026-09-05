@@ -55,6 +55,7 @@ import { settingsRailDot, type SettingsDotTone } from "../lib/settings-dots.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import type { TourId } from "../tour/contracts.ts";
 import { TOUR_ENTRIES } from "../tour/entries.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 
 /** Stable per-tab id, so the pane can name its tab as its `aria-labelledby` label. */
 function tabDomId(id: SettingsCategoryId): string {
@@ -283,6 +284,10 @@ export function SettingsPage({
   jump?: { anchor: string; nonce: number } | null;
 }): React.JSX.Element {
   const shown = category;
+  // The Setup rail row, for the tour that teaches where Setup is. One row of the same
+  // registry-driven loop below, so it is registered from that loop's ref callback rather
+  // than by lifting Setup out of the list it belongs to.
+  const setupTabTourRef = useTourTargetRef<HTMLButtonElement>("setup:settings-tab");
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
@@ -710,6 +715,7 @@ export function SettingsPage({
                     ref={(el) => {
                       if (el) tabRefs.current.set(c.id, el);
                       else tabRefs.current.delete(c.id);
+                      if (c.id === "setup") setupTabTourRef(el);
                     }}
                     onClick={() => onNavigate(c.id)}
                   >

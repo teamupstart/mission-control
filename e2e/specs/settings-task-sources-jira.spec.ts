@@ -669,4 +669,6 @@ test("Check it works accepts the Claude.ai Rovo Jira registration", async ({ pag
   const note = page.locator("p.ts-note");
   await expect(note).toHaveText("Looks good - Jira answered, and this JQL filter runs.");
   await expect(note).not.toHaveClass(/settings-error/);
+  await note.scrollIntoViewIfNeeded();
+  await shoot(page, "upstartclaw-structured-result");
 });

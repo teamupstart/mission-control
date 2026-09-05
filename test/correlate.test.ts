@@ -71,6 +71,168 @@ test("names a tmux session by its session name", () => {
   assert.equal(muxHandle(s!)?.paneId, "%1");
 });
 
+test("binds a tty-less multiplexer pane through its exact shell ancestry", () => {
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 40, ppid: 1, tty: "ttys1", command: "zsh", agent: null, agentNative: false }),
+      proc({ pid: 100, ppid: 40, tty: "ttys1" }),
+    ],
+    terminals: [{
+      kind: "multiplexer",
+      backend: "cmux",
+      panes: [muxPane({ session: "workspace-id", sessionName: "work", tty: null, paneId: "pane-id", panePid: 40 })],
+    }],
+  };
+
+  const [session] = correlate(input);
+  assert.equal(session?.name, "work");
+  assert.equal(session?.nameSource, "cmux");
+  assert.equal(muxHandle(session!)?.paneId, "pane-id");
+});
+
+test("declines unrelated, missing, and recycled pane pids", () => {
+  for (const [label, procs] of [
+    [
+      "unrelated",
+      [
+        proc({ pid: 40, ppid: 1, tty: null, command: "zsh", agent: null, agentNative: false }),
+        proc({ pid: 100, ppid: 50, tty: "ttys1" }),
+      ],
+    ],
+    ["missing", [proc({ pid: 100, ppid: 40, tty: "ttys1" })]],
+    [
+      "recycled",
+      [
+        proc({ pid: 40, ppid: 1, tty: null, command: "unrelated", agent: null, agentNative: false }),
+        proc({ pid: 50, ppid: 1, tty: "ttys1", command: "zsh", agent: null, agentNative: false }),
+        proc({ pid: 100, ppid: 50, tty: "ttys1" }),
+      ],
+    ],
+  ] as const) {
+    const [session] = correlate({
+      procs: [...procs],
+      terminals: [{
+        kind: "multiplexer",
+        backend: "cmux",
+        panes: [muxPane({ session: label, tty: null, paneId: label, panePid: 40 })],
+      }],
+    });
+    assert.equal(muxHandle(session!), null, label);
+    assert.equal(session?.nameSource, "process", label);
+  }
+});
+
+test("a cyclic or broken process chain terminates without guessing a pane", () => {
+  for (const [label, parents] of [
+    ["cycle", [[90, 91], [91, 90]]],
+    ["broken", [[90, 999]]],
+  ] as const) {
+    const [session] = correlate({
+      procs: [
+        ...parents.map(([pid, ppid]) =>
+          proc({ pid, ppid, tty: null, command: "zsh", agent: null, agentNative: false })),
+        proc({ pid: 100, ppid: 90, tty: "ttys1" }),
+      ],
+      terminals: [{
+        kind: "multiplexer",
+        backend: "cmux",
+        panes: [muxPane({ session: label, tty: null, paneId: label, panePid: 50 })],
+      }],
+    });
+    assert.equal(muxHandle(session!), null, label);
+  }
+});
+
+test("the closest unique pane ancestor wins within one multiplexer backend", () => {
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 80, ppid: 1, tty: null, command: "login", agent: null, agentNative: false }),
+      proc({ pid: 90, ppid: 80, tty: "ttys1", command: "zsh", agent: null, agentNative: false }),
+      proc({ pid: 100, ppid: 90, tty: "ttys1" }),
+    ],
+    terminals: [{
+      kind: "multiplexer",
+      backend: "cmux",
+      panes: [
+        muxPane({ session: "outer", tty: null, paneId: "outer", panePid: 80 }),
+        muxPane({ session: "inner", tty: null, paneId: "inner", panePid: 90 }),
+      ],
+    }],
+  };
+
+  const [session] = correlate(input);
+  assert.equal(session?.name, "inner");
+  assert.equal(muxHandle(session!)?.paneId, "inner");
+});
+
+test("equal-distance panes from one backend are ambiguous and declined", () => {
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 90, ppid: 1, tty: "ttys1", command: "zsh", agent: null, agentNative: false }),
+      proc({ pid: 100, ppid: 90, tty: "ttys1" }),
+    ],
+    terminals: [{
+      kind: "multiplexer",
+      backend: "cmux",
+      panes: [
+        muxPane({ session: "one", tty: null, paneId: "one", panePid: 90 }),
+        muxPane({ session: "two", tty: null, paneId: "two", panePid: 90 }),
+      ],
+    }],
+  };
+
+  const [session] = correlate(input);
+  assert.equal(muxHandle(session!), null);
+  assert.equal(session?.nameSource, "process");
+});
+
+test("a direct tty pane wins over the same backend's ancestry candidate", () => {
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 90, ppid: 1, tty: "ttys1", command: "zsh", agent: null, agentNative: false }),
+      proc({ pid: 100, ppid: 90, tty: "ttys1" }),
+    ],
+    terminals: [{
+      kind: "multiplexer",
+      backend: "cmux",
+      panes: [
+        muxPane({ session: "pid-match", tty: null, paneId: "pid", panePid: 90 }),
+        muxPane({ session: "tty-match", tty: "ttys1", paneId: "tty", panePid: null }),
+      ],
+    }],
+  };
+
+  const [session] = correlate(input);
+  assert.equal(session?.name, "tty-match");
+  assert.equal(muxHandle(session!)?.paneId, "tty");
+});
+
+test("registry order keeps an inner tty-bound tmux pane ahead of an outer tty-less pane", () => {
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 90, ppid: 1, tty: "ttys1", command: "zsh", agent: null, agentNative: false }),
+      proc({ pid: 100, ppid: 90, tty: "ttys1" }),
+    ],
+    terminals: [
+      {
+        kind: "multiplexer",
+        backend: "tmux",
+        panes: [muxPane({ session: "inner", tty: "ttys1", paneId: "%1", panePid: null })],
+      },
+      {
+        kind: "multiplexer",
+        backend: "cmux",
+        panes: [muxPane({ session: "outer", tty: null, paneId: "outer", panePid: 90 })],
+      },
+    ],
+  };
+
+  const [session] = correlate(input);
+  assert.equal(session?.name, "inner");
+  assert.equal(session?.nameSource, "tmux");
+  assert.equal(muxHandle(session!)?.backend, "tmux");
+});
+
 test("names a wezterm pane by its tab title", () => {
   const input: DiscoveryInput = {
     procs: [proc({ pid: 200, ppid: 50, tty: "ttys2" })],

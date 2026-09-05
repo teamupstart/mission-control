@@ -308,7 +308,20 @@ export type PipelineCommissionId = string;
 
 /** The generic Engineer lifecycle capability merged in ai-conductor at `8685e121`. */
 export const ENGINEER_LIFECYCLE_CAPABILITY = "engineerLifecycleEventsV1" as const;
+export const ENGINEER_READINESS_CAPABILITY = "engineerReadinessV1" as const;
+export const ENGINEER_WORKTREE_RETIREMENT_CAPABILITY = "engineerWorktreeRetirementV1" as const;
+export const ENGINEER_RETAINED_REVIEW_WORKTREES_CAPABILITY =
+  "engineerRetainedReviewWorktreesV1" as const;
+export const ENGINEER_OWNED_ATTEMPTS_CAPABILITY = "engineerOwnedAttemptsV1" as const;
 export const ENGINEER_LIFECYCLE_SCHEMA_VERSION = 1 as const;
+
+export interface PipelineEngineerCapabilities {
+  supported: boolean;
+  readiness?: boolean;
+  worktreeRetirement?: boolean;
+  retainedReviewWorktrees?: boolean;
+  ownedAttempts?: boolean;
+}
 
 /** Durable Engineer event limits, enforced before any event reaches SQLite. */
 export const ENGINEER_EVENT_LIMITS = {
@@ -358,6 +371,8 @@ export const ENGINEER_EVENT_TYPES = [
   "engineer_run_cancelled",
   "engineer_run_failed",
   "engineer_run_settled",
+  "engineer_readiness_checked",
+  "engineer_worktree_retired",
 ] as const;
 export type EngineerEventType = (typeof ENGINEER_EVENT_TYPES)[number];
 
@@ -382,9 +397,60 @@ export interface EngineerEventBase {
   ts: string;
 }
 
+export type EngineerReadinessStatus = "ready" | "blocked" | "inconclusive";
+export type EngineerFailureClass =
+  | "authentication"
+  | "authorization"
+  | "remote"
+  | "workspace"
+  | "tooling"
+  | "provider"
+  | "unknown";
+export type EngineerRetirementReason =
+  | "spec_merged"
+  | "spec_closed"
+  | "task_cancelled"
+  | "retention_expired"
+  | "operator_cleanup";
+
+export interface EngineerReadinessEvidence {
+  status: EngineerReadinessStatus;
+  code: string;
+  summary: string;
+  checkedCapabilities: string[];
+  retryable: boolean;
+  remedy: string | null;
+  diagnostic: string | null;
+  fingerprint: string;
+}
+
+export interface EngineerFailureEvidence {
+  error: string;
+  class: EngineerFailureClass;
+  code: string;
+  summary: string;
+  retryable: boolean;
+  remedy: string | null;
+  diagnostic: string | null;
+}
+
+export interface EngineerRetirementEvidence {
+  worktreePath: string;
+  branch: string;
+  planSlug: string;
+  reason: EngineerRetirementReason;
+  retainedCommit: string | null;
+  retiredAt: string;
+}
+
 /** Exact v1 event union copied from the merged provider contract. */
 export type EngineerLifecycleEvent = EngineerEventBase & (
-  | { type: "engineer_run_created"; idea: string }
+  | {
+      type: "engineer_run_created";
+      idea: string;
+      readinessRequired?: true;
+      integrationOwner?: string;
+    }
   | { type: "engineer_run_started" }
   | { type: "engineer_routing_selected"; project: string }
   | {
@@ -441,10 +507,24 @@ export type EngineerLifecycleEvent = EngineerEventBase & (
       prUrl: string | null;
       outcome: "pr_opened" | "local_commit";
       state: "awaiting_spec_merge";
+      retainedCommit?: string;
+      retainedAt?: string;
+      retentionDeadline?: string;
     }
   | { type: "engineer_run_cancelled"; reason: string }
-  | { type: "engineer_run_failed"; error: string }
+  | {
+      type: "engineer_run_failed";
+      error: string;
+      class?: EngineerFailureClass;
+      code?: string;
+      summary?: string;
+      retryable?: boolean;
+      remedy?: string | null;
+      diagnostic?: string | null;
+    }
   | { type: "engineer_run_settled"; outcome: "awaiting_spec_merge" }
+  | ({ type: "engineer_readiness_checked"; permitted: boolean } & EngineerReadinessEvidence)
+  | ({ type: "engineer_worktree_retired" } & Omit<EngineerRetirementEvidence, "retiredAt">)
 );
 
 /**
@@ -532,6 +612,7 @@ export const PIPELINE_WORKSPACE_REASONS = [
   "identity_conflict",
   "evidence_unavailable",
   "unsupported_attempt",
+  "provider_retired",
 ] as const;
 export type PipelineWorkspaceReason = (typeof PIPELINE_WORKSPACE_REASONS)[number];
 
@@ -570,6 +651,34 @@ export interface PipelineCommissionHandoff {
   outcome: "pr_opened" | "local_commit";
 }
 
+export interface PipelineCommissionReadiness extends EngineerReadinessEvidence {
+  permitted: boolean;
+  checkedAt: string;
+}
+
+export interface PipelineCommissionRetention {
+  retainedCommit: string;
+  retainedAt: string;
+  retentionDeadline: string;
+}
+
+/** Exact direct successor observed through provider correlation inspection, never adopted here. */
+export interface PipelineCommissionSuccessorCandidate {
+  engineerRunId: string;
+  attempt: number;
+  previousEngineerRunId: string;
+  attemptKey: string;
+  providerRevision: number;
+  state: Exclude<PipelineCommissionAttemptState, "reserved">;
+  integrationOwner: string | null;
+}
+
+/** Provider evidence that contradicts an already-projected immutable lifecycle fact. */
+export interface PipelineCommissionProjectionDrift {
+  kind: "retirement_identity" | "retirement_commit";
+  detail: string;
+}
+
 /** Recoverable provider refusal retained with explicit reducer-owned provenance. */
 export type PipelineCommissionBlocker =
   | { kind: "step_failed"; step: string; reason: string }
@@ -597,11 +706,125 @@ export interface PipelineCommission {
   authoringBranch: string | null;
   planSlug: string | null;
   handoff: PipelineCommissionHandoff | null;
+  capabilities?: PipelineEngineerCapabilities;
+  integrationOwner?: string | null;
+  readinessRequired?: boolean;
+  readiness?: PipelineCommissionReadiness | null;
+  failure?: EngineerFailureEvidence | null;
+  retention?: PipelineCommissionRetention | null;
+  retirement?: EngineerRetirementEvidence | null;
+  successorCandidate?: PipelineCommissionSuccessorCandidate | null;
+  projectionDrift?: PipelineCommissionProjectionDrift | null;
   linkedRun: PipelineRunLink | null;
   blocker: PipelineCommissionBlocker | null;
   error: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export type PipelineCommissionAttentionKind =
+  | "successor"
+  | "status_drift"
+  | "readiness"
+  | "failure"
+  | "workspace"
+  | "held";
+
+export interface PipelineCommissionAttention {
+  kind: PipelineCommissionAttentionKind;
+  priority: number;
+  title: string;
+  detail: string;
+}
+
+/** One daemon-independent attention reading shared by every Pipeline surface. */
+export function pipelineCommissionAttention(
+  commission: PipelineCommission,
+  task: { status: string; repoRoot: string | null } | null,
+  linkedRun: PipelineRun | null,
+  workspace: PipelineWorkspaceView | null = null,
+): PipelineCommissionAttention | null {
+  if (commission.successorCandidate) {
+    return {
+      kind: "successor",
+      priority: 0,
+      title: "Pipeline successor needs review",
+      detail: `Provider attempt ${commission.successorCandidate.attempt} exists outside the active Mission Control attempt.`,
+    };
+  }
+  if (commission.projectionDrift) {
+    return {
+      kind: "status_drift",
+      priority: 0,
+      title: "Pipeline lifecycle evidence conflicts",
+      detail: commission.projectionDrift.detail,
+    };
+  }
+  if (task?.repoRoot && task.repoRoot !== commission.repoRoot) {
+    return { kind: "status_drift", priority: 0, title: "Pipeline identity drift", detail: "The task and provider commission name different repositories." };
+  }
+  if (linkedRun && (linkedRun.provider !== commission.provider || linkedRun.repoRoot !== commission.repoRoot)) {
+    return { kind: "status_drift", priority: 0, title: "Pipeline successor drift", detail: "The implementation run does not match the commissioned provider repository." };
+  }
+  if (task?.status === "done" && (!linkedRun || linkedRun.group !== "processed")) {
+    return { kind: "status_drift", priority: 0, title: "Task completed before Pipeline", detail: "Mission Control marks the task done while the provider lifecycle is not completion-compatible." };
+  }
+  if (["running", "dispatching"].includes(task?.status ?? "") && commission.lifecycle === "cancelled") {
+    return { kind: "status_drift", priority: 0, title: "Cancelled Pipeline still marked active", detail: "The task remains active after the provider commission was cancelled." };
+  }
+  if (commission.readiness?.permitted === false) {
+    return { kind: "readiness", priority: 1, title: "Pipeline launch blocked", detail: commission.readiness.summary };
+  }
+  if (commission.failure) {
+    return { kind: "failure", priority: 1, title: commission.failure.summary, detail: commission.failure.remedy ?? commission.failure.error };
+  }
+  if (commission.lifecycle === "failed" || commission.lifecycle === "unsupported") {
+    return { kind: "failure", priority: 1, title: "Pipeline needs attention", detail: commission.error ?? "The provider lifecycle could not be projected." };
+  }
+  if (workspace && ["missing"].includes(workspace.availability)) {
+    return { kind: "workspace", priority: 2, title: "Pipeline workspace unavailable", detail: workspace.reason?.replaceAll("_", " ") ?? "The provider workspace is unavailable." };
+  }
+  if (commission.blocker) {
+    return { kind: "held", priority: 3, title: "Engineer is held", detail: commission.blocker.reason };
+  }
+  return null;
+}
+
+export interface PipelineCommissionAttentionEntry {
+  commission: PipelineCommission;
+  attention: PipelineCommissionAttention | null;
+}
+
+/**
+ * Resolve every commission against one snapshot before any surface filters or sorts it.
+ *
+ * Keeping the joins here is as important as keeping the predicate above here: a surface
+ * that forgets the linked implementation run, current task, or projected workspace can
+ * turn the same provider evidence into a different attention answer.
+ */
+export function pipelineCommissionAttentionEntries(input: {
+  commissions?: readonly PipelineCommission[];
+  tasks?: readonly { id: string; status: string; repoRoot: string | null }[];
+  runs?: readonly PipelineRun[];
+  sessions?: readonly {
+    task?: { id: string } | null;
+    workspace?: PipelineWorkspaceView | null;
+  }[];
+}): PipelineCommissionAttentionEntry[] {
+  const taskById = new Map((input.tasks ?? []).map((task) => [task.id, task]));
+  const runByKey = new Map((input.runs ?? []).map((run) => [pipelineRunKeyOf(run), run]));
+  const workspaceByTask = new Map((input.sessions ?? []).flatMap((session) =>
+    session.task && session.workspace ? [[session.task.id, session.workspace] as const] : []));
+
+  return (input.commissions ?? []).map((commission) => ({
+    commission,
+    attention: pipelineCommissionAttention(
+      commission,
+      taskById.get(commission.taskId) ?? null,
+      commission.linkedRun ? runByKey.get(pipelineRunKeyOf(commission.linkedRun)) ?? null : null,
+      workspaceByTask.get(commission.taskId) ?? null,
+    ),
+  }));
 }
 
 /** Stable in-memory key for a commission. Kept as a helper for symmetry with run keys. */

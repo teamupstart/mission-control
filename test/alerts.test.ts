@@ -20,7 +20,9 @@ import type {
   SessionQueueSummary,
   SessionState,
   Task,
+  TaskSummary,
 } from "../src/shared/types.ts";
+import type { PipelineCommission } from "../src/shared/pipeline.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -109,6 +111,34 @@ function workflowRun(over: Partial<WorkflowRunSummary> = {}): WorkflowRunSummary
     reviewPosture: null,
     uncertainDeliveryCount: 0,
     refusedDeliveryCount: 0,
+    updatedAt: 1,
+    ...over,
+  };
+}
+
+function pipelineCommission(over: Partial<PipelineCommission> = {}): PipelineCommission {
+  return {
+    id: "commission-1",
+    taskId: "t1",
+    provider: "ai-conductor",
+    repoRoot: "/repo/demo",
+    correlationId: "commission-1",
+    lifecycle: "authoring",
+    attempts: [],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: 1,
     updatedAt: 1,
     ...over,
   };
@@ -287,6 +317,51 @@ test("idle + task-done are always DETECTED, as info - delivery decides who hears
   assert.equal(r.filter(deliverable).length, 0);
 });
 
+test("Pipeline attention replaces idle and task outcome alerts for the same work", () => {
+  const taskSummary: TaskSummary = {
+    id: "t1",
+    title: "Pipeline task",
+    fullTitle: "Pipeline task",
+    kind: "pipeline",
+    workflowId: null,
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    pipelineRun: null,
+    scheduleId: null,
+    scheduleOccurrenceId: null,
+    scheduledFor: null,
+    ensemble: null,
+    repoPrs: [],
+  };
+  const before = scope(
+    [mkSession({ id: "pipeline-host", state: "working", task: taskSummary })],
+    [mkTask({ id: "t1", status: "running", repoRoot: "/repo/demo" })],
+  );
+  before.pipelineCommissions = [pipelineCommission()];
+  const after = scope(
+    [mkSession({ id: "pipeline-host", state: "idle", task: { ...taskSummary, status: "done" } })],
+    [mkTask({ id: "t1", status: "done", repoRoot: "/repo/demo" })],
+  );
+  after.pipelineCommissions = [pipelineCommission({
+    lifecycle: "failed",
+    failure: {
+      error: "provider failed",
+      class: "provider",
+      code: "provider_failed",
+      summary: "Provider failed",
+      retryable: false,
+      remedy: null,
+      diagnostic: null,
+    },
+  })];
+
+  const alerts = detectAlerts(before, after);
+  assert.deepEqual(alerts.map((alert) => alert.kind), ["pipeline"]);
+  assert.equal(alerts[0]?.severity, "attention");
+  assert.match(alerts[0]?.title ?? "", /Task completed before Pipeline/);
+});
+
 
 test("summarizeAlerts lists titles and caps the overflow", () => {
   const a = (title: string): Alert => ({
@@ -315,6 +390,14 @@ test("hasReportable is false for an empty/all-exited scope, true when there's ac
   assert.equal(hasReportable(scope([mkSession({ state: "idle" })])), true);
   assert.equal(hasReportable(scope([], [mkTask({ status: "backlog" })])), true);
   assert.equal(hasReportable(scope([], [mkTask({ status: "done" })])), false);
+});
+
+test("hasReportable ignores a healthy Pipeline commission with no attention", () => {
+  const healthy = scope([], [mkTask({ id: "t1", status: "running", repoRoot: "/repo/demo" })]);
+  healthy.pipelineCommissions = [pipelineCommission()];
+
+  assert.equal(hasReportable(healthy), false);
+  assert.equal(digestLine(healthy), "0 need you · 0 working · 0 idle");
 });
 
 test("chimeGate rate-limits, but lets an urgent tone cut through a recent info chime", () => {

@@ -1,4 +1,5 @@
 import { UI_CONFIG_DEFAULTS } from "../../src/shared/protocol.ts";
+import type { DisplayItemId } from "../../src/web/lib/board-card.ts";
 
 /**
  * The shipped hidden-items list with some ids un-hidden.
@@ -12,7 +13,12 @@ import { UI_CONFIG_DEFAULTS } from "../../src/shared/protocol.ts";
  * Derived from `UI_CONFIG_DEFAULTS` instead, so a spec says the one thing it means - "with
  * the workflow details switched on, otherwise as shipped" - and a later default change
  * carries through it rather than silently changing what it was testing.
+ *
+ * `ids` is typed as `DisplayItemId` rather than a bare `string`, so a typo'd id is a
+ * compile error here instead of a silent no-op: `.includes()` against a misspelled id never
+ * matches, `hiddenDisplayItems` comes back unchanged, and the spec fails later at whatever
+ * assertion expected the item to be visible - reporting the wrong thing entirely.
  */
-export function displayItemsShowing(...ids: readonly string[]): string[] {
+export function displayItemsShowing(...ids: readonly DisplayItemId[]): string[] {
   return UI_CONFIG_DEFAULTS.hiddenDisplayItems.filter((hidden) => !ids.includes(hidden));
 }

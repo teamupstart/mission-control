@@ -27,6 +27,7 @@ import { claudeEnvelopeModels, claudeEnvelopeTurnId } from "./envelope.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkQuery,
+  ClaudeSdkQueryOptions,
   ClaudeSdkMessage,
   ClaudeSdkPermissionMode,
   ClaudeSdkPermissionResult,
@@ -327,8 +328,21 @@ class TurnStream {
 class ClaudeSdkSession implements SdkSessionHandle {
   private readonly pending = new Map<string, Pending>();
   private readonly out = new EventStream();
-  private readonly turns = new TurnStream();
+  private turns = new TurnStream();
   private query: ClaudeSdkQuery | null = null;
+  private queryPump: Promise<void> | null = null;
+  private relaunch: (
+    prompt: AsyncIterable<ClaudeSdkUserMessage>,
+    resume: string,
+  ) => Promise<ClaudeSdkQuery> = async () => {
+    throw new Error("this Claude SDK session cannot be relaunched");
+  };
+  /** The stale process being drained before a fresh one resumes this conversation. */
+  private recoveringQuery: ClaudeSdkQuery | null = null;
+  /** Set by the provider's structured failure and spent by the next accepted user turn. */
+  private authenticationFailed = false;
+  /** One shared replacement boundary for every send that arrives while credentials reload. */
+  private authenticationRecovery: Promise<void> | null = null;
   private agentSessionId: string | null = null;
   /** The actual model reported by Claude's init frame, retained across a /clear rebind. */
   private modelId: string | null = null;
@@ -393,6 +407,7 @@ class ClaudeSdkSession implements SdkSessionHandle {
    */
   async send(turn: SdkTurn): Promise<SdkSendDisposition> {
     if (this.stopped) throw new Error("this session's driver has stopped");
+    await this.recoverIfAuthenticationFailed();
     const steering = this.turnActive;
     this.acceptTurn(turn);
     return steering ? "steered" : "started";
@@ -400,9 +415,64 @@ class ClaudeSdkSession implements SdkSessionHandle {
 
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     if (this.stopped) throw new Error("this session's driver has stopped");
+    await this.recoverIfAuthenticationFailed();
     if (this.turnActive) return null;
     this.acceptTurn(turn);
     return "started";
+  }
+
+  /** Join or begin the sole process replacement caused by the current auth failure. */
+  private async recoverIfAuthenticationFailed(): Promise<void> {
+    let recovery = this.authenticationRecovery;
+    if (!recovery) {
+      if (!this.authenticationFailed) return;
+      recovery = this.recoverAuthentication();
+      this.authenticationRecovery = recovery;
+    }
+    try {
+      await recovery;
+    } finally {
+      if (this.authenticationRecovery === recovery) this.authenticationRecovery = null;
+    }
+  }
+
+  /**
+   * Replace only the Claude subprocess after an authentication failure.
+   *
+   * Claude loads its account credentials when the process starts. A `/login` completed in
+   * another terminal updates those credentials on disk, but the streaming SDK query keeps
+   * the old process alive and therefore keeps the stale account state. Close that process's
+   * input, wait until it has released the conversation file, then resume the SAME native
+   * conversation. One failed process causes one shared relaunch, and callers that overlap
+   * join that boundary before normal started/steered/idle dispatch resumes. If the operator
+   * has not logged in yet, the replacement reports authentication failure again and the
+   * following turn may retry without an automatic loop.
+   */
+  private async recoverAuthentication(): Promise<void> {
+    const stale = this.requireQuery();
+    const draining = this.queryPump;
+    if (!this.agentSessionId) {
+      throw new Error("Claude authentication failed before this conversation could be resumed");
+    }
+
+    this.recoveringQuery = stale;
+    this.turns.close();
+    await draining;
+    if (this.stopped) throw new Error("this session's driver has stopped");
+
+    this.turns = new TurnStream();
+    this.authenticationFailed = false;
+    this.turnActive = false;
+    // Each `query()` reports counters for that query process, even when it resumes the same
+    // native conversation. The replacement therefore starts a new accounting window.
+    this.cumulativeUsage = null;
+    try {
+      const fresh = await this.relaunch(this.turns, this.agentSessionId);
+      this.attach(fresh);
+    } catch (error) {
+      this.finish(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }
 
   private acceptTurn(turn: SdkTurn): void {
@@ -648,6 +718,24 @@ class ClaudeSdkSession implements SdkSessionHandle {
     return this.turns;
   }
 
+  configureRelaunch(
+    relaunch: (
+      prompt: AsyncIterable<ClaudeSdkUserMessage>,
+      resume: string,
+    ) => Promise<ClaudeSdkQuery>,
+  ): void {
+    this.relaunch = relaunch;
+  }
+
+  attach(query: ClaudeSdkQuery): void {
+    this.query = query;
+    const pump = this.pump(query);
+    this.queryPump = pump;
+    void pump.catch((error) => {
+      console.error("[claude-sdk] detached query pump failed:", error);
+    });
+  }
+
   /**
    * The permission callback: everything the CLI cannot settle on its own arrives here.
    *
@@ -818,23 +906,37 @@ class ClaudeSdkSession implements SdkSessionHandle {
     } catch (err) {
       reason = err instanceof Error ? err.message : String(err);
     } finally {
-      this.stopped = true;
-      this.turns.close();
-      for (const [id, held] of this.pending) {
-        held.resolve({ behavior: "deny", message: "this session ended" });
-        this.out.emit({ kind: "request_resolved", requestId: id });
+      if (this.recoveringQuery === query && !this.stopped) {
+        this.recoveringQuery = null;
+        if (this.query === query) this.query = null;
+      } else {
+        this.finish(reason);
       }
-      this.pending.clear();
-      this.out.emit({
-        kind: "exited",
-        reason,
-        resumable: this.agentSessionId !== null,
-      });
-      this.out.end();
     }
   }
 
+  private finish(reason: string): void {
+    if (this.stopped && this.query === null) return;
+    this.stopped = true;
+    this.query = null;
+    this.turns.close();
+    for (const [id, held] of this.pending) {
+      held.resolve({ behavior: "deny", message: "this session ended" });
+      this.out.emit({ kind: "request_resolved", requestId: id });
+    }
+    this.pending.clear();
+    this.out.emit({
+      kind: "exited",
+      reason,
+      resumable: this.agentSessionId !== null,
+    });
+    this.out.end();
+  }
+
   private consume(message: ClaudeSdkMessage): void {
+    if (message.type === "assistant" && message.error === "authentication_failed") {
+      this.authenticationFailed = true;
+    }
     // The init frame is the one authoritative answer to "which model did this launch
     // actually bind?" It is especially important on resume: the durable launch request may
     // be null ("use Claude's default"), and an idle resumed transcript may contain no fresh
@@ -1111,91 +1213,93 @@ export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSp
       // reads is the intent - there is no separate "type the prompt" step to race.
       if (opts.prompt) session.seed(opts.prompt);
       const permissionMode = sdkPermissionMode(opts.permissionMode);
-      const query = await deps.query({
-        prompt: session.input(),
-        options: {
-          cwd: opts.cwd,
-          pathToClaudeCodeExecutable: await deps.executable(),
-          env: deps.env(opts.cwd, opts.stateHome),
-          ...(opts.model ? { model: opts.model } : {}),
-          ...(opts.effort ? { effort: opts.effort } : {}),
-          ...(permissionMode ? { permissionMode } : {}),
-          // The operator's repository standing instructions, as a NON-DESTRUCTIVE append.
-          //
-          // The preset object is the only form that can do this. A bare `string` here
-          // REPLACES Claude Code's own system prompt, which would turn an embedded session
-          // into a different agent from the dispatched pane running the same task. Omitted
-          // entirely when there is nothing to send, so an ordinary session's options object
-          // is exactly what it always was.
-          ...(opts.standingInstructions
-            ? {
-                systemPrompt: {
-                  type: "preset" as const,
-                  preset: "claude_code" as const,
-                  append: opts.standingInstructions,
+      const options: ClaudeSdkQueryOptions = {
+        cwd: opts.cwd,
+        pathToClaudeCodeExecutable: await deps.executable(),
+        env: deps.env(opts.cwd, opts.stateHome),
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.effort ? { effort: opts.effort } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
+        // The operator's repository standing instructions, as a NON-DESTRUCTIVE append.
+        //
+        // The preset object is the only form that can do this. A bare `string` here
+        // REPLACES Claude Code's own system prompt, which would turn an embedded session
+        // into a different agent from the dispatched pane running the same task. Omitted
+        // entirely when there is nothing to send, so an ordinary session's options object
+        // is exactly what it always was.
+        ...(opts.standingInstructions
+          ? {
+              systemPrompt: {
+                type: "preset" as const,
+                preset: "claude_code" as const,
+                append: opts.standingInstructions,
+              },
+            }
+          : {}),
+        // The secondary worktrees of a multi-repo task. Spread conditionally so an
+        // ordinary session's options object is exactly what it always was.
+        //
+        // Launch-time is the ONLY moment this can be said. The runtime `addDirectories`
+        // control request requires its argument to be a strict subdirectory of cwd or of
+        // a directory named here, so a sibling checkout is unreachable to a session that
+        // did not start with it.
+        ...(opts.extraDirs.length > 0 ? { additionalDirectories: [...opts.extraDirs] } : {}),
+        // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
+        // reading it as "skip permissions" is the mistake to avoid: the CLI has two
+        // separate flags, and this option compiles to the weaker one.
+        //
+        //   --allow-dangerously-skip-permissions  Enable bypassing all permission checks
+        //                                         as an option, WITHOUT it being enabled
+        //                                         by default.
+        //   --dangerously-skip-permissions        Bypass all permission checks.
+        //
+        // The vendor bundle emits the first (`if(b)H.push("--allow-dangerously-skip-permissions")`)
+        // and emits `--permission-mode` separately, so what the operator picked still decides
+        // what happens. Unconditional here for the same reason it is safe: the mode is the
+        // gate, this is only the permission to reach it.
+        //
+        // Unconditional is also the only thing that WORKS, which is the part worth keeping.
+        // `bypassPermissions` is not just a launch choice - `harness-capabilities.ts` lists
+        // it in `pickable` with `liveControl: { kind: "cycle" }`, so the chip can switch a
+        // running session into it through `setPermissionMode`. The vendor's live setter takes
+        // the mode ALONE (`sdk.d.ts:2300`), with nowhere to carry this flag, so launch is the
+        // only moment it can ever be declared. Deriving it from the launch mode would leave
+        // every session that started in any other mode unable to reach bypass at all.
+        allowDangerouslySkipPermissions: true,
+        ...(opts.resume ? { resume: opts.resume } : {}),
+        ...(opts.mcp
+          ? {
+              mcpServers: {
+                [opts.mcp.serverName]: {
+                  type: "stdio",
+                  command: opts.mcp.command,
+                  args: opts.mcp.args,
+                  env: opts.mcp.env,
                 },
-              }
-            : {}),
-          // The secondary worktrees of a multi-repo task. Spread conditionally so an
-          // ordinary session's options object is exactly what it always was.
-          //
-          // Launch-time is the ONLY moment this can be said. The runtime `addDirectories`
-          // control request requires its argument to be a strict subdirectory of cwd or of
-          // a directory named here, so a sibling checkout is unreachable to a session that
-          // did not start with it.
-          ...(opts.extraDirs.length > 0 ? { additionalDirectories: [...opts.extraDirs] } : {}),
-          // Makes `bypassPermissions` REACHABLE for this session. It does not enter it, and
-          // reading it as "skip permissions" is the mistake to avoid: the CLI has two
-          // separate flags, and this option compiles to the weaker one.
-          //
-          //   --allow-dangerously-skip-permissions  Enable bypassing all permission checks
-          //                                         as an option, WITHOUT it being enabled
-          //                                         by default.
-          //   --dangerously-skip-permissions        Bypass all permission checks.
-          //
-          // The vendor bundle emits the first (`if(b)H.push("--allow-dangerously-skip-permissions")`)
-          // and emits `--permission-mode` separately, so what the operator picked still decides
-          // what happens. Unconditional here for the same reason it is safe: the mode is the
-          // gate, this is only the permission to reach it.
-          //
-          // Unconditional is also the only thing that WORKS, which is the part worth keeping.
-          // `bypassPermissions` is not just a launch choice - `harness-capabilities.ts` lists
-          // it in `pickable` with `liveControl: { kind: "cycle" }`, so the chip can switch a
-          // running session into it through `setPermissionMode`. The vendor's live setter takes
-          // the mode ALONE (`sdk.d.ts:2300`), with nowhere to carry this flag, so launch is the
-          // only moment it can ever be declared. Deriving it from the launch mode would leave
-          // every session that started in any other mode unable to reach bypass at all.
-          allowDangerouslySkipPermissions: true,
-          ...(opts.resume ? { resume: opts.resume } : {}),
-          ...(opts.mcp
-            ? {
-                mcpServers: {
-                  [opts.mcp.serverName]: {
-                    type: "stdio",
-                    command: opts.mcp.command,
-                    args: opts.mcp.args,
-                    env: opts.mcp.env,
-                  },
-                },
-              }
-            : {}),
-          // The ask channel's disallow + redirect are deliberately NOT rendered here. They
-          // exist because a menu on a child's screen is unreadable to the dashboard; a
-          // driver request IS the dashboard's own control, so the native tool is better
-          // than the MCP stand-in it was approximating. The MCP server still rides along
-          // above, because `report_status` and the rest are not about asking questions.
-          canUseTool: session.canUseTool,
-          hooks: session.hooks(),
-          // CLAUDE.md, skills and the operator's settings - the same sources an
-          // interactive session loads. Without this the SDK starts with none of them,
-          // which would make an embedded session a different agent from a dispatched pane.
-          settingSources: ["user", "project", "local"],
-          // Mission Control decides when a session is over (a task settles it, or a human
-          // kills it). A turn ceiling here would end one mid-work with no way to say so.
-          includePartialMessages: false,
-        },
+              },
+            }
+          : {}),
+        // The ask channel's disallow + redirect are deliberately NOT rendered here. They
+        // exist because a menu on a child's screen is unreadable to the dashboard; a
+        // driver request IS the dashboard's own control, so the native tool is better
+        // than the MCP stand-in it was approximating. The MCP server still rides along
+        // above, because `report_status` and the rest are not about asking questions.
+        canUseTool: session.canUseTool,
+        hooks: session.hooks(),
+        // CLAUDE.md, skills and the operator's settings - the same sources an
+        // interactive session loads. Without this the SDK starts with none of them,
+        // which would make an embedded session a different agent from a dispatched pane.
+        settingSources: ["user", "project", "local"],
+        // Mission Control decides when a session is over (a task settles it, or a human
+        // kills it). A turn ceiling here would end one mid-work with no way to say so.
+        includePartialMessages: false,
+      };
+      session.configureRelaunch((prompt, resume) => {
+        const { resume: _previousResume, ...base } = options;
+        return deps.query({ prompt, options: { ...base, resume } });
       });
-      void session.pump(query);
+      const query = await deps.query({ prompt: session.input(), options });
+      session.attach(query);
       return session;
     },
   };

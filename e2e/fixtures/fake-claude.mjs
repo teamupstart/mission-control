@@ -29,7 +29,7 @@
  * So a fake that only wrote to stdout would produce a live, idle, correctly-modelled card
  * with a permanently empty conversation. Writing that file is half of what this does.
  */
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -37,7 +37,9 @@ import { createInterface } from "node:readline";
 
 function argvValue(flag) {
   const index = process.argv.indexOf(flag);
-  return index >= 0 ? process.argv[index + 1] : undefined;
+  if (index >= 0) return process.argv[index + 1];
+  const inline = process.argv.find((value) => value.startsWith(`${flag}=`));
+  return inline?.slice(flag.length + 1);
 }
 
 /**
@@ -56,7 +58,24 @@ function sessionIdForCwd() {
     hex.slice(20, 32),
   ].join("-");
 }
-const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? argvValue("--resume") ?? sessionIdForCwd();
+const RESUME_ID = argvValue("--resume");
+const SESSION_ID = process.env.MC_E2E_SESSION_ID ?? RESUME_ID ?? sessionIdForCwd();
+
+/**
+ * A process-scoped snapshot of the operator's Claude authentication.
+ *
+ * The real CLI reads its login when the SDK subprocess starts and keeps that state for the
+ * life of the process. Updating the credential file from a separate terminal therefore does
+ * not repair an already-running SDK session. This fixture deliberately snapshots the marker
+ * once so the auth recovery spec cannot pass unless Mission Control actually replaces the
+ * stale process and resumes the conversation.
+ */
+const AUTH_RECOVERY_MARKER = process.env.MC_E2E_RECORD_DIR
+  ? join(process.env.MC_E2E_RECORD_DIR, "claude-auth-restored")
+  : null;
+const AUTHENTICATED_AT_START = AUTH_RECOVERY_MARKER !== null && existsSync(AUTH_RECOVERY_MARKER);
+const EXPIRE_AUTH_TURN = "E2E_EXPIRE_CLAUDE_AUTH";
+let authenticationExpired = false;
 
 // An explicit dispatch model is echoed by the real CLI's init frame. Keep the mock label
 // for default launches, but preserve a pinned model so browser specs can exercise the
@@ -640,9 +659,15 @@ mkdirSync(projectDir, { recursive: true });
 const transcriptPath = join(projectDir, `${SESSION_ID}.jsonl`);
 // Created eagerly: `resolveTranscriptPath` returns null for a path that does not exist yet,
 // and the `bound` event that carries it fires as soon as the first frame lands.
-writeFileSync(transcriptPath, "");
+// A resumed CLI appends to the existing native conversation. Preserving that file is also
+// what keeps the dashboard's transcript cursor valid across an SDK subprocess replacement.
+const resumedTranscript = RESUME_ID !== undefined && existsSync(transcriptPath);
+if (!resumedTranscript) writeFileSync(transcriptPath, "");
 
-let turn = 0;
+const resumedRecordCount = resumedTranscript
+  ? readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean).length
+  : 0;
+let turn = resumedRecordCount;
 function appendTurn(role, content) {
   turn += 1;
   const runtime = role === "assistant"
@@ -944,7 +969,7 @@ let results = 0;
 function turnUsage() {
   results += 1;
   return {
-    uuid: `${SESSION_ID}-result-${results}`,
+    uuid: `${SESSION_ID}-result-${resumedRecordCount + results}`,
     total_cost_usd: 2.5 * results,
     num_turns: results,
     modelUsage: {
@@ -982,6 +1007,26 @@ function answer(prompts) {
     });
   }
   emit({ type: "result", subtype: "success", session_id: SESSION_ID, ...turnUsage() });
+}
+
+/** Emit the structured failure and visible transcript text produced by an expired login. */
+function answerAuthenticationFailure() {
+  const text = "Not logged in · Please run /login";
+  appendTurn("assistant", [{ type: "text", text }]);
+  emit({
+    type: "assistant",
+    session_id: SESSION_ID,
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  });
+  emit({
+    type: "result",
+    subtype: "error_during_execution",
+    is_error: true,
+    errors: [text],
+    session_id: SESSION_ID,
+    ...turnUsage(),
+  });
 }
 
 /** Run the fake scout's file write and real submission while its SDK turn stays open. */
@@ -1083,6 +1128,12 @@ rl.on("line", (line) => {
 
     appendTurn("user", prompt);
     if (prompt.includes(SLOW_STOP)) slowStop = true;
+
+    if (prompt === EXPIRE_AUTH_TURN) authenticationExpired = true;
+    if (authenticationExpired && !AUTHENTICATED_AT_START) {
+      answerAuthenticationFailure();
+      return;
+    }
 
     // A message that arrives while a turn is open is ABSORBED BY THAT TURN, and the turn
     // still ends with exactly one `result`. That is what Claude Code does - it attaches the

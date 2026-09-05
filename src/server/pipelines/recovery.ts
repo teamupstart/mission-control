@@ -258,7 +258,8 @@ export async function inspectPipelineSuccessor(input: {
       successor.attempt !== active.attempt + 1 || successor.idea !== predecessor.idea) {
     return invalidCandidate(successor, noEvents, "the provider successor identity does not match the failed attempt");
   }
-  if ((successor.integrationOwner ?? null) !== (predecessor.integrationOwner ?? null)) {
+  if (successor.integrationOwner &&
+      successor.integrationOwner !== (predecessor.integrationOwner ?? null)) {
     return invalidCandidate(successor, noEvents, "the provider successor does not preserve integration ownership");
   }
   const replay = await input.lifecycle.replay({ engineerRunId: successor.engineerRunId, afterRevision: 0 });

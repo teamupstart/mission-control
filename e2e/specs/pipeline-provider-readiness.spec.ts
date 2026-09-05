@@ -315,6 +315,7 @@ test("an exact direct provider successor is reviewed and adopted without rewriti
   await expect(lifecycle.getByText("Recovery adoption partial", { exact: true })).toBeVisible();
   await expect(lifecycle).toContainText("Scripted Engineer replay failure");
   await expect(lifecycle.getByRole("button", { name: "Adopt exact successor" })).toBeVisible();
+  await expect(lifecycle.getByRole("button", { name: "Abandon commission" })).toHaveCount(0);
   const evidenceDir = join("e2e", ".artifacts", "pipeline-provider-readiness");
   mkdirSync(evidenceDir, { recursive: true });
   await dashboard.mouse.move(0, 0);

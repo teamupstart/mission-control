@@ -1654,7 +1654,12 @@ test("one malformed persisted projection degrades explicitly without breaking th
 test("correlation inspection projects one direct successor for review without appending it", async () => {
   reset();
   const held = commission();
-  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, {
+    idea: "Intent task-1",
+    readinessRequired: true,
+    integrationOwner: held.id,
+  })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 2, {
     error: "provider failed",
     class: "provider",
     code: "provider_failed",
@@ -1673,8 +1678,9 @@ test("correlation inspection projects one direct successor for review without ap
     previousEngineerRunId: null,
     repoRoot: repo,
     idea: "Intent task-1",
-    eventRevision: 1,
+    eventRevision: 2,
     state: "failed" as const,
+    integrationOwner: held.id,
   };
   const successor = {
     ...current,
@@ -1684,6 +1690,7 @@ test("correlation inspection projects one direct successor for review without ap
     previousEngineerRunId: current.engineerRunId,
     eventRevision: 2,
     state: "authoring" as const,
+    integrationOwner: null,
   };
   const successorEvents = [
     {

@@ -373,6 +373,7 @@ export function PipelineRuns({
             onAdoptSuccessor={() => { void recover("adopt"); }}
             onAbandon={() => { void recover("abandon"); }}
             onCancel={() => { void recover("cancel"); }}
+            canSettleCommission={recoveryGuard !== null}
             onSelectRun={onSelect}
           />
         ) : (

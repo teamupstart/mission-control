@@ -120,7 +120,7 @@ export function seedDirectConductorEngineerSuccessor(home: string): FakeEngineer
     repoRoot: previous.repoRoot,
     idea: previous.idea,
     readinessRequired: previous.readinessRequired,
-    integrationOwner: previous.integrationOwner ?? null,
+    integrationOwner: null,
     state: "authoring",
     events: [],
   };

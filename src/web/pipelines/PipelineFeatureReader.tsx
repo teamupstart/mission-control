@@ -157,6 +157,7 @@ function ProviderLifecycle({
   onAdoptSuccessor,
   onAbandon,
   onCancel,
+  canSettle,
   implementationActive,
 }: {
   commission: PipelineCommission;
@@ -171,6 +172,7 @@ function ProviderLifecycle({
   onAdoptSuccessor: () => void;
   onAbandon: () => void;
   onCancel: () => void;
+  canSettle: boolean;
   implementationActive: boolean;
 }): React.JSX.Element {
   const readiness = commission.readiness ?? null;
@@ -232,11 +234,13 @@ function ProviderLifecycle({
               </button>
             </Tooltip>
           )}
-          <Tooltip label="Close this failed commission without changing its attempt history">
-            <button type="button" className="btn" onClick={onAbandon} disabled={recoveryBusy !== null}>
-              {recoveryBusy === "abandon" ? "Abandoning…" : "Abandon commission"}
-            </button>
-          </Tooltip>
+          {canSettle && (
+            <Tooltip label="Close this failed commission without changing its attempt history">
+              <button type="button" className="btn" onClick={onAbandon} disabled={recoveryBusy !== null}>
+                {recoveryBusy === "abandon" ? "Abandoning…" : "Abandon commission"}
+              </button>
+            </Tooltip>
+          )}
         </div>
       )}
       {pipelineRecoveryIsActive(commission.recovery) && (
@@ -281,7 +285,7 @@ function ProviderLifecycle({
           )}
         </details>
       )}
-      {!failure && !commission.handoff && commission.lifecycle !== "cancelled" && (
+      {canSettle && !failure && !commission.handoff && commission.lifecycle !== "cancelled" && (
         <Tooltip label="Cancel this active Pipeline commission">
           <button type="button" className="btn" onClick={onCancel} disabled={recoveryBusy !== null}>
             {recoveryBusy === "cancel" ? "Cancelling…" : "Cancel Pipeline"}
@@ -323,6 +327,7 @@ export function PipelineFeatureReader({
   onAdoptSuccessor = () => undefined,
   onAbandon = () => undefined,
   onCancel = () => undefined,
+  canSettleCommission,
   onSelectRun,
 }: {
   activeCommission: PipelineCommission | null;
@@ -340,6 +345,7 @@ export function PipelineFeatureReader({
   onAdoptSuccessor?: () => void;
   onAbandon?: () => void;
   onCancel?: () => void;
+  canSettleCommission: boolean;
   onSelectRun: (run: PipelineRun) => void;
 }): React.JSX.Element {
   const commissionError = activeCommission?.error?.trim() || null;
@@ -372,6 +378,7 @@ export function PipelineFeatureReader({
           onAdoptSuccessor={onAdoptSuccessor}
           onAbandon={onAbandon}
           onCancel={onCancel}
+          canSettle={canSettleCommission}
           implementationActive={activeRun !== null}
         />
       )}

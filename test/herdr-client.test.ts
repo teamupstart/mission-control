@@ -241,6 +241,65 @@ test("creation readiness alone starts a stopped server and polls until compatibl
   }
 });
 
+test("creation readiness retries a transient initial status failure before starting the server", async () => {
+  let probes = 0;
+  const exec: TerminalExec = async () => {
+    probes += 1;
+    if (probes === 1) return run("", 1, true);
+    return run(probes === 2
+      ? status("/tmp/herdr.sock", { status: "not_running", running: false, version: null, protocol: null, compatible: null })
+      : status("/tmp/herdr.sock"));
+  };
+  let spawned = 0;
+  let clock = 0;
+  const client = createHerdrClient(exec, HERDR_BIN, {
+    spawnDetached: () => {
+      assert.equal(probes, 2, "server startup waits for a confirmed stopped status");
+      spawned += 1;
+      return { unref() {} };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    actionTimeoutMs: 500,
+    readyPollMs: 10,
+  });
+
+  assert.deepEqual(await client.ensureReady(), {
+    ok: true,
+    value: "/tmp/herdr.sock",
+    outcomeUnknown: false,
+  });
+  assert.equal(probes, 3);
+  assert.equal(spawned, 1);
+});
+
+test("creation readiness bounds persistent status failures and returns retry guidance", async () => {
+  let probes = 0;
+  const exec: TerminalExec = async () => {
+    probes += 1;
+    return run("", 1, true);
+  };
+  let spawned = 0;
+  let clock = 0;
+  const client = createHerdrClient(exec, HERDR_BIN, {
+    spawnDetached: () => {
+      spawned += 1;
+      return { unref() {} };
+    },
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    actionTimeoutMs: 25,
+    readyPollMs: 10,
+  });
+
+  const result = await client.ensureReady();
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /Herdr server status did not finish/);
+  assert.match(result.error ?? "", /Start Herdr or restart its server, then try again/);
+  assert.equal(probes, 4);
+  assert.equal(spawned, 0);
+});
+
 test("passive operations never start a stopped or incompatible Herdr server", async () => {
   for (const incompatible of [false, true]) {
     let spawned = 0;

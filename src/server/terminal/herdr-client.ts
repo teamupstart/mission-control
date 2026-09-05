@@ -410,7 +410,7 @@ class SocketBatch {
 type Probe =
   | { state: "ready"; socket: string; version: string }
   | { state: "stopped"; socket: string }
-  | { state: "failed"; error: string };
+  | { state: "failed"; error: string; retryable: boolean };
 
 export interface HerdrClient {
   probe(): Promise<Probe>;
@@ -446,16 +446,22 @@ export function createHerdrClient(
     });
     if (result.code !== 0) {
       const why = result.outcomeUnknown ? "did not finish" : "failed";
-      return { state: "failed", error: `Herdr server status ${why}: ${result.stderr.trim() || "no status was returned"}` };
+      return {
+        state: "failed",
+        error: `Herdr server status ${why}: ${result.stderr.trim() || "no status was returned"}`,
+        retryable: true,
+      };
     }
     let raw: unknown;
     try {
       raw = JSON.parse(result.stdout);
     } catch {
-      return { state: "failed", error: "Herdr server status returned malformed JSON" };
+      return { state: "failed", error: "Herdr server status returned malformed JSON", retryable: false };
     }
     const parsed = StatusSchema.safeParse(raw);
-    if (!parsed.success) return { state: "failed", error: "Herdr server status returned an invalid response" };
+    if (!parsed.success) {
+      return { state: "failed", error: "Herdr server status returned an invalid response", retryable: false };
+    }
     const status = parsed.data;
     if (!status.running) return { state: "stopped", socket: status.socket };
     if (
@@ -468,15 +474,26 @@ export function createHerdrClient(
       return {
         state: "failed",
         error: `Herdr server is incompatible. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_PROTOCOL}; update Herdr or restart its server.`,
+        retryable: false,
       };
     }
     return { state: "ready", socket: status.socket, version: status.version };
   };
 
   const ensureReady = async (): Promise<HerdrResult<string>> => {
-    const initial = await probe();
+    const deadline = deps.now() + deps.actionTimeoutMs;
+    let initial = await probe();
+    let lastError = "Herdr server did not become ready";
+    while (initial.state === "failed" && initial.retryable && deps.now() < deadline) {
+      lastError = initial.error;
+      await deps.sleep(deps.readyPollMs);
+      initial = await probe();
+    }
     if (initial.state === "ready") return { ok: true, value: initial.socket, outcomeUnknown: false };
-    if (initial.state === "failed") return failure(initial.error);
+    if (initial.state === "failed") {
+      if (!initial.retryable) return failure(initial.error);
+      return failure(`${initial.error}. Start Herdr or restart its server, then try again.`);
+    }
     try {
       const child = deps.spawnDetached(bin(), ["server"], {
         detached: true,
@@ -490,8 +507,6 @@ export function createHerdrClient(
     } catch {
       // A concurrent creator may have won the socket race. The readiness loop is authoritative.
     }
-    const deadline = deps.now() + deps.actionTimeoutMs;
-    let lastError = "Herdr server did not become ready";
     while (deps.now() < deadline) {
       await deps.sleep(deps.readyPollMs);
       const current = await probe();

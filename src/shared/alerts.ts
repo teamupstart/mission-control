@@ -24,6 +24,11 @@ import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "./workflow.ts";
 import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
+import {
+  pipelineCommissionAttentionEntries,
+  type PipelineCommission,
+  type PipelineRun,
+} from "./pipeline.ts";
 
 export type AlertKind =
   | "needs-input"
@@ -45,7 +50,8 @@ export type AlertKind =
    * is a loop to interrupt, not a digest line.
    */
   | "workflow-repeat"
-  | "ensemble";
+  | "ensemble"
+  | "pipeline";
 export type AlertSeverity = "attention" | "info";
 
 export interface Alert {
@@ -91,6 +97,8 @@ export interface AlertScope {
    * so an ensemble alert or an Away digest can never carry run detail.
    */
   ensembleSummaries?: EnsembleSummary[];
+  pipelineCommissions?: PipelineCommission[];
+  pipelineRuns?: PipelineRun[];
 }
 
 /**
@@ -170,6 +178,20 @@ export function stuckAlert(st: Stall, sessions: Session[]): Alert {
 export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
+  const attentionByCommission = (scope: AlertScope) => {
+    return new Map(pipelineCommissionAttentionEntries({
+      commissions: scope.pipelineCommissions,
+      tasks: scope.tasks,
+      runs: scope.pipelineRuns,
+      sessions: scope.sessions,
+    }).flatMap(({ commission, attention }) => {
+      return attention ? [[commission.id, { attention, taskId: commission.taskId }] as const] : [];
+    }));
+  };
+  const nextPipelineAttention = attentionByCommission(next);
+  const pipelineAttentionTaskIds = new Set(
+    [...nextPipelineAttention.values()].map((entry) => entry.taskId),
+  );
 
   for (const s of next.sessions) {
     const before = prevSessions.get(s.id);
@@ -281,7 +303,12 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
     // idle: finished a burst of work and is now waiting. Informational - it means
     // something FINISHED, which is digest material rather than an interruption.
-    if (before && reportBucket(s) === "idle" && reportBucket(before) === "working") {
+    if (
+      before &&
+      !pipelineAttentionTaskIds.has(s.task?.id ?? "") &&
+      reportBucket(s) === "idle" &&
+      reportBucket(before) === "working"
+    ) {
       alerts.push({
         id: `idle:${s.id}`,
         kind: "idle",
@@ -310,7 +337,11 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   const prevTasks = new Map(prev.tasks.map((t) => [t.id, t]));
   for (const t of next.tasks) {
     const beforeTask = prevTasks.get(t.id);
-    if (t.status === "failed" && beforeTask?.status !== "failed") {
+    if (
+      t.status === "failed" &&
+      beforeTask?.status !== "failed" &&
+      !pipelineAttentionTaskIds.has(t.id)
+    ) {
       alerts.push({
         id: `failed:${t.id}`,
         kind: "task-failed",
@@ -319,7 +350,11 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         sessionId: t.sessionId,
         severity: "attention",
       });
-    } else if (t.status === "done" && beforeTask?.status !== "done") {
+    } else if (
+      t.status === "done" &&
+      beforeTask?.status !== "done" &&
+      !pipelineAttentionTaskIds.has(t.id)
+    ) {
       alerts.push({
         id: `done:${t.id}`,
         kind: "task-done",
@@ -538,6 +573,20 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     });
   }
 
+  const previousPipelineAttention = attentionByCommission(prev);
+  for (const [commissionId, { attention }] of nextPipelineAttention) {
+    const before = previousPipelineAttention.get(commissionId)?.attention;
+    if (before?.kind === attention.kind && before.detail === attention.detail) continue;
+    alerts.push({
+      id: `pipeline:${commissionId}:${attention.kind}`,
+      kind: "pipeline",
+      title: attention.title,
+      body: attention.detail,
+      sessionId: null,
+      severity: "attention",
+    });
+  }
+
   return alerts;
 }
 
@@ -560,7 +609,13 @@ export function hasReportable(scope: AlertScope): boolean {
     || (scope.workflowRuns ?? []).some((run) =>
       !["completed", "cancelled", "failed"].includes(run.status))
     || (scope.ensembleSummaries ?? []).some((e) =>
-      e.attention || e.status === null || !ensembleIsTerminal(e.status));
+      e.attention || e.status === null || !ensembleIsTerminal(e.status))
+    || pipelineCommissionAttentionEntries({
+      commissions: scope.pipelineCommissions,
+      tasks: scope.tasks,
+      runs: scope.pipelineRuns,
+      sessions: scope.sessions,
+    }).some(({ attention }) => attention !== null);
 }
 
 /** Compact scope digest, e.g. "2 need you · 3 working · 1 idle · 1 in backlog". */
@@ -591,5 +646,12 @@ export function digestLine(scope: AlertScope): string {
   if (workflowAttention > 0) parts.push(`${workflowAttention} workflow attention`);
   const ensembleAttention = (scope.ensembleSummaries ?? []).filter((e) => e.attention).length;
   if (ensembleAttention > 0) parts.push(`${ensembleAttention} ensemble attention`);
+  const pipelineAttention = pipelineCommissionAttentionEntries({
+    commissions: scope.pipelineCommissions,
+    tasks: scope.tasks,
+    runs: scope.pipelineRuns,
+    sessions: scope.sessions,
+  }).filter(({ attention }) => attention !== null).length;
+  if (pipelineAttention > 0) parts.push(`${pipelineAttention} pipeline attention`);
   return parts.join(" · ");
 }

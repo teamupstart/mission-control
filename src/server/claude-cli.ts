@@ -345,9 +345,22 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * Claude Code has emitted both the provider payload directly and the MCP result envelope that
+ * carries it. Keep callers on one contract: a tool call's output is the provider's structured
+ * data, while the model-facing text remains in the stream's tool_result block.
+ */
+function structuredToolOutput(value: unknown): unknown {
+  const envelope = objectRecord(value);
+  return envelope && Object.hasOwn(envelope, "structuredContent")
+    ? envelope.structuredContent
+    : value;
+}
+
+/**
  * Parse Claude Code's newline-delimited SDK messages without treating model-facing tool text as
- * provider data. `tool_use_result` is the SDK's structured MCP output; if a CLI version omits it,
- * the matching call is absent from the trace and a caller that requires it can fail closed.
+ * provider data. `tool_use_result` carries either the structured MCP output itself or an MCP
+ * result envelope containing `structuredContent`; if a CLI version omits it, the matching call is
+ * absent from the trace and a caller that requires it can fail closed.
  */
 export function parseClaudeToolTrace(raw: string): ClaudeToolTrace {
   const pending = new Map<string, { name: string; input: unknown }>();
@@ -396,7 +409,7 @@ export function parseClaudeToolTrace(raw: string): ClaudeToolTrace {
         const toolUseId = results[0]!.tool_use_id as string;
         const call = pending.get(toolUseId);
         if (call) {
-          toolCalls.push({ ...call, output: frame.tool_use_result });
+          toolCalls.push({ ...call, output: structuredToolOutput(frame.tool_use_result) });
           pending.delete(toolUseId);
         }
       }

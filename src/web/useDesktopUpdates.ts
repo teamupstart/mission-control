@@ -31,6 +31,8 @@ interface DesktopUpdateState {
   snapshot: UpdateSnapshot | null;
   check(): void;
   apply(): void;
+  install(): void;
+  cancel(): void;
   defer(): void;
   dismiss(): void;
 }
@@ -54,10 +56,16 @@ export function useDesktopUpdates(): DesktopUpdateState {
   const apply = useCallback(() => {
     void updates?.apply().catch(() => {});
   }, [updates]);
+  const install = useCallback(() => {
+    void updates?.install().catch(() => {});
+  }, [updates]);
+  const cancel = useCallback(() => {
+    void updates?.cancel().catch(() => {});
+  }, [updates]);
   const defer = useCallback(() => {
     void updates?.defer().catch(() => {});
   }, [updates]);
   const dismiss = useCallback(() => setDismissed(true), []);
 
-  return { snapshot: dismissed ? null : snapshot, check, apply, defer, dismiss };
+  return { snapshot: dismissed ? null : snapshot, check, apply, install, cancel, defer, dismiss };
 }

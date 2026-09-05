@@ -5,7 +5,7 @@ import { activePaneDialog, sessionWorkspaceRoot } from "@shared/session.ts";
 import { canMessage } from "@shared/pane.ts";
 import { pipelineRunKey, pipelineRunKeyOf } from "@shared/pipeline.ts";
 import { taskPillParts } from "@shared/task.ts";
-import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
+import { shortenCwd, uptime, relativeTime } from "../../lib/format.ts";
 import {
   newestSessionRun,
   sessionCanBindWorkflow,
@@ -29,6 +29,8 @@ import {
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
 import { useDisplayItems } from "../../lib/board-card.ts";
+import { pipelineSessionDisplay } from "../../lib/attention.ts";
+import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { fitDetailHead, observeDetailHead } from "../../detailHeadLadder.ts";
 import { fitDetailTabs, observeDetailTabs } from "../../detailTabsLadder.ts";
 import {
@@ -381,7 +383,13 @@ export function ConsoleDetail({
     if (session.foremanInvite === null) setDrawerOpen(false);
   }, [session.foremanInvite]);
 
-  const st = stateDisplay(session);
+  const runtimeState = useSessionRuntimeDisplay(session);
+  const st = pipelineSessionDisplay(
+    session,
+    pipelineCommission,
+    pipelineCommissionRun,
+    runtimeState,
+  );
   const live = session.state !== "exited" && session.state !== "stopping";
   const canSend = canMessage(session);
   const canRename = canRenameSession(session);
@@ -574,6 +582,7 @@ export function ConsoleDetail({
         <StateBadge
           session={session}
           onOpenReviews={() => view.onOpenReviews(session.id)}
+          display={st}
         />
         <span className="detail-head-spacer" />
         {/* Leads the runtime cluster - mode, model, context, cost - because the posture

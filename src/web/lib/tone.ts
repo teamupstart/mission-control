@@ -45,11 +45,14 @@ export interface ToneGroup {
  * a column happens to be on screen.
  *
  */
-export function groupByTone(sessions: readonly Session[]): ToneGroup[] {
+export function groupByTone(
+  sessions: readonly Session[],
+  toneFor: (session: Session) => Tone = (session) => stateDisplay(session).tone,
+): ToneGroup[] {
   const groups: ToneGroup[] = TONE_GROUPS.map((g) => ({ ...g, sessions: [] }));
   const byTone = new Map(groups.map((g) => [g.tone, g]));
   for (const s of sessions) {
-    byTone.get(stateDisplay(s).tone)?.sessions.push(s);
+    byTone.get(toneFor(s))?.sessions.push(s);
   }
   return groups;
 }

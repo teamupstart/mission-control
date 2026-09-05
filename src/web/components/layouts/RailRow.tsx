@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
-import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { useInterrupting } from "../../lib/interrupting.ts";
+import { relativeTime, uptime } from "../../lib/format.ts";
+import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
   AgentDot,
@@ -20,6 +20,7 @@ import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
+import { pipelineSessionDisplay } from "../../lib/attention.ts";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -71,7 +72,13 @@ export function RailRow({
 }): React.JSX.Element {
   // The rail draws its own badge, so it asks for the transient stop directly - the Console
   // is where a session is watched while it works, and so where the wait is most visible.
-  const st = stateDisplay(session, useInterrupting(session.id));
+  const runtimeState = useSessionRuntimeDisplay(session);
+  const st = pipelineSessionDisplay(
+    session,
+    pipelineCommission,
+    pipelineCommissionRun,
+    runtimeState,
+  );
   // The same shared sentence the Board tile reads. The rail shows more
   // rows per screen than either, so it is the surface where "the section rule scrolled
   // away" happens soonest - the row has to carry its own answer here most of all.

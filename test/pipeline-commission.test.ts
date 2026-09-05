@@ -221,6 +221,90 @@ test("a handoff without a pinned commit leaves the evidence slot available", () 
   }), "stored");
 });
 
+test("readiness and typed failure evidence survive the shared live and replay reducer", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, {
+    idea: "x",
+    readinessRequired: true,
+    integrationOwner: "commission-task-1",
+  })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_readiness_checked", 2, {
+    status: "blocked",
+    code: "authentication_required",
+    summary: "GitHub authentication is required",
+    checkedCapabilities: ["git", "gh"],
+    retryable: true,
+    remedy: "Authenticate gh, then check again",
+    diagnostic: "gh auth status failed",
+    fingerprint: "readiness-v1",
+    permitted: false,
+  })).outcome, "stored");
+  let held = getPipelineCommission("commission-task-1");
+  assert.equal(held?.integrationOwner, "commission-task-1");
+  assert.equal(held?.readiness?.permitted, false);
+  assert.equal(held?.readiness?.code, "authentication_required");
+
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 3, {
+    error: "gh auth status failed",
+    class: "authentication",
+    code: "authentication_required",
+    summary: "GitHub authentication is required",
+    retryable: true,
+    remedy: "Authenticate gh",
+    diagnostic: "provider diagnostic",
+  })).outcome, "stored");
+  held = getPipelineCommission("commission-task-1");
+  assert.equal(held?.failure?.class, "authentication");
+  assert.equal(held?.failure?.summary, "GitHub authentication is required");
+});
+
+test("provider retirement is the only post-terminal event and freezes retained evidence", () => {
+  reset();
+  commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_created", 1, { idea: "x" })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_worktree_created", 2, {
+    worktreePath: `${repo}/.worktrees/retained-spec`,
+    branch: "spec/retained-spec",
+    planSlug: "retained-spec",
+  })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_spec_handoff", 3, {
+    planSlug: "retained-spec",
+    branch: "spec/retained-spec",
+    prUrl: null,
+    outcome: "local_commit",
+    state: "awaiting_spec_merge",
+  })).outcome, "stored");
+  assert.equal(applyEngineerEvent(event("engineer_run_settled", 4, {
+    outcome: "awaiting_spec_merge",
+  })).outcome, "stored");
+  const retainedCommit = "a".repeat(40);
+  assert.equal(applyEngineerEvent(event("engineer_worktree_retired", 5, {
+    worktreePath: `${repo}/.worktrees/retained-spec`,
+    branch: "spec/retained-spec",
+    planSlug: "retained-spec",
+    reason: "spec_merged",
+    retainedCommit,
+  })).outcome, "stored");
+  const held = getPipelineCommission("commission-task-1");
+  assert.equal(held?.retirement?.reason, "spec_merged");
+  assert.equal(held?.attempts[0]?.evidenceCommit, retainedCommit);
+  assert.equal(held?.attempts[0]?.evidenceCommitProvenance, "provider_retirement");
+  assert.equal(applyEngineerEvent(event("engineer_worktree_retired", 6, {
+    worktreePath: `${repo}/.worktrees/wrong-spec`,
+    branch: "spec/retained-spec",
+    planSlug: "retained-spec",
+    reason: "spec_merged",
+    retainedCommit,
+  })).outcome, "stored");
+  const conflicted = getPipelineCommission("commission-task-1");
+  assert.equal(conflicted?.lifecycle, "awaiting_spec_merge");
+  assert.equal(conflicted?.retirement?.worktreePath, `${repo}/.worktrees/retained-spec`);
+  assert.equal(conflicted?.projectionDrift?.kind, "retirement_identity");
+  assert.equal(loadPipelineCommissions()[0]?.projectionDrift?.kind, "retirement_identity");
+  assert.equal(applyEngineerEvent(event("engineer_run_started", 7)).outcome, "terminal");
+});
+
 test("authoring branch and plan slug are stable within one attempt", () => {
   reset();
   commission();
@@ -946,6 +1030,77 @@ test("one malformed persisted projection degrades explicitly without breaking th
   held = loadPipelineCommissions();
   assert.equal(held[0]?.attempts[0]?.origin, "mission_control");
   assert.equal(held[0]?.attempts[0]?.evidenceCommit, null);
+});
+
+test("correlation inspection projects one direct successor for review without appending it", async () => {
+  reset();
+  const held = commission();
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: null,
+    diagnostic: null,
+  })).outcome, "stored");
+  const current = {
+    schemaVersion: 1 as const,
+    capability: "engineerLifecycleEventsV1" as const,
+    engineerRunId: "run-task-1",
+    correlationId: "correlation-task-1",
+    attemptKey: "launch-task-1",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot: repo,
+    idea: "Intent task-1",
+    eventRevision: 1,
+    state: "failed" as const,
+  };
+  const successor = {
+    ...current,
+    engineerRunId: "run-task-1-external-successor",
+    attemptKey: "external-successor",
+    attempt: 2,
+    previousEngineerRunId: current.engineerRunId,
+    eventRevision: 4,
+    state: "authoring" as const,
+  };
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true, ownedAttempts: true } }),
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [current, successor] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+  };
+  try {
+    const registry = new Registry();
+    registry.initializePipelineCommissions([held]);
+    await refreshPipelineCommission(registry, getPipelineCommission(held.id)!);
+    const projected = getPipelineCommission(held.id)!;
+    assert.equal(projected.attempts.length, 1, "review does not adopt or append the successor");
+    assert.deepEqual(projected.successorCandidate, {
+      engineerRunId: successor.engineerRunId,
+      attempt: 2,
+      previousEngineerRunId: current.engineerRunId,
+      attemptKey: successor.attemptKey,
+      providerRevision: 4,
+      state: "authoring",
+      integrationOwner: null,
+    });
+    assert.deepEqual(loadPipelineCommissions()[0]?.successorCandidate, projected.successorCandidate);
+
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle.inspectCorrelation = async () => ({
+      ok: true,
+      value: [current],
+    });
+    await refreshPipelineCommission(registry, projected);
+    assert.equal(getPipelineCommission(held.id)?.successorCandidate, null);
+    assert.equal(getPipelineCommission(held.id)?.attempts.length, 1);
+  } finally {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  }
 });
 
 test("live-first, replay-first, and restart reconciliation converge on one projection", async () => {

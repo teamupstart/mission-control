@@ -87,6 +87,37 @@ export function resolveTargetRef(input: {
 }): { ref: string; source: TargetRefSource };
 export function receiptReleaseTag(input: { ref: string; source: TargetRefSource }): string | null;
 export function plistVersion(text: string | null | undefined): string | null;
+export interface IsolateStagedBundleOps {
+  /** The identity of the bundle directory now at a path, or null when there is none. */
+  revision(path: string): string | null;
+  remove(path: string): void;
+  makeDirectory(path: string): void;
+  move(from: string, to: string): void;
+}
+
+export function isolateStagedBundle(input: {
+  bundle: string;
+  isolated: string;
+  expectedRevision: string | null;
+  bundleName: string;
+  ops: IsolateStagedBundleOps;
+}): {
+  /** The path to copy from, or null when the install must be refused. */
+  sourceBundle: string | null;
+  /** Why the install must be refused, or null when it may proceed. */
+  problem: string | null;
+  /** True when the isolated directory holds another build and must not be cleaned up. */
+  keepIsolated: boolean;
+  /** Where that other build was left, for a human to recover. */
+  rescued: string | null;
+  /** Why the bundle is being installed in place rather than from isolation. */
+  inPlace: string | null;
+};
+
+export function stagedVersionProblem(input: {
+  stagedVersion: string | null;
+  ref: string | null;
+}): string | null;
 export function appsDirProblem(input: {
   appsDir: string;
   exists: boolean;
@@ -97,7 +128,20 @@ export function packagedVersionProblem(input: {
   sourceVersion: string;
 }): string | null;
 export function parseArgs(argv: string[]): {
-  options: { ref: string | null; fromOrigin: boolean; dryRun: boolean; appsDir: string };
+  options: {
+    ref: string | null;
+    fromOrigin: boolean;
+    dryRun: boolean;
+    appsDir: string;
+    /** Emit machine-readable stage markers for the app that is watching. */
+    progress: boolean;
+    /** Build and verify, then stop before touching the installed app. */
+    stageOnly: boolean;
+    /** Install this already-built bundle: swap and receipt only. */
+    fromStaged: string | null;
+    /** Refuse that bundle unless it is still the one this token identifies. */
+    stagedRevision: string | null;
+  };
   help: boolean;
   problem: string | null;
 };

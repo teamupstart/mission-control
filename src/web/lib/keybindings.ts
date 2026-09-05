@@ -15,6 +15,7 @@
 // docs/plans/ui-settings-to-daemon/plan.md.
 
 import { useCallback, useSyncExternalStore } from "react";
+import { CARD_SHORTCUT_CHORDS } from "./card-shortcuts.ts";
 import { subscribeUiConfig, uiConfig, updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 export type ActionId =
@@ -491,9 +492,41 @@ export function ariaKeyshortcuts(chord: string): string | undefined {
   return [...mods.map((mod) => ariaMods[mod] ?? mod), ariaKey].join("+");
 }
 
-/** True when a chord targets a reserved navigation key and so can't be bound. */
+/**
+ * Why a chord cannot be bound to an action, phrased to finish "⌘1 is reserved for …", or
+ * null when it is bindable.
+ *
+ * Two kinds of reservation, and they are here together because a caller only ever wants the
+ * one answer "can this be bound, and if not why not".
+ *
+ * The Board's twelve card-jump chords are the second kind, and they are reserved for exactly
+ * the reason `Enter` is above: App's jump arm runs ahead of the action dispatch, so an action
+ * bound to ⌘4 keeps working in the Console, on every other page, and with the card item
+ * switched off, and silently stops working on the Board. A binding that works in some
+ * layouts and not others is the one promise this table makes, so the table refuses it rather
+ * than accepting a chord it cannot honour. See `lib/card-shortcuts.ts`.
+ *
+ * Unconditional, deliberately - NOT gated on whether the operator has the card item on. What
+ * this table accepts must not depend on a checkbox in another panel, or binding ⌘4 with the
+ * item off would quietly become a shadowed binding the moment it was switched back on.
+ */
+export function reservedChordReason(chord: string): string | null {
+  if (chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key)) return "grid navigation";
+  if (CARD_SHORTCUT_CHORDS.includes(chord)) return "the Board's card jump shortcuts";
+  return null;
+}
+
+/**
+ * True when a chord can't be bound to an action.
+ *
+ * Read by `sanitize` as well as by the editor, which is what MIGRATES an operator who had
+ * already bound one of these: a stored override on a reserved chord is dropped on read, so
+ * the action returns to its own default rather than staying shadowed. Every shipped default
+ * is a chord no reservation covers (`test/keybindings.test.ts`), so the fallback is always
+ * available.
+ */
 export function isReservedChord(chord: string): boolean {
-  return chord === "Tab" || RESERVED_KEYS.has(parseChord(chord).key);
+  return reservedChordReason(chord) !== null;
 }
 
 /** True when keyboard input belongs to a native field or an effective contenteditable host. */
@@ -702,8 +735,12 @@ export function bindingValidationError(
   id: ActionId,
   chord: string,
 ): string | null {
-  if (isReservedChord(chord)) {
-    return `${formatChord(chord)} is reserved for grid navigation.`;
+  // The REASON, not one generic sentence. "reserved for grid navigation" was true of every
+  // reservation when it was written, and printing it over a card-jump chord would send an
+  // operator looking for an arrow key they never pressed.
+  const reserved = reservedChordReason(chord);
+  if (reserved) {
+    return `${formatChord(chord)} is reserved for ${reserved}.`;
   }
   const owner = findConflicts({ ...bindings, [id]: chord }).get(id)?.[0];
   if (!owner) return null;

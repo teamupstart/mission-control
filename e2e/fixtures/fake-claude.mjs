@@ -353,7 +353,10 @@ if (process.argv.includes("--setting-sources=")) {
             }],
           },
           tool_use_result: {
-            issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            content: "one empty Jira page",
+            structuredContent: {
+              issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            },
           },
         }),
         JSON.stringify({ type: "result", result: "Jira query completed" }),

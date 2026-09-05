@@ -285,7 +285,9 @@ export async function launchTerminal(
     const sessions = mux.sessions;
     const spawned = await spawnDetachedUniquely(
       sessions,
-      { cwd: spec.cwd, argv: spec.argv, sidePane: false },
+      // This route is an explicit operator request, so the new multiplexer surface should
+      // become its internal selection. Raising an OS window remains a separate capability.
+      { cwd: spec.cwd, argv: spec.argv, sidePane: false, select: true },
       spec.name,
       deps.launchId,
     );

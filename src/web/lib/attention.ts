@@ -1,13 +1,41 @@
 import type { EnsembleSummary, TaskEnsembleLink } from "@shared/ensemble.ts";
-import type { ReviewItem, Session } from "@shared/types.ts";
+import type { ReviewItem, Session, Task } from "@shared/types.ts";
 import {
+  pipelineCommissionAttention,
+  pipelineCommissionAttentionEntries,
   pipelineHaltRunbookLine,
   pipelineRunKeyOf,
   type PipelineHaltClass,
   type PipelineRun,
+  type PipelineCommission,
+  type PipelineCommissionAttention,
 } from "@shared/pipeline.ts";
 import { activePaneDialog } from "@shared/session.ts";
 import { stateDisplay } from "./format.ts";
+
+/**
+ * The one display rule for a session correlated with a Pipeline commission.
+ *
+ * Provider lifecycle attention outranks the runtime badge on every fleet surface. When the
+ * provider has nothing attention-worthy to report, preserve the caller's runtime reading,
+ * including transient client-only states such as an interrupt in flight.
+ */
+export function pipelineSessionDisplay(
+  session: Session,
+  commission: PipelineCommission | null | undefined,
+  linkedRun: PipelineRun | null | undefined,
+  runtimeState: ReturnType<typeof stateDisplay> = stateDisplay(session),
+): ReturnType<typeof stateDisplay> {
+  const attention = commission
+    ? pipelineCommissionAttention(
+        commission,
+        session.task ? { status: session.task.status, repoRoot: session.repoRoot } : null,
+        linkedRun ?? null,
+        session.workspace ?? null,
+      )
+    : null;
+  return attention ? { label: attention.title, tone: "attention" } : runtimeState;
+}
 
 /**
  * A session on its way out, whose questions can no longer be delivered.
@@ -40,6 +68,12 @@ function isSettling(session: Session): boolean {
 
 /** One thing to act on. Ordered by SECTION first (see `foldAttention`), never interleaved. */
 export type AttentionItem =
+  | {
+      kind: "pipeline_commission";
+      id: string;
+      commission: PipelineCommission;
+      attention: PipelineCommissionAttention;
+    }
   | {
       kind: "ensemble_decision";
       /** Stable across renders and unique in the fold, so it can key a list. */
@@ -182,6 +216,8 @@ export interface AttentionInput {
    * opinion on it.
    */
   pipelineRuns?: readonly PipelineRun[];
+  pipelineCommissions?: readonly PipelineCommission[];
+  tasks?: readonly Task[];
 }
 
 /**
@@ -300,6 +336,24 @@ export function foldAttention(input: AttentionInput): AttentionFold {
   // Oldest wait leads, like every other section: `updatedAt` is when the projection last
   // changed, which for a halted run is when it stopped. Ties break on the run key so the
   // order is total and two renders of one fleet cannot reshuffle.
+  for (const { commission, attention } of pipelineCommissionAttentionEntries({
+    commissions: input.pipelineCommissions,
+    tasks: input.tasks,
+    runs: input.pipelineRuns,
+    sessions: input.sessions,
+  })
+    .filter((entry): entry is { commission: PipelineCommission; attention: PipelineCommissionAttention } => entry.attention !== null)
+    .sort((a, b) => a.attention.priority - b.attention.priority || a.commission.updatedAt - b.commission.updatedAt)) {
+    for (const session of input.sessions) {
+      if (session.task?.id === commission.taskId) represented.add(session.id);
+    }
+    items.push({
+      kind: "pipeline_commission",
+      id: `pipeline-commission:${commission.id}`,
+      commission,
+      attention,
+    });
+  }
   for (const run of [...(input.pipelineRuns ?? [])]
     .filter((run) => run.halt !== null)
     .sort(

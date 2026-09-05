@@ -204,8 +204,11 @@ make install-app    # …and copy THIS worktree's build into /Applications
 managed install.
 
 A managed installed app keeps itself current from stable GitHub Releases. Choose **Check for
-Updates…** from the app menu or tray; the app uses the existing authenticated `gh` CLI, asks before
-rebuilding, and restores the previous working bundle if the update cannot complete. See
+Updates…** from the app menu or tray; the app uses the existing authenticated `gh` CLI and asks
+before rebuilding. Accepting does not close anything: the new version is built while Mission
+Control keeps running, with a progress bar naming each stage and a **Cancel**, and only when it is
+built and verified does the app offer **Restart and Install** - the seconds-long part that needs
+the app closed. A failed install restores the previous working bundle. See
 [Updates from the installed app](desktop-and-packaging.md#updates-from-the-installed-app).
 
 The app is self-contained: the daemon runs on Electron's bundled Node (with `node:sqlite`),

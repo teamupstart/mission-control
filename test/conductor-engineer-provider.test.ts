@@ -39,9 +39,40 @@ else {
     idea: flag("--idea") || "Add widgets",
     eventRevision: 1,
     state: command === "run-cancel" ? "cancelled" : "created",
+    readinessRequired: true,
+    integrationOwner: flag("--integration-owner") || "commission-owner-1",
+    readiness: command === "run-readiness" ? {
+      status: mode === "blocked-readiness" ? "blocked" : "ready",
+      code: mode === "blocked-readiness" ? "authentication_required" : "ready",
+      summary: mode === "blocked-readiness"
+        ? "GitHub authentication is required"
+        : mode === "malformed-readiness"
+          ? "x".repeat(241)
+          : "Provider is ready",
+      checkedCapabilities: ["git", "gh"],
+      retryable: true,
+      remedy: mode === "blocked-readiness" ? "Authenticate gh, then check again" : null,
+      diagnostic: mode === "blocked-readiness" ? "gh auth status failed" : null,
+      fingerprint: "readiness-fingerprint",
+      permitted: mode !== "blocked-readiness",
+      checkedAt: "2026-08-28T12:00:00.000Z",
+    } : null,
+    failure: null,
+    retention: null,
+    retirement: null,
   };
-  if (command === "capabilities") console.log(JSON.stringify({schemaVersion:1, engineerLifecycleEventsV1:true}));
+  if (command === "capabilities") console.log(JSON.stringify({schemaVersion:1, engineerLifecycleEventsV1:true, engineerReadinessV1:true, engineerWorktreeRetirementV1:true, engineerRetainedReviewWorktreesV1:true, engineerOwnedAttemptsV1:true}));
   else if (command === "run-create" || command === "run-cancel") console.log(JSON.stringify(base));
+  else if (command === "run-readiness") {
+    const expected = ["engineer", "run-readiness", "--run-id", runId, "--repo-root", repoRoot];
+    if (mode === "strict-readiness-argv" && JSON.stringify(args) !== JSON.stringify(expected)) {
+      process.stderr.write("unexpected readiness arguments: " + JSON.stringify(args) + "\\n");
+      process.exitCode = 2;
+    } else {
+      console.log(JSON.stringify(base));
+      if (mode === "blocked-readiness") process.exitCode = 1;
+    }
+  }
   else if (command === "run-inspect") console.log(JSON.stringify({schemaVersion:1, capability:"engineerLifecycleEventsV1", repoRoot, correlationId, runs:[base]}));
   else if (command === "run-replay") {
     const afterRevision = Number(flag("--after-revision"));
@@ -67,7 +98,13 @@ test("capability, create, correlation inspect, replay, and cancel parse exact JS
   resetConductorEngineerCapabilityCache();
   assert.deepEqual(await CONDUCTOR_ENGINEER_LIFECYCLE.capability(), {
     ok: true,
-    value: { supported: true },
+    value: {
+      supported: true,
+      readiness: true,
+      worktreeRetirement: true,
+      retainedReviewWorktrees: true,
+      ownedAttempts: true,
+    },
   });
   const created = await CONDUCTOR_ENGINEER_LIFECYCLE.create({
     repoRoot: "/repo/demo",
@@ -91,6 +128,39 @@ test("capability, create, correlation inspect, replay, and cancel parse exact JS
     reason: "operator cancelled",
   });
   assert.equal(cancelled.ok && cancelled.value.state, "cancelled");
+});
+
+test("a blocked readiness snapshot is evidence even though the provider exits one", async () => {
+  process.env.FAKE_CONDUCTOR_MODE = "blocked-readiness";
+  const answer = await CONDUCTOR_ENGINEER_LIFECYCLE.readiness!({
+    engineerRunId: "run-1",
+    repoRoot: "/repo/demo",
+  });
+  assert.equal(answer.ok, true);
+  if (answer.ok) {
+    assert.equal(answer.value.readiness?.status, "blocked");
+    assert.equal(answer.value.readiness?.permitted, false);
+    assert.equal(answer.value.readiness?.code, "authentication_required");
+  }
+});
+
+test("readiness sends only the Phase 2 required run identity and repository flags", async () => {
+  process.env.FAKE_CONDUCTOR_MODE = "strict-readiness-argv";
+  const answer = await CONDUCTOR_ENGINEER_LIFECYCLE.readiness!({
+    engineerRunId: "run-1",
+    repoRoot: "/repo/demo",
+  });
+  assert.equal(answer.ok, true);
+});
+
+test("an oversized readiness snapshot is refused before it reaches the projection", async () => {
+  process.env.FAKE_CONDUCTOR_MODE = "malformed-readiness";
+  const answer = await CONDUCTOR_ENGINEER_LIFECYCLE.readiness!({
+    engineerRunId: "run-1",
+    repoRoot: "/repo/demo",
+  });
+  assert.equal(answer.ok, false);
+  if (!answer.ok) assert.match(answer.error, /malformed Engineer readiness snapshot/);
 });
 
 test("malformed output is refused even when the command exits successfully", async () => {

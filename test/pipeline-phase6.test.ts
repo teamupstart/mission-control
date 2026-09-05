@@ -8,6 +8,7 @@ import {
   ENGINEER_STEP_NAMES,
   PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_HALT_CLASSES,
+  type EngineerLifecycleEvent,
   type PipelineActionResult,
   type PipelineCommission,
   type PipelineRun,
@@ -90,6 +91,154 @@ function run(haltClass = "mechanical"): PipelineRun {
     updatedAt: 1,
   };
 }
+
+test("commissioned dispatch persists readiness and ownership before launching the host", async (t) => {
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  for (const status of ["ready", "blocked", "inconclusive"] as const) {
+    const taskId = `pipeline-readiness-${status}`;
+    const repoRoot = `/repo/readiness-${status}`;
+    setPipelinesConfig({
+      enabled: true,
+      repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+    });
+    const registry = new Registry();
+    registry.upsertTask(mkTask({
+      id: taskId,
+      agent: "codex",
+      kind: "pipeline",
+      repoRoot,
+      intent: `Check ${status} readiness`,
+    }));
+    const supervisor = fakeSupervisor(registry);
+    let owner: string | undefined;
+    let snapshot!: PipelineEngineerRunSnapshot;
+    let events: EngineerLifecycleEvent[] = [];
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+      capability: async () => ({
+        ok: true,
+        value: {
+          supported: true,
+          readiness: true,
+          worktreeRetirement: true,
+          retainedReviewWorktrees: true,
+          ownedAttempts: true,
+        },
+      }),
+      create: async (input) => {
+        owner = input.integrationOwner;
+        snapshot = {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId: `engineer-${status}`,
+          correlationId: input.correlationId,
+          attemptKey: input.attemptKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          idea: input.idea,
+          eventRevision: 1,
+          state: "created",
+          readinessRequired: true,
+          integrationOwner: input.integrationOwner ?? null,
+        };
+        events = [{
+          schemaVersion: 1,
+          engineerRunId: snapshot.engineerRunId,
+          correlationId: snapshot.correlationId!,
+          attemptKey: snapshot.attemptKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          revision: 1,
+          ts: "2026-09-04T12:00:00.000Z",
+          type: "engineer_run_created",
+          idea: snapshot.idea,
+          readinessRequired: true,
+          integrationOwner: input.integrationOwner,
+        }];
+        return { ok: true, value: snapshot };
+      },
+      readiness: async () => {
+        const permitted = status === "ready";
+        const readiness = {
+          status,
+          code: status === "ready" ? "ready" : `${status}_readiness`,
+          summary: status === "ready" ? "Provider is ready" : `Provider readiness is ${status}`,
+          checkedCapabilities: ["git", "gh"],
+          retryable: status !== "ready",
+          remedy: status === "ready" ? null : "Repair provider access",
+          diagnostic: status === "ready" ? null : "provider diagnostic",
+          fingerprint: `${status}-fingerprint`,
+          permitted,
+          checkedAt: "2026-09-04T12:00:01.000Z",
+        };
+        events.push({
+          schemaVersion: 1,
+          engineerRunId: snapshot.engineerRunId,
+          correlationId: snapshot.correlationId!,
+          attemptKey: snapshot.attemptKey,
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot,
+          revision: 2,
+          ts: readiness.checkedAt,
+          type: "engineer_readiness_checked",
+          ...readiness,
+        });
+        snapshot = { ...snapshot, eventRevision: 2, readiness };
+        return { ok: true, value: snapshot };
+      },
+      inspectCorrelation: async () => ({ ok: true, value: [] }),
+      replay: async ({ afterRevision }) => ({
+        ok: true,
+        value: events.filter((event) => event.revision > afterRevision),
+      }),
+      cancel: async () => ({ ok: true, value: { ...snapshot, state: "cancelled" } }),
+    };
+    const dispatcher = new Dispatcher(registry, undefined, {
+      supervisor,
+      missionMcpDescriptor: async () => ({
+        serverName: "mission-control",
+        command: "/usr/bin/node",
+        args: ["/dist/mcp/server.mjs"],
+        env: {},
+      }),
+      verifyMissionMcpTools: async () => ({ ok: true }),
+      pipelineLaunch: async () => ({
+        ok: true,
+        commissioned: true,
+        provider: "ai-conductor",
+        launchRuntime: "agent-sdk",
+        cwd: repoRoot,
+        capabilities: {
+          supported: true,
+          readiness: true,
+          worktreeRetirement: true,
+          retainedReviewWorktrees: true,
+          ownedAttempts: true,
+        },
+      }),
+    });
+
+    await dispatcher.dispatch(taskId);
+
+    const commission = registry.pipelineCommissionForTask(taskId)!;
+    assert.equal(owner, commission.id, status);
+    assert.equal(commission.integrationOwner, commission.id, status);
+    assert.equal(commission.readiness?.status, status, status);
+    assert.equal(commission.attempts[0]?.providerRevision, 2, status);
+    assert.equal(supervisor.starts.length, status === "ready" ? 1 : 0, status);
+    assert.equal(registry.getTask(taskId)?.status, "running", status);
+    assert.equal(
+      registry.getTask(taskId)?.sessionId !== null,
+      status === "ready",
+      status,
+    );
+  }
+});
 
 test("conductor idea dispatch scrubs nesting and preserves the intent as one argv value", () => {
   const intent = "Build the thing; keep $HOME and `pwd` literal";

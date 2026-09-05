@@ -8,13 +8,18 @@ import {
   PIPELINE_HALT_CLASSES,
   PIPELINE_HALT_CLASS_INFO,
   pipelineHaltRunbookLine,
+  type PipelineCommission,
   type PipelineHaltClass,
   type PipelineRun,
 } from "../src/shared/pipeline.ts";
-import { foldAttention, type AttentionItem } from "../src/web/lib/attention.ts";
+import {
+  foldAttention,
+  pipelineSessionDisplay,
+  type AttentionItem,
+} from "../src/web/lib/attention.ts";
 import { AttentionInbox } from "../src/web/components/AttentionInbox.tsx";
 import { SessionWorkflowsPane } from "../src/web/components/SessionWorkflowsPane.tsx";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { mkSession, mkTaskSummary } from "./helpers/session-fixture.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // A halted pipeline as a first-class thing waiting on a person, and the ladder that reads one.
@@ -26,6 +31,34 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 // owned was the one thing the drain could not show them.
 
 const REPO = "/repo/demo";
+
+function mkCommission(over: Partial<PipelineCommission> = {}): PipelineCommission {
+  return {
+    id: "commission-1",
+    taskId: "pipeline-task",
+    provider: "ai-conductor",
+    repoRoot: REPO,
+    correlationId: "commission-1",
+    lifecycle: "authoring",
+    attempts: [],
+    activeAttempt: 1,
+    steps: [],
+    currentStep: null,
+    tier: null,
+    track: null,
+    project: null,
+    authoringWorktree: null,
+    authoringBranch: null,
+    planSlug: null,
+    handoff: null,
+    linkedRun: null,
+    blocker: null,
+    error: null,
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  };
+}
 
 function mkRun(over: Partial<PipelineRun> = {}): PipelineRun {
   return {
@@ -117,6 +150,91 @@ test("halts are derived before the blocked-session backstop can claim anything",
     pipelineRuns: [mkRun()],
   });
   assert.deepEqual(result.items.map((item) => item.kind), ["pipeline_halt", "session_blocked"]);
+});
+
+test("Pipeline lifecycle attention claims its host before the blocked-session backstop", () => {
+  const blocked = mkSession({
+    id: "pipeline-host",
+    name: "Pipeline host",
+    state: "awaiting_input",
+    task: {
+      id: "pipeline-task",
+      title: "Pipeline task",
+      fullTitle: "Pipeline task",
+      kind: "pipeline",
+      workflowId: null,
+      status: "running",
+      outcome: null,
+      outcomeUrl: null,
+      pipelineRun: null,
+      scheduleId: null,
+      scheduleOccurrenceId: null,
+      scheduledFor: null,
+      ensemble: null,
+      repoPrs: [],
+    },
+  });
+  const result = foldAttention({
+    sessions: [blocked],
+    reviews: [],
+    ensembles: [],
+    pipelineCommissions: [mkCommission({
+      readinessRequired: true,
+      readiness: {
+        status: "blocked",
+        code: "authentication_required",
+        summary: "GitHub authentication is required",
+        checkedCapabilities: ["gh"],
+        retryable: true,
+        remedy: "Authenticate GitHub",
+        diagnostic: null,
+        fingerprint: "blocked",
+        permitted: false,
+        checkedAt: "2026-09-04T12:00:00.000Z",
+      },
+    })],
+  });
+  assert.deepEqual(result.items.map((item) => item.kind), ["pipeline_commission"]);
+});
+
+test("Pipeline session display applies the shared attention override and preserves runtime state otherwise", () => {
+  const session = mkSession({
+    repoRoot: REPO,
+    task: mkTaskSummary({
+      id: "pipeline-task",
+      pipelineCommissionId: "commission-1",
+      status: "running",
+    }),
+  });
+  const runtimeState = { label: "interrupting", tone: "working" as const };
+
+  assert.deepEqual(
+    pipelineSessionDisplay(session, mkCommission(), null, runtimeState),
+    runtimeState,
+  );
+  assert.deepEqual(
+    pipelineSessionDisplay(
+      session,
+      mkCommission({
+        readinessRequired: true,
+        readiness: {
+          status: "blocked",
+          code: "authentication_required",
+          summary: "GitHub authentication is required",
+          checkedCapabilities: ["gh"],
+          retryable: true,
+          remedy: "Authenticate GitHub",
+          diagnostic: null,
+          fingerprint: "blocked",
+          permitted: false,
+          checkedAt: "2026-09-04T12:00:00.000Z",
+        },
+      }),
+      null,
+      runtimeState,
+    ),
+    { label: "Pipeline launch blocked", tone: "attention" },
+  );
 });
 
 test("the oldest halt leads, and the order is total", () => {

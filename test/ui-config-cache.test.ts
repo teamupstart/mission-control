@@ -22,6 +22,7 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 const { readCache, readLegacySettings, writeCache } = await import("../src/web/lib/uiCache.ts");
+const { DISPLAY_ITEM_HIDDEN_SEEDS } = await import("../src/shared/protocol.ts");
 
 beforeEach(() => store.clear());
 
@@ -38,10 +39,10 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.keybindingHints, true);
   assert.equal(config.guidedDispatch, true);
   assert.equal(config.guidedTour, true);
-  // NOT empty. The shipped default is "the card the previous release drew", and `worktree`
-  // is the one registry item no card drew before - so it ships hidden and an upgrade moves
-  // nothing on screen. See `UI_CONFIG_DEFAULTS` for the whole reasoning.
-  assert.deepEqual(config.hiddenDisplayItems, ["worktree"]);
+  // NOT empty. `worktree` is the one registry item no card drew before, so it ships hidden
+  // and an upgrade moves nothing on screen; `workflowDetails` is the one that ships hidden
+  // having previously been unconditional. See `UI_CONFIG_DEFAULTS` for the whole reasoning.
+  assert.deepEqual(config.hiddenDisplayItems, ["worktree", "workflowDetails"]);
 });
 
 test("a written cache round-trips", () => {
@@ -57,6 +58,10 @@ test("a written cache round-trips", () => {
     guidedTour: false,
     trustStaged: ["/work/staged"],
     hiddenDisplayItems: ["cost"],
+    // Head-seeded, which is what any record this build writes looks like. That is what makes
+    // the list below round-trip VERBATIM rather than gaining the ships-hidden ids: a cache
+    // already given its seeds is the operator's answer and is never added to again.
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
     // FALSE, deliberately, because this field's default is true: a cache that read a stored
     // `false` with `||` would hand back the default and re-group the board on every cold paint
     // for the one operator who turned it off. Asserting the non-default value is the only way
@@ -91,9 +96,18 @@ test("a preference this cache forgets to copy would reset on every cold paint", 
   // NON-empty default and so can be dropped two ways. A hidden item forgotten by `coerce`
   // comes back on the next cold paint, and an item the operator switched ON is hidden
   // again by a fallback that reaches for `[]` instead of the shipped default.
-  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: ["cost", "model"] }));
+  // `hiddenDisplayItemsSeed` at the head in both, so this stays a test of the COPY. Without
+  // it these records look like an upgrade from a build with no marker, and the seeding would
+  // add the ships-hidden ids - a real behaviour, tested on its own below.
+  store.set("mission-control.ui", JSON.stringify({
+    hiddenDisplayItems: ["cost", "model"],
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+  }));
   assert.deepEqual(readCache().hiddenDisplayItems, ["cost", "model"]);
-  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: [] }));
+  store.set("mission-control.ui", JSON.stringify({
+    hiddenDisplayItems: [],
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+  }));
   assert.deepEqual(
     readCache().hiddenDisplayItems,
     [],
@@ -112,12 +126,15 @@ test("the hidden list is handed back as a fresh array the panel can build a patc
   // Same rule `trustStaged` follows: the default is a shared frozen literal, and the panel
   // computes its next patch from what it reads here. Mutating the constant would change
   // the default for every later cold paint in this process.
-  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: ["cost"] }));
+  store.set("mission-control.ui", JSON.stringify({
+    hiddenDisplayItems: ["cost"],
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+  }));
   readCache().hiddenDisplayItems.push("model");
   assert.deepEqual(readCache().hiddenDisplayItems, ["cost"]);
   store.clear();
   readCache().hiddenDisplayItems.push("goal");
-  assert.deepEqual(readCache().hiddenDisplayItems, ["worktree"]);
+  assert.deepEqual(readCache().hiddenDisplayItems, ["worktree", "workflowDetails"]);
 });
 
 test("a rendering this build does not ship reads as the shipped one", () => {
@@ -216,4 +233,53 @@ test("rich text is only off when the old build explicitly wrote off", () => {
   store.clear();
   store.set("mission-control.rich-text", "0");
   assert.equal(readLegacySettings()?.richText, false);
+});
+
+// ---- a ships-hidden item on an UPGRADE, which the default list alone cannot deliver ----
+//
+// `UI_CONFIG_DEFAULTS.hiddenDisplayItems` only reaches a record that stored NO list, because
+// a stored list is the operator's own answer and is handed back verbatim - which is the whole
+// point of the field. So an operator who has ever unchecked one card item carries a list that
+// cannot mention an id invented later, and a "ships off" item would arrive switched ON for
+// exactly the people most likely to notice. `DISPLAY_ITEM_HIDDEN_SEEDS` plus the
+// `hiddenDisplayItemsSeed` marker is what closes that, and these are its two directions.
+
+test("an upgraded cache that stored its own list is given the ships-hidden ids once", () => {
+  // The upgrade, exactly as an existing operator has it: a list they wrote, and no marker,
+  // because no build that wrote it had one.
+  store.set("mission-control.ui", JSON.stringify({ hiddenDisplayItems: ["cost"] }));
+  const upgraded = readCache();
+  assert.deepEqual(
+    upgraded.hiddenDisplayItems,
+    ["cost", "workflowDetails"],
+    "an operator who had ever hidden another item would have got Workflow details switched ON",
+  );
+  // Their own choice is preserved rather than replaced by the default list.
+  assert.ok(upgraded.hiddenDisplayItems.includes("cost"));
+  assert.ok(!upgraded.hiddenDisplayItems.includes("worktree"), "worktree is not re-hidden");
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+});
+
+test("a record with no list of its own takes the marker without gaining ids twice", () => {
+  // An operator who changed some OTHER preference and never touched this panel. The schema
+  // default already carries every ships-hidden id, so seeding must not append them again.
+  store.set("mission-control.ui", JSON.stringify({ layout: "board" }));
+  const upgraded = readCache();
+  assert.deepEqual(upgraded.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+});
+
+test("switching a ships-hidden item on survives the next cold paint", () => {
+  // The other direction, and the one a seeding migration gets wrong by being unconditional:
+  // once the marker is at the head, an absent id means the operator turned it ON and it must
+  // stay on. Without this the checkbox would appear to work and then undo itself on reload.
+  store.set("mission-control.ui", JSON.stringify({
+    hiddenDisplayItems: ["cost"],
+    hiddenDisplayItemsSeed: DISPLAY_ITEM_HIDDEN_SEEDS.length,
+  }));
+  assert.deepEqual(
+    readCache().hiddenDisplayItems,
+    ["cost"],
+    "a seeded record was seeded again, re-hiding an item the operator switched on",
+  );
 });

@@ -95,7 +95,7 @@ export const DISPLAY_ITEMS = [
     group: "card",
     label: "Workflow",
     description:
-      "The cropped stage ladder for the review that owns this session, and the control that expands it in place. Hidden, a run in progress is only visible from Runs or the console.",
+      "The cropped stage ladder for the review that owns this session. Hidden, a run in progress is only visible from Runs or the console.",
   },
   {
     id: "workflowProgressBar",
@@ -103,6 +103,13 @@ export const DISPLAY_ITEMS = [
     label: "Workflow progress bar",
     description:
       "The run's whole stage track and repair-round budget. Unchecked, the card returns to the single consequential stage with its member detail.",
+  },
+  {
+    id: "workflowDetails",
+    group: "card",
+    label: "Workflow details",
+    description:
+      "Why the run is where it is, and the control that opens its whole actionable ladder inside the card. It ships OFF, so by default a card states the stage track, the stage it is on and the repair-round count and nothing else. Checked, it adds the expand/collapse control - and the Board's expand chord - and the sentence naming what objected or what the run is waiting on.",
   },
   {
     id: "pipelinePhases",
@@ -235,9 +242,9 @@ export const DISPLAY_GROUP_COPY: Record<
  * rather than silently hiding a fact.
  *
  * There is no per-item default here on purpose. An item that ships hidden says so by being
- * in `UI_CONFIG_DEFAULTS.hiddenDisplayItems` - `worktree` is the only one - so this stays a
- * single question asked of a single list, and checking the box removes the id exactly as it
- * does for every other item.
+ * in `UI_CONFIG_DEFAULTS.hiddenDisplayItems` - `worktree` and `workflowDetails` are the two -
+ * so this stays a single question asked of a single list, and checking the box removes the id
+ * exactly as it does for every other item.
  */
 export function isDisplayItemShown(
   hidden: readonly string[],

@@ -92,8 +92,9 @@ test("an untitled dispatch is named by the model, not by its first line", async 
   const t = create(tasks, intent);
 
   // Returns immediately under the heuristic title - the card must appear now, not after a
-  // subprocess - and that title is exactly the first-line-verbatim one we're replacing.
-  assert.match(t.title, /^Hey, Can You Take/);
+  // subprocess. That title is the deterministic tier's, first line with the dictated framing
+  // ("hey, can you") taken off, and it is what the branch and the terminal home are cut from.
+  assert.match(t.title, /^Take a Look at the Thing Where Reset/);
 
   await until(() => tasks.get(t.id)?.title === "Fix flaky worktree cleanup", "the model's title");
 });
@@ -106,7 +107,7 @@ test("a model reply that keeps the framing still reaches the card naming the wor
   setMode("framed");
   const tasks = new TaskManager(new Registry());
   const t = create(tasks, "hey, the herd view needs a multiplexer");
-  assert.match(t.title, /^Hey, the Herd View/);
+  assert.match(t.title, /^The Herd View Needs a Multiplexer/);
 
   await until(() => tasks.get(t.id)?.title === "The Herdr multiplexer", "the stripped model title");
   setMode("good");
@@ -208,7 +209,7 @@ test("dispatching while titling is in flight uses the model's title, not the heu
   const t = create(tasks, "hey, could you please look at the flaky worktree cleanup on Reset?");
   // The heuristic title is on the card right now, and the operator can click Dispatch on it
   // immediately - this is that click, landing inside the titling window.
-  assert.match(t.title, /^Hey, Could You Please/);
+  assert.match(t.title, /^Look at the Flaky Worktree Cleanup/);
 
   const dispatched = await tasks.dispatch(t.id);
 
@@ -262,7 +263,7 @@ test("an untitled dispatch launches before the model has named it", async () => 
     assert.equal(dispatched, true, "the launch must not wait for the model's title");
     assert.match(
       titleAtDispatch ?? "",
-      /^Hey, Could You Please/,
+      /^Look at the Flaky Worktree Cleanup/,
       "the launch must use the heuristic title while the model is still answering",
     );
   } finally {

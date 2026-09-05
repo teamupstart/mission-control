@@ -33,6 +33,21 @@ const TITLE_MINOR_WORDS = new Set([
  * `Document` - the prompt asks for those, because each says something about the work that its
  * object cannot.
  */
+/**
+ * Greetings, which matter less for themselves than for what they hide.
+ *
+ * The match is anchored, so an unstripped "Hey," in front of "could you please" put that whole
+ * phrase out of reach and a dictated task still carried `hey-could-you-please-look-at-the` as
+ * its branch. The loop takes the greeting off first and the framing behind it on the next pass.
+ *
+ * A TRAILING COMMA IS REQUIRED, and that is the whole reason this is separate from the phrases
+ * below rather than another entry among them. Sharing their tail - which absorbs a hyphen - made
+ * "Hi-fidelity mockups for the board" into "Fidelity mockups for the board" and "OK Computer
+ * playlist widget" into "Computer playlist widget", eating a word that was part of the name. The
+ * comma is what distinguishes someone greeting you from someone using the word: dictation writes
+ * "Hey, can you", never "Hey can you". A greeting without one is left alone on purpose.
+ */
+const TITLE_GREETING = "(?:hey|hi|hello|ok(?:ay)?)\\s*,";
 const TITLE_PREAMBLE_PHRASES = [
   "please",
   "kindly",
@@ -53,7 +68,10 @@ const TITLE_PREAMBLE_PHRASES = [
  */
 const TITLE_PREAMBLE_TAIL = "[\\s,:;.\\u2013\\u2014-]*";
 const TITLE_PREAMBLE = new RegExp(
-  `^(?:${TITLE_PREAMBLE_PHRASES.join("|")})\\b${TITLE_PREAMBLE_TAIL}`,
+  // The greeting carries its own comma and so must NOT take the `\b` the phrases need: a word
+  // boundary between a comma and the space after it does not exist, and appending one here made
+  // the whole alternative unmatchable.
+  `^(?:${TITLE_GREETING}|(?:${TITLE_PREAMBLE_PHRASES.join("|")})\\b)${TITLE_PREAMBLE_TAIL}`,
   "i",
 );
 
@@ -80,7 +98,14 @@ export function stripTitlePreamble(text: string): string {
   }
   // Re-capitalise only when something was actually removed, so an untouched title keeps the
   // casing the model or the operator chose and a stripped one still reads like a heading.
-  return out === original ? out : out.charAt(0).toUpperCase() + out.slice(1);
+  if (out === original) return out;
+  // And only when the newly exposed first word is entirely lowercase. A word already carrying
+  // a capital is a proper name, an acronym or a symbol - `iOS`, `useEffect`, `App.tsx` - which
+  // is the same reason `deriveFullTitle` skips those word by word. Uppercasing character one
+  // unconditionally turned "Please iOS session support" into "IOS session support", corrupting
+  // the name precisely when a preamble was there to remove.
+  const [firstWord = ""] = out.split(/\s+/);
+  return /[A-Z]/.test(firstWord) ? out : out.charAt(0).toUpperCase() + out.slice(1);
 }
 
 /** The complete first-line title behind the bounded title stored on an untitled task. */

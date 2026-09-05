@@ -2561,8 +2561,8 @@ export class TaskManager {
   }
 
   /** Retire one predecessor through Registry's sole managed-session eviction path. */
-  private async stopPipelineEngineerHost(taskId: string, sessionId: string): Promise<void> {
-    await this.registry.replacePipelineEngineerHost(taskId, sessionId, async () => {
+  private async stopPipelineEngineerHost(taskId: string, sessionId: string): Promise<boolean> {
+    return await this.registry.replacePipelineEngineerHost(taskId, sessionId, async () => {
       if (this.supervisor?.handleFor(sessionId)) await this.supervisor.stop(sessionId);
     });
   }
@@ -2648,7 +2648,16 @@ export class TaskManager {
         if (replacing) this.registry.upsertPipelineCommission(replacing);
         try {
           if (task.sessionId) {
-            await this.stopPipelineEngineerHost(id, task.sessionId);
+            const replaced = await this.stopPipelineEngineerHost(id, task.sessionId);
+            const current = this.registry.getTask(id);
+            if (!replaced && current?.sessionId) {
+              return {
+                ok: false,
+                code: "task_conflict",
+                error: "the Pipeline task changed host ownership before recovery replacement",
+                task: current,
+              };
+            }
           }
           if (!authorized()) {
             return pipelineRecoveryConsentFailure(this.registry.getTask(id) ?? task);
@@ -2670,6 +2679,24 @@ export class TaskManager {
           }
           if (!authorized()) {
             return pipelineRecoveryConsentFailure(this.registry.getTask(id) ?? task);
+          }
+          const launchTask = this.registry.getTask(id);
+          const launchCommission = this.registry.pipelineCommission(prepared.commission.id);
+          if (
+            !launchTask || launchTask.kind !== "pipeline" ||
+            launchTask.pipelineCommissionId !== prepared.commission.id ||
+            launchTask.status !== "running" || launchTask.sessionId ||
+            launchCommission?.activeAttempt !== recoveryAttempt ||
+            launchCommission.recovery?.kind !== "retry" ||
+            launchCommission.recovery.attempt !== recoveryAttempt ||
+            launchCommission.recovery.state !== "replacing_host"
+          ) {
+            return {
+              ok: false,
+              code: "task_conflict",
+              error: "the Pipeline task or recovery ownership changed before host launch",
+              task: launchTask ?? task,
+            };
           }
           await this.dispatcher.dispatch(id);
         } catch (error) {

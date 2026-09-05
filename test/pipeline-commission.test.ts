@@ -1084,6 +1084,102 @@ test("a thrown retry launch persists failure and releases the in-process reserva
   assert.equal(launches, 2, "the second operator call is not stranded as recovery_in_flight");
 });
 
+test("retry aborts when another host takes task ownership during preflight", async (t) => {
+  reset();
+  const held = commission("task-1", { supported: true, readiness: true, ownedAttempts: true });
+  db.prepare(`UPDATE tasks SET status = 'running' WHERE id = ?`).run(held.taskId);
+  assert.equal(applyEngineerEvent(event("engineer_run_failed", 1, {
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  })).outcome, "stored");
+  const failed = getPipelineCommission(held.id)!;
+  const registry = new Registry();
+  registry.initializePipelineCommissions([failed]);
+  const predecessorHost = registry.registerSdkSession({
+    id: "sdk:retry-predecessor",
+    agent: "codex",
+    name: "Retry predecessor",
+    cwd: repo,
+    agentSessionId: "retry-predecessor",
+    gitBranch: null,
+    gitRoot: repo,
+    repoRoot: repo,
+  });
+  const replacementHost = registry.registerSdkSession({
+    id: "sdk:concurrent-replacement",
+    agent: "codex",
+    name: "Concurrent replacement",
+    cwd: repo,
+    agentSessionId: "concurrent-replacement",
+    gitBranch: null,
+    gitRoot: repo,
+    repoRoot: repo,
+  });
+  registry.upsertTask({
+    ...loadActiveTasks().find((entry) => entry.id === held.taskId)!,
+    kind: "pipeline",
+    status: "running",
+    sessionId: predecessorHost.id,
+    pipelineCommissionId: held.id,
+    updatedAt: Date.now(),
+  });
+  const original = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = original;
+  });
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: held.capabilities! }),
+    readinessProbe: async () => {
+      const current = registry.getTask(held.taskId)!;
+      registry.upsertTask({ ...current, sessionId: replacementHost.id, updatedAt: Date.now() });
+      return { ok: true, value: {
+        status: "ready",
+        code: "ready",
+        summary: "Provider is ready",
+        checkedCapabilities: ["git"],
+        retryable: true,
+        remedy: null,
+        diagnostic: null,
+        fingerprint: "ready",
+      } };
+    },
+    create: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => ({ ok: false, error: "unused", outcomeUnknown: false }),
+  };
+  let launches = 0;
+  let stops = 0;
+  const manager = new TaskManager(registry, undefined, {
+    handleFor: () => ({}),
+    stop: async () => { stops += 1; },
+  } as never);
+  (manager as unknown as { dispatcher: { dispatch(id: string): Promise<void> } }).dispatcher.dispatch = async () => {
+    launches += 1;
+  };
+  const predecessor = failed.attempts[0]!;
+  const result = await manager.retryPipelineAttempt(held.taskId, {
+    guard: {
+      commissionId: failed.id,
+      activeAttempt: predecessor.attempt,
+      engineerRunId: predecessor.engineerRunId!,
+      providerRevision: predecessor.providerRevision,
+    },
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("changed host ownership must refuse retry dispatch");
+  assert.equal(result.code, "task_conflict");
+  assert.equal(launches, 0);
+  assert.equal(stops, 0);
+  assert.equal(registry.getTask(held.taskId)?.sessionId, replacementHost.id);
+});
+
 test("abandon retires the managed Engineer host before clearing task ownership", async () => {
   reset();
   const held = commission();

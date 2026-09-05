@@ -27,7 +27,7 @@ import type {
   TerminalEmulator,
   TerminalResult,
 } from "./types.ts";
-import { binPresent } from "./bin.ts";
+import { binPresent, binUnsupportedReason } from "./bin.ts";
 import { MULTIPLEXERS, EMULATORS } from "./registry.ts";
 import {
   cleanupDisposableAgentStateHome,
@@ -40,6 +40,8 @@ export interface TerminalTargetDeps {
   emulators: Record<string, TerminalEmulator>;
   /** Seam for the tests - the real one reads the filesystem and spawns nothing. */
   installed: (spec: BinSpec) => boolean;
+  /** Optional platform seam; omitted test deps use the shared BinSpec host gate. */
+  unsupported?: (spec: BinSpec) => string | null;
   launchId: () => string;
 }
 
@@ -47,8 +49,13 @@ export const defaultTerminalTargetDeps: TerminalTargetDeps = {
   multiplexers: MULTIPLEXERS,
   emulators: EMULATORS,
   installed: binPresent,
+  unsupported: binUnsupportedReason,
   launchId: () => randomUUID().slice(0, 6),
 };
+
+function unsupportedReason(deps: TerminalTargetDeps, spec: BinSpec): string | null {
+  return (deps.unsupported ?? binUnsupportedReason)(spec);
+}
 
 /** What a launcher asks for: a window, here, running this. */
 export interface TerminalLaunchSpec {
@@ -69,7 +76,11 @@ export interface TerminalLaunchSpec {
 function raiser(deps: TerminalTargetDeps): TerminalEmulator | null {
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
-    if (emulator?.spawn && deps.installed(emulator.bin)) return emulator;
+    if (
+      emulator?.spawn &&
+      !unsupportedReason(deps, emulator.bin) &&
+      deps.installed(emulator.bin)
+    ) return emulator;
   }
   return null;
 }
@@ -84,6 +95,8 @@ function multiplexerView(
     // A multiplexer that only ever attaches to what is already running cannot make one.
     return { ...base, blurb: "", detail: null, unavailable: `${mux.label} cannot start a session` };
   }
+  const unsupported = unsupportedReason(deps, mux.bin);
+  if (unsupported) return { ...base, blurb: "", detail: null, unavailable: unsupported };
   if (!deps.installed(mux.bin)) {
     return { ...base, blurb: "", detail: null, unavailable: `${mux.label} is not installed` };
   }
@@ -129,6 +142,8 @@ function emulatorView(
       unavailable: `${emulator.label} cannot open a window from outside`,
     };
   }
+  const unsupported = unsupportedReason(deps, emulator.bin);
+  if (unsupported) return { ...base, blurb: "", detail: null, unavailable: unsupported };
   if (!deps.installed(emulator.bin)) {
     return { ...base, blurb: "", detail: null, unavailable: `${emulator.label} is not installed` };
   }

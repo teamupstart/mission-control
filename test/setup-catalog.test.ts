@@ -10,7 +10,7 @@ import {
 
 test("the setup catalog is exhaustive, append-only, and carries usable remedies", () => {
   assert.deepEqual(Object.keys(SETUP_DEPENDENCY_INFO), [...SETUP_DEPENDENCY_IDS]);
-  assert.equal(SETUP_DEPENDENCY_IDS.at(-1), "iterm", "new persisted ids append after existing entries");
+  assert.equal(SETUP_DEPENDENCY_IDS.at(-1), "herdr", "new persisted ids append after existing entries");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-cli"].requirement, "required");
   assert.equal(SETUP_DEPENDENCY_INFO["gh-auth"].requirement, "required");
   assert.deepEqual(SETUP_DEPENDENCY_INFO.iterm.remedy, {

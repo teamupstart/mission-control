@@ -100,6 +100,23 @@ test("missing, needs-setup, and unknown stay distinct", async () => {
   assert.deepEqual(plugin, { state: "unknown", why: "Claude Code's plugin record could not be read.", evidence: "EACCES" });
 });
 
+test("an unsupported Herdr host is actionable without probing installation", async () => {
+  let installationProbes = 0;
+  const status = await SETUP_PROBES.herdr(deps({
+    backendUnsupported: (id) => id === "herdr" ? "Herdr integration is supported on macOS and Linux only" : null,
+    installedBackend: async () => {
+      installationProbes += 1;
+      return "/tools/herdr";
+    },
+  }));
+  assert.deepEqual(status, {
+    state: "needs-setup",
+    why: "Herdr integration is supported on macOS and Linux only",
+    evidence: null,
+  });
+  assert.equal(installationProbes, 0);
+});
+
 test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {
   const pluginsDir = mkdtempSync(join(tmpdir(), "mission-setup-plugins-"));
   try {

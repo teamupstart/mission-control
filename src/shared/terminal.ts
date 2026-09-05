@@ -14,21 +14,22 @@
 
 /**
  * Multiplexers we can drive - named persistent sessions holding panes that outlive any
- * window. (tmux, zellij, screen, cmux)
+ * window. (tmux, Herdr, cmux)
  *
  * A tuple rather than a bare union because the ORDER is load-bearing, not incidental:
  * discovery correlates backends in this order and the FIRST one holding a pane on a
  * session's tty is the one that names it (`nameSource`). With one multiplexer that is
  * unobservable; with two, moving an entry renames every session hosted by both.
  *
- * tmux before cmux, by the same nesting rule that ranks every multiplexer above every
- * emulator: cmux is a terminal that hosts shells, so `tmux` can run INSIDE a cmux surface
+ * tmux before Herdr before cmux, by the same nesting rule that ranks every multiplexer above
+ * every emulator: tmux can run inside a Herdr pane, while cmux is the outer self-hosting GUI
+ * fallback. cmux is a terminal that hosts shells, so `tmux` can run INSIDE a cmux surface
  * and is then the inner, more specific answer. The two rarely collide in practice - tmux
  * mints a fresh pty per pane, so an agent under tmux-in-cmux sits on a tty cmux does not
  * report - but the order is what decides it if they ever do, and it should not be decided by
  * which line came first.
  */
-export const MULTIPLEXER_IDS = ["tmux", "cmux"] as const;
+export const MULTIPLEXER_IDS = ["tmux", "herdr", "cmux"] as const;
 
 export type MultiplexerId = (typeof MULTIPLEXER_IDS)[number];
 

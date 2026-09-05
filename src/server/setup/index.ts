@@ -27,7 +27,7 @@ import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
 import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
-import { resolveBin } from "../terminal/bin.ts";
+import { binUnsupportedReason, resolveBin } from "../terminal/bin.ts";
 import { EMULATORS, MULTIPLEXERS } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
@@ -55,6 +55,8 @@ async function agentStatus(id: SetupDependencyId, deps: SetupDeps): Promise<Setu
 }
 
 async function terminalStatus(id: TerminalBackendId, deps: SetupDeps): Promise<SetupStatus> {
+  const unsupported = deps.backendUnsupported?.(id);
+  if (unsupported) return { state: "needs-setup", why: unsupported, evidence: null };
   const path = await deps.installedBackend(id);
   return path ? { state: "satisfied", evidence: path } : { state: "missing" };
 }
@@ -124,6 +126,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
   tmux: (deps) => terminalStatus("tmux", deps),
   cmux: (deps) => terminalStatus("cmux", deps),
+  herdr: (deps) => terminalStatus("herdr", deps),
   wezterm: (deps) => terminalStatus("wezterm", deps),
   ghostty: (deps) => terminalStatus("ghostty", deps),
   "gh-cli": (deps) => present(deps.ghBin(), deps),
@@ -168,6 +171,12 @@ export function defaultSetupDeps(): SetupDeps {
         ? MULTIPLEXERS[id as keyof typeof MULTIPLEXERS].bin
         : EMULATORS[id as keyof typeof EMULATORS].bin;
       return resolveBinPath(resolveBin(spec));
+    },
+    backendUnsupported: (id) => {
+      const spec = MULTIPLEXER_IDS.includes(id as never)
+        ? MULTIPLEXERS[id as keyof typeof MULTIPLEXERS].bin
+        : EMULATORS[id as keyof typeof EMULATORS].bin;
+      return binUnsupportedReason(spec);
     },
     ghBin,
     resolveBinPath,

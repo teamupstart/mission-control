@@ -117,6 +117,7 @@ test("every registered backend gets a row, multiplexers first, unavailable ones 
     deps({
       multiplexers: {
         tmux: recordingMux().backend,
+        herdr: recordingMux({ mux: { id: "herdr", label: "Herdr" } }).backend,
         cmux: recordingMux({ sessions: { attachArgv: null }, mux: { id: "cmux", label: "cmux" } })
           .backend,
       },

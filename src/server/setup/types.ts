@@ -23,6 +23,8 @@ export interface SetupDeps {
   environment: EnvironmentDeps;
   agentBin(agent: AgentType): string;
   installedBackend(id: TerminalBackendId): Promise<string | null>;
+  /** An adapter-level host refusal that must win before installation probing. */
+  backendUnsupported?(id: TerminalBackendId): string | null;
   ghBin(): string;
   resolveBinPath(bin: string): Promise<string | null>;
   runCommand(bin: string, argv: string[]): Promise<RunResult>;

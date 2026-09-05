@@ -960,31 +960,54 @@ export class Dispatcher {
       let reservationBound = false;
       this.registry.beginPipelineEngineerReservation(taskId);
       try {
-        const created = await lifecycle.create({
-          repoRoot: task.repoRoot,
-          idea: task.intent,
-          correlationId: commission.correlationId,
-          attemptKey: attempt.launchKey,
-          ...(engineerCapabilities.ownedAttempts
-            ? { integrationOwner: commission.id }
-            : {}),
-        });
-        if (created.ok) {
-          reserved = created.value;
-        } else {
-          // Creation is idempotent. Inspecting the exact correlation closes the response-lost
-          // case without minting another run or another launch key.
+        if (attempt.engineerRunId) {
+          // A daemon restart can leave the retry provider-bound but without a live host.
+          // Rehydrate that exact reservation instead of trusting provider-side create
+          // idempotency to avoid minting another run for the same Mission Control attempt.
+          engineerRunId = attempt.engineerRunId;
+          engineerProviderBound = true;
           const inspected = await lifecycle.inspectCorrelation({
             repoRoot: task.repoRoot,
             correlationId: commission.correlationId,
           });
-          reserved = inspected.ok
-            ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
-            : null;
+          if (!inspected.ok) {
+            throw new Error(`could not inspect the bound provider Engineer run: ${inspected.error}`);
+          }
+          reserved = inspected.value.find(
+            (candidate) => candidate.engineerRunId === attempt.engineerRunId,
+          ) ?? null;
           if (!reserved) {
-            engineerCreateOutcomeUnknown = created.outcomeUnknown ||
-              (!inspected.ok && inspected.outcomeUnknown);
-            throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
+            throw new Error(
+              `the bound provider Engineer run ${attempt.engineerRunId} is no longer available`,
+            );
+          }
+        } else {
+          const created = await lifecycle.create({
+            repoRoot: task.repoRoot,
+            idea: task.intent,
+            correlationId: commission.correlationId,
+            attemptKey: attempt.launchKey,
+            ...(engineerCapabilities.ownedAttempts
+              ? { integrationOwner: commission.id }
+              : {}),
+          });
+          if (created.ok) {
+            reserved = created.value;
+          } else {
+            // Creation is idempotent. Inspecting the exact correlation closes the response-lost
+            // case without minting another run or another launch key.
+            const inspected = await lifecycle.inspectCorrelation({
+              repoRoot: task.repoRoot,
+              correlationId: commission.correlationId,
+            });
+            reserved = inspected.ok
+              ? (inspected.value.find((candidate) => candidate.attemptKey === attempt.launchKey) ?? null)
+              : null;
+            if (!reserved) {
+              engineerCreateOutcomeUnknown = created.outcomeUnknown ||
+                (!inspected.ok && inspected.outcomeUnknown);
+              throw new Error(`could not reserve the provider Engineer run: ${created.error}`);
+            }
           }
         }
         const reservedRun = reserved;

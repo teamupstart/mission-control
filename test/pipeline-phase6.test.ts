@@ -30,6 +30,7 @@ import {
   getTask as getDurableTask,
   getPipelineCommission,
   reservePipelineCommissionRetry,
+  updatePipelineCommissionRecovery,
   upsertPipelineCommissionAttempt,
 } from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
@@ -1509,6 +1510,214 @@ test("a lost retry reservation response retains one attempt and an explicit unkn
   assert.equal(held.attempts[1]?.engineerRunId, null);
   assert.equal(held.recovery?.state, "provider_outcome_unknown");
   assert.match(held.recovery?.error ?? "", /provider timed out/);
+});
+
+test("a restarted bound retry inspects its exact provider run without creating another", async (t) => {
+  const taskId = "pipeline-retry-bound-restart";
+  const repoRoot = "/repo/retry-bound-restart";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    intent: "Resume the exact bound retry",
+  }));
+  const capabilities = {
+    supported: true,
+    readiness: true,
+    worktreeRetirement: true,
+    retainedReviewWorktrees: true,
+    ownedAttempts: true,
+  };
+  const created = createPipelineCommission({
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    capabilities,
+    id: "commission-retry-bound-restart",
+    correlationId: "correlation-retry-bound-restart",
+    launchKey: "initial-bound-restart",
+  });
+  bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 1,
+    engineerRunId: "engineer-bound-predecessor",
+    providerAttempt: 1,
+    attemptKey: "initial-bound-restart",
+    previousEngineerRunId: null,
+    integrationOwner: created.id,
+  });
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-bound-predecessor",
+    correlationId: created.correlationId,
+    attemptKey: "initial-bound-restart",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot,
+    revision: 1,
+    ts: "2026-09-05T12:00:00.000Z",
+    type: "engineer_run_failed",
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  }).outcome, "stored");
+  const predecessor = getPipelineCommission(created.id)!.attempts[0]!;
+  const reserved = reservePipelineCommissionRetry({
+    guard: {
+      commissionId: created.id,
+      activeAttempt: predecessor.attempt,
+      engineerRunId: predecessor.engineerRunId!,
+      providerRevision: predecessor.providerRevision,
+    },
+    launchKey: "retry-bound-restart",
+  });
+  assert.equal(reserved.ok, true);
+  if (!reserved.ok) return;
+  bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 2,
+    engineerRunId: "engineer-bound-retry",
+    providerAttempt: 2,
+    attemptKey: "retry-bound-restart",
+    previousEngineerRunId: "engineer-bound-predecessor",
+    integrationOwner: created.id,
+    readinessRequired: true,
+  });
+  const readiness = {
+    status: "ready" as const,
+    code: "ready",
+    summary: "Provider is ready",
+    checkedCapabilities: ["git", "gh"],
+    retryable: true,
+    remedy: null,
+    diagnostic: null,
+    fingerprint: "retry-bound-ready",
+    permitted: true,
+    checkedAt: "2026-09-05T12:00:02.000Z",
+  };
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-bound-retry",
+    correlationId: created.correlationId,
+    attemptKey: "retry-bound-restart",
+    attempt: 2,
+    previousEngineerRunId: "engineer-bound-predecessor",
+    repoRoot,
+    revision: 1,
+    ts: "2026-09-05T12:00:01.000Z",
+    type: "engineer_run_created",
+    idea: "Resume the exact bound retry",
+    readinessRequired: true,
+    integrationOwner: created.id,
+  }).outcome, "stored");
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-bound-retry",
+    correlationId: created.correlationId,
+    attemptKey: "retry-bound-restart",
+    attempt: 2,
+    previousEngineerRunId: "engineer-bound-predecessor",
+    repoRoot,
+    revision: 2,
+    ts: readiness.checkedAt,
+    type: "engineer_readiness_checked",
+    ...readiness,
+  }).outcome, "stored");
+  const failedLaunch = updatePipelineCommissionRecovery({
+    commissionId: created.id,
+    attempt: 2,
+    state: "host_launch_failed",
+    error: "managed host failed before restart",
+  });
+  assert.ok(failedLaunch);
+  registry.upsertTask({
+    ...registry.getTask(taskId)!,
+    pipelineCommissionId: created.id,
+    sessionId: null,
+    status: "running",
+    updatedAt: Date.now(),
+  });
+  registry.initializePipelineCommissions([failedLaunch]);
+  setPipelinesConfig({
+    enabled: true,
+    launchRuntime: "agent-sdk",
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+  });
+
+  const boundSnapshot: PipelineEngineerRunSnapshot = {
+    schemaVersion: 1,
+    capability: "engineerLifecycleEventsV1",
+    engineerRunId: "engineer-bound-retry",
+    correlationId: created.correlationId,
+    attemptKey: "retry-bound-restart",
+    attempt: 2,
+    previousEngineerRunId: "engineer-bound-predecessor",
+    repoRoot,
+    idea: "Resume the exact bound retry",
+    eventRevision: 2,
+    state: "created",
+    readinessRequired: true,
+    integrationOwner: created.id,
+    readiness,
+  };
+  let createCalls = 0;
+  let inspectCalls = 0;
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: capabilities }),
+    readinessProbe: async () => ({ ok: true, value: readiness }),
+    create: async () => {
+      createCalls += 1;
+      return {
+        ok: true,
+        value: { ...boundSnapshot, engineerRunId: "engineer-duplicate-retry" },
+      };
+    },
+    readiness: async () => ({ ok: true, value: boundSnapshot }),
+    inspectCorrelation: async () => {
+      inspectCalls += 1;
+      return { ok: true, value: [boundSnapshot] };
+    },
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => ({ ok: true, value: { ...boundSnapshot, state: "cancelled" } }),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      capabilities,
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  assert.equal(createCalls, 0, "a bound recovery must not reserve another provider run");
+  assert.equal(inspectCalls, 1, "the persisted provider run is revalidated before host launch");
+  assert.equal(supervisor.starts.length, 1);
+  assert.equal(registry.pipelineCommission(created.id)?.attempts[1]?.engineerRunId, "engineer-bound-retry");
+  assert.equal(registry.pipelineCommission(created.id)?.recovery?.state, "complete");
 });
 
 test("provider reservation is cancelled when managed host setup fails", async (t) => {

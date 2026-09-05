@@ -76,7 +76,7 @@ export function herdrMultiplexer(
     list: async (): Promise<MuxPane[]> => {
       if (unsupported()) return [];
       const listed = await client.snapshotWithProcesses();
-      if (!listed.ok) return [];
+      if (!listed.ok) throw new Error(listed.error);
       const { snapshot, processes } = listed.value;
       const workspaces = uniqueBy(snapshot.workspaces, (workspace) => workspace.workspace_id);
       const tabs = uniqueBy(snapshot.tabs, (tab) => tab.tab_id);
@@ -88,14 +88,14 @@ export function herdrMultiplexer(
         const workspace = workspaces.get(pane.workspace_id);
         const tab = tabs.get(pane.tab_id);
         const process = processes.get(pane.pane_id);
-        if (!workspace || !tab || tab.workspace_id !== workspace.workspace_id || !process) return [];
+        if (!workspace || !tab || tab.workspace_id !== workspace.workspace_id || process === undefined) return [];
         out.push({
           session: workspace.workspace_id,
           sessionName: workspace.label,
           windowIndex: tab.number,
           windowName: tab.label,
           paneId: pane.pane_id,
-          panePid: process.shell_pid && process.shell_pid > 0 ? process.shell_pid : null,
+          panePid: process?.shell_pid && process.shell_pid > 0 ? process.shell_pid : null,
           // Herdr 0.8.2 does not publish pane ttys. Keeping this null is what activates the
           // Phase 1 exact shell-PID ancestry join without pretending a client tty is a pane tty.
           tty: null,

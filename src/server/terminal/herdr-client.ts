@@ -77,6 +77,28 @@ const WorkspaceCreatedSchema = z.object({
   workspace: WorkspaceSchema,
   tab: TabSchema,
   root_pane: HerdrPaneSchema,
+}).superRefine((created, context) => {
+  if (created.tab.workspace_id !== created.workspace.workspace_id) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["tab", "workspace_id"],
+      message: "workspace mismatch",
+    });
+  }
+  if (created.root_pane.workspace_id !== created.workspace.workspace_id) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["root_pane", "workspace_id"],
+      message: "workspace mismatch",
+    });
+  }
+  if (created.root_pane.tab_id !== created.tab.tab_id) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["root_pane", "tab_id"],
+      message: "tab mismatch",
+    });
+  }
 });
 
 const WorkspaceInfoSchema = z.object({
@@ -117,7 +139,7 @@ export type HerdrWorkspaceCreated = z.infer<typeof WorkspaceCreatedSchema>;
 
 export type HerdrResult<T> =
   | { ok: true; value: T; outcomeUnknown: false }
-  | { ok: false; error: string; outcomeUnknown: boolean };
+  | { ok: false; error: string; outcomeUnknown: boolean; code?: string };
 
 interface Request<T> {
   method: string;
@@ -169,8 +191,8 @@ const defaultDeps: HerdrClientDeps = {
   readyPollMs: READY_POLL_MS,
 };
 
-function failure<T>(error: string, outcomeUnknown = false): HerdrResult<T> {
-  return { ok: false, error, outcomeUnknown };
+function failure<T>(error: string, outcomeUnknown = false, code?: string): HerdrResult<T> {
+  return code ? { ok: false, error, outcomeUnknown, code } : { ok: false, error, outcomeUnknown };
 }
 
 export function asTerminal(result: HerdrResult<unknown>): TerminalResult {
@@ -181,7 +203,7 @@ export function asTerminal(result: HerdrResult<unknown>): TerminalResult {
 
 function versionAtLeast(version: string, floor: string): boolean {
   const parse = (value: string): number[] | null => {
-    const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
+    const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
     return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
   };
   const actual = parse(version);
@@ -350,6 +372,7 @@ class SocketBatch {
         this.active.results.set(id, failure(
           `Herdr ${request.operation} was refused: ${envelope.data.error.message}`,
           false,
+          envelope.data.error.code,
         ));
         continue;
       }
@@ -417,7 +440,7 @@ export interface HerdrClient {
   ensureReady(): Promise<HerdrResult<string>>;
   snapshotWithProcesses(): Promise<HerdrResult<{
     snapshot: HerdrSnapshot;
-    processes: Map<string, HerdrProcessInfo>;
+    processes: Map<string, HerdrProcessInfo | null>;
   }>>;
   read(paneId: string): Promise<HerdrResult<string>>;
   sendText(paneId: string, text: string): Promise<TerminalResult>;
@@ -439,9 +462,9 @@ export function createHerdrClient(
   const bin = () => resolveBin(binSpec);
   const env = () => binEnv(binSpec);
 
-  const probe = async (): Promise<Probe> => {
+  const probe = async (timeoutMs = deps.readTimeoutMs): Promise<Probe> => {
     const result = await exec(bin(), ["status", "server", "--json"], {
-      timeoutMs: deps.readTimeoutMs,
+      timeoutMs,
       env: env(),
     });
     if (result.code !== 0) {
@@ -482,17 +505,32 @@ export function createHerdrClient(
 
   const ensureReady = async (): Promise<HerdrResult<string>> => {
     const deadline = deps.now() + deps.actionTimeoutMs;
-    let initial = await probe();
+    const remaining = (): number => deadline - deps.now();
+    const probeBeforeDeadline = async (): Promise<Probe | null> => {
+      const budget = remaining();
+      return budget > 0 ? probe(Math.min(deps.readTimeoutMs, budget)) : null;
+    };
+    const pollBeforeDeadline = async (): Promise<Probe | null> => {
+      const budget = remaining();
+      if (budget <= 0) return null;
+      await deps.sleep(Math.min(deps.readyPollMs, budget));
+      return probeBeforeDeadline();
+    };
     let lastError = "Herdr server did not become ready";
-    while (initial.state === "failed" && initial.retryable && deps.now() < deadline) {
+    const notReady = (): HerdrResult<string> =>
+      failure(`${lastError}. Start Herdr or restart its server, then try again.`);
+
+    let initial = await probeBeforeDeadline();
+    while (initial?.state === "failed" && initial.retryable) {
       lastError = initial.error;
-      await deps.sleep(deps.readyPollMs);
-      initial = await probe();
+      initial = await pollBeforeDeadline();
     }
+    if (!initial) return notReady();
     if (initial.state === "ready") return { ok: true, value: initial.socket, outcomeUnknown: false };
     if (initial.state === "failed") {
       if (!initial.retryable) return failure(initial.error);
-      return failure(`${initial.error}. Start Herdr or restart its server, then try again.`);
+      lastError = initial.error;
+      return notReady();
     }
     try {
       const child = deps.spawnDetached(bin(), ["server"], {
@@ -507,13 +545,13 @@ export function createHerdrClient(
     } catch {
       // A concurrent creator may have won the socket race. The readiness loop is authoritative.
     }
-    while (deps.now() < deadline) {
-      await deps.sleep(deps.readyPollMs);
-      const current = await probe();
+    while (true) {
+      const current = await pollBeforeDeadline();
+      if (!current) break;
       if (current.state === "ready") return { ok: true, value: current.socket, outcomeUnknown: false };
       if (current.state === "failed") lastError = current.error;
     }
-    return failure(`${lastError}. Start Herdr or restart its server, then try again.`);
+    return notReady();
   };
 
   const socketFor = async (autoStart: boolean): Promise<HerdrResult<string>> =>
@@ -612,11 +650,17 @@ export function createHerdrClient(
         },
       );
       await Promise.all(workers);
-      const processes = new Map<string, HerdrProcessInfo>();
+      const processes = new Map<string, HerdrProcessInfo | null>();
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index]!;
-        if (!result.ok) return result;
         const expected = panes[index]!.pane_id;
+        if (!result.ok) {
+          if (result.code === "pane_not_found") {
+            processes.set(expected, null);
+            continue;
+          }
+          return result;
+        }
         if (result.value.process_info.pane_id !== expected || processes.has(expected)) {
           return failure("Herdr pane process identities did not match the snapshot");
         }

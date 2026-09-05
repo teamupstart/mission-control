@@ -115,6 +115,51 @@ test("list maps workspaces, tabs, panes, shell pids, and cwd fallback to stable 
   }
 });
 
+test("a stale pane process lookup keeps the pane visible with an unknown pid", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
+    else if (request.params.pane_id === "pane-api") {
+      socket.write(`${JSON.stringify({
+        id: request.id,
+        error: { code: "pane_not_found", message: "pane closed during snapshot enrichment" },
+      })}\n`);
+    } else {
+      reply(socket, request.id, {
+        type: "pane_process_info",
+        process_info: { pane_id: request.params.pane_id, shell_pid: 222, tty: null },
+      });
+    }
+  });
+  try {
+    const panes = await herdrMultiplexer(execStatus(fake.path)).list();
+    assert.equal(panes.length, 2);
+    assert.equal(panes.find((pane) => pane.paneId === "pane-api")?.panePid, null);
+    assert.equal(panes.find((pane) => pane.paneId === "pane-web")?.panePid, 222);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a non-stale process lookup failure rejects the pane list", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
+    else {
+      socket.write(`${JSON.stringify({
+        id: request.id,
+        error: { code: "permission_denied", message: "process inspection denied" },
+      })}\n`);
+    }
+  });
+  try {
+    await assert.rejects(
+      () => herdrMultiplexer(execStatus(fake.path)).list(),
+      /Herdr pane process info for pane-api was refused: process inspection denied/,
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("pane control uses raw text, exhaustive key names, bracket-aware paste, visible capture, and agent focus", async () => {
   const fake = await fakeHerdrSocket(standardReply);
   try {
@@ -209,6 +254,43 @@ test("workspace lifecycle keeps exact cwd, selection intent, shell boundaries, a
     assert.deepEqual(fake.requests.at(-1)?.params, { workspace_id: "workspace-uuid" });
   } finally {
     await fake.close();
+  }
+});
+
+test("workspace creation refuses inconsistent workspace, tab, and root-pane identities before command delivery", async () => {
+  for (const mismatch of ["tab-workspace", "pane-workspace", "pane-tab"] as const) {
+    const fake = await fakeHerdrSocket((request, socket) => {
+      if (request.method === "workspace.create") {
+        reply(socket, request.id, {
+          type: "workspace_created",
+          workspace: { workspace_id: "new-workspace", label: "work" },
+          tab: {
+            tab_id: "new-tab",
+            workspace_id: mismatch === "tab-workspace" ? "other-workspace" : "new-workspace",
+            number: 1,
+            label: "main",
+          },
+          root_pane: {
+            pane_id: "new-pane",
+            workspace_id: mismatch === "pane-workspace" ? "other-workspace" : "new-workspace",
+            tab_id: mismatch === "pane-tab" ? "other-tab" : "new-tab",
+          },
+        });
+      } else {
+        reply(socket, request.id, { type: "ok" });
+      }
+    });
+    try {
+      const result = await herdrMultiplexer(execStatus(fake.path)).sessions!.spawnDetached({
+        name: "work", cwd: "/repo", select: false, argv: ["agent"], sidePane: false,
+      });
+      assert.equal(result.ok, false, mismatch);
+      assert.equal(result.outcomeUnknown, true, mismatch);
+      assert.match(result.error ?? "", /invalid response/, mismatch);
+      assert.deepEqual(fake.requests.map((request) => request.method), ["workspace.create"], mismatch);
+    } finally {
+      await fake.close();
+    }
   }
 });
 

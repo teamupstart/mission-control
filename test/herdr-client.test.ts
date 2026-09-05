@@ -275,8 +275,10 @@ test("creation readiness retries a transient initial status failure before start
 
 test("creation readiness bounds persistent status failures and returns retry guidance", async () => {
   let probes = 0;
-  const exec: TerminalExec = async () => {
+  const timeouts: number[] = [];
+  const exec: TerminalExec = async (_bin, _args, options) => {
     probes += 1;
+    timeouts.push(options?.timeoutMs ?? 0);
     return run("", 1, true);
   };
   let spawned = 0;
@@ -296,8 +298,51 @@ test("creation readiness bounds persistent status failures and returns retry gui
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /Herdr server status did not finish/);
   assert.match(result.error ?? "", /Start Herdr or restart its server, then try again/);
-  assert.equal(probes, 4);
+  assert.equal(probes, 3);
   assert.equal(spawned, 0);
+  assert.equal(clock, 25);
+  assert.deepEqual(timeouts, [25, 15, 5]);
+});
+
+test("only strict stable Herdr versions are compatible", async () => {
+  for (const version of [`${HERDR_MIN_VERSION}-beta.1`, `${HERDR_MIN_VERSION}+local`, "00.8.2"]) {
+    const client = createHerdrClient(async () => run(status("/tmp/herdr.sock", { version })), HERDR_BIN);
+    const result = await client.probe();
+    assert.equal(result.state, "failed", version);
+    assert.match(result.state === "failed" ? result.error : "", /incompatible/, version);
+  }
+});
+
+test("pane_not_found is a per-pane process miss while other process refusals remain failures", async () => {
+  for (const code of ["pane_not_found", "permission_denied"] as const) {
+    const fake = await fakeHerdrSocket((request, socket) => {
+      if (request.method === "session.snapshot") {
+        reply(socket, request.id, SNAPSHOT);
+      } else if (request.params.pane_id === "w1:p1") {
+        socket.write(`${JSON.stringify({ id: request.id, error: { code, message: code } })}\n`);
+      } else {
+        reply(socket, request.id, {
+          type: "pane_process_info",
+          process_info: { pane_id: request.params.pane_id, shell_pid: 202, tty: null },
+        });
+      }
+    });
+    try {
+      const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).snapshotWithProcesses();
+      if (code === "pane_not_found") {
+        assert.equal(result.ok, true);
+        if (result.ok) {
+          assert.equal(result.value.processes.get("w1:p1"), null);
+          assert.equal(result.value.processes.get("w1:p2")?.shell_pid, 202);
+        }
+      } else {
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.equal(result.code, code);
+      }
+    } finally {
+      await fake.close();
+    }
+  }
 });
 
 test("passive operations never start a stopped or incompatible Herdr server", async () => {

@@ -128,20 +128,20 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 ### Established by Phase 1, consumed by Phases 2 and 3
 
-- `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, safe query audit metadata, and opaque metadata-only repository evidence handles.
+- `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, repository-evidence protocol capability, safe query audit metadata, and opaque metadata-only repository evidence handles with a line/byte/diff range discriminator.
 - The MCP operation set is closed: `read`, `search`, `glob`, `git_status`, `git_diff`, `git_show`, `git_log`, and `git_blame`.
 - `RepositoryHistoryPolicyV1` fixes the retained range at a deterministic all-parent breadth-first prefix capped before 2,048 commits or 512 MiB of incremental unique allowed historical blobs. Descriptor membership, not generic reachability, controls history queries; boundary and out-of-range results are typed and auditable.
 - `RepositoryViewDescriptor` names a verified manifest and sparse object/materialized view, including the immutable retained-revision/frontier fields. It never names the original checkout.
 - Path policy and secret scrubbing are shared pure modules. The MCP applies them for both providers; provider prompts do not enforce access.
 - `PersonaWorkloadExecutor` accepts a versioned request and supports dispatch, ordered event replay after a sequence, cancellation by generation, and reconciliation by workload id.
-- `LocalPersonaWorkloadExecutor` uses injected artifact materialization and event persistence boundaries. Phase 2 supplies the artifact implementation; Phase 3 supplies durable ingestion.
+- `LocalPersonaWorkloadExecutor` uses injected artifact materialization and event persistence boundaries. Its trusted supervisor binds submission, workload, Workflow attempt, locator, and digest identity before materialization. Phase 2 supplies the artifact implementation; Phase 3 supplies durable ingestion.
 - Repository bodies travel only between the provider and local MCP. Workload events carry safe query/evidence-handle metadata and the final verdict, never response bodies, evidence excerpts, or quote fields.
 - The separate repository MCP bundle has no Mission Control credentials or HTTP client and is included in build and smoke verification.
 
 ### Established by Phase 2, consumed by Phase 3
 
 - `WorkflowRepositoryArtifact` is digest-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, repository/history policy versions, retained-revision/frontier metadata, byte counts, state, and cleanup state. `WorkflowRepositorySnapshotClaim` gives each submission an independent durable claim on that digest.
-- `WorkflowRepositoryArtifactService.prepare`, `promote`, `discard`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points. Preparation creates no durable claim; promotion is the only operation that may create one.
+- `WorkflowRepositoryArtifactService.prepare`, `promote`, `discard`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points. Preparation creates no durable claim; promotion is the only operation that may create one. Materialization accepts only an active-request-bound request and revalidates the submission's ready digest/locator claim before filesystem access.
 - The artifact contains original commit/tree identities and all allowed blobs for the exact policy-retained revision prefix, but no sensitive blob bodies. Denied entries remain visible only as classified metadata; source-base objects outside the prefix remain diff-only.
 - Capture candidates use a dedicated namespace under Mission Control state, never the repository worktree or common Git directory as durable storage.
 - A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no active claim remains before removing bytes. Startup reconciliation deletes only zero-claim paths whose digest ownership is proven.
@@ -154,11 +154,12 @@ Independent review work inside a phase may run in parallel, but each phase is on
 - Publication identity is `(workflow_id, source_draft_revision, source_snapshot_fingerprint)` over canonical resolved graph JSON.
 - A repository-enabled attempt owns exactly one durable workload id and one current cancellation generation.
 - Repository capture binds to the specific per-repository run checkout. External-artifact validation and reserved submission evidence complete before candidate promotion and raw-context persistence.
-- The `repository` evidence kind is appended as a metadata-only discriminated-union branch. Existing evidence kinds keep their current identifiers and wire shapes, and repository capability artifacts do not contribute to evidence-readiness coverage.
+- The `repository` evidence kind is appended as a metadata-only discriminated-union branch. Existing evidence kinds keep their current identifiers and wire shapes, repository handle metadata preserves exact line, byte, or diff ranges, and repository capability artifacts do not contribute to evidence-readiness coverage.
 - New imported Personas default to `none`; reimport and plugin synchronization preserve the operator-owned access value.
 - Workload event ingestion is append-only and idempotent by `(workload_id, sequence)`. Conflicting duplicates or gaps are infrastructure failures.
 - Query audit and evidence-handle persistence stores metadata only and is paged independently from Workflow events and LLM calls.
-- Evidence references to repository content contain only `operationId` plus opaque `evidenceHandleId`. The engine resolves daemon-owned same-attempt returned-item/path/range metadata before accepting the verdict and rejects quote, excerpt, and free-form path/range fields.
+- Evidence references to repository content contain only `operationId` plus opaque `evidenceHandleId`. The engine resolves daemon-owned same-attempt returned-item/path and discriminated line/byte/diff range metadata before accepting the verdict and rejects quote, excerpt, and free-form path/range fields.
+- Read-enabled dispatch requires matching repository-evidence protocol capability from daemon, executor, and verdict parser. Mixed versions fail before provider launch or durable verdict write; application rollback restores the verified pre-migration database recovery point after repository citations exist.
 - `none` access preserves the historical prompt, provider call, fingerprint, and verdict path byte for byte.
 
 ## Ownership matrix
@@ -241,5 +242,6 @@ After Phase 3, the implementation must re-prove these cross-phase properties:
 4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted.
 5. No sensitive blob body appears in the artifact, MCP response for a denied operation, audit database, run export, logs, or browser.
 6. History selection is deterministic at both ceilings; the three `git_show` patch cases, frontier log/blame behavior, and `revision_out_of_range` denial work after source removal and are identical for Claude and Codex.
-7. Repository evidence handles validate one same-attempt returned item and exact range without any response body, excerpt, quote, or provider-supplied path entering daemon state.
-8. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.
+7. Repository evidence handles validate one same-attempt returned item and exact line, byte, or diff range without any response body, excerpt, quote, or provider-supplied path entering daemon state.
+8. Mixed-version executor/parser fixtures fail closed before repository-enabled provider launch or verdict persistence, while current readers retain all eight legacy evidence kinds and a frozen pre-feature reader opens only the verified pre-migration recovery copy.
+9. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.

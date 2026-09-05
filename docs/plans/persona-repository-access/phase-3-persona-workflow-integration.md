@@ -114,7 +114,8 @@ In `src/shared/protocol.ts`:
 - default missing `PersonaSnapshot.repositoryAccess` to `none`;
 - extend run-detail/query-audit schemas additively;
 - append a metadata-only `repository` evidence kind containing required `operationId` and opaque `evidenceHandleId`, with no quote, excerpt, or free-form path/range field;
-- refactor `EvidenceRef`, `WorkflowEvidenceRefSchema`, `EvidenceInputSchema`, verdict normalization, audit helpers, and renderers to a discriminated union. Preserve the exact identifiers and wire shape of `diff`, `transcript`, `standard`, `goal`, `decision`, `check`, `image`, and `artifact`.
+- refactor `EvidenceRef`, `WorkflowEvidenceRefSchema`, `EvidenceInputSchema`, verdict normalization, audit helpers, and renderers to a discriminated union. Preserve the exact identifiers and wire shape of `diff`, `transcript`, `standard`, `goal`, `decision`, `check`, `image`, and `artifact`;
+- add a required repository-evidence protocol capability to read-enabled workload dispatch and terminal results so a mixed-version executor or parser fails before provider launch or verdict persistence.
 
 In `src/server/db.ts`:
 
@@ -205,7 +206,7 @@ Persist enough state for local and future remote executors:
 - workload id, node attempt id, request/idempotency key, executor identity, snapshot digest, protocol version, state, deadline, cancellation generation, accepted/terminal timestamps, highest contiguous sequence, last error, and transport diagnostics;
 - ordered workload events with payload equality hash and ingestion timestamp;
 - query audit rows with operation id/kind, safe path display or query hash, timing, outcome/denial/error including history-boundary and out-of-range results, item/byte counts, truncation, cursor presence, and cancellation state;
-- evidence-handle rows keyed by unpredictable opaque id, binding one actually returned item to snapshot/workload/operation identity, item ordinal, canonical approved path and exact returned line/diff range, policy version, and truncation state.
+- evidence-handle rows keyed by unpredictable opaque id, binding one actually returned item to snapshot/workload/attempt/operation identity, item ordinal, canonical approved path, policy version, truncation state, and an exact discriminated returned range: `line` start/end lines, `byte` start/end offsets, or `diff` old/new line bounds.
 
 The daemon is the only database writer. The MCP writes a safe local journal; the workload supervisor emits safe events; the engine/store validates and persists them. Neither event type nor table stores result bodies, excerpts, quotes, or provider-supplied path/range assertions.
 
@@ -237,11 +238,11 @@ For every repository evidence reference:
 
 - operation id belongs to the same workload and node attempt;
 - the handle record exists in the authenticated event stream and belongs to the same snapshot, workload, operation, and returned item;
-- the operation completed successfully and the stored handle metadata names one canonical allowed path and exact range that was actually returned;
+- the operation completed successfully and the stored handle metadata names one canonical allowed path and exact discriminated line, byte, or diff range that was actually returned;
 - a truncated item supports only its stored returned range;
 - fabricated, duplicate-conflicting, denied, failed, cancelled, omitted, cross-attempt, or unrelated handles cannot support a verdict.
 
-The engine and UI resolve the approved display path/range from daemon-owned handle metadata, never from provider text. They do not reconstruct or persist the excerpt. Ordinary reviewer prose remains the existing bounded/scrubbed final verdict and is not represented as a verified repository quote.
+The engine and UI resolve the approved display path and discriminated line, byte, or diff range from daemon-owned handle metadata, never from provider text. They do not reconstruct or persist the excerpt. Ordinary reviewer prose remains the existing bounded/scrubbed final verdict and is not represented as a verified repository quote.
 
 Access-off verdicts retain the existing evidence union and validation behavior. Prompt construction for access-off is byte-identical. The access-enabled prompt explains the repository MCP capability, pagination, security boundaries, bounded retained-history range, boundary/out-of-range responses, and metadata-only evidence handle form without telling the provider it has shell or filesystem access.
 
@@ -306,6 +307,8 @@ Document the local MCP as an in-workload repository query service, not a network
 - New database tables and fields are additive/idempotent; fresh and upgraded schemas converge.
 - Query audit paging is bounded and optional to newer clients.
 - No artifact or response body is stored in SQLite, SSE, logs, run export, or browser state.
+- Repository citations are enabled only when daemon, executor, and verdict parser advertise the same repository-evidence protocol capability. A mismatch is an infrastructure failure before provider launch or durable verdict write.
+- The database and all three strict evidence schemas upgrade atomically in one application release. After the first repository citation is persisted, rollback uses the verified pre-migration database recovery point; an older application never opens the upgraded state as a supported path.
 
 ## Tests and verification
 
@@ -346,8 +349,9 @@ Cover:
 - multiple read/search/glob/Git queries in one attempt;
 - denial recovery and pagination within the same provider session;
 - retained-history recovery within the same provider session, covering the true-root patch, retained-first-parent patch, omitted-first-parent `history_boundary` with no patch, frontier log/blame truncation, and out-of-range denial with the same result and audit semantics for Claude and Codex;
-- same-attempt metadata-only evidence validation, including a successful handle, exact truncated range, fabricated id, cross-attempt reuse, operation mismatch, conflicting duplicate event, and rejection of quote/excerpt fields;
+- same-attempt metadata-only evidence validation, including successful line, byte, and diff handles, exact truncated ranges for each discriminator, fabricated id, cross-attempt reuse, operation mismatch, conflicting duplicate event, and rejection of quote/excerpt fields;
 - discriminated evidence schema compatibility for all eight existing kinds plus the appended repository branch;
+- mixed-version tests proving an older or capability-mismatched executor/parser cannot launch a read-enabled provider or persist a repository citation, while old eight-kind verdicts remain readable by the current schemas; a frozen pre-feature reader opens the verified pre-migration recovery copy and rejects rather than partially decoding an upgraded repository verdict;
 - Claude/Codex parity and image preservation;
 - missing/corrupt artifact, failed materialization, MCP crash, provider crash, malformed verdict, audit failure, event duplicate/gap, timeout, cumulative budget, cancellation, late result, daemon restart, executor loss, retry exhaustion, and manual resubmit;
 - proof that every read-enabled failure avoids prompt-only execution;
@@ -367,7 +371,7 @@ Cover:
 6. repeat capability parity for Codex;
 7. observe denial and truncation/pagination in the audit summary without response bodies;
 8. observe retained-history boundary and out-of-range outcomes without omitted commit metadata;
-9. submit a verdict with a returned evidence handle and see only its approved path/range metadata, never an excerpt;
+9. submit verdicts with returned line-window, byte-window, and diff evidence handles and see only their approved path/range metadata, never an excerpt;
 10. remove/corrupt the artifact or fail MCP and see retry then blocked state, never a verdict;
 11. reload and see persisted audit/retry state;
 12. render a historical old run as no repository access.

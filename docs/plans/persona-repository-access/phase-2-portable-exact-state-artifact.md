@@ -105,13 +105,13 @@ Implement one `WorkflowRepositoryArtifactService` with:
 prepare(input, signal): Promise<WorkflowRepositoryArtifactCandidate>
 promote(candidate, submissionId): Promise<WorkflowRepositorySnapshot>
 discard(candidate): Promise<void>
-materialize(locator, digest, signal): Promise<RepositoryViewLease>
+materialize(request: RepositoryMaterializationRequest, signal): Promise<RepositoryViewLease>
 verify(snapshot, signal): Promise<RepositoryArtifactVerification>
 release(submissionId): Promise<void>
 reconcile(): Promise<RepositoryArtifactReconciliation>
 ```
 
-The service owns all filesystem paths and namespace checks. `prepare` creates no durable artifact record or submission claim. `promote` is the only operation that may publish candidate bytes and create a claim. Callers name submission identity and expected digest, never deletion paths.
+The service owns all filesystem paths and namespace checks. `RepositoryMaterializationRequest` carries submission id, workload id, Workflow attempt id, locator, and digest. Before filesystem access, the trusted workload supervisor validates those values against the active `PersonaWorkloadRequest`, and the artifact service independently verifies that the submission still has an active claim for the same ready digest/locator. A mismatch fails closed and creates no materialization. `prepare` creates no durable artifact record or submission claim. `promote` is the only operation that may publish candidate bytes and create a claim. Callers name submission identity and expected digest, never deletion paths.
 
 ## Implementation steps
 
@@ -209,6 +209,7 @@ Implement the Phase 1 materializer:
 
 - resolve an opaque locator only inside the dedicated artifact root;
 - canonicalize and containment-check every artifact path;
+- accept only an active-request-bound `RepositoryMaterializationRequest` and reject submission, workload, attempt, locator, or digest mismatch before opening artifact paths;
 - verify outer digest, canonical manifest, format/policy/history-policy versions, retained-set counts/frontier metadata, and every listed component before use;
 - construct a private Git object directory and allowed worktree/index view in a fresh attempt-scoped directory;
 - disable object fetching, alternates outside the artifact, hooks, config includes, credential helpers, and network;
@@ -269,6 +270,7 @@ Required proofs:
 - the original worktree and index hashes are unchanged after success and failure;
 - reconstructed HEAD/index/worktree layer diffs and status match the captured fixture exactly;
 - an artifact still works after source checkout/common-dir deletion;
+- stale or cross-attempt materialization requests and mismatched submission, workload, locator, or digest values fail before a lease or filesystem view is created;
 - denied blob bodies and known secret markers do not appear anywhere under the artifact root;
 - Phase 1 MCP operations succeed for allowed content and deny sensitive content against the real artifact;
 - retained revision selection is deterministic across repeated capture, stops before the first commit or byte overflow without holes, includes every allowed blob needed in range, and records identical boundary metadata in the descriptor and manifest;

@@ -1,8 +1,13 @@
 import { EMULATOR_IDS, MULTIPLEXER_IDS } from "@shared/terminal.ts";
-import { binPresent, binUnsupportedReason } from "./bin.ts";
+import {
+  binPresent,
+  binUnavailableReason,
+  binUnsupportedReason,
+  type BinAvailabilityDeps,
+} from "./bin.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { defaultTerminalDeps, type TerminalDeps } from "./registry.ts";
-import type { BinSpec, NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
+import type { NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
 
 /**
  * Where a DISPATCHED agent's terminal home comes from, and what can be asked of it
@@ -50,20 +55,13 @@ import type { BinSpec, NameRules, TerminalBackendId, TerminalResult } from "./ty
  * cannot be enumerated) untestable precisely because they are the ones no developer's
  * machine is in.
  */
-export interface HomeDeps extends TerminalDeps {
-  installed: (spec: BinSpec) => boolean;
-  unsupported?: (spec: BinSpec) => string | null;
-}
+export interface HomeDeps extends TerminalDeps, BinAvailabilityDeps {}
 
 export const defaultHomeDeps: HomeDeps = {
   ...defaultTerminalDeps,
   installed: binPresent,
   unsupported: binUnsupportedReason,
 };
-
-function unsupportedReason(deps: HomeDeps, spec: BinSpec): string | null {
-  return (deps.unsupported ?? binUnsupportedReason)(spec);
-}
 
 /** What a new home needs: what to run, where, and under what name. */
 export interface HomeSpec {
@@ -131,11 +129,7 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
   for (const id of MULTIPLEXER_IDS) {
     const backend = deps.multiplexers[id];
     const sessions = backend.sessions;
-    if (
-      !sessions ||
-      unsupportedReason(deps, backend.bin) ||
-      !deps.installed(backend.bin)
-    ) continue;
+    if (!sessions || binUnavailableReason(backend.bin, backend.label, deps)) continue;
     mux.push({
       id,
       label: backend.label,
@@ -170,11 +164,7 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
   for (const id of EMULATOR_IDS) {
     const backend = deps.emulators[id];
     const spawn = backend.spawn;
-    if (
-      !spawn ||
-      unsupportedReason(deps, backend.bin) ||
-      !deps.installed(backend.bin)
-    ) continue;
+    if (!spawn || binUnavailableReason(backend.bin, backend.label, deps)) continue;
     const list = backend.list;
     emu.push({
       id,

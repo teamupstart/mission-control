@@ -71,6 +71,22 @@ export function binUnsupportedReason(
   return spec.unsupportedReason?.(platform) ?? null;
 }
 
+export interface BinAvailabilityDeps {
+  installed: (spec: BinSpec) => boolean;
+  unsupported?: (spec: BinSpec) => string | null;
+}
+
+/** One availability decision: host support wins, then installation is probed. */
+export function binUnavailableReason(
+  spec: BinSpec,
+  label: string,
+  deps: BinAvailabilityDeps,
+): string | null {
+  const unsupported = (deps.unsupported ?? binUnsupportedReason)(spec);
+  if (unsupported) return unsupported;
+  return deps.installed(spec) ? null : `${label} is not installed`;
+}
+
 /**
  * The specs live here, beside the three functions that read them, so that "which binary",
  * "in what environment" and "is it even installed" are one question asked of one object.

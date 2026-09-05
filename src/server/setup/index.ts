@@ -14,10 +14,7 @@ import {
   type SetupRowView,
   type SetupStatus,
 } from "@shared/setup-catalog.ts";
-import {
-  MULTIPLEXER_IDS,
-  type TerminalBackendId,
-} from "@shared/terminal.ts";
+import type { TerminalBackendId } from "@shared/terminal.ts";
 
 import { ghBin } from "../config.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
@@ -28,7 +25,7 @@ import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
 import { binUnsupportedReason, resolveBin } from "../terminal/bin.ts";
-import { EMULATORS, MULTIPLEXERS } from "../terminal/registry.ts";
+import { terminalBackendBin } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
@@ -167,17 +164,10 @@ export function defaultSetupDeps(): SetupDeps {
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     agentBin: resolveAgentBin,
     installedBackend: async (id) => {
-      const spec = MULTIPLEXER_IDS.includes(id as never)
-        ? MULTIPLEXERS[id as keyof typeof MULTIPLEXERS].bin
-        : EMULATORS[id as keyof typeof EMULATORS].bin;
+      const spec = terminalBackendBin(id);
       return resolveBinPath(resolveBin(spec));
     },
-    backendUnsupported: (id) => {
-      const spec = MULTIPLEXER_IDS.includes(id as never)
-        ? MULTIPLEXERS[id as keyof typeof MULTIPLEXERS].bin
-        : EMULATORS[id as keyof typeof EMULATORS].bin;
-      return binUnsupportedReason(spec);
-    },
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id)),
     ghBin,
     resolveBinPath,
     runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),

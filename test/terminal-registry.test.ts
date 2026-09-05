@@ -6,6 +6,7 @@ import {
   MULTIPLEXERS,
   bindPane,
   hostPanesFor,
+  terminalBackendBin,
 } from "../src/server/terminal/registry.ts";
 import type {
   EmulatorPane,
@@ -14,7 +15,11 @@ import type {
 } from "../src/server/terminal/types.ts";
 import { PLAIN_NAMES } from "../src/server/terminal/names.ts";
 import { paneToken } from "../src/shared/pane.ts";
-import type { TerminalHandle } from "../src/shared/terminal.ts";
+import {
+  EMULATOR_IDS,
+  MULTIPLEXER_IDS,
+  type TerminalHandle,
+} from "../src/shared/terminal.ts";
 
 // What is at stake: that a new terminal backend cannot be half-integrated.
 //
@@ -29,9 +34,11 @@ import type { TerminalHandle } from "../src/shared/terminal.ts";
 // adapter filed under it, and that the composition rule (writes innermost, focus outward)
 // has exactly one implementation.
 
-test("every registry key names the adapter filed under it", () => {
+test("every registry key names its adapter and binary spec", () => {
   for (const [id, mux] of Object.entries(MULTIPLEXERS)) assert.equal(mux.id, id);
   for (const [id, emu] of Object.entries(EMULATORS)) assert.equal(emu.id, id);
+  for (const id of MULTIPLEXER_IDS) assert.equal(terminalBackendBin(id), MULTIPLEXERS[id].bin);
+  for (const id of EMULATOR_IDS) assert.equal(terminalBackendBin(id), EMULATORS[id].bin);
 });
 
 test("capability nulls are declarations, and the two axes differ in what they declare", () => {

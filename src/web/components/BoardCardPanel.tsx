@@ -13,6 +13,7 @@ import {
   PREVIEW_WORKFLOW_RUN,
   previewSession,
 } from "../lib/board-card-preview.ts";
+import { CARD_SHORTCUT_KEYS, cardShortcutChord } from "../lib/card-shortcuts.ts";
 import { useUiConfig } from "../lib/uiConfig.ts";
 import { SessionTile } from "./layouts/SessionTile.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -154,6 +155,12 @@ export function BoardCardPanel(): React.JSX.Element {
               workflowRun={PREVIEW_WORKFLOW_RUN}
               workflowStageDetail="summary"
               pipelineRun={PREVIEW_PIPELINE_RUN}
+              // The first slot, because a preview card is the first card. On the real board
+              // this comes from the session's position (`lib/card-shortcuts.ts`); there is no
+              // board here, so the fixture states the position the way it states the goal and
+              // the branch - otherwise the Jump shortcut checkbox would be the one control in
+              // this panel that looks identical checked and unchecked.
+              shortcutChord={cardShortcutChord(CARD_SHORTCUT_KEYS[0])}
             />
           </div>
         </div>

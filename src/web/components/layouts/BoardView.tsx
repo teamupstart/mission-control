@@ -152,6 +152,8 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     props.sessions,
     heldSessionIds(props.workflowRunsBySession),
     groupByRepo,
+    props.pipelineCommissionById,
+    props.pipelineRunByKey,
   );
   const groups = order.groups;
   // The denominator in every repository head's `2 of 7`, folded once for the whole board rather
@@ -230,6 +232,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             : null
       }
       pipelineCommission={commission}
+      // The card's ⌘-number slot, looked up rather than counted here. `tile()` is called from
+      // inside the cluster frames and the repository frames as well as loose in a column, so
+      // a position counted at the call site would restart inside every frame - which is the
+      // one thing the numbering must not do.
+      shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
     />
   };
   /**

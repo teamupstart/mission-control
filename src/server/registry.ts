@@ -5509,6 +5509,8 @@ export class Registry extends EventEmitter {
       taskSources: sources.map((source) => ({ source, status: status.get(source.id) })),
       workflowRuns: [...this.workflowRuns.values()],
       ensembles: [...this.ensembles.values()],
+      pipelineCommissions: [...this.pipelineCommissions.values()],
+      pipelineRuns: [...this.pipelineRuns.values()],
       // The same `COUNT` over the adoption ledger `prsToday` uses, on a seven-day cutoff.
       // A week rather than a day because "shipped" is the one stage whose emptiness on a
       // Monday morning would say nothing true about a fleet that shipped four things on

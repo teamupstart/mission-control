@@ -17,6 +17,7 @@ import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
+import type { PipelineCommission, PipelineRun } from "@shared/pipeline.ts";
 
 // The away watcher: the daemon half of away mode. Diffs the registry snapshot on a
 // timer, runs the stall rules against a real clock, and folds what happened into
@@ -38,6 +39,8 @@ export interface AwaySource {
     tasks: Task[];
     workflowRunSummaries?: WorkflowRunSummary[];
     ensembleSummaries?: EnsembleSummary[];
+    pipelineCommissions?: PipelineCommission[];
+    pipelineRuns?: PipelineRun[];
   };
 }
 
@@ -163,6 +166,8 @@ export function startAwayWatcher(
           ? { workflowRepeatOffenders: deps.workflowRepeatOffenders() }
           : {}),
         ensembleSummaries: snap.ensembleSummaries ?? [],
+        pipelineCommissions: snap.pipelineCommissions,
+        pipelineRuns: snap.pipelineRuns,
       };
 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than

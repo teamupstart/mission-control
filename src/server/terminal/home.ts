@@ -144,6 +144,9 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
           cwd: spec.cwd,
           argv: spec.argv,
           sidePane: spec.sidePane,
+          // Dispatch is background work. It must not move the operator away from the
+          // multiplexer surface they are using when a new home is created.
+          select: false,
         }),
       kill: sessions.kill,
     });

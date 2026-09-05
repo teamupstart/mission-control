@@ -581,16 +581,20 @@ test("reset rebinds and returns to its default like any other action", () => {
 test("a rebind the daemon refuses is taken back, not left on screen", async () => {
   // The chord governs what the runtime handler fires on, so a control showing a binding
   // the daemon rejected is worse than one that never moved: the key would do nothing.
-  setBinding("filter", "cmd+1");
-  assert.equal(stored().filter, "cmd+1");
+  // Any two bindable chords; this test is about the optimistic write and its revert, not
+  // about which keys they are. NOT ⌘1/⌘2, which the Board's card jumps now reserve - see
+  // `reservedChordReason` - so `setBinding` would refuse them and the test would pass
+  // vacuously on a store that never moved.
+  setBinding("filter", "cmd+j");
+  assert.equal(stored().filter, "cmd+j");
 
   daemonAccepts = false;
   try {
-    setBinding("filter", "cmd+2");
+    setBinding("filter", "cmd+u");
     // The optimistic write lands first; the revert is a microtask behind the response.
-    assert.equal(stored().filter, "cmd+2", "the optimistic write should be immediate");
+    assert.equal(stored().filter, "cmd+u", "the optimistic write should be immediate");
     await new Promise((r) => setTimeout(r, 0));
-    assert.equal(stored().filter, "cmd+1", "a refused rebind was left showing");
+    assert.equal(stored().filter, "cmd+j", "a refused rebind was left showing");
   } finally {
     daemonAccepts = true;
   }

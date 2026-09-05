@@ -699,18 +699,21 @@ available:
   without opening its detail.
 - **You choose what a session draws.** **Settings → Display → Session display** is a
   checklist of every optional item a session states about itself. Under **Board card** sit
-  the card's own - goal, live activity, workflow, model, context meter, reasoning effort,
-  permission mode, cost, branch, worktree and last seen - and unchecking one applies to
-  every card in every column immediately. A live preview card sits in the panel and redraws
-  as you toggle, so you can see what you are trading without
+  the card's own - jump shortcut, goal, live activity, workflow, model, context meter,
+  reasoning effort, permission mode, cost, branch, worktree and last seen - and unchecking
+  one applies to every card in every column immediately. A live preview card sits in the
+  panel and redraws as you toggle, so you can see what you are trading without
   leaving Settings. Two things are deliberately not on the list. The **attention flags** -
   a draft or escalated note, a review, a queued turn, a pull request, an Inspector verdict,
   a recurring mission, an ensemble - are always drawn, because no preference should be able
   to make a session that needs you look like one that does not; each of them already draws
   nothing when it has nothing to say. Nor are the things that *are* the card: the tone
-  spine, the name, the agent dot and the **held** tag. The **defaults draw exactly the card
-  the previous release drew**, so upgrading moves nothing; the one new item, the
-  **worktree**, starts off. Switched on, it prints the checkout's directory name in the
+  spine, the name, the agent dot and the **held** tag. The **defaults draw exactly the facts
+  the previous release drew**, so upgrading states nothing new about a session; the one new
+  fact, the **worktree**, starts off. The [**jump shortcut**](#jumping-straight-to-a-board-card)
+  is the exception and ships on, because it is not a fact about the session but the keycap
+  for a key that opens the card - and a chord nobody can see is a chord nobody presses.
+  Switched on, the worktree prints the checkout's directory name in the
   branch row with the whole path on hover - the leaf rather than the path, because a pool
   worktree path is sixty characters of bookkeeping and that row is two cells sharing one
   line. The choice is per browser and stored through the daemon, so it survives a reload;
@@ -1393,6 +1396,70 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>Delete</kbd> | Remove the focused reviewer or stage, after a confirmation naming what goes | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 
+### Jumping straight to a Board card
+
+Each Board card prints a key in its top-right corner - <kbd>⌘</kbd><kbd>1</kbd> through
+<kbd>⌘</kbd><kbd>9</kbd>, then <kbd>⌘</kbd><kbd>0</kbd>, <kbd>⌘</kbd><kbd>-</kbd> and
+<kbd>⌘</kbd><kbd>=</kbd> - and pressing it opens that card's console view, the same place
+<kbd>Enter</kbd> on the card would take you. It works from the overview and from inside the
+console, where it re-points the open detail at another card without a trip back out. It also
+works while the cursor is in a reply box, because every one of these chords carries
+<kbd>⌘</kbd>.
+
+**In the desktop app all twelve are the app's while this is switched on.** There are no
+browser tabs to select, and the View menu hands <kbd>⌘</kbd><kbd>0</kbd>,
+<kbd>⌘</kbd><kbd>-</kbd> and <kbd>⌘</kbd><kbd>=</kbd> over for as long as the Board is using
+them - a menu accelerator is registered with the system and would otherwise be handled before
+the dashboard ever saw the keystroke. Page zoom keeps its **Zoom In**, **Zoom Out** and
+**Actual Size** items throughout, so it is always one click away, and **it gets its keyboard
+shortcuts back the moment the Board stops claiming them**: uncheck **Jump shortcut**, switch to
+the Console layout, or simply leave Fleet for the Library, Runs or Settings, and
+<kbd>⌘</kbd><kbd>0</kbd>/<kbd>⌘</kbd><kbd>-</kbd>/<kbd>⌘</kbd><kbd>=</kbd> zoom again exactly as
+they always did. Ownership follows the page and the preference, not the cards: the number row
+is the Board's whenever you are on Fleet in the Board layout with this switched on, and it is
+zoom's every other time.
+
+That follows the *preference*, not the card count. While the feature is on, the number row
+belongs to the Board even where it has no card to give a key to - so on a board of three
+cards, <kbd>⌘</kbd><kbd>-</kbd> does nothing in the desktop app rather than zooming. The
+alternative was a zoom shortcut that worked until a tenth agent appeared and then silently
+stopped, which is worse than a key that is plainly the Board's for as long as you have the
+feature switched on.
+
+**In a plain browser tab, some of them may stay the browser's.** These twelve are also
+browser-chrome shortcuts on macOS: <kbd>⌘</kbd><kbd>1</kbd>-<kbd>⌘</kbd><kbd>9</kbd> select a
+tab and <kbd>⌘</kbd><kbd>0</kbd> / <kbd>⌘</kbd><kbd>-</kbd> / <kbd>⌘</kbd><kbd>=</kbd> reset,
+shrink and enlarge the page. A browser resolves its own window shortcuts, and which of them it
+lets a page claim is its decision and differs between browsers - no page can override that
+either way. The dashboard asks for the keystroke, so where the browser offers the page the
+choice the card jump wins, and where the browser reserves the key it keeps it and the jump
+does not happen. The keys are the same and the keycaps read the same on both surfaces, rather
+than the card teaching one chord in the app and another in a tab; if you would rather have
+your browser's keys back, uncheck **Jump shortcut** and the chords go down with the keycaps.
+
+The keys belong to **positions**, not to sessions. They are handed out down the board and
+across its status columns - the first card in **needs you** is <kbd>⌘</kbd><kbd>1</kbd> and
+the count carries on into **working** and **idle** rather than restarting - so as cards
+finish and move, the numbering closes up behind them and the top card is always
+<kbd>⌘</kbd><kbd>1</kbd>. Twelve keys is what the number row has: a thirteenth visible card
+plainly carries no keycap rather than a chord nobody can press, and a card hidden inside a
+folded repository frame claims no key either.
+
+They are deliberately **not** in the shortcut list below, because there is no one action to
+name - <kbd>⌘</kbd><kbd>4</kbd> means "the fourth card" or it means nothing - and nothing an
+operator could usefully rebind. They are switched on and off with the other card items, at
+**Settings → Display → Session display → Jump shortcut**, which takes down the keycaps and
+the chords together.
+
+The twelve are also **reserved from the shortcut list**, so no action can be bound to one.
+That is the same rule <kbd>Enter</kbd> follows and for the same reason: the jump runs ahead of
+the action, so an action bound to <kbd>⌘</kbd><kbd>4</kbd> would keep working in the Console
+and on every other page and silently stop working on the Board, and a shortcut that works in
+some layouts and not others is the one thing the table promises not to do. Pressing one while
+recording says so instead of accepting it. If you had already bound an action to one of these
+before upgrading, that binding is dropped on read and the action returns to its own default -
+so it works everywhere again rather than being shadowed on the Board.
+
 Every shortcut managed by the shortcut list is **customizable**. Open **Settings** - the ⚙ gear
 in the top bar, or (in the desktop app)
 **Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
@@ -1404,7 +1471,8 @@ trying to reuse an assigned key is refused inline. You can reset any one shortcu
 of them); if another custom binding has claimed that shortcut's default, resetting clears
 the override and leaves the shortcut unset until its default is free. The arrow keys,
 <kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
-and can't be reassigned; <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
+and can't be reassigned; neither can the Board's twelve
+[card jump chords](#jumping-straight-to-a-board-card); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
 editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
 are in-surface keys rather than fleet chords - they only exist while their surface is active - so
@@ -1425,7 +1493,8 @@ Codex / Claude in the Console and Board detail's tab strip; Focus, Diff, Reset, 
 Complete and Kill in the Console
 footer; the Console's Conversation, Work queue, Diff and Files tabs; the Files toolbar's Preview,
 Editor and Comment controls; Dispatch and the Fleet,
-Library and Runs segments in the top bar; the Board tile's workflow disclosure; the Diff reader's
+Library and Runs segments in the top bar; the Board tile's workflow disclosure and its
+[jump key](#jumping-straight-to-a-board-card); the Diff reader's
 Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact
 icon-only Delete controls name it in their tooltip. They

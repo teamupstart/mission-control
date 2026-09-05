@@ -17,6 +17,7 @@ import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import {
+  appendConductorEngineerEvent,
   conductorWorktree,
   readConductorInvocations,
   readConductorEngineerRuns,
@@ -424,6 +425,9 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     ],
     { stdio: "pipe" },
   );
+  const retainedCommit = execFileSync("git", ["-C", authoring, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
 
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   let callerCredential: string | null = null;
@@ -443,6 +447,25 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
     body: JSON.stringify({ path: authoring }),
   });
   expect(reported.status, await reported.text()).toBe(200);
+
+  appendConductorEngineerEvent(daemon.home, "engineer_worktree_created", {
+    worktreePath: authoring,
+    branch: "spec/sdk-hosted-pipeline-route",
+    planSlug: "sdk-hosted-pipeline-route",
+  });
+  appendConductorEngineerEvent(daemon.home, "engineer_spec_handoff", {
+    planSlug: "sdk-hosted-pipeline-route",
+    branch: "spec/sdk-hosted-pipeline-route",
+    prUrl: null,
+    outcome: "local_commit",
+    state: "awaiting_spec_merge",
+    retainedCommit,
+    retainedAt: new Date().toISOString(),
+    retentionDeadline: new Date(Date.now() + 86_400_000).toISOString(),
+  });
+  appendConductorEngineerEvent(daemon.home, "engineer_run_settled", {
+    outcome: "awaiting_spec_merge",
+  });
 
   let hostName = "";
   await expect
@@ -525,6 +548,20 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   execFileSync("git", ["-C", daemon.repo, "worktree", "remove", "--force", authoring], {
     stdio: "pipe",
   });
+  appendConductorEngineerEvent(daemon.home, "engineer_worktree_retired", {
+    worktreePath: authoring,
+    branch: "spec/sdk-hosted-pipeline-route",
+    planSlug: "sdk-hosted-pipeline-route",
+    reason: "spec_merged",
+    retainedCommit,
+  });
+  await expect.poll(async () => {
+    const sessions = await request<Array<{
+      id: string;
+      workspace?: { availability: string; reason: string | null } | null;
+    }>>(daemon, "/api/sessions");
+    return sessions.find((session) => session.id === task!.sessionId)?.workspace ?? null;
+  }).toMatchObject({ availability: "retired", reason: "provider_retired" });
   await request(daemon, `/api/sessions/${encodeURIComponent(task!.sessionId!)}/diff`);
   await expect(detail.getByRole("status")).toContainText("Read-only Pipeline evidence from");
   await expect(activeComposer).toHaveCount(0);
@@ -559,6 +596,12 @@ test("SDK pipeline dispatch tracks the Engineer workspace without becoming provi
   await expect(retainedThread.getByRole("button", { name: "Reply" })).toHaveCount(0);
   await expect(detail.getByRole("button", { name: "Open in" })).toBeDisabled();
   await shoot(dashboard, "11-retired-workspace-read-only-files", detail);
+
+  await dashboard.getByRole("button", { name: "Runs", exact: true }).click();
+  await dashboard.getByRole("tab", { name: /Pipelines 1/ }).click();
+  await expect(
+    dashboard.getByRole("region", { name: "Provider lifecycle" }),
+  ).toContainText("Authoring workspace retired by the provider: spec merged.");
 });
 
 test.describe("managed Pipeline worker separation", () => {

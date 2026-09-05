@@ -351,6 +351,15 @@ listed in **Settings → Repositories**, seeded with `~/workspace`, `~/code`, `~
 `~/upstart`, for git checkouts. `MISSION_WORKSPACE_DIRS` remains the colon-separated launch-time
 override. Select the repo to base the task on rather than typing a path. Type to filter;
 arrow/enter to pick.
+
+The Settings panel is also where the index is maintained. Any directory can be removed, including
+a seeded default, and **Restore defaults** adds back only seeded directories that are missing while
+leaving operator-added rows alone. Each row reports a missing, non-directory, unreadable, or unsafe
+path instead of silently omitting it. **Rescan now** clears the discovery cache so a newly cloned
+checkout appears immediately. While `MISSION_WORKSPACE_DIRS` is set, the panel names the override
+and keeps the saved list read-only. This same repository picker is reused by Dispatch,
+**Settings → Trust**, **Standing instructions**, and **Task sources**.
+
 Each row is the checkout's **directory name**, not its path: every repo under one workspace
 root shares a long leading prefix, and a list of paths as narrow as the field ellipsizes away
 the only part that tells two rows apart. The full path is on the row's tooltip, and it is

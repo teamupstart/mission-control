@@ -8,6 +8,8 @@ After this phase, a test or internal harness can dispatch one versioned local Pe
 
 Estimated gross non-test implementation: **1,950-2,550 lines**.
 
+Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The provider-neutral foundation remains valid. Current Claude headless execution has an SDK path with narrowly granted read tools, while current Codex headless paths reject generic grants and differ on image support. This reinforces the dedicated workload-adapter boundary and leaves the provider parity prototype as a blocking exit gate.
+
 ## Entry criteria and direct dependencies
 
 - The planning PR containing `plan.md`, `phased-plan.md`, and this file has merged.
@@ -46,6 +48,7 @@ This phase does not:
 - `runClaudeSdkOneShot` is structured-output capable but defaults its tool-less jobs to one turn. Repository workloads need a dedicated multi-tool-call turn budget.
 - `runCodexSdkOneShot` explicitly rejects tool grants and images. The workload adapter must use a provider path that supports launch-scoped MCP and preserves Workflow image inputs, or prove an equally bounded dedicated SDK path. It must not weaken image behavior or fake parity.
 - Full session adapters already configure Claude `mcpServers` and Codex `mcp_servers.*`. Reuse their descriptor composition patterns, not their Registry/session ownership.
+- Current Workflow attempts also carry daemon-owned submission images, text artifacts, and call-ledger metadata. The versioned workload request and both provider prototypes must preserve those inputs and accounting semantics; repository access cannot narrow existing review context.
 - Inspector denies and scrubs useful secret families, but the deny list includes host-absolute patterns because the provider tool grant reads a live checkout. The new policy starts from those families and operates on repository-relative bytes plus an explicit `.git` ban.
 - Git content commands can invoke configured external diff, text conversion, or clean filters. Every repository operation and fixture must prove those are disabled.
 - The Phase 2 artifact intentionally has missing sensitive blobs. Phase 1 readers must pre-authorize paths before invoking Git and must never run an unrestricted content operation and redact it afterwards.

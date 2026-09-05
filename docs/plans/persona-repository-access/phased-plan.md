@@ -27,7 +27,7 @@ No phase may revive or consume those task contracts. The files in this planning 
 
 ## Repository investigation
 
-The plan was rechecked against `origin/main` at `298a7b2b4a975bb6f4d9953ac5f19b9669129935`, after PR #770 merged. The old PR changed planning artifacts only; no Persona repository-access implementation exists.
+The plan was rechecked again on 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). No Persona repository-access implementation exists. The local-MCP architecture and three serial phases remain valid, with the current-state amendments below controlling implementation.
 
 ### Contracts that remain current
 
@@ -36,7 +36,9 @@ The plan was rechecked against `origin/main` at `298a7b2b4a975bb6f4d9953ac5f19b9
 - `src/server/db.ts` creates tables before `migrate()`. Any index that names a new column must be created beside its `addColumn` migration, not in the initial boot block alone.
 - Built-in Personas are generated application data, not rows in `personas`. `PersonaManager` and `WorkflowStore` reject ordinary update and archive operations for them.
 - `WorkflowStore.publishWorkflow` currently reuses a version by `(workflow_id, source_draft_revision)` before it projects the resolved Persona catalog. Publication must compare a canonical resolved graph fingerprint as well.
-- `captureStableWorkflowContext` is the existing stable checkout boundary. It samples repository identity and status around evidence capture and is the only correct place to attach exact-state sealing.
+- `captureStableWorkflowContext` is the existing stable checkout boundary. It samples repository identity and status around evidence capture and is the correct place to prepare an exact-state candidate, but not to create its durable claim.
+- Workflow submission capture now resolves `workflowCheckoutPath` per repository run. Repository artifacts must seal that resolved checkout and retain one claim per submission/run.
+- `WorkflowManager.captureAndActivate` validates external artifact expectations before raw-context persistence, freezes reserved evidence, captures daemon-owned image/text artifacts, compacts context, and applies evidence-readiness policy before activation. Repository candidates must be discarded on guard failure and promoted only after those gates pass.
 - `computeSessionDiff` is prompt evidence with a 1.2 MB patch cap and bounded untracked rendering. Its base semantics are reusable, but its output cannot serve repository-wide access.
 - `src/server/git/ensemble-snapshot.ts` proves the private-index and private-ref pattern, while collapsing the index and working tree into one commit. Repository review must keep HEAD, index, and worktree layers distinct.
 - `WorkflowEngine.runAttempt` currently makes one fresh tool-less `LlmRunner.run` call. `handleInfrastructureFailure` already owns retry scheduling and the final `infrastructure_error` block.
@@ -46,10 +48,11 @@ The plan was rechecked against `origin/main` at `298a7b2b4a975bb6f4d9953ac5f19b9
 - Inspector's `DENY_PATHS` and `scrubSecrets` are useful precedents, but its provider-side tool grant is Claude-only. The repository policy must move below both providers into the MCP and artifact boundary.
 - `WorkflowRunDetail` already pages events and LLM calls. Repository query audits need their own bounded page or summary rather than being folded into the compact SSE run summary.
 - Workflow retention and startup reconciliation already run under `WorkflowManager`. Repository artifact cleanup belongs in that daemon-owned lifecycle and must keep SQLite writes in the daemon.
-- `PersonaEditor` treats all built-in fields as read-only and short-circuits save. Repository access therefore needs a dedicated mutation path and control instead of weakening the general built-in edit guard.
+- `PersonaEditor` treats all built-in fields as read-only and short-circuits save. Repository access therefore needs a dedicated mutation path and control instead of weakening the general built-in edit guard. Imported and plugin-managed Personas now carry provenance; reimport and synchronization must preserve operator-owned repository access.
+- Evidence currently has eight stable kinds with a uniform quote/path/line schema. The metadata-only repository handle must be an appended discriminated-union branch while the existing eight branches retain their exact identifiers and wire shapes.
 - Browser-visible changes require a built-dashboard Playwright spec, accessible selectors, and fake Claude and Codex providers.
 
-### New discrepancy resolved during phasing
+### Discrepancies resolved during phasing and revalidation
 
 The approved plan requires both Git history and omission of sensitive blob contents from the portable artifact. A normal Git bundle cannot satisfy both because reachable commits and trees pull every referenced blob into the bundle.
 
@@ -62,6 +65,8 @@ The implementation will use a versioned sparse Git object artifact instead of a 
 5. Derive status from the captured manifest. Never run an unrestricted diff or show and filter its output afterwards.
 
 This preserves original Git identities for log, show, and blame on an explicit bounded range while ensuring a provider process cannot recover secret-bearing blob bodies from the artifact. Revisions outside the retained manifest set are denied as `revision_out_of_range`. For a retained commit, `git_show` patch mode compares a true root with the empty tree, compares a non-root only when its recorded first parent is retained, and otherwise returns `history_boundary` with no patch. Frontier log/blame results carry explicit truncation without consulting the original checkout. Phase 1 proves that the MCP operates safely over a sparse object database and establishes the history policy; Phase 2 owns producing and validating that exact artifact set.
+
+The current capture pipeline adds a second ordering constraint. Phase 2 must expose a private candidate lifecycle with explicit prepare, promote, and discard operations. Phase 3 prepares the candidate within stable capture, then preserves external artifact validation and reserved-evidence capture. It promotes the digest and submission claim only after those gates pass and before raw context persistence. A repository artifact is capability input and never satisfies criterion-mapped evidence readiness.
 
 ## Sizing and phase count
 
@@ -136,7 +141,7 @@ Independent review work inside a phase may run in parallel, but each phase is on
 ### Established by Phase 2, consumed by Phase 3
 
 - `WorkflowRepositoryArtifact` is digest-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, repository/history policy versions, retained-revision/frontier metadata, byte counts, state, and cleanup state. `WorkflowRepositorySnapshotClaim` gives each submission an independent durable claim on that digest.
-- `WorkflowRepositoryArtifactService.seal`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points.
+- `WorkflowRepositoryArtifactService.prepare`, `promote`, `discard`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points. Preparation creates no durable claim; promotion is the only operation that may create one.
 - The artifact contains original commit/tree identities and all allowed blobs for the exact policy-retained revision prefix, but no sensitive blob bodies. Denied entries remain visible only as classified metadata; source-base objects outside the prefix remain diff-only.
 - Capture candidates use a dedicated namespace under Mission Control state, never the repository worktree or common Git directory as durable storage.
 - A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no active claim remains before removing bytes. Startup reconciliation deletes only zero-claim paths whose digest ownership is proven.
@@ -148,6 +153,9 @@ Independent review work inside a phase may run in parallel, but each phase is on
 - `PersonaSnapshot.repositoryAccess` is non-optional after parse because the schema defaults missing historical values to `none`.
 - Publication identity is `(workflow_id, source_draft_revision, source_snapshot_fingerprint)` over canonical resolved graph JSON.
 - A repository-enabled attempt owns exactly one durable workload id and one current cancellation generation.
+- Repository capture binds to the specific per-repository run checkout. External-artifact validation and reserved submission evidence complete before candidate promotion and raw-context persistence.
+- The `repository` evidence kind is appended as a metadata-only discriminated-union branch. Existing evidence kinds keep their current identifiers and wire shapes, and repository capability artifacts do not contribute to evidence-readiness coverage.
+- New imported Personas default to `none`; reimport and plugin synchronization preserve the operator-owned access value.
 - Workload event ingestion is append-only and idempotent by `(workload_id, sequence)`. Conflicting duplicates or gaps are infrastructure failures.
 - Query audit and evidence-handle persistence stores metadata only and is paged independently from Workflow events and LLM calls.
 - Evidence references to repository content contain only `operationId` plus opaque `evidenceHandleId`. The engine resolves daemon-owned same-attempt returned-item/path/range metadata before accepting the verdict and rejects quote, excerpt, and free-form path/range fields.

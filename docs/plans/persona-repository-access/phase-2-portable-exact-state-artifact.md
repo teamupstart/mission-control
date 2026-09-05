@@ -10,6 +10,8 @@ This phase does not enable repository access for Personas. Phase 3 activates con
 
 Estimated gross non-test implementation: **1,350-1,750 lines**.
 
+Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The exact-state artifact design remains valid. Current capture ordering requires a two-step candidate lifecycle: prepare inside the stable repository boundary, then promote and claim only after the manager's external-artifact and reserved-evidence guards pass.
+
 ## Entry criteria and direct dependencies
 
 - Phase 1 has merged.
@@ -43,7 +45,7 @@ This phase does not:
 
 ## Repository findings and inherited contracts
 
-- `WorkflowManager.captureAndActivate` creates the submission row before evidence capture and calls `captureStableWorkflowContext` while the run and submission are `capturing`. This provides a real submission id for ownership.
+- `WorkflowManager.captureAndActivate` creates the submission row before evidence capture and calls `captureStableWorkflowContext` while the run and submission are `capturing`. It now validates external artifact expectations and captures reserved image/text evidence before raw-context persistence. Candidate preparation may occur during stable capture, but claim creation must wait for those later guards.
 - `captureStableWorkflowContext` already retries a candidate when the checkout boundary changes. Exact-state sealing must participate in the same before/after sample rather than opening a second race window.
 - The existing prompt evidence persists before context compaction and marks the submission `running` only after the final context fingerprint. Repository artifact readiness must be committed before that transition for access-enabled submissions in Phase 3.
 - `workflowRepositoryFingerprint` is the existing answer to whether repository work changed, but it is derived from bounded prompt evidence. The artifact digest is the stronger exact-state identity and must not replace historical access-off fingerprints.
@@ -100,14 +102,16 @@ A directory artifact is acceptable as the local representation if its canonical 
 Implement one `WorkflowRepositoryArtifactService` with:
 
 ```ts
-seal(input, signal): Promise<WorkflowRepositorySnapshot>
+prepare(input, signal): Promise<WorkflowRepositoryArtifactCandidate>
+promote(candidate, submissionId): Promise<WorkflowRepositorySnapshot>
+discard(candidate): Promise<void>
 materialize(locator, digest, signal): Promise<RepositoryViewLease>
 verify(snapshot, signal): Promise<RepositoryArtifactVerification>
 release(submissionId): Promise<void>
 reconcile(): Promise<RepositoryArtifactReconciliation>
 ```
 
-The service owns all filesystem paths and namespace checks. Callers name submission identity and expected digest, never deletion paths.
+The service owns all filesystem paths and namespace checks. `prepare` creates no durable artifact record or submission claim. `promote` is the only operation that may publish candidate bytes and create a claim. Callers name submission identity and expected digest, never deletion paths.
 
 ## Implementation steps
 
@@ -178,9 +182,9 @@ Build the artifact object set explicitly. Verify that every nonsensitive blob re
 
 Do not use a normal `git bundle` or a traversal mode that implicitly closes over every reachable blob. The artifact is intentionally sparse and bounded. Phase 1's path-scoped, retained-set-aware operations are the only reader.
 
-### 5. Seal atomically inside stable capture
+### 5. Prepare inside stable capture and promote after capture guards
 
-Extend `captureStableWorkflowContext` with an optional injected sealing callback or candidate transaction that defaults to absent and therefore changes no current caller.
+Extend `captureStableWorkflowContext` with an optional injected candidate-preparation callback that defaults to absent and therefore changes no current caller. The callback receives the exact checkout resolved for the per-repository Workflow run and returns an unclaimed candidate.
 
 For an activated caller in Phase 3:
 
@@ -189,12 +193,15 @@ For an activated caller in Phase 3:
 3. build objects, classifications, manifest, and digest;
 4. resample HEAD, index/status, repository identity, and existing transcript/session boundary;
 5. discard the candidate and retry if any boundary changed;
-6. atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's active claim in one database transaction;
-7. only then allow the submission to become `running`.
+6. return the unclaimed candidate with the stable prompt context;
+7. let `captureAndActivate` validate external artifact expectations and capture the already-reserved submission image/text evidence;
+8. discard the candidate on any guard or evidence failure;
+9. after those guards pass, atomically promote or verify the candidate in the digest namespace, upsert the digest-level artifact record, and insert the submission's active claim in one database transaction;
+10. only then persist raw context, compact/check evidence readiness, and allow the submission to become `running`.
 
 If another capture concurrently wins promotion for the same digest, verify those bytes and attach a second independent claim instead of replacing them. If database persistence fails after promotion, leave enough candidate metadata for startup reconciliation to prove and remove a zero-claim orphan. If filesystem promotion fails after a row exists, mark it failed/cleanup-pending only when no ready shared record already satisfies the digest. Never guess ownership or claim count from a directory name alone.
 
-Phase 2 tests invoke this seam directly. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
+Phase 2 tests invoke prepare, promote, and discard directly, including the guarantee that preparation alone produces no durable row or claim. Production Workflow callers remain unchanged until Phase 3 supplies the callback conditionally.
 
 ### 6. Materialize and verify without the original checkout
 

@@ -18,6 +18,7 @@
 </head>
 <body><main><h1>Persona repository access for Workflow reviews</h1>
 <p>Status: Approved for phased implementation<br>Repository: <code>ai-harness</code><br>Implementation scope: planning only in this task</p>
+<p><strong>Revalidated:</strong> 2026-09-04 against <code>origin/main</code> at <code>3459720f</code> (<code>v1.7.1</code>). The approved local-MCP architecture remains valid. The current integration, capture-order, evidence, and Persona-provenance amendments in this document are controlling for implementation.</p>
 <p><strong>Supersession:</strong> This Markdown source replaces the daemon-side broker design from planning PR #770. The approved architecture is the local repository MCP and portable exact-state artifact described below; the earlier implementation tasks were cancelled and must not be revived.</p>
 <h2>Outcome</h2>
 <p>Allow an operator to enable read-only access to the complete submitted Git worktree on an individual Workflow Persona. During a review, either a Claude or Codex Persona runs once inside an isolated review workload and makes multiple typed repository queries through a local MCP repository server before returning its verdict. The MCP server reads a portable immutable representation of the exact submitted checkout, applies one provider-neutral security policy, and records an audit event for every operation, denial, truncation, cancellation, and failure.</p>
@@ -71,8 +72,13 @@
 </tr>
 <tr>
 <td><code>src/server/workflows/context.ts</code></td>
-<td>Stable capture persists bounded prompt context after checking the live checkout boundary.</td>
-<td>Seal and digest a portable repository snapshot artifact inside the same stable capture boundary before activating the run.</td>
+<td>Stable capture resolves the checkout for each per-repository Workflow run and persists bounded prompt context after checking the live checkout boundary.</td>
+<td>Prepare a portable repository artifact candidate inside the same stable boundary for the run&#39;s resolved checkout. Do not durably promote or claim it until later capture guards pass.</td>
+</tr>
+<tr>
+<td><code>src/server/workflows/manager.ts</code></td>
+<td>Capture validates external artifact expectations, freezes reserved evidence, captures image/text artifacts, compacts context, and applies evidence-readiness policy before activation.</td>
+<td>Preserve this ordering. Discard a repository candidate on guard failure; promote and claim it only after those guards pass and before raw context persistence. The artifact is capability input, not criterion evidence.</td>
 </tr>
 <tr>
 <td><code>src/server/diff.ts</code></td>
@@ -86,8 +92,8 @@
 </tr>
 <tr>
 <td><code>src/server/workflows/engine.ts</code></td>
-<td>A Persona makes one structured <code>LlmRunner.run</code> call and then emits a verdict. Infrastructure failures already retry and ultimately block.</td>
-<td>Dispatch one versioned review workload, ingest its ordered events, validate its terminal verdict, and route workload or repository failures through the existing retry state machine.</td>
+<td>A Persona makes one structured <code>LlmRunner.run</code> call, preserving images, submission evidence, the LLM call ledger, and verdict normalization. Infrastructure failures already retry and ultimately block.</td>
+<td>Keep the access-off arm behaviorally identical. Dispatch one versioned review workload only for <code>read</code>, preserve current inputs/accounting, and route failures through the existing retry state machine.</td>
 </tr>
 <tr>
 <td><code>src/server/llm/</code></td>
@@ -105,9 +111,14 @@
 <td>Extract the reusable content policy while leaving Inspector behavior unchanged. Apply it inside the repository MCP server for both providers.</td>
 </tr>
 <tr>
-<td><code>src/web/workflows/PersonaEditor.tsx</code></td>
-<td>All built-in fields are read-only.</td>
-<td>Keep those fields locked while exposing only the local repository-access override. Explain the capability and its security boundary in the editor.</td>
+<td><code>src/shared/workflow.ts</code>, <code>src/shared/protocol.ts</code></td>
+<td>Evidence has eight append-only kinds with a uniform quote/path/line shape.</td>
+<td>Append <code>repository</code> as a discriminated-union branch while preserving the identifiers and exact wire shape of all eight existing kinds.</td>
+</tr>
+<tr>
+<td><code>src/web/workflows/PersonaEditor.tsx</code> and Persona import/sync paths</td>
+<td>All built-in fields are read-only. Imported and plugin-managed Personas carry provenance and can be reimported or synchronized.</td>
+<td>Expose only the local repository-access override. New imports default to <code>none</code>; reimport and plugin synchronization preserve the operator&#39;s existing access value.</td>
 </tr>
 <tr>
 <td>Workflow tests and <code>e2e/</code></td>
@@ -123,6 +134,10 @@
 <li>Publication idempotency currently keys only on workflow draft revision. Snapshot-aware publication identity is required to make a later Persona access edit effective without forcing an unrelated draft edit.</li>
 <li>Built-in workflow versions are app-owned immutable artifacts. A local built-in Persona override applies to future operator-published versions that resolve that Persona, not retroactively to shipped built-in workflow versions.</li>
 <li>Current Mission Control browser updates use a reconnecting SSE projection, not a durable remote workload protocol. The workload event contract therefore needs its own ids, sequence numbers, replay cursor, and idempotency rather than treating a WebSocket as state.</li>
+<li>A submission is captured once per resolved repository run. The artifact binds to <code>workflowCheckoutPath</code> for that run.</li>
+<li>Artifact preparation may participate in stable capture, but durable promotion and the submission claim wait until external-artifact and reserved-evidence guards pass.</li>
+<li>Repository snapshots enable queries but do not satisfy or weaken criterion-mapped evidence collection.</li>
+<li>The metadata-only repository evidence handle requires a discriminated union that preserves every existing evidence branch.</li>
 </ol>
 <h2>Target request and data flow</h2>
 <p>At submission capture, the daemon seals a portable content-addressed artifact containing captured HEAD, staged index state, working-tree state including nonignored untracked files, and a classification manifest. During each enabled Persona attempt, the engine dispatches one isolated workload. Inside that workload, the provider calls a local stdio MCP repository server repeatedly and then returns one structured verdict. Repository results stay local; the workload supervisor emits ordered lifecycle and safe audit events to Mission Control.</p>
@@ -146,8 +161,8 @@
 
 <p>The load-bearing flow is:</p>
 <ol>
-<li>The exact checkout passes the existing stable-capture checks.</li>
-<li>The snapshot owner writes or verifies the immutable layered Git artifact and canonical manifest, computes its digest, atomically registers a digest-level artifact record plus the submission&#39;s ownership claim, and only then marks repository access ready.</li>
+<li>The daemon resolves the checkout for the specific per-repository run. Inside stable capture, the snapshot owner prepares a private immutable candidate without creating a durable claim.</li>
+<li>The manager validates the external-artifact expectation and captures reserved image/text evidence. Any failure discards the candidate. Once those guards pass, it atomically promotes or verifies the artifact and registers the submission claim before raw context persistence.</li>
 <li>The Workflow engine creates a versioned workload request naming the attempt, frozen Persona, snapshot digest and locator, repository policy, deadline, and idempotency key.</li>
 <li>The local reference executor initially, or a future remote adapter later, materializes the artifact into an isolated workload and verifies its digest.</li>
 <li>The selected provider starts once with all built-in filesystem, shell, write, and network tools disabled and only the local repository MCP server registered.</li>
@@ -204,7 +219,7 @@
   <figcaption id="snapshot-layers-caption">The artifact preserves dirty-state layers without depending on the original worktree.</figcaption>
 </figure>
 
-<p>Use a private temporary index, modeled on the ensemble snapshot implementation, so capture never mutates the operator&#39;s real index. Sealing happens inside <code>captureStableWorkflowContext</code>: sample the boundary, build candidate objects and manifest, resample status and identity, and atomically commit or reuse the digest-level artifact record plus the submission claim only when both samples agree. Clean abandoned candidates and temporary indexes on mismatch.</p>
+<p>Use a private temporary index, modeled on the ensemble snapshot implementation, so capture never mutates the operator&#39;s real index. Candidate preparation happens inside <code>captureStableWorkflowContext</code>: sample the boundary, build candidate objects and manifest, resample status and identity, and return an unclaimed candidate only when both samples agree. <code>captureAndActivate</code> discards the candidate if external-artifact validation or reserved evidence capture fails; otherwise it atomically promotes or reuses the artifact and inserts the submission claim before raw context persistence.</p>
 <p>Package the required objects and canonical manifest into a content-addressed artifact whose digest covers every byte and semantic ref. The digest-level record owns the daemon-controlled locator and bytes; a per-submission claim references that digest. Concurrent captures of identical state converge on one verified record while retaining independent claims. The workload request exposes an opaque artifact locator plus digest, never a live checkout path. A later remote publisher can replace the locator with a scoped artifact reference without changing Workflow or Persona contracts.</p>
 <p>Sensitive paths remain represented in the manifest as denied entries, but their blob contents are omitted from the portable workload artifact. This prevents a compromised provider process from bypassing the MCP policy by inspecting artifact files directly. The MCP server independently enforces the same policy, so omission and query denial are defense-in-depth layers rather than competing sources of truth.</p>
 <p>Each submission owns a durable claim, not the shared artifact bytes, and every retry for that submission reuses its claimed digest. Retention or submission deletion atomically marks that claim released and enqueues digest cleanup only when no active submission claim remains. The retryable daemon-owned reconciler rechecks the zero-claim invariant in the deletion transaction before removing bytes and the digest record. Startup reconciliation repairs database/filesystem non-atomicity, restores or retires claims conservatively, and deletes only zero-claim artifacts in the dedicated Workflow namespace whose digest ownership is proven.</p>
@@ -311,7 +326,7 @@
 <p>Add an append-only <code>workflow_repository_query_events</code> ledger keyed by attempt id and MCP operation sequence, plus bounded evidence-handle metadata keyed by opaque handle id. Each query record includes workload id, workload event sequence, snapshot digest, normalized operation kind, safe path or query hash metadata, start/end time, duration, outcome, denial/error code, item and byte counts, truncation, cursor presence, and cancellation state. Each handle record binds one actually returned item to its successful operation, canonical approved path/range, item ordinal, policy version, and truncation state. Do not store repository response bodies, excerpts, quote fields, sensitive query text, or provider secrets.</p>
 <p>Add durable workload dispatch and event state sufficient to make local and future remote execution share one lifecycle: request idempotency key, accepted executor identity, highest contiguous event sequence, terminal outcome, cancellation generation, and transport diagnostics. A duplicate event is ignored after equality validation; a conflicting duplicate or sequence gap is an infrastructure fault rather than guessed ordering.</p>
 <p>Extend existing Workflow run detail data and UI with a repository-query audit summary. Operators can inspect what operation ran, whether it was allowed, denied, truncated, failed, or cancelled, and how much data it returned. The view must not reproduce file bodies. Add structured server logs and status counts for capture latency/failure, query latency/outcome, retries caused by repository access, active snapshot count, and cleanup backlog.</p>
-<p>Extend Workflow evidence references with a metadata-only <code>repository</code> kind containing an operation id and <code>evidenceHandleId</code>. It has no quote, excerpt, or free-form path/range field. The engine resolves the handle against persisted safe metadata and accepts it only when it was minted for a successfully returned item from the same snapshot, workload, and node attempt; the UI may display the stored approved path/range metadata. A truncated item remains bound to only the exact returned range. A fabricated, duplicate-conflicting, denied, failed, cancelled, or unrelated handle is invalid. Existing prompt-only evidence remains valid for Personas with <code>none</code> access and for old runs. Ordinary reviewer prose remains part of the existing bounded/scrubbed final verdict, but it is not treated as a verified repository excerpt.</p>
+<p>Append a metadata-only <code>repository</code> kind to the stable evidence vocabulary. Refactor the shared schemas, verdict normalization, audit helpers, and renderers to a discriminated union. The existing eight kinds retain their identifiers and quote/path/line wire shapes. The repository branch contains only an operation id and <code>evidenceHandleId</code>. The engine accepts it only when the handle was minted for a successfully returned item from the same snapshot, workload, and node attempt. Repository artifacts do not count toward criterion-mapped submission evidence readiness.</p>
 <h2>Failure and retry behavior</h2>
 <p>Classify failures consistently:</p>
 <ul>
@@ -354,12 +369,15 @@
 <h3>Persistence, migration, and integration tests</h3>
 <ul>
 <li>Custom access updates and CAS conflicts; built-in override creation, update, removal, and immutable-field rejection.</li>
+<li>New imports default to <code>none</code>, while reimport and plugin synchronization preserve existing operator access and provenance.</li>
 <li>Snapshot capture, portable reconstruction, and rollback under checkout mutation, Git failure, database failure, digest mismatch, restart reconciliation, retention, and cleanup retries.</li>
+<li>Per-repository capture resolves the same checkout as <code>workflowCheckoutPath</code>; expectation mismatch or reserved-evidence failure leaves no active claim or raw context.</li>
 <li>Two submissions claiming the same digest, release of either claim while the other remains active, final-claim cleanup, concurrent claim/release, and crash recovery without premature byte deletion or leaked claims.</li>
 <li>Publication hash backfill, identical republish, same-draft Persona access republish, historical parsing, and built-in version immutability.</li>
 <li>Local reference workloads that make several MCP calls in one provider session, read several pages, recover from denial, cite returned evidence, and complete once.</li>
 <li>Artifact, executor, MCP, and provider unavailability; cancellation; duplicate and gapped events; restart recovery; retry exhaustion; and proof that prompt-only fallback never occurs.</li>
 <li>Audit ordering, redaction, cardinality, and read APIs without response-body persistence.</li>
+<li>Repository capability artifacts leave criterion-mapped evidence readiness unchanged.</li>
 </ul>
 <h3>Runner-contract parity</h3>
 <ul>
@@ -484,6 +502,9 @@
 <li>The current stable capture reads a bounded diff and status from the bound live checkout; the existing detached check worktree contains one commit and cannot preserve submitted staged, unstaged, and untracked distinctions.</li>
 <li>Mission Control already treats a late Persona result after run cancellation as audit-only and already owns the Workflow retry state machine.</li>
 <li>The browser&#39;s current reconnecting SSE projection is not a durable remote workload event protocol.</li>
+<li>As of <code>3459720f</code>, submission capture resolves a checkout per repository run, validates external artifact expectations, captures reserved image/text evidence, compacts context, and applies evidence-readiness policy before activation.</li>
+<li>As of <code>3459720f</code>, evidence kinds are an append-only eight-value vocabulary with a shared quote/path/line shape, so a metadata-only repository handle requires a compatible discriminated union.</li>
+<li>As of <code>3459720f</code>, imported and plugin-managed Personas carry provenance and support reimport/synchronization, so operator-owned repository access must survive those flows.</li>
 </ul>
 <h3>Pending technical proof</h3>
 <ul>

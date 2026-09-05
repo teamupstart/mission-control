@@ -59,6 +59,39 @@ async function terminalStatus(id: TerminalBackendId, deps: SetupDeps): Promise<S
   return path ? { state: "satisfied", evidence: path } : { state: "missing" };
 }
 
+/** Mission Control depends on GitHub CLI behavior only present from this release onward. */
+const GH_MINIMUM_VERSION = "2.100.0";
+
+/** Parse only stable `gh version X.Y.Z` output and compare numeric components. */
+function ghVersionAtLeast(versionOutput: string, minimum: string): boolean | null {
+  const match = /^gh version (\d+)\.(\d+)\.(\d+)(?:\s|$)/m.exec(versionOutput);
+  if (!match) return null;
+  const installed = match.slice(1, 4).map(Number);
+  const required = minimum.split(".").map(Number);
+  for (let index = 0; index < required.length; index++) {
+    if (installed[index]! > required[index]!) return true;
+    if (installed[index]! < required[index]!) return false;
+  }
+  return true;
+}
+
+async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const path = await deps.resolveBinPath(deps.ghBin());
+  if (!path) return { state: "missing" };
+  const result = await deps.runCommand(path, ["--version"]);
+  const atLeast = result.outcomeUnknown || result.code === null
+    ? null
+    : ghVersionAtLeast(result.stdout, GH_MINIMUM_VERSION);
+  if (atLeast === false) {
+    return {
+      state: "needs-setup",
+      why: `The installed GitHub CLI is older than the required ${GH_MINIMUM_VERSION}. Upgrade it to keep GitHub operations working.`,
+      evidence: path,
+    };
+  }
+  return { state: "satisfied", evidence: path };
+}
+
 async function ghAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
   const path = await deps.resolveBinPath(deps.ghBin());
   if (!path) return { state: "missing" };
@@ -126,7 +159,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   cmux: (deps) => terminalStatus("cmux", deps),
   wezterm: (deps) => terminalStatus("wezterm", deps),
   ghostty: (deps) => terminalStatus("ghostty", deps),
-  "gh-cli": (deps) => present(deps.ghBin(), deps),
+  "gh-cli": ghCliStatus,
   "gh-auth": ghAuthStatus,
   "claude-plugins": pluginStatus,
   "claude-skills": skillStatus,

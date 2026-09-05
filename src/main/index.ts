@@ -185,7 +185,7 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
   // Which of ⌘0/⌘-/⌘= the View menu may keep. The dashboard reports whether it is claiming
-  // the number row for Board card jumps; the menu holds those accelerators whenever it is
+  // the number row for the fleet's session jumps; the menu holds those accelerators whenever it is
   // not, so switching the preference off gives the keys back to zoom instead of leaving
   // three keys that nothing answers to. See `menu-template.ts`.
   ipcMain.handle("mission:card-jump-keys", (_e, claimed: boolean) => {

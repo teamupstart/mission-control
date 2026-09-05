@@ -83,6 +83,10 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
     return <RailRow
       key={s.id}
       session={s}
+      // The rail's own ⌘-number slot, from App's one assignment over the fleet's ordered
+      // columns - the same map the Board card reads. Undefined until App hands one down and
+      // absent for a row past the twelfth, which `RailRow` draws as no keycap at all.
+      shortcutChord={props.cardShortcutBySession?.get(s.id) ?? null}
       selected={s.id === props.selectedId}
       onSelect={() => props.onSelect(s.id)}
       registerEl={props.registerEl}

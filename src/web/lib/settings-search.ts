@@ -206,7 +206,7 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
       "budget",
       // The jump keys, which are the one item in that checklist an operator is likely to
       // hunt for by the KEY rather than by the item's name - "cmd 1" is what somebody types
-      // who wants to know where the numbers on their cards came from, or to stop ⌘- zooming
+      // who wants to know where the numbers on their cards or rail rows came from, or to stop ⌘- zooming
       // something else. They land on the panel that switches the whole thing off, because
       // there is no per-chord row anywhere to send them to.
       "jump",

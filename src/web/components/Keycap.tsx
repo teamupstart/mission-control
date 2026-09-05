@@ -26,12 +26,13 @@ export function Keycap(
     /**
      * A chord this component cannot look up, given directly.
      *
-     * For the one kind of shortcut the rebindable registry does not hold: the Board card's
-     * ⌘1 … ⌘= jump keys, which address a POSITION rather than an action and so have no
-     * `ActionId` to resolve (see `lib/card-shortcuts.ts`). Everything else this component
-     * owns still applies, which is the whole reason the case lives here instead of in a
-     * hand-rolled `<kbd>` on the tile: the hint preference and the markup stay one fact,
-     * and turning keycaps off turns this one off too.
+     * For the one kind of shortcut the rebindable registry does not hold: the fleet's
+     * ⌘1 … ⌘= jump keys, printed on a Board card and on a Console rail row, which address a
+     * POSITION rather than an action and so have no `ActionId` to resolve (see
+     * `lib/card-shortcuts.ts`). Everything else this component owns still applies, which is
+     * the whole reason the case lives here instead of in a hand-rolled `<kbd>` on the tile
+     * and a second one on the row: the hint preference and the markup stay one fact, and
+     * turning keycaps off turns these off too.
      */
     | { chord: string },
 ): React.JSX.Element | null {

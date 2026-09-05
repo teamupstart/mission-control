@@ -7,8 +7,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
- * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= on the Board's cards: the keycap in each card's top-right corner, and
- * the key opening that card's console.
+ * ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= over the fleet's sessions: the keycap in each Board card's top-right
+ * corner, the one each Console rail row prints beside its state word, and the key opening
+ * that session's console.
  *
  * Every claim below needs a browser. The unit tests beside `lib/card-shortcuts.ts` prove how a
  * slot is handed out over a list of ids; they cannot see a keycap on a laid-out card, and they
@@ -24,11 +25,15 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  * - The item is switched on and off in Settings → Display like every other card item, and
  *   unchecking it stands down the keycaps AND the chords together - an invisible shortcut
  *   that still swallowed ⌘0/⌘-/⌘= would be the one shape this control must not have.
- * - The desktop shell is told when the Board owns the number row, so page zoom keeps those
+ * - The desktop shell is told when the fleet owns the number row, so page zoom keeps those
  *   keys the rest of the time. The menu itself is invisible from a browser; the report the
  *   dashboard sends is the whole input to it, and that is observable.
  * - The Keyboard panel refuses these twelve chords, naming the reservation, so no action can
- *   be bound to a key that would work in the Console and die on the Board.
+ *   be bound to a key that would work on another page and die on the fleet.
+ * - The CONSOLE rail prints the SAME numbering against the same sessions, beside each row's
+ *   state word, and its keys open the same conversations - so switching layout re-draws one
+ *   numbering rather than making a second. Only a browser can see that the rail's key landed
+ *   where it was asked to land, and that the key a row prints is the row a key opens.
  *
  * No model tokens are spent: every agent binary is redirected by
  * `e2e/fixtures/fake-agents.ts`, and the question that puts the second card in a second
@@ -194,6 +199,24 @@ function keycap(tile: Locator): Locator {
   return tile.locator(".tile-head .kb-hint");
 }
 
+/** The Console layout, whose rail prints the same twelve keys the Board's cards do. */
+async function useConsoleLayout(page: Page, daemon: DaemonHandle): Promise<void> {
+  const response = await fetch(new URL("/api/ui/config", daemon.baseURL), {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ layout: "console" }),
+  });
+  expect(response.ok, "the daemon accepted the Console layout").toBe(true);
+  // A reload rather than a hash navigation, for the reason `useBoardLayout` gives above.
+  await page.reload();
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeVisible();
+}
+
+/** The keycap a rail row prints, which is the only place a person reads that row's key. */
+function railKeycap(row: Locator): Locator {
+  return row.locator(".rail-state-line .kb-hint");
+}
+
 async function shoot(page: Page, name: string): Promise<void> {
   if (process.env.MC_E2E_EVIDENCE !== "1") return;
   mkdirSync(EVIDENCE, { recursive: true });
@@ -289,6 +312,123 @@ test("the board numbers its cards across columns, and the key opens that card's 
   await dashboard.keyboard.press("Meta+1");
   await expect(dashboard.locator(".cdetail").getByRole("heading", { name: IDLE_CARD.title }))
     .toBeVisible();
+});
+
+test("the Console rail prints the same keys beside its state words, and they open those rows", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The rail half of the feature, and the reason it is a separate test rather than an
+  // assertion bolted onto the one above: the claim is that the two layouts draw ONE numbering
+  // over the same fleet, which needs the same two sessions read on the Board and then on the
+  // Console. Two sessions in two tone groups, for the reason the board test gives - a single
+  // row cannot tell "the rail numbers itself" apart from "the first row gets a 1".
+  const idle = await dispatchIdleAgent(dashboard, daemon, IDLE_CARD);
+  const asked = await dispatchIdleAgent(dashboard, daemon, ASKED_CARD);
+  const reviewId = await askForReview(daemon, asked.cwd!);
+
+  // Read on the BOARD first, so what follows is a comparison rather than a fresh reading.
+  await useBoardLayout(dashboard, daemon);
+  const askedTile = dashboard.locator("main.board section.board-col.tone-attention .tile");
+  const idleTile = dashboard.locator("main.board section.board-col.tone-idle .tile");
+  await expect(keycap(askedTile)).toHaveText("⌘1");
+  await expect(keycap(idleTile)).toHaveText("⌘2");
+
+  await useConsoleLayout(dashboard, daemon);
+  const rail = dashboard.getByRole("navigation", { name: "Sessions" });
+  const askedRow = rail.locator(".rail-row").filter({ hasText: ASKED_CARD.title });
+  const idleRow = rail.locator(".rail-row").filter({ hasText: IDLE_CARD.title });
+  await expect(askedRow).toHaveCount(1);
+  await expect(idleRow).toHaveCount(1);
+
+  // THE SAME numbering, session for session. The rail is the board's columns read end to end,
+  // so the session that printed ⌘1 on a card prints ⌘1 on its row - a layout switch must not
+  // renumber the fleet.
+  await expect(railKeycap(askedRow)).toHaveText("⌘1");
+  await expect(railKeycap(idleRow)).toHaveText("⌘2");
+  expect(idle.id, "the two dispatches are two sessions").not.toBe(asked.id);
+
+  // WHERE it sits, which is the placement the operator chose over three others: immediately
+  // left of the row's state word, on the state line, with the state word still flush against
+  // the rail's right edge. Measured rather than eyeballed - only a laid-out row can say this,
+  // and it is the one assertion no markup test could make.
+  const capBox = (await railKeycap(idleRow).boundingBox())!;
+  const stateBox = (await idleRow.locator(".rail-state").boundingBox())!;
+  expect(capBox.x + capBox.width, "the keycap ends left of the state word").toBeLessThanOrEqual(
+    stateBox.x + 1,
+  );
+  expect(
+    stateBox.x - (capBox.x + capBox.width),
+    "and sits right beside it rather than across the row",
+  ).toBeLessThan(12);
+  // On the same line as the state word, not the meta line below it.
+  expect(
+    Math.abs(capBox.y + capBox.height / 2 - (stateBox.y + stateBox.height / 2)),
+    "the keycap shares the state word's line",
+  ).toBeLessThan(3);
+  // The state word is still the rightmost thing on its line - both rows end it at the same
+  // edge, whatever the word is.
+  const askedStateBox = (await askedRow.locator(".rail-state").boundingBox())!;
+  expect(
+    Math.abs((stateBox.x + stateBox.width) - (askedStateBox.x + askedStateBox.width)),
+    "two rows with different state words end their state line at the same edge",
+  ).toBeLessThan(2);
+  // And the state cell RESERVES more room than the word "idle" needs, which is what puts the
+  // keys of a quiet fleet's rows - "working", "idle", "starting", "exited" - in one column
+  // rather than stepping in and out with the length of the word beside them. Measured on the
+  // cell rather than by comparing two rows, because this fleet's other row reads "needs an
+  // answer": a label past the reservation is meant to take the room it needs and move its own
+  // row's key, so a cross-row comparison would be asserting the opposite rule.
+  const idleWordWidth = await idleRow.locator(".rail-state").evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().width;
+  });
+  expect(idleWordWidth, "the state cell holds the short word 'idle'").toBeLessThan(30);
+  expect(
+    stateBox.width - idleWordWidth,
+    "the state cell reserves room past its word, so short states share one key column",
+  ).toBeGreaterThan(8);
+  await shoot(dashboard, "07-rail-numbered-beside-the-state-word");
+
+  // The chord is announced on the control it drives - the row itself here, since the rail's
+  // keycap is `aria-hidden` like every other keycap in this app.
+  await expect(idleRow).toHaveAttribute("aria-keyshortcuts", "Meta+2");
+
+  // The claim: pressing the key opens THAT row's conversation. ⌘2 is the idle row, which is
+  // not the row the rail opens by default, so this cannot be a coincidence of the selection.
+  await dashboard.keyboard.press("Meta+2");
+  const detail = dashboard.locator(".console-detail .cdetail");
+  await expect(detail.getByRole("heading", { name: IDLE_CARD.title })).toBeVisible();
+  await expect(idleRow).toHaveAttribute("aria-current", "true");
+  await shoot(dashboard, "08-rail-jumped-to-the-idle-row");
+
+  // ⌘1 re-points the open detail at the other row, the same way it does inside the Board's
+  // drill-in, rather than needing the selection walked there.
+  await dashboard.keyboard.press("Meta+1");
+  await expect(detail.getByRole("heading", { name: ASKED_CARD.title })).toBeVisible();
+
+  // REFRESH, from the rail's side. The question is answered, so the `Zulu` row leaves the
+  // attention group and the two rows sort by name in `idle` - which puts `Alpha` first and
+  // hands it ⌘1. The keys follow the POSITION, on this layout exactly as on the board.
+  await api(daemon, `/api/reviews/${reviewId}/resolve`, { action: "dismiss" });
+  await expect(rail.locator(".rail-group.tone-attention")).toHaveCount(0);
+  await expect(railKeycap(idleRow)).toHaveText("⌘1");
+  await expect(railKeycap(askedRow)).toHaveText("⌘2");
+
+  // And the one switch takes the rail's keycaps down with the board's, which is what the
+  // item's own description now promises about both surfaces.
+  await dashboard.goto(`${daemon.baseURL}/#/settings/display`);
+  await dashboard.getByRole("checkbox", { name: "Jump shortcut", exact: true }).uncheck();
+  await dashboard.goto(`${daemon.baseURL}/#/fleet`);
+  await expect(idleRow).toHaveCount(1);
+  await expect(railKeycap(idleRow)).toHaveCount(0);
+  // The chord stands down with them, which is the half a keycap assertion cannot see. ⌘1 is
+  // the `Alpha` row's key after the refresh above, and the detail is on `Zulu` - so a jump
+  // that still fired would be unmistakable here, and the detail staying put is the claim.
+  await dashboard.keyboard.press("Meta+1");
+  await expect(detail.getByRole("heading", { name: ASKED_CARD.title })).toBeVisible();
+  await expect(idleRow).not.toHaveAttribute("aria-keyshortcuts", "Meta+1");
 });
 
 test("all twelve slots are handed out in order, and the last three open their cards", async ({
@@ -389,7 +529,7 @@ test("unchecking the item takes the keycaps off every card and stands the chords
   await expect(dashboard.locator(".cdetail")).toBeVisible();
 });
 
-test("the shell is told the Board owns the number row only on Fleet, and only while it is on", async ({
+test("the shell is told the fleet owns the number row only on Fleet, and only while it is on", async ({
   dashboard,
   daemon,
 }) => {
@@ -402,11 +542,12 @@ test("the shell is told the Board owns the number row only on Fleet, and only wh
   // observable is the report the dashboard sends, and that report is the whole input to the
   // decision, so this stubs the bridge and reads it.
   //
-  // Ownership follows the PAGE and the PREFERENCE, not whether a card happens to hold a
-  // given slot - on the enabled Fleet Board the row is the Board's even where slots 10-12 have
-  // no card, which is the rule `main/menu-template.ts` states and `docs/ui.md` repeats. So the
-  // cases below vary exactly those two things, and both shipped broken in this branch: a page
-  // that is not Fleet under a layout that still says `board`, and the preference switched off.
+  // Ownership follows the PAGE and the PREFERENCE - not whether a card happens to hold a
+  // given slot, and not the layout: on enabled Fleet the row is the fleet's even where slots
+  // 10-12 have no session, and both layouts print and answer these keys. That is the rule
+  // `main/menu-template.ts` states and `docs/ui.md` repeats. So the cases below vary exactly
+  // those two things, and both shipped broken in this branch: a page that is not Fleet under a
+  // layout that still says `board`, and the preference switched off.
   await dashboard.addInitScript(() => {
     const reports: boolean[] = [];
     Object.defineProperty(window, "__cardJumpKeyReports", {
@@ -435,6 +576,15 @@ test("the shell is told the Board owns the number row only on Fleet, and only wh
   await expect(dashboard.locator("main.board .tile")).toHaveCount(1);
   // Claimed: a Board card is on screen with a key printed on it.
   await expect.poll(latest, { message: "the Board claims the number row" }).toBe(true);
+
+  // Still claimed on the CONSOLE, which is the change this branch makes to the rule: the rail
+  // draws the same keycaps, so a claim that stood down here would leave three of them naming
+  // keys the View menu had taken back for zoom.
+  await useConsoleLayout(dashboard, daemon);
+  await expect(dashboard.locator(".rail-row")).toHaveCount(1);
+  await expect.poll(latest, { message: "the Console rail claims the number row too" })
+    .toBe(true);
+  await useBoardLayout(dashboard, daemon);
 
   // Released on another PAGE, though the layout is still Board. The keydown handler returns
   // early for every non-fleet route, so a claim here would take ⌘0/⌘-/⌘= from zoom on the
@@ -475,15 +625,15 @@ test("the shortcut is not a rebindable action in the Keyboard panel", async ({
   }
   // Nor can an action be REBOUND onto one of the twelve, which is the other half of "not
   // configurable here". The jump arm runs ahead of the action dispatch, so an action bound to
-  // ⌘1 would keep working in the Console and on every other page and silently stop working on
-  // the Board - so the editor refuses the chord instead of accepting one it cannot honour, and
-  // says which reservation refused it.
+  // ⌘1 would keep working on every other page and silently stop working on the fleet, on
+  // either of its layouts - so the editor refuses the chord instead of accepting one it cannot
+  // honour, and says which reservation refused it.
   const diffRow = panel.locator('[data-anchor="keyboard/diff"]');
   await diffRow.getByRole("button", { name: /^Change shortcut for Open diff/ }).click();
   await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();
   await dashboard.keyboard.press("Meta+1");
   await expect(panel.locator(".settings-error"))
-    .toHaveText("⌘1 is reserved for the Board's card jump shortcuts.");
+    .toHaveText("⌘1 is reserved for the fleet's session jump shortcuts.");
   // Still recording after a refusal, which is the right shape - the operator is being asked
   // for a different key, not silently returned to a row that looks unchanged.
   await expect(diffRow.getByRole("button", { name: /^Recording/ })).toBeVisible();

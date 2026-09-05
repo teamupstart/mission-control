@@ -1986,30 +1986,37 @@ export function App(): React.JSX.Element {
     [fleet, foldedIds],
   );
 
-  // ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= over the Board's cards, derived from the arrays directly above.
+  // ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= over the fleet's sessions, derived from the arrays directly above.
   //
   // Off the SAME `boardColumns` the arrow keys walk, deliberately: the numbering has to cross
   // the tone columns in reading order and skip whatever a folded repository frame is hiding,
   // and both of those are already true of these arrays. Deriving it from a second pass over
-  // the fleet would be a second opinion about the board's order, and the symptom would be a
+  // the fleet would be a second opinion about the fleet's order, and the symptom would be a
   // keycap that opens its neighbour.
   //
-  // Board only. The Console rail draws no keycaps, and a chord that silently opened the
-  // fourth row of a rail nobody had numbered would be a shortcut with no affordance.
+  // BOTH fleet layouts, off that one derivation. The Console rail is what a Board column
+  // morphs into on drill-in, and it draws its rows from the same `orderSessions` result in the
+  // same order, so the concatenation of these columns IS the rail top to bottom: switching
+  // layout re-draws the same twelve keys against the same twelve sessions rather than
+  // renumbering them. A second assignment pass per layout could only ever be a second opinion
+  // about one order.
   //
   // The registry item gates BOTH halves - see `board-card.ts` - so an operator who unchecks
   // it gets ⌘0/⌘-/⌘= back for whatever else they use them for, rather than keeping twelve
   // invisible chords.
   const shownDisplayItem = useDisplayItems();
-  // The SAME three conditions the keydown arm needs to act, in one place, because this value
+  // The SAME two conditions the keydown arm needs to act, in one place, because this value
   // is also what tells the desktop shell whether to keep zoom's accelerators. The fleet route
-  // is part of it rather than only a guard inside the handler: `layout` stays `"board"` while
-  // an operator is on Library, Runs or Settings, so a condition that asked only about the
-  // layout claimed ⌘0/⌘-/⌘= from the View menu on every one of those pages while the handler
-  // returned early and no card could answer them. Dead keys, and most visibly on the Settings
-  // page that carries this very checkbox.
-  const cardShortcutsOn =
-    route.page === "fleet" && layout === "board" && shownDisplayItem("cardShortcut");
+  // is part of it rather than only a guard inside the handler: the layout state stays whatever
+  // it was while an operator is on Library, Runs or Settings, so a condition that did not ask
+  // about the page claimed ⌘0/⌘-/⌘= from the View menu on every one of those pages while the
+  // handler returned early and nothing could answer them. Dead keys, and most visibly on the
+  // Settings page that carries this very checkbox.
+  //
+  // No layout term any more, and that is the change rather than an omission: both fleet
+  // layouts now print the keys and answer them, so a layout test here would release the row
+  // on a Console that draws twelve keycaps.
+  const cardShortcutsOn = route.page === "fleet" && shownDisplayItem("cardShortcut");
   const cardShortcuts = useMemo(
     () => (cardShortcutsOn ? assignCardShortcuts(boardColumns) : NO_CARD_SHORTCUTS),
     [cardShortcutsOn, boardColumns],
@@ -2594,9 +2601,10 @@ export function App(): React.JSX.Element {
       // session merely because its state remains mounted in App.
       if (route.page !== "fleet") return;
 
-      // ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= open a Board card's console. The keycap in each card's top
-      // corner is the same derivation this reads (`lib/card-shortcuts.ts`), so the key a
-      // card prints is the key that opens it.
+      // ⌘1 … ⌘9, ⌘0, ⌘-, ⌘= open a session's console. The keycap the Board card prints in
+      // its top corner, and the one the Console rail prints beside the state word, are the
+      // same derivation this reads (`lib/card-shortcuts.ts`), so the key a row shows is the
+      // key that opens it on either layout.
       //
       // ABOVE the overlay stand-down below and gated on its own `anyOpen` check, because it
       // is also above the typing guard: every chord here carries ⌘, which is the rule this
@@ -2621,6 +2629,10 @@ export function App(): React.JSX.Element {
         // The same two steps Enter on a tile performs, in the same order - the drill-in opens
         // whatever the cursor is on, so this must not be reversed. Already drilled in, this
         // re-points the open detail at the new card, which is what a click on a rail row does.
+        //
+        // Harmless on the Console, where the selection IS the open detail: the flag only
+        // decides whether the Board shows a column or a drill-in, so setting it here is what
+        // makes one arm serve both layouts instead of branching on the layout.
         setBoardOpen(true);
         return;
       }

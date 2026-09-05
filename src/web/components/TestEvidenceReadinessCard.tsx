@@ -277,7 +277,9 @@ export function TestEvidenceReadinessCard({
               : `First Auditor attempt accepted ${formatAuditRate(
                   aggregate.firstAuditorAttemptAccepted,
                   "first Auditor attempts",
-                )} · target at least 70%`}
+                )} · target at least ${Math.round(
+                  TEST_EVIDENCE_TARGETS.firstPassAcceptance * 100,
+                )}%`}
           </ConsoleState>
 
           <Group id="wf-evidence-preflight" title="Preflight outcomes">
@@ -462,8 +464,10 @@ export function TestEvidenceReadinessCard({
           {aggregate.firstAuditorAttemptUnknown > 0 && (
             <p className="settings-hint">
               {aggregate.firstAuditorAttemptUnknown} legacy
-              {aggregate.firstAuditorAttemptUnknown === 1 ? " attempt has" : " attempts have"}
-              {" "}no first-Auditor identity and is excluded from the headline.
+              {aggregate.firstAuditorAttemptUnknown === 1
+                ? " attempt has no first-Auditor identity and is excluded"
+                : " attempts have no first-Auditor identity and are excluded"}
+              {" "}from the headline.
             </p>
           )}
           {aggregate.preflight.truncated && (

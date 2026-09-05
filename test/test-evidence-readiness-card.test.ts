@@ -247,6 +247,17 @@ test("one unreadable attempt is described in the singular", () => {
   );
 });
 
+test("legacy attempts agree in number when excluded from the headline", () => {
+  assert.match(
+    render({ ...MEASURED, firstAuditorAttemptUnknown: 1 }),
+    /1 legacy attempt has no first-Auditor identity and is excluded from the headline/,
+  );
+  assert.match(
+    render({ ...MEASURED, firstAuditorAttemptUnknown: 2 }),
+    /2 legacy attempts have no first-Auditor identity and are excluded from the headline/,
+  );
+});
+
 test("the card reads out every number the report's rollout criterion is written in", () => {
   const html = render(MEASURED);
   assert.match(html, /First Auditor attempt accepted 33% \(1 of 3 first Auditor attempts\)/);

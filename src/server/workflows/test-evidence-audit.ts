@@ -60,8 +60,12 @@ const MISSING_ROLES: Partial<Record<WorkflowEvidenceReadinessGapCode, WorkflowEv
   missing_state_snapshot: ["state_snapshot"],
 };
 
+function shortDigest(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex").slice(0, 12);
+}
+
 export function guidanceDigest(guidanceMarkdown: string): string {
-  return createHash("sha256").update(guidanceMarkdown, "utf8").digest("hex").slice(0, 12);
+  return shortDigest(guidanceMarkdown);
 }
 
 /** Opaque correlation only. The underlying database identity never enters telemetry payloads. */
@@ -72,6 +76,10 @@ export function evidenceTelemetryKey(kind: "submission" | "attempt", id: string)
 function evidenceTelemetryEventId(kind: "readiness" | "audit", id: string): string {
   const source = kind === "audit" ? "attempt" : "submission";
   return `${kind}:${evidenceTelemetryKey(source, id)}`;
+}
+
+function telemetryPayloadDigest(payload: WorkflowJson): string {
+  return shortDigest(JSON.stringify(payload));
 }
 
 export function isTestEvidenceAuditorPersona(persona: PersonaSnapshot): boolean {
@@ -150,33 +158,34 @@ export function evidenceReadinessEvaluatedEvent(input: {
   const proofClasses = gapCriteria.flatMap((criterion) =>
     criterion.authorProofClass === null ? [] : [criterion.authorProofClass]);
   const missingRoles = gapCodes.flatMap((gap) => MISSING_ROLES[gap] ?? []);
+  const payload: WorkflowJson = {
+    submissionKey: evidenceTelemetryKey("submission", input.submission.id),
+    policy: input.version.evidenceReadinessPolicy,
+    evaluatorVersion: input.readiness?.evaluatorVersion ?? null,
+    status: input.readiness?.status ?? "not_evaluated",
+    round: input.submission.round,
+    segment: input.submission.segment,
+    refinementReason: input.submission.refinementReason ?? null,
+    criteriaCount: input.readiness?.criteria.length ?? 0,
+    mappedClaimCount: input.readiness?.criteria.filter(
+      (criterion) => criterion.matchedClientCriterionId !== null,
+    ).length ?? 0,
+    warningCount: input.readiness?.criteria.reduce(
+      (sum, criterion) => sum + criterion.warnings.length,
+      0,
+    ) ?? 0,
+    gapCount: gapCodes.length,
+    gapCodes: categoryCounts(gapCodes),
+    proofClasses: categoryCounts(proofClasses),
+    missingRoles: categoryCounts(missingRoles),
+    override: input.readiness?.status === "overridden",
+    workflowId: input.version.workflowId,
+    workflowVersion: input.version.version,
+    repositoryScope: scopeCategory(input.coverage),
+  };
   return {
-    eventId: evidenceTelemetryEventId("readiness", input.submission.id),
-    payload: {
-      submissionKey: evidenceTelemetryKey("submission", input.submission.id),
-      policy: input.version.evidenceReadinessPolicy,
-      evaluatorVersion: input.readiness?.evaluatorVersion ?? null,
-      status: input.readiness?.status ?? "not_evaluated",
-      round: input.submission.round,
-      segment: input.submission.segment,
-      refinementReason: input.submission.refinementReason ?? null,
-      criteriaCount: input.readiness?.criteria.length ?? 0,
-      mappedClaimCount: input.readiness?.criteria.filter(
-        (criterion) => criterion.matchedClientCriterionId !== null,
-      ).length ?? 0,
-      warningCount: input.readiness?.criteria.reduce(
-        (sum, criterion) => sum + criterion.warnings.length,
-        0,
-      ) ?? 0,
-      gapCount: gapCodes.length,
-      gapCodes: categoryCounts(gapCodes),
-      proofClasses: categoryCounts(proofClasses),
-      missingRoles: categoryCounts(missingRoles),
-      override: input.readiness?.status === "overridden",
-      workflowId: input.version.workflowId,
-      workflowVersion: input.version.version,
-      repositoryScope: scopeCategory(input.coverage),
-    },
+    eventId: `${evidenceTelemetryEventId("readiness", input.submission.id)}:${telemetryPayloadDigest(payload)}`,
+    payload,
   };
 }
 

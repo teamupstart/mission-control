@@ -8,6 +8,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { workflowCommandEvidenceContent } from "../../src/shared/workflow.ts";
+import { evidenceTelemetryKey } from "../../src/server/workflows/test-evidence-audit.ts";
 
 const EVIDENCE = artifactsDir("workflow-evidence-readiness");
 
@@ -190,11 +191,11 @@ function stageLaterPacket(
 
 function seedOutcomeAnalytics(daemon: DaemonHandle): void {
   const readiness = (
-    submissionKey: string,
+    submissionId: string,
     status: "ready" | "gaps" | "unavailable",
     workflowVersion: number,
   ) => ({
-    submissionKey,
+    submissionKey: evidenceTelemetryKey("submission", submissionId),
     policy: "criterion_mapped_v1",
     evaluatorVersion: "criterion-mapped-v1",
     status,
@@ -214,14 +215,14 @@ function seedOutcomeAnalytics(daemon: DaemonHandle): void {
     repositoryScope: "repository",
   });
   const audit = (
-    submissionKey: string,
+    submissionId: string,
     outcome: "pass" | "fail",
     readinessStatus: "ready" | "overridden",
     workflowVersion: number,
     digest: string,
   ) => ({
     nodeId: "test-auditor",
-    submissionKey,
+    submissionKey: evidenceTelemetryKey("submission", submissionId),
     workflowId: "analytics-workflow",
     workflowVersion,
     guidance: {
@@ -253,6 +254,11 @@ function seedOutcomeAnalytics(daemon: DaemonHandle): void {
     downstreamProofRequests: [],
     possibleDownstreamProofOverreach: false,
   });
+  const legacyAudit = (...args: Parameters<typeof audit>) => {
+    const payload: ReturnType<typeof audit> & { firstAuditorAttempt?: boolean } = audit(...args);
+    delete payload.firstAuditorAttempt;
+    return payload;
+  };
   withDaemonDb(daemon, (db) => {
     const insert = db.prepare(
       `INSERT INTO workflow_events (event_id, run_id, ts, event_kind, payload_json)
@@ -264,17 +270,21 @@ function seedOutcomeAnalytics(daemon: DaemonHandle): void {
       ["e2e-audit-ready", "analytics-ready", 11, "test_evidence_audit",
         audit("opaque-ready", "fail", "ready", 13, "aaaaaaaaaaaa")],
       ["e2e-readiness-override", "analytics-override", 20, "evidence_readiness_evaluated",
-        readiness("opaque-override", "gaps", 12)],
+        readiness("override-submission", "gaps", 12)],
       ["e2e-override", "analytics-override", 21, "evidence_readiness_overridden",
-        { acknowledgedRisk: true }],
+        { submissionId: "override-submission", acknowledgedRisk: true }],
       ["e2e-audit-override", "analytics-override", 22, "test_evidence_audit",
-        audit("opaque-override", "pass", "overridden", 12, "bbbbbbbbbbbb")],
+        audit("override-submission", "pass", "overridden", 12, "bbbbbbbbbbbb")],
       ["e2e-readiness-refined", "analytics-refined", 30, "evidence_readiness_evaluated",
-        readiness("opaque-refined", "gaps", 13)],
+        readiness("refined-submission", "gaps", 13)],
       ["e2e-refinement", "analytics-refined", 31, "evidence_preflight_refinement_reserved",
-        { round: 1, segment: 1 }],
+        { parentSubmissionId: "refined-submission", round: 1, segment: 1 }],
       ["e2e-readiness-unavailable", "analytics-unavailable", 40,
-        "evidence_readiness_evaluated", readiness("opaque-unavailable", "unavailable", 13)],
+        "evidence_readiness_evaluated", readiness("unavailable-submission", "unavailable", 13)],
+      ["e2e-audit-legacy-1", "analytics-legacy-1", 50, "test_evidence_audit",
+        legacyAudit("legacy-submission-1", "pass", "ready", 13, "cccccccccccc")],
+      ["e2e-audit-legacy-2", "analytics-legacy-2", 51, "test_evidence_audit",
+        legacyAudit("legacy-submission-2", "pass", "ready", 13, "cccccccccccc")],
     ];
     for (const event of events) {
       insert.run(event[0], event[1], event[2], event[3], JSON.stringify(event[4]));
@@ -523,6 +533,10 @@ test("Test evidence readiness separates preflight outcomes from first Auditor ac
   const card = dashboard.locator('[data-anchor="workflows/test-evidence"]');
   await expect(card).toBeVisible();
   await expect(card).toContainText("First Auditor attempt accepted 50% (1 of 2 first Auditor attempts)");
+  await expect(card).toContainText("target at least 70%");
+  await expect(card).toContainText(
+    "2 legacy attempts have no first-Auditor identity and are excluded from the headline.",
+  );
   await expect(card).toContainText("Preflight interceptions");
   await expect(card).toContainText("50% (2 of 4 enforcing evaluations)");
   await expect(card).toContainText("Same-round refinements");

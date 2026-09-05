@@ -226,8 +226,19 @@ test("readiness evaluation telemetry is bounded, opaque, and replay-stable", () 
     coverage,
     version,
   });
+  const reevaluated = evidenceReadinessEvaluatedEvent({
+    submission,
+    readiness: null,
+    coverage,
+    version,
+  });
   assert.equal(first.eventId, replay.eventId);
   assert.notEqual(first.eventId, distinct.eventId);
+  assert.notEqual(
+    first.eventId,
+    reevaluated.eventId,
+    "a changed evaluation of the same resumed submission needs its own replay-stable event",
+  );
   assert.deepEqual(first.payload, {
     submissionKey: evidenceTelemetryKey("submission", submission.id),
     policy: "criterion_mapped_v1",

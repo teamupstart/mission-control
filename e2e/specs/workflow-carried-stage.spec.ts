@@ -254,12 +254,17 @@ test("a carried stage names the round it passed in, and goes there in one press"
   const runId = await seedCarriedRun(dashboard, daemon);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
 
-  // Two entries under ONE repair round: the continuation cost no repair budget.
+  // ONE tile for the one repair round, with its two captures listed in the tray below it:
+  // the continuation cost no repair budget, and a second tile beside the first is how the
+  // strip used to claim it had. The `Round 1 · evidence N` wording survives where it belongs
+  // - on the carried line below that cites the round it inherited from.
   const scrubber = dashboard.getByRole("group", { name: "Select a round" });
-  await expect(scrubber.locator(".wf-run-round-name"))
-    .toHaveText([SOURCE_ROUND, "Round 1 · evidence 2"]);
+  await expect(scrubber.locator(".wf-run-round-name")).toHaveText(["Round 1"]);
+  await expect(scrubber.locator(".wf-run-round-count")).toHaveText("2 evidence");
+  const snapshots = dashboard.getByRole("group", { name: "Select evidence in round 1" });
+  await expect(snapshots.locator(".wf-run-tray-chip")).toHaveCount(2);
   // The run opens on the newest segment, which is the one holding the carried stage.
-  await expect(scrubber.getByRole("button", { name: /evidence 2/ }))
+  await expect(snapshots.getByRole("button", { name: /evidence 2/ }))
     .toHaveAttribute("aria-pressed", "true");
 
   const carriedStage = dashboard.locator(".wf-pipeline-stage")
@@ -314,8 +319,10 @@ test("a carried stage names the round it passed in, and goes there in one press"
   // ...and it is one PRESS from the proof, which is the whole complaint. Before this the reader
   // had to leave the round, find the earlier one in the scrubber, and read it there.
   await provenance.click();
-  await expect(scrubber.getByRole("button", { name: new RegExp("evidence 1") }))
+  await expect(snapshots.getByRole("button", { name: /evidence 1/ }))
     .toHaveAttribute("aria-pressed", "true");
+  // ...and the chip it left is released, so the tray names one open capture and not two.
+  await expect(snapshots.locator(".wf-run-tray-chip[aria-pressed='true']")).toHaveCount(1);
   // The same stage, in the round that earned it, showing the outcome the line promised.
   await expect(carriedStage.locator(".wf-pipeline-stage-head .wf-pipeline-status"))
     .toHaveText("All passed");

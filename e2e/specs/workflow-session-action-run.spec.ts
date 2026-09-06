@@ -264,13 +264,17 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   // an operator reads, and it is the half that can lie by borrowing a reviewer's vocabulary.
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
 
-  // Two entries under ONE repair round, named as evidence rather than as a second attempt at
-  // the same thing. A scrubber that showed "Round 1, Round 2" would say the run had spent
-  // half its repair budget on an action that spends none.
+  // ONE tile for ONE repair round, with the two snapshots inside it named as evidence rather
+  // than as a second attempt at the same thing. A scrubber that showed "Round 1, Round 2" -
+  // or two tiles of any wording - would say the run had spent half its repair budget on an
+  // action that spends none.
   const scrubber = dashboard.getByRole("group", { name: "Select a round" });
-  await expect(scrubber.locator(".wf-run-round-name")).toHaveText([
-    "Round 1 · evidence 1",
-    "Round 1 · evidence 2",
+  await expect(scrubber.locator(".wf-run-round-name")).toHaveText(["Round 1"]);
+  await expect(scrubber.locator(".wf-run-round-count")).toHaveText("2 evidence");
+  const snapshots = dashboard.getByRole("group", { name: "Select evidence in round 1" });
+  await expect(snapshots.locator(".wf-run-tray-chip-name")).toHaveText([
+    "evidence 1",
+    "evidence 2",
   ]);
   await expect(dashboard.locator(".wf-run-notice"))
     .toContainText("does not spend a repair round");
@@ -354,9 +358,11 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   await expect(actionCard)
     .toContainText("The instruction is ready and has not been sent to the session yet.");
   // One repair round, one evidence snapshot: no continuation happened, so the scrubber draws
-  // no evidence suffix at all.
-  await expect(dashboard.getByRole("group", { name: "Select a round" }).locator(".wf-run-round-name"))
-    .toHaveText(["Round 1"]);
+  // one tile with no count badge, and no tray at all.
+  const lone = dashboard.getByRole("group", { name: "Select a round" });
+  await expect(lone.locator(".wf-run-round-name")).toHaveText(["Round 1"]);
+  await expect(lone.locator(".wf-run-round-count")).toHaveCount(0);
+  await expect(dashboard.getByRole("group", { name: /^Select evidence/ })).toHaveCount(0);
   // Never filed under the heading that promises a verdict. This graph holds no reviewer at all,
   // so the section says exactly that - and the action's name is nowhere in it. It used to be
   // asserted against `.wf-run-attempt`, which was populated by the Session and End nodes' own

@@ -510,6 +510,152 @@ export function runRounds(
   });
 }
 
+/**
+ * One round, with every evidence snapshot it took, for a scrubber that draws ONE TILE PER
+ * ROUND.
+ *
+ * `runRounds` answers per submission because that is what every scoped section is keyed on,
+ * and it stays that way. What it cannot say is how many tiles to draw: a run that captured
+ * evidence eleven times inside round 2 produced eleven entries, and a strip of them reads as
+ * eleven rounds - which is the opposite of what the segment model exists to convey, and on a
+ * three-round run it filled the header with twenty-three tiles that had to wrap three deep.
+ *
+ * So the round is the unit of the tile, and the snapshots inside it are the unit of
+ * SELECTION. The group wears the newest snapshot's status, because that is what the round is
+ * doing now; the older ones keep their own, because "round 2 took eleven captures and one of
+ * them failed" is exactly the sentence a collapsed tile must not swallow.
+ */
+export interface RoundGroupView {
+  round: number;
+  /** `Round 2`, or `Round 2 · GitHub Inspector`, taken from the newest snapshot. */
+  label: string;
+  /** The newest snapshot: what the tile selects, and whose status it wears. */
+  head: RoundView;
+  /** Every snapshot of this round in execution order, oldest first. Never empty. */
+  segments: readonly RoundView[];
+  status: PipelineStatus;
+}
+
+/**
+ * Fold `runRounds` into one entry per round, keeping execution order in both directions.
+ *
+ * Grouped by round NUMBER rather than by adjacency. The rows arrive ordered, so the two agree
+ * today; keyed on the number they still agree if a later feature ever interleaves them, and a
+ * duplicate `Round 2` tile is the one failure a reader could not diagnose from the screen.
+ */
+export function runRoundGroups(rounds: readonly RoundView[]): RoundGroupView[] {
+  const groups = new Map<number, RoundView[]>();
+  for (const round of rounds) {
+    const segments = groups.get(round.round);
+    if (segments) segments.push(round);
+    else groups.set(round.round, [round]);
+  }
+  return [...groups.values()].map((segments) => {
+    const head = segments[segments.length - 1]!;
+    return {
+      round: head.round,
+      label: `Round ${head.round}`
+        + (head.inspectorOnly ? " · GitHub Inspector" : ""),
+      head,
+      segments,
+      status: head.status,
+    };
+  });
+}
+
+/**
+ * The tile's badge: how many times this round captured evidence.
+ *
+ * Deliberately INDEPENDENT of what is selected. The tray below names the snapshot being read,
+ * so a badge that also changed with the selection would only make the tile's own width move
+ * under a reader clicking along the chips - the tiles beside it shifting sideways on every
+ * pick. Static text keeps the whole strip still while the tray does the talking.
+ */
+export function roundEvidenceCountLabel(group: RoundGroupView): string {
+  return `${group.segments.length} evidence`;
+}
+
+/** A tray chip's own name: one-based for a human, as the round label counts it. */
+export function evidenceChipLabel(segment: RoundView): string {
+  return `evidence ${segment.segment + 1}`;
+}
+
+/**
+ * How many of this round's captures failed.
+ *
+ * The tile wears the NEWEST capture's status, and only the open round draws a tray - so
+ * without this a failure that happened mid-round vanished the moment the reader looked at a
+ * different round. Round 2 could hold a failed capture while round 3 is on screen, and
+ * round 2's tile would report nothing but its newest state. That is the one thing collapsing
+ * a round must not hide, and it is what the marker beside the count badge exists to say.
+ *
+ * Counts every failed capture in the round, including the newest. A round parked on a failure
+ * says so twice - once in its status line, once here - which is redundant rather than wrong,
+ * and the alternative (excluding the head) makes the number mean "failures you cannot already
+ * see", which is a rule a reader would have to be told.
+ */
+export function roundFailedCaptureCount(group: RoundGroupView): number {
+  return group.segments.filter((segment) => segment.status.tone === "failed").length;
+}
+
+/**
+ * The tile's failure marker, or null when nothing in the round failed.
+ *
+ * Selection-independent for the same reason the count badge is: it must not move the strip
+ * when a reader clicks along the chips.
+ */
+export function roundFailedCaptureLabel(group: RoundGroupView): string | null {
+  const failed = roundFailedCaptureCount(group);
+  return failed === 0 ? null : `${failed} failed`;
+}
+
+/**
+ * Does this round hold the submission being read?
+ *
+ * The ownership rule, and the ONE place it is decided. The tile reads it for its pressed and
+ * active states; `openEvidenceTray` below reads the same function to pick the tray. Written
+ * twice - once here and once inline in the tile's own render - the two drifted the moment
+ * either changed, and the tie-break the comment on `runRoundGroups` anticipates for duplicate
+ * round numbers is exactly the change that would do it: a tile claiming to be the active
+ * round while a different round's tray is the one on screen.
+ */
+export function roundHoldsViewedSubmission(
+  group: RoundGroupView,
+  viewedSubmissionId: string | null,
+): boolean {
+  return group.segments.some((segment) => segment.submissionId === viewedSubmissionId);
+}
+
+/**
+ * Has this round more than one capture, so a tray has something to offer?
+ *
+ * The eligibility threshold, and the ONE place it lives. It gates three things that must
+ * agree or the tile lies about itself: whether the count badge is drawn, whether the tile
+ * reports `aria-expanded` at all, and whether a tray is rendered underneath.
+ */
+export function roundOpensEvidenceTray(group: RoundGroupView): boolean {
+  return group.segments.length > 1;
+}
+
+/**
+ * Whose tray is open: the round holding the submission being read.
+ *
+ * One tray at a time, and it belongs to the round on screen rather than to a separate
+ * disclosure the reader has to keep in their head. A round with a single snapshot opens
+ * nothing - there is no choice to offer - which is why this can answer null for a round that
+ * is perfectly well selected, and why the tile cannot derive its OWN ownership from this
+ * result: a lone viewed snapshot owns the view while opening no tray. That is the trap this
+ * function is composed from the two predicates above rather than duplicating them.
+ */
+export function openEvidenceTray(
+  groups: readonly RoundGroupView[],
+  viewedSubmissionId: string | null,
+): RoundGroupView | null {
+  const group = groups.find((candidate) =>
+    roundHoldsViewedSubmission(candidate, viewedSubmissionId));
+  return group && roundOpensEvidenceTray(group) ? group : null;
+}
+
 function segmentCounts(submissions: readonly WorkflowSubmission[]): Map<number, number> {
   const counts = new Map<number, number>();
   for (const submission of submissions) {

@@ -128,7 +128,6 @@ import {
   ENSEMBLE_DECISION_STATUSES,
   ENSEMBLE_DRIVER_KEYS,
   ENSEMBLE_EVALUATION_STATUSES,
-  ENSEMBLE_EVALUATOR_KINDS,
   ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_LIMITS,
   ENSEMBLE_LLM_CALL_STATES,
@@ -4781,11 +4780,19 @@ export const WorkflowJsonSchema: z.ZodType<WorkflowJson> = z.lazy(() =>
 );
 
 const WorkflowVerdictTextSchema = z.string().trim().min(1);
+const WorkflowVerdictOptionalPathSchema = z.preprocess(
+  (value) => value === null ? undefined : value,
+  z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
+);
+const WorkflowVerdictOptionalLineSchema = z.preprocess(
+  (value) => value === null ? undefined : value,
+  z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
+);
 export const WorkflowEvidenceRefSchema = z.object({
   kind: z.enum(EVIDENCE_REF_KINDS),
   quote: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
-  path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
-  line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
+  path: WorkflowVerdictOptionalPathSchema,
+  line: WorkflowVerdictOptionalLineSchema,
 }).superRefine((value, ctx) => {
   if (value.kind !== "image" && value.kind !== "artifact") return;
   if (!value.path) {
@@ -5138,8 +5145,27 @@ export const WorkflowRequestedChangeSchema = z.object({
     .array(WorkflowEvidenceRefSchema)
     .min(1)
     .max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence),
-  path: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictPath).optional(),
-  line: z.number().int().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictLine).optional(),
+  path: WorkflowVerdictOptionalPathSchema,
+  line: WorkflowVerdictOptionalLineSchema,
+});
+
+// Strict provider schemas require one object at the root. Keep both conditional branches
+// present on the wire, then parse the reply through PersonaVerdictSchema before accepting it.
+export const PersonaVerdictProviderWireSchema = z.object({
+  verdict: z.enum(["pass", "fail"]),
+  summary: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
+  approvalDetails: z
+    .object({
+      reason: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
+      evidence: z.array(WorkflowEvidenceRefSchema).max(WORKFLOW_EXECUTION_LIMITS.verdictEvidence),
+    })
+    .nullable(),
+  requestedChanges: z
+    .array(WorkflowRequestedChangeSchema)
+    .min(1)
+    .max(WORKFLOW_EXECUTION_LIMITS.verdictChanges)
+    .nullable(),
+  confidence: z.number().finite().min(0).max(1),
 });
 
 export const PersonaVerdictSchema = z

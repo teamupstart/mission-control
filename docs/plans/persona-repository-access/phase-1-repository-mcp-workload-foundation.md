@@ -4,11 +4,40 @@
 
 Land the provider-neutral execution and security foundation for repository-aware Persona reviews without enabling the feature for any Persona yet.
 
-After this phase, a test or internal harness can dispatch one versioned local Persona workload against an injected materialized repository view. Claude and Codex each start one isolated provider session, call the same local stdio MCP server repeatedly, and return one schema-validated verdict. The MCP exposes only the eight approved read operations, enforces one shared policy, emits safe audit metadata locally, and never receives Mission Control credentials.
+After this phase, a test or internal harness can dispatch one versioned local Persona workload against an injected materialized repository view. Dedicated Claude and Codex adapters can each start one isolated provider session, call the same local stdio MCP server repeatedly, and return one schema-validated verdict. The MCP exposes only the eight approved read operations, enforces one shared policy, emits safe audit metadata locally, and never receives Mission Control credentials.
 
 Estimated gross non-test implementation: **1,950-2,550 lines**.
 
-Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The provider-neutral foundation remains valid. Current Claude headless execution has an SDK path with narrowly granted read tools, while current Codex headless paths reject generic grants and differ on image support. This reinforces the dedicated workload-adapter boundary and leaves the provider parity prototype as a blocking exit gate.
+Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The provider-neutral foundation remains valid. Current Claude headless execution has an SDK path with narrowly granted read tools, while current Codex headless paths reject generic grants and differ on image support. This reinforces the dedicated workload-adapter boundary.
+
+Verification amendment: on 2026-09-06 the operator removed installed Claude execution from the blocking gate because the available authenticated Claude account cannot run further model calls under its spend limit. Claude remains a supported adapter and must pass the same deterministic multi-call, capability, image, cancellation, handle, verdict, and accounting contract tests as Codex. Installed Codex remains the blocking process-boundary proof. This does not authorize a Claude fallback, a weaker Claude contract, production activation, or a claim that live Claude compatibility was reverified.
+
+## Delivered Phase 1 contract
+
+This document owns the delivered Phase 1 behavior as well as the route that produced it. The implementation remains a dormant foundation: no Persona persistence, HTTP route, Workflow engine call, default executor construction, database migration, or browser surface can activate repository access.
+
+### Closed repository and evidence boundary
+
+- `src/shared/repository-access.ts` owns the strict operation, request, result, view, history, cursor, audit, evidence-handle, workload, event, materialization, cancellation, and compatibility schemas. The only repository operations are `read`, `search`, `glob`, `git_status`, `git_diff`, `git_show`, `git_log`, and `git_blame`.
+- Success results are operation-specific. They reject item kinds, ranges, cardinalities, mixed `git_show` metadata and diff pages, and history-boundary combinations that the reader cannot produce.
+- Evidence handles contain metadata only. They bind the snapshot, workload, Workflow attempt, daemon-minted operation-instance id, operation kind, item ordinal, approved path, policy version, truncation state, and exactly one canonical range. Line ranges are 1-based half-open over LF-delimited text, raw-blob byte ranges are 0-based half-open, and diff ranges carry independent 1-based half-open old and new intervals.
+- `src/server/repository/reader.ts` reads only the injected verified descriptor. Worktree bytes are checked against their captured Git object identity before they can be returned or receive a handle. Search charges each candidate match against the response-byte and item budgets before retaining it, and its continuation cursor resumes at the first unserved match. Paths, history membership, cursors, budgets, Git arguments, patch headers, and audit writes fail closed.
+- `src/repository-mcp/server.ts` is a separate stdio bundle that publishes exactly those eight tools. It receives an attempt-scoped private descriptor and audit sink, has no Mission MCP or Workflow API dependency, and emits no result bodies through audit events.
+
+### Provider and executor boundary
+
+- `src/server/workflows/persona-workload/executor.ts` owns the local reference supervisor and accepts an injected `RepositoryArtifactMaterializer`. Materialization requests include submission, workload, Workflow attempt, artifact locator, and artifact digest identity. The daemon-owned prompt, submission images, text evidence, and LLM call accounting remain in the workload contract.
+- Claude and Codex use dedicated workload adapters. Each receives the same provider-neutral MCP descriptor, exact tool inventory, budgets, deadline, images, and structured verdict schema. Built-in filesystem, shell, write, and network tools are disabled. Codex may accept cached hosted-search results, but its native `tools.web_search` capability must be effectively disabled before thread start.
+- `src/server/agent-subprocess-env.ts` owns the shared headless subprocess environment policy. Claude and Codex adapters depend on that neutral owner and retain no cross-provider launch dependency.
+- The Codex adapter uses the enterprise-compatible `on-request` approval policy and rejects every provider interaction request at the client boundary. This preserves non-interactive fail-closed execution on installations whose managed policy refuses `never`.
+- Keychain-backed Codex authentication remains owned by the configured Codex home. The adapter redirects workload SQLite and logs into the attempt directory, probes the effective MCP inventory without starting a thread, explicitly disables every inherited MCP definition, and then verifies that only the repository MCP is enabled before model execution.
+- The local executor accepts a provider result only after at least two repository MCP calls occurred in one provider session, the provider call trace exactly matches the safe repository audit journal, operation-instance ids are unique, and the final verdict passes the shared schema.
+- `npm run test:persona-provider-parity` is the blocking provider gate. It runs the deterministic shared Claude/Codex contract suite without provider calls, then launches only the installed authenticated Codex process against a generated non-sensitive repository fixture. Codex must perform repository `read` and `git_status` calls in one session and return one accepted structured verdict with usage accounting. The command must pass before the Phase 1 pull request is eligible to merge. A failure does not authorize a provider-specific repository tool, repeated-call broker, prompt-only fallback, or wider capability grant.
+
+### Phase 2 and Phase 3 handoff
+
+- Phase 2 supplies the portable artifact owner behind `RepositoryArtifactMaterializer`. It may extend only the versioned artifact descriptor and must preserve the exact operation, policy, security, provider, audit, evidence-handle, cancellation, and event semantics established here.
+- Phase 3 owns persistence, citations, Workflow activation, and remote scheduling. Its first release must be a writer-disabled compatibility-floor build that strictly refuses newer database schemas and dormantly parses and preserves repository evidence. Citation writers and read-enabled dispatch remain disabled until every state owner is at that floor.
 
 ## Entry criteria and direct dependencies
 
@@ -95,16 +124,16 @@ interface RepositoryArtifactMaterializer {
 
 ## Implementation steps
 
-### 1. Prove both providers before broad implementation
+### 1. Prove provider compatibility and the blocking Codex process boundary
 
-Build focused executable contract prototypes using the installed provider paths:
+Build focused executable contract prototypes through the dedicated provider paths:
 
-1. Start one isolated Claude workload with one launch-scoped stdio MCP descriptor, all built-in filesystem/shell/write/network tools disabled, multiple MCP calls, required image inputs, and one structured final result.
-2. Repeat the same sequence for Codex through its workload-specific SDK/app-server path.
+1. Exercise one isolated Claude workload through a deterministic provider transport with one launch-scoped stdio MCP descriptor, all built-in filesystem/shell/write/network tools disabled, multiple MCP calls, required image inputs, and one structured final result.
+2. Repeat the same deterministic sequence for Codex through its workload-specific app-server protocol transport, then run the installed Codex process against the synthetic repository fixture.
 3. Record the exact provider configuration in runner-contract tests: working directory, sandbox/approval posture, disabled built-ins, MCP registration, model, images, schema, deadline, and cancellation.
 4. Prove the provider sees only the repository MCP tool names and cannot call Mission MCP or provider-native repository tools.
 
-This is a blocking feasibility gate. If either provider cannot meet the contract, stop the phase and return the design to operator review. Do not add a provider-specific fallback, repeated fresh-call broker, prompt-only fallback, or direct filesystem grant.
+The deterministic contract is blocking for both adapters, and the installed process proof is blocking for Codex. Do not add a provider-specific fallback, repeated fresh-call broker, prompt-only fallback, or direct filesystem grant. Installed Claude execution is non-blocking under the 2026-09-06 operator amendment and is not part of the normal verification command.
 
 ### 2. Extract one repository security policy
 
@@ -229,7 +258,7 @@ npm run smoke
 
 ## Merge and exit criteria
 
-- Both installed provider paths pass the one-session, multiple-MCP-call, image, structured-result, cancellation, and no-direct-tool contract.
+- Both provider adapters pass the deterministic one-session, multiple-MCP-call, image, structured-result, cancellation, and no-direct-tool contract, and installed Codex passes the live process-boundary fixture.
 - The repository MCP publishes exactly eight tools and contains no Mission Control credential or task API path.
 - Every operation shares the same path/content policy and explicit budgets.
 - History operations enforce the shared retained-revision set, report its boundary, and never fetch, accept, or imply history beyond it.
@@ -240,7 +269,7 @@ npm run smoke
 - No existing Workflow or Inspector behavior changes.
 - The phase pull request records any deviation from this proposed route and why.
 
-If provider parity fails, this phase does not merge and Phase 2 must not start.
+If deterministic provider parity or installed Codex parity fails, this phase does not merge and Phase 2 must not start. Installed Claude execution is not a merge gate under the 2026-09-06 operator amendment.
 
 ## Downstream handoff
 

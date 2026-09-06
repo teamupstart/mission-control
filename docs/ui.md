@@ -286,7 +286,7 @@ Four things can come back, and they are deliberately different:
 | Outcome | What you see | What to do |
 | --- | --- | --- |
 | **Reported** | The target repository and a **View GitHub issue** link | Nothing. The draft is retired; reopening starts fresh |
-| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and confirm again - nothing was published |
+| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and report again - nothing was published |
 | **Cannot report** | The specific missing piece - `gh auth login`, an unreachable repository, a label the target does not have | An operator fixes the configuration; the button stays disabled until preflight passes |
 | **Unknown** | "Check the target repository before reporting this again", and a disabled button | Go and look. The issue may or may not exist, and a second press is how a duplicate gets filed under your name |
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PRODUCT_ISSUE_LIMITS,
   PRODUCT_ISSUE_TYPES,
@@ -177,15 +177,16 @@ function previewMatches(
   return same ? preview : null;
 }
 
-let productIssueAuthorizationPreview: {
-  requestId: string;
-  draftIdentity: string;
-} | null = null;
+const productIssueAuthorizationCapability = typeof window === "undefined"
+  ? null
+  : window.missionDesktop?.claimProductIssueAuthorization?.() ?? null;
 
-// Claim the isolated preload's one provider slot as this module loads. The provider closes over
-// module state rather than DOM attributes, and the preload refuses every later replacement.
-if (typeof window !== "undefined") {
-  window.missionDesktop?.bindProductIssuePreview?.(() => productIssueAuthorizationPreview);
+function authorizeProductIssue(input: { requestId: string; draftIdentity: string }): boolean {
+  if (!productIssueAuthorizationCapability) return false;
+  return window.missionDesktop?.authorizeProductIssue?.(
+    productIssueAuthorizationCapability,
+    input,
+  ) === true;
 }
 
 /** Everything the presentational modal draws. Owned by the layer, so a close keeps it. */
@@ -204,6 +205,8 @@ export interface ProductIssueModalProps {
   result: ProductIssueSubmitResult | null;
   /** False once an `unknown` outcome has made blind retry unsafe for this opening. */
   retryAllowed: boolean;
+  /** Authorize only the exact preview carried by the owned Report control's trusted click. */
+  onAuthorize: (input: { requestId: string; draftIdentity: string }) => boolean;
   /** One press: confirm the rendered preview and publish it. */
   onSubmit: () => void;
   onClear: () => void;
@@ -220,6 +223,7 @@ export function ProductIssueModal({
   submitting,
   result,
   retryAllowed,
+  onAuthorize,
   onSubmit,
   onClear,
   onClose,
@@ -250,6 +254,7 @@ export function ProductIssueModal({
    * button that did nothing, which is how the same report gets filed twice.
    */
   const outcomeRef = useRef<HTMLParagraphElement | null>(null);
+  const authorizedSubmitRef = useRef(false);
   useEffect(() => {
     if (!result) return;
     outcomeRef.current?.scrollIntoView({ block: "nearest" });
@@ -282,7 +287,8 @@ export function ProductIssueModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (blocked) return;
+          if (blocked || !authorizedSubmitRef.current) return;
+          authorizedSubmitRef.current = false;
           onSubmit();
         }}
       >
@@ -547,7 +553,17 @@ export function ProductIssueModal({
               className="btn btn-primary"
               disabled={blocked}
               aria-label="Report publicly"
-              data-product-issue-report=""
+              onClick={(event) => {
+                authorizedSubmitRef.current = Boolean(
+                  event.nativeEvent.isTrusted &&
+                  matched &&
+                  onAuthorize({
+                    requestId: matched.requestId,
+                    draftIdentity: matched.draftIdentity,
+                  }),
+                );
+                if (!authorizedSubmitRef.current) event.preventDefault();
+              }}
             >
               {submitting
                 ? "Publishing…"
@@ -697,14 +713,6 @@ export function ProductIssueLayer({
    * with no grant in hand.
   */
   const matched = previewMatches(preview, draft);
-  useLayoutEffect(() => {
-    productIssueAuthorizationPreview = open && matched
-      ? { requestId: matched.requestId, draftIdentity: matched.draftIdentity }
-      : null;
-    return () => {
-      productIssueAuthorizationPreview = null;
-    };
-  }, [open, matched]);
   const onSubmit = useCallback(() => {
     if (submittingRef.current || !retryAllowed || !matched) return;
     submittingRef.current = true;
@@ -739,6 +747,7 @@ export function ProductIssueLayer({
       submitting={submitting}
       result={result}
       retryAllowed={retryAllowed}
+      onAuthorize={authorizeProductIssue}
       onSubmit={onSubmit}
       onClear={resetDraft}
       onClose={onClose}

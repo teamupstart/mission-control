@@ -80,6 +80,7 @@ function draw(overrides: Partial<ProductIssueModalProps> = {}): string {
     submitting: false,
     result: null,
     retryAllowed: true,
+    onAuthorize: () => true,
     onSubmit: () => {},
     onClear: () => {},
     onClose: () => {},
@@ -227,7 +228,6 @@ test("submit is closed until the draft validates, preflight is ready and a previ
 test("the ready form offers one report action without an armed intermediate state", () => {
   const html = draw();
   assert.match(html, /<button type="submit"[^>]*aria-label="Report publicly"/);
-  assert.match(html, /data-product-issue-report=""/);
   assert.doesNotMatch(html, /data-product-issue-(?:request-id|draft-identity)/);
   assert.doesNotMatch(html, /Publish to acme\/public-issues/);
   assert.doesNotMatch(html, /Ready to publish/);

@@ -13,9 +13,12 @@ declare global {
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;
     removeIntegrations(): Promise<{ ok: boolean; message: string }>;
-    /** Bind the app's private current-preview reader once; later callers cannot replace it. */
-    bindProductIssuePreview?(
-      provider: () => { requestId: string; draftIdentity: string } | null,
+    /** Claim the renderer module's private capability once. */
+    claimProductIssueAuthorization?(): string | null;
+    /** Arm one exact report only for the module that claimed the private capability. */
+    authorizeProductIssue?(
+      capability: string,
+      input: { requestId: string; draftIdentity: string },
     ): boolean;
     updates: {
       getState(): Promise<UpdateSnapshot>;

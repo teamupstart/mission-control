@@ -4,36 +4,16 @@
 // (open a link in the system browser, install the Claude integrations, read the
 // app version). contextIsolation keeps this the only channel into the renderer.
 
+import { randomUUID } from "node:crypto";
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 
-const PRODUCT_ISSUE_REPORT_SELECTOR = "button[data-product-issue-report]";
-type ProductIssuePreviewProvider = () => {
+interface ProductIssueAuthorizationInput {
   requestId: string;
   draftIdentity: string;
-} | null;
-let productIssuePreviewProvider: ProductIssuePreviewProvider | null = null;
-
-// Context isolation keeps this trusted-click capture outside the page's JavaScript world.
-// No arming function is exposed to page code: only the exact rendered identity carried by a
-// real Report-control click reaches main, synchronously before React submits the form.
-window.addEventListener("click", (event) => {
-  if (
-    !event.isTrusted ||
-    navigator.userActivation?.isActive !== true ||
-    !(event.target instanceof Element)
-  ) return;
-  const button = event.target.closest<HTMLButtonElement>(PRODUCT_ISSUE_REPORT_SELECTOR);
-  if (!button || button.disabled) return;
-  let input: ReturnType<ProductIssuePreviewProvider> = null;
-  try {
-    input = productIssuePreviewProvider?.() ?? null;
-  } catch {
-    return;
-  }
-  if (!input) return;
-  ipcRenderer.sendSync("mission:product-issue-report-click", input);
-}, true);
+}
+const productIssueAuthorizationCapability = randomUUID();
+let productIssueAuthorizationClaimed = false;
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
@@ -43,10 +23,21 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     ipcRenderer.invoke("mission:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("mission:remove-integrations"),
-  bindProductIssuePreview: (provider: ProductIssuePreviewProvider): boolean => {
-    if (productIssuePreviewProvider) return false;
-    productIssuePreviewProvider = provider;
-    return true;
+  claimProductIssueAuthorization: (): string | null => {
+    if (productIssueAuthorizationClaimed) return null;
+    productIssueAuthorizationClaimed = true;
+    return productIssueAuthorizationCapability;
+  },
+  authorizeProductIssue: (
+    capability: string,
+    input: ProductIssueAuthorizationInput,
+  ): boolean => {
+    if (
+      !productIssueAuthorizationClaimed ||
+      capability !== productIssueAuthorizationCapability ||
+      navigator.userActivation?.isActive !== true
+    ) return false;
+    return ipcRenderer.sendSync("mission:product-issue-report-click", input) === true;
   },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),

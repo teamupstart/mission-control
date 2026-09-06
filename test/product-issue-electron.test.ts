@@ -127,6 +127,7 @@ function dialog(overrides: Partial<ProductIssueModalProps> = {}): string {
     submitting: false,
     result: null,
     retryAllowed: true,
+    onAuthorize: () => true,
     onSubmit: () => {},
     onClear: () => {},
     onClose: () => {},

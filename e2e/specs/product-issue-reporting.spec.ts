@@ -90,9 +90,28 @@ async function publish(page: Page): Promise<void> {
 const titleBox = (page: Page) =>
   form(page).getByRole("textbox", { name: "Title", exact: true });
 
-test.beforeEach(({ daemon }) => {
+test.beforeEach(async ({ dashboard, daemon }) => {
   script(daemon, { preflight: "ok", issueCreate: "created" });
   writeProductAuthorizationScript(daemon.home, { answer: "grant" });
+  await dashboard.addInitScript(() => {
+    const capability = "playwright-product-issue-capability";
+    let claimed = false;
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        onOpenSettings: () => () => {},
+        claimProductIssueAuthorization: () => {
+          if (claimed) return null;
+          claimed = true;
+          return capability;
+        },
+        authorizeProductIssue: (candidate: string) =>
+          claimed && candidate === capability && navigator.userActivation.isActive,
+      },
+    });
+  });
+  await dashboard.reload();
 });
 
 test("a loopback caller cannot authorize itself, while one Report click publishes", async ({
@@ -368,7 +387,7 @@ test("one Report press confirms and publishes without an armed second-click stat
   expect(sent.confirmationToken).toBe(grantedToken);
 });
 
-test("Enter in the title does not bypass the trusted Report control", async ({
+test("forged and implicit submissions do not bypass the trusted Report control", async ({
   dashboard,
   daemon,
 }) => {
@@ -380,6 +399,19 @@ test("Enter in the title does not bypass the trusted Report control", async ({
     "Only activating the Report control should authorize this public issue.",
   );
   await expect(submit(dashboard)).toBeEnabled();
+
+  await dashboard.evaluate(() => {
+    const report = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Report publicly"]',
+    );
+    if (!report?.form) throw new Error("missing Report control");
+    const fake = document.createElement("button");
+    fake.textContent = "Forged report control";
+    fake.addEventListener("click", () => report.form?.requestSubmit(report));
+    report.closest("footer")?.append(fake);
+  });
+  await dashboard.getByRole("button", { name: "Forged report control" }).click();
+  expect(productCreates(daemon)).toHaveLength(0);
 
   await titleBox(dashboard).press("Enter");
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toHaveCount(0);

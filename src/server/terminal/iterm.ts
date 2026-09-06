@@ -1,3 +1,8 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
 import { normTty } from "../discovery/tty.ts";
 import { normalizeItermSessionId } from "@shared/pane.ts";
 import { ITERM_BIN } from "./bin.ts";
@@ -19,8 +24,44 @@ const BUNDLE_ID = "com.googlecode.iterm2";
 const LIST_TIMEOUT_MS = 2500;
 const ACTION_TIMEOUT_MS = 4000;
 const CAPTURE_TIMEOUT_MS = 1000;
+const SPAWN_MARKER_WAIT_MS = 1000;
+const SPAWN_MARKER_POLL_MS = 25;
 const US = "\x1f";
 const RS = "\x1e";
+
+interface SpawnMarker {
+  path: string;
+  read(): string;
+  cleanup(): void;
+}
+
+type SpawnMarkerFactory = () => SpawnMarker;
+
+function createSpawnMarker(): SpawnMarker {
+  const directory = mkdtempSync(join(tmpdir(), "mission-iterm-spawn-"));
+  const path = join(directory, "session-id");
+  return {
+    path,
+    read: () => {
+      try {
+        return readFileSync(path, "utf8");
+      } catch {
+        return "";
+      }
+    },
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+async function readSpawnSessionId(marker: SpawnMarker): Promise<string | null> {
+  const deadline = Date.now() + SPAWN_MARKER_WAIT_MS;
+  do {
+    const paneId = normalizeItermSessionId(marker.read().trim());
+    if (paneId) return paneId;
+    await delay(SPAWN_MARKER_POLL_MS);
+  } while (Date.now() < deadline);
+  return null;
+}
 
 const KEY_EXPRESSIONS: Record<Key, string> = {
   enter: "character id 13",
@@ -188,7 +229,10 @@ function actionResult(result: Awaited<ReturnType<TerminalExec>>, fallback: strin
   return toResult(result, fallback);
 }
 
-export function itermEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
+export function itermEmulator(
+  exec: TerminalExec = defaultExec,
+  spawnMarkerFactory: SpawnMarkerFactory = createSpawnMarker,
+): TerminalEmulator {
   const osa = (script: string, timeoutMs: number) =>
     exec("/usr/bin/osascript", [], { input: script, timeoutMs });
   const command = async (script: string, fallback: string) =>
@@ -256,33 +300,44 @@ export function itermEmulator(exec: TerminalExec = defaultExec): TerminalEmulato
 
     spawn: {
       async tab(spec: TabSpec): Promise<SpawnResult> {
+        const marker = spawnMarkerFactory();
         const argv = shellCommand(spec.argv);
-        const innerLaunch = `${spec.cwd ? `cd -- ${shellCommand([spec.cwd])} && ` : ""}exec ${argv}`;
+        const writeSessionId = `/usr/bin/printf '%s' "$ITERM_SESSION_ID" > ${shellCommand([marker.path])}`;
+        const innerLaunch = `${spec.cwd ? `cd -- ${shellCommand([spec.cwd])} && ` : ""}${writeSessionId} && exec ${argv}`;
         // iTerm2 tokenizes `command` as a direct command line; it does not evaluate shell
         // operators itself. Make the shell boundary explicit so `cd`, `&&`, and `exec`
         // establish the requested worktree and argv instead of becoming arguments to a
         // short-lived command that leaves iTerm2's "session ended" warning behind.
         const launch = shellCommand(["/bin/sh", "-c", innerLaunch]);
         const script = `tell application id "${BUNDLE_ID}"
-  set newWindow to create window with default profile command ${appleScriptString(launch)}
-  set newTab to current tab of newWindow
-  set newSession to current session of newTab
-  return id of newSession
+  create window with default profile command ${appleScriptString(launch)}
 end tell`;
         const result = await osa(script, ACTION_TIMEOUT_MS);
-        if (result.code !== 0) {
+        let paneId: string | null;
+        try {
+          paneId = await readSpawnSessionId(marker);
+        } finally {
+          marker.cleanup();
+        }
+        if (!paneId && result.code !== 0) {
           return { ...actionResult(result, "iTerm2 could not open a window"), target: null };
         }
-        const paneId = normalizeItermSessionId(result.stdout.trim());
-        const target = paneId ? { paneId, tabId: "1" } : null;
+        if (!paneId) {
+          return {
+            ok: false,
+            error: "iTerm2 opened a window but did not expose its session ID",
+            outcomeUnknown: true,
+            target: null,
+          };
+        }
+        const target = { paneId, tabId: "1" };
 
-        // iTerm2 exposes a tab index and writable title in its dictionary, but querying or
-        // mutating either through the object returned by `create window` hangs or errors on
-        // 3.6.11. Re-find the tab by the session's stable ID in a separate Apple Event, the
-        // same path every later retitle uses. Once creation returned, the window is open;
-        // a best-effort title failure must not report the launch as failed and invite a
-        // duplicate window or settle an SDK handoff whose terminal successor is alive.
-        if (target && spec.title) {
+        // iTerm2 3.6.11 can leave the `create window` Apple Event hanging after it has
+        // already launched the command. Capture the stable session ID inside that command
+        // instead of querying the newly created AppleScript object. Re-find the tab by the
+        // captured ID in a separate Apple Event, the same path every later retitle uses.
+        // A best-effort title failure must not revoke a launch proven by the marker.
+        if (spec.title) {
           await retitle(target, spec.title);
         }
         return {

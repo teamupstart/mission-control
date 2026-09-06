@@ -282,34 +282,83 @@ export function humanTranscriptDecisions(messages: TranscriptMessage[]): Workflo
   return messages.map(transcriptDecision).filter((item): item is WorkflowHumanDecision => item !== null);
 }
 
+export interface DeliveredWorkflowTranscriptAnchor {
+  payload: string;
+  transcriptAnchor: number;
+}
+
+interface WorkflowTranscriptTurnIdentity {
+  id: string;
+  ts: number;
+  payloadFingerprint: string;
+}
+
 /**
  * Restore authorship that the transcript format cannot carry.
  *
- * The live overlay handles every non-human injection the current daemon observed. Confirmed
- * workflow deliveries add the durable half: they remain identifiable after a restart, when
- * the in-memory overlay is intentionally empty. Payloads are compared by the same normalized
- * fingerprint as live attribution so transcript trimming cannot turn a workflow packet into
- * an operator decision.
+ * Workflow attribution is identity-based here, not the live overlay's text-only label. A human
+ * can quote a packet verbatim after it was delivered, and context capture must keep that later
+ * decision. Native ids are preferred; a timestamp plus payload fingerprint is used only when
+ * both sides contain one unambiguous match, for transcript parsers whose synthesized ids differ
+ * between reads.
  */
 export function attributeWorkflowContextTranscript(
   sessionId: string,
   messages: TranscriptMessage[],
-  deliveredWorkflowPayloads: readonly string[],
+  deliveredWorkflowTurns: readonly WorkflowTranscriptTurnIdentity[],
 ): TranscriptMessage[] {
-  const durableWorkflow = new Set(
-    deliveredWorkflowPayloads
-      .filter((payload) => payload.trim().length > 0)
-      .map(injectionFingerprint),
-  );
-  return attributeTranscript(sessionId, messages).map((message) => {
-    if (
-      message.role !== "user"
-      || message.origin !== undefined
-      || !message.text
-      || !durableWorkflow.has(injectionFingerprint(message.text))
-    ) return message;
-    return { ...message, origin: "workflow" };
+  const liveAttributed = attributeTranscript(sessionId, messages).map((message) => {
+    if (message.origin !== "workflow") return message;
+    return { ...message, origin: undefined };
   });
+  const exactIds = new Set(deliveredWorkflowTurns.map((turn) => turn.id));
+  const fallbackCounts = new Map<string, number>();
+  const messageCounts = new Map<string, number>();
+  const keyFor = (fingerprint: string, ts: number): string => `${ts}\0${fingerprint}`;
+
+  for (const turn of deliveredWorkflowTurns) {
+    if (turn.ts <= 0) continue;
+    const key = keyFor(turn.payloadFingerprint, turn.ts);
+    fallbackCounts.set(key, (fallbackCounts.get(key) ?? 0) + 1);
+  }
+  for (const message of liveAttributed) {
+    if (message.role !== "user" || !message.text || message.ts <= 0) continue;
+    const key = keyFor(injectionFingerprint(message.text), message.ts);
+    messageCounts.set(key, (messageCounts.get(key) ?? 0) + 1);
+  }
+
+  return liveAttributed.map((message) => {
+    if (message.role !== "user" || message.origin !== undefined || !message.text) return message;
+    const fingerprint = injectionFingerprint(message.text);
+    const exact = exactIds.has(message.id)
+      && deliveredWorkflowTurns.some((turn) =>
+        turn.id === message.id && turn.payloadFingerprint === fingerprint
+      );
+    const fallbackKey = keyFor(fingerprint, message.ts);
+    const unambiguousFallback = message.ts > 0
+      && fallbackCounts.get(fallbackKey) === 1
+      && messageCounts.get(fallbackKey) === 1;
+    return exact || unambiguousFallback ? { ...message, origin: "workflow" } : message;
+  });
+}
+
+function deliveredWorkflowTurnIdentities(
+  located: NonNullable<ReturnType<typeof sessionMessages>>,
+  deliveries: readonly DeliveredWorkflowTranscriptAnchor[],
+): WorkflowTranscriptTurnIdentity[] {
+  const identities: WorkflowTranscriptTurnIdentity[] = [];
+  for (const delivery of deliveries) {
+    if (!delivery.payload.trim()) continue;
+    const payloadFingerprint = injectionFingerprint(delivery.payload);
+    const messages = located.read.before(located.path, delivery.transcriptAnchor, 12).messages;
+    const match = messages.findLast((message) =>
+      message.role === "user"
+      && Boolean(message.text)
+      && injectionFingerprint(message.text) === payloadFingerprint
+    );
+    if (match) identities.push({ id: match.id, ts: match.ts, payloadFingerprint });
+  }
+  return identities;
 }
 
 export function workflowReviewDecision(review: ReviewItem): WorkflowHumanDecision {
@@ -670,7 +719,7 @@ export async function readWorkflowContextRaw(
   registry: Registry,
   binding: WorkflowBinding,
   priorPersonaFeedback: PersonaFeedbackSummary[] = [],
-  deliveredWorkflowPayloads: readonly string[] = [],
+  deliveredWorkflowAnchors: readonly DeliveredWorkflowTranscriptAnchor[] = [],
 ): Promise<WorkflowRawCaptureRead> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
@@ -692,8 +741,9 @@ export async function readWorkflowContextRaw(
   const attributedTranscript = attributeWorkflowContextTranscript(
     session.id,
     transcriptWindow.messages,
-    deliveredWorkflowPayloads,
+    located ? deliveredWorkflowTurnIdentities(located, deliveredWorkflowAnchors) : [],
   );
+  const contextTranscript = attributedTranscript.filter((message) => message.origin !== "workflow");
   const {
     diff,
     allStatus,
@@ -715,10 +765,10 @@ export async function readWorkflowContextRaw(
         rationale: clip(episode.brief ?? episode.recommendation ?? "", MAX_DECISION_TEXT) || null,
         source: { kind: "foreman_episode", id: String(episode.id) },
       })),
-    ...humanTranscriptDecisions(attributedTranscript),
+    ...humanTranscriptDecisions(contextTranscript),
   ]);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
-  const boundedTranscript = boundedWorkflowTranscript(transcriptWindow.messages);
+  const boundedTranscript = boundedWorkflowTranscript(contextTranscript);
   const transcript = boundedTranscript.transcript;
   const raw: RawWorkflowContext = {
     primaryGoal: {

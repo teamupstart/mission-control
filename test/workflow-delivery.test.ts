@@ -76,12 +76,12 @@ test("confirmed workflow payloads remain available for transcript attribution af
   const store = seededStore("attribution");
   const delivered = prepare(store, "attribution", "evidence_readiness");
   store.claimDeliverySend(delivered.id);
-  store.confirmDeliverySend(delivered.id, 10, true, 11);
+  store.confirmDeliverySend(delivered.id, 1_234, true, 11);
 
   const restarted = new WorkflowStore();
   assert.deepEqual(
-    restarted.listDeliveredPayloadsForTranscript("session-attribution", "note-attribution"),
-    ["repair exactly once"],
+    restarted.listDeliveredTranscriptAnchors("session-attribution", "note-attribution"),
+    [{ payload: "repair exactly once", transcriptAnchor: 1_234 }],
   );
 });
 

@@ -98,23 +98,28 @@ test("workflow context excludes a delivered workflow packet after live attributi
   const transcriptPath = join(home, "workflow-attribution.jsonl");
   const humanDecision = "Keep the public API stable";
   const workflowPacket = "# Evidence preflight needs repair\n\nCapture the rendered result.";
-  writeFileSync(
-    transcriptPath,
-    [
-      {
-        type: "user",
-        uuid: "human-decision",
-        timestamp: "2026-09-06T13:00:00.000Z",
-        message: { role: "user", content: humanDecision },
-      },
-      {
-        type: "user",
-        uuid: "workflow-repair",
-        timestamp: "2026-09-06T13:01:00.000Z",
-        message: { role: "user", content: workflowPacket },
-      },
-    ].map((item) => JSON.stringify(item)).join("\n") + "\n",
-  );
+  const records = [
+    {
+      type: "user",
+      uuid: "human-decision",
+      timestamp: "2026-09-06T13:00:00.000Z",
+      message: { role: "user", content: humanDecision },
+    },
+    {
+      type: "user",
+      uuid: "workflow-repair",
+      timestamp: "2026-09-06T13:01:00.000Z",
+      message: { role: "user", content: workflowPacket },
+    },
+    {
+      type: "user",
+      uuid: "human-repetition",
+      timestamp: "2026-09-06T13:02:00.000Z",
+      message: { role: "user", content: workflowPacket },
+    },
+  ].map((item) => `${JSON.stringify(item)}\n`);
+  writeFileSync(transcriptPath, records.join(""));
+  const deliveryAnchor = Buffer.byteLength(records[0]! + records[1]!);
 
   const registry = new Registry();
   registry.applyDiscovery([{
@@ -141,13 +146,27 @@ test("workflow context excludes a delivered workflow packet after live attributi
 
   recordInjection(session.id, workflowPacket, "workflow");
   forgetInjections(session.id);
-  const captured = await readWorkflowContextRaw(registry, binding, [], [workflowPacket]);
-
-  assert.deepEqual(captured.raw.humanDecisions, [{
-    decision: humanDecision,
-    rationale: null,
-    source: { kind: "transcript", id: "human-decision" },
+  const captured = await readWorkflowContextRaw(registry, binding, [], [{
+    payload: workflowPacket,
+    transcriptAnchor: deliveryAnchor,
   }]);
+
+  assert.deepEqual(captured.raw.humanDecisions, [
+    {
+      decision: humanDecision,
+      rationale: null,
+      source: { kind: "transcript", id: "human-decision" },
+    },
+    {
+      decision: workflowPacket,
+      rationale: null,
+      source: { kind: "transcript", id: "human-repetition" },
+    },
+  ]);
+  assert.deepEqual(
+    captured.raw.evidence.transcript.map((message) => message.content),
+    [humanDecision, workflowPacket],
+  );
 });
 
 test("transcript evidence retains the observed 5,393-byte TAP turn through test 13", () => {

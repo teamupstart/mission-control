@@ -5913,7 +5913,7 @@ export class WorkflowManager {
           this.registry,
           binding,
           this.priorFeedback(run.id),
-          this.store.listDeliveredPayloadsForTranscript(
+          this.store.listDeliveredTranscriptAnchors(
             binding.sessionId ?? "",
             binding.noteKey,
           ),

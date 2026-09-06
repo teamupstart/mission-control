@@ -216,7 +216,9 @@ test("typed failure refuses task completion and retries once on a fresh host", a
   chmodSync(codexBin, 0o644);
   await recovery.getByRole("button", { name: "Retry Engineer" }).click();
   await expect(recovery.getByText("Recovery host launch failed", { exact: true })).toBeVisible();
-  await expect(recovery).toContainText("EACCES");
+  await expect(recovery).toContainText(
+    'agent binary "codex" not found in the executable environment',
+  );
   await expect(recovery.getByRole("button", { name: "Resume Engineer" })).toBeVisible();
   await expect(recovery.getByRole("button", { name: "Start Engineer" })).toHaveCount(0);
   await dashboard.mouse.move(0, 0);

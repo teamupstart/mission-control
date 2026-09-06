@@ -23,6 +23,12 @@ interface PathEntry {
   detail: string;
 }
 
+interface PathEntryGroup {
+  values: readonly string[];
+  source: ExecutableSourceId;
+  detail: string;
+}
+
 export interface ExecutableEnvironmentSnapshot {
   generation: number;
   path: string;
@@ -82,6 +88,20 @@ function absoluteDirectory(value: string): string | null {
 
 function splitPath(value: string | undefined): string[] {
   return (value ?? "").split(delimiter).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function collectPathEntries(groups: readonly PathEntryGroup[]): PathEntry[] {
+  const entries: PathEntry[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const value of group.values) {
+      const directory = absoluteDirectory(value);
+      if (!directory || seen.has(directory)) continue;
+      seen.add(directory);
+      entries.push({ directory, source: group.source, detail: group.detail });
+    }
+  }
+  return entries;
 }
 
 function isPathCommand(command: string): boolean {
@@ -374,14 +394,11 @@ export class ExecutableLocator {
     path: string,
     snapshot: ExecutableEnvironmentSnapshot,
   ): ExecutableEnvironmentSnapshot {
-    const entries: PathEntry[] = [];
-    const seen = new Set<string>();
-    for (const value of splitPath(path)) {
-      const directory = absoluteDirectory(value);
-      if (!directory || seen.has(directory)) continue;
-      seen.add(directory);
-      entries.push({ directory, source: "runtime", detail: "explicit child PATH" });
-    }
+    const entries = collectPathEntries([{
+      values: splitPath(path),
+      source: "runtime",
+      detail: "explicit child PATH",
+    }]);
     return {
       ...snapshot,
       path: entries.map((entry) => entry.directory).join(delimiter),
@@ -443,20 +460,27 @@ export class ExecutableLocator {
   }
 
   private installSnapshot(shell: LoginShellResult): ExecutableEnvironmentSnapshot {
-    const entries: PathEntry[] = [];
-    const seen = new Set<string>();
-    const add = (values: readonly string[], source: ExecutableSourceId, detail: string): void => {
-      for (const value of values) {
-        const directory = absoluteDirectory(value);
-        if (!directory || seen.has(directory)) continue;
-        seen.add(directory);
-        entries.push({ directory, source, detail });
-      }
-    };
+    const groups: PathEntryGroup[] = [];
     const custom = prefixedEnv(this.env, "EXECUTABLE_PATHS");
-    if (custom) add(splitPath(custom.value), "operator-directory", custom.name);
-    add(splitPath(this.inheritedPath ?? this.env.PATH), "inherited-path", "PATH inherited by Mission Control");
-    add(splitPath(shell.path ?? undefined), "login-shell", this.env.SHELL?.trim() || "/bin/zsh");
+    if (custom) {
+      groups.push({
+        values: splitPath(custom.value),
+        source: "operator-directory",
+        detail: custom.name,
+      });
+    }
+    groups.push(
+      {
+        values: splitPath(this.inheritedPath ?? this.env.PATH),
+        source: "inherited-path",
+        detail: "PATH inherited by Mission Control",
+      },
+      {
+        values: splitPath(shell.path ?? undefined),
+        source: "login-shell",
+        detail: this.env.SHELL?.trim() || "/bin/zsh",
+      },
+    );
 
     const context = executableCandidateContext(this.env);
     const dataHome = this.env.XDG_DATA_HOME?.trim() || join(context.home, ".local", "share");
@@ -464,24 +488,27 @@ export class ExecutableLocator {
     const miseShims = this.env.MISE_SHIMS_DIR?.trim() || join(miseData, "shims");
     const asdfData = this.env.ASDF_DATA_DIR?.trim() || join(context.home, ".asdf");
     const voltaHome = this.env.VOLTA_HOME?.trim() || join(context.home, ".volta");
-    add(
-      [
-        join(context.home, ".local", "bin"),
-        miseShims,
-        join(asdfData, "shims"),
-        join(voltaHome, "bin"),
-        join(context.home, "go", "bin"),
-      ],
-      "version-manager",
-      "supported per-user tool locations",
+    groups.push(
+      {
+        values: [
+          join(context.home, ".local", "bin"),
+          miseShims,
+          join(asdfData, "shims"),
+          join(voltaHome, "bin"),
+          join(context.home, "go", "bin"),
+        ],
+        source: "version-manager",
+        detail: "supported per-user tool locations",
+      },
+      {
+        values: this.platform === "win32"
+          ? []
+          : ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
+        source: "os-default",
+        detail: `${this.platform} supported defaults`,
+      },
     );
-    add(
-      this.platform === "win32"
-        ? []
-        : ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
-      "os-default",
-      `${this.platform} supported defaults`,
-    );
+    const entries = collectPathEntries(groups);
     const refreshedAtMs = this.now();
     const snapshot: ExecutableEnvironmentSnapshot = {
       generation: (this.snapshotValue?.generation ?? 0) + 1,

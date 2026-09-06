@@ -19,7 +19,7 @@ import {
   executableCandidateContext,
   executableSpec,
 } from "../src/server/executables/catalog.ts";
-import { GHOSTTY_BIN, binPresent, resolveBin } from "../src/server/terminal/bin.ts";
+import { binPresent } from "../src/server/terminal/bin.ts";
 import { asQuote, ghosttyEmulator, parseSurfaces } from "../src/server/terminal/ghostty.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
 
@@ -71,13 +71,16 @@ test("the capabilities it declares, and the two nulls that survived a real insta
   assert.deepEqual(g.hostProcess, { commands: ["ghostty"] });
 });
 
-test("the binary answers 'is it installed' and is never the thing that runs", async () => {
+test("the catalog declares the detection binary and the adapter never runs it", async () => {
   // The first backend where those are two different binaries. `+new-window` answers "not
   // supported on this platform" and the bundle is built `app runtime: .none`, so the GUI is
   // driven by Apple Events - and `binPresent` still needs a real path to test.
-  assert.equal(resolveBin(GHOSTTY_BIN), "/Applications/Ghostty.app/Contents/MacOS/ghostty");
   const declared = executableSpec("ghostty");
   assert.equal(declared.overrideEnv, "GHOSTTY_BIN");
+  assert.deepEqual(declared.candidates(executableCandidateContext()), [
+    "/Applications/Ghostty.app/Contents/MacOS/ghostty",
+    `${process.env.HOME}/Applications/Ghostty.app/Contents/MacOS/ghostty`,
+  ]);
 
   // No bare PATH candidate, deliberately: `ghostty` is normally absent from PATH on macOS
   // and normally PRESENT on Linux, where the AppleScript this adapter depends on does not

@@ -35,49 +35,29 @@ for use only after the user explicitly requests a report, shows the daemon-deriv
 `input` review, and calls the mutation route only after a human selects **Submit public issue**.
 Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
 
-The dashboard's [Feedback form](ui.md#report-product-feedback) publishes only after a person
-answers a native dialog, and the daemon is the one that asks.
+The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
+publicly** press. The context-isolated Electron preload captures the trusted click on that exact
+control through a capability claimed once as the app module loads and retained only in that
+module's closure. The owned control requires a trusted native click before it uses the capability
+with the current preview's request id and draft identity. Synthetic clicks, implicit form submits,
+and page scripts without that capability cannot arm a report. The shell accepts the request only
+from the main
+dashboard web contents and only while the browser reports an active user gesture. It shows no
+second dialog. The daemon then asks
+the shell to consume that exact request id and draft identity over the private utility-process
+port. An authorization is short-lived and single-use, so another loopback process can preview and
+call the confirmation route but cannot produce the private reply that mints a grant.
 
-Why it has to work that way is the interesting part, because three earlier designs did not. Every
-`/api/*` route is loopback-reachable and unauthenticated, so anything the dashboard can send, a
-process running as the operator can send too. That defeats any confirmation the caller
-**presents**. The first design authorized with the preview's `draftIdentity`, a hash of the
-request that anything holding the draft can recompute. The second minted a random token and
-returned it in the preview reply - unguessable, but obtainable by calling preview, which is a read
-the form issues on every settled keystroke. The third required the per-machine bearer token from
-`~/.mission-control/token`, and that failed for the sharpest reason of the three: the token is a
-file, a process running as the operator can read it, and **possession is not attestation**.
+The daemon keeps preview and mutation separate internally. Previewing never returns a publish
+token. After the shell authorizes the Report click, the daemon mints a grant pinned to one report
+opening and exact derived content, valid for two minutes, and single-use. Re-deriving target,
+labels, source, environment and body at submission prevents a configuration change between
+preview and publication from sending content the form did not show. The request id and submission
+claim prevent double-clicks and replays from creating duplicate issues.
 
-So the daemon stopped trying to authenticate the caller. `POST /api/product-issues/confirm`
-authenticates nobody and grants nothing by itself. It asks the desktop shell to put a system
-dialog naming the target repository in front of the operator, over the Electron utility-process
-port the daemon was forked on - not a route, not a socket, not a file - and mints a grant only if
-the reply says a person clicked publish. A local script may call the route as often as it likes:
-every call raises a dialog on somebody's screen, and no click means no grant. The verifier is the
-daemon, and what it verifies is an event outside the API rather than a value inside a request.
-
-The grant that comes back is then pinned to one report opening and to the exact content the daemon
-derived for it, valid two minutes, and single-use. Three checks run at submission. The grant
-establishes that somebody said yes. Its expiry establishes that they said so recently, rather than
-an old approval being banked and spent later. Re-deriving target, labels, source, environment and
-body and comparing them against what the grant was minted for establishes that the daemon's own
-derivation has not moved since - so an operator repointing the target between the moment somebody
-reads the preview and the moment they press is refused rather than published into a repository
-nobody was shown. The grant is retired once a submission using it reaches a terminal outcome, so a
-publish cannot be replayed, while a retry-safe refusal keeps it because nothing was published.
-
-**A daemon nobody can ask publishes nothing.** Started outside the desktop shell - `npm run dev`,
-a LaunchAgent, a test - there is no dialog to raise, so preflight reports `consent-unavailable`
-and the form says so before anything is typed. It still previews the exact public content, which
-is a read and always was safe. The fallback is refusal, never a weaker confirmation the daemon
-could satisfy on its own.
-
-**What remains true.** This does not identify who is at the machine: one human at the keyboard is
-the unit here, as it is for every other confirmation in this app. Somebody with a session on the
-operator's desktop can click the dialog, and nothing software-side changes that. What is gone is
-the class of attack the reviews were about - a process that can reach the loopback API, or read a
-file, publishing without anybody seeing it. The blast radius is bounded further by the fixed target
-repository, which no request can name, and by `gh auth`, which the operator owns.
+**A daemon outside the desktop shell publishes nothing.** A standalone browser or adopted daemon
+has no private utility-process channel, so preflight reports that the report must be opened in the
+desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
 The agent path is separate and stricter - it is token-guarded, neither preview mints a grant, there
 is no MCP confirming route at all, and its authorization is the human-submitted `input` review.

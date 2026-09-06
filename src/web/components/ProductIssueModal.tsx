@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PRODUCT_ISSUE_LIMITS,
   PRODUCT_ISSUE_TYPES,
-  type ProductIssueConfirmation,
   type ProductIssueDraft,
   type ProductIssuePreflight,
   type ProductIssuePreview,
@@ -10,11 +9,10 @@ import {
   type ProductIssueType,
 } from "@shared/product-issues.ts";
 import {
-  confirmProductIssue,
   fetchProductIssuePreflight,
   previewProductIssue,
-  submitProductIssue,
 } from "../lib/api.ts";
+import { publishProductIssue } from "../lib/product-issue-submission.ts";
 import {
   AttachmentStrip,
   revokeAttachments,
@@ -38,11 +36,10 @@ import { Tooltip } from "./Tooltip.tsx";
  *    preview is fetched rather than composed here: a locally-rendered preview would be a
  *    second implementation of the body, and the two would drift apart silently - with the
  *    public copy being the one nobody was shown.
- * 2. **Publishing takes two deliberate presses, against content that is on screen.** The
- *    first press confirms - it asks the daemon for a short-lived, single-use grant for the
- *    preview React has actually RENDERED - and the button then relabels to name the public
- *    repository it is about to write to. The second press publishes with that grant, and
- *    nothing is fetched between it and the publish.
+ * 2. **Publishing takes one deliberate press, against content that is on screen.** That press
+ *    asks the daemon for a short-lived, single-use grant for the preview React has actually
+ *    RENDERED and immediately spends it. The grant remains an internal boundary between the
+ *    preview read and the mutation; it is not a second decision the person must make.
  *
  *    Both halves of that were defects once, and both are worth naming. Submission used to
  *    echo the preview's `draftIdentity`, which is a hash of the request: anything holding
@@ -52,13 +49,12 @@ import { Tooltip } from "./Tooltip.tsx";
  *    revision fetched its preview inside the click handler and submitted it in the same
  *    promise chain, so React never rendered what was published.
  *
- *    Editing the report drops the grant, so it can never outlive the words it was taken
- *    against; so does its two-minute expiry. The daemon re-derives everything and refuses a
- *    grant whose derivation has moved, and the modal then shows the refreshed preview and
- *    waits to be confirmed again.
+ *    The daemon re-derives everything and refuses a grant whose derivation moved between the
+ *    two internal requests. The modal then shows the refreshed preview and waits for one new
+ *    Report press.
  *
  * The draft outlives the modal. Someone who closes this to go re-read the bug they are
- * reporting comes back to the words they had written; only **Clear** and a confirmed
+ * reporting comes back to the words they had written; only **Clear** and a successful
  * creation reset it. That retention is the whole reason the state lives in `ProductIssueLayer`
  * rather than in the modal - see there.
  *
@@ -181,20 +177,16 @@ function previewMatches(
   return same ? preview : null;
 }
 
-/**
- * The grant in hand for THIS rendered preview, or null.
- *
- * Compared against the preview's identity rather than merely against the draft, because that
- * is the thing the daemon pinned the grant to. A grant left over from content that has since
- * moved must read as "not confirmed" on screen, or the button would offer a publish the
- * daemon is about to refuse.
- */
-function confirmationMatches(
-  confirmation: ProductIssueConfirmation | null,
-  matched: ProductIssuePreview | null,
-): ProductIssueConfirmation | null {
-  if (!confirmation || !matched) return null;
-  return confirmation.draftIdentity === matched.draftIdentity ? confirmation : null;
+const productIssueAuthorizationCapability = typeof window === "undefined"
+  ? null
+  : window.missionDesktop?.claimProductIssueAuthorization?.() ?? null;
+
+function authorizeProductIssue(input: { requestId: string; draftIdentity: string }): boolean {
+  if (!productIssueAuthorizationCapability) return false;
+  return window.missionDesktop?.authorizeProductIssue?.(
+    productIssueAuthorizationCapability,
+    input,
+  ) === true;
 }
 
 /** Everything the presentational modal draws. Owned by the layer, so a close keeps it. */
@@ -208,17 +200,14 @@ export interface ProductIssueModalProps {
   /** A refusal or configuration problem the preview itself reported. */
   previewProblem: string | null;
   previewing: boolean;
-  /** The grant taken by the confirming press, or null while none is held. */
-  confirmation: ProductIssueConfirmation | null;
-  confirming: boolean;
   submitting: boolean;
   /** The last terminal outcome of this opening. Survives a close, like the draft. */
   result: ProductIssueSubmitResult | null;
   /** False once an `unknown` outcome has made blind retry unsafe for this opening. */
   retryAllowed: boolean;
-  /** First press: ask the daemon to confirm the rendered preview. */
-  onConfirm: () => void;
-  /** Second press: publish with the grant that press returned. */
+  /** Authorize only the exact preview carried by the owned Report control's trusted click. */
+  onAuthorize: (input: { requestId: string; draftIdentity: string }) => boolean;
+  /** One press: confirm the rendered preview and publish it. */
   onSubmit: () => void;
   onClear: () => void;
   onClose: () => void;
@@ -231,12 +220,10 @@ export function ProductIssueModal({
   preview,
   previewProblem,
   previewing,
-  confirmation,
-  confirming,
   submitting,
   result,
   retryAllowed,
-  onConfirm,
+  onAuthorize,
   onSubmit,
   onClear,
   onClose,
@@ -267,16 +254,15 @@ export function ProductIssueModal({
    * button that did nothing, which is how the same report gets filed twice.
    */
   const outcomeRef = useRef<HTMLParagraphElement | null>(null);
+  const authorizedSubmitRef = useRef(false);
   useEffect(() => {
     if (!result) return;
     outcomeRef.current?.scrollIntoView({ block: "nearest" });
   }, [result]);
   const preflightProblem = preflight && !preflight.ready ? preflight.problems[0] ?? null : null;
   const matched = previewMatches(preview, draft);
-  const confirmed = confirmationMatches(confirmation, matched);
   const blocked =
     created !== null ||
-    confirming ||
     submitting ||
     previewing ||
     drop.uploading ||
@@ -284,8 +270,7 @@ export function ProductIssueModal({
     draftProblem !== null ||
     preflight === null ||
     !preflight.ready ||
-    // Nothing rendered means nothing to confirm. Both presses act on the preview on screen,
-    // so neither is offered while there is not one.
+    // Nothing rendered means nothing to submit. The press acts on the preview on screen.
     matched === null;
 
   const typeUi = PRODUCT_ISSUE_TYPE_UI[draft.type];
@@ -302,12 +287,9 @@ export function ProductIssueModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (blocked) return;
-          // One submit handler, two meanings, and the grant decides which. Holding a grant
-          // for the rendered preview is exactly the state "this person has already asked to
-          // publish this text", so that press publishes; anything else confirms first.
-          if (confirmed) onSubmit();
-          else onConfirm();
+          if (blocked || !authorizedSubmitRef.current) return;
+          authorizedSubmitRef.current = false;
+          onSubmit();
         }}
       >
         <header className="modal-head">
@@ -316,7 +298,7 @@ export function ProductIssueModal({
             <button
               type="button"
               className="icon-btn"
-              aria-label="Close"
+              aria-label="Close feedback form"
               onClick={onClose}
               disabled={submitting}
             >
@@ -381,6 +363,9 @@ export function ProductIssueModal({
               maxLength={PRODUCT_ISSUE_LIMITS.titleBytes}
               placeholder="One line someone scanning the issue list would understand"
               onChange={(e) => onDraftChange({ ...draft, title: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.preventDefault();
+              }}
               disabled={submitting}
               aria-label="Title"
             />
@@ -483,16 +468,6 @@ export function ProductIssueModal({
             )}
           </section>
 
-          {confirmed && !created && (
-            /* The state between the two presses, said out loud. A button that silently
-               relabels is a button somebody presses twice by reflex, and the second press
-               here is irreversible - so the destination and the way back out are both on
-               screen, not only in the tooltip. */
-            <p className="feedback-armed" role="status">
-              Ready to publish in {confirmed.target}. Press again to file it publicly, or edit
-              the report to go back.
-            </p>
-          )}
           {created && (
             <p className="feedback-created" role="status" ref={outcomeRef}>
               {/* The URL itself, not a second "View GitHub issue" - the footer already
@@ -538,24 +513,28 @@ export function ProductIssueModal({
             </button>
           </Tooltip>
           <span className="actions-spacer" />
-          {/* No second Close here. The header ✕, Escape and the backdrop already close this,
-              and two controls answering to "Close" is one a screen-reader user cannot pick
-              between. */}
           {created ? (
             /* The outcome, on the control that was just pressed. A "Report publicly" button
                left sitting there after a successful report is an invitation to file the
                same issue again - and the daemon would answer that second press with an
                uncertain result rather than a refusal, which is the worst answer to get. */
-            <Tooltip label={`Open ${created.issueUrl}`}>
-              <a
-                className="btn btn-primary feedback-created-action"
-                href={created.issueUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                View GitHub issue
-              </a>
-            </Tooltip>
+            <span className="feedback-created-actions">
+              <Tooltip label="Close this feedback form">
+                <button type="button" className="btn btn-ghost" onClick={onClose}>
+                  Close
+                </button>
+              </Tooltip>
+              <Tooltip label={`Open ${created.issueUrl}`}>
+                <a
+                  className="btn btn-primary feedback-created-action"
+                  href={created.issueUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  View GitHub issue
+                </a>
+              </Tooltip>
+            </span>
           ) : (
           <Tooltip
             label={
@@ -566,29 +545,29 @@ export function ProductIssueModal({
                     : preflightProblem
                       ? preflightProblem.message
                       : "Waiting for Mission Control to confirm what will be published")
-                : confirmed
-                  ? `Publish this now in ${confirmed.target}`
-                  : `Check this over before it is published in ${matched?.target ?? "the public issue tracker"}`
+                : `Publish this report in ${matched?.target ?? "the public issue tracker"}`
             }
           >
             <button
               type="submit"
               className="btn btn-primary"
               disabled={blocked}
-              /* The accessible name changes with the press, because the two presses do
-                 different things and a screen reader must not hear the same word twice for
-                 "check this" and "publish this irreversibly". */
-              aria-label={
-                confirmed ? `Publish to ${confirmed.target}` : "Report publicly"
-              }
+              aria-label="Report publicly"
+              onClick={(event) => {
+                authorizedSubmitRef.current = Boolean(
+                  event.nativeEvent.isTrusted &&
+                  matched &&
+                  onAuthorize({
+                    requestId: matched.requestId,
+                    draftIdentity: matched.draftIdentity,
+                  }),
+                );
+                if (!authorizedSubmitRef.current) event.preventDefault();
+              }}
             >
               {submitting
                 ? "Publishing…"
-                : confirming
-                  ? "Checking…"
-                  : confirmed
-                    ? `Publish to ${confirmed.target}`
-                    : "Report publicly"}
+                : "Report publicly"}
             </button>
           </Tooltip>
           )}
@@ -621,16 +600,9 @@ export function ProductIssueLayer({
   const [preview, setPreview] = useState<ProductIssuePreview | null>(null);
   const [previewProblem, setPreviewProblem] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
-  /**
-   * The grant taken by the confirming press, held only until it is spent or goes stale.
-   *
-   * Deliberately not folded into `preview`. A preview is re-fetched as the draft settles,
-   * and a publishing capability that rode along with it would be re-issued by typing -
-   * which is the defect this state exists to make impossible to reintroduce.
-   */
-  const [confirmation, setConfirmation] = useState<ProductIssueConfirmation | null>(null);
-  const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  /** React state disables the control on render; this closes the same-tick double-click gap. */
+  const submittingRef = useRef(false);
   const [result, setResult] = useState<ProductIssueSubmitResult | null>(null);
   const [retryAllowed, setRetryAllowed] = useState(true);
   /**
@@ -664,7 +636,6 @@ export function ProductIssueLayer({
     setDraft(EMPTY_PRODUCT_ISSUE_DRAFT);
     setPreview(null);
     setPreviewProblem(null);
-    setConfirmation(null);
     setResult(null);
     setRetryAllowed(true);
   }, []);
@@ -701,15 +672,6 @@ export function ProductIssueLayer({
   // reply for older words must not be shown beside newer ones.
   const problem = productIssueDraftProblem(draft);
   useEffect(() => {
-    /**
-     * Editing the report drops the grant.
-     *
-     * The daemon would refuse a grant whose derivation moved anyway, so this is not the
-     * boundary - it is the screen telling the truth. A button still reading "Publish to
-     * acme/public-issues" under words that have since changed is an offer to publish
-     * something that is no longer what is written.
-     */
-    setConfirmation(null);
     if (!open || problem !== null) {
       setPreview(null);
       setPreviewProblem(null);
@@ -739,67 +701,21 @@ export function ProductIssueLayer({
   }, [open, problem, draft, previewNonce]);
 
   /**
-   * Let the grant expire on screen at the moment it expires at the daemon.
+   * The single Report press.
    *
-   * Without this the button keeps offering to publish for as long as the modal stays open,
-   * and the press would come back as a refusal that reads like a fault. Two minutes is the
-   * daemon's TTL; this only mirrors it.
-   */
-  useEffect(() => {
-    if (!confirmation) return;
-    const remaining = confirmation.expiresAt - Date.now();
-    if (remaining <= 0) {
-      setConfirmation(null);
-      return;
-    }
-    const timer = setTimeout(() => setConfirmation(null), remaining);
-    return () => clearTimeout(timer);
-  }, [confirmation]);
-
-  /**
-   * The two presses.
-   *
-   * `onConfirm` takes a grant for `matched` - the preview React has actually RENDERED for
-   * this draft. `onSubmit` spends it. Nothing is fetched between the second press and the
-   * publish, which is the ordering that makes the content on screen and the content
-   * published the same thing: a preview requested inside the publishing handler would
-   * resolve after the render that showed the old one.
+   * It takes a grant for `matched` - the preview React has actually RENDERED for this draft -
+   * and immediately spends it. No preview is fetched inside the handler, so the content on
+   * screen and the content published remain the same thing.
    *
    * The daemon re-derives everything and compares it against what the grant was minted for,
    * so a target or environment that moved in between is refused rather than published. A
    * refusal re-previews below, which puts the person back in front of the current content
    * with no grant in hand.
-   */
+  */
   const matched = previewMatches(preview, draft);
-  const confirmed = confirmationMatches(confirmation, matched);
-
-  const onConfirm = useCallback(() => {
-    if (confirming || submitting || !retryAllowed || !matched) return;
-    setConfirming(true);
-    setResult(null);
-    const request = {
-      ...productIssueDraftPayload(draft),
-      requestId: requestIdRef.current,
-      client: productIssueClient(),
-    };
-    void confirmProductIssue(request).then((next) => {
-      setConfirming(false);
-      if (next.outcome === "confirmation") {
-        setConfirmation(next);
-        return;
-      }
-      // Anything else is a terminal-shaped answer and belongs in the same place every other
-      // outcome does. `unknown` here means the opening is already publishing, which is the
-      // one case where pressing again is not safe.
-      setResult(next);
-      if (next.outcome === "unknown") setRetryAllowed(false);
-      setPreview(null);
-      setPreviewNonce((n) => n + 1);
-    });
-  }, [confirming, draft, matched, retryAllowed, submitting]);
-
   const onSubmit = useCallback(() => {
-    if (submitting || confirming || !retryAllowed || !confirmed) return;
+    if (submittingRef.current || !retryAllowed || !matched) return;
+    submittingRef.current = true;
     setSubmitting(true);
     setResult(null);
     const request = {
@@ -807,25 +723,17 @@ export function ProductIssueLayer({
       requestId: requestIdRef.current,
       client: productIssueClient(),
     };
-    void submitProductIssue(request, confirmed.token).then((next) => {
+    void publishProductIssue(request).then((next) => {
+      submittingRef.current = false;
       setSubmitting(false);
-      setResult(next);
-      // The grant is single-use at the daemon either way, so holding it here after any
-      // answer would only offer a press that is already going to be refused.
-      setConfirmation(null);
-      // Only `unknown` closes the door. A refusal is explicitly retry-safe - the daemon
-      // released its claim - and telling someone to go check GitHub after a refusal that
-      // provably published nothing would be advice that costs them the draft.
-      if (next.outcome === "unknown") setRetryAllowed(false);
-      // A refusal may be the daemon saying its own derivation moved since this grant was
-      // minted. Drop the stale preview and fetch a fresh one, so the next confirmation is
-      // taken against content the person has been shown rather than against the old screen.
-      if (next.outcome === "refused" || next.outcome === "configuration") {
+      setResult(next.result);
+      setRetryAllowed(next.retryAllowed);
+      if (next.refreshPreview) {
         setPreview(null);
         setPreviewNonce((n) => n + 1);
       }
     });
-  }, [confirmed, confirming, draft, retryAllowed, submitting]);
+  }, [draft, matched, retryAllowed]);
 
   if (!open) return null;
   return (
@@ -836,12 +744,10 @@ export function ProductIssueLayer({
       preview={preview}
       previewProblem={previewProblem}
       previewing={previewing}
-      confirmation={confirmation}
-      confirming={confirming}
       submitting={submitting}
       result={result}
       retryAllowed={retryAllowed}
-      onConfirm={onConfirm}
+      onAuthorize={authorizeProductIssue}
       onSubmit={onSubmit}
       onClear={resetDraft}
       onClose={onClose}

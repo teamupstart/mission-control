@@ -4,8 +4,16 @@
 // (open a link in the system browser, install the Claude integrations, read the
 // app version). contextIsolation keeps this the only channel into the renderer.
 
+import { randomUUID } from "node:crypto";
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
+
+interface ProductIssueAuthorizationInput {
+  requestId: string;
+  draftIdentity: string;
+}
+const productIssueAuthorizationCapability = randomUUID();
+let productIssueAuthorizationClaimed = false;
 
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
@@ -15,6 +23,22 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     ipcRenderer.invoke("mission:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("mission:remove-integrations"),
+  claimProductIssueAuthorization: (): string | null => {
+    if (productIssueAuthorizationClaimed) return null;
+    productIssueAuthorizationClaimed = true;
+    return productIssueAuthorizationCapability;
+  },
+  authorizeProductIssue: (
+    capability: string,
+    input: ProductIssueAuthorizationInput,
+  ): boolean => {
+    if (
+      !productIssueAuthorizationClaimed ||
+      capability !== productIssueAuthorizationCapability ||
+      navigator.userActivation?.isActive !== true
+    ) return false;
+    return ipcRenderer.sendSync("mission:product-issue-report-click", input) === true;
+  },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),
     check: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-check"),

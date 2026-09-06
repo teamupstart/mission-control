@@ -127,59 +127,53 @@ export function ghProductScriptPath(home: string): string {
   return join(home, "gh-product-script.json");
 }
 
-export function productConsentScriptPath(home: string): string {
-  return join(home, "product-consent-script.json");
+export function productAuthorizationScriptPath(home: string): string {
+  return join(home, "product-authorization-script.json");
 }
 
-export function productConsentBinPath(home: string): string {
-  return join(home, "bin", "product-consent");
+export function productAuthorizationBinPath(home: string): string {
+  return join(home, "bin", "product-authorization");
 }
 
 /**
- * Stand in for the operator answering the native publish dialog.
+ * Stand in for the Electron shell's private authorization channel.
  *
- * In the shipped app the daemon asks the Electron shell over its utility-process port and a
- * person clicks. A daemon forked by this fixture has no shell, and deliberately CANNOT publish
- * without one - so the suite gives it something else to ask, through the launch-time
- * `MISSION_PRODUCT_ISSUE_CONSENT_CMD` seam. Setting that is not a bypass anyone gains from: it
- * lives on the daemon's own environment, and a process that can choose that has already
- * replaced the daemon. `MISSION_GH_BIN` redirects the GitHub CLI on the same reasoning.
- *
- * It records what it was asked, so a spec can assert that confirming reached a human question
- * naming the right repository rather than being decided inside the daemon.
+ * The shipped daemon asks its parent utility process. This fixture daemon has no Electron
+ * parent, so the launch-time command seam supplies the same grant/refusal boundary without
+ * making any real external call. A process that chooses the daemon environment has already
+ * replaced the daemon, just as with the MISSION_GH_BIN blast dam below.
  */
-export function writeProductConsentBin(home: string): string {
-  const bin = productConsentBinPath(home);
+export function writeProductAuthorizationBin(home: string): string {
+  const bin = productAuthorizationBinPath(home);
   mkdirSync(dirname(bin), { recursive: true });
   writeFileSync(
     bin,
     [
       "#!/usr/bin/env node",
-      "const { readFileSync, writeFileSync, appendFileSync } = require('node:fs');",
-      `const script = ${JSON.stringify(productConsentScriptPath(home))};`,
-      `const log = ${JSON.stringify(join(home, "product-consent-asked.jsonl"))};`,
-      "const [target, title] = process.argv.slice(2);",
-      "appendFileSync(log, JSON.stringify({ target, title }) + String.fromCharCode(10));",
+      "const { readFileSync, appendFileSync } = require('node:fs');",
+      `const script = ${JSON.stringify(productAuthorizationScriptPath(home))};`,
+      `const log = ${JSON.stringify(join(home, "product-authorization-asked.jsonl"))};`,
+      "const [requestId, draftIdentity, target, title] = process.argv.slice(2);",
+      "appendFileSync(log, JSON.stringify({ requestId, draftIdentity, target, title }) + String.fromCharCode(10));",
       "let answer = 'grant';",
       "try { answer = JSON.parse(readFileSync(script, 'utf8')).answer; } catch {}",
       "process.exit(answer === 'grant' ? 0 : 1);",
     ].join("\n") + "\n",
     { mode: 0o755 },
   );
-  writeProductConsentScript(home, { answer: "grant" });
+  writeProductAuthorizationScript(home, { answer: "grant" });
   return bin;
 }
 
-/** What the stand-in operator will say next. */
-export interface FakeProductConsentScript {
+export interface FakeProductAuthorizationScript {
   answer: "grant" | "refuse";
 }
 
-export function writeProductConsentScript(
+export function writeProductAuthorizationScript(
   home: string,
-  script: FakeProductConsentScript,
+  script: FakeProductAuthorizationScript,
 ): void {
-  writeFileSync(productConsentScriptPath(home), JSON.stringify(script, null, 2));
+  writeFileSync(productAuthorizationScriptPath(home), JSON.stringify(script, null, 2));
 }
 
 /**

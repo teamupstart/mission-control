@@ -31778,18 +31778,6 @@ body.foreman-sidecar-open .modal-backdrop {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* The state between the two presses: confirmed, not yet published. Drawn on --attention
-   rather than --idle because it is the one moment in this dialog where the next press is
-   irreversible, and it must not read like the neutral "here is your issue" notice below. */
-.feedback-armed {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
-  background: color-mix(in srgb, var(--attention) 10%, transparent);
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
 .feedback-created {
   margin: 0;
   padding: 10px 12px;
@@ -31799,9 +31787,13 @@ body.foreman-sidecar-open .modal-backdrop {
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
-/* The created-issue link, which takes the primary button's place in the footer. An <a> and
-   not a button on purpose: it opens the issue, so it has to be middle-clickable and
-   copyable like every other link to a public URL. */
+/* Keep the terminal actions together at the right edge: closing is the ordinary next move,
+   while the created-issue link remains the primary, middle-clickable destination. */
+.feedback-created-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .feedback-created-action {
   text-decoration: none;
 }

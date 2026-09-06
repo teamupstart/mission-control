@@ -260,20 +260,14 @@ screenshot locators, never repository metadata or filesystem paths. See
 [Public product issue reporting](security.md#public-product-issue-reporting) for what the
 environment line and image locators may contain and what they never contain.
 
-**Publishing takes two presses and a system dialog.** **Report publicly** does not publish. It
-asks Mission Control to confirm, and Mission Control puts a system dialog in front of you naming
-the repository and quoting your title, defaulting to Cancel. Say no and nothing is published and
-your draft is untouched. Say yes and the button renames itself to name that repository - **Publish
-to owner/name** - with a line beside it saying the same. That second press is the one that files a
-public issue, and nothing is fetched in between, so what you read is what goes. Editing anything
-takes the confirmation back and the button returns to **Report publicly**; so does leaving it for
-two minutes.
-
-**A daemon running outside the desktop app cannot publish.** It has no way to show you that
-dialog, so it says so when the form opens rather than at the moment you press. The full public
-body is still on screen, so you can file it yourself. See
-[Public product issue reporting](security.md#public-product-issue-reporting) for why the
-confirmation cannot live in the browser.
+**Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
+has its trusted control click captured by the isolated desktop preload, authorizes that exact
+preview through the desktop shell, and files it without a warning dialog or
+a second button press. The button stays busy through the internal authorization, confirmation,
+and submission requests, so another press cannot race the first one. If the derived content
+changes before publication, Mission Control refuses it and refreshes the preview rather than
+publishing content that was not shown. A report opened from a standalone browser cannot publish,
+because it has no private desktop authorization channel.
 
 **Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
 WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with
@@ -284,7 +278,7 @@ missing instead of offering a retry that would create a duplicate.
 
 Your draft **survives closing the dialog**. Close it to go and re-read the thing you are
 reporting and the words are still there when you come back. Two things clear it: **Clear**,
-which you press on purpose, and a confirmed submission, after which the next opening starts
+which you press on purpose, and a successful submission, after which the next opening starts
 empty because that report is already filed.
 
 Four things can come back, and they are deliberately different:
@@ -292,7 +286,7 @@ Four things can come back, and they are deliberately different:
 | Outcome | What you see | What to do |
 | --- | --- | --- |
 | **Reported** | The target repository and a **View GitHub issue** link | Nothing. The draft is retired; reopening starts fresh |
-| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and confirm again - nothing was published |
+| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and report again - nothing was published |
 | **Cannot report** | The specific missing piece - `gh auth login`, an unreachable repository, a label the target does not have | An operator fixes the configuration; the button stays disabled until preflight passes |
 | **Unknown** | "Check the target repository before reporting this again", and a disabled button | Go and look. The issue may or may not exist, and a second press is how a duplicate gets filed under your name |
 

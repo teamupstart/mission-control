@@ -79,7 +79,13 @@ import {
   runChangeWorklist,
   runGrantNotice,
   runParkedSentence,
+  evidenceChipLabel,
+  openEvidenceTray,
+  roundEvidenceCountLabel,
+  roundHoldsViewedSubmission,
+  roundOpensEvidenceTray,
   runRefusedSentence,
+  runRoundGroups,
   runRounds,
   runStalemates,
   runStatusLabel,
@@ -1832,7 +1838,11 @@ export function WorkflowRunView({
     return node && version ? nodeLabel(version.graph, node, []) : null;
   };
   const rounds = runRounds(detail, nameOfNode);
+  const roundGroups = runRoundGroups(rounds);
   const viewed = selectedSubmission(detail, roundId);
+  // Which round's tray is open. Declared beside `viewed` because it IS a fact about the
+  // viewed submission, not a second piece of disclosure state a reader could get out of sync.
+  const openTray = openEvidenceTray(roundGroups, viewed?.id ?? null);
   const viewedRound = rounds.find((round) => round.submissionId === viewed?.id) ?? null;
   const latest = rounds.at(-1) ?? null;
   const isLatest = viewed === null || viewed.id === latest?.submissionId;
@@ -2192,29 +2202,90 @@ export function WorkflowRunView({
 
       {rounds.length > 0 && (
         <section className="wf-run-rounds" aria-label="Rounds">
+          {/* One tile per ROUND. Eleven captures in one repair round is a detail OF that
+              round, and drawn as eleven tiles it claimed eleven rounds had happened - so the
+              tile carries a COUNT, and the captures themselves live in a tray below that
+              opens for the round being read. One tray at a time, so the strip stays three
+              tiles on one row whatever a round spent getting its evidence. */}
           <div className="wf-run-scrubber" role="group" aria-label="Select a round">
-            {rounds.map((round) => (
-              <Tooltip
-                key={round.submissionId}
-                // The provenance ADDS to the round and its status rather than replacing
-                // them: a continuation entry is still an entry whose state a reader wants.
-                label={[
-                  `${round.label}: ${round.status.label}`,
-                  segmentProvenanceSentence(round),
-                ].filter(Boolean).join(". ")}
-              >
-                <button
-                  className={`wf-run-round workflow-${round.status.tone}${
-                    round.submissionId === viewed?.id ? " active" : ""}`}
-                  aria-pressed={round.submissionId === viewed?.id}
-                  onClick={() => onRound(round.submissionId)}
+            {roundGroups.map((group) => {
+              // Both facts come from the model, which is also what `openEvidenceTray` above
+              // is built from - so the tile's pressed, active, badge and `aria-expanded`
+              // states cannot disagree with which tray is actually rendered.
+              const ownsViewed = roundHoldsViewedSubmission(group, viewed?.id ?? null);
+              const opens = roundOpensEvidenceTray(group);
+              return (
+                <Tooltip
+                  key={group.round}
+                  label={opens
+                    ? `${group.label}: ${group.status.label}. Captured evidence`
+                      + ` ${group.segments.length} times; opens the newest and lists them all.`
+                    : `${group.label}: ${group.status.label}`}
                 >
-                  <span className="wf-run-round-name">{round.label}</span>
-                  <span className="wf-run-round-state">{round.status.label}</span>
-                </button>
-              </Tooltip>
-            ))}
+                  <button
+                    className={`wf-run-round workflow-${group.status.tone}${
+                      ownsViewed ? " active" : ""}`}
+                    // The ROUND is pressed whichever of its snapshots is being read: this
+                    // selects the newest, and a reader who then picked a chip is still
+                    // reading this round. `aria-expanded` is what says the tray is theirs.
+                    aria-pressed={ownsViewed}
+                    {...(opens ? { "aria-expanded": ownsViewed } : {})}
+                    onClick={() => onRound(group.head.submissionId)}
+                  >
+                    <span className="wf-run-round-line">
+                      <span className="wf-run-round-name">{group.label}</span>
+                      {opens && (
+                        <span className="wf-run-round-count">
+                          {roundEvidenceCountLabel(group)}
+                        </span>
+                      )}
+                    </span>
+                    <span className="wf-run-round-state">{group.status.label}</span>
+                  </button>
+                </Tooltip>
+              );
+            })}
           </div>
+          {/* The open round's captures. Below the strip rather than inside a tile, because a
+              tray inside one would either widen that tile past its neighbours or wrap the
+              strip - and the strip staying one row is the whole point of the tile above. */}
+          {openTray && (
+            <div
+              className="wf-run-tray"
+              role="group"
+              aria-label={`Select evidence in round ${openTray.round}`}
+            >
+              <p className="wf-run-tray-label">
+                {`Round ${openTray.round} evidence`}
+              </p>
+              <div className="wf-run-tray-chips">
+                {openTray.segments.map((segment) => (
+                  <Tooltip
+                    key={segment.submissionId}
+                    // The provenance ADDS to the snapshot and its status rather than
+                    // replacing them: a continuation is still an entry whose state a
+                    // reader wants, and the chip prints only a short form of it.
+                    label={[
+                      `${segment.label}: ${segment.status.label}`,
+                      segmentProvenanceSentence(segment),
+                    ].filter(Boolean).join(". ")}
+                  >
+                    <button
+                      className={`wf-run-tray-chip workflow-${segment.status.tone}${
+                        segment.submissionId === viewed?.id ? " active" : ""}`}
+                      aria-pressed={segment.submissionId === viewed?.id}
+                      onClick={() => onRound(segment.submissionId)}
+                    >
+                      <span className="wf-run-tray-chip-name">
+                        {evidenceChipLabel(segment)}
+                      </span>
+                      <span className="wf-run-tray-chip-state">{segment.status.label}</span>
+                    </button>
+                  </Tooltip>
+                ))}
+              </div>
+            </div>
+          )}
           {/* Said under the scrubber rather than only in a tooltip: a second entry under one
               round looks exactly like a repair, and the whole point of the segment model is
               that it is not one. */}

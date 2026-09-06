@@ -36,6 +36,12 @@ import {
   nodeStatusesForSubmission,
   readCapturedContext,
   reviewerStatus,
+  evidenceChipLabel,
+  openEvidenceTray,
+  roundEvidenceCountLabel,
+  roundHoldsViewedSubmission,
+  roundOpensEvidenceTray,
+  runRoundGroups,
   runRounds,
   selectedSubmission,
   stageStatus,
@@ -45,6 +51,7 @@ import {
   submissionRoundLabel,
   submissionStatus,
 } from "../src/web/workflows/run-model.ts";
+import type { RoundGroupView } from "../src/web/workflows/run-model.ts";
 
 const submission = (
   id: string,
@@ -227,6 +234,113 @@ test("rounds are listed in execution order and a repair round is marked", () => 
   assert.deepEqual(rounds[0]!.status, { tone: "failed", label: "Changes requested" });
   assert.deepEqual(rounds[1]!.status, { tone: "running", label: "Under review" });
   assert.equal(rounds[2]!.inspectorOnly, true);
+});
+
+test("a round's evidence snapshots collapse into one tile that keeps their tones", () => {
+  // The defect: three rounds that captured evidence 3, 11 and 9 times drew twenty-three
+  // tiles wrapping three rows deep, and read as twenty-three rounds.
+  const submissions = [
+    submission("r1s0", 1, { segment: 0, status: "waiting_for_evidence_readiness" }),
+    submission("r1s1", 1, { segment: 1, status: "waiting_for_session", completedAt: null }),
+    submission("r2s0", 2, { segment: 0, status: "failed" }),
+    submission("r2s1", 2, { segment: 1, status: "running", completedAt: null }),
+    submission("r3s0", 3, { segment: 0, mode: "inspector_only" }),
+  ];
+  const groups = runRoundGroups(runRounds(detail(submissions, [])));
+
+  assert.deepEqual(groups.map((group) => group.label), [
+    "Round 1",
+    "Round 2",
+    "Round 3 · GitHub Inspector",
+  ]);
+  assert.deepEqual(groups.map((group) => group.segments.length), [2, 2, 1]);
+  // The tile wears the NEWEST snapshot's status, because that is what the round is doing
+  // now - and the older snapshot keeps its own, which is the whole reason the tray's chips
+  // carry a tone each.
+  assert.deepEqual(groups[1]!.head.submissionId, "r2s1");
+  assert.deepEqual(groups[1]!.status, { tone: "running", label: "Under review" });
+  assert.deepEqual(
+    groups[1]!.segments.map((segment) => segment.status.tone),
+    ["failed", "running"],
+    "a failed capture inside a collapsed round is still visible",
+  );
+  // Execution order survives the fold, in both directions.
+  assert.deepEqual(
+    groups.flatMap((group) => group.segments.map((segment) => segment.submissionId)),
+    ["r1s0", "r1s1", "r2s0", "r2s1", "r3s0"],
+  );
+
+  // The tile's badge counts captures and does NOT move with the selection: the tray names
+  // the snapshot, and a badge that also changed would shift this tile and every tile after
+  // it on each chip a reader picks.
+  assert.equal(roundEvidenceCountLabel(groups[1]!), "2 evidence");
+  assert.equal(roundEvidenceCountLabel(groups[2]!), "1 evidence");
+  // A chip names itself one-based, matching how the round label counts segments.
+  assert.deepEqual(groups[1]!.segments.map(evidenceChipLabel), ["evidence 1", "evidence 2"]);
+});
+
+test("one tray opens, for the round being read, and never for a lone snapshot", () => {
+  const submissions = [
+    submission("r1s0", 1, { segment: 0 }),
+    submission("r1s1", 1, { segment: 1 }),
+    submission("r2s0", 2, { segment: 0 }),
+  ];
+  const groups = runRoundGroups(runRounds(detail(submissions, [])));
+
+  // Whichever snapshot of round 1 is being read, round 1 owns the tray.
+  assert.equal(openEvidenceTray(groups, "r1s0")?.round, 1);
+  assert.equal(openEvidenceTray(groups, "r1s1")?.round, 1);
+  // Round 2 captured once, so there is no choice to offer and nothing opens - even though
+  // that round is perfectly well selected. Stamping a one-chip tray under it would spend a
+  // panel on a distinction nobody is drawing.
+  assert.equal(openEvidenceTray(groups, "r2s0"), null);
+  // A submission id from another run, which is what stale component state looks like.
+  assert.equal(openEvidenceTray(groups, "gone"), null);
+  assert.equal(openEvidenceTray(groups, null), null);
+});
+
+test("the tile's own states come from the same predicates the tray is chosen with", () => {
+  // What is at stake: ONE owner per rule. The tile decides its pressed, active, badge and
+  // `aria-expanded` states from these two functions, and `openEvidenceTray` is composed from
+  // the same two - so a tile cannot claim to be the active round while a different round's
+  // tray is the one rendered.
+  const groups = runRoundGroups(runRounds(detail([
+    submission("r1s0", 1, { segment: 0 }),
+    submission("r1s1", 1, { segment: 1 }),
+    submission("r2s0", 2, { segment: 0 }),
+  ], [])));
+  const [roundOne, roundTwo] = groups as [RoundGroupView, RoundGroupView];
+
+  // Ownership follows the VIEWED submission, whichever capture of the round it is.
+  assert.equal(roundHoldsViewedSubmission(roundOne, "r1s1"), true);
+  assert.equal(roundHoldsViewedSubmission(roundTwo, "r1s1"), false);
+  assert.equal(roundHoldsViewedSubmission(roundOne, null), false);
+
+  // Eligibility is about the round alone and says nothing about what is selected.
+  assert.equal(roundOpensEvidenceTray(roundOne), true);
+  assert.equal(roundOpensEvidenceTray(roundTwo), false);
+
+  /**
+   * The composition, and the trap it exists to stop: a LONE viewed snapshot owns the view
+   * while opening no tray. So the tile cannot read its own ownership off `openEvidenceTray`
+   * - round 2 here is the round being read, and that function correctly answers null for it.
+   * Deriving `aria-pressed` from the tray would leave the round on screen unpressed.
+   */
+  assert.equal(openEvidenceTray(groups, "r2s0"), null);
+  assert.equal(roundHoldsViewedSubmission(roundTwo, "r2s0"), true);
+
+  // And where a tray IS open, it is exactly the round the ownership predicate picks.
+  for (const viewed of ["r1s0", "r1s1"]) {
+    const open = openEvidenceTray(groups, viewed);
+    assert.ok(open, `round 1 should open a tray for ${viewed}`);
+    assert.equal(roundHoldsViewedSubmission(open, viewed), true);
+    assert.equal(roundOpensEvidenceTray(open), true);
+    assert.equal(
+      groups.filter((group) => roundHoldsViewedSubmission(group, viewed)).length,
+      1,
+      "exactly one round may own the viewed submission",
+    );
+  }
 });
 
 test("a round with no fail verdict is waiting, not failed", () => {

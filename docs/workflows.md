@@ -1071,11 +1071,11 @@ same single-state filter the **State** dropdown offers in full; the dropdown sti
 every state, and workflow id and session filters sit beside it. Filters and the selected run
 are part of the bookmarkable hash, and history pages 50 rows at a time.
 
-A run is read one **submission** at a time. The scrubber lists every one with the round it
-belongs to - GitHub Inspector-only repair rounds marked as such - and the round that asked for
-changes is marked even though its submission is a healthy `waiting for the session`.
-Selecting one scopes the pipeline statuses, the review worklist, the join packets and the
-timeline to it; the latest is selected by default. The GitHub Inspector gate, completion claims, deliveries and
+A run is read one **submission** at a time. The scrubber draws **one tile per round** -
+GitHub Inspector-only repair rounds marked as such - and the round that asked for changes is
+marked even though its submission is a healthy `waiting for the session`. Selecting one
+scopes the pipeline statuses, the review worklist, the join packets and the timeline to it;
+the latest is selected by default. The GitHub Inspector gate, completion claims, deliveries and
 every recovery action always reflect the live run whatever is on screen, and a note says so
 while an earlier one is selected.
 
@@ -1083,9 +1083,17 @@ while an earlier one is selected.
 evaluator asked for changes, the work came back, and the whole pipeline runs again from
 Session against the repair budget. A segment is a session action finishing: fresh evidence,
 only the stages after the action, and no budget spent. A round that holds more than one
-segment labels each of them - `Round 1 · evidence 1`, `Round 1 · evidence 2` - and selecting
-a continuation says in a sentence which action produced it and that it cost no repair round. A
-round with a single segment is just `Round 1`, because there is no distinction to draw. The
+segment carries a **count badge** on its tile - `11 evidence` - and lists those segments in a
+**tray below the strip**, one chip each, in a grid of equal cells naming the capture and its
+state (`evidence 7`, `Under review`). The chip wears its segment's own tone, so a capture that
+failed inside a round is visible without opening anything else. Exactly one tray is open at a
+time and it belongs to the round being read, which the tile announces with `aria-expanded`.
+Selecting a chip says in a sentence which action produced that segment and that it cost no
+repair round. A round with a single segment carries no badge and opens no tray, because there
+is no distinction to draw. A round is therefore always one tile: a run that captured evidence
+twenty-three times across three rounds reads as three rounds, which is the fact the segment
+model exists to keep straight. The badge deliberately does not change with the selection - the
+tray names the open capture - so clicking along the chips never moves the strip above. The
 action that authorized a segment is shown *with* that segment even though its attempt belongs
 to the parent, so a continuation never reads as evidence that arrived from nowhere.
 

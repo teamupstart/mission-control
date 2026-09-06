@@ -34,6 +34,7 @@ interface ChildProcessBoundary {
   contract:
     | "bootstrap-login-shell"
     | "current-runtime"
+    | "declared-executable"
     | "locator-result"
     | "operator-command"
     | "resolved-path-parameter"
@@ -80,6 +81,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
+  ],
+  "src/server/repository/reader.ts": [
+    { operation: "execFile", command: '"git"', contract: "declared-executable", reason: "standalone repository reader uses catalog-declared Git with hardened argv and environment policy" },
   ],
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },
@@ -236,6 +240,10 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === "shell";
     case "current-runtime":
       return ["args.node", "descriptor.command", "request.node"].includes(boundary.command);
+    case "declared-executable": {
+      const command = literalCommand(boundary.command);
+      return command !== null && Object.values(EXECUTABLE_SPECS).some((spec) => spec.command === command);
+    }
     case "locator-result":
       return boundary.command === "executable.path" || boundary.command === "resolved";
     case "operator-command":

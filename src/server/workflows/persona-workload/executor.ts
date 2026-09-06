@@ -85,15 +85,26 @@ function workloadPrompt(request: PersonaWorkloadRequest): string {
 
 type PersonaLlmCall = Extract<PersonaWorkloadResult, { kind: "succeeded" }>["llmCall"];
 
+class PersonaWorkloadDeadlineError extends Error {
+  constructor() {
+    super("Persona workload deadline exceeded");
+    this.name = "PersonaWorkloadDeadlineError";
+  }
+}
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 function failureResult(
   error: unknown,
-  cancelled: boolean,
+  signal: AbortSignal,
   llmCall: PersonaLlmCall | null,
 ): PersonaWorkloadResult {
-  const message = error instanceof Error ? error.message : String(error);
+  const deadlineExceeded = signal.reason instanceof PersonaWorkloadDeadlineError;
+  const failure = deadlineExceeded ? signal.reason : error;
+  const message = failure instanceof Error ? failure.message : String(failure);
   return {
     kind: "failed",
-    code: cancelled ? "cancelled" : "provider_unavailable",
+    code: deadlineExceeded ? "deadline_exceeded" : signal.aborted ? "cancelled" : "provider_unavailable",
     message: message.slice(0, 4_000) || "Persona workload failed",
     retryable: true,
     llmCall,
@@ -132,7 +143,21 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     this.workloads.set(request.workloadId, state);
-    void this.run(state).finally(() => signal.removeEventListener("abort", abort));
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+    const enforceDeadline = () => {
+      if (state.controller.signal.aborted) return;
+      const remaining = request.deadline - this.now();
+      if (remaining <= 0) {
+        state.controller.abort(new PersonaWorkloadDeadlineError());
+        return;
+      }
+      deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+    };
+    enforceDeadline();
+    void this.run(state).finally(() => {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      signal.removeEventListener("abort", abort);
+    });
     return this.stream(state, 0);
   }
 
@@ -170,7 +195,10 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let llmCall: PersonaLlmCall | null = null;
     const emittedAuditIds = new Set<string>();
     try {
-      if (request.deadline <= this.now()) throw new Error("Persona workload deadline has passed");
+      if (request.deadline <= this.now()) {
+        state.controller.abort(new PersonaWorkloadDeadlineError());
+        throw state.controller.signal.reason;
+      }
       lease = await this.options.materializer.materialize(
         materializationRequest(request),
         state.controller.signal,
@@ -275,7 +303,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           // workload still fails closed and no unvalidated audit event is emitted.
         }
       }
-      const result = failureResult(error, state.controller.signal.aborted, llmCall);
+      const result = failureResult(error, state.controller.signal, llmCall);
       state.terminal = result;
       this.emit(state, { kind: "completed", result });
     } finally {

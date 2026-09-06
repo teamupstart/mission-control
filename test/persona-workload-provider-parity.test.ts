@@ -430,6 +430,18 @@ function audit(operation: "read" | "git_diff", range: RepositoryEvidenceRange, o
   };
 }
 
+function rejectWhenAborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const fallback = setTimeout(() => reject(new Error("executor did not enforce the workload deadline")), 1_000);
+    const abort = () => {
+      clearTimeout(fallback);
+      reject(signal.reason);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+}
+
 test("local Claude and Codex workloads preserve identical line, byte, diff, evidence, and call-accounting contracts", async () => {
   const fixture = repositoryViewFixture();
   const launches: PersonaProviderLaunch[] = [];
@@ -492,6 +504,80 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
         if (terminal.result.kind === "succeeded") assert.ok(terminal.result.llmCall.inputBytes > 0);
       }
     }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("the workload deadline aborts materialization and returns a structured deadline failure", async () => {
+  const fixture = repositoryViewFixture();
+  let providerStarted = false;
+  const provider: PersonaWorkloadProviderAdapter = {
+    id: "claude",
+    async run() {
+      providerStarted = true;
+      throw new Error("provider must not start before materialization");
+    },
+  };
+  const executor = new LocalPersonaWorkloadExecutor({
+    materializer: {
+      async materialize(_value, signal) {
+        return rejectWhenAborted(signal);
+      },
+    },
+    providers: { claude: provider, codex: { ...provider, id: "codex" } },
+    repositoryMcpEntrypoint: "/tmp/repository-mcp.mjs",
+  });
+  try {
+    const events: PersonaWorkloadEvent[] = [];
+    const input = { ...request("claude", fixture.descriptor.snapshotDigest), deadline: Date.now() + 100 };
+    for await (const event of executor.dispatch(input, new AbortController().signal)) events.push(event);
+    assert.equal(providerStarted, false);
+    const completed = events.at(-1);
+    assert.equal(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assert.equal(completed.result.kind, "failed");
+      assert.equal(completed.result.kind === "failed" ? completed.result.code : null, "deadline_exceeded");
+    }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("the workload deadline aborts provider execution and releases the repository lease", async () => {
+  const fixture = repositoryViewFixture();
+  let releases = 0;
+  const provider: PersonaWorkloadProviderAdapter = {
+    id: "claude",
+    async run(_launch, signal) {
+      return rejectWhenAborted(signal);
+    },
+  };
+  const executor = new LocalPersonaWorkloadExecutor({
+    materializer: {
+      async materialize() {
+        return {
+          descriptor: fixture.descriptor,
+          async release() {
+            releases += 1;
+          },
+        };
+      },
+    },
+    providers: { claude: provider, codex: { ...provider, id: "codex" } },
+    repositoryMcpEntrypoint: "/tmp/repository-mcp.mjs",
+  });
+  try {
+    const events: PersonaWorkloadEvent[] = [];
+    const input = { ...request("claude", fixture.descriptor.snapshotDigest), deadline: Date.now() + 100 };
+    for await (const event of executor.dispatch(input, new AbortController().signal)) events.push(event);
+    const completed = events.at(-1);
+    assert.equal(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assert.equal(completed.result.kind, "failed");
+      assert.equal(completed.result.kind === "failed" ? completed.result.code : null, "deadline_exceeded");
+    }
+    assert.equal(releases, 1);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

@@ -553,6 +553,115 @@ test("legacy provider lifecycle is explicit and offers no Phase 4 recovery actio
   assert.doesNotMatch(html, />Check again</);
 });
 
+test("a conclusively failed retry host exposes the reserved attempt resume action", () => {
+  const predecessor = commission().attempts[0]!;
+  const recovering = commission({
+    lifecycle: "created",
+    attempts: [
+      { ...predecessor, state: "failed", terminalReason: "provider_failed" },
+      {
+        ...predecessor,
+        attempt: 2,
+        launchKey: "launch-2",
+        engineerRunId: "engineer-2",
+        previousEngineerRunId: predecessor.engineerRunId,
+        state: "created",
+        terminalReason: null,
+      },
+    ],
+    activeAttempt: 2,
+    failure: null,
+    handoff: null,
+    linkedRun: null,
+    recovery: {
+      kind: "retry",
+      predecessorAttempt: 1,
+      predecessorEngineerRunId: "engineer-1",
+      predecessorProviderRevision: 3,
+      attempt: 2,
+      state: "host_launch_failed",
+      candidateFingerprint: null,
+      error: "the managed host could not start",
+      startedAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_001,
+    },
+  });
+  const html = renderToStaticMarkup(createElement(PipelineRuns, {
+    runs: [],
+    commissions: [recovering],
+    selectedCommissionId: recovering.id,
+    onSelectCommission: () => undefined,
+    selected: null,
+    onSelect: () => undefined,
+    onOpenSettings: () => undefined,
+  }));
+
+  assert.match(html, />Resume Engineer</);
+  assert.match(html, /Resume the reserved Engineer retry on a fresh host/);
+  assert.doesNotMatch(html, />Retry Engineer</);
+});
+
+test("an unbound recovery attempt exposes no unusable settlement action", () => {
+  const predecessor = commission().attempts[0]!;
+  const unbound = commission({
+    lifecycle: "created",
+    activeAttempt: 2,
+    handoff: null,
+    linkedRun: null,
+    attempts: [
+      { ...predecessor, state: "failed", terminalReason: "provider_failed" },
+      {
+        ...predecessor,
+        attempt: 2,
+        launchKey: "launch-2",
+        engineerRunId: null,
+        previousEngineerRunId: predecessor.engineerRunId,
+        providerRevision: 0,
+        state: "created",
+        terminalReason: null,
+      },
+    ],
+    recovery: {
+      kind: "retry",
+      predecessorAttempt: 1,
+      predecessorEngineerRunId: "engineer-1",
+      predecessorProviderRevision: 3,
+      attempt: 2,
+      state: "provider_reservation_failed",
+      candidateFingerprint: null,
+      error: "the provider reservation failed",
+      startedAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_001,
+    },
+  });
+  const render = (value: PipelineCommission): string => renderToStaticMarkup(createElement(
+    PipelineRuns,
+    {
+      runs: [],
+      commissions: [value],
+      selectedCommissionId: value.id,
+      onSelectCommission: () => undefined,
+      selected: null,
+      onSelect: () => undefined,
+      onOpenSettings: () => undefined,
+    },
+  ));
+
+  assert.doesNotMatch(render(unbound), />Cancel Pipeline</);
+  assert.doesNotMatch(render({
+    ...unbound,
+    failure: {
+      error: "provider failed",
+      class: "provider",
+      code: "provider_failed",
+      summary: "Provider failed",
+      retryable: false,
+      remedy: null,
+      diagnostic: null,
+    },
+  }), />Abandon commission</);
+});
+
 test("only explicit current commission blockers synthesize a recoverable halt", () => {
   const refusal = "artifact stem does not match the reserved feature slug";
   const landRefused = commission({

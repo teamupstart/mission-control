@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "../src/shared/types.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
 
 /**
  * `Registry.onSessionExit` - the one moment a reader gets between "this session is over" and
@@ -108,4 +109,43 @@ test("unsubscribing stops the announcements", () => {
   registry.applyDiscovery([mkDiscovered({ syntheticId: "ignored" })]);
   registry.applyDiscovery([]);
   assert.equal(calls, 0);
+});
+
+test("Pipeline host replacement detaches the task and enters the one eviction path once", async () => {
+  const registry = new Registry();
+  const session = registry.registerSdkSession({
+    id: "sdk:failed-engineer-host",
+    agent: "codex",
+    name: "failed Engineer",
+    cwd: "/repo",
+    agentSessionId: "failed-engineer-agent",
+  });
+  registry.upsertTask(mkTask({
+    id: "pipeline-host-replacement",
+    kind: "pipeline",
+    agent: "codex",
+    repoRoot: "/repo",
+    status: "running",
+    sessionId: session.id,
+  }));
+  const exits: string[] = [];
+  registry.onSessionExit((exited) => exits.push(exited.id));
+  let stops = 0;
+
+  assert.equal(await registry.replacePipelineEngineerHost(
+    "pipeline-host-replacement",
+    session.id,
+    async () => { stops += 1; },
+  ), true);
+  assert.equal(registry.getTask("pipeline-host-replacement")?.sessionId, null);
+  assert.equal(registry.getSession(session.id)?.state, "exited");
+  assert.deepEqual(exits, [session.id]);
+  assert.equal(stops, 1);
+  assert.equal(await registry.replacePipelineEngineerHost(
+    "pipeline-host-replacement",
+    session.id,
+    async () => { stops += 1; },
+  ), false);
+  assert.deepEqual(exits, [session.id]);
+  assert.equal(stops, 1);
 });

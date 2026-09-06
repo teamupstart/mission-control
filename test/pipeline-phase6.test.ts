@@ -28,12 +28,16 @@ import { TaskManager } from "../src/server/tasks.ts";
 import { pipelineCommissionLine } from "../src/web/pipelines/pipeline-run-model.ts";
 import {
   getTask as getDurableTask,
+  getPipelineCommission,
+  reservePipelineCommissionRetry,
+  updatePipelineCommissionRecovery,
   upsertPipelineCommissionAttempt,
 } from "../src/server/db.ts";
 import { setPipelinesConfig } from "../src/server/pipelines/config.ts";
 import {
   bindPipelineCommissionAttempt,
   createPipelineCommission,
+  applyEngineerEvent,
 } from "../src/server/pipelines/commissions.ts";
 import { PIPELINE_PROVIDERS } from "../src/server/pipelines/providers.ts";
 import type { PipelineEngineerRunSnapshot } from "../src/server/pipelines/types.ts";
@@ -1254,6 +1258,7 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
     field: "correlationId" | "repoRoot" | "attemptKey";
     value: string;
   } = { field: "correlationId", value: "foreign-correlation" };
+  const cancelledRunIds: string[] = [];
   const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
   PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
     capability: async () => ({ ok: true, value: { supported: true } }),
@@ -1276,7 +1281,25 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
     }),
     inspectCorrelation: async () => ({ ok: true, value: [] }),
     replay: async () => ({ ok: true, value: [] }),
-    cancel: async () => assert.fail("a mismatched provider reservation is not owned locally"),
+    cancel: async ({ engineerRunId }) => {
+      cancelledRunIds.push(engineerRunId);
+      return {
+        ok: true,
+        value: {
+          schemaVersion: 1,
+          capability: "engineerLifecycleEventsV1",
+          engineerRunId,
+          correlationId: "cancelled-mismatched-run",
+          attemptKey: "cancelled-mismatched-run",
+          attempt: 1,
+          previousEngineerRunId: null,
+          repoRoot: "/repo/cancelled-mismatched-run",
+          idea: "cancelled mismatched run",
+          eventRevision: 2,
+          state: "cancelled",
+        },
+      };
+    },
   };
   t.after(() => {
     PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
@@ -1316,6 +1339,11 @@ test("commissioned dispatch rejects a provider reservation with mismatched ident
       null,
     );
   }
+  assert.deepEqual(cancelledRunIds, [
+    "engineer-mismatched-correlationId",
+    "engineer-mismatched-repoRoot",
+    "engineer-mismatched-attemptKey",
+  ]);
   assert.equal(supervisor.starts.length, 0);
 });
 
@@ -1396,6 +1424,324 @@ test("commissioned requests sharing derived task identity reserve separate provi
     commissions[0]?.attempts[0]?.engineerRunId,
     commissions[1]?.attempts[0]?.engineerRunId,
   );
+});
+
+test("a lost retry reservation response retains one attempt and an explicit unknown outcome", async (t) => {
+  const taskId = "pipeline-retry-response-lost";
+  const repoRoot = "/repo/retry-response-lost";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    intent: "Recover without minting a duplicate",
+  }));
+  const created = createPipelineCommission({
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    capabilities: { supported: true, readiness: true, ownedAttempts: true },
+    id: "commission-retry-response-lost",
+    correlationId: "correlation-retry-response-lost",
+    launchKey: "initial-response-lost",
+  });
+  bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 1,
+    engineerRunId: "engineer-response-lost-1",
+    providerAttempt: 1,
+    attemptKey: "initial-response-lost",
+    previousEngineerRunId: null,
+    integrationOwner: created.id,
+  });
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-response-lost-1",
+    correlationId: created.correlationId,
+    attemptKey: "initial-response-lost",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot,
+    revision: 1,
+    ts: "2026-09-04T12:00:00.000Z",
+    type: "engineer_run_failed",
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  }).outcome, "stored");
+  const failed = getPipelineCommission(created.id)!;
+  const reserved = reservePipelineCommissionRetry({
+    guard: {
+      commissionId: failed.id,
+      activeAttempt: 1,
+      engineerRunId: "engineer-response-lost-1",
+      providerRevision: 1,
+    },
+    launchKey: "retry-response-lost",
+  });
+  assert.equal(reserved.ok, true);
+  if (!reserved.ok) return;
+  registry.upsertTask({
+    ...registry.getTask(taskId)!,
+    pipelineCommissionId: created.id,
+    status: "running",
+    updatedAt: Date.now(),
+  });
+  registry.initializePipelineCommissions([reserved.commission]);
+
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: { supported: true, readiness: true, ownedAttempts: true } }),
+    readinessProbe: async () => ({ ok: true, value: {
+      status: "ready",
+      code: "ready",
+      summary: "Provider is ready",
+      checkedCapabilities: ["git", "gh"],
+      retryable: true,
+      remedy: null,
+      diagnostic: null,
+      fingerprint: "ready",
+    } }),
+    create: async () => ({ ok: false, error: "provider timed out", outcomeUnknown: true }),
+    inspectCorrelation: async () => ({ ok: true, value: [] }),
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => assert.fail("an unknown reservation is never cancelled by guessing"),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const dispatcher = new Dispatcher(registry, undefined, {
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      capabilities: { supported: true, readiness: true, ownedAttempts: true },
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  const held = registry.pipelineCommission(created.id)!;
+  assert.equal(held.attempts.length, 2);
+  assert.equal(held.attempts[1]?.engineerRunId, null);
+  assert.equal(held.recovery?.state, "provider_outcome_unknown");
+  assert.match(held.recovery?.error ?? "", /provider timed out/);
+});
+
+test("a restarted bound retry inspects its exact provider run without creating another", async (t) => {
+  const taskId = "pipeline-retry-bound-restart";
+  const repoRoot = "/repo/retry-bound-restart";
+  const registry = new Registry();
+  registry.upsertTask(mkTask({
+    id: taskId,
+    agent: "codex",
+    kind: "pipeline",
+    repoRoot,
+    status: "running",
+    intent: "Resume the exact bound retry",
+  }));
+  const capabilities = {
+    supported: true,
+    readiness: true,
+    worktreeRetirement: true,
+    retainedReviewWorktrees: true,
+    ownedAttempts: true,
+  };
+  const created = createPipelineCommission({
+    taskId,
+    provider: "ai-conductor",
+    repoRoot,
+    capabilities,
+    id: "commission-retry-bound-restart",
+    correlationId: "correlation-retry-bound-restart",
+    launchKey: "initial-bound-restart",
+  });
+  bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 1,
+    engineerRunId: "engineer-bound-predecessor",
+    providerAttempt: 1,
+    attemptKey: "initial-bound-restart",
+    previousEngineerRunId: null,
+    integrationOwner: created.id,
+  });
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-bound-predecessor",
+    correlationId: created.correlationId,
+    attemptKey: "initial-bound-restart",
+    attempt: 1,
+    previousEngineerRunId: null,
+    repoRoot,
+    revision: 1,
+    ts: "2026-09-05T12:00:00.000Z",
+    type: "engineer_run_failed",
+    error: "provider failed",
+    class: "provider",
+    code: "provider_failed",
+    summary: "Provider failed",
+    retryable: true,
+    remedy: "Retry",
+    diagnostic: null,
+  }).outcome, "stored");
+  const predecessor = getPipelineCommission(created.id)!.attempts[0]!;
+  const reserved = reservePipelineCommissionRetry({
+    guard: {
+      commissionId: created.id,
+      activeAttempt: predecessor.attempt,
+      engineerRunId: predecessor.engineerRunId!,
+      providerRevision: predecessor.providerRevision,
+    },
+    launchKey: "retry-bound-restart",
+  });
+  assert.equal(reserved.ok, true);
+  if (!reserved.ok) return;
+  bindPipelineCommissionAttempt({
+    commissionId: created.id,
+    attempt: 2,
+    engineerRunId: "engineer-bound-retry",
+    providerAttempt: 2,
+    attemptKey: "retry-bound-restart",
+    previousEngineerRunId: "engineer-bound-predecessor",
+    integrationOwner: created.id,
+    readinessRequired: true,
+  });
+  const readiness = {
+    status: "ready" as const,
+    code: "ready",
+    summary: "Provider is ready",
+    checkedCapabilities: ["git", "gh"],
+    retryable: true,
+    remedy: null,
+    diagnostic: null,
+    fingerprint: "retry-bound-ready",
+    permitted: true,
+    checkedAt: "2026-09-05T12:00:02.000Z",
+  };
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-bound-retry",
+    correlationId: created.correlationId,
+    attemptKey: "retry-bound-restart",
+    attempt: 2,
+    previousEngineerRunId: "engineer-bound-predecessor",
+    repoRoot,
+    revision: 1,
+    ts: "2026-09-05T12:00:01.000Z",
+    type: "engineer_run_created",
+    idea: "Resume the exact bound retry",
+    readinessRequired: true,
+    integrationOwner: created.id,
+  }).outcome, "stored");
+  assert.equal(applyEngineerEvent({
+    schemaVersion: 1,
+    engineerRunId: "engineer-bound-retry",
+    correlationId: created.correlationId,
+    attemptKey: "retry-bound-restart",
+    attempt: 2,
+    previousEngineerRunId: "engineer-bound-predecessor",
+    repoRoot,
+    revision: 2,
+    ts: readiness.checkedAt,
+    type: "engineer_readiness_checked",
+    ...readiness,
+  }).outcome, "stored");
+  const failedLaunch = updatePipelineCommissionRecovery({
+    commissionId: created.id,
+    attempt: 2,
+    state: "host_launch_failed",
+    error: "managed host failed before restart",
+  });
+  assert.ok(failedLaunch);
+  registry.upsertTask({
+    ...registry.getTask(taskId)!,
+    pipelineCommissionId: created.id,
+    sessionId: null,
+    status: "running",
+    updatedAt: Date.now(),
+  });
+  registry.initializePipelineCommissions([failedLaunch]);
+  setPipelinesConfig({
+    enabled: true,
+    launchRuntime: "agent-sdk",
+    repos: [{ provider: "ai-conductor", repoRoot, enabled: true }],
+  });
+
+  const boundSnapshot: PipelineEngineerRunSnapshot = {
+    schemaVersion: 1,
+    capability: "engineerLifecycleEventsV1",
+    engineerRunId: "engineer-bound-retry",
+    correlationId: created.correlationId,
+    attemptKey: "retry-bound-restart",
+    attempt: 2,
+    previousEngineerRunId: "engineer-bound-predecessor",
+    repoRoot,
+    idea: "Resume the exact bound retry",
+    eventRevision: 2,
+    state: "created",
+    readinessRequired: true,
+    integrationOwner: created.id,
+    readiness,
+  };
+  let createCalls = 0;
+  let inspectCalls = 0;
+  const originalLifecycle = PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle;
+  PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = {
+    capability: async () => ({ ok: true, value: capabilities }),
+    readinessProbe: async () => ({ ok: true, value: readiness }),
+    create: async () => {
+      createCalls += 1;
+      return {
+        ok: true,
+        value: { ...boundSnapshot, engineerRunId: "engineer-duplicate-retry" },
+      };
+    },
+    readiness: async () => ({ ok: true, value: boundSnapshot }),
+    inspectCorrelation: async () => {
+      inspectCalls += 1;
+      return { ok: true, value: [boundSnapshot] };
+    },
+    replay: async () => ({ ok: true, value: [] }),
+    cancel: async () => ({ ok: true, value: { ...boundSnapshot, state: "cancelled" } }),
+  };
+  t.after(() => {
+    PIPELINE_PROVIDERS["ai-conductor"].engineerLifecycle = originalLifecycle;
+  });
+  const supervisor = fakeSupervisor(registry);
+  const dispatcher = new Dispatcher(registry, undefined, {
+    supervisor,
+    missionMcpDescriptor: async () => ({
+      serverName: "mission-control",
+      command: "/usr/bin/node",
+      args: ["/dist/mcp/server.mjs"],
+      env: {},
+    }),
+    verifyMissionMcpTools: async () => ({ ok: true }),
+    pipelineLaunch: async () => ({
+      ok: true,
+      commissioned: true,
+      provider: "ai-conductor",
+      launchRuntime: "agent-sdk",
+      cwd: repoRoot,
+      capabilities,
+    }),
+  });
+
+  await dispatcher.dispatch(taskId);
+
+  assert.equal(createCalls, 0, "a bound recovery must not reserve another provider run");
+  assert.equal(inspectCalls, 1, "the persisted provider run is revalidated before host launch");
+  assert.equal(supervisor.starts.length, 1);
+  assert.equal(registry.pipelineCommission(created.id)?.attempts[1]?.engineerRunId, "engineer-bound-retry");
+  assert.equal(registry.pipelineCommission(created.id)?.recovery?.state, "complete");
 });
 
 test("provider reservation is cancelled when managed host setup fails", async (t) => {
@@ -2547,6 +2893,17 @@ test("only the processed provider projection settles an adopted Pipeline task", 
 
 test("adopting an already-processed provider projection settles through the ordinary path", () => {
   const { registry, tasks, target, targetLink, host, task } = managedAdoptionFixture();
+  const commission = createPipelineCommission({
+    taskId: task.id,
+    provider: target.provider,
+    repoRoot: target.repoRoot,
+  });
+  registry.initializePipelineCommissions([commission]);
+  registry.upsertTask({
+    ...task,
+    pipelineCommissionId: commission.id,
+    updatedAt: Date.now(),
+  });
   registry.initializePipelineRuns([{
     ...target,
     group: "processed",
@@ -2554,9 +2911,13 @@ test("adopting an already-processed provider projection settles through the ordi
     prUrl: "https://github.com/example/demo/pull/77",
   }]);
 
-  const adopted = tasks.adoptPipelineRun(task, targetLink, { kind: "managed", session: host });
+  const adopted = tasks.adoptPipelineRun(registry.getTask(task.id)!, targetLink, {
+    kind: "managed",
+    session: host,
+  });
 
   assert.equal(adopted.ok, true);
+  assert.equal(registry.pipelineCommission(commission.id)?.linkedRun, null);
   assert.equal(registry.getTask(task.id)?.status, "done");
   assert.equal(registry.getTask(task.id)?.outcomeUrl, "https://github.com/example/demo/pull/77");
 });

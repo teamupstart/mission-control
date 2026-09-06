@@ -2,13 +2,18 @@ import { Fragment, useMemo, useState } from "react";
 import type { Task } from "@shared/types.ts";
 import {
   PIPELINE_DAEMON_ACTIONS,
+  pipelineAdoptionRecoveryIsResumable,
   pipelineGrantAllowed,
+  pipelineRecoveryIsActive,
+  pipelineRecoveryPredecessorGuard,
   pipelineRepoKey,
+  pipelineRetryRecoveryIsResumable,
   pipelineRunKeyOf,
   type PipelineAction,
   type PipelineConsole,
   type PipelineRun,
   type PipelineCommission,
+  type PipelineRecoveryOperation,
 } from "@shared/pipeline.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { repoLeaf } from "../lib/format.ts";
@@ -71,6 +76,7 @@ export function PipelineRuns({
   const { repos, refresh } = usePipelineRepos(true);
   const [checkingCommissionId, setCheckingCommissionId] = useState<string | null>(null);
   const [startingCommissionId, setStartingCommissionId] = useState<string | null>(null);
+  const [recoveryBusy, setRecoveryBusy] = useState<PipelineRecoveryOperation | null>(null);
   const [readinessError, setReadinessError] = useState<string | null>(null);
   const sections = useMemo(() => pipelineRail(runs, repos ?? []), [runs, repos]);
 
@@ -156,8 +162,72 @@ export function PipelineRuns({
   const canStartAfterReadiness = activeCommission?.readiness?.permitted === true &&
     checkingCommissionId === null &&
     activeCommission.lifecycle === "created" &&
+    !pipelineRecoveryIsActive(activeCommission.recovery) &&
     activeTask?.status === "running" &&
     !activeTask.sessionId;
+  const activeAttempt = activeCommission?.attempts.find(
+    (attempt) => attempt.attempt === activeCommission.activeAttempt,
+  ) ?? null;
+  const recoveryGuard = activeCommission && activeAttempt?.engineerRunId &&
+    activeAttempt.providerRevision > 0
+    ? {
+        commissionId: activeCommission.id,
+        activeAttempt: activeAttempt.attempt,
+        engineerRunId: activeAttempt.engineerRunId,
+        providerRevision: activeAttempt.providerRevision,
+      }
+    : null;
+  const predecessorGuard = activeCommission
+    ? pipelineRecoveryPredecessorGuard(activeCommission)
+    : null;
+  const retryGuard = activeCommission && pipelineRetryRecoveryIsResumable(activeCommission.recovery)
+    ? predecessorGuard
+    : recoveryGuard;
+  const adoptionGuard = activeCommission &&
+    pipelineAdoptionRecoveryIsResumable(activeCommission.recovery)
+    ? predecessorGuard
+    : recoveryGuard;
+  const recover = async (
+    action: "retry" | "refresh" | "adopt" | "abandon" | "cancel",
+  ): Promise<void> => {
+    const actionGuard = action === "retry"
+      ? retryGuard
+      : action === "adopt" ? adoptionGuard : recoveryGuard;
+    if (!activeCommission || !actionGuard || recoveryBusy) return;
+    setRecoveryBusy(action);
+    setReadinessError(null);
+    const candidate = activeCommission.successorCandidate;
+    let result: Awaited<ReturnType<typeof api.retryPipelineAttempt>>;
+    switch (action) {
+      case "retry":
+        result = await api.retryPipelineAttempt(activeCommission.taskId, { guard: actionGuard });
+        break;
+      case "refresh":
+        result = await api.refreshPipelineSuccessor(activeCommission.taskId, { guard: actionGuard });
+        break;
+      case "adopt":
+        if (!candidate?.fingerprint) {
+          setReadinessError("The exact successor fingerprint is unavailable. Refresh before adopting.");
+          setRecoveryBusy(null);
+          return;
+        }
+        result = await api.adoptPipelineSuccessor(activeCommission.taskId, {
+          guard: actionGuard,
+          candidateEngineerRunId: candidate.engineerRunId,
+          candidateRevision: candidate.providerRevision,
+          candidateFingerprint: candidate.fingerprint,
+        });
+        break;
+      case "abandon":
+        result = await api.abandonPipelineCommission(activeCommission.taskId, { guard: actionGuard });
+        break;
+      case "cancel":
+        result = await api.cancelPipelineCommission(activeCommission.taskId, { guard: actionGuard });
+        break;
+    }
+    if (!result.ok) setReadinessError(result.error ?? "Pipeline recovery could not be completed");
+    setRecoveryBusy(null);
+  };
 
   return (
     <section className="pipelines">
@@ -297,6 +367,13 @@ export function PipelineRuns({
             canStartAfterReadiness={canStartAfterReadiness}
             startingAfterReadiness={startingCommissionId === activeCommission?.id}
             onStartAfterReadiness={() => { void startAfterReadiness(); }}
+            recoveryBusy={recoveryBusy}
+            onRetry={() => { void recover("retry"); }}
+            onRefreshSuccessor={() => { void recover("refresh"); }}
+            onAdoptSuccessor={() => { void recover("adopt"); }}
+            onAbandon={() => { void recover("abandon"); }}
+            onCancel={() => { void recover("cancel"); }}
+            canSettleCommission={recoveryGuard !== null}
             onSelectRun={onSelect}
           />
         ) : (

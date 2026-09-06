@@ -57,17 +57,24 @@ export const DISPLAY_ITEMS = [
     /**
      * The one entry here that governs a CAPABILITY and not just a fact.
      *
-     * Unchecking it takes the keycap off every card AND stands the twelve chords down, so an
-     * operator who does not want them keeps ⌘0/⌘-/⌘= for whatever else they use those keys
-     * for. That coupling is deliberate and is why there is no second switch: an invisible
-     * shortcut that still fires is the one shape this control must not have. The chords
-     * themselves live in `lib/card-shortcuts.ts`.
+     * Unchecking it takes the keycap off every card AND every rail row AND stands the twelve
+     * chords down, so an operator who does not want them keeps ⌘0/⌘-/⌘= for whatever else
+     * they use those keys for. That coupling is deliberate and is why there is no second
+     * switch: an invisible shortcut that still fires is the one shape this control must not
+     * have. The chords themselves live in `lib/card-shortcuts.ts`.
+     *
+     * The one entry in the `card` group that also governs a surface outside the card - the
+     * Console rail prints the same key beside its state word, off the same assignment. It
+     * stays one item rather than two because it is one capability and one number row: a rail
+     * switch that could be on while the board's was off would have to renumber nothing and
+     * yet answer the same twelve keys, and its description is where an operator reads which
+     * surfaces it covers.
      */
     id: "cardShortcut",
     group: "card",
     label: "Jump shortcut",
     description:
-      "The ⌘1 … ⌘0, ⌘-, ⌘= keycap in the card's top corner, and the chord itself: press it to open that card's console. The keys are handed out down the board and across its columns, and move up as cards finish. While this is on the number row belongs to the board: in the desktop app page zoom keeps its View menu items but gives up ⌘0/⌘-/⌘=, and in a browser tab any key your browser keeps for selecting a tab or zooming stays the browser's. Unchecked, the keycaps go, the chords stand down, and those keys zoom again.",
+      "The ⌘1 … ⌘0, ⌘-, ⌘= keycap on the card and beside the Console rail's state word, and the chord itself: press it to open that session's console. The keys are handed out down the fleet and across the board's columns - the rail is those columns read end to end, so a session keeps its key when you switch layout - and they move up as sessions finish. While this is on the number row belongs to the fleet: in the desktop app page zoom keeps its View menu items but gives up ⌘0/⌘-/⌘=, and in a browser tab any key your browser keeps for selecting a tab or zooming stays the browser's. Unchecked, the keycaps go, the chords stand down, and those keys zoom again.",
   },
   {
     id: "goal",
@@ -88,7 +95,7 @@ export const DISPLAY_ITEMS = [
     group: "card",
     label: "Workflow",
     description:
-      "The cropped stage ladder for the review that owns this session, and the control that expands it in place. Hidden, a run in progress is only visible from Runs or the console.",
+      "The cropped stage ladder for the review that owns this session. Hidden, a run in progress is only visible from Runs or the console.",
   },
   {
     id: "workflowProgressBar",
@@ -96,6 +103,13 @@ export const DISPLAY_ITEMS = [
     label: "Workflow progress bar",
     description:
       "The run's whole stage track and repair-round budget. Unchecked, the card returns to the single consequential stage with its member detail.",
+  },
+  {
+    id: "workflowDetails",
+    group: "card",
+    label: "Workflow details",
+    description:
+      "Why the run is where it is, and the control that opens its whole actionable ladder inside the card. It ships OFF, so by default a card states the stage track, the stage it is on and the repair-round count and nothing else. Checked, it adds the expand/collapse control - and the Board's expand chord - and the sentence naming what objected or what the run is waiting on.",
   },
   {
     id: "pipelinePhases",
@@ -228,9 +242,9 @@ export const DISPLAY_GROUP_COPY: Record<
  * rather than silently hiding a fact.
  *
  * There is no per-item default here on purpose. An item that ships hidden says so by being
- * in `UI_CONFIG_DEFAULTS.hiddenDisplayItems` - `worktree` is the only one - so this stays a
- * single question asked of a single list, and checking the box removes the id exactly as it
- * does for every other item.
+ * in `UI_CONFIG_DEFAULTS.hiddenDisplayItems` - `worktree` and `workflowDetails` are the two -
+ * so this stays a single question asked of a single list, and checking the box removes the id
+ * exactly as it does for every other item.
  */
 export function isDisplayItemShown(
   hidden: readonly string[],

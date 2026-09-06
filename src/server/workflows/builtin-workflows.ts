@@ -25,6 +25,7 @@ import {
   NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import {
   compileStages,
   stageNodeIds,
@@ -137,16 +138,34 @@ function compileBuiltinGraph(pipeline: StagePipeline): WorkflowDraftGraph {
  * `missing_persona` on every install, which is a broken flagship discovered by an operator
  * instead of by the process that built it.
  */
-function builtinPersonaSnapshot(personaId: PersonaId): PersonaSnapshot {
+interface BuiltinPersonaExecution {
+  runner: LlmRunnerId;
+  model: string;
+}
+
+interface BuiltinPersonaExecutionRouting {
+  default: BuiltinPersonaExecution;
+  overrides?: Readonly<Partial<Record<PersonaId, BuiltinPersonaExecution>>>;
+}
+
+function builtinPersonaSnapshot(
+  personaId: PersonaId,
+  routing: BuiltinPersonaExecutionRouting | null,
+): PersonaSnapshot {
   const persona = BUILTIN_PERSONAS.find((candidate) => candidate.id === personaId);
   if (!persona) {
     throw new Error(`built-in workflow references Persona ${personaId}, which this build does not ship`);
   }
-  return personaSnapshotOf(persona);
+  const snapshot = personaSnapshotOf(persona);
+  if (routing === null) return snapshot;
+  return { ...snapshot, ...(routing.overrides?.[personaId] ?? routing.default) };
 }
 
 /** The same draft-to-published projection `publishWorkflow` performs, over the shipped graph. */
-function publishBuiltinGraph(graph: WorkflowDraftGraph): PublishedWorkflowGraph {
+function publishBuiltinGraph(
+  graph: WorkflowDraftGraph,
+  personaExecution: BuiltinPersonaExecutionRouting | null,
+): PublishedWorkflowGraph {
   return {
     nodes: graph.nodes.map((node): PublishedWorkflowNode => {
       if (node.kind === "persona") {
@@ -154,7 +173,7 @@ function publishBuiltinGraph(graph: WorkflowDraftGraph): PublishedWorkflowGraph 
           id: node.id,
           kind: "persona" as const,
           position: node.position,
-          persona: builtinPersonaSnapshot(node.personaId),
+          persona: builtinPersonaSnapshot(node.personaId, personaExecution),
         };
       }
       // No shipped workflow authors one yet - the runtime that would execute it arrives in a
@@ -192,6 +211,11 @@ interface BuiltinWorkflowSource {
   /** Ascending. Index 0 is version 1, and the last entry is what the draft shows. */
   versions: readonly {
     pipeline: StagePipeline;
+    /**
+     * The default and per-Persona execution identities frozen into this version. `null`
+     * preserves each built-in Persona's own routing exactly as that version shipped.
+     */
+    personaExecution: BuiltinPersonaExecutionRouting | null;
     completionPolicy: WorkflowCompletionPolicy;
     /**
      * Stated per version, never defaulted. Same rule as `bindingDefaults` below: a shipped
@@ -215,7 +239,7 @@ function builtinWorkflow(source: BuiltinWorkflowSource): BuiltinWorkflow {
     workflowId: builtinWorkflowId(source.slug),
     version: index + 1,
     sourceDraftRevision: source.versions[index]!.sourceDraftRevision,
-    graph: publishBuiltinGraph(graph),
+    graph: publishBuiltinGraph(graph, source.versions[index]!.personaExecution),
     completionPolicy: source.versions[index]!.completionPolicy,
     resumptionPolicy: source.versions[index]!.resumptionPolicy,
     evidenceReadinessPolicy: source.versions[index]!.evidenceReadinessPolicy,
@@ -688,13 +712,11 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "Typecheck and test, then seven built-in review roles: Intent Conformance first; Code Risk, "
-      + "Code Quality and Code Design in parallel; then Test Evidence and Documentation in "
-      + "parallel with Slop Filter. Configured checks run for real, while unconfigured slots skip "
-      + "and pass. Every "
-      + "failure returns to the session for repair. The current version finishes both review "
-      + "stages before opening and verifying the pull request, then completes without requiring "
-      + "the optional GitHub Inspector gate.",
+      "Typecheck and test, then seven review roles: Intent Conformance; Code Risk, Quality and "
+      + "Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
+      + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
+      + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
+      + "the pull request without requiring GitHub Inspector.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -706,6 +728,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "restart_workflow",
@@ -718,6 +741,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V2,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "restart_workflow",
@@ -730,6 +754,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "restart_workflow",
@@ -742,6 +767,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -754,6 +780,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -766,6 +793,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -787,6 +815,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // parks in `waiting_for_new_head`, which the observer never touches, because an
         // Inspector repair is resolved by a pushed head the poller observes.
         pipeline: NO_MISTAKES_REVIEW_V3,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -808,6 +837,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // handoff into the session would be asking for a pull request the run already has.
         // Waiting is the honest answer, and the operator still has Prepare PR by hand.
         pipeline: NO_MISTAKES_REVIEW_V4,
+        personaExecution: null,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -826,6 +856,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // captured commit. GitHub Inspector remains an optional remote service and still owns
         // its review ledger, public GitHub behavior, and exact-head Shipping proof.
         pipeline: NO_MISTAKES_REVIEW_V5,
+        personaExecution: null,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -839,6 +870,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // verified Pull Request action. The completion posture remains local: GitHub
         // Inspector is optional and Shipping continues to own its remote exact-head proof.
         pipeline: NO_MISTAKES_REVIEW_V6,
+        personaExecution: null,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -852,6 +884,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // posture and the binding defaults are all version 10's, so the only difference an
         // operator rebinding from 10 to 11 gets is a third judgment on the same submission.
         pipeline: NO_MISTAKES_REVIEW_V7,
+        personaExecution: null,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -865,6 +898,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // one repair packet, and nothing changes after it, so the new version adds one focused
         // judgment without adding a serial stage or changing publication behavior.
         pipeline: NO_MISTAKES_REVIEW_V8,
+        personaExecution: null,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -875,11 +909,28 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // Version 13: the version 12 graph now enforces criterion-mapped evidence readiness.
         // Every earlier version remains advisory and behaviorally unchanged.
         pipeline: NO_MISTAKES_REVIEW_V8,
+        personaExecution: null,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "criterion_mapped_v1",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 12,
+      },
+      {
+        // Version 14: every reviewer is pinned to Codex, with Sol for Code Design and Terra for
+        // the others. The graph, guidance, policies, and binding defaults remain version 13's.
+        pipeline: NO_MISTAKES_REVIEW_V8,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 13,
       },
     ],
   }),

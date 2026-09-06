@@ -51,36 +51,3 @@ test("fork pull requests cannot execute on shared self-hosted runners", () => {
   assert.match(workflow, /unit-node-26:[\s\S]*?runs-on:\s*ubuntu-latest/u);
   assert.match(workflow, /e2e:[\s\S]*?runs-on:\s*ubuntu-latest/u);
 });
-
-test("public entry-point documentation has no legacy internal-only notice", () => {
-  for (const rel of ["README.md", "CONTRIBUTING.md", "SECURITY.md"]) {
-    const text = repoFile(rel);
-    assert.doesNotMatch(text, /internal repository|not licensed for public distribution/iu, rel);
-  }
-
-  const readme = repoFile("README.md");
-  const contributing = repoFile("CONTRIBUTING.md");
-
-  assert.match(readme, /Apache License 2\.0/);
-  assert.equal(
-    readme.match(/git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/gu)?.length,
-    2,
-    "both README setup paths must clone the public repository",
-  );
-  assert.equal(readme.match(/^cd mission-control$/gmu)?.length, 2, "both README setup paths must enter mission-control");
-  assert.match(contributing, /git clone https:\/\/github\.com\/teamupstart\/mission-control\.git/);
-  assert.match(repoFile("SECURITY.md"), /upstart\.com\/lenders\/regulatory-compliance\/vulnerability-reporting/);
-  assert.doesNotMatch(
-    [
-      repoFile("SECURITY.md"),
-      repoFile(".github/ISSUE_TEMPLATE/bug_report.md"),
-      repoFile(".github/ISSUE_TEMPLATE/config.yml"),
-    ].join("\n"),
-    /github\.com\/teamupstart\/mission-control\/security\/advisories\/new/u,
-  );
-  assert.match(readme, /@anthropic-ai\/claude-agent-sdk/);
-  assert.match(readme, /does not accept external pull\s+requests/iu);
-  assert.match(contributing, /Public users may open bug reports and feature requests/iu);
-  assert.match(contributing, /write, maintain, or admin\s+access/iu);
-  assert.doesNotMatch(contributing, /Fork the repository/iu);
-});

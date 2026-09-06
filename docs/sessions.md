@@ -341,6 +341,12 @@ pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
   just as they control a pane-backed one - though on Codex a reasoning-effort selection
   takes effect when the next turn starts rather than immediately, which the effort badge
   [says on its face](#levels-that-apply-on-the-next-turn);
+- if a Claude SDK session reports that it is no longer logged in, authenticate Claude from
+  any terminal. Its next Mission Control message replaces the stale SDK subprocess, resumes
+  the same Claude conversation, and delivers that message with the credentials now on disk.
+  `/login` is not an interactive command in the embedded composer. If authentication fails
+  before Claude reports a conversation id, there is nothing safe to resume; the session exits
+  as unresumable so the operator can start a new conversation;
 - the transcript still comes from the same session file the interactive CLI reads -
   `~/.claude/projects/…` for Claude, the `~/.codex/sessions/…` rollout for Codex, which
   `thread/start` hands the daemon directly. The human-authored task text from the first
@@ -1323,7 +1329,7 @@ unresolved. An effective amendment or replacement updates the Goal and advances 
 version, while steering changes only the latest focus.
 
 The reconciliation call is rate-limited to at most once a minute per session. Its provider
-and model are selected in **Settings → [Models](models.md#models-what-the-apps-own-model-work-runs-on)**;
+and model are selected in **Settings → [Models](models.md)**;
 out of the box it uses the **local `claude` CLI, not the Anthropic API**, with no API key in
 Mission Control. If the provider is missing, logged out, slow, or returns an unsafe amendment,
 the last durable objective stays visible and the unresolved instruction remains ahead of later

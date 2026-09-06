@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { displayItemsShowing } from "../fixtures/display-items.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -128,16 +129,23 @@ async function openRunOn(daemon: DaemonHandle, sessionId: string): Promise<strin
 }
 
 /**
- * Put the dashboard in the Board layout.
+ * Put the dashboard in the Board layout, with the workflow details switched on.
  *
  * Written to the daemon rather than `localStorage`: the web store hydrates from
  * `GET /api/ui/config` at boot and overwrites the local cache. The reload is what makes it take.
+ *
+ * The disclosure this whole spec is about is a Display item that ships OFF, so asking for it
+ * is a precondition rather than a second subject - the same division `line-density.spec.ts`
+ * draws. `board-card-workflow-details.spec.ts` owns the shipped default and the checkbox.
  */
 async function useBoardLayout(page: Page, daemon: DaemonHandle): Promise<void> {
   const response = await fetch(`${daemon.baseURL}/api/ui/config`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ layout: "board" }),
+    body: JSON.stringify({
+      layout: "board",
+      hiddenDisplayItems: displayItemsShowing("workflowDetails"),
+    }),
   });
   const body = (await response.json()) as { config?: { layout?: string } };
   expect(body.config?.layout, "the daemon accepted the Board layout").toBe("board");

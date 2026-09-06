@@ -5,6 +5,7 @@ import {
   ENGINEER_RETAINED_REVIEW_WORKTREES_CAPABILITY,
   ENGINEER_LIFECYCLE_CAPABILITY,
   ENGINEER_WORKTREE_RETIREMENT_CAPABILITY,
+  type EngineerReadinessEvidence,
   type EngineerLifecycleEvent,
   type UnsupportedEngineerLifecycleEvent,
   type UnknownEngineerLifecycleEvent,
@@ -142,16 +143,21 @@ function retainedCommit(value: unknown): value is string {
 function parseReadiness(value: unknown): PipelineEngineerRunSnapshot["readiness"] {
   if (value === null) return null;
   const row = record(value);
+  if (!row || parseReadinessEvidence(row) === null ||
+      typeof row.permitted !== "boolean" || !timestamp(row.checkedAt)) return null;
+  return row as unknown as PipelineEngineerRunSnapshot["readiness"];
+}
+
+function parseReadinessEvidence(value: unknown): EngineerReadinessEvidence | null {
+  const row = record(value);
   if (!row || !["ready", "blocked", "inconclusive"].includes(String(row.status)) ||
       !boundedString(row.code, ENGINEER_EVENT_LIMITS.identityChars) ||
-      !boundedString(row.summary, 240) ||
-      !Array.isArray(row.checkedCapabilities) ||
+      !boundedString(row.summary, 240) || !Array.isArray(row.checkedCapabilities) ||
       row.checkedCapabilities.length < 1 || row.checkedCapabilities.length > 32 ||
       row.checkedCapabilities.some((entry) => !boundedString(entry, 64)) ||
       typeof row.retryable !== "boolean" || !stringOrNull(row.remedy, 512) ||
-      !stringOrNull(row.diagnostic, 2048) || !boundedString(row.fingerprint, 128) ||
-      typeof row.permitted !== "boolean" || !timestamp(row.checkedAt)) return null;
-  return row as unknown as PipelineEngineerRunSnapshot["readiness"];
+      !stringOrNull(row.diagnostic, 2048) || !boundedString(row.fingerprint, 128)) return null;
+  return row as unknown as EngineerReadinessEvidence;
 }
 
 function parseFailure(value: unknown): PipelineEngineerRunSnapshot["failure"] {
@@ -272,6 +278,25 @@ async function create(input: {
     parsed.attemptKey === input.attemptKey
     ? { ok: true, value: parsed }
     : failure(answer.value.result, "provider returned a malformed Engineer run snapshot");
+}
+
+async function readinessProbe(input: {
+  repoRoot: string;
+}): Promise<PipelineEngineerResult<EngineerReadinessEvidence>> {
+  const bin = await executable();
+  if (!bin.ok) return bin;
+  const result = await run(bin.value, [
+    "engineer",
+    "readiness-probe",
+    "--repo-root",
+    input.repoRoot,
+  ], { timeoutMs: COMMAND_TIMEOUT_MS });
+  const parsed = parsedJson(result);
+  const evidence = parsed === null ? null : parseReadinessEvidence(parsed);
+  if (!evidence) {
+    return failure(result, result.stderr.trim() || "provider returned malformed Engineer readiness evidence");
+  }
+  return { ok: true, value: evidence };
 }
 
 async function readiness(input: {
@@ -421,6 +446,7 @@ async function cancel(input: {
 
 export const CONDUCTOR_ENGINEER_LIFECYCLE: PipelineEngineerLifecycle = {
   capability,
+  readinessProbe,
   create,
   readiness,
   inspectCorrelation,

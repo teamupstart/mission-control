@@ -12,6 +12,7 @@ import { CheckLeaseManager } from "../src/server/workflows/check-lease.ts";
 import { LegacyTreehouseService } from "../src/server/worktrees/legacy-treehouse.ts";
 import type { WorktreeOccupancy } from "../src/server/worktrees/occupancy.ts";
 import type { TerminalLaunchSpec } from "../src/server/terminal/targets.ts";
+import type { TerminalBackendId } from "../src/shared/terminal.ts";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const db = openDb();
@@ -32,7 +33,7 @@ const operations = new WorktreeOperationsService(manager, {
   diskBytes: async () => 0,
 });
 const launched: TerminalLaunchSpec[] = [];
-const launch = async (_backend: "tmux" | "cmux" | "wezterm" | "ghostty" | "iterm", spec: TerminalLaunchSpec) => {
+const launch = async (_backend: TerminalBackendId, spec: TerminalLaunchSpec) => {
   launched.push(spec);
   return { ok: true, label: "Test terminal", homeName: null, status: 200 };
 };

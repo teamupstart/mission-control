@@ -1,4 +1,8 @@
-import { UI_CONFIG_DEFAULTS, UiConfigSchema } from "@shared/protocol.ts";
+import {
+  seedHiddenDisplayItems,
+  UI_CONFIG_DEFAULTS,
+  UiConfigSchema,
+} from "@shared/protocol.ts";
 import type { UiConfig, UiConfigPatch, UiConfigView } from "@shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
@@ -42,9 +46,14 @@ function migrateGuidedTour(raw: unknown): unknown {
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getUiConfig(persistMigration = true): UiConfig {
   const stored = getAppConfig(CONFIG_ENTRY);
+  // `seedHiddenDisplayItems` is shared rather than written here, for the reason its own
+  // comment gives: the browser's `localStorage` copy is what the FIRST PAINT reads, so a
+  // migration only the daemon performed would show the item switched on for one frame and
+  // then correct itself. Runs on the raw record, like the two above, so the absence of its
+  // marker still means "written before this build".
   const migrated = stored === undefined
     ? {}
-    : migrateGuidedTour(migrateRetiredLayout(stored));
+    : seedHiddenDisplayItems(migrateGuidedTour(migrateRetiredLayout(stored)));
   const config = UiConfigSchema.parse(migrated);
   if (persistMigration && migrated !== stored && stored !== undefined) {
     setAppConfig(CONFIG_ENTRY, config);

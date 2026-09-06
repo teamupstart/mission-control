@@ -20,14 +20,18 @@ import { randomUUID } from "node:crypto";
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import { MULTIPLEXER_IDS, EMULATOR_IDS } from "@shared/terminal.ts";
 import type {
-  BinSpec,
   DetachedSessionSpec,
   Multiplexer,
   MuxSessions,
   TerminalEmulator,
   TerminalResult,
 } from "./types.ts";
-import { binPresent } from "./bin.ts";
+import {
+  binPresent,
+  binUnavailableReason,
+  binUnsupportedReason,
+  type BinAvailabilityDeps,
+} from "./bin.ts";
 import { MULTIPLEXERS, EMULATORS } from "./registry.ts";
 import {
   cleanupDisposableAgentStateHome,
@@ -35,11 +39,9 @@ import {
   isolatedAgentArgv,
 } from "../agent-subprocess-env.ts";
 
-export interface TerminalTargetDeps {
+export interface TerminalTargetDeps extends BinAvailabilityDeps {
   multiplexers: Record<string, Multiplexer>;
   emulators: Record<string, TerminalEmulator>;
-  /** Seam for the tests - the real one reads the filesystem and spawns nothing. */
-  installed: (spec: BinSpec) => boolean;
   launchId: () => string;
 }
 
@@ -47,6 +49,7 @@ export const defaultTerminalTargetDeps: TerminalTargetDeps = {
   multiplexers: MULTIPLEXERS,
   emulators: EMULATORS,
   installed: binPresent,
+  unsupported: binUnsupportedReason,
   launchId: () => randomUUID().slice(0, 6),
 };
 
@@ -69,7 +72,10 @@ export interface TerminalLaunchSpec {
 function raiser(deps: TerminalTargetDeps): TerminalEmulator | null {
   for (const id of EMULATOR_IDS) {
     const emulator = deps.emulators[id];
-    if (emulator?.spawn && deps.installed(emulator.bin)) return emulator;
+    if (
+      emulator?.spawn &&
+      !binUnavailableReason(emulator.bin, emulator.label, deps)
+    ) return emulator;
   }
   return null;
 }
@@ -84,9 +90,8 @@ function multiplexerView(
     // A multiplexer that only ever attaches to what is already running cannot make one.
     return { ...base, blurb: "", detail: null, unavailable: `${mux.label} cannot start a session` };
   }
-  if (!deps.installed(mux.bin)) {
-    return { ...base, blurb: "", detail: null, unavailable: `${mux.label} is not installed` };
-  }
+  const unavailable = binUnavailableReason(mux.bin, mux.label, deps);
+  if (unavailable) return { ...base, blurb: "", detail: null, unavailable };
   // `attachArgv: null` is this interface's way of saying the backend's sessions are never
   // without a window - cmux draws its own. Such a backend needs nobody's help to be seen.
   if (!sessions.attachArgv) {
@@ -129,9 +134,8 @@ function emulatorView(
       unavailable: `${emulator.label} cannot open a window from outside`,
     };
   }
-  if (!deps.installed(emulator.bin)) {
-    return { ...base, blurb: "", detail: null, unavailable: `${emulator.label} is not installed` };
-  }
+  const unavailable = binUnavailableReason(emulator.bin, emulator.label, deps);
+  if (unavailable) return { ...base, blurb: "", detail: null, unavailable };
   return { ...base, blurb: "New window in the worktree.", detail: null, unavailable: null };
 }
 

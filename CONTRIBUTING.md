@@ -142,8 +142,9 @@ runtime surfaces also need `npm run build` and `npm run smoke`; UI changes also 
 `npm run test:e2e` with a matching spec.
 
 CI runs typechecking, linting, unit tests on the supported Node.js releases, production builds,
-bundle smoke tests, and the browser suite. See [the CI runner allocation](README.md#ci-runner-allocation)
-before changing runner labels, worker counts, or shard counts.
+bundle smoke tests, and the browser suite. Pull request jobs run on ephemeral GitHub-hosted
+runners. Review `.github/workflows/ci.yml` before changing runner labels, worker counts, or shard
+counts.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

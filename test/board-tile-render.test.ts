@@ -134,7 +134,7 @@ test("the tile shows what the session is doing right now", () => {
   assert.match(html, /editing ConsoleDetail\.tsx/);
 });
 
-test("a bound workflow starts as an in-place Board disclosure, not a navigation flag", () => {
+test("a bound workflow is a run named in place, not a navigation flag", () => {
   const session = mkSession();
   const viewProps = {
     ...props([session]),
@@ -151,12 +151,21 @@ test("a bound workflow starts as an in-place Board disclosure, not a navigation 
     html,
     /aria-label="Open No-Mistakes Review v4 workflow run: Review changes"/,
   );
-  assert.match(html, /aria-expanded="false"/);
-  // `v`, not the `e` this shipped with: the review queue's badge took `e` when it got a
-  // chord of its own, and the disclosure moved rather than resolving to nothing.
-  assert.match(html, /<kbd class="kb-hint" aria-hidden="true">v<\/kbd>/);
-  assert.match(html, /Show full workflow/);
   assert.doesNotMatch(html, /tf-workflow/);
+
+  // And what the SHIPPED profile does not draw. These run with no `localStorage` and no
+  // daemon, so `useUiConfig` reads the defaults - where `workflowDetails` is off. The
+  // expand control and the chord hint that names its key (`v`, not the `e` this shipped
+  // with - the review queue's badge took `e` when it got a chord of its own) are behind
+  // that checkbox now, and `test/board-card-items.test.ts` renders a real tile with the
+  // box checked to prove both halves move.
+  assert.doesNotMatch(html, /Show full workflow/);
+  assert.doesNotMatch(html, /tile-workflow-disclosure-row/);
+  assert.doesNotMatch(html, /<kbd class="kb-hint" aria-hidden="true">v<\/kbd>/);
+  // What the default DOES keep, so this is a claim about the reasons rather than about the
+  // run: the whole repair-round budget, named pip by pip, with the round count beside it.
+  assert.match(html, /class="wf-repair-meter"/);
+  assert.match(html, /class="wf-repair-count">R2 \/ 5</);
 });
 
 test("a settled session omits the ticker rather than animating over a still session", () => {

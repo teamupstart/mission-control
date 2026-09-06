@@ -13,6 +13,13 @@ declare global {
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;
     removeIntegrations(): Promise<{ ok: boolean; message: string }>;
+    /** Claim the renderer module's private capability once. */
+    claimProductIssueAuthorization?(): string | null;
+    /** Arm one exact report only for the module that claimed the private capability. */
+    authorizeProductIssue?(
+      capability: string,
+      input: { requestId: string; draftIdentity: string },
+    ): boolean;
     updates: {
       getState(): Promise<UpdateSnapshot>;
       check(): Promise<UpdateSnapshot>;

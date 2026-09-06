@@ -128,7 +128,7 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   | tee e2e/.artifacts/board-card-customization/focused-playwright-transcript.txt
 ```
 
-### The ⌘-number jump keys on Board cards
+### The ⌘-number jump keys on Board cards and Console rail rows
 
 `e2e/.artifacts/board-card-jump-shortcut/` carries four frames of the same two-session fleet:
 the keycaps numbered `⌘1` in **needs you** and `⌘2` in **idle** (which is the "across the
@@ -145,6 +145,12 @@ the only fleet big enough to reach the last three slots: `05` shows all twelve k
 order - `⌘1`…`⌘9`, `⌘0`, `⌘-`, `⌘=` - with a thirteenth card plainly carrying none, and `06`
 shows the console `⌘=` opened on the twelfth. Those two exist because a two-card board cannot
 distinguish "`⌘=` opens the twelfth card" from "`⌘=` is not ours".
+
+Frames `07` and `08` are the Console rail's half of the same feature: the two rows carrying
+`⌘1` and `⌘2` beside their state words - the same two keys the cards printed a moment earlier
+in `01`, which is the "one numbering, two layouts" claim - and the conversation `⌘2` opened
+from the rail. `07` is also the only picture of the placement decision: the key sits left of
+the state word, and the state words line up so the keys read as a column.
 
 Note what that pair does and does not settle. Playwright delivers a keystroke to the renderer
 over the DevTools protocol rather than through the browser's own chrome - it cannot open a
@@ -169,10 +175,11 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
 
 `e2e/.artifacts/board-card-preview/` carries the **Settings → Display → Session display**
 checklist beside its live preview card, twice: once at the shipped defaults - every item
-checked except the worktree, which is the one item no card drew before this feature - and
-once with Goal and Model unchecked and the worktree switched on, so the same frame shows
-what each checkbox actually costs and buys. Both sections are in frame, the board card's
-fourteen items and the conversation header's two, which is why the viewport is 1780px tall.
+checked except the worktree, which no card drew before that feature, and the workflow
+details, which a card used to draw unconditionally - and once with Goal and Model unchecked
+and the worktree switched on, so the same frame shows what each checkbox actually costs and
+buys. Both sections are in frame, the board card's fifteen items and the conversation
+header's two, which is why the viewport is 1860px tall.
 No agent is dispatched, so nothing runs but the settings page and a daemon.
 
 `e2e/.artifacts/conversation-band-optional/` is the other half of that feature and carries
@@ -239,6 +246,31 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --config e2e/playwright.config.ts \
   e2e/specs/board-card-workflow-progress.spec.ts \
   --workers=1 --reporter=list
+```
+
+### The workflow details preference on a board card
+
+`e2e/.artifacts/board-card-workflow-details/` carries one real parked run's card in both
+states: the shipped default, where the card is a progress reading and nothing more, and the
+same card with **Workflow details** checked, where the reviewer's objection and the
+**Show full workflow** control return - plus the expanded ladder that control opens, and the
+Settings panel whose preview answers the checkbox without a reload.
+
+The four frames are the argument for the feature rather than decoration: the claim is that a
+card can state how far a review has got without repeating somebody else's reasoning on every
+tile in a column, and one frame cannot show that. The reviewer is a Persona carrying
+`E2E_FAIL_VERDICT`, so the objection is real, deterministic, and costs no model tokens.
+
+Regenerate the frames with:
+
+```sh
+mkdir -p e2e/.artifacts/board-card-workflow-details
+set -o pipefail   # or the pipe below reports tee's success, not Playwright's
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/board-card-workflow-details.spec.ts \
+  --workers=1 --reporter=list \
+  | tee e2e/.artifacts/board-card-workflow-details/focused-playwright-transcript.txt
 ```
 
 ### Native workflow image evidence

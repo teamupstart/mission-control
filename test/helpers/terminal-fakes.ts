@@ -90,9 +90,10 @@ export function fakeTerminals(
   second: Multiplexer = fakeMultiplexer({ id: "cmux", label: "cmux" }),
   secondEmu: TerminalEmulator = fakeEmulator({ id: "ghostty", label: "Ghostty" }),
   thirdEmu: TerminalEmulator = fakeEmulator({ id: "iterm", label: "iTerm2" }),
+  third: Multiplexer = fakeMultiplexer({ id: "herdr", label: "Herdr" }),
 ): TerminalDeps {
   return {
-    multiplexers: { tmux: mux, cmux: second },
+    multiplexers: { tmux: mux, herdr: third, cmux: second },
     emulators: { wezterm: emu, ghostty: secondEmu, iterm: thirdEmu },
   };
 }

@@ -3,6 +3,7 @@ import type {
   TestEvidenceAuditAggregate,
   TestEvidenceAuditRate,
   TestEvidenceAuditSlice,
+  TestEvidenceReadinessCategoryCount,
   TestEvidenceRequestCategory,
 } from "@shared/workflow.ts";
 import { TEST_EVIDENCE_AUDITOR_PERSONA_ID } from "@shared/workflow.ts";
@@ -29,7 +30,7 @@ import { ConsoleCard, ConsoleState } from "./settings-console.tsx";
 
 /** The report's own targets, restated where the numbers they judge are drawn. */
 export const TEST_EVIDENCE_TARGETS = {
-  /** At least this share of first submissions accepted. */
+  /** At least this share of first semantic Auditor attempts accepted. */
   firstPassAcceptance: 0.7,
   /** At most this many auditor attempts per run. */
   attemptsPerRun: 1.5,
@@ -70,6 +71,26 @@ const CATEGORY_LABELS: Record<TestEvidenceRequestCategory, string> = {
   downstream_proof: "Asked for later-stage proof",
   other: "Other",
 };
+
+const PREFLIGHT_LABELS: Record<string, string> = {
+  focused_execution: "Focused execution",
+  integration: "Integration",
+  visual: "Visual",
+  performance: "Performance",
+  rendered_artifact: "Rendered artifact",
+  state_confirmation: "State confirmation",
+  execution: "Execution",
+  rendered_output: "Rendered output",
+  baseline_measurement: "Baseline measurement",
+  result_measurement: "Result measurement",
+  deliverable: "Deliverable",
+  state_snapshot: "State snapshot",
+};
+
+function categoryValue(value: TestEvidenceReadinessCategoryCount<string>): string {
+  return `${value.occurrences} ${value.occurrences === 1 ? "occurrence" : "occurrences"}`
+    + ` · ${formatAuditRate(value.affectedEvaluations, "intercepted evaluations")}`;
+}
 
 /**
  * One slice's identity as a label.
@@ -199,8 +220,17 @@ export function TestEvidenceReadinessCard({
   workflows?: WorkflowSummary[];
 }): React.JSX.Element {
   const workflowNames = new Map(workflows.map((workflow) => [workflow.id as string, workflow.name]));
-  const acceptance = aggregate?.firstSubmissionAccepted.rate ?? null;
+  const acceptance = aggregate?.firstAuditorAttemptAccepted.rate ?? null;
   const perRun = aggregate?.attemptsPerRun ?? null;
+  const noAuditorAttempts = aggregate !== null && aggregate.attempts === 0;
+  const noPreflightEvaluations = aggregate !== null && aggregate.preflight.evaluations === 0;
+  const noPreflightTelemetry = noPreflightEvaluations
+    && aggregate.preflight.malformed === 0;
+  const noTelemetryRecorded = noAuditorAttempts
+    && aggregate.malformed === 0
+    && noPreflightTelemetry;
+  const auditorWindowUnreadable = noAuditorAttempts && aggregate.malformed > 0;
+  const onlyAuditorWindowUnreadable = auditorWindowUnreadable && noPreflightTelemetry;
   const acceptanceMet = meetsTarget(
     acceptance,
     TEST_EVIDENCE_TARGETS.firstPassAcceptance,
@@ -210,19 +240,19 @@ export function TestEvidenceReadinessCard({
   return (
     <ConsoleCard title="Test evidence readiness" anchor="workflows/test-evidence">
       <p className="settings-hint">
-        What the built-in Test Evidence Auditor has actually done, from the bounded telemetry
-        each of its attempts appends. Counts and rates only - no prompt, diff, transcript,
-        Persona guidance, verdict text or session content passes through here. Reading this
-        changes nothing: it never re-runs a Persona or rewrites a verdict.
+        Structural evidence preflight and the built-in Test Evidence Auditor are measured
+        separately. An interception is not an acceptance: the Auditor remains the semantic
+        authority. Counts, enums, versions and opaque digests only - no criterion, caption,
+        path, prompt, diff, transcript, guidance, verdict text or override reason appears here.
       </p>
 
       {!aggregate ? (
         <ConsoleState tone="unknown">Unknown - the daemon has not answered</ConsoleState>
-      ) : aggregate.attempts === 0 && aggregate.malformed === 0 ? (
+      ) : noTelemetryRecorded ? (
         <ConsoleState tone="off">
           No Test Evidence Auditor attempt has been recorded yet
         </ConsoleState>
-      ) : aggregate.attempts === 0 ? (
+      ) : onlyAuditorWindowUnreadable ? (
         /* Events exist and NONE of them could be read back. The empty state above is wrong
            here in the way that matters: it reports an auditor nobody has run, when what is
            actually true is that every recorded attempt is unreadable - a corrupted or
@@ -243,14 +273,100 @@ export function TestEvidenceReadinessCard({
         </>
       ) : (
         <>
-          <ConsoleState tone={targetTone(acceptanceMet)}>
-            {`First-pass acceptance ${formatAuditRate(
-              aggregate.firstSubmissionAccepted,
-              "first submissions",
-            )} · target at least 70%`}
-          </ConsoleState>
+          {auditorWindowUnreadable ? (
+            <ConsoleState tone="attention">
+              No Test Evidence Auditor attempt could be read back
+            </ConsoleState>
+          ) : (
+            <ConsoleState tone={targetTone(acceptanceMet)}>
+              {acceptance === null
+                ? "First Auditor attempt accepted · No data - no first Auditor attempts recorded"
+                : `First Auditor attempt accepted ${formatAuditRate(
+                    aggregate.firstAuditorAttemptAccepted,
+                    "first Auditor attempts",
+                  )} · target at least ${Math.round(
+                    TEST_EVIDENCE_TARGETS.firstPassAcceptance * 100,
+                  )}%`}
+            </ConsoleState>
+          )}
 
-          <Group id="wf-evidence-attempts" title="Attempts">
+          <Group id="wf-evidence-preflight" title="Preflight outcomes">
+            <Row
+              label="Preflight interceptions"
+              value={formatAuditRate(
+                aggregate.preflight.interceptions,
+                "enforcing evaluations",
+              )}
+            />
+            <Row
+              label="Same-round refinements"
+              value={formatAuditRate(
+                aggregate.preflight.sameRoundRefinements,
+                "intercepted runs",
+              )}
+            />
+            <Row
+              label="Operator overrides"
+              value={formatAuditRate(aggregate.preflight.overrides, "intercepted runs")}
+            />
+            <Row
+              label="Readiness unavailable"
+              value={formatAuditRate(
+                aggregate.preflight.unavailable,
+                "enforcing evaluations",
+              )}
+            />
+          </Group>
+
+          <Group id="wf-evidence-disagreement" title="Preflight and Auditor disagreement">
+            <Row
+              label="Post-ready Auditor rejection"
+              value={formatAuditRate(
+                aggregate.postReadyAuditorRejections,
+                "first Auditor attempts on ready packets",
+              )}
+            />
+            <Row
+              label="Post-override Auditor rejection"
+              value={formatAuditRate(
+                aggregate.postOverrideAuditorRejections,
+                "first Auditor attempts on overridden packets",
+              )}
+            />
+          </Group>
+
+          {(aggregate.preflight.proofClasses.length > 0
+            || aggregate.preflight.missingRoles.length > 0) && (
+            <Group id="wf-evidence-gaps" title="Most frequent intercepted gaps">
+              {aggregate.preflight.proofClasses.slice(0, 4).map((entry) => (
+                <Row
+                  key={`class:${entry.category}`}
+                  label={`${PREFLIGHT_LABELS[entry.category] ?? entry.category} proof class`}
+                  value={categoryValue(entry)}
+                />
+              ))}
+              {aggregate.preflight.missingRoles.slice(0, 4).map((entry) => (
+                <Row
+                  key={`role:${entry.category}`}
+                  label={`Missing ${PREFLIGHT_LABELS[entry.category] ?? entry.category} role`}
+                  value={categoryValue(entry)}
+                />
+              ))}
+              <p className="settings-hint">
+                Category counts overlap when one evaluation has several gaps. Rendered-artifact
+                alternatives may appear under both deliverable and rendered output.
+              </p>
+            </Group>
+          )}
+
+          <Group id="wf-evidence-attempts" title="Auditor attempts">
+            <Row
+              label="Historical first-submission acceptance"
+              value={formatAuditRate(
+                aggregate.firstSubmissionAccepted,
+                "round-1 segment-0 submissions",
+              )}
+            />
             <Row
               label="Attempts that failed"
               value={formatAuditRate(aggregate.attemptFailures, "attempts")}
@@ -279,7 +395,7 @@ export function TestEvidenceReadinessCard({
             ))}
           </Group>
 
-          <Group id="wf-evidence-readiness" title="Evidence readiness on first submissions">
+          <Group id="wf-evidence-readiness" title="Historical packet shape on first submissions">
             <Row
               label="First submissions with no image"
               value={formatAuditRate(aggregate.readiness.withoutImages, "first submissions")}
@@ -318,8 +434,25 @@ export function TestEvidenceReadinessCard({
                     ? null
                     : workflowNames.get(slice.workflowId) ?? null)}
                   value={`${slice.attempts} ${slice.attempts === 1 ? "attempt" : "attempts"}`
-                    + " · first pass "
-                    + formatAuditRate(slice.firstSubmissionAccepted, "first submissions")}
+                    + " · first Auditor "
+                    + formatAuditRate(slice.firstAuditorAttemptAccepted, "first Auditor attempts")}
+                />
+              ))}
+            </Group>
+          )}
+
+          {aggregate.preflight.slices.length > 0 && (
+            <Group id="wf-evidence-evaluator-slices" title="By readiness evaluator">
+              {aggregate.preflight.slices.map((slice) => (
+                <Row
+                  key={[slice.workflowId, slice.workflowVersion, slice.evaluatorVersion].join(":")}
+                  label={`${slice.workflowId === null
+                    ? "Unknown workflow"
+                    : workflowNames.get(slice.workflowId) ?? `workflow ${slice.workflowId.slice(0, 8)}`}
+                    · ${slice.workflowVersion === null ? "unknown version" : `v${slice.workflowVersion}`}
+                    · evaluator ${slice.evaluatorVersion ?? "not evaluated"}`}
+                  value={`${slice.evaluations} ${slice.evaluations === 1 ? "evaluation" : "evaluations"}`
+                    + ` · intercepted ${formatAuditRate(slice.interceptions, "enforcing evaluations")}`}
                 />
               ))}
             </Group>
@@ -336,9 +469,36 @@ export function TestEvidenceReadinessCard({
               from every rate above.
             </p>
           )}
+          {aggregate.firstAuditorAttemptUnknown > 0 && (
+            <p className="settings-hint">
+              {aggregate.firstAuditorAttemptUnknown} legacy
+              {aggregate.firstAuditorAttemptUnknown === 1
+                ? " attempt has no first-Auditor identity and is excluded"
+                : " attempts have no first-Auditor identity and are excluded"}
+              {" "}from the headline.
+            </p>
+          )}
+          {aggregate.preflight.truncated && (
+            <p className="settings-hint">
+              Older preflight lifecycle events are outside this window: only the newest
+              {" "}{aggregate.scanLimit} are counted.
+            </p>
+          )}
+          {aggregate.preflight.malformed > 0 && (
+            <p className="settings-warn">
+              {aggregate.preflight.malformed} preflight lifecycle
+              {aggregate.preflight.malformed === 1 ? " event is" : " events are"}
+              {" "}unreadable and excluded from preflight rates.
+            </p>
+          )}
           {aggregate.slicesOmitted > 0 && (
             <p className="settings-hint">
               {aggregate.slicesOmitted} further guidance revisions are not listed.
+            </p>
+          )}
+          {aggregate.preflight.slicesOmitted > 0 && (
+            <p className="settings-hint">
+              {aggregate.preflight.slicesOmitted} further readiness evaluator slices are not listed.
             </p>
           )}
         </>

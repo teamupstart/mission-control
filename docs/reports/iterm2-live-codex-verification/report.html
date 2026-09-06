@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iTerm2 Codex transport verification</title>
+  <style>
+    :root { color-scheme: dark; --bg: #101419; --panel: #171d24; --text: #edf3f8; --muted: #aab8c5; --line: #33414e; --good: #66d59a; --warn: #ffc66d; --bad: #ff8585; --accent: #78b7ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { width: min(1040px, calc(100% - 32px)); margin: 40px auto 72px; }
+    h1, h2 { line-height: 1.15; }
+    h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 3.6rem); }
+    h2 { margin: 32px 0 14px; font-size: 1.25rem; }
+    p { max-width: 78ch; }
+    .lede { color: var(--muted); font-size: 1.08rem; }
+    .verdict { border: 1px solid var(--good); border-radius: 14px; background: var(--panel); padding: 20px; margin: 24px 0; }
+    .verdict strong { color: var(--good); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 16px; }
+    .card h3 { margin: 0 0 8px; font-size: 1rem; }
+    .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); }
+    th, td { padding: 11px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .82rem; letter-spacing: .04em; text-transform: uppercase; }
+    code { color: #c8e2ff; background: #0b1015; border-radius: 4px; padding: 1px 5px; }
+    pre { overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #0b1015; color: #d8e9f7; }
+    a { color: var(--accent); }
+    ul { padding-left: 22px; }
+    .small { color: var(--muted); font-size: .9rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>iTerm2 Codex transport verification</h1>
+  <p class="lede">Live experiment against iTerm2 3.6.11, Codex 0.153.4, and Mission Control 1.8.0. The complete experiment ran after the worktree reached the latest <code>origin/main</code>, <code>071f9db88c9ba7c8955e3fada038ee5c59edefca</code>.</p>
+
+  <section class="verdict">
+    <strong class="good">Verdict: pass. Mission Control successfully exercised the complete Codex task lifecycle through iTerm2.</strong>
+    <p>The fixed adapter launched and bound a real Codex terminal session with iTerm2 as the sole available backend. Mission Control delivered the initial prompt and a structured multiline follow-up, captured both exact replies, focused and retitled the exact pane, recorded the task outcome, closed the pane, and observed registry removal. The live record and focused test output are registered as trusted workflow evidence.</p>
+  </section>
+
+  <h2>What the live experiment verified</h2>
+  <div class="grid">
+    <article class="card"><h3 class="good">Launch and bind</h3><p>The task advanced from <code>dispatching</code> to <code>running</code>, acquired an <code>emulator:iterm</code> resource, and bound a state-confirmed Codex terminal session.</p></article>
+    <article class="card"><h3 class="good">Two-way prompt transport</h3><p>Codex returned <code>ITERM2_071F_INITIAL_OK alpha=53 beta=blue</code>, then correctly consumed multiline structured data and returned <code>ITERM2_071F_FOLLOWUP_OK 53 blue 35</code>.</p></article>
+    <article class="card"><h3 class="good">Exact-pane controls</h3><p>Pane capture showed both turns. Focus returned <code>{"ok":true}</code>, and a later registry snapshot preserved <code>iterm2-071f-verified</code> as both the session name and iTerm tab title.</p></article>
+    <article class="card"><h3 class="good">Completion and closure</h3><p>The task finished as <code>done</code> with the verified outcome, pane close returned <code>{"ok":true}</code>, and three consecutive scoped reads found no remaining session row.</p></article>
+  </div>
+
+  <h2>Observed evidence</h2>
+  <table>
+    <thead><tr><th>Check</th><th>Result</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>Latest main</td><td class="good">Pass</td><td><code>HEAD == origin/main == 071f9db8</code> before the live run, and the task recorded <code>baseSha=071f9db8</code>.</td></tr>
+      <tr><td>Only iTerm2 available</td><td class="good">Pass</td><td>The isolated daemon made tmux, Herdr, cmux, WezTerm, and Ghostty unavailable. Only iTerm2 remained launchable.</td></tr>
+      <tr><td>Fresh patched launch</td><td class="good">Pass</td><td>Mission Control returned iTerm target <code>E42F4979-D258-4900-8B0A-8EC5FAB2502C</code> and bound <code>proc:ttys062:49717:1788661593000</code>.</td></tr>
+      <tr><td>Initial response</td><td class="good">Pass</td><td><code>ITERM2_071F_INITIAL_OK alpha=53 beta=blue</code></td></tr>
+      <tr><td>Structured follow-up</td><td class="good">Pass</td><td>Multiline fields <code>alpha</code>, <code>beta</code>, <code>operation</code>, and <code>values</code> produced the exact expected reply.</td></tr>
+      <tr><td>Capture, focus, and retitle</td><td class="good">Pass</td><td>Transcript and pane capture contained both turns; focus succeeded; the exact pane retained <code>iterm2-071f-verified</code>.</td></tr>
+      <tr><td>Complete and close</td><td class="good">Pass</td><td>Task status became <code>done</code>, kill succeeded, and the scoped session was removed from the registry.</td></tr>
+      <tr><td>Trusted evidence handoff</td><td class="warn">Text only</td><td>The post-fast-forward live record, exact command outputs, and five coverage claims were registered as text evidence. No native iTerm2 screenshot was registered because macOS Screen Recording permission was not granted.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Defects fixed in the worktree</h2>
+  <ul>
+    <li><strong>False negative after a successful launch.</strong> The iTerm2 adapter no longer reads <code>current tab</code>, <code>current session</code>, and <code>id</code> from the object returned by <code>create window</code>. The launched shell writes its iTerm session identity into a private temporary marker. A valid marker proves launch success even if the Apple Event times out. <a href="https://iterm2.com/documentation-scripting.html">[1]</a></li>
+    <li><strong>Identity mismatch.</strong> iTerm2 exports <code>ITERM_SESSION_ID</code> as <code>wNtNpN:UUID</code>, while AppleScript returns the bare GUID. Mission Control now removes only the documented mutable positional prefix and uses the GUID for discovery, launch targeting, and hook binding. <a href="https://gitlab.com/gnachman/iterm2/-/blob/v3.6.11/sources/PTYSession/PTYSession.m">[2]</a></li>
+    <li><strong>Bounded cleanup.</strong> Spawn markers use a private temporary directory, are polled for one bounded second, and are always removed.</li>
+  </ul>
+
+  <h2>Verification</h2>
+  <table>
+    <thead><tr><th>Gate</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Focused iTerm2 and hook regressions</td><td class="good">28 passed, 0 failed</td></tr>
+      <tr><td>Live iTerm2 acceptance</td><td class="good">Complete lifecycle passed on Mission Control 1.8.0 after the final update to <code>071f9db8</code></td></tr>
+      <tr><td>Workflow evidence registration</td><td class="warn">Text evidence and criterion coverage were registered; native screenshot evidence is absent</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Confidence and remaining proof</h2>
+  <p><strong>High functional confidence.</strong> The post-fast-forward live task covers the full requested surface on the final latest-main snapshot. The marker regression recreates the original timeout-plus-success failure, and the identity regression models the two live iTerm2 session-ID representations.</p>
+
+  <h2>Sources</h2>
+  <ol>
+    <li><a href="https://iterm2.com/documentation-scripting.html">iTerm2 AppleScript documentation</a>, including the documented <code>create window with default profile command</code> form.</li>
+    <li><a href="https://gitlab.com/gnachman/iterm2/-/blob/v3.6.11/sources/PTYSession/PTYSession.m">iTerm2 3.6.11 PTYSession source</a>, which constructs the positional <code>ITERM_SESSION_ID</code> and exposes the session GUID.</li>
+  </ol>
+
+  <p class="small">The live experiment created no commit, push, or pull request. Temporary task state remained isolated from the operator's Mission Control database. The evidence file is gitignored and was registered with Mission Control rather than committed.</p>
+</main>
+</body>
+</html>

@@ -8,6 +8,8 @@ After this phase, a test or internal harness can dispatch one versioned local Pe
 
 Estimated gross non-test implementation: **1,950-2,550 lines**.
 
+Revalidated: 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). The provider-neutral foundation remains valid. Current Claude headless execution has an SDK path with narrowly granted read tools, while current Codex headless paths reject generic grants and differ on image support. This reinforces the dedicated workload-adapter boundary and leaves the provider parity prototype as a blocking exit gate.
+
 ## Entry criteria and direct dependencies
 
 - The planning PR containing `plan.md`, `phased-plan.md`, and this file has merged.
@@ -46,6 +48,7 @@ This phase does not:
 - `runClaudeSdkOneShot` is structured-output capable but defaults its tool-less jobs to one turn. Repository workloads need a dedicated multi-tool-call turn budget.
 - `runCodexSdkOneShot` explicitly rejects tool grants and images. The workload adapter must use a provider path that supports launch-scoped MCP and preserves Workflow image inputs, or prove an equally bounded dedicated SDK path. It must not weaken image behavior or fake parity.
 - Full session adapters already configure Claude `mcpServers` and Codex `mcp_servers.*`. Reuse their descriptor composition patterns, not their Registry/session ownership.
+- Current Workflow attempts also carry daemon-owned submission images, text artifacts, and call-ledger metadata. The versioned workload request and both provider prototypes must preserve those inputs and accounting semantics; repository access cannot narrow existing review context.
 - Inspector denies and scrubs useful secret families, but the deny list includes host-absolute patterns because the provider tool grant reads a live checkout. The new policy starts from those families and operates on repository-relative bytes plus an explicit `.git` ban.
 - Git content commands can invoke configured external diff, text conversion, or clean filters. Every repository operation and fixture must prove those are disabled.
 - The Phase 2 artifact intentionally has missing sensitive blobs. Phase 1 readers must pre-authorize paths before invoking Git and must never run an unrestricted content operation and redact it afterwards.
@@ -64,10 +67,10 @@ Create `src/shared/repository-access.ts` with append-only or closed constants an
 - a versioned `RepositoryViewDescriptor` naming only an isolated manifest/object view and its verified digest, ordered retained-revision ids, frontier/omitted-parent metadata, retained counts/bytes, and history policy version;
 - layered budgets for per-call bytes/items/time and per-attempt calls/bytes/time;
 - opaque cursor metadata bound to snapshot digest, operation shape, policy version, and position;
-- a versioned `PersonaWorkloadRequest` with idempotency key, frozen Persona payload, provider/model, prompt/images, artifact locator/digest, policy, budgets, deadline, and cancellation generation;
+- a versioned `PersonaWorkloadRequest` with workload id, Workflow attempt id, submission id, idempotency key, frozen Persona payload, provider/model, prompt/images, artifact locator/digest, policy, budgets, deadline, cancellation generation, and required repository-evidence protocol capability;
 - ordered `PersonaWorkloadEvent` variants with workload id, sequence, timestamp, and payload;
 - `PersonaWorkloadResult` containing one validated Persona verdict or one typed infrastructure failure;
-- opaque `RepositoryEvidenceHandleId` and safe handle metadata bound to snapshot/workload/operation identity, returned item ordinal, canonical approved path and exact line/diff range, policy version, and truncation state;
+- opaque `RepositoryEvidenceHandleId` and safe handle metadata bound to snapshot digest, workload id, Workflow attempt id, daemon-minted operation-instance id, closed operation kind, returned item ordinal, canonical approved path, policy version, truncation state, and one canonical half-open range: `line` uses 1-based `startLine`/`endLineExclusive` over LF-delimited text, `byte` uses 0-based `startByte`/`endByteExclusive` over immutable raw blob bytes with `encoding: "raw"`, and `diff` carries separate 1-based half-open old/new line intervals with equal bounds allowed for an empty insertion or deletion side;
 - safe `RepositoryQueryAuditMetadata` with hashes/counts and bounded evidence-handle metadata only, never result bodies, excerpts, quote fields, or sensitive query text.
 
 Use exhaustive records and switches over every operation and event. Unknown future values must fail closed rather than map to a nearby capability.
@@ -84,11 +87,11 @@ interface PersonaWorkloadExecutor {
 }
 
 interface RepositoryArtifactMaterializer {
-  materialize(locator: string, digest: string, signal: AbortSignal): Promise<RepositoryViewLease>;
+  materialize(request: RepositoryMaterializationRequest, signal: AbortSignal): Promise<RepositoryViewLease>;
 }
 ```
 
-The local executor accepts the materializer as a dependency. This phase uses a fixture implementation; Phase 2 supplies the real artifact owner. The supervisor owns provider/MCP process lifetime and emits ordered events. It does not own Workflow state or SQLite.
+`RepositoryMaterializationRequest` carries submission, workload, Workflow attempt, locator, and digest identity. The trusted supervisor constructs it only after matching all five values to the active `PersonaWorkloadRequest`; the materializer must reject any mismatch before filesystem access. The local executor accepts the materializer as a dependency. This phase uses a fixture implementation; Phase 2 supplies the real artifact owner. The supervisor owns provider/MCP process lifetime and emits ordered events. It does not own Workflow state or SQLite.
 
 ## Implementation steps
 
@@ -210,9 +213,9 @@ Add or extend focused tests such as:
 - `test/inspector-scrub.test.ts` and Inspector grant equality regressions
 - `test/keep-awake-native-build.test.ts` or the current bundle/build contract suite where new entrypoint enumeration belongs
 
-Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, all three `git_show` patch cases including a merge frontier whose first parent remains retained, boundary log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, evidence handles for exact returned ranges, absence of handles on non-success outcomes, body-free audit events, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
+Security fixtures cover traversal in every field, absolute and option-like input, Unicode/case behavior, non-UTF-8 names, denied paths returned indirectly by search/glob/diff/show/blame, symlinks outside the view, submodules, arbitrary refs, reachable-but-out-of-range revisions, source base outside the retained range, all three `git_show` patch cases including a merge frontier whose first parent remains retained, boundary log/blame behavior, forged patch headers and commit messages, configured diff/textconv/filter commands, binary files, sparse missing denied blobs, missing in-range allowed blobs, evidence handles for exact returned 1-based half-open line windows, 0-based raw-byte windows, and independent old/new diff intervals including empty sides, absence of handles on non-success outcomes, body-free audit events, timeouts, cancellation, response limits, cumulative limits, and cursor tampering.
 
-Provider contract fixtures prove multiple repository calls and one verdict for Claude and Codex without real tokens. They assert image preservation and exact capability parity.
+Provider contract fixtures prove multiple repository calls and one verdict for Claude and Codex without real tokens. They assert image preservation, line-window and byte-window handle parity, diff-range parity, and exact capability parity.
 
 Run focused tests with the mandatory loader, then:
 
@@ -232,7 +235,7 @@ npm run smoke
 - History operations enforce the shared retained-revision set, report its boundary, and never fetch, accept, or imply history beyond it.
 - Sparse denied blobs cannot be read or leaked through another operation.
 - MCP response bodies remain between provider and MCP; emitted events contain safe metadata only.
-- Every content evidence handle maps to one actually returned allowed item and exact range; no response excerpt or quote crosses into workload events.
+- Every content evidence handle maps to one actually returned allowed item through the canonical operation-instance and half-open line, raw-byte, or old/new diff coordinate contract; no response excerpt or quote crosses into workload events.
 - Build and smoke prove both MCP bundles are packaged and runnable.
 - No existing Workflow or Inspector behavior changes.
 - The phase pull request records any deviation from this proposed route and why.
@@ -258,9 +261,9 @@ Phase 3 may rely on the same contracts and must not widen `LlmRunner`, create a 
 ## Cross-phase compatibility audit
 
 - The Phase 1 access enum uses final `none`/`read` spellings so Phase 3 does not migrate a temporary vocabulary.
-- Query, evidence-handle, and audit schemas contain attempt/workload identity fields even though Phase 1 does not persist them; Phase 3 can write and validate them without changing MCP responses or retaining excerpts.
-- The materializer is injected, so Phase 2 can add the real artifact owner without replacing the executor.
+- Query, evidence-handle, and audit schemas contain the canonical snapshot/workload/attempt/operation-instance identity fields, separate operation kind, item ordinal, approved path, and half-open line/raw-byte/old-new-diff range discriminator even though Phase 1 does not persist them; Phase 3 can write and validate them without changing MCP responses or retaining excerpts.
+- The materializer is injected and accepts only an active-request-bound materialization request, so Phase 2 can add the real artifact owner without replacing the executor or weakening attempt isolation.
 - The MCP reads a manifest and sparse object view rather than a live repository path, matching Phase 2's portability and sensitive-blob omission.
 - History validity is descriptor membership, not generic reachability, so Phase 2 can package one deterministic bounded prefix and Phase 3 can disclose and audit the same boundary without changing provider semantics.
-- The final verdict contract remains the existing Persona verdict union, so Phase 3 can preserve access-off parsing and add repository evidence validation without a second verdict format.
+- The final verdict protocol advertises repository-evidence capability explicitly. Before any citation writer can be enabled, a compatibility-floor release must add strict refusal of database schema versions newer than the reader supports plus dormant parsing/preservation of the repository evidence branch. Phase 3 can preserve access-off parsing, require every state owner to be at that floor, reject mixed-version read-enabled dispatch before provider launch, and add repository evidence validation without guessing compatibility.
 - No user-visible or durable surface exists yet, so a Phase 1 merge cannot advertise an unavailable capability.

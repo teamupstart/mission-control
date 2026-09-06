@@ -26,11 +26,11 @@ test("the preview redraws as items are toggled, and never navigates", async ({
   page,
   daemon,
 }) => {
-  // Tall enough for the whole panel to be on screen at once. The checklist is fourteen rows
+  // Tall enough for the whole panel to be on screen at once. The checklist is fifteen rows
   // of label-over-prose across two sections, beside a sticky card, and a screenshot of it
   // taken across a scroll is stitched rather than photographed - which is not what a frame
   // meant for pixel review should be.
-  await page.setViewportSize({ width: 1500, height: 1780 });
+  await page.setViewportSize({ width: 1500, height: 1860 });
 
   // The preview's workflow panel is drawn from a run SUMMARY, and there is no run behind
   // it. Recorded from before the navigation, because the failure this guards against is a
@@ -51,10 +51,11 @@ test("the preview redraws as items are toggled, and never navigates", async ({
 
   // Every registry item has a reachable checkbox, and the LAST one is reachable too - the
   // panel is the tallest thing in Display and its final row is the one a layout mistake
-  // would push off the end of the section rather than merely below the fold. Sixteen now:
-  // fourteen card items - including both compact progress meters and the jump shortcut -
-  // and the console band's two, which share this panel rather than a second one.
-  await expect(panel.getByRole("checkbox")).toHaveCount(16);
+  // would push off the end of the section rather than merely below the fold. Seventeen now:
+  // fifteen card items - including both compact progress meters, the jump shortcut, and the
+  // workflow-details switch - and the console band's two, which share this panel rather
+  // than a second one.
+  await expect(panel.getByRole("checkbox")).toHaveCount(17);
   await expect(panel.getByRole("checkbox", { name: "Git branch", exact: true }))
     .toBeVisible();
   // Both sections name themselves, which is what tells the card's "Branch" apart from the

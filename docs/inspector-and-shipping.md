@@ -8,7 +8,8 @@ its verified Pull Request action. Version 9 introduced the judge as a singleton 
 runs it alongside Code Risk Reviewer in stage 3, version 11 adds
 [Code Design Reviewer](workflows.md#built-in-personas) to that same stage, version 12
 adds Slop Filter beside Test Evidence Auditor and Documentation Steward in stage 4, and current
-version 13 adds criterion-mapped evidence preflight before any local attempt. Versions 9 onward complete after
+version 14 retains v13's criterion-mapped evidence preflight while routing every Persona through
+Codex, using Sol for Code Design and Terra for the other reviewers. Versions 9 onward complete after
 verified publication and do not wait for GitHub Inspector. Enabling this service adds review of
 pushed heads on GitHub; it does not enable or skip the local Personas.
 

@@ -1,6 +1,6 @@
 {
   "name": "mission-control",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -45,7 +45,7 @@
     "docs:screenshots": "node scripts/docs-screenshots.mjs",
     "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",
     "build:codex-hook": "esbuild hooks/codex-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/codex-hook.mjs",
-    "package": "npm run build && electron-builder --mac",
+    "package": "npm run build && electron-builder --mac --publish never",
     "start": "npm run build:native && tsx src/server/index.ts",
     "foreman": "tsx src/server/foreman/worker.ts",
     "typecheck": "tsc --noEmit",

@@ -54,7 +54,8 @@ test("rescuing settings from a legacy product name consumes the guided tour", as
     guidedDispatch: true,
     guidedTour: false,
     trustStaged: [],
-    hiddenDisplayItems: ["worktree"],
+    hiddenDisplayItems: ["worktree", "workflowDetails"],
+    hiddenDisplayItemsSeed: 1,
     conversationView: "terminal",
     // The whole config is pushed up, so a field the legacy read could not know about arrives at
     // its shipped default rather than being dropped - which is what an operator rescued from an

@@ -133,7 +133,7 @@ test("the Claude hook spec surfaces a readable activity line", () => {
 test("overlayKeyFromEnv prefers nested identities and binds iTerm2 exactly", () => {
   assert.equal(overlayKeyFromEnv({ tmuxPane: "%3", weztermPane: "7", itermSession: "w0t0p0:UUID" }), "tmux:%3");
   assert.equal(overlayKeyFromEnv({ weztermPane: "7", itermSession: "w0t0p0:UUID" }), "wezterm:7");
-  assert.equal(overlayKeyFromEnv({ itermSession: "w0t0p0:UUID" }), "iterm:w0t0p0:UUID");
+  assert.equal(overlayKeyFromEnv({ itermSession: "w0t0p0:UUID" }), "iterm:UUID");
   assert.equal(overlayKeyFromEnv({ itermSession: "  " }), null);
   assert.equal(overlayKeyFromEnv({}), null);
 });
@@ -150,5 +150,11 @@ test("the hook overlay key and session key agree, so binding works", () => {
   // carries the same tmux pane -> the keys must match.
   const hookKey = overlayKeyFromEnv({ tmuxPane: "%3", weztermPane: "7" });
   const sess = { terminals: [mkMuxHandle({ paneId: "%3" }), mkEmuHandle({ paneId: "7" })] } as Session;
+  assert.equal(hookKey, sessionKey(sess));
+});
+
+test("an iTerm2 environment ID binds to the bare GUID returned by AppleScript", () => {
+  const hookKey = overlayKeyFromEnv({ itermSession: "w12t3p4:UUID" });
+  const sess = { terminals: [mkEmuHandle({ backend: "iterm", paneId: "UUID" })] } as Session;
   assert.equal(hookKey, sessionKey(sess));
 });

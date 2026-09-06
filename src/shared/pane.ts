@@ -50,13 +50,14 @@ export function weztermPaneToken(paneId: number | string): string {
 }
 
 /**
- * iTerm2 exports the same globally unique session id through AppleScript and
- * `ITERM_SESSION_ID`. Trim transport whitespace and reject empty or ambiguous values so
- * discovery and hook ingestion share one exact identity rule.
+ * iTerm2 exposes a session's GUID through AppleScript, while `ITERM_SESSION_ID` prefixes
+ * that GUID with the session's mutable window, tab, and pane positions. Strip only that
+ * documented positional prefix so discovery, launch markers, and hooks share the stable
+ * GUID as their identity. Trim transport whitespace and reject empty or ambiguous values.
  */
 export function normalizeItermSessionId(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value.trim();
+  const normalized = value.trim().replace(/^w\d+t\d+p\d+:/, "");
   if (!normalized || /\s/.test(normalized)) return null;
   return normalized;
 }

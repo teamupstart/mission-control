@@ -14,10 +14,7 @@ import {
   type SetupRowView,
   type SetupStatus,
 } from "@shared/setup-catalog.ts";
-import {
-  MULTIPLEXER_IDS,
-  type TerminalBackendId,
-} from "@shared/terminal.ts";
+import type { TerminalBackendId } from "@shared/terminal.ts";
 
 import { ghBin } from "../config.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
@@ -27,8 +24,8 @@ import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
 import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
-import { resolveBin } from "../terminal/bin.ts";
-import { EMULATORS, MULTIPLEXERS } from "../terminal/registry.ts";
+import { binUnsupportedReason, resolveBin } from "../terminal/bin.ts";
+import { terminalBackendBin } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
@@ -55,8 +52,43 @@ async function agentStatus(id: SetupDependencyId, deps: SetupDeps): Promise<Setu
 }
 
 async function terminalStatus(id: TerminalBackendId, deps: SetupDeps): Promise<SetupStatus> {
+  const unsupported = deps.backendUnsupported?.(id);
+  if (unsupported) return { state: "needs-setup", why: unsupported, evidence: null };
   const path = await deps.installedBackend(id);
   return path ? { state: "satisfied", evidence: path } : { state: "missing" };
+}
+
+/** Mission Control depends on GitHub CLI behavior only present from this release onward. */
+const GH_MINIMUM_VERSION = "2.100.0";
+
+/** Parse only stable `gh version X.Y.Z` output and compare numeric components. */
+function ghVersionAtLeast(versionOutput: string, minimum: string): boolean | null {
+  const match = /^gh version (\d+)\.(\d+)\.(\d+)(?:\s|$)/m.exec(versionOutput);
+  if (!match) return null;
+  const installed = match.slice(1, 4).map(Number);
+  const required = minimum.split(".").map(Number);
+  for (let index = 0; index < required.length; index++) {
+    if (installed[index]! > required[index]!) return true;
+    if (installed[index]! < required[index]!) return false;
+  }
+  return true;
+}
+
+async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const status = await present(deps.ghBin(), deps);
+  if (status.state !== "satisfied") return status;
+  const result = await deps.runCommand(status.evidence, ["--version"]);
+  const atLeast = !result.outcomeUnknown && result.code === 0
+    ? ghVersionAtLeast(result.stdout, GH_MINIMUM_VERSION)
+    : null;
+  if (atLeast === false) {
+    return {
+      state: "needs-setup",
+      why: `The installed GitHub CLI is older than the required ${GH_MINIMUM_VERSION}. Upgrade it to keep GitHub operations working.`,
+      evidence: status.evidence,
+    };
+  }
+  return status;
 }
 
 async function ghAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
@@ -124,9 +156,10 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
   tmux: (deps) => terminalStatus("tmux", deps),
   cmux: (deps) => terminalStatus("cmux", deps),
+  herdr: (deps) => terminalStatus("herdr", deps),
   wezterm: (deps) => terminalStatus("wezterm", deps),
   ghostty: (deps) => terminalStatus("ghostty", deps),
-  "gh-cli": (deps) => present(deps.ghBin(), deps),
+  "gh-cli": ghCliStatus,
   "gh-auth": ghAuthStatus,
   "claude-plugins": pluginStatus,
   "claude-skills": skillStatus,
@@ -164,11 +197,10 @@ export function defaultSetupDeps(): SetupDeps {
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     agentBin: resolveAgentBin,
     installedBackend: async (id) => {
-      const spec = MULTIPLEXER_IDS.includes(id as never)
-        ? MULTIPLEXERS[id as keyof typeof MULTIPLEXERS].bin
-        : EMULATORS[id as keyof typeof EMULATORS].bin;
+      const spec = terminalBackendBin(id);
       return resolveBinPath(resolveBin(spec));
     },
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id)),
     ghBin,
     resolveBinPath,
     runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),

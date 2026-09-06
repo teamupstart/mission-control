@@ -14,8 +14,8 @@ import { CARD_SHORTCUT_CHORDS } from "../src/web/lib/card-shortcuts.ts";
  *
  * A menu accelerator is registered with the OS and is handled BEFORE the renderer sees the
  * keystroke, so this is not a style question: Electron's stock `viewMenu` attaches
- * `⌘0`/`⌘-`/`⌘+` to its three zoom roles, which are the last three of the Board card's
- * twelve jump shortcuts. Left as a role, those three chords would work in a browser and
+ * `⌘0`/`⌘-`/`⌘+` to its three zoom roles, which are the last three of the fleet's twelve
+ * session jump shortcuts. Left as a role, those three chords would work in a browser and
  * silently do nothing in the packaged app - a failure with no diff to look at and no error
  * anywhere.
  *
@@ -40,9 +40,9 @@ function menu(claimed: boolean): Item[] {
   ) as Item[];
 }
 
-/** While the Board is using the jump keys. */
+/** While the fleet is using the jump keys. */
 const template = menu(true);
-/** While it is not - the preference off, or any layout that cannot use them. */
+/** While it is not - the preference off, or any page that cannot use them. */
 const released = menu(false);
 
 /** Every item at every depth, so a nested submenu cannot smuggle an accelerator in. */
@@ -103,7 +103,7 @@ test("the reload, devtools and full-screen roles are untouched", () => {
   }
 });
 
-test("no menu item claims a chord the Board's jump keys use, while the Board is using them", () => {
+test("no menu item claims a chord the jump keys use, while the fleet is using them", () => {
   const claimed = accelerators(template);
   for (const accelerator of RENDERER_OWNED_ACCELERATORS) {
     assert.equal(
@@ -121,7 +121,7 @@ test("no menu item claims a chord the Board's jump keys use, while the Board is 
   }
 });
 
-test("every accelerator the list reserves is one the Board actually binds", () => {
+test("every accelerator the list reserves is one the fleet actually binds", () => {
   // Ties the two files together in the direction that can rot. The list is deliberately not
   // all twelve slots - only ⌘0, ⌘- and ⌘= were ever claimed by a menu role, and reserving
   // ⌘1 would say the menu had a claim on it that it never had. What it must not become is a
@@ -146,7 +146,7 @@ test("every accelerator the list reserves is one the Board actually binds", () =
   }
 });
 
-test("the menu takes the zoom keys BACK when the Board is not using them", () => {
+test("the menu takes the zoom keys BACK when the fleet is not using them", () => {
   // The bug this is here for: the accelerators were given up unconditionally, so unchecking
   // Jump shortcut left ⌘0/⌘-/⌘= doing nothing at all - the renderer had stopped handling
   // them and the menu no longer owned them either. The preference could switch the feature
@@ -159,7 +159,7 @@ test("the menu takes the zoom keys BACK when the Board is not using them", () =>
   for (const role of ["resetZoom", "zoomIn", "zoomOut"]) {
     assert.ok(
       roles.includes(role),
-      `zoom does not get its "${role}" accelerator back when the Board releases the keys`,
+      `zoom does not get its "${role}" accelerator back when the fleet releases the keys`,
     );
   }
   // And no hand-rolled duplicate left behind beside them, which would give the View menu two
@@ -193,9 +193,9 @@ test("releasing the keys changes only the zoom entries", () => {
 
 test("the default state is the one that leaves zoom alone", () => {
   // `appMenuTemplate` is called once at launch, before any renderer has reported anything.
-  // Defaulting to "the Board owns the keys" would take zoom's shortcuts away for the whole
-  // window that a dashboard takes to load, and keep them away in the Console layout of a
-  // profile that never opens Board.
+  // Defaulting to "the fleet owns the keys" would take zoom's shortcuts away for the whole
+  // window that a dashboard takes to load, and keep them away for a profile that opens
+  // straight onto the Library or Runs and never reaches Fleet at all.
   const roles = (menu(false).find((item) => item.label === "View")?.submenu ?? [])
     .map((item) => item.role);
   const atLaunch = appMenuTemplate("Mission Control", {

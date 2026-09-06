@@ -162,11 +162,6 @@ export function SessionTile({
     [registerEl, session.id, tourTargetRef],
   );
   useEffect(() => setWorkflowExpanded(false), [workflowRunId]);
-  useEffect(() => {
-    if (!workflowRunId || !registerWorkflowDisclosure) return;
-    registerWorkflowDisclosure(session.id, { toggle: toggleWorkflowExpanded });
-    return () => registerWorkflowDisclosure(session.id, null);
-  }, [registerWorkflowDisclosure, session.id, toggleWorkflowExpanded, workflowRunId]);
 
   // The run rides along so a held tile refuses the drop: handing work over resets the agent,
   // and the run owns its next turn. Same source as the `held` flag above, so the tag and the
@@ -205,6 +200,70 @@ export function SessionTile({
   // is what makes the settings preview honest - the preview mounts one tile with a slot and
   // no board behind it, so unchecking the box has to be visible from the tile's own side.
   const jump = shown("cardShortcut") ? shortcutChord : null;
+  const workflowDetails = shown("workflowDetails");
+  // The expand chord drives the same transition as the disclosure button, so it is offered on
+  // exactly the same condition THE PANEL is drawn under. Registering it while the button is
+  // switched off, or while `workflow` itself is hidden and the panel below never mounts at
+  // all, would leave a key that claims the session and toggles state nobody can see - and
+  // `App` treats an unregistered session as unclaimed, which is the honest answer for a card
+  // with no disclosure at all.
+  const workflowDisclosureAvailable = shown("workflow") && workflowDetails;
+  useEffect(() => {
+    if (!workflowRunId || !workflowDisclosureAvailable || !registerWorkflowDisclosure) return;
+    registerWorkflowDisclosure(session.id, { toggle: toggleWorkflowExpanded });
+    return () => registerWorkflowDisclosure(session.id, null);
+  }, [
+    registerWorkflowDisclosure,
+    session.id,
+    toggleWorkflowExpanded,
+    workflowDisclosureAvailable,
+    workflowRunId,
+  ]);
+  /*
+   * Switching EITHER `workflowDetails` or `workflow` itself OFF closes the panel for good,
+   * rather than merely hiding it.
+   *
+   * `workflowVisiblyExpanded` below already masks an open panel the instant either item goes
+   * false, and that mask is what stops a frame of ladder from being drawn with no control
+   * left to close it (or, for `workflow`, with no panel to draw at all). But masking is not
+   * settling: the raw `workflowExpanded` would still be true underneath, so switching the item
+   * back ON would spring the tile open into the full ladder with no click - and one tile would
+   * reopen while its neighbour, never expanded, stayed shut. Checking either box back on
+   * offers the ABILITY to expand. It must not restore an expansion nobody asked for a second
+   * time.
+   *
+   * Separate from the run-keyed reset above because it answers a different question. That one
+   * means "this is a different run now"; this one means "you have put this control away".
+   *
+   * Today's routing hides the difference - `AppPageShell` mounts one page slot, so reaching
+   * the checkbox unmounts the board and this state dies with it. That is the routing's
+   * accident, not this component's guarantee: the settings surface was a modal over the
+   * fleet before it was a page, and `uiConfig.ts` records a `ui_config` ServerEvent as
+   * planned follow-up, either of which delivers the flip to a tile that is still mounted.
+   */
+  useEffect(() => {
+    if (!workflowDisclosureAvailable) setWorkflowExpanded(false);
+  }, [workflowDisclosureAvailable]);
+  /*
+   * Whether this tile is VISIBLY showing the expanded ladder - the single owner of that fact.
+   *
+   * `workflowExpanded` is the raw disclosure state and says nothing on its own: the operator
+   * can switch `workflowDetails` OR `workflow` itself off while a tile is already expanded,
+   * and the panel has to close rather than sit open with no control to shut it - or, for
+   * `workflow`, with nothing left to show at all. That resolution is ONE rule, and this is the
+   * only place all of its inputs live, so it is settled here and handed down already resolved.
+   * The disclosure component is told the answer rather than the facts, because the outer
+   * tile's `workflow-expanded` class - which reserves the layout space - and the inner panel's
+   * `is-expanded` content state have to be the same decision. Two separately written AND
+   * expressions would be two decisions, and the first change to the condition would strand a
+   * reserved-but-empty tile behind a collapsed (or absent) panel.
+   *
+   * `workflowDetails` still travels on its own past this point, because the disclosure ROW's
+   * visibility is a genuinely different question: it is drawn whenever the item is on,
+   * expanded or not - and by the time it is asked, `workflow` is already known to be shown,
+   * since the row lives inside the panel that condition gates.
+   */
+  const workflowVisiblyExpanded = workflowExpanded && workflowDisclosureAvailable;
 
   return (
     <div
@@ -213,7 +272,9 @@ export function SessionTile({
         selected ? " selected" : ""
       }${held ? " is-held" : ""}${
         droppable ? " can-drop" : ""
-      }${over ? " drop-over" : ""}${workflowExpanded ? " workflow-expanded" : ""}${
+      }${over ? " drop-over" : ""}${
+        workflowVisiblyExpanded ? " workflow-expanded" : ""
+      }${
         isTourTask ? " mc-tour-task" : ""
       }`}
       onDragOver={(e) => {
@@ -331,16 +392,22 @@ export function SessionTile({
           arrives over SSE; this panel loads the existing run detail, shows the consequential rung
           while collapsed, and reuses the real actionable ladder when disclosed. Its wrapper owns
           click propagation so neither action accidentally drills into the Console: the compact
-          preview opens the exact run, while the disclosure control expands in place. */}
+          preview opens the exact run, while the disclosure control expands in place.
+
+          The disclosure control and the peek's one sentence about WHY are the operator's
+          choice (`workflowDetails`, off by default); the rung, the stage track and the repair
+          budget are not. So the collapsed peek is what a card says about a run unless someone
+          asks it for more. */}
       {shown("workflow") && workflowRun && (
         <WorkflowLadderPanel
           run={workflowRun}
           session={session}
           stageDetail={workflowStageDetail}
           progressMeter={shown("workflowProgressBar")}
+          workflowDetails={workflowDetails}
           onOpenRun={() => onOpenWorkflowRun?.(workflowRun.id)}
           tileDisclosure={{
-            expanded: workflowExpanded,
+            expanded: workflowVisiblyExpanded,
             onExpandedChange: setWorkflowExpanded,
             // Two clicks, because this panel's background has two honest meanings and the
             // tile's own selection is what tells them apart. An expanded ladder is most of

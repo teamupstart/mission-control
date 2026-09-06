@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, uptime } from "../../lib/format.ts";
+import { ariaKeyshortcuts } from "../../lib/keybindings.ts";
 import { useSessionRuntimeDisplay } from "../../lib/interrupting.ts";
 import { heldByRun } from "../../lib/held.ts";
 import {
@@ -19,6 +20,7 @@ import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import type { PipelineCommission, PipelineRun, PipelineRunLink } from "@shared/pipeline.ts";
 import { Tooltip } from "../Tooltip.tsx";
+import { Keycap } from "../Keycap.tsx";
 import { pipelineCommissionLine } from "../../pipelines/pipeline-run-model.ts";
 import { pipelineSessionDisplay } from "../../lib/attention.ts";
 
@@ -33,6 +35,7 @@ import { pipelineSessionDisplay } from "../../lib/attention.ts";
  */
 export function RailRow({
   session,
+  shortcutChord = null,
   selected,
   onSelect,
   registerEl,
@@ -50,6 +53,15 @@ export function RailRow({
   onOpenPipelineCommission,
 }: {
   session: Session;
+  /**
+   * The ⌘-number jump chord this rail POSITION answers to, or null when it holds no slot -
+   * a thirteenth row, or an operator with the display item switched off.
+   *
+   * Handed down from App off the same ordered arrays the arrow keys walk, exactly as the
+   * Board card's keycap is, so the rail and the board never print two different numberings
+   * for one fleet. See `lib/card-shortcuts.ts`.
+   */
+  shortcutChord?: string | null;
   selected: boolean;
   onSelect: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
@@ -126,6 +138,10 @@ export function RailRow({
         className={`rail-row tone-${st.tone}${held ? " is-held" : ""}${selected ? " selected" : ""}`}
         aria-current={selected}
         aria-describedby={descriptionId}
+        /* The keycap this row prints is `aria-hidden`, as every keycap in this app is, so
+           the chord is announced here instead - on the control it actually drives, which for
+           the rail is the row itself rather than a button stretched over a card. */
+        aria-keyshortcuts={shortcutChord ? ariaKeyshortcuts(shortcutChord) : undefined}
         onClick={onSelect}
       >
         <AgentDot agent={session.agent} />
@@ -141,6 +157,17 @@ export function RailRow({
               whole two-line budget is the point of it. "held" qualifies the "idle" it sits
               next to, the same pairing the card's head draws. */}
           <span className="rail-state-line">
+            {/* FIRST on the state line, so the state word stays flush against the rail's
+                right edge and the key reads as qualifying it - the same pairing the `held`
+                pill makes, and the placement the operator chose over a left gutter, the meta
+                line and an inline key after the name. `.rail-state` carries a min-width for
+                it: "working" and "idle" differ in width, and without one the twelve keys sat
+                ragged down a rail whose whole affordance is a column of numbers.
+
+                `Keycap` rather than a `<kbd>` here, as on the card: it renders NOTHING when
+                keycaps are switched off, and `.rail-state-line` lays out with `gap`, so the
+                row closes up instead of keeping a hole. */}
+            {shortcutChord && <Keycap chord={shortcutChord} />}
             {held && (
               <Tooltip
                 label={`Held by ${heldBy?.workflowName ?? "a workflow"} - the run owns this session's next turn`}

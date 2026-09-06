@@ -25,6 +25,9 @@ import {
   DetachReviewWaitSchema,
   DispatchBacklogTaskSchema,
   DispatchSchema,
+  PipelineAdoptSuccessorSchema,
+  PipelineRetrySchema,
+  PipelineSettlementSchema,
   ResolveRepoSchema,
   TourDispatchSchema,
   EditWorkItemSchema,
@@ -1115,25 +1118,8 @@ export function buildApp(
 
 
   /**
-   * The confirming step: ASK for a publish, and get one only if a person says yes.
-   *
-   * This route authenticates nobody, and that is deliberate rather than an oversight. Three
-   * earlier revisions tried to make the confirmation something a caller PRESENTS - a hash of
-   * the request, then a random token from the preview reply, then the per-machine bearer token
-   * - and each failed for the same reason: `/api/*` is loopback-reachable, so anything the
-   * dashboard can send a local process can send, and a token is a file that a process running
-   * as the operator can read. Possession is not attestation.
-   *
-   * So calling this grants nothing by itself. It asks the desktop shell to put a native dialog
-   * naming the target repository in front of the operator, over the utility-process port - not
-   * a route, not a socket, not a file - and mints a grant only if the reply says a person
-   * clicked publish. A local script may call this as often as it likes; every call raises a
-   * dialog on somebody's screen, and no click means no grant. See ./product-issue-consent.ts.
-   *
-   * The grant is then two minutes, single-use, pinned to one derivation. Not folded into the
-   * preview route for the second reason as well: preview is a read the modal issues on every
-   * settled keystroke, and authority that falls out of looking is authority nobody chose to
-   * take.
+   * Mint the short-lived grant that the dashboard's one Report action immediately spends.
+   * Kept apart from preview so reading or editing never creates publishing authority.
    */
   app.post(
     "/api/product-issues/confirm",
@@ -1164,7 +1150,7 @@ export function buildApp(
    * The dashboard's public mutation, bound to the confirmation the browser rendered.
    *
    * Phase 1 held this route back on purpose: "preview then submit" alone would let anything
-   * that can reach the daemon publish without a person ever seeing the content.
+   * that can reach the daemon publish without first obtaining the exact rendered derivation.
    * `confirmationToken` is the single-use grant minted by `/api/product-issues/confirm` -
    * unguessable, so it cannot be computed from the draft; short-lived, so an old approval
    * cannot be held and spent later; and retired once a submission using it reaches a terminal
@@ -6813,6 +6799,64 @@ export function buildApp(
       return c.json({ error: r.error }, r.error === "no such task" ? 404 : 409);
     }
     return c.json(r.task!);
+  });
+
+  const pipelineRecoveryResponse = (
+    c: Context,
+    result: Awaited<ReturnType<TaskManager["retryPipelineAttempt"]>>,
+  ) => {
+    if (result.ok) return c.json(result.task);
+    const status = result.error === "no such task"
+      ? 404
+      : result.code === "provider_outcome_unknown"
+        ? 504
+        : result.code === "provider_failure"
+          ? 502
+        : result.code === "host_launch_failure"
+          ? 500
+          : result.code === "readiness_blocked" || result.code === "unsupported_provider"
+            ? 422
+            : 409;
+    return c.json(
+      { error: result.error, code: result.code, ...(result.outcomeUnknown ? { outcomeUnknown: true } : {}) },
+      status,
+    );
+  };
+
+  app.post("/api/tasks/:id/pipeline/retry", async (c) => {
+    const parsed = await parseBody(c, PipelineRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(c, await tasks.retryPipelineAttempt(c.req.param("id"), parsed.data));
+  });
+
+  app.post("/api/tasks/:id/pipeline/successor/refresh", async (c) => {
+    const parsed = await parseBody(c, PipelineRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(c, await tasks.refreshPipelineSuccessor(c.req.param("id"), parsed.data));
+  });
+
+  app.post("/api/tasks/:id/pipeline/successor/adopt", async (c) => {
+    const parsed = await parseBody(c, PipelineAdoptSuccessorSchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(c, await tasks.adoptPipelineSuccessor(c.req.param("id"), parsed.data));
+  });
+
+  app.post("/api/tasks/:id/pipeline/abandon", async (c) => {
+    const parsed = await parseBody(c, PipelineSettlementSchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(
+      c,
+      await tasks.settlePipelineCommission(c.req.param("id"), parsed.data, "abandon"),
+    );
+  });
+
+  app.post("/api/tasks/:id/pipeline/cancel", async (c) => {
+    const parsed = await parseBody(c, PipelineSettlementSchema);
+    if (!parsed.ok) return parsed.res;
+    return pipelineRecoveryResponse(
+      c,
+      await tasks.settlePipelineCommission(c.req.param("id"), parsed.data, "cancel"),
+    );
   });
 
   // Assign a backlog task to an already-running agent. A refusal here is a 409, not a

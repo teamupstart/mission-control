@@ -30,6 +30,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "claude-skills",
   "ai-conductor",
   "iterm",
+  "herdr",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -255,6 +256,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       kind: "command",
       argv: ["brew", "install", "--cask", "iterm2"],
       note: "Install iTerm2 with Homebrew.",
+    },
+  },
+  herdr: {
+    id: "herdr",
+    label: "Herdr",
+    family: "terminals",
+    requirement: "optional",
+    enables: "Adds durable default-server workspaces, pane control, and full-client reattachment on macOS and Linux.",
+    remedy: {
+      kind: "link",
+      url: "https://herdr.dev/docs/install/",
+      label: "Open Herdr installation guide",
     },
   },
 };

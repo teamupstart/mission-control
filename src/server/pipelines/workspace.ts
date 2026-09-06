@@ -120,7 +120,10 @@ async function git(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: 
   };
 }
 
-async function commitAt(repoRoot: string, revision: string): Promise<string | null> {
+export async function resolvePipelineEvidenceCommit(
+  repoRoot: string,
+  revision: string,
+): Promise<string | null> {
   if (!revision || revision.startsWith("-") || revision.includes("\0")) return null;
   const resolved = await git(repoRoot, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`]);
   if (!resolved.ok || !/^[0-9a-f]{40,64}$/i.test(resolved.stdout)) return null;
@@ -128,7 +131,7 @@ async function commitAt(repoRoot: string, revision: string): Promise<string | nu
 }
 
 async function objectExists(repoRoot: string, commit: string | null): Promise<boolean> {
-  return commit !== null && await commitAt(repoRoot, commit) === commit.toLowerCase();
+  return commit !== null && await resolvePipelineEvidenceCommit(repoRoot, commit) === commit.toLowerCase();
 }
 
 async function pathEntryExists(candidate: string): Promise<boolean> {
@@ -230,7 +233,7 @@ async function freezeLegacyBranch(
 ): Promise<PipelineCommission> {
   if (attempt.evidenceCommit !== null || attempt.evidenceFrozenAt !== null) return commission;
   if (!commission.authoringBranch) return commission;
-  const commit = await commitAt(commission.repoRoot, commission.authoringBranch);
+  const commit = await resolvePipelineEvidenceCommit(commission.repoRoot, commission.authoringBranch);
   if (!commit) return commission;
   advancePipelineCommissionEvidence({
     commissionId: commission.id,
@@ -271,7 +274,7 @@ async function validateLive(
     git(root, ["rev-parse", "--show-toplevel"]),
     git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
     git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
-    commitAt(root, "HEAD"),
+    resolvePipelineEvidenceCommit(root, "HEAD"),
   ]);
   try {
     if (
@@ -298,9 +301,10 @@ async function validateLive(
       return { ok: false, reason: "identity_conflict" };
     }
   }
-  if (attempt.evidenceCommit && attempt.evidenceCommit !== head) {
+  const frozenCommit = attempt.evidenceCommit?.toLowerCase() ?? null;
+  if (frozenCommit && frozenCommit !== head) {
     if (attempt.evidenceFrozenAt !== null) return { ok: false, reason: "identity_conflict" };
-    if (!(await git(repoRoot, ["merge-base", "--is-ancestor", attempt.evidenceCommit, head])).ok) {
+    if (!(await git(repoRoot, ["merge-base", "--is-ancestor", frozenCommit, head])).ok) {
       return { ok: false, reason: "identity_conflict" };
     }
   }

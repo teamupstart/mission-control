@@ -344,6 +344,16 @@ test("enforced gaps wait, and in-round capture and override replays recover acti
   assert.deepEqual(h.store.getSubmission(submitted.value.submission.id)?.readiness?.gapCodes, [
     "missing_rendered_output",
   ]);
+  const initialEvaluation = h.store.listEvents(runId)
+    .find((event) => event.kind === "evidence_readiness_evaluated");
+  assert.ok(initialEvaluation, "the activation decision must append its structural evaluation");
+  assert.match(JSON.stringify(initialEvaluation.payload), /"status":"gaps"/);
+  assert.match(JSON.stringify(initialEvaluation.payload), /"criteriaCount":1/);
+  assert.doesNotMatch(
+    JSON.stringify(initialEvaluation.payload),
+    /Rendered workflow state is inspectable|browser-run|playwright|focused\.spec\.ts/,
+    "readiness telemetry must not contain criterion, evidence identity, command or path content",
+  );
   await waitFor(
     () => h.store.listDeliveries(runId).some((delivery) => delivery.kind === "evidence_readiness"),
     "readiness delivery was not prepared",

@@ -21,7 +21,9 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { getAppConfig, openDb, setAppConfig } = await import("../src/server/db.ts");
 const { getUiConfig, setUiConfig, uiConfigView } = await import("../src/server/ui-config.ts");
-const { UI_CONFIG_DEFAULTS } = await import("../src/shared/protocol.ts");
+const { DISPLAY_ITEM_HIDDEN_SEEDS, UI_CONFIG_DEFAULTS } = await import(
+  "../src/shared/protocol.ts",
+);
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -148,4 +150,71 @@ test("a keybinding for an action this build retired is stored, not rejected", ()
     .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
     .run("ui", JSON.stringify({ keybindings: { someRetiredAction: "cmd+9" } }));
   assert.deepEqual(getUiConfig().keybindings, { someRetiredAction: "cmd+9" });
+});
+
+// ---- a display item that must ship OFF, on a profile that already exists ----
+//
+// `UI_CONFIG_DEFAULTS.hiddenDisplayItems` is not enough by itself, and that is the whole
+// reason `DISPLAY_ITEM_HIDDEN_SEEDS` exists. A stored list is the operator's own answer and
+// is returned verbatim; the default only reaches a record that stored no list at all. So on
+// every profile that ever unchecked one card item, a newly-introduced ships-hidden item would
+// resolve to SHOWN - the opposite of what it ships as, and invisible to any test that starts
+// from an empty store, which is every other test in this file.
+
+test("an existing profile that stored its own hidden list still gets a ships-hidden item off", () => {
+  // The upgrade: a list this operator wrote, and no seed marker, because the build that
+  // wrote it had none.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board", hiddenDisplayItems: ["cost"] });
+  const upgraded = getUiConfig();
+  assert.deepEqual(
+    upgraded.hiddenDisplayItems,
+    ["cost", "workflowDetails"],
+    "a ships-hidden item arrived switched ON for an operator who had customised this panel",
+  );
+  // Their own answer survives, and an item that shipped before the marker is not re-hidden.
+  assert.ok(upgraded.hiddenDisplayItems.includes("cost"));
+  assert.ok(!upgraded.hiddenDisplayItems.includes("worktree"));
+  assert.equal(upgraded.layout, "board", "the seeding rewrote an unrelated preference");
+
+  // Persisted, not merely computed - the same rule the guided-tour migration follows. A
+  // migration that only ever answered in memory would re-run on every read, and the marker
+  // it writes is what makes switching the item on stick.
+  const stored = getAppConfig(APP_CONFIG_ENTRIES.ui) as Record<string, unknown>;
+  assert.deepEqual(stored.hiddenDisplayItems, ["cost", "workflowDetails"]);
+  assert.equal(stored.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+});
+
+test("switching a ships-hidden item on is not undone by the next read", () => {
+  // The direction an unconditional seeding gets wrong. Once the marker is at the head, an
+  // absent id means the operator turned it ON; re-seeding would make the checkbox appear to
+  // work and then silently revert.
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board", hiddenDisplayItems: ["cost"] });
+  getUiConfig();
+  setUiConfig({ hiddenDisplayItems: ["cost"] });
+  assert.deepEqual(getUiConfig().hiddenDisplayItems, ["cost"]);
+  assert.deepEqual(
+    getUiConfig().hiddenDisplayItems,
+    ["cost"],
+    "a second read re-hid an item the operator had switched on",
+  );
+});
+
+test("a profile that never touched this panel is seeded without duplicating the defaults", () => {
+  setAppConfig(APP_CONFIG_ENTRIES.ui, { layout: "board" });
+  const upgraded = getUiConfig();
+  assert.deepEqual(upgraded.hiddenDisplayItems, [...UI_CONFIG_DEFAULTS.hiddenDisplayItems]);
+  assert.equal(upgraded.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+});
+
+test("a fresh profile is born fully seeded and never migrates", () => {
+  // An absent record must not look like an un-seeded one, or the item could never be
+  // switched on: the schema default already carries every ships-hidden id.
+  const fresh = getUiConfig();
+  assert.deepEqual(fresh.hiddenDisplayItems, ["worktree", "workflowDetails"]);
+  assert.equal(fresh.hiddenDisplayItemsSeed, DISPLAY_ITEM_HIDDEN_SEEDS.length);
+  assert.equal(
+    getAppConfig(APP_CONFIG_ENTRIES.ui),
+    undefined,
+    "reading an unset config wrote one, which would defeat the configured flag",
+  );
 });

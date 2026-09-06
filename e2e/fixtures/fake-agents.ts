@@ -30,7 +30,16 @@ import {
 export interface FakeAgents {
   /** Directory the fakes write their invocation records into. */
   recordDir: string;
-  bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string; gh: string };
+  bins: {
+    claude: string;
+    codex: string;
+    pi: string;
+    cmux: string;
+    herdr: string;
+    wezterm: string;
+    keepAwake: string;
+    gh: string;
+  };
 }
 
 export type FakePiCatalogMode = "success" | "failure";
@@ -118,59 +127,53 @@ export function ghProductScriptPath(home: string): string {
   return join(home, "gh-product-script.json");
 }
 
-export function productConsentScriptPath(home: string): string {
-  return join(home, "product-consent-script.json");
+export function productAuthorizationScriptPath(home: string): string {
+  return join(home, "product-authorization-script.json");
 }
 
-export function productConsentBinPath(home: string): string {
-  return join(home, "bin", "product-consent");
+export function productAuthorizationBinPath(home: string): string {
+  return join(home, "bin", "product-authorization");
 }
 
 /**
- * Stand in for the operator answering the native publish dialog.
+ * Stand in for the Electron shell's private authorization channel.
  *
- * In the shipped app the daemon asks the Electron shell over its utility-process port and a
- * person clicks. A daemon forked by this fixture has no shell, and deliberately CANNOT publish
- * without one - so the suite gives it something else to ask, through the launch-time
- * `MISSION_PRODUCT_ISSUE_CONSENT_CMD` seam. Setting that is not a bypass anyone gains from: it
- * lives on the daemon's own environment, and a process that can choose that has already
- * replaced the daemon. `MISSION_GH_BIN` redirects the GitHub CLI on the same reasoning.
- *
- * It records what it was asked, so a spec can assert that confirming reached a human question
- * naming the right repository rather than being decided inside the daemon.
+ * The shipped daemon asks its parent utility process. This fixture daemon has no Electron
+ * parent, so the launch-time command seam supplies the same grant/refusal boundary without
+ * making any real external call. A process that chooses the daemon environment has already
+ * replaced the daemon, just as with the MISSION_GH_BIN blast dam below.
  */
-export function writeProductConsentBin(home: string): string {
-  const bin = productConsentBinPath(home);
+export function writeProductAuthorizationBin(home: string): string {
+  const bin = productAuthorizationBinPath(home);
   mkdirSync(dirname(bin), { recursive: true });
   writeFileSync(
     bin,
     [
       "#!/usr/bin/env node",
-      "const { readFileSync, writeFileSync, appendFileSync } = require('node:fs');",
-      `const script = ${JSON.stringify(productConsentScriptPath(home))};`,
-      `const log = ${JSON.stringify(join(home, "product-consent-asked.jsonl"))};`,
-      "const [target, title] = process.argv.slice(2);",
-      "appendFileSync(log, JSON.stringify({ target, title }) + String.fromCharCode(10));",
+      "const { readFileSync, appendFileSync } = require('node:fs');",
+      `const script = ${JSON.stringify(productAuthorizationScriptPath(home))};`,
+      `const log = ${JSON.stringify(join(home, "product-authorization-asked.jsonl"))};`,
+      "const [requestId, draftIdentity, target, title] = process.argv.slice(2);",
+      "appendFileSync(log, JSON.stringify({ requestId, draftIdentity, target, title }) + String.fromCharCode(10));",
       "let answer = 'grant';",
       "try { answer = JSON.parse(readFileSync(script, 'utf8')).answer; } catch {}",
       "process.exit(answer === 'grant' ? 0 : 1);",
     ].join("\n") + "\n",
     { mode: 0o755 },
   );
-  writeProductConsentScript(home, { answer: "grant" });
+  writeProductAuthorizationScript(home, { answer: "grant" });
   return bin;
 }
 
-/** What the stand-in operator will say next. */
-export interface FakeProductConsentScript {
+export interface FakeProductAuthorizationScript {
   answer: "grant" | "refuse";
 }
 
-export function writeProductConsentScript(
+export function writeProductAuthorizationScript(
   home: string,
-  script: FakeProductConsentScript,
+  script: FakeProductAuthorizationScript,
 ): void {
-  writeFileSync(productConsentScriptPath(home), JSON.stringify(script, null, 2));
+  writeFileSync(productAuthorizationScriptPath(home), JSON.stringify(script, null, 2));
 }
 
 /**
@@ -213,6 +216,173 @@ if (dir) {
 }
 if (process.env.MC_E2E_CMUX_MODE === "unknown") {
   setInterval(() => {}, 1000);
+}
+`;
+
+/**
+ * A disposable Herdr-compatible default server for the one E2E spec that opts into it.
+ * It implements only Mission Control's bounded protocol surface, records every mutation,
+ * and starts a free fake `claude` descendant for PID-ancestry discovery. No real Herdr or
+ * agent binary is reachable from this process.
+ */
+const FAKE_HERDR = `#!/usr/bin/env node
+const { appendFileSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
+const { createServer } = require("node:net");
+const { join } = require("node:path");
+const { spawn } = require("node:child_process");
+const argv = process.argv.slice(2);
+const home = process.env.MISSION_HOME;
+const socketPath = join(home, "fake-herdr.sock");
+const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
+const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
+if (argv[0] === "status" && argv[1] === "server") {
+  if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
+    status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
+  } else {
+    const running = existsSync(socketPath);
+    status({ status: running ? "running" : "not_running", running, version: running ? "0.8.2" : null, protocol: running ? 20 : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
+  }
+  process.exit(0);
+}
+if (argv[0] === "server") {
+  if (!existsSync(socketPath)) {
+    const child = spawn(process.execPath, [__filename, "serve", String(process.ppid)], {
+      detached: true,
+      env: process.env,
+      stdio: "ignore",
+    });
+    child.unref();
+  }
+  process.exit(0);
+}
+if (argv[0] !== "serve") process.exit(0);
+
+rmSync(socketPath, { force: true });
+let serial = 0;
+const workspaces = new Map();
+const agents = new Map();
+const record = (request) => appendFileSync(recordPath, JSON.stringify(request) + "\\n");
+const stopAgent = (paneId) => {
+  const child = agents.get(paneId);
+  if (!child) return;
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  agents.delete(paneId);
+};
+const ensureAgent = (pane) => {
+  if (agents.has(pane.pane_id)) return agents.get(pane.pane_id).pid;
+  const fakeDir = join(home, "fake-herdr-agent");
+  mkdirSync(fakeDir, { recursive: true });
+  const agentBin = join(fakeDir, "claude");
+  const script = join(fakeDir, "agent.mjs");
+  if (!existsSync(agentBin)) symlinkSync(process.execPath, agentBin);
+  writeFileSync(script, "setInterval(() => {}, 1000);\\n");
+  const command = JSON.stringify(agentBin) + " " + JSON.stringify(script);
+  // Discovery deliberately ignores headless agents. The script utility gives this fake the same real
+  // controlling tty an agent has inside a Herdr pane, while remaining portable across the
+  // two supported hosts. Cleanup kills its detached process group.
+  const args = process.platform === "darwin"
+    ? ["-q", "/dev/null", agentBin, script]
+    : ["-q", "-c", command, "/dev/null"];
+  const child = spawn("/usr/bin/script", args, {
+    cwd: pane.cwd,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  agents.set(pane.pane_id, child);
+  pane.shell_pid = child.pid;
+  return child.pid;
+};
+// Stable Herdr closes a non-subscription connection after its first response.
+const ok = (socket, id, result = { type: "ok" }) => socket.end(JSON.stringify({ id, result }) + "\\n");
+const server = createServer((socket) => {
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    const lines = buffer.split("\\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line) continue;
+      const request = JSON.parse(line);
+      record(request);
+      const p = request.params || {};
+      if (request.method === "session.snapshot") {
+        const values = [...workspaces.values()];
+        ok(socket, request.id, {
+          type: "session_snapshot",
+          snapshot: {
+            version: "0.8.2", protocol: 20,
+            workspaces: values.map((x) => ({ workspace_id: x.workspaceId, label: x.label })),
+            tabs: values.map((x) => ({ tab_id: x.tabId, workspace_id: x.workspaceId, number: 1, label: "main" })),
+            panes: values.flatMap((x) => x.panes.map((pane) => ({ pane_id: pane.pane_id, workspace_id: x.workspaceId, tab_id: x.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd }))),
+            layouts: [], agents: [],
+          },
+        });
+      } else if (request.method === "pane.process_info") {
+        const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: pane?.shell_pid || null, tty: null, foreground_processes: [] } });
+      } else if (request.method === "workspace.create") {
+        serial += 1;
+        const workspaceId = "fake-workspace-" + serial;
+        const tabId = workspaceId + ":tab";
+        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: null };
+        workspaces.set(workspaceId, { workspaceId, tabId, label: p.label, panes: [pane] });
+        ok(socket, request.id, {
+          type: "workspace_created",
+          workspace: { workspace_id: workspaceId, label: p.label },
+          tab: { tab_id: tabId, workspace_id: workspaceId, number: 1, label: "main" },
+          root_pane: { pane_id: pane.pane_id, workspace_id: workspaceId, tab_id: tabId, cwd: pane.cwd, foreground_cwd: pane.cwd },
+        });
+      } else if (request.method === "pane.send_input") {
+        const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        if (pane && Array.isArray(p.keys) && p.keys.includes("enter")) ensureAgent(pane);
+        ok(socket, request.id);
+      } else if (request.method === "pane.split") {
+        const workspace = [...workspaces.values()].find((x) => x.panes.some((pane) => pane.pane_id === p.target_pane_id));
+        const pane = { pane_id: workspace.workspaceId + ":side", cwd: p.cwd, shell_pid: null };
+        workspace.panes.push(pane);
+        ok(socket, request.id, { type: "pane_created", pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
+      } else if (request.method === "pane.read") {
+        ok(socket, request.id, { type: "pane_read", read: { pane_id: p.pane_id, text: "fake Herdr pane output" } });
+      } else if (request.method === "workspace.rename") {
+        const workspace = workspaces.get(p.workspace_id);
+        if (workspace) workspace.label = p.label;
+        ok(socket, request.id);
+      } else if (request.method === "workspace.close") {
+        const workspace = workspaces.get(p.workspace_id);
+        if (workspace) for (const pane of workspace.panes) stopAgent(pane.pane_id);
+        workspaces.delete(p.workspace_id);
+        ok(socket, request.id);
+      } else {
+        ok(socket, request.id);
+      }
+    }
+  });
+});
+// The server process is deliberately reparented, matching stable Herdr's
+// detached_server_daemon capability. Keep the original disposable daemon PID only as a
+// cleanup watchdog so a failed E2E worker cannot leave this fake behind.
+const parentPid = Number(argv[1]);
+const leave = () => {
+  for (const paneId of agents.keys()) stopAgent(paneId);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 100).unref();
+};
+process.on("SIGTERM", leave);
+process.on("SIGINT", leave);
+setInterval(() => {
+  try { process.kill(parentPid, 0); } catch { leave(); }
+}, 100).unref();
+server.listen(socketPath);
+`;
+
+const FAKE_WEZTERM = `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
 }
 `;
 
@@ -299,7 +469,7 @@ if (argv[0] === "--version") {
   process.stdout.write(
     product.preflight === "gh-version"
       ? "gh version 2.98.0 (fake)\\n"
-      : "gh version 2.99.0 (fake)\\n",
+      : "gh version 2.101.0 (fake)\\n",
   );
 } else if (command.startsWith("auth status")) {
   preflightRefusal("gh-auth");
@@ -434,6 +604,14 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(cmux, FAKE_CMUX);
   chmodSync(cmux, 0o755);
 
+  const herdr = join(binDir, "fake-herdr");
+  writeFileSync(herdr, FAKE_HERDR);
+  chmodSync(herdr, 0o755);
+
+  const wezterm = join(binDir, "fake-wezterm");
+  writeFileSync(wezterm, FAKE_WEZTERM);
+  chmodSync(wezterm, 0o755);
+
   const keepAwake = join(binDir, "fake-caffeinate");
   writeFileSync(keepAwake, FAKE_KEEP_AWAKE);
   chmodSync(keepAwake, 0o755);
@@ -442,5 +620,5 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(gh, FAKE_GH);
   chmodSync(gh, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, keepAwake, gh } };
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh } };
 }

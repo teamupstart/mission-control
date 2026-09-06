@@ -4225,6 +4225,45 @@ export interface TestEvidenceAuditCategoryShare {
   failures: TestEvidenceAuditRate;
 }
 
+export type TestEvidenceReadinessScopeCategory = "none" | "repository" | "all" | "mixed";
+
+export interface TestEvidenceReadinessCategoryCount<T extends string> {
+  category: T;
+  /** Total category occurrences. One evaluation can contribute more than one occurrence. */
+  occurrences: number;
+  /** Evaluations containing this category, over intercepted evaluations. Categories overlap. */
+  affectedEvaluations: TestEvidenceAuditRate;
+}
+
+export interface TestEvidenceReadinessSlice {
+  workflowId: string | null;
+  workflowVersion: number | null;
+  evaluatorVersion: string | null;
+  evaluations: number;
+  interceptions: TestEvidenceAuditRate;
+  unavailable: TestEvidenceAuditRate;
+}
+
+export interface TestEvidencePreflightAggregate {
+  evaluations: number;
+  enforcingEvaluations: number;
+  malformed: number;
+  truncated: boolean;
+  /** Enforced evaluations that entered the evidence-readiness wait. */
+  interceptions: TestEvidenceAuditRate;
+  /** Intercepted runs that produced an evidence-preflight child segment. */
+  sameRoundRefinements: TestEvidenceAuditRate;
+  /** Intercepted runs activated through the audited operator override. */
+  overrides: TestEvidenceAuditRate;
+  /** Evaluations unavailable under the enforcing policy. */
+  unavailable: TestEvidenceAuditRate;
+  gapCodes: TestEvidenceReadinessCategoryCount<WorkflowEvidenceReadinessGapCode>[];
+  proofClasses: TestEvidenceReadinessCategoryCount<WorkflowEvidenceProofClass>[];
+  missingRoles: TestEvidenceReadinessCategoryCount<WorkflowEvidenceProofRole>[];
+  slices: TestEvidenceReadinessSlice[];
+  slicesOmitted: number;
+}
+
 /**
  * One guidance-revision slice, which is the whole reason the identity fields exist.
  *
@@ -4258,6 +4297,10 @@ export interface TestEvidenceAuditSlice {
   personaRevision: number | null;
   guidanceDigest: string | null;
   attempts: number;
+  /** Passing first Auditor attempts over known first Auditor attempts in this slice. */
+  firstAuditorAttemptAccepted: TestEvidenceAuditRate;
+  /** Legacy attempts in this slice that predate explicit first-Auditor identity. */
+  firstAuditorAttemptUnknown: number;
   /** Passing first submissions over all first submissions in this slice. */
   firstSubmissionAccepted: TestEvidenceAuditRate;
   /** Failing attempts over all attempts in this slice. */
@@ -4298,7 +4341,13 @@ export interface TestEvidenceAuditAggregate {
   scanLimit: number;
   oldestAt: number | null;
   newestAt: number | null;
-  /** The report's headline: passing first submissions over all first submissions. */
+  /** Passing first Auditor attempts over all explicitly identified first Auditor attempts. */
+  firstAuditorAttemptAccepted: TestEvidenceAuditRate;
+  /** Attempts carrying the explicit first-Auditor fact, including later attempts. */
+  firstAuditorAttemptKnown: number;
+  /** Legacy attempts that predate the explicit first-Auditor fact. */
+  firstAuditorAttemptUnknown: number;
+  /** Historical compatibility metric: round-1 segment-0 acceptance. */
   firstSubmissionAccepted: TestEvidenceAuditRate;
   /** Failing attempts over all attempts. */
   attemptFailures: TestEvidenceAuditRate;
@@ -4306,6 +4355,11 @@ export interface TestEvidenceAuditAggregate {
   readiness: TestEvidenceAuditReadiness;
   /** Attempts that asked for later-stage proof the original intent never named. */
   possibleOverreach: TestEvidenceAuditRate;
+  /** Failing first Auditor attempts whose activated packet was structurally ready. */
+  postReadyAuditorRejections: TestEvidenceAuditRate;
+  /** Failing first Auditor attempts whose activated packet used an operator override. */
+  postOverrideAuditorRejections: TestEvidenceAuditRate;
+  preflight: TestEvidencePreflightAggregate;
   /** Busiest slices first. */
   slices: TestEvidenceAuditSlice[];
   /** Slices past the cap. Reported rather than silently truncated. */

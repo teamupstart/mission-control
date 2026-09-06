@@ -28,6 +28,9 @@ the Persona's provider override or the app-wide provider; then the Persona's mod
 unknown to an older build is reported and falls back through the shared provider ladder.
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
+Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
+Review v14 pins its seven snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
+the other six on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
 
 ### Importing a Persona from a file
 
@@ -150,7 +153,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 12 are preserved for bindings that already pin them, and version 13 is current. There is
+through 13 are preserved for bindings that already pin them, and version 14 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -266,14 +269,15 @@ action and changes only the new version's completion policy to `none`; version 1
 Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
 Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
 Slop Filter to stage 4; and version 13 keeps that graph while enabling criterion-mapped evidence
-preflight. Every earlier version remains in the
+preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
+with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 13 because it is current. Adopting the newer version on an
+take version 14 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -797,7 +801,8 @@ gap result remain visible after activation and restart.
 advisory behavior. An unavailable compaction result and model-suggested proof-class mismatch remain
 warnings rather than hard gaps. A null readiness value means historical data or an off-policy
 submission with no coverage; it never means ready. No-Mistakes Review v13 is the first built-in
-version that opts in; versions 1 through 12 remain byte-compatible and non-enforcing.
+version that opts in; v14 retains that policy while changing reviewer routing, and versions 1
+through 12 remain byte-compatible and non-enforcing.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
 before repository evidence. Prior Persona feedback is labeled as non-human input and all
@@ -928,16 +933,24 @@ A published version whose graph cannot be expressed as stages keeps the existing
 here and links to the Runs page, where its read-only graph remains available.
 
 The Board overview also keeps a compact **active-rung preview** inside each bound session tile.
-It names the consequential stage and its members, and keeps the first objection, GitHub Inspector wait,
-or uncertain-delivery warning in view. A stage carried forward from an earlier round never takes
-that slot - it is finished work, so the preview keeps naming whatever is actually running - and the
-tile instead carries one line counting them, **✓ 2 stages carried from Round 1 · evidence 1**.
+It names the consequential stage and its members. A stage carried forward from an earlier round
+never takes that slot - it is finished work, so the preview keeps naming whatever is actually
+running - and the tile instead carries one line counting them,
+**✓ 2 stages carried from Round 1 · evidence 1**.
 Click the compact preview to open that exact run's complete evidence and timeline.
-**Show full workflow** expands that tile in place into the same actionable ladder;
+
+How much of the run's REASONING that tile carries is the operator's choice, through
+**Workflow details** in [Settings → Display → Session display](ui.md#layout-console-or-board-in-settings). It ships **off**,
+and off a card is a progress reading: the run's name and state, its stage track, the stage it is
+on, and its repair-round budget. Switched on, the tile also keeps the first objection, GitHub
+Inspector wait, or uncertain-delivery warning in view, and gains the disclosure control -
+**Show full workflow** expands that tile in place into the same actionable ladder, and
 **Collapse workflow** returns to the preview. Press <kbd>v</kbd> on the selected tile to toggle
-those same controls without opening the session detail. These controls do
-not open the session or leave the Board. **Open run** inside the expanded ladder reaches the same
-run as the compact preview.
+those same controls without opening the session detail; the chord is unclaimed while the item is
+off, so it never expands a panel with no control to close it. None of these controls opens the
+session or leaves the Board. **Open run** inside the expanded ladder reaches the same run as the
+compact preview. The session's own **Workflows** tab is unaffected by the preference: it has a
+whole pane of height to spend, and always draws the full ladder.
 
 Clicking the expanded ladder's own background - anywhere that is not one of its controls - reads
 in two steps. The first click selects that tile, and only selects it: the ladder stays open and
@@ -1071,11 +1084,11 @@ same single-state filter the **State** dropdown offers in full; the dropdown sti
 every state, and workflow id and session filters sit beside it. Filters and the selected run
 are part of the bookmarkable hash, and history pages 50 rows at a time.
 
-A run is read one **submission** at a time. The scrubber lists every one with the round it
-belongs to - GitHub Inspector-only repair rounds marked as such - and the round that asked for
-changes is marked even though its submission is a healthy `waiting for the session`.
-Selecting one scopes the pipeline statuses, the review worklist, the join packets and the
-timeline to it; the latest is selected by default. The GitHub Inspector gate, completion claims, deliveries and
+A run is read one **submission** at a time. The scrubber draws **one tile per round** -
+GitHub Inspector-only repair rounds marked as such - and the round that asked for changes is
+marked even though its submission is a healthy `waiting for the session`. Selecting one
+scopes the pipeline statuses, the review worklist, the join packets and the timeline to it;
+the latest is selected by default. The GitHub Inspector gate, completion claims, deliveries and
 every recovery action always reflect the live run whatever is on screen, and a note says so
 while an earlier one is selected.
 
@@ -1083,9 +1096,22 @@ while an earlier one is selected.
 evaluator asked for changes, the work came back, and the whole pipeline runs again from
 Session against the repair budget. A segment is a session action finishing: fresh evidence,
 only the stages after the action, and no budget spent. A round that holds more than one
-segment labels each of them - `Round 1 · evidence 1`, `Round 1 · evidence 2` - and selecting
-a continuation says in a sentence which action produced it and that it cost no repair round. A
-round with a single segment is just `Round 1`, because there is no distinction to draw. The
+segment carries a **count badge** on its tile - `11 evidence` - and lists those segments in a
+**tray below the strip**, one chip each, in a grid of equal cells naming the capture and its
+state (`evidence 7`, `Under review`). The chip wears its segment's own tone, so once a round's
+tray is open a reader can see which of its captures failed. Only the round being read has a
+tray, and the tile itself reports the newest segment's status - so a round that failed
+mid-way, then carried on, would say nothing about it from a collapsed tile. That is what the
+**failure marker** beside the count badge is for: `2 failed`, drawn on any round holding a
+failed capture whether or not its tray is open, and independent of what is selected. Exactly
+one tray is open at a time and it belongs to the round being read, which the tile announces
+with `aria-expanded`.
+Selecting a chip says in a sentence which action produced that segment and that it cost no
+repair round. A round with a single segment carries no badge and opens no tray, because there
+is no distinction to draw. A round is therefore always one tile: a run that captured evidence
+twenty-three times across three rounds reads as three rounds, which is the fact the segment
+model exists to keep straight. The badge deliberately does not change with the selection - the
+tray names the open capture - so clicking along the chips never moves the strip above. The
 action that authorized a segment is shown *with* that segment even though its attempt belongs
 to the parent, so a continuation never reads as evidence that arrived from nowhere.
 
@@ -1662,15 +1688,36 @@ It is never displayed as zero, inferred from the fleet ledger, or estimated.
 
 ### Test evidence readiness
 
-**Settings → Workflows → Test evidence readiness** aggregates the `test_evidence_audit` events
-above across every retained run and refreshes on the same tick as Workflow health. It reports
-first-pass acceptance (round 1, segment 0), the failure rate over all auditor attempts, auditor
-attempts per run, the possible-overreach rate, each rejection category's share of the failing
-attempts, and evidence-readiness adoption on first submissions: how many carried no image, no text
-artifact, and no upstream Check, how many had a truncated transcript, and how many bytes Check
-retention and transcript head-clipping dropped. Attempts are also broken down by workflow version,
-Persona and guidance digest, which is what makes a guidance revision comparable with the one
-before it. The Persona *revision* is not part of that grouping: the digest identifies the exact
+**Settings → Workflows → Test evidence readiness** reads two separate, newest-first windows across
+every retained run and refreshes on the same tick as Workflow health. The Auditor window contains
+up to 2,000 `test_evidence_audit` events. Its headline is the acceptance rate among each run's first
+completed Test Evidence Auditor attempt. Infrastructure retries do not enter that denominator, and
+packets intercepted by structural preflight are not counted as Auditor passes. The historical
+round-1, segment-0 first-submission acceptance remains visible as a separate measure so its meaning
+does not change under the new denominator. Older events that predate durable first-attempt identity
+are counted as unknown and excluded from the headline.
+
+The independent preflight window contains up to 2,000 readiness evaluations, refinement
+reservations and overrides. Interception and unavailable rates use enforcing
+`criterion_mapped_v1` evaluations as their denominator. Same-round refinement and override rates
+use distinct intercepted runs as their denominator. The panel also reports rejection among first
+Auditor attempts whose captured packet was structurally ready, and separately among those admitted
+by an operator override. These disagreement measures preserve Test Evidence Auditor as the semantic
+authority: preflight checks structure and proof-role coverage, while the Auditor decides whether
+the evidence is relevant and sufficient. Proof-class, missing-role and gap-code frequencies are
+drawn only from intercepted evaluations and are never treated as acceptance.
+
+The panel retains the all-attempt failure rate, attempts per run, possible-overreach rate, each
+rejection category's share of failing attempts, and historical evidence adoption on first
+submissions: how many carried no image, no text artifact, and no upstream Check, how many had a
+truncated transcript, and how many bytes Check retention and transcript head-clipping dropped.
+Auditor attempts are broken down by workflow version, Persona and guidance digest. Preflight
+evaluations are broken down by workflow version and readiness evaluator version. The workflow
+version is the immutable policy snapshot, including whether criterion-mapped readiness was off or
+enforcing; the evaluator version identifies the structural implementation. Neither breakdown is a
+policy-tuning recommendation, and a first sample does not change guidance or thresholds.
+
+The Persona *revision* is not part of the Auditor grouping: the digest identifies the exact
 guidance bytes, so a Persona edit that left the guidance alone keeps its attempts in the same row
 rather than halving the population behind two identically labelled ones. A row reports the newest
 revision seen carrying its guidance, and is labelled with the workflow's name from the live
@@ -1680,16 +1727,18 @@ apart. A Persona is named on the row only when it is not the built-in auditor.
 
 It is advisory and strictly read-only. It re-runs no Persona, rewrites no verdict, gates nothing,
 and holds no state; the Persona's published judgment is unaffected by anything shown here. Only
-counts, durable enums and identifiers cross the wire - never prompt, diff, transcript, guidance,
-verdict or session content.
+counts, bounded enums, versions and opaque correlation keys cross the wire - never criterion text,
+captions, commands, file paths, prompt, diff, transcript, guidance, verdict, override reason or
+session content.
 
 An empty population is reported as **no reading**, never as 0%, so a fleet that has never run the
-auditor cannot be mistaken for one whose first-pass acceptance is zero. The aggregate reads the
-newest 2,000 events (`GET /api/workflows/test-evidence-audit`, optional `limit`); when older
-attempts fall outside that window, or an event cannot be read back, the panel says so rather than
-presenting a partial history as the whole one. A window whose events could not be read back at
-all is distinguished from one with no events: an auditor that has never run and telemetry that
-cannot be decoded lead to opposite conclusions, so neither borrows the other's wording.
+auditor cannot be mistaken for one whose first-attempt acceptance is zero. Each aggregate window
+uses the requested `limit` (`GET /api/workflows/test-evidence-audit`, newest 2,000 by default).
+Auditor and preflight truncation are reported independently. When older events fall outside either
+window, or an event cannot be read back, the panel says so rather than presenting a partial history
+as the whole one. A window whose Auditor events could not be read back at all is distinguished from
+one with no Auditor events: an auditor that has never run and telemetry that cannot be decoded lead
+to opposite conclusions, so neither borrows the other's wording.
 
 Workflow health is read under **Settings → Workflows**, and refreshes on its own while that
 panel is open. It reports active runs, queued and running Persona calls, waiting, uncertain and

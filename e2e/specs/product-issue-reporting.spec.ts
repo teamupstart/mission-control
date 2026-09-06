@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -8,6 +9,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
   FAKE_GH_PRODUCT_ISSUE_URL,
   type FakeGhProductScript,
+  writeProductAuthorizationScript,
 } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
@@ -63,27 +65,6 @@ function labelsOf(record: GhRecord): string[] {
  */
 const form = (page: Page) => page.getByRole("dialog", { name: "Report product feedback" });
 
-/**
- * What the stand-in operator answers the next time the daemon asks.
- *
- * In the shipped app that question is a native dialog raised by the Electron shell over its
- * utility-process port, and the answer is a click. A daemon forked by this fixture has no shell
- * and so deliberately cannot publish at all; the suite gives it a program to ask instead, named
- * on the daemon's own environment at launch. See `writeProductConsentBin`.
- */
-function consent(daemon: DaemonHandle, answer: "grant" | "refuse"): void {
-  writeFileSync(daemon.productConsentPath, JSON.stringify({ answer }, null, 2));
-}
-
-/** Every publish question the daemon actually asked, in order. */
-function consentQuestions(daemon: DaemonHandle): Array<{ target: string; title: string }> {
-  if (!existsSync(daemon.productConsentAskedPath)) return [];
-  return readFileSync(daemon.productConsentAskedPath, "utf8")
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as { target: string; title: string });
-}
-
 async function openFromTopbar(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Report product feedback", exact: true }).click();
   await expect(form(page)).toBeVisible();
@@ -99,42 +80,78 @@ async function fill(page: Page, type: string, title: string, details: string): P
   await expect(dialog.getByText("acme/public-issues").first()).toBeVisible();
 }
 
-/**
- * The primary control, under whichever of its two names it is currently wearing.
- *
- * Both presses go through the same button, and it renames itself between them - "Report
- * publicly" asks the daemon to confirm what is on screen, and "Publish to acme/public-issues"
- * spends that confirmation. Selecting on the regex keeps `toBeDisabled` assertions honest
- * whichever state the form is in.
- */
 const submit = (page: Page) =>
-  form(page).getByRole("button", { name: /^(Report publicly|Publish to )/ });
-/** The confirming press only. */
-const confirmButton = (page: Page) =>
   form(page).getByRole("button", { name: "Report publicly", exact: true });
-/** The publishing press only - present solely once a confirmation is held. */
-const publishButton = (page: Page) =>
-  form(page).getByRole("button", { name: "Publish to acme/public-issues", exact: true });
 
-/**
- * Take both presses.
- *
- * Publishing deliberately cannot be reached in one click, so every test that files an issue
- * goes through here - and the assertion between the two clicks is the invariant itself: the
- * first press files nothing, it arms a control that names where the second press will write.
- */
+/** Publish through the single Report press exposed to the person using the form. */
 async function publish(page: Page): Promise<void> {
-  await confirmButton(page).click();
-  await expect(page.getByText(/Ready to publish in acme\/public-issues/)).toBeVisible();
-  await publishButton(page).click();
+  await submit(page).click();
 }
 const titleBox = (page: Page) =>
   form(page).getByRole("textbox", { name: "Title", exact: true });
 
-test.beforeEach(({ daemon }) => {
+test.beforeEach(async ({ dashboard, daemon }) => {
   script(daemon, { preflight: "ok", issueCreate: "created" });
-  // Somebody is at the machine and says yes, unless a test says otherwise.
-  consent(daemon, "grant");
+  writeProductAuthorizationScript(daemon.home, { answer: "grant" });
+  await dashboard.addInitScript(() => {
+    const capability = "playwright-product-issue-capability";
+    let claimed = false;
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        onOpenSettings: () => () => {},
+        claimProductIssueAuthorization: () => {
+          if (claimed) return null;
+          claimed = true;
+          return capability;
+        },
+        authorizeProductIssue: (candidate: string) =>
+          claimed && candidate === capability && navigator.userActivation.isActive,
+      },
+    });
+  });
+  await dashboard.reload();
+});
+
+test("a loopback caller cannot authorize itself, while one Report click publishes", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeProductAuthorizationScript(daemon.home, { answer: "refuse" });
+  const input = {
+    type: "bug",
+    title: "Unauthorized local publish",
+    details: "A local process must not be able to mint its own public publishing grant.",
+    attachmentUploadIds: [],
+    requestId: randomUUID(),
+    client: "electron",
+  };
+  const previewed = await dashboard.request.post(
+    `${daemon.baseURL}/api/product-issues/preview`,
+    { data: input },
+  );
+  expect(previewed.status()).toBe(200);
+  const confirmed = await dashboard.request.post(
+    `${daemon.baseURL}/api/product-issues/confirm`,
+    { data: input },
+  );
+  expect(confirmed.status()).toBe(409);
+  expect((await confirmed.json()).outcome).toBe("refused");
+  expect(productCreates(daemon)).toHaveLength(0);
+
+  writeProductAuthorizationScript(daemon.home, { answer: "grant" });
+  await openFromTopbar(dashboard);
+  await fill(
+    dashboard,
+    "Bug",
+    "One click reports the issue",
+    "The Report button should authorize and publish without another prompt.",
+  );
+  await publish(dashboard);
+  await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  await expect(form(dashboard).locator("footer").getByRole("button", { name: "Close" })).toBeVisible();
+  expect(productCreates(daemon)).toHaveLength(1);
 });
 
 test.describe("the default public issue target", () => {
@@ -175,7 +192,7 @@ test("the topbar and the palette open the same retained draft", async ({ dashboa
   await form(dashboard)
     .getByRole("textbox", { name: "Details", exact: true })
     .fill("Killed the daemon, reconnected, counts never moved again.");
-  await dashboard.getByRole("button", { name: "Close", exact: true }).click();
+  await dashboard.getByRole("button", { name: "Close feedback form", exact: true }).click();
   await expect(form(dashboard)).toBeHidden();
 
   // In through the palette this time, typed by the word someone in this state reaches for.
@@ -223,7 +240,7 @@ test("all five types file their own labels, and the browser chooses none of them
     await fill(dashboard, label, `Report about ${wire}`, `Details for the ${wire} case.`);
     await publish(dashboard);
     await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
-    await dashboard.getByRole("button", { name: "Close", exact: true }).click();
+    await form(dashboard).locator("footer").getByRole("button", { name: "Close", exact: true }).click();
 
     await expect.poll(() => productCreates(daemon).length).toBe(index + 1);
     const record = productCreates(daemon)[index]!;
@@ -286,7 +303,7 @@ test("the submission carries reporter content and nothing that steers GitHub", a
 });
 
 /**
- * Publishing takes two presses, and nothing is fetched between the second and the publish.
+ * Publishing takes one press while retaining the daemon's internal single-use grant.
  *
  * This is the regression guard on three real defects, each caught after the one before it was
  * fixed. The first revision authorized with `draftIdentity`, a hash of the request anything
@@ -296,11 +313,10 @@ test("the submission carries reporter content and nothing that steers GitHub", a
  * click handler and submitted it in the same promise chain, so React never rendered what was
  * published.
  *
- * So three things are asserted here. The preview reply carries no token at all. The confirming
- * press mints one, against the identity that is on screen. And between the publishing press
- * and the publish there is exactly one network event - the publish - carrying that token.
+ * The preview reply carries no token. The Report press mints one against the identity on screen
+ * and spends it immediately, without exposing an armed second-click state.
  */
-test("publishing takes a confirming press first, and sends the token that press returned", async ({
+test("one Report press confirms and publishes without an armed second-click state", async ({
   dashboard,
 }) => {
   const wire: Array<{ kind: "preview" | "confirm" | "submit"; body: string }> = [];
@@ -340,37 +356,73 @@ test("publishing takes a confirming press first, and sends the token that press 
     previewCarriedToken,
     "a preview reply carrying a publish token is authority obtained by reading",
   ).toBe(false);
-  // And the form does not offer to publish yet - only to check.
-  await expect(publishButton(dashboard)).toBeHidden();
+  await expect(dashboard.getByText(/Ready to publish/)).toBeHidden();
 
-  await confirmButton(dashboard).click();
-  await expect(dashboard.getByText(/Ready to publish in acme\/public-issues/)).toBeVisible();
-  await expect(publishButton(dashboard)).toBeEnabled();
-  expect(grantedToken, "the confirming press returned no grant").toBeTruthy();
-
-  // From here the only network event a correct implementation produces is the publish.
+  // One user action performs the bounded confirm/submit exchange and reaches the terminal result.
   const beforeClick = wire.length;
-  await publishButton(dashboard).click();
+  await submit(dashboard).click();
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  await expect(dashboard.getByText(/Ready to publish in acme\/public-issues/)).toBeHidden();
+  await expect(
+    form(dashboard).locator("footer").getByRole("button", { name: "Close", exact: true }),
+  ).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidenceDir = join(process.cwd(), "e2e", ".artifacts", "product-issue-one-click");
+    mkdirSync(evidenceDir, { recursive: true });
+    await form(dashboard).locator("footer").scrollIntoViewIfNeeded();
+    await dashboard.mouse.move(1, 1);
+    await form(dashboard).screenshot({
+      path: join(evidenceDir, "reported-with-close-action.png"),
+    });
+  }
 
   const afterClick = wire.slice(beforeClick);
   expect(
     afterClick.map((entry) => entry.kind),
-    "anything fetched between the press and the publish is content that was never rendered",
-  ).toEqual(["submit"]);
-  const sent = JSON.parse(afterClick[0]!.body) as { confirmationToken: string };
+    "one Report press must complete confirmation and publication",
+  ).toEqual(["confirm", "submit"]);
+  expect(grantedToken, "the Report press returned no grant").toBeTruthy();
+  const sent = JSON.parse(afterClick[1]!.body) as { confirmationToken: string };
   expect(sent.confirmationToken).toBe(grantedToken);
 });
 
-/**
- * Editing the report takes the confirmation back.
- *
- * The daemon would refuse a grant whose derivation moved anyway, so this is about what the
- * screen says: a button still offering to publish under words that have since changed is an
- * offer to publish something that is no longer written there. After an edit the control is
- * back to asking to check, and a second confirming press is required.
- */
-test("editing after confirming disarms the publish and requires confirming again", async ({
+test("forged and implicit submissions do not bypass the trusted Report control", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFromTopbar(dashboard);
+  await fill(
+    dashboard,
+    "Bug",
+    "Enter must not publish",
+    "Only activating the Report control should authorize this public issue.",
+  );
+  await expect(submit(dashboard)).toBeEnabled();
+
+  await dashboard.evaluate(() => {
+    const report = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Report publicly"]',
+    );
+    if (!report?.form) throw new Error("missing Report control");
+    const fake = document.createElement("button");
+    fake.textContent = "Forged report control";
+    fake.addEventListener("click", () => report.form?.requestSubmit(report));
+    report.closest("footer")?.append(fake);
+  });
+  await dashboard.getByRole("button", { name: "Forged report control" }).click();
+  expect(productCreates(daemon)).toHaveLength(0);
+
+  await titleBox(dashboard).press("Enter");
+  await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toHaveCount(0);
+  expect(productCreates(daemon)).toHaveLength(0);
+
+  await publish(dashboard);
+  await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  expect(productCreates(daemon)).toHaveLength(1);
+});
+
+test("editing before reporting publishes the latest rendered draft in one press", async ({
   dashboard,
   daemon,
 }) => {
@@ -381,18 +433,13 @@ test("editing after confirming disarms the publish and requires confirming again
     "Tiles freeze after reconnect",
     "Killed the daemon, reconnected, and the counts never moved again.",
   );
-  await confirmButton(dashboard).click();
-  await expect(publishButton(dashboard)).toBeVisible();
-
   await titleBox(dashboard).fill("Tiles freeze after reconnect, every time");
-  await expect(publishButton(dashboard)).toBeHidden();
-  await expect(dashboard.getByText(/Ready to publish/)).toBeHidden();
-  await expect(confirmButton(dashboard)).toBeVisible();
-  // Nothing was published by the edit, or by the confirmation it invalidated.
+  await expect(
+    form(dashboard).getByRole("region", { name: "What will be published" }),
+  ).toContainText("Tiles freeze after reconnect, every time");
   expect(productCreates(daemon)).toHaveLength(0);
 
-  // The way forward is the same two presses, now against what is actually written.
-  await expect(confirmButton(dashboard)).toBeEnabled();
+  await expect(submit(dashboard)).toBeEnabled();
   await publish(dashboard);
   // Polled, like every other positive assertion on the recorder here: the fake writes its
   // record from a separate process, so the DOM can show the outcome before the file lands.
@@ -403,85 +450,6 @@ test("editing after confirming disarms the publish and requires confirming again
 });
 
 /**
- * The reported bypass, driven end to end against the real daemon.
- *
- * A local process previews, confirms and publishes over the loopback API - the exact sequence
- * in the finding, with no browser involved at all. It reads the public content, which is a read
- * and was never the problem, and then stops: the confirming call reaches a person who says no,
- * and there is no grant to publish with. Nothing that a caller could have SENT would have
- * changed that, which is the property four revisions of this feature were trying to reach.
- */
-test("a local caller can preview but cannot publish when the operator says no", async ({
-  dashboard,
-  daemon,
-}) => {
-  consent(daemon, "refuse");
-  const body = {
-    type: "bug",
-    title: "Filed by a local script",
-    details: "Straight at the loopback API, in the same order the dashboard calls it.",
-    attachmentUploadIds: [] as string[],
-    requestId: "9f1d2c3b-4a5e-4f60-8b71-2c3d4e5f6a7b",
-    client: "browser",
-  };
-  const previewed = await dashboard.request.post(`${daemon.baseURL}/api/product-issues/preview`, {
-    data: body,
-  });
-  expect(previewed.status()).toBe(200);
-  const preview = (await previewed.json()) as Record<string, unknown>;
-  expect("confirmationToken" in preview).toBe(false);
-
-  const confirmed = await dashboard.request.post(`${daemon.baseURL}/api/product-issues/confirm`, {
-    data: body,
-  });
-  expect(confirmed.status()).toBe(409);
-  // And the attempt was not silent: it put the question in front of somebody, naming the
-  // repository it wanted to write to. A script cannot do this quietly.
-  expect(consentQuestions(daemon)).toContainEqual({
-    target: "acme/public-issues",
-    title: "Filed by a local script",
-  });
-
-  const published = await dashboard.request.post(`${daemon.baseURL}/api/product-issues`, {
-    data: { ...body, confirmationToken: preview.draftIdentity },
-  });
-  expect(published.status()).toBe(502);
-  expect(productCreates(daemon)).toHaveLength(0);
-});
-
-/**
- * The same refusal, met through the form rather than through curl.
- *
- * The person pressed Report publicly, read the dialog, and said no. The draft survives - the
- * words were never the problem - and the button is back to asking rather than stuck armed.
- */
-test("declining the publish dialog keeps the draft and publishes nothing", async ({
-  dashboard,
-  daemon,
-}) => {
-  consent(daemon, "refuse");
-  await openFromTopbar(dashboard);
-  await fill(
-    dashboard,
-    "Bug",
-    "Tiles freeze after reconnect",
-    "Killed the daemon, reconnected, and the counts never moved again.",
-  );
-  await confirmButton(dashboard).click();
-
-  await expect(form(dashboard).getByRole("alert")).toContainText(/not confirmed/i);
-  await expect(publishButton(dashboard)).toBeHidden();
-  await expect(titleBox(dashboard)).toHaveValue("Tiles freeze after reconnect");
-  expect(productCreates(daemon)).toHaveLength(0);
-
-  // Saying yes on the second ask publishes the same words, with no retyping.
-  consent(daemon, "grant");
-  await publish(dashboard);
-  await expect.poll(() => productCreates(daemon).length).toBe(1);
-});
-
-/**
- * A confirmation the daemon did not mint publishes nothing./**
  * A confirmation the daemon did not mint publishes nothing.
  *
  * The browser is not the boundary here and this proves it: the request is rewritten on the
@@ -642,7 +610,7 @@ test("a refusal is safely retryable, and an unknown outcome is not", async ({
   script(daemon, { preflight: "ok", issueCreate: "created" });
   await publish(dashboard);
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
-  await dashboard.getByRole("button", { name: "Close", exact: true }).click();
+  await form(dashboard).locator("footer").getByRole("button", { name: "Close", exact: true }).click();
 
   script(daemon, { preflight: "ok", issueCreate: "unknown" });
   await openFromTopbar(dashboard);
@@ -670,7 +638,7 @@ test("missing GitHub auth and a missing label each produce actionable copy", asy
   await expect(form(dashboard).getByRole("alert")).toContainText("gh auth login");
   await expect(form(dashboard).getByText(/still submit a text-only report/)).toHaveCount(0);
   await expect(submit(dashboard)).toBeDisabled();
-  await dashboard.getByRole("button", { name: "Close", exact: true }).click();
+  await dashboard.getByRole("button", { name: "Close feedback form", exact: true }).click();
 
   script(daemon, { preflight: "labels", issueCreate: "created" });
   await openFromTopbar(dashboard);

@@ -70,6 +70,8 @@ import type {
   UiConfigView,
   PipelinesConfigPatch,
   PipelineInstallerLaunchBody,
+  PipelineAdoptSuccessor,
+  PipelineRetry,
   SetupInstallerLaunchBody,
   TaskSourcesConfigPatch,
   ReorderTask,
@@ -1322,14 +1324,8 @@ export async function previewProductIssue(
 /**
  * Take the confirming step for the report on screen.
  *
- * An ordinary loopback call that grants nothing by itself, which is the interesting part. The
- * daemon answers it by asking the operator natively - a system dialog raised by the desktop
- * shell, over a channel no HTTP caller participates in - and mints a grant only if a person
- * clicks publish. So this resolves when that dialog is answered, and can resolve as a refusal
- * because it was dismissed.
- *
- * That also means this call is slow by nature: a human is in it. Nothing here times out on
- * their behalf; the daemon gives up after two minutes and answers honestly.
+ * The dashboard immediately spends the returned grant in the same Report action. Keeping this
+ * separate from preview ensures that reading or editing does not mint publishing authority.
  *
  * Never throws, like every mutator here; a failure is a retry-safe refusal because confirming
  * reaches no `gh` and publishes nothing.
@@ -1758,6 +1754,16 @@ export const api = {
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/start`),
+  retryPipelineAttempt: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/retry`, input),
+  refreshPipelineSuccessor: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/successor/refresh`, input),
+  adoptPipelineSuccessor: (id: string, input: PipelineAdoptSuccessor) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/successor/adopt`, input),
+  abandonPipelineCommission: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/abandon`, input),
+  cancelPipelineCommission: (id: string, input: PipelineRetry) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/pipeline/cancel`, input),
   /**
    * Edit a task - the dispatch modal reopened on a card, the backlog column's priority
    * picker, or its enable/disable toggle.

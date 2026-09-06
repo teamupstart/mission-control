@@ -6928,6 +6928,29 @@ export class WorkflowStore {
     ).all(runId) as unknown[]).map(parseWorkflowDeliveryRow);
   }
 
+  /**
+   * Confirmed packets that can still appear in one session's bounded transcript window.
+   *
+   * The delivery ledger is the durable authorship source for workflow context capture. Only
+   * confirmed sends qualify: prepared, refused, and uncertain packets cannot prove the runtime
+   * received their text. Newest first and capped beyond the transcript window so a long-lived
+   * session cannot make context capture scan or retain an unbounded payload history.
+   */
+  listDeliveredPayloadsForTranscript(
+    sessionId: string,
+    noteKey: string,
+    limit = 200,
+  ): string[] {
+    return (this.db.prepare(
+      `SELECT payload FROM workflow_deliveries
+        WHERE session_id = ? AND note_key = ?
+          AND delivered_at IS NOT NULL AND payload_pruned_at IS NULL
+          AND payload <> ''
+        ORDER BY delivered_at DESC, id DESC
+        LIMIT ?`,
+    ).all(sessionId, noteKey, limit) as Array<{ payload: string }>).map((row) => row.payload);
+  }
+
   listDeliveriesByState(state: WorkflowDelivery["state"]): WorkflowDelivery[] {
     return (this.db.prepare(
       `SELECT * FROM workflow_deliveries WHERE state = ? ORDER BY created_at ASC, id ASC`,

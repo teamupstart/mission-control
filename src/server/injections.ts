@@ -44,7 +44,7 @@ const PER_SESSION = 200;
  */
 const SESSIONS = 500;
 
-function fingerprint(text: string): string {
+export function injectionFingerprint(text: string): string {
   // Trimmed: the pane gets exactly what was passed, but a turn's recorded text has been
   // through `conversationText` and a trim on the way back out.
   return createHash("sha1").update(text.trim()).digest("base64");
@@ -91,7 +91,7 @@ export function recordInjection(sessionId: string, text: string, origin: TurnOri
   }
   // Re-inserting moves a repeated payload to the back, so an instruction that keeps being
   // re-sent can't be the one evicted for being "old".
-  const key = fingerprint(text);
+  const key = injectionFingerprint(text);
   byText.delete(key);
   byText.set(key, origin);
   while (byText.size > PER_SESSION) {
@@ -113,7 +113,7 @@ export function recordInjection(sessionId: string, text: string, origin: TurnOri
 /** Who typed this exact text into this session, or undefined for "the human, as far as
  *  we know" - the answer that leaves a turn reading the way it always has. */
 export function originOf(sessionId: string, text: string): TurnOrigin | undefined {
-  return seen.get(sessionId)?.get(fingerprint(text));
+  return seen.get(sessionId)?.get(injectionFingerprint(text));
 }
 
 /** Forget a session's deliveries. For tests, and for a reset that clears the context. */

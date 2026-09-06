@@ -15,9 +15,11 @@ import type {
 } from "@shared/workflow.ts";
 import { WORKFLOW_EVIDENCE_PROOF_CLASSES } from "@shared/workflow.ts";
 import { computeSessionDiff } from "../diff.ts";
+import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import { loadResolvedWorkflowReviews } from "../db.ts";
 import { sessionMessages } from "../harness/index.ts";
+import { attributeTranscript } from "../transcript-attribution.ts";
 import { changedPaths } from "../inspector/diff-lines.ts";
 import { getLlmConfig, llmJobModel, llmRunnerChoice } from "../llm/config.ts";
 import { providerJsonSchema } from "../llm/json-schema.ts";
@@ -278,6 +280,36 @@ function transcriptDecision(message: TranscriptMessage): WorkflowHumanDecision |
 /** Filtering is absence-based so every present and future attributed origin stays non-human. */
 export function humanTranscriptDecisions(messages: TranscriptMessage[]): WorkflowHumanDecision[] {
   return messages.map(transcriptDecision).filter((item): item is WorkflowHumanDecision => item !== null);
+}
+
+/**
+ * Restore authorship that the transcript format cannot carry.
+ *
+ * The live overlay handles every non-human injection the current daemon observed. Confirmed
+ * workflow deliveries add the durable half: they remain identifiable after a restart, when
+ * the in-memory overlay is intentionally empty. Payloads are compared by the same normalized
+ * fingerprint as live attribution so transcript trimming cannot turn a workflow packet into
+ * an operator decision.
+ */
+export function attributeWorkflowContextTranscript(
+  sessionId: string,
+  messages: TranscriptMessage[],
+  deliveredWorkflowPayloads: readonly string[],
+): TranscriptMessage[] {
+  const durableWorkflow = new Set(
+    deliveredWorkflowPayloads
+      .filter((payload) => payload.trim().length > 0)
+      .map(injectionFingerprint),
+  );
+  return attributeTranscript(sessionId, messages).map((message) => {
+    if (
+      message.role !== "user"
+      || message.origin !== undefined
+      || !message.text
+      || !durableWorkflow.has(injectionFingerprint(message.text))
+    ) return message;
+    return { ...message, origin: "workflow" };
+  });
 }
 
 export function workflowReviewDecision(review: ReviewItem): WorkflowHumanDecision {
@@ -638,6 +670,7 @@ export async function readWorkflowContextRaw(
   registry: Registry,
   binding: WorkflowBinding,
   priorPersonaFeedback: PersonaFeedbackSummary[] = [],
+  deliveredWorkflowPayloads: readonly string[] = [],
 ): Promise<WorkflowRawCaptureRead> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
@@ -656,6 +689,11 @@ export async function readWorkflowContextRaw(
     truncated: false,
     headCount: 0,
   };
+  const attributedTranscript = attributeWorkflowContextTranscript(
+    session.id,
+    transcriptWindow.messages,
+    deliveredWorkflowPayloads,
+  );
   const {
     diff,
     allStatus,
@@ -677,7 +715,7 @@ export async function readWorkflowContextRaw(
         rationale: clip(episode.brief ?? episode.recommendation ?? "", MAX_DECISION_TEXT) || null,
         source: { kind: "foreman_episode", id: String(episode.id) },
       })),
-    ...humanTranscriptDecisions(transcriptWindow.messages),
+    ...humanTranscriptDecisions(attributedTranscript),
   ]);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
   const boundedTranscript = boundedWorkflowTranscript(transcriptWindow.messages);

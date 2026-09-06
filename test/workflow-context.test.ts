@@ -27,6 +27,7 @@ const {
   WORKFLOW_TRANSCRIPT_LIMITS,
 } = await import("../src/server/workflows/context.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
+const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -91,6 +92,62 @@ test("workflow context preserves raw goal and excludes every attributed non-huma
   assert.equal(context.compaction.status, "fallback");
   assert.deepEqual(context.constraints, []);
   assert.deepEqual(context.acceptanceCriteria, []);
+});
+
+test("workflow context excludes a delivered workflow packet after live attribution is lost", async () => {
+  const transcriptPath = join(home, "workflow-attribution.jsonl");
+  const humanDecision = "Keep the public API stable";
+  const workflowPacket = "# Evidence preflight needs repair\n\nCapture the rendered result.";
+  writeFileSync(
+    transcriptPath,
+    [
+      {
+        type: "user",
+        uuid: "human-decision",
+        timestamp: "2026-09-06T13:00:00.000Z",
+        message: { role: "user", content: humanDecision },
+      },
+      {
+        type: "user",
+        uuid: "workflow-repair",
+        timestamp: "2026-09-06T13:01:00.000Z",
+        message: { role: "user", content: workflowPacket },
+      },
+    ].map((item) => JSON.stringify(item)).join("\n") + "\n",
+  );
+
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "workflow-attribution-session",
+    agent: "claude",
+    name: "workflow attribution",
+    nameSource: "process",
+    cwd: process.cwd(),
+    gitBranch: "feature",
+    gitRoot: process.cwd(),
+    repoRoot: process.cwd(),
+    pid: 7,
+    tty: "ttys-workflow-attribution",
+    terminals: [],
+    startedAt: 1,
+    transcriptPath,
+  } as DiscoveredSession]);
+  const session = registry.getSession("workflow-attribution-session")!;
+  const binding = {
+    id: "workflow-attribution-binding",
+    sessionId: session.id,
+    noteKey: noteKeyFor(session),
+  } as WorkflowBinding;
+
+  recordInjection(session.id, workflowPacket, "workflow");
+  forgetInjections(session.id);
+  const captured = await readWorkflowContextRaw(registry, binding, [], [workflowPacket]);
+
+  assert.deepEqual(captured.raw.humanDecisions, [{
+    decision: humanDecision,
+    rationale: null,
+    source: { kind: "transcript", id: "human-decision" },
+  }]);
 });
 
 test("transcript evidence retains the observed 5,393-byte TAP turn through test 13", () => {

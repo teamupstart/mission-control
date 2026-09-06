@@ -699,7 +699,9 @@ continue in the background. The first request is acknowledged with HTTP `202`; r
 request key returns the same row with HTTP `200`. One submission captures one shared snapshot
 for every concurrent Persona. It preserves the raw goal, refined goal when present, human
 decisions and rationale, repository HEAD and diff, transcript evidence, repository standards,
-and prior Persona feedback. A cheap provider-neutral compaction call may summarize that
+and prior Persona feedback. Confirmed workflow packets in the transcript are attributed from
+the durable delivery ledger and never recaptured as human decisions, including after a daemon
+restart. A cheap provider-neutral compaction call may summarize that
 context, but its 45-second attempt cannot replace the raw evidence. An unparsable reply gets
 one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
 deterministic visible fallback.

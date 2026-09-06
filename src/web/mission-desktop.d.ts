@@ -13,6 +13,10 @@ declare global {
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;
     removeIntegrations(): Promise<{ ok: boolean; message: string }>;
+    /** Arm one exact public report from the active Report click. */
+    authorizeProductIssue?(
+      input: { requestId: string; draftIdentity: string },
+    ): Promise<boolean>;
     updates: {
       getState(): Promise<UpdateSnapshot>;
       check(): Promise<UpdateSnapshot>;

@@ -261,10 +261,12 @@ screenshot locators, never repository metadata or filesystem paths. See
 environment line and image locators may contain and what they never contain.
 
 **Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
-confirms that exact preview and files it without a warning dialog or a second button press. The
-button stays busy through both internal requests, so another press cannot race the first one.
-If the derived content changes before publication, Mission Control refuses it and refreshes the
-preview rather than publishing content that was not shown.
+authorizes that exact preview through the desktop shell and files it without a warning dialog or
+a second button press. The button stays busy through the internal authorization, confirmation,
+and submission requests, so another press cannot race the first one. If the derived content
+changes before publication, Mission Control refuses it and refreshes the preview rather than
+publishing content that was not shown. A report opened from a standalone browser cannot publish,
+because it has no private desktop authorization channel.
 
 **Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
 WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with

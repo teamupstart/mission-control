@@ -20,6 +20,7 @@ import { createWindow, getMainWindow, showWindow } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations } from "./integrations.ts";
+import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
@@ -177,6 +178,11 @@ function registerIpc(updateController: UpdateController): void {
     const r = removeIntegrations();
     showIntegrationResult("Integrations", r.message);
     return r;
+  });
+  ipcMain.handle("mission:authorize-product-issue", (event, input: unknown) => {
+    const mainContents = getMainWindow()?.webContents;
+    if (!mainContents || event.sender !== mainContents) return false;
+    return armProductIssueAuthorization(input);
   });
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));

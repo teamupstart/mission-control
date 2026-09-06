@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -8,6 +9,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import {
   FAKE_GH_PRODUCT_ISSUE_URL,
   type FakeGhProductScript,
+  writeProductAuthorizationScript,
 } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
@@ -88,8 +90,58 @@ async function publish(page: Page): Promise<void> {
 const titleBox = (page: Page) =>
   form(page).getByRole("textbox", { name: "Title", exact: true });
 
-test.beforeEach(({ daemon }) => {
+test.beforeEach(async ({ dashboard, daemon }) => {
   script(daemon, { preflight: "ok", issueCreate: "created" });
+  writeProductAuthorizationScript(daemon.home, { answer: "grant" });
+  await dashboard.evaluate(() => {
+    Object.defineProperty(window, "missionDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        authorizeProductIssue: () => Promise.resolve(true),
+      },
+    });
+  });
+});
+
+test("a loopback caller cannot authorize itself, while one Report click publishes", async ({
+  dashboard,
+  daemon,
+}) => {
+  writeProductAuthorizationScript(daemon.home, { answer: "refuse" });
+  const input = {
+    type: "bug",
+    title: "Unauthorized local publish",
+    details: "A local process must not be able to mint its own public publishing grant.",
+    attachmentUploadIds: [],
+    requestId: randomUUID(),
+    client: "electron",
+  };
+  const previewed = await dashboard.request.post(
+    `${daemon.baseURL}/api/product-issues/preview`,
+    { data: input },
+  );
+  expect(previewed.status()).toBe(200);
+  const confirmed = await dashboard.request.post(
+    `${daemon.baseURL}/api/product-issues/confirm`,
+    { data: input },
+  );
+  expect(confirmed.status()).toBe(409);
+  expect((await confirmed.json()).outcome).toBe("refused");
+  expect(productCreates(daemon)).toHaveLength(0);
+
+  writeProductAuthorizationScript(daemon.home, { answer: "grant" });
+  await openFromTopbar(dashboard);
+  await fill(
+    dashboard,
+    "Bug",
+    "One click reports the issue",
+    "The Report button should authorize and publish without another prompt.",
+  );
+  await publish(dashboard);
+  await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  await expect(form(dashboard).locator("footer").getByRole("button", { name: "Close" })).toBeVisible();
+  expect(productCreates(daemon)).toHaveLength(1);
 });
 
 test.describe("the default public issue target", () => {

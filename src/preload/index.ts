@@ -15,6 +15,14 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     ipcRenderer.invoke("mission:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("mission:remove-integrations"),
+  authorizeProductIssue: (
+    input: { requestId: string; draftIdentity: string },
+  ): Promise<boolean> => {
+    // Only the Report click should arm public publishing. Checking in the isolated preload
+    // world prevents ordinary page code or an HTTP caller from manufacturing that gesture.
+    if (navigator.userActivation?.isActive !== true) return Promise.resolve(false);
+    return ipcRenderer.invoke("mission:authorize-product-issue", input);
+  },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),
     check: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-check"),

@@ -43,7 +43,7 @@ const {
   productIssuesRepo,
 } = await import("../src/server/config.ts");
 const {
-  ProductIssueService,
+  ProductIssueService: ProductIssueServiceBase,
   PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
   productIssueCreateArgs,
   productIssueLabels,
@@ -58,11 +58,19 @@ const {
 const { stubRun } = await import("../src/server/util/exec.ts");
 import type { SavedUpload } from "../src/server/uploads.ts";
 import type { ProductIssueRunner } from "../src/server/product-issues.ts";
+import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
 import type { ProductIssueRequest } from "../src/shared/product-issues.ts";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const target = () => ({ ok: true as const, repo: "acme/public-issues" });
+const AUTHORIZES = { unavailable: null, authorize: () => Promise.resolve(true) };
+
+class ProductIssueService extends ProductIssueServiceBase {
+  constructor(options: ProductIssueServiceOptions = {}) {
+    super({ authorization: AUTHORIZES, ...options });
+  }
+}
 
 function request(overrides: Partial<ProductIssueRequest> = {}): ProductIssueRequest {
   return {

@@ -36,20 +36,23 @@ for use only after the user explicitly requests a report, shows the daemon-deriv
 Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
-publicly** press. The daemon keeps preview and mutation separate internally: previewing never
-returns a publish token, while the Report press requests a short-lived grant for the exact rendered
-derivation and immediately spends it. The grant is pinned to one report opening and exact derived
-content, valid for two minutes, and single-use. Re-deriving target, labels, source, environment and
-body at submission prevents a configuration change between preview and publication from sending
-content the form did not show. The request id and submission claim prevent double-clicks and
-replays from creating duplicate issues.
+publicly** press. That click first arms the exact rendered preview through the context-isolated
+Electron preload bridge. The shell accepts it only from the main dashboard web contents and only
+while the browser reports an active user gesture. It shows no second dialog. The daemon then asks
+the shell to consume that exact request id and draft identity over the private utility-process
+port. An authorization is short-lived and single-use, so another loopback process can preview and
+call the confirmation route but cannot produce the private reply that mints a grant.
 
-The dashboard route is loopback-only but not authenticated. A process running as the operator can
-reproduce the same confirm-and-submit requests as the dashboard, so the one-click flow is not human
-attestation. Its blast radius is bounded by the fixed configured target, daemon-owned labels and
-body generation, strict request limits, `gh` authentication, and the duplicate guards above. No
-dashboard request can choose another repository or inject labels, environment data, or local
-filesystem paths.
+The daemon keeps preview and mutation separate internally. Previewing never returns a publish
+token. After the shell authorizes the Report click, the daemon mints a grant pinned to one report
+opening and exact derived content, valid for two minutes, and single-use. Re-deriving target,
+labels, source, environment and body at submission prevents a configuration change between
+preview and publication from sending content the form did not show. The request id and submission
+claim prevent double-clicks and replays from creating duplicate issues.
+
+**A daemon outside the desktop shell publishes nothing.** A standalone browser or adopted daemon
+has no private utility-process channel, so preflight reports that the report must be opened in the
+desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
 The agent path is separate and stricter - it is token-guarded, neither preview mints a grant, there
 is no MCP confirming route at all, and its authorization is the human-submitted `input` review.

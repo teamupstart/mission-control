@@ -1,5 +1,5 @@
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PRODUCT_ISSUE_REQUIRED_LABELS,
@@ -125,6 +125,55 @@ export const FAKE_GH_PRODUCT_ISSUE_URL = "https://github.com/acme/public-issues/
 /** Where a spec scripts `FAKE_GH`'s product-report behavior for one daemon. */
 export function ghProductScriptPath(home: string): string {
   return join(home, "gh-product-script.json");
+}
+
+export function productAuthorizationScriptPath(home: string): string {
+  return join(home, "product-authorization-script.json");
+}
+
+export function productAuthorizationBinPath(home: string): string {
+  return join(home, "bin", "product-authorization");
+}
+
+/**
+ * Stand in for the Electron shell's private authorization channel.
+ *
+ * The shipped daemon asks its parent utility process. This fixture daemon has no Electron
+ * parent, so the launch-time command seam supplies the same grant/refusal boundary without
+ * making any real external call. A process that chooses the daemon environment has already
+ * replaced the daemon, just as with the MISSION_GH_BIN blast dam below.
+ */
+export function writeProductAuthorizationBin(home: string): string {
+  const bin = productAuthorizationBinPath(home);
+  mkdirSync(dirname(bin), { recursive: true });
+  writeFileSync(
+    bin,
+    [
+      "#!/usr/bin/env node",
+      "const { readFileSync, appendFileSync } = require('node:fs');",
+      `const script = ${JSON.stringify(productAuthorizationScriptPath(home))};`,
+      `const log = ${JSON.stringify(join(home, "product-authorization-asked.jsonl"))};`,
+      "const [requestId, draftIdentity, target, title] = process.argv.slice(2);",
+      "appendFileSync(log, JSON.stringify({ requestId, draftIdentity, target, title }) + String.fromCharCode(10));",
+      "let answer = 'grant';",
+      "try { answer = JSON.parse(readFileSync(script, 'utf8')).answer; } catch {}",
+      "process.exit(answer === 'grant' ? 0 : 1);",
+    ].join("\n") + "\n",
+    { mode: 0o755 },
+  );
+  writeProductAuthorizationScript(home, { answer: "grant" });
+  return bin;
+}
+
+export interface FakeProductAuthorizationScript {
+  answer: "grant" | "refuse";
+}
+
+export function writeProductAuthorizationScript(
+  home: string,
+  script: FakeProductAuthorizationScript,
+): void {
+  writeFileSync(productAuthorizationScriptPath(home), JSON.stringify(script, null, 2));
 }
 
 /**

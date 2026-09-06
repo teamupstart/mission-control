@@ -38,6 +38,10 @@ import {
   productIssuesRepo,
   type ProductIssuesRepoConfig,
 } from "./config.ts";
+import {
+  resolveProductIssueAuthorization,
+  type ProductIssueAuthorizationPort,
+} from "./product-issue-authorization.ts";
 import { githubIssueCreateOutcome } from "./github/issue-create.ts";
 import {
   detectImageExt,
@@ -104,6 +108,8 @@ export interface ProductIssueServiceOptions {
   platform?: string;
   architecture?: string;
   demoMode?: boolean;
+  /** Private non-HTTP authorization for dashboard publishing. */
+  authorization?: ProductIssueAuthorizationPort;
 }
 
 interface PreviewClaim {
@@ -314,6 +320,7 @@ export class ProductIssueService {
   private readonly platform: string;
   private readonly architecture: string;
   private readonly demoMode: boolean;
+  private readonly authorization: ProductIssueAuthorizationPort;
   private readonly previews = new Map<string, PreviewClaim>();
   private readonly grants = new Map<string, ConfirmationGrant>();
   private readonly claims = new Map<string, SubmitClaim>();
@@ -327,6 +334,7 @@ export class ProductIssueService {
     this.platform = options.platform ?? hostPlatform();
     this.architecture = options.architecture ?? hostArch();
     this.demoMode = options.demoMode ?? Boolean(process.env.MISSION_DEMO_SCENARIO_DIR);
+    this.authorization = options.authorization ?? resolveProductIssueAuthorization();
   }
 
   attachmentState(): ProductIssueAttachmentState {
@@ -354,6 +362,17 @@ export class ProductIssueService {
         problems: [{
           code: "demo-mode",
           message: "Product issue reporting is disabled in demo mode",
+        }],
+      };
+    }
+    if (this.authorization.unavailable) {
+      return {
+        ready: false,
+        target: target.repo,
+        attachments,
+        problems: [{
+          code: "consent-unavailable",
+          message: this.authorization.unavailable,
         }],
       };
     }
@@ -523,6 +542,10 @@ export class ProductIssueService {
    * The grant is returned to the one Report press and spent immediately by the dashboard. It
    * remains separate from preview so reading or editing never creates publishing authority.
    *
+   * The grant is minted only after the desktop shell consumes the authorization armed by the
+   * same Report click. That reply travels over the private utility-process port rather than
+   * this loopback API, so another local HTTP caller cannot mint its own grant.
+   *
    * Dashboard only. The agent path's authorization is its submitted `input` review over a
    * token-guarded transport, and a grant an agent could mint for itself would be a second way
    * in beside the confirmation Phase 1 built.
@@ -555,6 +578,23 @@ export class ProductIssueService {
     if (!preview) return refused("Preview this product issue before confirming it");
     if (preview.identity !== identity) {
       return refused("The product issue changed after preview; preview the current draft again");
+    }
+    if (this.claims.has(request.requestId)) {
+      return unknown(
+        "This report opening is already submitting or has an uncertain result; check GitHub before retrying",
+      );
+    }
+    if (this.authorization.unavailable) {
+      return configuration(this.authorization.unavailable);
+    }
+    const authorized = await this.authorization.authorize({
+      requestId: request.requestId,
+      draftIdentity: identity,
+      target: target.repo,
+      title: request.title,
+    });
+    if (!authorized) {
+      return refused("Publishing was not authorized by the Report click; nothing was published");
     }
     if (this.claims.has(request.requestId)) {
       return unknown(

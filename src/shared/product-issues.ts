@@ -178,9 +178,9 @@ export type ProductIssuePreviewResponse =
  * It is retired on first terminal use.
  *
  * This is the shape `WorktreeActionPreview` already uses for the other irreversible action in
- * this app, and the bound is the same one: it establishes that the caller took the confirming
- * step for this exact content, not that the caller is a person. On a loopback API with no
- * authentication, no server-side value can establish the second - see docs/security.md.
+ * this app. For dashboard reporting it is minted only after the desktop shell consumes an exact
+ * authorization armed by the active Report click over Electron IPC. That non-HTTP step is what
+ * prevents another loopback caller from minting its own grant - see docs/security.md.
  */
 export interface ProductIssueConfirmation {
   outcome: "confirmation";

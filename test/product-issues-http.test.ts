@@ -15,7 +15,9 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
-const { ProductIssueService } = await import("../src/server/product-issues.ts");
+const { ProductIssueService: ProductIssueServiceBase } = await import(
+  "../src/server/product-issues.ts"
+);
 const { buildApp } = await import("../src/server/routes.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 const { PRODUCT_ISSUE_CONFIRMATION_TTL_MS, PRODUCT_ISSUE_REQUIRED_LABELS } = await import(
@@ -24,6 +26,7 @@ const { PRODUCT_ISSUE_CONFIRMATION_TTL_MS, PRODUCT_ISSUE_REQUIRED_LABELS } = awa
 const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ProductIssueService as ProductIssueServiceType } from "../src/server/product-issues.ts";
+import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
 
 openDb();
 const TOKEN = ensureToken();
@@ -55,6 +58,14 @@ const discovered: DiscoveredSession = {
   startedAt: 0,
 };
 registry.applyDiscovery([discovered]);
+
+const AUTHORIZES = { unavailable: null, authorize: () => Promise.resolve(true) };
+
+class ProductIssueService extends ProductIssueServiceBase {
+  constructor(options: ProductIssueServiceOptions = {}) {
+    super({ authorization: AUTHORIZES, ...options });
+  }
+}
 
 function appFor(service: ProductIssueServiceType) {
   const args: Parameters<typeof buildApp> = [registry, reviews, tasks, queues];
@@ -447,6 +458,72 @@ test("neither preview mints a publish token, and confirming is dashboard-only", 
     body: JSON.stringify({ ...draft(), env: {}, cwd: "/repo/product" }),
   });
   assert.equal(agentConfirm.status, 404);
+});
+
+test("a loopback caller cannot mint a grant without private desktop authorization", async () => {
+  let creates = 0;
+  let asked: { requestId: string; draftIdentity: string } | null = null;
+  const app = appFor(new ProductIssueService({
+    authorization: {
+      unavailable: null,
+      authorize: (input) => {
+        asked = input;
+        return Promise.resolve(false);
+      },
+    },
+    target: () => ({ ok: true, repo: "acme/public-issues" }),
+    runner: async () => {
+      creates++;
+      return stubRun({ stdout: "https://x/1\n", stderr: "", code: 0 });
+    },
+  }));
+  const input = draft({ client: "electron" });
+  const previewed = await app.request("/api/product-issues/preview", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(input),
+  });
+  const preview = (await previewed.json()) as { draftIdentity: string };
+
+  const confirmed = await app.request("/api/product-issues/confirm", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify(input),
+  });
+  assert.equal(confirmed.status, 409);
+  assert.deepEqual(asked, {
+    requestId: input.requestId,
+    draftIdentity: preview.draftIdentity,
+    target: "acme/public-issues",
+    title: input.title,
+  });
+  assert.equal(creates, 0, "an unauthorized loopback call must reach no gh");
+});
+
+test("a daemon without a private desktop channel fails closed before gh preflight", async () => {
+  let calls = 0;
+  const unavailable = "Publishing needs the Mission Control desktop app";
+  const app = appFor(new ProductIssueService({
+    authorization: {
+      unavailable,
+      authorize: () => Promise.resolve(false),
+    },
+    target: () => ({ ok: true, repo: "acme/public-issues" }),
+    runner: async () => {
+      calls++;
+      return stubRun({ stdout: "", stderr: "", code: 0 });
+    },
+  }));
+  const preflight = (await (await app.request(
+    "/api/product-issues/preflight",
+    { headers: LOOPBACK },
+  )).json()) as {
+    ready: boolean;
+    problems: Array<{ code: string; message: string }>;
+  };
+  assert.equal(preflight.ready, false);
+  assert.deepEqual(preflight.problems, [{ code: "consent-unavailable", message: unavailable }]);
+  assert.equal(calls, 0);
 });
 
 /**

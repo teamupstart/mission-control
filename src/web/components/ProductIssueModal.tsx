@@ -9,11 +9,10 @@ import {
   type ProductIssueType,
 } from "@shared/product-issues.ts";
 import {
-  confirmProductIssue,
   fetchProductIssuePreflight,
   previewProductIssue,
-  submitProductIssue,
 } from "../lib/api.ts";
+import { publishProductIssue } from "../lib/product-issue-submission.ts";
 import {
   AttachmentStrip,
   revokeAttachments,
@@ -693,29 +692,15 @@ export function ProductIssueLayer({
       requestId: requestIdRef.current,
       client: productIssueClient(),
     };
-    void confirmProductIssue(request).then((next) => {
-      if (next.outcome === "confirmation") {
-        void submitProductIssue(request, next.token).then((result) => {
-          submittingRef.current = false;
-          setSubmitting(false);
-          setResult(result);
-          if (result.outcome === "unknown") setRetryAllowed(false);
-          if (result.outcome === "refused" || result.outcome === "configuration") {
-            setPreview(null);
-            setPreviewNonce((n) => n + 1);
-          }
-        });
-        return;
-      }
-      // Anything else is a terminal-shaped answer and belongs in the same place every other
-      // outcome does. `unknown` here means the opening is already publishing, which is the
-      // one case where pressing again is not safe.
+    void publishProductIssue(request, matched.draftIdentity).then((next) => {
       submittingRef.current = false;
       setSubmitting(false);
-      setResult(next);
-      if (next.outcome === "unknown") setRetryAllowed(false);
-      setPreview(null);
-      setPreviewNonce((n) => n + 1);
+      setResult(next.result);
+      setRetryAllowed(next.retryAllowed);
+      if (next.refreshPreview) {
+        setPreview(null);
+        setPreviewNonce((n) => n + 1);
+      }
     });
   }, [draft, matched, retryAllowed]);
 

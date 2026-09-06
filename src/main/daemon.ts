@@ -18,6 +18,7 @@ import {
   type DaemonCompatibility,
 } from "@shared/daemon-protocol.ts";
 import { loginShellPath } from "../server/util/path-env.ts";
+import { serveProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
 
 export interface DaemonController {
@@ -100,6 +101,9 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
       PATH: loginShellPath(),
       MISSION_WEB_DIR: opts.webDir,
     },
+    // A Report click is armed in the shell over IPC and consumed here over the private
+    // utility-process port. A loopback caller has access to neither side of that handoff.
+    onSpawn: serveProductIssueAuthorization,
   });
   return {
     adopted: false,

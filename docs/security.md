@@ -37,8 +37,10 @@ Dismissed, orphaned, free-form, malformed, and non-human review answers publish 
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
 publicly** press. The context-isolated Electron preload captures the trusted click on that exact
-control and its rendered preview identity. Page scripts have no arming API and cannot pass
-arbitrary preview values to the bridge. The shell accepts the capture only from the main
+control. Its request id and draft identity come from the app module's private current-preview
+state through a provider that the preload binds once and will not replace; they are never read
+from mutable DOM attributes. Page scripts have no arming API and cannot pass arbitrary preview
+values to the bridge. The shell accepts the capture only from the main
 dashboard web contents and only while the browser reports an active user gesture. It shows no
 second dialog. The daemon then asks
 the shell to consume that exact request id and draft identity over the private utility-process

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   PRODUCT_ISSUE_LIMITS,
   PRODUCT_ISSUE_TYPES,
@@ -175,6 +175,17 @@ function previewMatches(
     have.attachmentUploadIds.length === wanted.attachmentUploadIds.length &&
     have.attachmentUploadIds.every((id, i) => id === wanted.attachmentUploadIds[i]);
   return same ? preview : null;
+}
+
+let productIssueAuthorizationPreview: {
+  requestId: string;
+  draftIdentity: string;
+} | null = null;
+
+// Claim the isolated preload's one provider slot as this module loads. The provider closes over
+// module state rather than DOM attributes, and the preload refuses every later replacement.
+if (typeof window !== "undefined") {
+  window.missionDesktop?.bindProductIssuePreview?.(() => productIssueAuthorizationPreview);
 }
 
 /** Everything the presentational modal draws. Owned by the layer, so a close keeps it. */
@@ -534,8 +545,6 @@ export function ProductIssueModal({
               disabled={blocked}
               aria-label="Report publicly"
               data-product-issue-report=""
-              data-product-issue-request-id={matched?.requestId}
-              data-product-issue-draft-identity={matched?.draftIdentity}
             >
               {submitting
                 ? "Publishing…"
@@ -683,8 +692,16 @@ export function ProductIssueLayer({
    * so a target or environment that moved in between is refused rather than published. A
    * refusal re-previews below, which puts the person back in front of the current content
    * with no grant in hand.
-   */
+  */
   const matched = previewMatches(preview, draft);
+  useLayoutEffect(() => {
+    productIssueAuthorizationPreview = open && matched
+      ? { requestId: matched.requestId, draftIdentity: matched.draftIdentity }
+      : null;
+    return () => {
+      productIssueAuthorizationPreview = null;
+    };
+  }, [open, matched]);
   const onSubmit = useCallback(() => {
     if (submittingRef.current || !retryAllowed || !matched) return;
     submittingRef.current = true;

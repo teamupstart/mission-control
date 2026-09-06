@@ -8,6 +8,11 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 
 const PRODUCT_ISSUE_REPORT_SELECTOR = "button[data-product-issue-report]";
+type ProductIssuePreviewProvider = () => {
+  requestId: string;
+  draftIdentity: string;
+} | null;
+let productIssuePreviewProvider: ProductIssuePreviewProvider | null = null;
 
 // Context isolation keeps this trusted-click capture outside the page's JavaScript world.
 // No arming function is exposed to page code: only the exact rendered identity carried by a
@@ -20,10 +25,14 @@ window.addEventListener("click", (event) => {
   ) return;
   const button = event.target.closest<HTMLButtonElement>(PRODUCT_ISSUE_REPORT_SELECTOR);
   if (!button || button.disabled) return;
-  const requestId = button.dataset.productIssueRequestId;
-  const draftIdentity = button.dataset.productIssueDraftIdentity;
-  if (!requestId || !draftIdentity) return;
-  ipcRenderer.sendSync("mission:product-issue-report-click", { requestId, draftIdentity });
+  let input: ReturnType<ProductIssuePreviewProvider> = null;
+  try {
+    input = productIssuePreviewProvider?.() ?? null;
+  } catch {
+    return;
+  }
+  if (!input) return;
+  ipcRenderer.sendSync("mission:product-issue-report-click", input);
 }, true);
 
 contextBridge.exposeInMainWorld("missionDesktop", {
@@ -34,6 +43,11 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     ipcRenderer.invoke("mission:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("mission:remove-integrations"),
+  bindProductIssuePreview: (provider: ProductIssuePreviewProvider): boolean => {
+    if (productIssuePreviewProvider) return false;
+    productIssuePreviewProvider = provider;
+    return true;
+  },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),
     check: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-check"),

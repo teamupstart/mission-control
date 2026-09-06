@@ -13,6 +13,10 @@ declare global {
     openExternal(url: string): Promise<void>;
     installIntegrations(): Promise<{ ok: boolean; message: string }>;
     removeIntegrations(): Promise<{ ok: boolean; message: string }>;
+    /** Bind the app's private current-preview reader once; later callers cannot replace it. */
+    bindProductIssuePreview?(
+      provider: () => { requestId: string; draftIdentity: string } | null,
+    ): boolean;
     updates: {
       getState(): Promise<UpdateSnapshot>;
       check(): Promise<UpdateSnapshot>;

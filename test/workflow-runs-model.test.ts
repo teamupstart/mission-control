@@ -301,7 +301,7 @@ test("one tray opens, for the round being read, and never for a lone snapshot", 
   assert.equal(openEvidenceTray(groups, null), null);
 });
 
-test("a failed capture is counted on its round's tile, viewed or not", () => {
+test("a round's failure marker counts captures, not its own status line", () => {
   /**
    * The defect this pins, found in review: only the OPEN round draws a tray, and the tile
    * wears the NEWEST capture's status - so a failure that happened mid-round vanished as soon
@@ -322,16 +322,18 @@ test("a failed capture is counted on its round's tile, viewed or not", () => {
 
   // The round's status says nothing about the failure - that is the whole problem.
   assert.deepEqual(roundTwo.status, { tone: "running", label: "Under review" });
-  // The marker does, and it does so independently of what is selected.
+  // The marker does. It counts CAPTURES rather than reading the round's own status line,
+  // which is the whole distinction: round 2 reports a failure its status cannot mention.
   assert.equal(roundFailedCaptureCount(roundTwo), 1);
   assert.equal(roundFailedCaptureLabel(roundTwo), "1 failed");
-  for (const viewed of ["r1s0", "r2s0", "r2s1", "r3s0", null]) {
-    assert.equal(
-      roundFailedCaptureLabel(roundTwo),
-      "1 failed",
-      `the marker must not depend on the selection (${viewed})`,
-    );
-  }
+  //
+  // Nothing here varies the SELECTION, and deliberately so: `roundFailedCaptureLabel` takes
+  // only the round, so no selection can reach it and independence is a fact about the
+  // signature rather than something a runtime assertion could fail on. Asserting it here by
+  // looping over viewed ids would re-run one identical call and prove nothing. Where a
+  // selection genuinely exists - the rendered tile - `e2e/specs/workflow-round-scrubber.spec.ts`
+  // asserts the marker on round 2 while its tray is CLOSED and round 3 is being read, and that
+  // assertion was confirmed to fail when the marker is not rendered.
 
   // Rounds with nothing failed carry no marker at all, so the strip stays quiet by default.
   assert.equal(roundFailedCaptureLabel(roundOne), null);

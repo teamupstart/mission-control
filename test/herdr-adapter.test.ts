@@ -369,7 +369,7 @@ test("default-session selectors are scrubbed from probes, server environment, an
     assert.equal(resolveBin(HERDR_BIN), process.execPath);
     const argv = herdrMultiplexer().sessions!.attachArgv!("ignored-default-session-workspace");
     assert.deepEqual(argv, [
-      "env",
+      "/usr/bin/env",
       "-u", "HERDR_SESSION",
       "-u", "HERDR_SOCKET_PATH",
       "-u", "HERDR_WORKSPACE_ID",

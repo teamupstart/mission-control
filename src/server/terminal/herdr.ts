@@ -1,4 +1,5 @@
 import { binDropEnv, binEnv, binUnsupportedReason, resolveBin } from "./bin.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import {
   asTerminal,
   createHerdrClient,
@@ -156,7 +157,7 @@ export function herdrMultiplexer(
       },
 
       attachArgv: () => [
-        "env",
+        FIXED_OS_EXECUTABLES.env,
         ...binDropEnv(HERDR_BIN).flatMap((name) => ["-u", name]),
         resolveBin(HERDR_BIN),
       ],

@@ -58,11 +58,14 @@ function asDraft(graph: PublishedWorkflowGraph): WorkflowDraftGraph {
   };
 }
 
-test("No-Mistakes Review opts in only through its newest immutable version", () => {
+test("No-Mistakes Review preserves evidence readiness from version 13 onward", () => {
   for (const builtin of BUILTIN_WORKFLOWS) {
     assert.equal(builtin.definition.evidenceReadinessPolicy, "criterion_mapped_v1");
-    assert.equal(builtin.versions.slice(0, -1).every((version) => version.evidenceReadinessPolicy === "off"), true);
-    assert.equal(builtin.versions.at(-1)?.evidenceReadinessPolicy, "criterion_mapped_v1");
+    assert.equal(builtin.versions.slice(0, 12).every((version) => version.evidenceReadinessPolicy === "off"), true);
+    assert.equal(
+      builtin.versions.slice(12).every((version) => version.evidenceReadinessPolicy === "criterion_mapped_v1"),
+      true,
+    );
   }
 });
 
@@ -211,7 +214,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 13),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 14),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -251,7 +254,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and local completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 13);
+  assert.equal(builtin.versions.length, 14);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -377,7 +380,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 13, "one workflow, thirteen versions");
+  assert.equal(builtin.versions.length, 14, "one workflow, fourteen versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -672,7 +675,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 13);
+  assert.equal(builtin.versions.length, 14);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -845,7 +848,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 13);
+  assert.equal(builtin.versions.length, 14);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -973,4 +976,45 @@ test("version 13 changes only evidence readiness enforcement", () => {
   assert.deepEqual(version.completionPolicy, prior.completionPolicy);
   assert.equal(version.resumptionPolicy, prior.resumptionPolicy);
   assert.deepEqual(version.bindingDefaults, prior.bindingDefaults);
+});
+
+test("version 14 pins Code Design to Codex Sol and every other reviewer to Codex Terra", () => {
+  const builtin = noMistakesReview();
+  const prior = builtin.versions[12]!;
+  const version = builtin.versions[13]!;
+  assert.equal(version.id, builtinWorkflowVersionId("no-mistakes-review", 14));
+  assert.equal(version.version, 14);
+  assert.equal(version.sourceDraftRevision, 13);
+  assert.equal(version.evidenceReadinessPolicy, prior.evidenceReadinessPolicy);
+  assert.deepEqual(version.completionPolicy, prior.completionPolicy);
+  assert.equal(version.resumptionPolicy, prior.resumptionPolicy);
+  assert.deepEqual(version.bindingDefaults, prior.bindingDefaults);
+  assert.deepEqual(version.graph.edges, prior.graph.edges);
+
+  const priorNodes = new Map(prior.graph.nodes.map((node) => [node.id, node]));
+  const reviewerNodes = version.graph.nodes.filter((node) => node.kind === "persona");
+  assert.equal(reviewerNodes.length, 7);
+  for (const node of version.graph.nodes) {
+    const earlier = priorNodes.get(node.id);
+    assert.ok(earlier, `${node.id} was added in the routing-only version`);
+    if (node.kind !== "persona") {
+      assert.deepEqual(node, earlier);
+      continue;
+    }
+    assert.equal(node.persona.runner, "codex");
+    assert.equal(
+      node.persona.model,
+      node.persona.sourcePersonaId === "builtin:code-design-reviewer"
+        ? "gpt-5.6-sol"
+        : "gpt-5.6-terra",
+    );
+    assert.ok(earlier.kind === "persona");
+    assert.equal(earlier.persona.runner, null);
+    assert.equal(earlier.persona.model, null);
+    assert.deepEqual(
+      { ...node, persona: { ...node.persona, runner: null, model: null } },
+      earlier,
+      `${node.id} changed beyond its execution routing`,
+    );
+  }
 });

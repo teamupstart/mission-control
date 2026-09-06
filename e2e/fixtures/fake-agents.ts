@@ -1,5 +1,5 @@
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PRODUCT_ISSUE_REQUIRED_LABELS,
@@ -125,61 +125,6 @@ export const FAKE_GH_PRODUCT_ISSUE_URL = "https://github.com/acme/public-issues/
 /** Where a spec scripts `FAKE_GH`'s product-report behavior for one daemon. */
 export function ghProductScriptPath(home: string): string {
   return join(home, "gh-product-script.json");
-}
-
-export function productConsentScriptPath(home: string): string {
-  return join(home, "product-consent-script.json");
-}
-
-export function productConsentBinPath(home: string): string {
-  return join(home, "bin", "product-consent");
-}
-
-/**
- * Stand in for the operator answering the native publish dialog.
- *
- * In the shipped app the daemon asks the Electron shell over its utility-process port and a
- * person clicks. A daemon forked by this fixture has no shell, and deliberately CANNOT publish
- * without one - so the suite gives it something else to ask, through the launch-time
- * `MISSION_PRODUCT_ISSUE_CONSENT_CMD` seam. Setting that is not a bypass anyone gains from: it
- * lives on the daemon's own environment, and a process that can choose that has already
- * replaced the daemon. `MISSION_GH_BIN` redirects the GitHub CLI on the same reasoning.
- *
- * It records what it was asked, so a spec can assert that confirming reached a human question
- * naming the right repository rather than being decided inside the daemon.
- */
-export function writeProductConsentBin(home: string): string {
-  const bin = productConsentBinPath(home);
-  mkdirSync(dirname(bin), { recursive: true });
-  writeFileSync(
-    bin,
-    [
-      "#!/usr/bin/env node",
-      "const { readFileSync, writeFileSync, appendFileSync } = require('node:fs');",
-      `const script = ${JSON.stringify(productConsentScriptPath(home))};`,
-      `const log = ${JSON.stringify(join(home, "product-consent-asked.jsonl"))};`,
-      "const [target, title] = process.argv.slice(2);",
-      "appendFileSync(log, JSON.stringify({ target, title }) + String.fromCharCode(10));",
-      "let answer = 'grant';",
-      "try { answer = JSON.parse(readFileSync(script, 'utf8')).answer; } catch {}",
-      "process.exit(answer === 'grant' ? 0 : 1);",
-    ].join("\n") + "\n",
-    { mode: 0o755 },
-  );
-  writeProductConsentScript(home, { answer: "grant" });
-  return bin;
-}
-
-/** What the stand-in operator will say next. */
-export interface FakeProductConsentScript {
-  answer: "grant" | "refuse";
-}
-
-export function writeProductConsentScript(
-  home: string,
-  script: FakeProductConsentScript,
-): void {
-  writeFileSync(productConsentScriptPath(home), JSON.stringify(script, null, 2));
 }
 
 /**

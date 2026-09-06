@@ -260,20 +260,11 @@ screenshot locators, never repository metadata or filesystem paths. See
 [Public product issue reporting](security.md#public-product-issue-reporting) for what the
 environment line and image locators may contain and what they never contain.
 
-**Publishing takes two presses and a system dialog.** **Report publicly** does not publish. It
-asks Mission Control to confirm, and Mission Control puts a system dialog in front of you naming
-the repository and quoting your title, defaulting to Cancel. Say no and nothing is published and
-your draft is untouched. Say yes and the button renames itself to name that repository - **Publish
-to owner/name** - with a line beside it saying the same. That second press is the one that files a
-public issue, and nothing is fetched in between, so what you read is what goes. Editing anything
-takes the confirmation back and the button returns to **Report publicly**; so does leaving it for
-two minutes.
-
-**A daemon running outside the desktop app cannot publish.** It has no way to show you that
-dialog, so it says so when the form opens rather than at the moment you press. The full public
-body is still on screen, so you can file it yourself. See
-[Public product issue reporting](security.md#public-product-issue-reporting) for why the
-confirmation cannot live in the browser.
+**Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
+confirms that exact preview and files it without a warning dialog or a second button press. The
+button stays busy through both internal requests, so another press cannot race the first one.
+If the derived content changes before publication, Mission Control refuses it and refreshes the
+preview rather than publishing content that was not shown.
 
 **Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
 WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with
@@ -284,7 +275,7 @@ missing instead of offering a retry that would create a duplicate.
 
 Your draft **survives closing the dialog**. Close it to go and re-read the thing you are
 reporting and the words are still there when you come back. Two things clear it: **Clear**,
-which you press on purpose, and a confirmed submission, after which the next opening starts
+which you press on purpose, and a successful submission, after which the next opening starts
 empty because that report is already filed.
 
 Four things can come back, and they are deliberately different:

@@ -17,9 +17,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   ghProductScriptPath,
-  productConsentBinPath,
-  productConsentScriptPath,
-  writeProductConsentBin,
   ghPullRequestsPath,
   codexCatalogControlPath,
   piCatalogControlPath,
@@ -88,10 +85,6 @@ export interface DaemonHandle {
    * On the handle for `ghPrsPath`'s reason: the fake reads one env var, set at spawn time.
    */
   ghProductPath: string;
-  /** Where a spec writes what the stand-in operator answers next. */
-  productConsentPath: string;
-  /** One JSON line per publish question the daemon actually asked. */
-  productConsentAskedPath: string;
   /**
    * The fake ai-conductor installation this daemon probes, and where a spec scripts the
    * repositories it says it manages.
@@ -286,7 +279,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   if (conductorNodeVersion !== undefined) {
     writeConductorNodeRuntime(home, conductorNodeVersion);
   }
-  writeProductConsentBin(home);
   const conductor = writeFakeConductor(home);
   if (extraEnv.MC_E2E_CONDUCTOR_STALE_BUNDLE === "1") {
     makeFakeConductorBundleStale(conductor);
@@ -428,10 +420,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // no run - not even one whose `gh` override somehow failed - names the real tracker. The
     // blast dam is `MISSION_GH_BIN` above; this is the second lock on the same door.
     MISSION_PRODUCT_ISSUES_REPO: "acme/public-issues",
-    // The stand-in for the operator answering the native publish dialog. Without something
-    // here the daemon can ask nobody and refuses every publish, which is exactly what a
-    // daemon started outside the desktop shell is supposed to do.
-    MISSION_PRODUCT_ISSUE_CONSENT_CMD: productConsentBinPath(home),
     // Native pools live inside this disposable MISSION_HOME. Keep their maintenance pass
     // deterministic during browser assertions; focused maintenance behavior belongs to the
     // allocator unit suite, while e2e specs drive explicit task cleanup.
@@ -681,8 +669,6 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     twinRepos,
     ghPrsPath: ghPullRequestsPath(home),
     ghProductPath: ghProductScriptPath(home),
-    productConsentPath: productConsentScriptPath(home),
-    productConsentAskedPath: join(home, "product-consent-asked.jsonl"),
     conductor,
     conductorCheckout,
     installFakeConductor,

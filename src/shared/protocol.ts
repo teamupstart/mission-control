@@ -616,9 +616,9 @@ export type ProductIssueRequestInput = z.infer<typeof ProductIssueRequestSchema>
  * that arrives merely by looking is not a decision anybody took. Authority that falls out of
  * a read is authority nobody granted.
  *
- * So the token now comes from `POST /api/product-issues/confirm`, a step of its own that sits
- * between the press asking to publish and the press confirming it, expires in two minutes,
- * and is retired on first terminal use.
+ * So the token now comes from `POST /api/product-issues/confirm`, an internal step initiated by
+ * the Report press and immediately spent by that same UI action. It expires in two minutes and
+ * is retired on first terminal use.
  *
  * It still grants no authority of its own. Target, labels, source, environment and body are
  * re-derived at submission, and the daemon additionally requires that the re-derivation match

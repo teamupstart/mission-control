@@ -69,16 +69,6 @@ function preview(overrides: Partial<ProductIssuePreview> = {}): ProductIssuePrev
   };
 }
 
-/** A grant for exactly the preview `preview()` renders. */
-const CONFIRMATION = {
-  outcome: "confirmation",
-  requestId: "11111111-2222-4333-8444-555555555555",
-  draftIdentity: "a".repeat(64),
-  target: "acme/public-issues",
-  token: "c".repeat(64),
-  expiresAt: 4_000_000_000_000,
-} as const;
-
 function draw(overrides: Partial<ProductIssueModalProps> = {}): string {
   const props: ProductIssueModalProps = {
     draft: DRAFT,
@@ -87,12 +77,9 @@ function draw(overrides: Partial<ProductIssueModalProps> = {}): string {
     preview: preview(),
     previewProblem: null,
     previewing: false,
-    confirmation: null,
-    confirming: false,
     submitting: false,
     result: null,
     retryAllowed: true,
-    onConfirm: () => {},
     onSubmit: () => {},
     onClear: () => {},
     onClose: () => {},
@@ -237,70 +224,10 @@ test("submit is closed until the draft validates, preflight is ready and a previ
   assert.doesNotMatch(draw(), disabled);
 });
 
-/**
- * Publishing takes two presses, and the first one is not a publish.
- *
- * With no grant in hand the primary control offers to CHECK the report, not to file it. That
- * wording is the invariant: a person who has only read the preview has not yet asked for
- * anything public to happen, and a button reading "publish" beside content they have merely
- * looked at would say otherwise.
- */
-test("with no confirmation in hand the button asks to report, not to publish", () => {
+test("the ready form offers one report action without an armed intermediate state", () => {
   const html = draw();
   assert.match(html, /<button type="submit"[^>]*aria-label="Report publicly"/);
   assert.doesNotMatch(html, /Publish to acme\/public-issues/);
-  // And nothing claims the report is ready to go.
-  assert.doesNotMatch(html, /Ready to publish/);
-});
-
-/**
- * A daemon with nobody to ask says so, in preflight, before anything is typed.
- *
- * The confirmation is a native dialog raised by the desktop shell, so a daemon started on its
- * own has no way to obtain one. That is a property of the daemon rather than of the report, and
- * a person deserves it before writing a bug report rather than after pressing publish.
- */
-test("a daemon that cannot ask anybody reports it as a preflight problem", () => {
-  const html = draw({
-    preflight: {
-      ready: false,
-      target: "acme/public-issues",
-      attachments: PREFLIGHT_READY.attachments,
-      problems: [{
-        code: "consent-unavailable",
-        message: "Publishing needs the Mission Control desktop app, which asks you to confirm.",
-      }],
-    },
-  });
-  assert.match(html, /<button type="submit"[^>]*disabled=""/);
-  assert.match(html, /needs the Mission Control desktop app/);
-});
-
-/**
- * The confirmed state names its destination, on the button and on the screen.
- *
- * A control that silently relabels between two presses is one somebody double-presses by
- * reflex - and the second press here files a public issue that cannot be recalled. So the
- * repository appears in the accessible name AND in a live region beside it.
- */
-test("a held confirmation relabels the button and says where it will publish", () => {
-  const html = draw({ confirmation: CONFIRMATION });
-  assert.match(html, /<button type="submit"[^>]*aria-label="Publish to acme\/public-issues"/);
-  assert.match(html, /Ready to publish in acme\/public-issues/);
-  // The way back out is offered in the same breath as the irreversible press.
-  assert.match(html, /edit the report to go back/);
-});
-
-/**
- * A grant that does not describe the preview on screen is not a confirmation.
- *
- * This is the render-level half of the staleness rule the daemon enforces: a grant minted
- * for content that has since moved must read as unconfirmed, or the button would offer a
- * publish that is already certain to be refused.
- */
-test("a confirmation minted for other content does not arm the button", () => {
-  const html = draw({ confirmation: { ...CONFIRMATION, draftIdentity: "b".repeat(64) } });
-  assert.match(html, /<button type="submit"[^>]*aria-label="Report publicly"/);
   assert.doesNotMatch(html, /Ready to publish/);
 });
 
@@ -362,6 +289,10 @@ test("a created issue offers its URL, and a refusal invites another try", () => 
   // a refusal - the worst possible answer to a duplicate public issue.
   assert.doesNotMatch(createdHtml, /Report publicly/);
   assert.match(createdHtml, /feedback-created-action/);
+  assert.match(
+    createdHtml,
+    /feedback-created-actions[^]*?<button[^>]*>Close<\/button>[^]*?View GitHub issue/,
+  );
 
   const refused: ProductIssueSubmitResult = {
     outcome: "refused",

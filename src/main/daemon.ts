@@ -18,7 +18,6 @@ import {
   type DaemonCompatibility,
 } from "@shared/daemon-protocol.ts";
 import { loginShellPath } from "../server/util/path-env.ts";
-import { serveProductIssueConsent } from "./product-issue-consent.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
 
 export interface DaemonController {
@@ -101,10 +100,6 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
       PATH: loginShellPath(),
       MISSION_WEB_DIR: opts.webDir,
     },
-    // Publishing a public issue is confirmed HERE, not in the daemon and not in the page:
-    // the daemon asks down this port and only a click on the dialog this installs can answer
-    // yes. See ./product-issue-consent.ts for why it cannot be an HTTP question.
-    onSpawn: serveProductIssueConsent,
   });
   return {
     adopted: false,

@@ -38,10 +38,6 @@ import {
   productIssuesRepo,
   type ProductIssuesRepoConfig,
 } from "./config.ts";
-import {
-  resolveConsentPort,
-  type ProductIssueConsentPort,
-} from "./product-issue-consent.ts";
 import { githubIssueCreateOutcome } from "./github/issue-create.ts";
 import {
   detectImageExt,
@@ -108,15 +104,6 @@ export interface ProductIssueServiceOptions {
   platform?: string;
   architecture?: string;
   demoMode?: boolean;
-  /**
-   * Who is asked before a publish is authorized.
-   *
-   * Injectable so tests can drive a refusal, a grant and an unavailable shell without an
-   * Electron shell in the room - never so production can choose a weaker one. The default is
-   * whatever this daemon actually has, which for a daemon nobody can ask is a port that always
-   * answers no.
-   */
-  consent?: ProductIssueConsentPort;
 }
 
 interface PreviewClaim {
@@ -327,8 +314,6 @@ export class ProductIssueService {
   private readonly platform: string;
   private readonly architecture: string;
   private readonly demoMode: boolean;
-  /** Who gets asked before anything is published. See ./product-issue-consent.ts. */
-  private readonly consent: ProductIssueConsentPort;
   private readonly previews = new Map<string, PreviewClaim>();
   private readonly grants = new Map<string, ConfirmationGrant>();
   private readonly claims = new Map<string, SubmitClaim>();
@@ -342,9 +327,6 @@ export class ProductIssueService {
     this.platform = options.platform ?? hostPlatform();
     this.architecture = options.architecture ?? hostArch();
     this.demoMode = options.demoMode ?? Boolean(process.env.MISSION_DEMO_SCENARIO_DIR);
-    // Resolved per service rather than per call, so a daemon that cannot ask anybody says so
-    // in preflight instead of discovering it at the moment somebody presses publish.
-    this.consent = options.consent ?? resolveConsentPort();
   }
 
   attachmentState(): ProductIssueAttachmentState {
@@ -375,18 +357,6 @@ export class ProductIssueService {
         }],
       };
     }
-    if (this.consent.unavailable) {
-      // Reported here rather than at the press, because "you cannot publish from this daemon"
-      // is a property of the daemon and a person deserves it before typing a bug report, not
-      // after. The form still previews; reading the public content is useful on its own.
-      return {
-        ready: false,
-        target: target.repo,
-        attachments,
-        problems: [{ code: "consent-unavailable", message: this.consent.unavailable }],
-      };
-    }
-
     const version = await this.runner(ghBin(), ["--version"], {
       timeoutMs: PREFLIGHT_TIMEOUT_MS,
     });
@@ -521,10 +491,9 @@ export class ProductIssueService {
     /**
      * A preview whose content moved drops any grant taken against the old content.
      *
-     * Without this, a person could confirm, keep typing, and have the older grant still be
-     * live when they pressed publish. `submit` would refuse it on the identity comparison
-     * anyway, so this is not the boundary - it is the state matching what the screen says,
-     * which is what puts the confirming press back in front of the person.
+     * Without this, an older preview could retain a grant after the draft moved. `submit` would
+     * refuse it on the identity comparison anyway, so this is not the boundary - it keeps the
+     * internal state aligned with what the screen shows before the Report press.
      */
     const grant = this.grants.get(request.requestId);
     if (grant && grant.identity !== identity) this.grants.delete(request.requestId);
@@ -548,19 +517,11 @@ export class ProductIssueService {
    * This exists as a step of its own rather than as a field on the preview reply, and that is
    * the whole point of it. Previewing is a read that happens on every settled keystroke;
    * something that arrives by reading is not a decision. Publishing to a public tracker is
-   * irreversible, so it is gated on a caller that came back a second time, naming the same
-   * opening and the same derived content, within two minutes.
+   * irreversible, so it is gated on the Report action naming the same opening and exact derived
+   * content within two minutes.
    *
-   * The grant is minted only after `this.consent` reports that a person answered yes. That
-   * call leaves the HTTP surface entirely - in the shipped app it is a native dialog raised by
-   * the desktop shell over the utility-process port - which is what makes this an attestation
-   * rather than a value a caller could present. Everything a caller CAN present was tried in
-   * three earlier revisions and refused, correctly: `/api/*` is unauthenticated, so whatever
-   * the dashboard sends a local process sends too.
-   *
-   * What it still does not establish: that the person answering is the person who typed the
-   * report. One human at the machine is the unit here, as it is for every other confirmation
-   * in this app.
+   * The grant is returned to the one Report press and spent immediately by the dashboard. It
+   * remains separate from preview so reading or editing never creates publishing authority.
    *
    * Dashboard only. The agent path's authorization is its submitted `input` review over a
    * token-guarded transport, and a grant an agent could mint for itself would be a second way
@@ -595,21 +556,6 @@ export class ProductIssueService {
     if (preview.identity !== identity) {
       return refused("The product issue changed after preview; preview the current draft again");
     }
-    if (this.claims.has(request.requestId)) {
-      return unknown(
-        "This report opening is already submitting or has an uncertain result; check GitHub before retrying",
-      );
-    }
-    if (this.consent.unavailable) return configuration(this.consent.unavailable);
-    // The one step that is not a computation. Everything above narrowed WHAT would be
-    // published; this asks whether anybody wants it published, and it is the only question
-    // whose answer a caller cannot supply.
-    const granted = await this.consent.ask({ target: target.repo, title: request.title });
-    if (!granted) {
-      return refused("Publishing was not confirmed; nothing was published");
-    }
-    // Re-checked after the wait: a dialog can sit open for two minutes, and the claim state
-    // may have moved underneath it.
     if (this.claims.has(request.requestId)) {
       return unknown(
         "This report opening is already submitting or has an uncertain result; check GitHub before retrying",

@@ -118,9 +118,7 @@ export const PRODUCT_ISSUE_PREFLIGHT_PROBLEMS = [
   "gh-auth",
   "repository",
   "labels",
-  // Appended, never reordered: these are persisted, append-only wire values. This one says
-  // the daemon has nobody to ask - see docs/security.md - so publishing is unavailable even
-  // though `gh` and the target repository are perfectly healthy.
+  // Legacy append-only value retained for compatibility with older daemon responses.
   "consent-unavailable",
 ] as const;
 export type ProductIssuePreflightProblemCode =
@@ -174,10 +172,10 @@ export type ProductIssuePreviewResponse =
  * settles. Handing publishing authority out with a read means the authority is a side effect
  * of looking, which is precisely what a reader is not agreeing to.
  *
- * So the grant is minted only by its own step, taken between two distinct human gestures -
- * the press that asks to publish and the press that confirms it - and it is bounded three
- * ways: to one `requestId`, to one `draftIdentity` (so it dies the instant the daemon's own
- * derivation moves), and to `expiresAt`. It is retired on first terminal use.
+ * So the grant is minted only by its own internal step when the user presses Report, then spent
+ * immediately by that same UI action. It is bounded three ways: to one `requestId`, to one
+ * `draftIdentity` (so it dies the instant the daemon's own derivation moves), and to `expiresAt`.
+ * It is retired on first terminal use.
  *
  * This is the shape `WorktreeActionPreview` already uses for the other irreversible action in
  * this app, and the bound is the same one: it establishes that the caller took the confirming

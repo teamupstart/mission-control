@@ -40,7 +40,51 @@ const CLIENT_INFO = { name: "mission-control-persona-workload", title: "Mission 
 const APPROVAL_POLICY = "on-request" as const;
 
 interface CodexWorkloadDeps {
-  connect(args: readonly string[], cwd: string): Promise<AppServerTransport>;
+  connect(args: readonly string[], cwd: string, options: CodexConnectionOptions): Promise<AppServerTransport>;
+}
+
+interface CodexConnectionOptions {
+  signal: AbortSignal;
+  deadline: number;
+}
+
+interface CodexStopGuard {
+  promise: Promise<never>;
+  dispose(): void;
+}
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function createStopGuard(signal: AbortSignal, deadline: number, deadlineMessage: string): CodexStopGuard {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+  let rejectGuard: (error: Error) => void = () => {};
+  const abort = () => rejectGuard(signal.reason instanceof Error ? signal.reason : new Error("Codex workload cancelled"));
+  const scheduleDeadline = () => {
+    if (disposed) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      rejectGuard(new Error(deadlineMessage));
+      return;
+    }
+    timer = setTimeout(scheduleDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+    timer.unref?.();
+  };
+  const promise = new Promise<never>((_resolve, reject) => {
+    rejectGuard = reject;
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    else scheduleDeadline();
+  });
+  promise.catch(() => {});
+  return {
+    promise,
+    dispose() {
+      disposed = true;
+      signal.removeEventListener("abort", abort);
+      if (timer) clearTimeout(timer);
+    },
+  };
 }
 
 interface CodexConfigLayerName {
@@ -130,6 +174,7 @@ async function configuredMcpServerNames(
   args: readonly string[],
   cwd: string,
   environment: NodeJS.ProcessEnv,
+  options: CodexConnectionOptions,
 ): Promise<string[]> {
   const transport = spawnAppServer(executable, args, cwd, environment);
   let client: AppServerClient;
@@ -141,21 +186,23 @@ async function configuredMcpServerNames(
   });
   const pump = client.pump();
   pump.catch(() => {});
+  const stopped = createStopGuard(options.signal, options.deadline, "Codex workload deadline exceeded during configuration probe");
   try {
-    await client.request<InitializeResponse>("initialize", {
+    await Promise.race([client.request<InitializeResponse>("initialize", {
       clientInfo: CLIENT_INFO,
       capabilities: { experimentalApi: true, requestAttestation: false },
-    });
-    const effective = await client.request<CodexConfigRead>("config/read", {
+    }), stopped.promise]);
+    const effective = await Promise.race([client.request<CodexConfigRead>("config/read", {
       cwd,
       includeLayers: false,
-    });
+    }), stopped.promise]);
     const servers = effective.config?.mcp_servers;
     if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
       throw new Error("Codex workload could not enumerate inherited MCP servers");
     }
     return Object.keys(servers as Record<string, unknown>);
   } finally {
+    stopped.dispose();
     await client.close().catch(() => {});
     await pump.catch(() => {});
   }
@@ -164,6 +211,7 @@ async function configuredMcpServerNames(
 export async function connectIsolatedCodexWorkload(
   args: readonly string[],
   cwd: string,
+  options: CodexConnectionOptions,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<AppServerTransport> {
   const isolatedStateRoot = join(cwd, ".codex-workload-state");
@@ -184,6 +232,7 @@ export async function connectIsolatedCodexWorkload(
     [...args, ...stateArgs],
     cwd,
     providerEnvironment,
+    options,
   );
   return spawnAppServer(
     executable,
@@ -206,7 +255,21 @@ export class CodexPersonaWorkloadAdapter implements PersonaWorkloadProviderAdapt
     assertProviderNeutralLaunch(launch);
     if (launch.provider !== this.id) throw new Error("Codex workload adapter received another provider");
     const images = validateLlmImages(launch.images);
-    const transport = await this.deps.connect(codexRepositoryMcpArgs(launch.repositoryMcp), launch.workingDirectory);
+    const connection = this.deps.connect(
+      codexRepositoryMcpArgs(launch.repositoryMcp),
+      launch.workingDirectory,
+      { signal, deadline: launch.deadline },
+    );
+    const connecting = createStopGuard(signal, launch.deadline, "Codex workload deadline exceeded during connection setup");
+    let transport: AppServerTransport;
+    try {
+      transport = await Promise.race([connection, connecting.promise]);
+    } catch (error) {
+      void connection.then((lateTransport) => lateTransport.close()).catch(() => {});
+      throw error;
+    } finally {
+      connecting.dispose();
+    }
     let threadId: string | null = null;
     let turnId: string | null = null;
     let finalResponse = "";
@@ -219,6 +282,9 @@ export class CodexPersonaWorkloadAdapter implements PersonaWorkloadProviderAdapt
       settle = resolve;
       fail = reject;
     });
+    completed.catch(() => {});
+    const providerFailure = completed.then<never>(() => new Promise<never>(() => {}));
+    providerFailure.catch(() => {});
     let client: AppServerClient;
     client = new AppServerClient(transport, {
       request(method: string, id: RequestId) {
@@ -278,16 +344,21 @@ export class CodexPersonaWorkloadAdapter implements PersonaWorkloadProviderAdapt
     pump.catch((error) => fail(error instanceof Error ? error : new Error(String(error))));
     const abort = () => {
       if (threadId && turnId) void client.request("turn/interrupt", { threadId, turnId }).catch(() => {});
-      fail(signal.reason instanceof Error ? signal.reason : new Error("Codex workload cancelled"));
     };
     signal.addEventListener("abort", abort, { once: true });
+    const stopped = createStopGuard(signal, launch.deadline, "Codex workload deadline exceeded");
+    const request = <Result>(method: string, params: unknown): Promise<Result> => Promise.race([
+      client.request<Result>(method, params),
+      providerFailure,
+      stopped.promise,
+    ]);
     try {
       const initialize: InitializeParams = {
         clientInfo: CLIENT_INFO,
         capabilities: { experimentalApi: true, requestAttestation: false },
       };
-      await client.request<InitializeResponse>("initialize", initialize);
-      const effective = await client.request<CodexConfigRead>("config/read", {
+      await request<InitializeResponse>("initialize", initialize);
+      const effective = await request<CodexConfigRead>("config/read", {
         cwd: launch.workingDirectory,
         includeLayers: true,
       });
@@ -311,7 +382,7 @@ export class CodexPersonaWorkloadAdapter implements PersonaWorkloadProviderAdapt
           throw new Error(`Codex workload did not disable ${feature}`);
         }
       }
-      const started = await client.request<ThreadStartResponse>("thread/start", {
+      const started = await request<ThreadStartResponse>("thread/start", {
         cwd: launch.workingDirectory,
         model: launch.model,
         approvalPolicy: APPROVAL_POLICY,
@@ -326,7 +397,7 @@ export class CodexPersonaWorkloadAdapter implements PersonaWorkloadProviderAdapt
         ...images.map((image): UserInput => ({ type: "localImage", path: image.path })),
         { type: "text", text: launch.prompt, text_elements: [] },
       ];
-      const turn = await client.request<TurnStartResponse>("turn/start", {
+      const turn = await request<TurnStartResponse>("turn/start", {
         threadId,
         input,
         model: launch.model,
@@ -335,16 +406,9 @@ export class CodexPersonaWorkloadAdapter implements PersonaWorkloadProviderAdapt
       });
       turnId = turn.turn.id;
       if (signal.aborted) abort();
-      const timeout = Math.max(1, launch.deadline - Date.now());
-      return await Promise.race([
-        completed,
-        new Promise<never>((_resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("Codex workload deadline exceeded")), timeout);
-          timer.unref?.();
-          completed.finally(() => clearTimeout(timer)).catch(() => {});
-        }),
-      ]);
+      return await Promise.race([completed, stopped.promise]);
     } finally {
+      stopped.dispose();
       signal.removeEventListener("abort", abort);
       await client.close().catch(() => {});
       await pump.catch(() => {});

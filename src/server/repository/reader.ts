@@ -58,9 +58,8 @@ interface MutableBudget {
 
 interface PendingItem {
   path?: string;
-  kind: "text" | "binary" | "path" | "status" | "commit" | "blame" | "diff";
+  kind: "text" | "path" | "status" | "commit" | "blame" | "diff";
   text?: string;
-  base64?: string;
   metadata?: Record<string, string | number | boolean | null>;
   range?: RepositoryEvidenceRange;
 }
@@ -100,7 +99,7 @@ function withoutCursor(request: RepositoryOperationRequest): unknown {
 }
 
 function globRegex(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|\\]/g, "\\$&");
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   const source = escaped.replaceAll("**", "\0").replaceAll("*", "[^/]*").replaceAll("?", "[^/]").replaceAll("\0", ".*");
   return new RegExp(`^${source}$`, "u");
 }
@@ -120,7 +119,6 @@ function bufferIsText(bytes: Buffer): boolean {
 function resultBytes(items: readonly PendingItem[]): number {
   return items.reduce((total, item) => {
     if (item.text !== undefined) return total + Buffer.byteLength(item.text);
-    if (item.base64 !== undefined) return total + Buffer.from(item.base64, "base64").byteLength;
     return total;
   }, 0);
 }
@@ -302,6 +300,9 @@ export class RepositoryReader {
   private async read(request: Extract<RepositoryOperationRequest, { operation: "read" }>, position: number, signal: AbortSignal) {
     const entry = this.entry(request.path);
     const bytes = request.layer === "worktree" ? this.worktreeBytes(entry, signal) : await this.indexBytes(entry, signal);
+    if (!bufferIsText(bytes)) {
+      throw new RepositoryPathPolicyError("path_denied", "binary repository content is unavailable");
+    }
     if (request.window.kind === "byte") {
       const start = request.cursor === undefined ? request.window.startByte : position;
       if (start >= bytes.byteLength) {
@@ -309,8 +310,11 @@ export class RepositoryReader {
       }
       const end = Math.min(bytes.byteLength, start + request.window.maxBytes, start + this.options.budgets.maxResponseBytes);
       const returned = bytes.subarray(start, end);
+      if (!bufferIsText(returned)) {
+        throw Object.assign(new Error("byte window must align to UTF-8 text boundaries"), { code: "request_invalid" });
+      }
       return {
-        items: [{ path: entry.path, kind: bufferIsText(returned) ? "text" as const : "binary" as const, ...(bufferIsText(returned) ? { text: scrubSecrets(returned.toString("utf8")) } : { base64: returned.toString("base64") }), range: { kind: "byte" as const, startByte: start, endByteExclusive: end, encoding: "raw" as const } }],
+        items: [{ path: entry.path, kind: "text" as const, text: scrubSecrets(returned.toString("utf8")), range: { kind: "byte" as const, startByte: start, endByteExclusive: end, encoding: "raw" as const } }],
         next: end < bytes.byteLength ? end : null,
         reason: end < bytes.byteLength ? "bytes" as const : null,
       };
@@ -505,9 +509,18 @@ export class RepositoryReader {
     if (entry.kind !== "file") throw Object.assign(new Error("blame requires a regular file"), { code: "request_invalid" });
     const endInclusive = Math.max(request.startLine, request.endLineExclusive - 1);
     const text = await this.git(["blame", "--porcelain", "--root", `-L${request.startLine},${endInclusive}`, request.revision, "--", entry.path], signal);
-    const returnedRevisions = [...text.matchAll(/^([0-9a-f]{40,64}) /gm)].map((match) => match[1]!);
+    const revisionFields = /^([0-9a-f]{40,64})(?= )|^previous ([0-9a-f]{40,64})(?= )/gm;
+    const returnedRevisions = [...text.matchAll(revisionFields)].map((match) => (match[1] ?? match[2])!);
     const historyTruncated = returnedRevisions.some((revision) => !this.retained.has(revision));
-    const safe = scrubSecrets(text.replace(/^([0-9a-f]{40,64}) /gm, (line, revision: string) => this.retained.has(revision) ? line : `${"0".repeat(revision.length)} `));
+    const safe = scrubSecrets(text.replace(
+      revisionFields,
+      (field, headerRevision: string | undefined, previousRevision: string | undefined) => {
+        const revision = (headerRevision ?? previousRevision)!;
+        if (this.retained.has(revision)) return field;
+        const redacted = "0".repeat(revision.length);
+        return previousRevision ? `previous ${redacted}` : redacted;
+      },
+    ));
     return this.paginate([{ path: entry.path, kind: "blame", text: safe, metadata: { historyTruncated }, range: { kind: "line", startLine: request.startLine, endLineExclusive: request.endLineExclusive } }], position);
   }
 

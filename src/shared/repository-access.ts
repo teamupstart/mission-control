@@ -247,12 +247,6 @@ export const RepositoryResultItemSchema = z.discriminatedUnion("kind", [
     range: z.union([RepositoryLineRangeSchema, RepositoryByteRangeSchema]),
   }).strict(),
   z.object({
-    ...RepositoryHandledItemCommon,
-    kind: z.literal("binary"),
-    base64: z.string().max(2 * 1024 * 1024),
-    range: RepositoryByteRangeSchema,
-  }).strict(),
-  z.object({
     ...RepositoryResultItemCommon,
     kind: z.literal("path"),
     path: RepositoryPathSchema,
@@ -311,7 +305,7 @@ const RepositorySuccessResult = {
 type RepositoryResultItemKind = z.infer<typeof RepositoryResultItemSchema>["kind"];
 
 export const REPOSITORY_SUCCESS_ITEM_KINDS = Object.freeze({
-  read: ["text", "binary"],
+  read: ["text"],
   search: ["text"],
   glob: ["path"],
   git_status: ["status"],

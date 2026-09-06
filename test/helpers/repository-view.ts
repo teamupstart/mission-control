@@ -7,7 +7,21 @@ import type { RepositoryViewDescriptor } from "../../src/shared/repository-acces
 import { REPOSITORY_HISTORY_POLICY_V1 } from "../../src/shared/repository-access.ts";
 
 function git(root: string, args: string[], input?: string): string {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", input }).trim();
+  return execFileSync("git", [
+    "-c", "commit.gpgsign=false",
+    "-c", `core.hooksPath=${join(root, ".hooks-disabled")}`,
+    "-C", root,
+    ...args,
+  ], {
+    encoding: "utf8",
+    input,
+    env: {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: join(root, ".gitconfig-disabled"),
+      GIT_TERMINAL_PROMPT: "0",
+    },
+  }).trim();
 }
 
 export interface RepositoryViewFixture {
@@ -15,7 +29,7 @@ export interface RepositoryViewFixture {
   descriptor: RepositoryViewDescriptor;
 }
 
-export function repositoryViewFixture(): RepositoryViewFixture {
+export function repositoryViewFixture(options: { preserveSensitiveObject?: boolean } = {}): RepositoryViewFixture {
   const root = mkdtempSync(join(tmpdir(), "mission-repository-view-test-"));
   git(root, ["init", "-q"]);
   git(root, ["config", "user.email", "fixture@example.test"]);
@@ -34,7 +48,9 @@ export function repositoryViewFixture(): RepositoryViewFixture {
   const worktreeTree = git(root, ["mktree"], `100644 blob ${worktreeBlob}\tsource.txt\n`);
   const envBlob = git(root, ["rev-parse", "HEAD:.env"]);
   rmSync(join(root, ".env"));
-  rmSync(join(root, ".git", "objects", envBlob.slice(0, 2), envBlob.slice(2)));
+  if (!options.preserveSensitiveObject) {
+    rmSync(join(root, ".git", "objects", envBlob.slice(0, 2), envBlob.slice(2)));
+  }
   const snapshotDigest = createHash("sha256").update(`${head}:${indexTree}:${worktreeTree}`).digest("hex");
   return {
     root,

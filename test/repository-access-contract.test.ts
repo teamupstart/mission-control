@@ -98,7 +98,6 @@ test("repository success schemas enforce operation item, range, and history-boun
   } as const;
   const items = {
     text: { kind: "text", ordinal: 1, metadata: {}, path: "source.txt", evidenceHandleId: "handle-1", text: "text", range: { kind: "line", startLine: 1, endLineExclusive: 2 } },
-    binary: { kind: "binary", ordinal: 1, metadata: {}, path: "source.bin", evidenceHandleId: "handle-1", base64: "YQ==", range: { kind: "byte", startByte: 0, endByteExclusive: 1, encoding: "raw" } },
     path: { kind: "path", ordinal: 1, metadata: {}, path: "source.txt" },
     status: { kind: "status", ordinal: 1, metadata: {}, path: "source.txt" },
     commit: { kind: "commit", ordinal: 1, metadata: {}, text: "commit" },
@@ -106,7 +105,7 @@ test("repository success schemas enforce operation item, range, and history-boun
     diff: { kind: "diff", ordinal: 1, metadata: {}, path: "source.txt", evidenceHandleId: "handle-1", text: "diff", range: { kind: "diff", old: { startLine: 1, endLineExclusive: 2 }, new: { startLine: 1, endLineExclusive: 2 } } },
   } as const;
   const legalKinds = {
-    read: ["text", "binary"],
+    read: ["text"],
     search: ["text"],
     glob: ["path"],
     git_status: ["status"],
@@ -139,7 +138,7 @@ test("repository success schemas enforce operation item, range, and history-boun
     ...success,
     operation: "read",
     itemCount: 2,
-    items: [items.text, { ...items.binary, ordinal: 2 }],
+    items: [items.text, { ...items.text, ordinal: 2 }],
   }).success, false);
   assert.equal(RepositoryOperationResultSchema.safeParse({
     ...success,

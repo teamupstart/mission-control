@@ -189,6 +189,29 @@ test("Codex workload adapter permits cached hosted search while disabling native
   assert.ok(turn.outputSchema);
 });
 
+test("Codex workload adapter aborts while provider connection setup is pending", async () => {
+  const controller = new AbortController();
+  let observedOptions: unknown;
+  const adapter = new CodexPersonaWorkloadAdapter({
+    async connect(...args: unknown[]) {
+      observedOptions = args[2];
+      return await new Promise<AppServerTransport>(() => {});
+    },
+  });
+  const run = adapter.run(launch("codex"), controller.signal);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  controller.abort(new Error("cancelled during connect"));
+
+  await assert.rejects(
+    Promise.race([
+      run,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("connect did not observe cancellation")), 250)),
+    ]),
+    /cancelled during connect/,
+  );
+  assert.equal((observedOptions as { signal?: AbortSignal } | undefined)?.signal, controller.signal);
+});
+
 test("Codex workload verifies the native web-search override through its resolved session layer", async () => {
   const transport = new ScriptedTransport(
     { repository: {} },

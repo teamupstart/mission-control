@@ -174,6 +174,8 @@ Implement:
 - `git_log`: descriptor-retained ancestry only, fixed metadata-only format, optional validated allowed path, no patch/stat/name flags, and explicit terminal boundary metadata;
 - `git_blame`: bounded allowed regular file/range against the retained view, with boundary attribution and `historyTruncated`, and with any emitted filename/previous path revalidated.
 
+Binary repository payloads are denied. Phase 1 does not return raw base64 or implement a safe bounded binary preview; byte windows remain available for UTF-8 repository text and keep raw-blob byte coordinates.
+
 All Git invocations use argv arrays, `--` separation, deterministic config, explicit revisions derived from the descriptor, timeouts, and cancellation. Disable external diff, text conversion, hooks, filters, pagers, optional locks, credential helpers, object fetching, and network. Treat a missing object on an allowed path as `unavailable`, not an empty file. Denied missing blobs must never be requested.
 
 For `git_diff` and patch-producing `git_show`, first resolve the complete changed path set, deny sensitive paths, then generate content for explicit allowed literal paths only. Verify every returned header path before returning bytes. Never generate an unrestricted patch and redact it later.

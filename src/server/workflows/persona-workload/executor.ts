@@ -154,10 +154,12 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
     };
     enforceDeadline();
-    void this.run(state).finally(() => {
-      if (deadlineTimer) clearTimeout(deadlineTimer);
-      signal.removeEventListener("abort", abort);
-    });
+    void this.run(state)
+      .finally(() => {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        signal.removeEventListener("abort", abort);
+      })
+      .catch(() => {});
     return this.stream(state, 0);
   }
 
@@ -308,7 +310,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       this.emit(state, { kind: "completed", result });
     } finally {
       await lease?.release().catch(() => {});
-      if (workDir) await rm(workDir, { recursive: true, force: true });
+      if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 

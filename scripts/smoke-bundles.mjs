@@ -406,16 +406,30 @@ async function smokeRepositoryMcp() {
   const root = await mkdtemp(join(tmpdir(), "mc-repository-mcp-smoke-"));
   const auditPath = join(root, "audit.jsonl");
   const configPath = join(root, "config.json");
+  const fixtureGit = (args, options = {}) => execFileSync("git", [
+    "-c", "commit.gpgsign=false",
+    "-c", `core.hooksPath=${join(root, ".hooks-disabled")}`,
+    "-C", root,
+    ...args,
+  ], {
+    ...options,
+    env: {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: join(root, ".gitconfig-disabled"),
+      GIT_TERMINAL_PROMPT: "0",
+    },
+  });
   try {
-    execFileSync("git", ["init", "-q", root]);
-    execFileSync("git", ["-C", root, "config", "user.email", "smoke@example.test"]);
-    execFileSync("git", ["-C", root, "config", "user.name", "Smoke"]);
+    fixtureGit(["init", "-q"]);
+    fixtureGit(["config", "user.email", "smoke@example.test"]);
+    fixtureGit(["config", "user.name", "Smoke"]);
     await writeFile(join(root, "hello.txt"), "hello repository MCP\n", "utf8");
-    execFileSync("git", ["-C", root, "add", "hello.txt"]);
-    execFileSync("git", ["-C", root, "commit", "-qm", "fixture"]);
-    const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const tree = execFileSync("git", ["-C", root, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
-    const blob = execFileSync("git", ["-C", root, "rev-parse", "HEAD:hello.txt"], { encoding: "utf8" }).trim();
+    fixtureGit(["add", "hello.txt"]);
+    fixtureGit(["commit", "-qm", "fixture"]);
+    const head = fixtureGit(["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const tree = fixtureGit(["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
+    const blob = fixtureGit(["rev-parse", "HEAD:hello.txt"], { encoding: "utf8" }).trim();
     await writeFile(auditPath, "", { mode: 0o600 });
     await writeFile(configPath, JSON.stringify({
       schemaVersion: 1,
@@ -448,7 +462,10 @@ async function smokeRepositoryMcp() {
     const operationBlock = /export const REPOSITORY_OPERATION_IDS = \[([\s\S]*?)\] as const;/.exec(contract)?.[1] ?? "";
     const expected = [...operationBlock.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
     const child = spawn(process.execPath, ["dist/repository-mcp/server.mjs"], {
-      env: { ...process.env, MISSION_REPOSITORY_MCP_CONFIG: configPath },
+      env: {
+        MISSION_REPOSITORY_MCP_CONFIG: configPath,
+        ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";

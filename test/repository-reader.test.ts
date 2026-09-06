@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -143,6 +144,115 @@ test("line windows fail when no complete line fits the response budget", async (
   }
 });
 
+test("glob treats brackets as literal path characters", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "glob", pattern: "source[.]txt" }, new AbortController().signal);
+
+    assert.equal(result.status, "ok");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("reader does not return raw binary repository bytes", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const content = Buffer.from([0x61, 0x00, 0x62]);
+    writeFileSync(join(fixture.root, "source.txt"), content);
+    const worktreeObjectId = createHash("sha1")
+      .update(`blob ${content.byteLength}\0`)
+      .update(content)
+      .digest("hex");
+    const descriptor = {
+      ...fixture.descriptor,
+      entries: fixture.descriptor.entries.map((entry) => (
+        entry.path === "source.txt" ? { ...entry, worktreeObjectId } : entry
+      )),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "byte", startByte: 0, maxBytes: 3 } }, new AbortController().signal);
+
+    assert.equal(result.status, "denied");
+    assert.equal(result.code, "path_denied");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("blame redacts non-retained revisions from previous fields", async () => {
+  const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
+  const git = (args: string[]): string => execFileSync("git", [
+    "-c", "commit.gpgsign=false",
+    "-c", `core.hooksPath=${join(fixture.root, ".hooks-disabled")}`,
+    "-C", fixture.root,
+    ...args,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: join(fixture.root, ".gitconfig-disabled"),
+      GIT_TERMINAL_PROMPT: "0",
+    },
+  }).trim();
+  try {
+    const omittedRevision = fixture.descriptor.headRevision;
+    git(["add", "source.txt"]);
+    git(["commit", "-qm", "second"]);
+    const headRevision = git(["rev-parse", "HEAD"]);
+    const tree = git(["rev-parse", "HEAD^{tree}"]);
+    const blob = git(["rev-parse", "HEAD:source.txt"]);
+    const descriptor = {
+      ...fixture.descriptor,
+      headRevision,
+      sourceRevision: headRevision,
+      indexTree: tree,
+      worktreeTree: tree,
+      retainedRevisions: [{ id: headRevision, parents: [], incrementalAllowedBlobBytes: 0 }],
+      frontier: [headRevision],
+      retainedCommitCount: 1,
+      entries: fixture.descriptor.entries.map((entry) => (
+        entry.path === "source.txt"
+          ? { ...entry, indexObjectId: blob, worktreeObjectId: blob, status: "clean" as const }
+          : entry
+      )),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 64 * 1024, maxResponseBytes: 64 * 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "git_blame", path: "source.txt", revision: headRevision, startLine: 1, endLineExclusive: 4 }, new AbortController().signal);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.items[0]?.kind, "blame");
+    if (result.items[0]?.kind === "blame") {
+      assert.doesNotMatch(result.items[0].text, new RegExp(omittedRevision, "u"));
+      assert.equal(result.items[0].metadata.historyTruncated, true);
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("search returns a byte-bounded progressing page without collecting later matches", async () => {
   const fixture = repositoryViewFixture();
   try {
@@ -166,7 +276,6 @@ test("search returns a byte-bounded progressing page without collecting later ma
       audit: { async append() {} },
     });
     const controller = new AbortController();
-    setImmediate(() => setImmediate(() => setImmediate(() => controller.abort())));
 
     const first = await reader.execute({
       operation: "search",

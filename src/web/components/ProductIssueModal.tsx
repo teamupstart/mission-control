@@ -357,6 +357,9 @@ export function ProductIssueModal({
               maxLength={PRODUCT_ISSUE_LIMITS.titleBytes}
               placeholder="One line someone scanning the issue list would understand"
               onChange={(e) => onDraftChange({ ...draft, title: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.preventDefault();
+              }}
               disabled={submitting}
               aria-label="Title"
             />

@@ -368,6 +368,28 @@ test("one Report press confirms and publishes without an armed second-click stat
   expect(sent.confirmationToken).toBe(grantedToken);
 });
 
+test("Enter in the title does not bypass the trusted Report control", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openFromTopbar(dashboard);
+  await fill(
+    dashboard,
+    "Bug",
+    "Enter must not publish",
+    "Only activating the Report control should authorize this public issue.",
+  );
+  await expect(submit(dashboard)).toBeEnabled();
+
+  await titleBox(dashboard).press("Enter");
+  await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toHaveCount(0);
+  expect(productCreates(daemon)).toHaveLength(0);
+
+  await publish(dashboard);
+  await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+  expect(productCreates(daemon)).toHaveLength(1);
+});
+
 test("editing before reporting publishes the latest rendered draft in one press", async ({
   dashboard,
   daemon,

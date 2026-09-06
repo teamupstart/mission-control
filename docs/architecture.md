@@ -12,10 +12,15 @@ flowchart LR
   electron[Electron shell] -->|starts and embeds| daemon
   electron -->|supervises packaged worker| foreman
   electron -->|loads| dashboard
+  electron -->|initializes and passes PATH| locator[Executable locator]
   mcp[MCP server] <-->|stdio| agent[Agent or editor]
   mcp -->|loopback HTTP| daemon
   hooks[Hook bridges] -->|loopback HTTP POST| daemon
   foreman[Foreman worker] -->|loopback HTTP| daemon
+  daemon --> locator
+  foreman --> locator
+  locator -->|absolute path + child env| agents
+  locator -->|absolute path + child env| terminal
   daemon --> inspector[GitHub Inspector]
   daemon --> sdk[SDK supervisor]
   daemon --> terminal[Terminal registry]
@@ -38,6 +43,7 @@ HTTP interface, so they cannot create competing state writers.
 | Electron shell | Starts the local daemon, supervises Foreman in packaged builds, and embeds the built dashboard. | [Desktop shell](desktop-and-packaging.md) |
 | Session system | Discovers terminal sessions, supervises embedded SDK sessions, and removes sessions through one lifecycle. | [Session lifecycle](session-lifecycle.md) |
 | Dispatch and harnesses | Chooses a runtime and expresses agent and terminal differences through capabilities. | [Dispatch](dispatch-and-runtimes.md), [harnesses](harnesses-and-terminals.md) |
+| Executable environment | Merges bounded path sources, resolves declared tools to absolute paths with provenance, and owns child PATH consistency. | [Executable contract](agent-guides/architecture.md#executable-environment-and-subprocesses), [operator configuration](configuration.md) |
 | Work coordination | Runs workflows, personas, session actions, ensembles, tasks, queues, and schedules. | [Workflow system](workflow-system.md), [tasks and schedules](tasks-and-scheduling.md) |
 | Foreman and GitHub Inspector | Foreman is an HTTP-only worker; GitHub Inspector is daemon-owned PR review state. | [Foreman](foreman.md), [GitHub Inspector and shipping](inspector-and-shipping.md) |
 | Integrations | MCP and hook bridges post facts to the daemon rather than modifying state directly. | [MCP server](../src/mcp/server.ts), [hooks](../hooks/) |

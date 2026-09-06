@@ -1,6 +1,6 @@
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -130,6 +130,20 @@ test("capabilities distinguish missing, diagnostic-only, and conditional JSON bi
   assert.equal((await adapterFor(old).capabilities()).kind, "diagnostic-only");
   const modern = runnerFor(jsonTree(), { version: "treehouse version v2.1.1" });
   assert.equal((await adapterFor(modern).capabilities()).kind, "conditional-json");
+});
+
+test("default detection and execution share the configured absolute Treehouse binary", async () => {
+  const binary = join(home, "custom-treehouse");
+  writeFileSync(binary, "#!/bin/sh\nprintf 'treehouse version v2.1.1\\n'\n");
+  chmodSync(binary, 0o755);
+  const previous = process.env.MISSION_TREEHOUSE_BIN;
+  process.env.MISSION_TREEHOUSE_BIN = binary;
+  try {
+    assert.equal((await new LegacyTreehouseAdapter().capabilities()).kind, "conditional-json");
+  } finally {
+    if (previous === undefined) delete process.env.MISSION_TREEHOUSE_BIN;
+    else process.env.MISSION_TREEHOUSE_BIN = previous;
+  }
 });
 
 test("missing and old binaries remain read-only and identity-unverifiable", async () => {

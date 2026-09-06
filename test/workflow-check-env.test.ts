@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 
 import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/check-env.ts";
+import { executableLocator } from "../src/server/executables/locator.ts";
 
 // What a check command is allowed to see.
 //
@@ -13,6 +14,10 @@ import { credentialShapedName, scrubCheckEnv } from "../src/server/workflows/che
 
 /** A realistic minted token: 24 random bytes as hex, which is what `ensureToken` produces. */
 const TOKEN = "4f3c2b1a9e8d7c6b5a4938271605f4e3d2c1b0a998877665";
+
+function canonicalPath(): string {
+  return executableLocator.snapshot().path;
+}
 
 const CASES: ReadonlyArray<{ name: string; value?: string; kept: boolean; why: string }> = [
   // --- kept: a build has to be able to find and run its own toolchain -----------------
@@ -95,7 +100,11 @@ test("the daemon's token is dropped by VALUE, whatever the variable is called", 
     },
     TOKEN,
   );
-  assert.deepEqual(Object.keys(scrubbed).filter((name) => name !== "MISSION_HOME"), ["KEPT"]);
+  assert.deepEqual(
+    Object.keys(scrubbed).filter((name) => name !== "MISSION_HOME"),
+    ["KEPT", "PATH"],
+  );
+  assert.ok(scrubbed.PATH, "workflow checks inherit the shared executable search path");
 });
 
 test("a SHORT token is scrubbed too - there is no length exception", () => {
@@ -106,12 +115,18 @@ test("a SHORT token is scrubbed too - there is no length exception", () => {
     { PATH: "/usr/bin", INNOCENT: "short-token", QUOTING: "Bearer short-token" },
     "short-token",
   );
-  assert.deepEqual({ ...scrubbed, MISSION_HOME: undefined }, { PATH: "/usr/bin", MISSION_HOME: undefined });
+  assert.deepEqual(
+    { ...scrubbed, MISSION_HOME: undefined },
+    { PATH: canonicalPath(), MISSION_HOME: undefined },
+  );
 
   // Down to a single character, which is where the collateral is worst and the ordering is
   // most deliberate: dropping a variable beats disclosing a credential.
   const single = scrubCheckEnv({ PATH: "/usr/bin", A: "a" }, "a");
-  assert.deepEqual({ ...single, MISSION_HOME: undefined }, { PATH: "/usr/bin", MISSION_HOME: undefined });
+  assert.deepEqual(
+    { ...single, MISSION_HOME: undefined },
+    { PATH: canonicalPath(), MISSION_HOME: undefined },
+  );
 });
 
 test("a whitespace-only token scrubs nothing, like an unminted one", () => {
@@ -120,7 +135,7 @@ test("a whitespace-only token scrubs nothing, like an unminted one", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", SPACED: "a b" }, "   ");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: "/usr/bin", SPACED: "a b", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), SPACED: "a b", MISSION_HOME: undefined },
   );
 });
 
@@ -131,7 +146,7 @@ test("an unminted token scrubs no values, rather than every value", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", HOME: "/home/me" }, "");
   assert.deepEqual(
     { ...scrubbed, MISSION_HOME: undefined },
-    { PATH: "/usr/bin", HOME: "/home/me", MISSION_HOME: undefined },
+    { PATH: canonicalPath(), HOME: "/home/me", MISSION_HOME: undefined },
   );
 });
 
@@ -144,7 +159,10 @@ test("the input environment is never mutated", () => {
 
 test("an undefined value is dropped rather than passed through as undefined", () => {
   const scrubbed = scrubCheckEnv({ PATH: "/usr/bin", EMPTY: undefined }, TOKEN);
-  assert.deepEqual({ ...scrubbed, MISSION_HOME: undefined }, { PATH: "/usr/bin", MISSION_HOME: undefined });
+  assert.deepEqual(
+    { ...scrubbed, MISSION_HOME: undefined },
+    { PATH: canonicalPath(), MISSION_HOME: undefined },
+  );
 });
 
 test("credentialShapedName is the name rule on its own", () => {

@@ -2,7 +2,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { openDb } from "../db.ts";
-import { onPath, run, type RunResult } from "../util/exec.ts";
+import { run, type RunResult } from "../util/exec.ts";
+import { locateExecutableSync } from "../executables/locator.ts";
 import { NativeWorktreeGit, type WorktreeGit } from "./git.ts";
 import {
   inspectWorktreeOccupancy,
@@ -193,7 +194,7 @@ export class LegacyTreehouseAdapter {
 
   constructor(deps: LegacyTreehouseAdapterDeps = {}) {
     this.execute = deps.execute ?? run;
-    this.present = deps.present ?? onPath;
+    this.present = deps.present ?? (() => locateExecutableSync("treehouse") !== null);
   }
 
   async capabilities(): Promise<LegacyTreehouseCapability> {

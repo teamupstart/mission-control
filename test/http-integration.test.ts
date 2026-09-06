@@ -122,7 +122,10 @@ test("/api/health surfaces the shared runtime identity + package version", async
   assert.equal(body.ok, true);
   assert.equal(body.service, "mission-control");
   assert.equal(body.version, pkgVersion);
-  assert.deepEqual(body.capabilities, ["criterion-mapped-workflow-evidence-v1"]);
+  assert.deepEqual(body.capabilities, [
+    "criterion-mapped-workflow-evidence-v1",
+    "daemon-executable-environment-v1",
+  ]);
 });
 
 test("a hook event (correct token) binds to the session and drives its state", async () => {

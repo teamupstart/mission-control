@@ -108,10 +108,10 @@ export function credentialShapedName(name: string): boolean {
  * stays a function a table-driven test can exhaust. Passing `""` (no token minted yet) is
  * legitimate and simply skips the value rule.
  *
- * Everything not named below SURVIVES, which is what makes a build work: `PATH`, `HOME`,
- * `SHELL`, `LANG` and the `LC_*` family, `TMPDIR`, `TZ`, and the proxy variables all pass
- * through, because a check that cannot find its own toolchain is a check that fails for a
- * reason having nothing to do with the change under review.
+ * Everything not named below SURVIVES, which is what makes a build work: `HOME`, `SHELL`,
+ * `LANG` and the `LC_*` family, `TMPDIR`, `TZ`, and the proxy variables all pass through.
+ * `PATH` is deliberately replaced by the daemon-owned executable snapshot inside
+ * `agentSubprocessEnv`, so checks use the same toolchain search path as every other child.
  */
 export function scrubCheckEnv(
   env: NodeJS.ProcessEnv,

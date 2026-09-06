@@ -20,6 +20,8 @@ import {
   isolatedScoutSubmissionCredentialPath,
   readToken,
 } from "../shared/harness-runtime.mjs";
+import { executableChildEnv } from "./executables/locator.ts";
+import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
@@ -130,7 +132,7 @@ export function agentSubprocessEnv(
   options: AgentSubprocessEnvOptions = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(base)) {
+  for (const [name, value] of Object.entries(executableChildEnv(base))) {
     if (value !== undefined) env[name] = value;
   }
   for (const name of STATE_HOME_ENV_NAMES) delete env[name];
@@ -187,10 +189,10 @@ export function isolatedAgentArgv(
     throw error;
   }
   return [
-    "/usr/bin/env",
+    FIXED_OS_EXECUTABLES.env,
     ...STATE_HOME_ENV_NAMES.flatMap((name) => ["-u", name]),
     ...Object.entries(env).map(([name, value]) => `${name}=${value}`),
-    "/bin/sh",
+    FIXED_OS_EXECUTABLES.sh,
     wrapper,
     ...argv,
   ];

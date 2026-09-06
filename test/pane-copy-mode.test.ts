@@ -10,6 +10,7 @@ import {
   type PaneDeps,
 } from "../src/server/actions.ts";
 import { bindSession } from "../src/server/terminal/registry.ts";
+import { resolveBin, TMUX_BIN } from "../src/server/terminal/bin.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { readTmuxPaneMode } from "../src/server/terminal/tmux.ts";
 import { run, stubRun, type RunResult } from "../src/server/util/exec.ts";
@@ -175,7 +176,7 @@ test("the same Escape goes straight through on a pane in no mode", async () => {
   const r = await interruptPaneSession(tmuxSession(), paneDeps(h));
 
   assert.equal(r.ok, true);
-  assert.deepEqual(h.argv, ["tmux send-keys -t %1 -- Escape"]);
+  assert.deepEqual(h.argv, [`${resolveBin(TMUX_BIN)} send-keys -t %1 -- Escape`]);
 });
 
 test("the Enter that answers a menu is refused when the pane is in a mode", async () => {

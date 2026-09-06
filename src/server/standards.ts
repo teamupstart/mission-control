@@ -6,6 +6,7 @@ import { readRepoDoc, realpathOr } from "./util/repo-doc.ts";
 import type { RepoDoc } from "./util/repo-doc.ts";
 import { run } from "./util/exec.ts";
 import { decodeUtf8Whole, utf8Bytes } from "./util/utf8.ts";
+import { locateExecutable } from "./executables/locator.ts";
 
 // The repo's own standards docs - what the queue verifier judges an item's diff
 // against when it asks "was this actually finished, to this repo's bar?".
@@ -240,12 +241,15 @@ async function gitTreeEntries(
   return entries;
 }
 
-function gitBlobPrefix(repoRoot: string, oid: string, limit: number): Promise<Buffer | null> {
-  return new Promise((resolveBlob) => {
+async function gitBlobPrefix(repoRoot: string, oid: string, limit: number): Promise<Buffer | null> {
+  const executable = await locateExecutable("git");
+  if (!executable) return null;
+  return await new Promise((resolveBlob) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn("git", ["-C", repoRoot, "cat-file", "blob", oid], {
+      child = spawn(executable.path, ["-C", repoRoot, "cat-file", "blob", oid], {
         stdio: ["ignore", "pipe", "ignore"],
+        env: executable.env,
       });
     } catch {
       resolveBlob(null);

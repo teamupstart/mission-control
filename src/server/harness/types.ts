@@ -519,7 +519,8 @@ export interface BackgroundSpec {
  * is a different rule for a different problem: a raw env key plus an ordered list of
  * absolute candidates probed with `existsSync`, because a terminal emulator hides inside a
  * `.app`. An agent CLI is bare on PATH, and validated separately at dispatch
- * (`resolveBinPath`). Do not unify them without a reason beyond the shared word "bin".
+ * (`resolveBinPath`). The daemon locator now owns both paths; this type still describes the
+ * harness-specific configured command that is handed to that shared boundary.
  */
 export interface BinSpec {
   /**

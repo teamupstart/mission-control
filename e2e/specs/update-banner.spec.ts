@@ -128,7 +128,9 @@ test("desktop update banner exposes the complete update flow while the browser s
   }, available);
   await dashboard.reload();
 
-  const status = dashboard.getByRole("status");
+  // The Fleet's loading placeholder is also a live-region status. The update component keeps
+  // one accessible name across available, preparing, ready, applying, and error states.
+  const status = dashboard.getByRole("status", { name: "Mission Control update" });
   await expect(status).toContainText("0.2.0");
   await expect(status).toContainText("A clearer dashboard and faster local sessions.");
   expect(await status.evaluate((banner) => banner.closest("header"))).toBeNull();

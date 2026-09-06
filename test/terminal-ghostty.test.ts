@@ -15,6 +15,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
+import {
+  executableCandidateContext,
+  executableSpec,
+} from "../src/server/executables/catalog.ts";
 import { GHOSTTY_BIN, binPresent, resolveBin } from "../src/server/terminal/bin.ts";
 import { asQuote, ghosttyEmulator, parseSurfaces } from "../src/server/terminal/ghostty.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
@@ -72,14 +76,19 @@ test("the binary answers 'is it installed' and is never the thing that runs", as
   // supported on this platform" and the bundle is built `app runtime: .none`, so the GUI is
   // driven by Apple Events - and `binPresent` still needs a real path to test.
   assert.equal(resolveBin(GHOSTTY_BIN), "/Applications/Ghostty.app/Contents/MacOS/ghostty");
-  assert.equal(GHOSTTY_BIN.env, "GHOSTTY_BIN");
+  const declared = executableSpec("ghostty");
+  assert.equal(declared.overrideEnv, "GHOSTTY_BIN");
 
   // No bare PATH candidate, deliberately: `ghostty` is normally absent from PATH on macOS
   // and normally PRESENT on Linux, where the AppleScript this adapter depends on does not
   // exist. A bare candidate would report "installed" on exactly the platform where every
   // call must fail.
-  assert.equal(GHOSTTY_BIN.candidates.includes("ghostty"), false);
-  assert.equal(binPresent({ ...GHOSTTY_BIN, env: null, candidates: ["/nope/ghostty"] }), false);
+  assert.equal(declared.searchPath, false);
+  assert.equal(declared.candidates(executableCandidateContext()).includes("ghostty"), false);
+  assert.equal(
+    binPresent({ env: null, candidates: ["/nope/ghostty"], dropEnv: [] }),
+    false,
+  );
 
   const { calls, exec } = recorder();
   await ghosttyEmulator(exec).list!();

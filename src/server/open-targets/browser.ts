@@ -114,8 +114,12 @@ async function macBundle(deps: OpenDeps): Promise<string> {
  * argv, which is a parser this feature should not own.
  */
 async function linuxLauncher(deps: OpenDeps): Promise<OpenResolution> {
-  if (deps.installed("gtk-launch", deps.env) && deps.installed("xdg-settings", deps.env)) {
-    const setting = await deps.run("xdg-settings", ["get", "default-web-browser"], {
+  const gtkLaunch = deps.resolveBin?.("gtk-launch", deps.env)
+    ?? (deps.installed("gtk-launch", deps.env) ? "gtk-launch" : null);
+  const xdgSettings = deps.resolveBin?.("xdg-settings", deps.env)
+    ?? (deps.installed("xdg-settings", deps.env) ? "xdg-settings" : null);
+  if (gtkLaunch && xdgSettings) {
+    const setting = await deps.run(xdgSettings, ["get", "default-web-browser"], {
       timeoutMs: 4000,
       env: deps.env,
     });
@@ -125,15 +129,17 @@ async function linuxLauncher(deps: OpenDeps): Promise<OpenResolution> {
         ok: true,
         launcher: {
           detail: desktop.replace(/\.desktop$/, ""),
-          command: (file) => ({ bin: "gtk-launch", args: [desktop, file] }),
+          command: (file) => ({ bin: gtkLaunch, args: [desktop, file] }),
         },
       };
     }
   }
-  if (deps.installed("xdg-open", deps.env)) {
+  const xdgOpen = deps.resolveBin?.("xdg-open", deps.env)
+    ?? (deps.installed("xdg-open", deps.env) ? "xdg-open" : null);
+  if (xdgOpen) {
     return {
       ok: true,
-      launcher: { detail: null, command: (file) => ({ bin: "xdg-open", args: [file] }) },
+      launcher: { detail: null, command: (file) => ({ bin: xdgOpen, args: [file] }) },
     };
   }
   return {
@@ -147,13 +153,14 @@ export const browserTarget: OpenTargetImpl = {
   async resolve(deps) {
     if (deps.platform === "darwin") {
       const bundle = await macBundle(deps);
+      const open = deps.resolveBin?.("open", deps.env) ?? "open";
       return {
         ok: true,
         launcher: {
           detail: bundleDisplayName(bundle),
           // The path is passed as-is rather than as a `file://` URL: it is absolute, so it
           // can never be read as a flag, and it needs no percent-encoding to survive.
-          command: (file) => ({ bin: "open", args: ["-b", bundle, file] }),
+          command: (file) => ({ bin: open, args: ["-b", bundle, file] }),
         },
       };
     }

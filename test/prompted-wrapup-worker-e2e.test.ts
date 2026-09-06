@@ -296,6 +296,10 @@ async function runWorker(
         MISSION_CLAUDE_BIN: opts.claudeBin,
         MISSION_CLAUDE_TRANSPORT: "print",
         FAKE_CLAUDE_LOG: opts.claudeLog,
+        // A standalone Foreman now initializes the login-shell contract. Keep this fixture
+        // independent of an operator's startup files: Node refuses `-ilc` immediately, so
+        // the worker exercises deterministic inherited-PATH degradation instead.
+        SHELL: process.execPath,
         // The trigger requires a settled idle session; the fixtures above are two
         // minutes idle, so this only keeps the test honest about which gate it passed.
         FOREMAN_QUEUE_SETTLE_MS: "1000",

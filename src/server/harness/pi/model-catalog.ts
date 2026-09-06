@@ -15,6 +15,7 @@ import {
 } from "../../agent-subprocess-env.ts";
 import { resolveBinPath } from "../../util/exec.ts";
 
+
 /** Exact isolation flags for the prompt-free, no-session Pi catalog probe. */
 export const PI_MODEL_CATALOG_ARGS = [
   "--mode",

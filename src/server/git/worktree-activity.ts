@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readlink, realpath } from "node:fs/promises";
 import { sep } from "node:path";
 import { taskRepoRefs, type TaskRepoRef, type TaskRepoSource } from "@shared/task-repos.ts";
+import { locateExecutable } from "../executables/locator.ts";
 
 // "Has anything Git can SEE changed in this checkout since the last time we looked?"
 //
@@ -219,12 +220,14 @@ function gitArgs(args: string[]): string[] {
   return ["--no-optional-locks", ...args];
 }
 
-function gitStream(
+async function gitStream(
   cwd: string,
   args: string[],
   onChunk: (chunk: Buffer) => void,
 ): Promise<GitStreamResult> {
-  return new Promise((resolve) => {
+  const executable = await locateExecutable("git");
+  if (!executable) return { code: null, overflowed: false, died: true };
+  return await new Promise((resolve) => {
     let seen = 0;
     let overflowed = false;
     let settled = false;
@@ -241,12 +244,12 @@ function gitStream(
     }, GIT_READ_TIMEOUT_MS);
     timer.unref?.();
     try {
-      child = spawn("git", gitArgs(args), {
+      child = spawn(executable.path, gitArgs(args), {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         // The same refusal as `--no-optional-locks`, through the environment, so any helper
         // git chooses to invoke on its own inherits it too.
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        env: { ...executable.env, GIT_OPTIONAL_LOCKS: "0" },
       });
     } catch {
       // A spawn refusal (no git on PATH, EAGAIN, a cwd that vanished) is reported as a died

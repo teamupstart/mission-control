@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { refreshLoginShellPath } from "./path-env.ts";
+import { executableLocator } from "../executables/locator.ts";
 
 /** Refresh the daemon's process PATH through the shared, cooldown-bounded shell probe. */
 export async function refreshProcessPathFromLoginShell(
@@ -33,46 +34,22 @@ export function onPath(bin: string, env: NodeJS.ProcessEnv = process.env): boole
 }
 
 /**
- * Where a bare command name resolves to, asked of the system's own resolver (`which`).
- * If the daemon's inherited PATH misses, refresh it from the user's login shell and retry.
- *
- * The third member of the family above, and it must NOT be merged into `onPath`. They
- * answer the same question at different prices and with different authority:
- *
- *  - `onPath` walks `PATH` with `existsSync`. No subprocess, so it is cheap enough to ask
- *    per keystroke - and it tests EXISTENCE, not executability, so a non-executable file
- *    with the right name satisfies it.
- *  - This spawns `which`, which is the resolution the shell would actually perform, and it
- *    yields the resolved path rather than a boolean. It costs a `fork` + `execve`.
- *
- * `check-spawn.ts:29-35` documents why a command precheck must not use `onPath`, and that
- * reasoning only holds while the two stay separately named. Callers pick deliberately:
- * `agentBinPresent` wants the resolver's answer because the very next thing it does is spawn
- * the binary it asked about.
+ * Resolve a command through the daemon-owned executable contract. Bare names use the same
+ * ordered search path, executable-bit check, cache generation, and provenance rules as every
+ * declared tool. Absolute paths are checked directly.
  *
  * A path containing a separator is not a PATH lookup at all - it names one file, so it is
  * answered from the filesystem, and null means "not there".
  */
 export async function resolveBinPath(bin: string): Promise<string | null> {
-  if (bin.includes("/")) return existsSync(bin) ? bin : null;
-  const resolve = async (): Promise<string | null> => {
-    const r = await run("which", [bin]);
-    const p = r.stdout.trim().split("\n")[0];
-    return r.code === 0 && p ? p : null;
-  };
-  const inherited = await resolve();
-  if (inherited) return inherited;
-
-  // Concurrent misses share one asynchronous shell read. Later misses reuse that result for
-  // a cooldown, so a genuinely absent optional command cannot source rc files without bound.
-  await refreshProcessPathFromLoginShell();
-  return resolve();
+  const resolved = await executableLocator.resolveCommand(bin);
+  return resolved?.path ?? null;
 }
 
 /**
  * Whether `bin` is resolvable at all - `resolveBinPath` with the path discarded.
  *
- * Exported for callers that need the system resolver's answer without keeping the path.
+ * Exported for callers that need the shared locator's answer without keeping the path.
  */
 export async function hasBin(bin: string): Promise<boolean> {
   return (await resolveBinPath(bin)) !== null;
@@ -123,7 +100,7 @@ export function stubRun(partial: Pick<RunResult, "stdout" | "stderr" | "code">):
  *
  * "Never throws" includes the argv being too big to spawn at all: see `E2BIG` below.
  */
-export function run(
+export async function run(
   bin: string,
   args: string[],
   opts: {
@@ -149,19 +126,34 @@ export function run(
     maxBuffer?: number;
   } = {},
 ): Promise<RunResult> {
-  return new Promise((resolve) => {
+  const executable = await executableLocator.resolveCommand(bin, {
+    env: opts.env,
+    cwd: opts.cwd,
+  });
+  if (!executable) {
+    return {
+      stdout: "",
+      stderr: `executable "${bin}" was not found in the executable environment`,
+      code: 1,
+      childPid: null,
+      outcomeUnknown: false,
+      overflowed: false,
+    };
+  }
+  const resolved = executable.path;
+  return await new Promise((resolve) => {
     let child: ReturnType<typeof execFile>;
     let childPid: number | null = null;
     try {
       child = execFile(
-        bin,
+        resolved,
         args,
         {
           timeout: opts.timeoutMs ?? 4000,
           maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024,
           windowsHide: true,
           cwd: opts.cwd,
-          env: opts.env,
+          env: executable.env,
         },
         (err, stdout, stderr) => {
           const code =

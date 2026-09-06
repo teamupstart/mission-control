@@ -362,7 +362,7 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: (line) => logged.push(line),
-    timeoutMs: 200,
+    timeoutMs: 1000,
     exitTimeoutMs: 400,
   });
 
@@ -467,7 +467,7 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: (line) => logged.push(line),
-    timeoutMs: 200,
+    timeoutMs: 1000,
     exitTimeoutMs: 300,
   });
   assert.equal(first.ok, false);
@@ -482,7 +482,7 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: (line) => logged.push(line),
-    timeoutMs: 200,
+    timeoutMs: 1000,
     exitTimeoutMs: 300,
   });
   assert.equal(second.ok, false);
@@ -505,7 +505,7 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: () => {},
-    timeoutMs: 200,
+    timeoutMs: 1000,
     exitTimeoutMs: 300,
   });
   // It ran this time - and timed out on its own terms, which is a different refusal.

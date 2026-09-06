@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { locateExecutableSync } from "../executables/locator.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -143,8 +144,11 @@ function linuxIdentity(pid: number): string | null {
 function darwinIdentity(pid: number): string | null {
   let raw: string;
   try {
-    raw = execFileSync("ps", ["-ww", "-o", "lstart=,command=", "-p", String(pid)], {
+    const executable = locateExecutableSync("ps");
+    if (!executable) return null;
+    raw = execFileSync(executable.path, ["-ww", "-o", "lstart=,command=", "-p", String(pid)], {
       encoding: "utf8",
+      env: executable.env,
       timeout: 5_000,
       maxBuffer: 1024 * 1024,
       // stderr discarded: a dead pid is an ordinary answer here, not something to print.

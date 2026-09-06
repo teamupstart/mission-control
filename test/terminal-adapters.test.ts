@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { executableLocator } from "../src/server/executables/locator.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
 import { parseClients, parsePanes, SEP, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
 import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
+import { withProcessEnv } from "./helpers/process-env.ts";
 
 // What is at stake: the things the two backends disagree about, which used to be resolved at
 // ~20 call sites and must be resolved once, here.
@@ -446,7 +448,7 @@ test("a backend drops its own environment pin, and only its own", async () => {
   // name that Focus cannot raise. Dropping it recovers the live default.
   const wezEnv = binEnv(WEZTERM_BIN, base);
   assert.equal(wezEnv.WEZTERM_UNIX_SOCKET, undefined);
-  assert.equal(wezEnv.PATH, "/usr/bin", "everything else passes through untouched");
+  assert.equal(wezEnv.PATH, executableLocator.snapshot().path, "the daemon snapshot owns PATH");
   // Not the other backend's. A shared scrub list would be one vendor's rule applied to
   // every backend on the machine.
   assert.equal(wezEnv.TMUX, base.TMUX);
@@ -456,7 +458,10 @@ test("a backend drops its own environment pin, and only its own", async () => {
   // different live server rather than restoring a dead one; and the ~19 inline
   // `run("tmux", …)` writes still inherit it, so scrubbing it here alone would build cards
   // from one server's pane ids and send keystrokes to another server's pane of that name.
-  assert.deepEqual(binEnv(TMUX_BIN, base), base);
+  assert.deepEqual(binEnv(TMUX_BIN, base), {
+    ...base,
+    PATH: executableLocator.snapshot().path,
+  });
 });
 
 test("the env rule reaches every command, not just the spec", async () => {
@@ -490,4 +495,18 @@ test("a binary is the env override, then the first path that exists, then PATH",
   } finally {
     delete process.env.MISSION_TEST_BIN;
   }
+});
+
+test("a bound backend whose catalog binary disappeared fails under its command name", async () => {
+  await withProcessEnv(
+    { MISSION_TMUX_BIN: "/definitely/not/a/real/tmux" },
+    async () => {
+      assert.equal(resolveBin(TMUX_BIN), "tmux");
+
+      const result = await tmuxMultiplexer().write.keys(MUX, ["escape"]);
+      assert.equal(result.ok, false);
+      assert.equal(result.outcomeUnknown, false);
+      assert.match(result.error ?? "", /executable "tmux" was not found/);
+    },
+  );
 });

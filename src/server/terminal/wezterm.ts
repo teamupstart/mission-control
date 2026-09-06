@@ -25,7 +25,7 @@ import type {
  * this backend does goes through `cli` below, which carries the two operational facts that
  * took a while to learn: `--no-auto-start`, which turns a 2.5s block into a fast failure when
  * no GUI is running, and the inherited `WEZTERM_UNIX_SOCKET` that goes stale when a GUI
- * restarts (now `WEZTERM_BIN.dropEnv`, so tmux gets the same treatment for the same reason).
+ * restarts (now the executable catalog's wezterm `dropEnv`).
  *
  * Routing the pane I/O through them was a DELIBERATE behavior change rather than a move -
  * the commit that did it should be read as one. The inline call sites it replaced (in

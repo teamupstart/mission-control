@@ -468,14 +468,14 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   };
 
   if (piOnLoginShellOnly) {
-    isolatedEnv.MISSION_PI_BIN = "pi";
+    delete isolatedEnv.MISSION_PI_BIN;
     isolatedEnv.PATH = `/usr/bin${delimiter}/bin`;
     isolatedEnv.SHELL = loginShell;
     isolatedEnv.MC_E2E_LOGIN_SHELL_PATH =
       `${dirname(loginPiBin)}${delimiter}${dirname(process.execPath)}${delimiter}/usr/bin${delimiter}/bin`;
     delete isolatedEnv.MC_E2E_PI_LOGIN_SHELL_ONLY;
   } else if (piOnVersionManagerShimOnly) {
-    isolatedEnv.MISSION_PI_BIN = "pi";
+    delete isolatedEnv.MISSION_PI_BIN;
     isolatedEnv.PATH = `${versionManagerRuntimeBin}${delimiter}/usr/bin${delimiter}/bin`;
     isolatedEnv.SHELL = join(home, "missing-login-shell");
     isolatedEnv.MISE_SHIMS_DIR = dirname(versionManagerPiBin);

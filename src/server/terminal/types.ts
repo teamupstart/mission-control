@@ -525,8 +525,15 @@ export interface TerminalEmulator {
  * unreachable with no way to say so, and nothing sanitized tmux's inherited environment at
  * all.
  */
-export interface BinSpec {
-  /** Env var that overrides everything, or null when the backend has no such convention. */
+interface CatalogBinSpec {
+  /** Production backends carry only the identity of their authoritative catalog entry. */
+  id: import("@shared/executables.ts").ExecutableId;
+}
+
+interface CompatibilityBinSpec {
+  /** Anonymous injected specs have no catalog identity. */
+  id?: undefined;
+  /** Env var that overrides everything, or null when the injected spec has no convention. */
   env: string | null;
   /**
    * Candidates tried in order. The last is conventionally the bare name, i.e. "hope it is
@@ -549,3 +556,5 @@ export interface BinSpec {
    */
   dropEnv: readonly string[];
 }
+
+export type BinSpec = CatalogBinSpec | CompatibilityBinSpec;

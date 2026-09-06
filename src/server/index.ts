@@ -97,7 +97,11 @@ import { SettingsBackupService } from "./settings-backups/service.ts";
 import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
+import { initializeExecutableEnvironment } from "./executables/locator.ts";
 
+// Every launch mode owns the same executable snapshot before any subsystem can detect or
+// start a child. An adopted daemon ran this in its own process when it originally launched.
+await initializeExecutableEnvironment();
 // Before SQLite is opened or migrations can run. The ownership file lives beside the
 // database, so API ports are irrelevant and two independent state homes remain independent.
 // Its native handle holds an OS lock for this process lifetime; crashes release that lock in

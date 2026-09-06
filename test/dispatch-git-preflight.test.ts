@@ -26,8 +26,17 @@ const home = mkdtempSync(join(tmpdir(), "mission-git-preflight-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { provisionWorktree, verifyPinnedBase } = await import("../src/server/dispatcher.ts");
+const { locateExecutableSync } = await import("../src/server/executables/locator.ts");
+const realGit = locateExecutableSync("git")?.path;
+assert.ok(realGit, "the Git preflight tests require a real Git executable");
+const originalGitOverride = process.env.MISSION_GIT_BIN;
+process.env.MISSION_GIT_BIN = realGit;
 
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  if (originalGitOverride === undefined) delete process.env.MISSION_GIT_BIN;
+  else process.env.MISSION_GIT_BIN = originalGitOverride;
+  rmSync(home, { recursive: true, force: true });
+});
 
 /**
  * A `git` that dies without reporting an exit of its own.
@@ -46,14 +55,18 @@ function fakeGitThatDies(): string {
   return dir;
 }
 
-/** Run `fn` with `dir` ahead of everything on PATH, and put PATH back afterwards. */
+/** Run `fn` with an explicit Git override, then restore the operator configuration. */
 async function withPath<T>(dir: string, fn: () => Promise<T>): Promise<T> {
-  const original = process.env.PATH;
-  process.env.PATH = `${dir}${delimiter}${original ?? ""}`;
+  const originalPath = process.env.PATH;
+  const originalOverride = process.env.MISSION_GIT_BIN;
+  process.env.PATH = `${dir}${delimiter}${originalPath ?? ""}`;
+  process.env.MISSION_GIT_BIN = join(dir, "git");
   try {
     return await fn();
   } finally {
-    process.env.PATH = original;
+    process.env.PATH = originalPath;
+    if (originalOverride === undefined) delete process.env.MISSION_GIT_BIN;
+    else process.env.MISSION_GIT_BIN = originalOverride;
   }
 }
 

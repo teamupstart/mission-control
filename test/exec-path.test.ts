@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -7,6 +15,7 @@ import test from "node:test";
 import {
   refreshProcessPathFromLoginShell,
   resolveBinPath,
+  run,
 } from "../src/server/util/exec.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
 
@@ -65,6 +74,90 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
       },
     );
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("run uses the catalog child environment for terminal-specific scrubbing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-run-drop-env-"));
+  const cmux = join(root, "cmux");
+  writeFileSync(
+    cmux,
+    [
+      "#!/bin/sh",
+      'printf "%s|%s|%s" "$CMUX_WORKSPACE_ID" "$CMUX_SURFACE_ID" "$CMUX_TAB_ID"',
+      "",
+    ].join("\n"),
+  );
+  chmodSync(cmux, 0o755);
+
+  try {
+    await withProcessEnv(
+      {
+        MISSION_CMUX_BIN: cmux,
+        CMUX_WORKSPACE_ID: "workspace",
+        CMUX_SURFACE_ID: "surface",
+        CMUX_TAB_ID: "tab",
+      },
+      async () => {
+        const result = await run("cmux", [], { env: { ...process.env } });
+        assert.equal(result.code, 0);
+        assert.equal(result.stdout, "||");
+      },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("run resolves and launches a bare command from the explicit child PATH", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-run-child-path-"));
+  const binDir = join(root, "bin");
+  const node = join(binDir, "node");
+  mkdirSync(binDir);
+  writeFileSync(node, "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PATH\"\n");
+  chmodSync(node, 0o755);
+
+  try {
+    await withProcessEnv(
+      {
+        MISSION_NODE_BIN: undefined,
+        FLEET_NODE_BIN: undefined,
+        HARNESS_NODE_BIN: undefined,
+      },
+      async () => {
+        const result = await run("node", ["-p", "process.execPath"], {
+          env: { ...process.env, PATH: binDir },
+        });
+        assert.equal(result.code, 0);
+        assert.deepEqual(result.stdout.trim().split("\n"), [node, binDir]);
+      },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("relative command paths resolve absolutely and execute from the requested cwd", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mission-run-relative-path-"));
+  const canonicalRoot = realpathSync(root);
+  const binDir = join(canonicalRoot, "bin");
+  const tool = join(binDir, "local-tool");
+  const previousCwd = process.cwd();
+  mkdirSync(binDir);
+  writeFileSync(tool, "#!/bin/sh\nprintf '%s\\n%s\\n' \"$0\" \"$PWD\"\n");
+  chmodSync(tool, 0o755);
+
+  try {
+    process.chdir(canonicalRoot);
+    assert.equal(await resolveBinPath("./bin/local-tool"), tool);
+    process.chdir(previousCwd);
+
+    const result = await run("bin/local-tool", [], { cwd: canonicalRoot });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.stdout.trim().split("\n"), [tool, canonicalRoot]);
+  } finally {
+    process.chdir(previousCwd);
     rmSync(root, { recursive: true, force: true });
   }
 });

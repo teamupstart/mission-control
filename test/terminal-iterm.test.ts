@@ -4,6 +4,10 @@ import test from "node:test";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { appleScriptString, appleScriptText } from "../src/server/terminal/applescript.ts";
 import { binPresent, ITERM_BIN, resolveBin } from "../src/server/terminal/bin.ts";
+import {
+  executableCandidateContext,
+  executableSpec,
+} from "../src/server/executables/catalog.ts";
 import { itermEmulator, parseItermSessions } from "../src/server/terminal/iterm.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
 
@@ -56,10 +60,25 @@ test("declares the complete iTerm2 capability surface and passive host gate", ()
 });
 
 test("detects only the configured app bundle without a PATH fallback", () => {
-  assert.equal(ITERM_BIN.env, "ITERM_BIN");
-  assert.deepEqual(ITERM_BIN.candidates, ["/Applications/iTerm.app/Contents/MacOS/iTerm2"]);
-  assert.equal(resolveBin({ ...ITERM_BIN, env: null }), "/Applications/iTerm.app/Contents/MacOS/iTerm2");
-  assert.equal(binPresent({ ...ITERM_BIN, env: null, candidates: ["/nope/iTerm2"] }), false);
+  const declared = executableSpec("iterm");
+  assert.equal(declared.overrideEnv, "ITERM_BIN");
+  assert.equal(declared.searchPath, false);
+  assert.deepEqual(declared.candidates(executableCandidateContext()), [
+    "/Applications/iTerm.app/Contents/MacOS/iTerm2",
+    `${process.env.HOME}/Applications/iTerm.app/Contents/MacOS/iTerm2`,
+  ]);
+  assert.equal(
+    resolveBin({
+      env: null,
+      candidates: ["/Applications/iTerm.app/Contents/MacOS/iTerm2"],
+      dropEnv: [],
+    }),
+    "/Applications/iTerm.app/Contents/MacOS/iTerm2",
+  );
+  assert.equal(
+    binPresent({ env: null, candidates: ["/nope/iTerm2"], dropEnv: [] }),
+    false,
+  );
 });
 
 test("enumerates every window, tab, and session through one stdin script", async () => {

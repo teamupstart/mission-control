@@ -1,5 +1,6 @@
 import { OPEN_TARGET_IDS, type OpenTargetId, type OpenTargetView } from "@shared/open-targets.ts";
-import { onPath, run } from "../util/exec.ts";
+import { run } from "../util/exec.ts";
+import { locateCommandSync } from "../executables/locator.ts";
 import { browserTarget } from "./browser.ts";
 import type { OpenDeps, OpenTargetImpl } from "./types.ts";
 
@@ -26,7 +27,8 @@ export const defaultOpenDeps: OpenDeps = {
   run,
   platform: process.platform,
   env: process.env,
-  installed: onPath,
+  installed: (bin) => locateCommandSync(bin) !== null,
+  resolveBin: (bin) => locateCommandSync(bin)?.path ?? null,
 };
 
 /**

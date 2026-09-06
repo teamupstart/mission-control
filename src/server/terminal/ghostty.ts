@@ -1,4 +1,5 @@
 import { GHOSTTY_BIN } from "./bin.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
@@ -218,7 +219,7 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
    * ordinary refusal that delivered nothing.
    */
   const osa = (script: string, timeoutMs: number) =>
-    exec("/usr/bin/osascript", ["-e", script], { timeoutMs });
+    exec(FIXED_OS_EXECUTABLES.osascript, ["-e", script], { timeoutMs });
 
   /** A surface, addressed at application level - `terminal` is an element of `application`. */
   const surface = (t: EmulatorTarget) =>

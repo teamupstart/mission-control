@@ -374,7 +374,10 @@ function SetupRow({ row, home }: { row: SetupRowView; home: string }): React.JSX
           )}
         </div>
         {satisfied ? (
-          <Evidence evidence={status.evidence} home={home} />
+          <>
+            <Evidence evidence={status.evidence} home={home} />
+            {status.source && <p className="setup-source">Source: {status.source}</p>}
+          </>
         ) : (
           <>
             <p className="setup-impact">{row.enables}</p>
@@ -549,8 +552,18 @@ function VerdictHeader({
         )}
       </div>
       <div className="setup-verdict-actions">
+        {/* This is a tour target, so its DOM identity must survive the loading transition.
+            Keep the native trigger mounted and express the brief unavailable state with
+            aria-disabled. Tooltip can then merge its handlers into the same button instead
+            of adding the disabled-trigger anchor that would disconnect Driver's target. */}
         <Tooltip label="Inspect this machine again">
-          <button type="button" className="btn btn-ghost" disabled={loading} onClick={onRefresh} ref={recheckRef}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            aria-disabled={loading}
+            onClick={loading ? undefined : onRefresh}
+            ref={recheckRef}
+          >
             {loading ? "Checking..." : "Re-check"}
           </button>
         </Tooltip>

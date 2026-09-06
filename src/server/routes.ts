@@ -6,6 +6,7 @@ import type { TypeOf, ZodTypeAny } from "zod";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
@@ -1346,7 +1347,7 @@ export function buildApp(
     const result = await terminalLauncher(parsed.data.backend, {
       name: `worktree-${slotId.slice(0, 8)}`,
       cwd,
-      argv: [process.env.SHELL || "/bin/sh", "-l"],
+      argv: [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-l"],
     });
     const body = {
       ok: result.ok,
@@ -3285,7 +3286,7 @@ export function buildApp(
     // files, so PATH, nvm/rbenv shims and prompt all differ from the terminal that person
     // opens by hand - in a window that exists to run the same commands they would. Every
     // shell this can resolve to (bash, zsh, fish, ksh, dash, csh/tcsh) accepts `-l`.
-    const argv = [process.env.SHELL || "/bin/sh", "-l"];
+    const argv = [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-l"];
     const result = await terminalLauncher(backend, { name: session.name, cwd: shellRoot, argv });
     const body = {
       ok: result.ok,
@@ -6144,7 +6145,7 @@ export function buildApp(
     }
 
     const installerArgv = [
-      "/usr/bin/env",
+      FIXED_OS_EXECUTABLES.env,
       ...Object.entries(launch.terminalEnv).map(([name, value]) => `${name}=${value}`),
       ...launch.argv,
     ];
@@ -6156,7 +6157,7 @@ export function buildApp(
     const result = await terminalLauncher(body.backend, {
       name: launch.title,
       cwd: launch.cwd,
-      argv: [process.env.SHELL || "/bin/sh", "-c", hold],
+      argv: [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-c", hold],
     });
     const answer: PipelineInstallerLaunchResult = {
       ok: result.ok,
@@ -6429,7 +6430,7 @@ export function buildApp(
     const result = await terminalLauncher(body.backend, {
       name: pipelineConsoleName(body.provider, body.console, body.slug),
       cwd: launch.cwd,
-      argv: [process.env.SHELL || "/bin/sh", "-c", hold],
+      argv: [process.env.SHELL || FIXED_OS_EXECUTABLES.sh, "-c", hold],
     });
     const answer: PipelineConsoleResult = {
       ok: result.ok,

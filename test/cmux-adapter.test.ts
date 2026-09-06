@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
+import { executableSpec } from "../src/server/executables/catalog.ts";
 import { binEnv } from "../src/server/terminal/bin.ts";
 import {
   CMUX_BIN,
@@ -250,6 +251,7 @@ test("paste is bracketed, and does not submit", async () => {
 test("the inherited default-target ids are dropped from every command", async () => {
   const rec = recorder();
   const cmux = cmuxMultiplexer(rec.exec);
+  const dropped = executableSpec("cmux").dropEnv;
   await cmux.list();
   await cmux.write.text(TARGET, "x");
   await cmux.capture!(TARGET);
@@ -261,7 +263,7 @@ test("the inherited default-target ids are dropped from every command", async ()
     // pin like TMUX - they are a default TARGET. An untargeted command lands in whichever
     // workspace the daemon happened to be launched in; verified, the same `cmux send` hit
     // workspace:1 bare and workspace:2 with the variable set.
-    for (const key of CMUX_BIN.dropEnv) {
+    for (const key of dropped) {
       assert.equal(call.env?.[key], undefined, `${key} must not reach ${call.args[0]}`);
     }
     // And the notices go to stdout in front of the JSON, so a warned-about command name is
@@ -269,7 +271,7 @@ test("the inherited default-target ids are dropped from every command", async ()
     assert.equal(call.env?.CMUX_QUIET, "1");
   }
   assert.deepEqual(
-    CMUX_BIN.dropEnv.filter((k) => k in binEnv(CMUX_BIN, { CMUX_WORKSPACE_ID: "x" })),
+    dropped.filter((k) => k in binEnv(CMUX_BIN, { CMUX_WORKSPACE_ID: "x" })),
     [],
   );
 });

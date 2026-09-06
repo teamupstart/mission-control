@@ -261,7 +261,8 @@ screenshot locators, never repository metadata or filesystem paths. See
 environment line and image locators may contain and what they never contain.
 
 **Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
-authorizes that exact preview through the desktop shell and files it without a warning dialog or
+has its trusted control click captured by the isolated desktop preload, authorizes that exact
+preview through the desktop shell, and files it without a warning dialog or
 a second button press. The button stays busy through the internal authorization, confirmation,
 and submission requests, so another press cannot race the first one. If the derived content
 changes before publication, Mission Control refuses it and refreshes the preview rather than

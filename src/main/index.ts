@@ -179,10 +179,11 @@ function registerIpc(updateController: UpdateController): void {
     showIntegrationResult("Integrations", r.message);
     return r;
   });
-  ipcMain.handle("mission:authorize-product-issue", (event, input: unknown) => {
+  ipcMain.on("mission:product-issue-report-click", (event, input: unknown) => {
+    event.returnValue = false;
     const mainContents = getMainWindow()?.webContents;
-    if (!mainContents || event.sender !== mainContents) return false;
-    return armProductIssueAuthorization(input);
+    if (!mainContents || event.sender !== mainContents) return;
+    event.returnValue = armProductIssueAuthorization(input);
   });
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));

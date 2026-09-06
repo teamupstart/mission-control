@@ -90,18 +90,9 @@ async function publish(page: Page): Promise<void> {
 const titleBox = (page: Page) =>
   form(page).getByRole("textbox", { name: "Title", exact: true });
 
-test.beforeEach(async ({ dashboard, daemon }) => {
+test.beforeEach(({ daemon }) => {
   script(daemon, { preflight: "ok", issueCreate: "created" });
   writeProductAuthorizationScript(daemon.home, { answer: "grant" });
-  await dashboard.evaluate(() => {
-    Object.defineProperty(window, "missionDesktop", {
-      configurable: true,
-      value: {
-        isDesktop: true,
-        authorizeProductIssue: () => Promise.resolve(true),
-      },
-    });
-  });
 });
 
 test("a loopback caller cannot authorize itself, while one Report click publishes", async ({

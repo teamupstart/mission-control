@@ -7,6 +7,25 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 
+const PRODUCT_ISSUE_REPORT_SELECTOR = "button[data-product-issue-report]";
+
+// Context isolation keeps this trusted-click capture outside the page's JavaScript world.
+// No arming function is exposed to page code: only the exact rendered identity carried by a
+// real Report-control click reaches main, synchronously before React submits the form.
+window.addEventListener("click", (event) => {
+  if (
+    !event.isTrusted ||
+    navigator.userActivation?.isActive !== true ||
+    !(event.target instanceof Element)
+  ) return;
+  const button = event.target.closest<HTMLButtonElement>(PRODUCT_ISSUE_REPORT_SELECTOR);
+  if (!button || button.disabled) return;
+  const requestId = button.dataset.productIssueRequestId;
+  const draftIdentity = button.dataset.productIssueDraftIdentity;
+  if (!requestId || !draftIdentity) return;
+  ipcRenderer.sendSync("mission:product-issue-report-click", { requestId, draftIdentity });
+}, true);
+
 contextBridge.exposeInMainWorld("missionDesktop", {
   isDesktop: true,
   version: (): Promise<string> => ipcRenderer.invoke("mission:version"),
@@ -15,14 +34,6 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     ipcRenderer.invoke("mission:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("mission:remove-integrations"),
-  authorizeProductIssue: (
-    input: { requestId: string; draftIdentity: string },
-  ): Promise<boolean> => {
-    // Only the Report click should arm public publishing. Checking in the isolated preload
-    // world prevents ordinary page code or an HTTP caller from manufacturing that gesture.
-    if (navigator.userActivation?.isActive !== true) return Promise.resolve(false);
-    return ipcRenderer.invoke("mission:authorize-product-issue", input);
-  },
   updates: {
     getState: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-get-state"),
     check: (): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-check"),

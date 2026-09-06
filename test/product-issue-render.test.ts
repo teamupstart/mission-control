@@ -227,6 +227,9 @@ test("submit is closed until the draft validates, preflight is ready and a previ
 test("the ready form offers one report action without an armed intermediate state", () => {
   const html = draw();
   assert.match(html, /<button type="submit"[^>]*aria-label="Report publicly"/);
+  assert.match(html, /data-product-issue-report=""/);
+  assert.match(html, /data-product-issue-request-id="11111111-2222-4333-8444-555555555555"/);
+  assert.match(html, new RegExp(`data-product-issue-draft-identity="${"a".repeat(64)}"`));
   assert.doesNotMatch(html, /Publish to acme\/public-issues/);
   assert.doesNotMatch(html, /Ready to publish/);
 });

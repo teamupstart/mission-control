@@ -36,9 +36,11 @@ for use only after the user explicitly requests a report, shows the daemon-deriv
 Dismissed, orphaned, free-form, malformed, and non-human review answers publish nothing.
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
-publicly** press. That click first arms the exact rendered preview through the context-isolated
-Electron preload bridge. The shell accepts it only from the main dashboard web contents and only
-while the browser reports an active user gesture. It shows no second dialog. The daemon then asks
+publicly** press. The context-isolated Electron preload captures the trusted click on that exact
+control and its rendered preview identity. Page scripts have no arming API and cannot pass
+arbitrary preview values to the bridge. The shell accepts the capture only from the main
+dashboard web contents and only while the browser reports an active user gesture. It shows no
+second dialog. The daemon then asks
 the shell to consume that exact request id and draft identity over the private utility-process
 port. An authorization is short-lived and single-use, so another loopback process can preview and
 call the confirmation route but cannot produce the private reply that mints a grant.

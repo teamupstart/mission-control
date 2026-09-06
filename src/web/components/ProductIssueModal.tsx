@@ -533,6 +533,9 @@ export function ProductIssueModal({
               className="btn btn-primary"
               disabled={blocked}
               aria-label="Report publicly"
+              data-product-issue-report=""
+              data-product-issue-request-id={matched?.requestId}
+              data-product-issue-draft-identity={matched?.draftIdentity}
             >
               {submitting
                 ? "Publishing…"
@@ -692,7 +695,7 @@ export function ProductIssueLayer({
       requestId: requestIdRef.current,
       client: productIssueClient(),
     };
-    void publishProductIssue(request, matched.draftIdentity).then((next) => {
+    void publishProductIssue(request).then((next) => {
       submittingRef.current = false;
       setSubmitting(false);
       setResult(next.result);

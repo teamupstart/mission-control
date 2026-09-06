@@ -24,7 +24,7 @@ delivery.
 
 **Mission Control: The software factory that just feels good.**
 
-This repository is internal. It is not licensed for public distribution.
+Mission Control's source code is licensed under the [Apache License 2.0](LICENSE).
 
 ![Mission Control fleet board](docs/images/fleet-board.png)
 
@@ -259,6 +259,8 @@ There are two paths through this repository:
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh
+  git clone https://github.com/teamupstart/mission-control.git
+  cd mission-control
   make init
   npm run dev
   ```
@@ -277,6 +279,15 @@ setting in the app or use the environment variable as a process-level fallback:
 See [Configuration](docs/configuration.md) for the complete precedence rules and transport
 tradeoffs.
 
+## Community participation
+
+Public users may open bug reports and feature requests through GitHub Issues. This repository
+does not accept external pull requests: pull request creation is limited to authorized repository
+collaborators, including Upstart maintainers. If you want to propose a code or documentation
+change, describe it in an issue for the maintainers to evaluate. See
+[Contributing](CONTRIBUTING.md) for details, and use the private process in
+[SECURITY.md](SECURITY.md) for suspected vulnerabilities.
+
 ## Go deeper
 
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
@@ -284,4 +295,13 @@ tradeoffs.
   local state fit together.
 - [Harnesses and terminal backends](docs/harnesses-and-terminals.md) - the extension boundaries
   that make Mission Control adaptable.
-- [Security policy](SECURITY.md) - security posture and internal vulnerability reporting.
+- [Security policy](SECURITY.md) - security posture and private vulnerability reporting.
+
+## License
+
+Copyright 2026 Jordan Mance.
+
+Mission Control is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for
+attribution information. Third-party dependencies remain subject to their own license terms,
+including the `@anthropic-ai/claude-agent-sdk` dependency and
+[Anthropic's applicable commercial terms](https://code.claude.com/docs/en/legal-and-compliance).

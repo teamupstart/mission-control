@@ -1,7 +1,20 @@
 # Contributing to Mission Control
 
-Mission Control is an internal repository. Start here for a clone-to-green path,
-then use [AGENTS.md](AGENTS.md) for the agent-facing engineering contracts.
+Thank you for helping improve Mission Control. This guide covers public issue reporting,
+the clone-to-green path, and the pull request workflow for authorized repository
+collaborators. Automated coding agents must also follow [AGENTS.md](AGENTS.md).
+
+## Ways to contribute
+
+- Public users may open bug reports and feature requests through GitHub Issues.
+- Search existing issues first, then use the issue templates so maintainers receive enough
+  context to respond.
+- This repository does not accept external pull requests. If you have a proposed code or
+  documentation change, describe it in an issue for the maintainers to evaluate.
+- Pull requests are restricted to repository collaborators with write, maintain, or admin
+  access, such as authorized Upstart maintainers.
+- Do not report suspected vulnerabilities in a public issue. Follow the private process in
+  [SECURITY.md](SECURITY.md).
 
 ## Clone to green
 
@@ -13,8 +26,8 @@ Prerequisites:
   is intentionally not installed by `npm install`.
 
 ```sh
-git clone <repository-url>
-cd ai-harness
+git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
 make init
 npx playwright install chromium
 npm run typecheck
@@ -60,10 +73,9 @@ tests with the required scoped outside-sandbox approval; do not bypass the
 preflight or add Chromium flags.
 
 `npm test` runs six test files concurrently by default. Set
-`MISSION_TEST_CONCURRENCY` to override that local worker count. CI pins eight workers
-on the `frontend-platform` 8-core runner, while each Playwright shard uses four workers
-on the group's 4-core runner. These hosted values are explicit, so CI tuning does not
-depend on the local fallback.
+`MISSION_TEST_CONCURRENCY` to override that local worker count. CI uses ephemeral GitHub-hosted
+runners with an explicit worker and shard allocation so its behavior does not depend on the local
+fallback and pull request jobs remain isolated from shared self-hosted infrastructure.
 
 ## Test layers
 
@@ -85,25 +97,6 @@ The spec must never spend model tokens: agent binaries are redirected to the fak
 agents in `e2e/fixtures/fake-agents.ts`. Do not add `data-testid`; select by role,
 label, or placeholder.
 
-## Continuous integration
-
-The main CI workflow reports thirty non-package checks on a pull request:
-
-- Two Node-specific dependency producers and the shared `gates` check run on GitHub-hosted
-  `ubuntu-latest`. The dependency producers cache exact lockfile-keyed `node_modules` trees for
-  Node.js 24 and 26; `gates` runs typecheck and lint against the Node.js 24 tree.
-- Six Node.js 24 unit shards and six Node.js 26 unit shards run on the `frontend-platform`
-  `ubuntu-8cpu-32ram-300ssd` runner with eight test workers. Every shard also builds and smoke-tests
-  its own bundles, so either supported Node release can expose a runtime-only failure.
-- Fifteen Node.js 24 end-to-end shards run independently on the `frontend-platform`
-  `ubuntu-4cpu-32ram-150ssd` runner with four Playwright workers. Each shard builds the dashboard
-  and daemon it drives, and fake agents ensure the suite spends no model tokens.
-
-The three-minute test-step objective is a performance target, not a timeout; slower failures keep
-their diagnostics. The release-only macOS package job remains on `macos-14`, and a separate
-pull-request-title workflow keeps squash subjects parseable by Release Please. Treat runner group,
-labels, worker counts, and shard counts as one capacity decision and benchmark them together.
-
 ## Working well in this repository
 
 - Inspect `git status` before editing and keep unrelated work out of your change.
@@ -117,16 +110,41 @@ labels, worker counts, and shard counts as one capacity decision and benchmark t
   evidence. Put evidence under gitignored `e2e/.artifacts/<topic>/` and attach it
   to the pull request.
 
-## Pull requests
+## Submitting a change as a repository collaborator
 
-Before opening a pull request, run the checks that cover your change. At minimum,
-the expected bar is `npm run typecheck`, `npm run lint`, and `npm test`. Changes to
-build or runtime surfaces also need `npm run build` and `npm run smoke`; UI changes
-also need `npm run test:e2e` with a matching spec.
+These steps apply only to authorized repository collaborators. Public issue reporters do not
+need to clone the repository or prepare an implementation.
 
-Lint is a CI gate, so it does not pass silently when skipped locally. See
-[Continuous integration](#continuous-integration) before changing runner labels, worker counts,
-or shard counts.
+1. Create a focused branch from the latest `main`.
+2. Make one coherent change and add focused tests for behavior changes.
+3. Run the checks that cover the change. Documentation-only changes do not require the full
+   runtime suite, but links, commands, and formatting must still be verified.
+4. Open a pull request using the repository template. Explain the outcome, tradeoffs, known
+   gaps, verification, and any follow-up work.
+5. Respond to review feedback with additional commits. Maintainers will squash the pull
+   request when it is ready to merge.
+
+Please keep discussions respectful, specific, and focused on improving the project. Harassment,
+personal attacks, and discriminatory behavior are not acceptable in project spaces.
+
+## Contribution licensing
+
+Unless you explicitly state otherwise, contributions intentionally submitted for inclusion in
+Mission Control are provided under the [Apache License 2.0](LICENSE), as described in section 5
+of that license. You must have the right to submit the work. Do not include code, assets, or
+documentation whose license is incompatible with this repository.
+
+## Maintainer pull requests
+
+Before opening a pull request, run the checks that cover your change. At minimum, code changes
+are expected to pass `npm run typecheck`, `npm run lint`, and `npm test`. Changes to build or
+runtime surfaces also need `npm run build` and `npm run smoke`; UI changes also need
+`npm run test:e2e` with a matching spec.
+
+CI runs typechecking, linting, unit tests on the supported Node.js releases, production builds,
+bundle smoke tests, and the browser suite. Pull request jobs run on ephemeral GitHub-hosted
+runners. Review `.github/workflows/ci.yml` before changing runner labels, worker counts, or shard
+counts.
 
 Use the pull request template. Its human-facing section explains why, what changed,
 tradeoffs, known gaps, proof of work, and follow-up work. Its agent-facing section

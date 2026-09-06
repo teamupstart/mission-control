@@ -110,12 +110,12 @@ one atomic rename so a daemon starting up never loads a half-written addon.
 `test/native-state-lock-provisioning.test.ts` holds both lines.
 
 `npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
-and CI explicitly pins it to 8 on the selected frontend 8-core runner. CI therefore does
+and CI explicitly pins it to 4 on its ephemeral GitHub-hosted runner. CI therefore does
 not inherit future changes to the local fallback. A failure that only appears under that
 CI contention needs the whole suite, not one file:
 
 ```sh
-MISSION_TEST_CONCURRENCY=8 npm test
+MISSION_TEST_CONCURRENCY=4 npm test
 ```
 
 On macOS, `npm test` includes real Electron geometry tests. If `CODEX_SANDBOX=seatbelt`, run `npm test` or `npm run test:electron` with scoped outside-sandbox approval. Do not bypass the preflight or add Chromium flags.
@@ -124,9 +124,9 @@ CI reports thirty non-package checks. Two independent `dependencies` checks use 
 `ubuntu-latest` to produce exact lockfile-keyed `node_modules` caches for Node.js 24 and 26.
 `gates` (typecheck and lint), Node.js 24 unit shards, and E2E depend only on the Node.js 24
 producer; Node.js 26 unit shards depend only on the Node.js 26 producer, so a failure in one
-release does not hide checks for the other. Unit tests, builds, and bundle smoke use the
-`frontend-platform` 8-core runner with eight workers across six shards per Node release. Fifteen
-`e2e` shards use the same group's 4-core runner with four workers each. The shared unit steps live
+release does not hide checks for the other. Unit tests, builds, bundle smoke, and fifteen E2E
+shards use ephemeral GitHub-hosted `ubuntu-latest` runners so pull request jobs remain isolated
+from shared self-hosted infrastructure. The shared unit steps live
 in `.github/actions/run-unit-shard/action.yml`. The separate
 pull-request-title workflow adds one lightweight PR-only check that keeps squash subjects parseable
 by Release Please. Lint is now a CI job rather than a local-only check, so a lint failure now turns

@@ -12,14 +12,10 @@ name: CI
 #
 # ## Runner policy
 #
-# Dependency producers and `gates` use standard GitHub-hosted `ubuntu-latest` runners. CPU-heavy
-# jobs use the shared `frontend-platform` group granted to this repository in
-# `teamupstart/Github_Org_Settings_TF#131`: unit runs on its 8-core label with eight test
-# workers, while each E2E shard runs on its reliability-tested 4-core label with four
-# Playwright workers. The test matrices split both suites far enough that every test step
-# targets three minutes or less. This is a performance target, not a timeout: slower runs
-# should preserve their diagnostics instead of being terminated. Keep group and labels
-# explicit so CI cannot silently move between unrelated runner pools.
+# Every Linux job uses an ephemeral GitHub-hosted `ubuntu-latest` runner. Pull requests execute
+# contributor-controlled code, so they must never reach a shared self-hosted runner. The test
+# matrices split both suites far enough that slower runs preserve their diagnostics instead of
+# being terminated by an aggressive timeout.
 #
 # The release-only package job stays pinned to `macos-14` because changing that image changes
 # the operating system used to build the shipped dmg.
@@ -149,9 +145,7 @@ jobs:
   unit-node-24:
     name: unit (node 24, shard ${{ matrix.shard }}/6)
     needs: dependencies-node-24
-    runs-on:
-      group: frontend-platform
-      labels: ubuntu-8cpu-32ram-300ssd
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -159,8 +153,8 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6]
 
     env:
-      # Match the selected runner's eight CPUs without changing the six-worker local default.
-      MISSION_TEST_CONCURRENCY: '8'
+      # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
+      MISSION_TEST_CONCURRENCY: '4'
       MISSION_TEST_SHARDS: '6'
 
     steps:
@@ -177,9 +171,7 @@ jobs:
   unit-node-26:
     name: unit (node 26, shard ${{ matrix.shard }}/6)
     needs: dependencies-node-26
-    runs-on:
-      group: frontend-platform
-      labels: ubuntu-8cpu-32ram-300ssd
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -187,8 +179,8 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6]
 
     env:
-      # Match the selected runner's eight CPUs without changing the six-worker local default.
-      MISSION_TEST_CONCURRENCY: '8'
+      # Keep CI concurrency explicit instead of inheriting changes to the local fallback.
+      MISSION_TEST_CONCURRENCY: '4'
       MISSION_TEST_SHARDS: '6'
 
     steps:
@@ -214,10 +206,9 @@ jobs:
   # floor and the current release for the DAEMON; the browser layer gains nothing from
   # being run twice.
   #
-  # Fifteen shards target less than three minutes for the 688-test browser suite even when
-  # a shard contains the suite's 1.4-minute outlier. Each shard uses four Playwright workers
-  # to match its 4-core runner. The target is measured rather than enforced by a timeout so
-  # a regression leaves complete diagnostics.
+  # Fifteen shards keep the 688-test browser suite bounded even when a shard contains the
+  # suite's long outlier. The target is measured rather than enforced by a timeout so a
+  # regression leaves complete diagnostics.
   #
   # No model tokens are spent: `e2e/fixtures/fake-agents.ts` points every `MISSION_*_BIN`
   # at a local fake, and nothing in `src/` reaches a model API by any other route. See that
@@ -227,9 +218,7 @@ jobs:
   e2e:
     name: e2e (shard ${{ matrix.shard }}/${{ strategy.job-total }})
     needs: dependencies-node-24
-    runs-on:
-      group: frontend-platform
-      labels: ubuntu-4cpu-32ram-150ssd
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false

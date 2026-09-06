@@ -70,8 +70,8 @@ npx playwright install chromium
 ## Bootstrap the checkout
 
 ```sh
-git clone <repository-url>
-cd ai-harness
+git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
 make init
 ```
 

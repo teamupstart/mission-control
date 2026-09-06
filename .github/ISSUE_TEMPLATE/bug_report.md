@@ -6,6 +6,10 @@ labels: bug
 assignees: ""
 ---
 
+> [!IMPORTANT]
+> Do not report security vulnerabilities here. Use Upstart's
+> [vulnerability reporting form](https://www.upstart.com/lenders/regulatory-compliance/vulnerability-reporting/).
+
 ## Summary
 
 <!-- What went wrong, and who does it affect? -->

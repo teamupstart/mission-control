@@ -3,8 +3,17 @@
   "version": "1.8.0",
   "private": true,
   "type": "module",
-  "author": "Mission Control",
+  "license": "Apache-2.0",
+  "author": "Jordan Mance",
   "description": "Local, auto-refreshing control plane for Claude Code / Codex / Pi sessions across terminal panes",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/teamupstart/mission-control.git"
+  },
+  "homepage": "https://github.com/teamupstart/mission-control#readme",
+  "bugs": {
+    "url": "https://github.com/teamupstart/mission-control/issues"
+  },
   "engines": {
     "node": ">=24"
   },

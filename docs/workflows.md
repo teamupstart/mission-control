@@ -1085,9 +1085,14 @@ Session against the repair budget. A segment is a session action finishing: fres
 only the stages after the action, and no budget spent. A round that holds more than one
 segment carries a **count badge** on its tile - `11 evidence` - and lists those segments in a
 **tray below the strip**, one chip each, in a grid of equal cells naming the capture and its
-state (`evidence 7`, `Under review`). The chip wears its segment's own tone, so a capture that
-failed inside a round is visible without opening anything else. Exactly one tray is open at a
-time and it belongs to the round being read, which the tile announces with `aria-expanded`.
+state (`evidence 7`, `Under review`). The chip wears its segment's own tone, so once a round's
+tray is open a reader can see which of its captures failed. Only the round being read has a
+tray, and the tile itself reports the newest segment's status - so a round that failed
+mid-way, then carried on, would say nothing about it from a collapsed tile. That is what the
+**failure marker** beside the count badge is for: `2 failed`, drawn on any round holding a
+failed capture whether or not its tray is open, and independent of what is selected. Exactly
+one tray is open at a time and it belongs to the round being read, which the tile announces
+with `aria-expanded`.
 Selecting a chip says in a sentence which action produced that segment and that it cost no
 repair round. A round with a single segment carries no badge and opens no tray, because there
 is no distinction to draw. A round is therefore always one tile: a run that captured evidence

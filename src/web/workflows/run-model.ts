@@ -581,6 +581,35 @@ export function evidenceChipLabel(segment: RoundView): string {
 }
 
 /**
+ * How many of this round's captures failed.
+ *
+ * The tile wears the NEWEST capture's status, and only the open round draws a tray - so
+ * without this a failure that happened mid-round vanished the moment the reader looked at a
+ * different round. Round 2 could hold a failed capture while round 3 is on screen, and
+ * round 2's tile would report nothing but its newest state. That is the one thing collapsing
+ * a round must not hide, and it is what the marker beside the count badge exists to say.
+ *
+ * Counts every failed capture in the round, including the newest. A round parked on a failure
+ * says so twice - once in its status line, once here - which is redundant rather than wrong,
+ * and the alternative (excluding the head) makes the number mean "failures you cannot already
+ * see", which is a rule a reader would have to be told.
+ */
+export function roundFailedCaptureCount(group: RoundGroupView): number {
+  return group.segments.filter((segment) => segment.status.tone === "failed").length;
+}
+
+/**
+ * The tile's failure marker, or null when nothing in the round failed.
+ *
+ * Selection-independent for the same reason the count badge is: it must not move the strip
+ * when a reader clicks along the chips.
+ */
+export function roundFailedCaptureLabel(group: RoundGroupView): string | null {
+  const failed = roundFailedCaptureCount(group);
+  return failed === 0 ? null : `${failed} failed`;
+}
+
+/**
  * Does this round hold the submission being read?
  *
  * The ownership rule, and the ONE place it is decided. The tile reads it for its pressed and

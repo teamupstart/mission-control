@@ -1885,6 +1885,18 @@ button.wf-run-version:focus-visible {
   white-space: nowrap;
 }
 
+/* The failure marker, drawn on the tile itself. It carries `workflow-failed` for its tone, so
+   nothing here may set `color`. Present whether or not the round opens a tray, because a
+   collapsed round is exactly where a mid-round failure would otherwise be invisible. */
+.wf-run-round-failed {
+  border: 1px solid color-mix(in srgb, currentColor 45%, var(--border));
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* The open round's captures.
  *
  * NOT `.wf-run-evidence`: that name is already taken, six hundred lines below, by the

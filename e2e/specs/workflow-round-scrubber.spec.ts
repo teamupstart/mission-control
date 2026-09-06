@@ -23,7 +23,9 @@ const EVIDENCE = artifactsDir("workflow-round-scrubber");
  * themselves live in a tray below the strip, one labelled chip each, in a grid of equal cells
  * naming the capture and its state. Exactly one tray is open at a time and it belongs to the
  * round being read, which the tile announces with `aria-expanded`. Each chip wears its own
- * capture's tone, so a collapsed round still admits that one of its captures failed.
+ * capture's tone, and because only the open round has a tray, every round holding a failed
+ * capture also carries a `2 failed` marker on its tile - which is what keeps a mid-round
+ * failure visible once that round is collapsed.
  *
  * Only a browser proves this. `test/workflow-runs-model.test.ts` pins the fold, and no
  * assertion on markup can say whether the strip is one row or three - which is the entire
@@ -145,8 +147,9 @@ async function seedRun(page: Page, daemon: DaemonHandle): Promise<string> {
  *
  * Segment zero of round 1 already exists and is the run's real, reviewed submission, so it
  * is left exactly as the engine wrote it and every other snapshot is inserted around it. The
- * last snapshot of round 3 is `failed` and one in its middle is too, which is what the tray's
- * chips exist to keep visible once the tile above them speaks only for the newest.
+ * last snapshot of round 3 is `failed` and one in its middle is too, and round 2 fails at
+ * segment 3 while its newest capture stays healthy - the case that proves the tile's failure
+ * marker, since neither round 2's status line nor its closed tray can report that failure.
  */
 function growRounds(daemon: DaemonHandle, runId: string): void {
   withDaemonDb(daemon, (db) => {
@@ -171,7 +174,13 @@ function growRounds(daemon: DaemonHandle, runId: string): void {
         if (round === 1 && segment === 0) continue;
         // The screenshot's own mix, so the tray's chips have more than one tone to draw. The
         // last snapshot of the last round failed - that is the state the run is parked in.
-        const status = round === 3 && (segment === count - 1 || segment === 4)
+        //
+        // Round 2 also fails MID-round, at segment 3, and that case is load-bearing: its
+        // newest capture is healthy, so round 2's status line cannot report the failure, and
+        // its tray is closed while round 3 is the round being read. Without a marker on the
+        // tile itself that failure is invisible from the strip, which is what review caught.
+        const status = (round === 3 && (segment === count - 1 || segment === 4))
+            || (round === 2 && segment === 3)
           ? "failed"
           : segment % 3 === 1
             ? "running"
@@ -260,6 +269,18 @@ test("a round is one tile however many times it captured evidence", async ({
   await expect(tray.locator(".wf-run-tray-chip.workflow-failed")).toHaveCount(2);
   await expect(tray.locator(".wf-run-tray-chip").last()).toHaveAttribute("aria-pressed", "true");
   await shoot(dashboard, dashboard.locator(".wf-run-rounds"), "01-one-tile-per-round");
+
+  // A FAILURE INSIDE A COLLAPSED ROUND IS STILL VISIBLE FROM THE STRIP. Round 2 is not the
+  // round being read, its tray is closed, and its newest capture is healthy - so its status
+  // line says "Under review" and says nothing about the capture that failed at segment 3.
+  // The tile's own marker is the only thing that can carry it, and this is the assertion that
+  // fails without it.
+  const tileOfRound = (round: number) => scrubber.locator(".wf-run-round").nth(round - 1);
+  await expect(tileOfRound(2).locator(".wf-run-round-state")).toHaveText("Under review");
+  await expect(tileOfRound(2).locator(".wf-run-round-failed")).toHaveText("1 failed");
+  await expect(tileOfRound(3).locator(".wf-run-round-failed")).toHaveText("2 failed");
+  // A round with nothing failed carries no marker, so the strip stays quiet by default.
+  await expect(tileOfRound(1).locator(".wf-run-round-failed")).toHaveCount(0);
 
   // The tile announces the tray as its own rather than leaving a reader to infer it.
   const tileOf = (round: number) => scrubber.locator(".wf-run-round").nth(round - 1);

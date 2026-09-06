@@ -39,6 +39,8 @@ import {
   evidenceChipLabel,
   openEvidenceTray,
   roundEvidenceCountLabel,
+  roundFailedCaptureCount,
+  roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
   runRoundGroups,
@@ -297,6 +299,51 @@ test("one tray opens, for the round being read, and never for a lone snapshot", 
   // A submission id from another run, which is what stale component state looks like.
   assert.equal(openEvidenceTray(groups, "gone"), null);
   assert.equal(openEvidenceTray(groups, null), null);
+});
+
+test("a failed capture is counted on its round's tile, viewed or not", () => {
+  /**
+   * The defect this pins, found in review: only the OPEN round draws a tray, and the tile
+   * wears the NEWEST capture's status - so a failure that happened mid-round vanished as soon
+   * as the reader looked at a different round. Round 2 below holds a failed capture and is
+   * NOT the round being read; nothing on screen said so.
+   */
+  const groups = runRoundGroups(runRounds(detail([
+    submission("r1s0", 1, { segment: 0 }),
+    // Round 2 fails at its first capture, then carries on. Its newest is healthy, so its
+    // status line cannot report the failure and its tray is closed while round 3 is read.
+    submission("r2s0", 2, { segment: 0, status: "failed" }),
+    submission("r2s1", 2, { segment: 1, status: "running", completedAt: null }),
+    submission("r3s0", 3, { segment: 0, status: "running", completedAt: null }),
+  ], [])));
+  const [roundOne, roundTwo, roundThree] = groups as [
+    RoundGroupView, RoundGroupView, RoundGroupView,
+  ];
+
+  // The round's status says nothing about the failure - that is the whole problem.
+  assert.deepEqual(roundTwo.status, { tone: "running", label: "Under review" });
+  // The marker does, and it does so independently of what is selected.
+  assert.equal(roundFailedCaptureCount(roundTwo), 1);
+  assert.equal(roundFailedCaptureLabel(roundTwo), "1 failed");
+  for (const viewed of ["r1s0", "r2s0", "r2s1", "r3s0", null]) {
+    assert.equal(
+      roundFailedCaptureLabel(roundTwo),
+      "1 failed",
+      `the marker must not depend on the selection (${viewed})`,
+    );
+  }
+
+  // Rounds with nothing failed carry no marker at all, so the strip stays quiet by default.
+  assert.equal(roundFailedCaptureLabel(roundOne), null);
+  assert.equal(roundFailedCaptureLabel(roundThree), null);
+  assert.equal(roundFailedCaptureCount(roundOne), 0);
+
+  // Every failed capture counts, including a newest one the status line already reports.
+  const parked = runRoundGroups(runRounds(detail([
+    submission("p0", 1, { segment: 0, status: "failed" }),
+    submission("p1", 1, { segment: 1, status: "failed" }),
+  ], [])));
+  assert.equal(roundFailedCaptureLabel(parked[0]!), "2 failed");
 });
 
 test("the tile's own states come from the same predicates the tray is chosen with", () => {

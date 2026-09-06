@@ -82,6 +82,7 @@ import {
   evidenceChipLabel,
   openEvidenceTray,
   roundEvidenceCountLabel,
+  roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
   runRefusedSentence,
@@ -2214,13 +2215,21 @@ export function WorkflowRunView({
               // states cannot disagree with which tray is actually rendered.
               const ownsViewed = roundHoldsViewedSubmission(group, viewed?.id ?? null);
               const opens = roundOpensEvidenceTray(group);
+              // Only the OPEN round draws a tray, so a failure that happened mid-round is
+              // invisible while a different round is being read. The marker is what keeps it
+              // on the collapsed tile.
+              const failed = roundFailedCaptureLabel(group);
               return (
                 <Tooltip
                   key={group.round}
-                  label={opens
-                    ? `${group.label}: ${group.status.label}. Captured evidence`
-                      + ` ${group.segments.length} times; opens the newest and lists them all.`
-                    : `${group.label}: ${group.status.label}`}
+                  label={[
+                    `${group.label}: ${group.status.label}`,
+                    opens
+                      ? `Captured evidence ${group.segments.length} times;`
+                        + " opens the newest and lists them all."
+                      : null,
+                    failed ? `${failed} of this round's captures.` : null,
+                  ].filter(Boolean).join(". ")}
                 >
                   <button
                     className={`wf-run-round workflow-${group.status.tone}${
@@ -2238,6 +2247,11 @@ export function WorkflowRunView({
                         <span className="wf-run-round-count">
                           {roundEvidenceCountLabel(group)}
                         </span>
+                      )}
+                      {/* Drawn whether or not the round opens a tray: a single-capture round
+                          that failed is still a failure a reader must see from the strip. */}
+                      {failed && (
+                        <span className="wf-run-round-failed workflow-failed">{failed}</span>
                       )}
                     </span>
                     <span className="wf-run-round-state">{group.status.label}</span>

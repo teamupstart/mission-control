@@ -42,7 +42,9 @@ captures as labelled chips.
 
 - Keeps the words a pip gives up (`evidence 7`, `Under review`).
 - Costs one extra click, and what sits below the strip changes height as the reader scrubs.
-- The chips carry their segment's tone, so a failed capture is still visible at a glance.
+- The chips carry their segment's tone. Only the open round has a tray, so each tile also
+  carries a `2 failed` marker when its round holds a failed capture - added in review, because
+  without it a round that failed mid-way and carried on said nothing once collapsed.
 
 ### C. Round tiles with an evidence stepper on the selected tile
 
@@ -85,15 +87,23 @@ The strip itself - the tiles - is always one row.
   now; older snapshots keep their own, which is what the chips show. `runRounds()` is
   unchanged, so `submissionRoundLabel()` still cites `Round 1 · evidence 2` where a carried
   stage names a specific submission.
-- `roundEvidenceCountLabel()`, `evidenceChipLabel()` and `openEvidenceTray()` own the badge
-  wording, the chip wording, and which round's tray is open. `openEvidenceTray()` answers null
-  for a round with one capture, so a lone snapshot never opens a one-chip panel.
+- `roundEvidenceCountLabel()`, `evidenceChipLabel()`, `roundFailedCaptureLabel()` and
+  `openEvidenceTray()` own the badge wording, the chip wording, the failure marker and which
+  round's tray is open. `openEvidenceTray()` answers null for a round with one capture, so a
+  lone snapshot never opens a one-chip panel.
 - The tile in `WorkflowRuns.tsx` is a single button carrying the round, its status and its
   count badge, with `aria-expanded` when it owns the tray. The tray renders below the strip -
   never inside a tile, which would either widen that tile past its neighbours or wrap the
   strip - and its chips are buttons with `aria-pressed`, each wrapped in the app's one
   `Tooltip`, so the provenance sentence is reachable by pointer and by screen reader.
-- A round with a single snapshot draws no badge and no tray.
+- A round with a single snapshot draws no badge and no tray, but still draws the failure
+  marker if its one capture failed.
+
+Found in review and fixed here: only the open round renders a tray, and the tile reports the
+NEWEST capture's status - so a round that failed mid-way and then carried on was silent about
+it from a collapsed tile. `roundFailedCaptureLabel()` and the `.wf-run-round-failed` marker
+close that, and the browser spec seeds exactly that shape (round 2 fails at segment 3 while
+its newest capture is healthy) to hold it.
 
 One defect only a rendered check could have found: the tray's classes were first named after
 evidence, and `wf-run-evidence` was already taken six hundred lines down `styles.css` by the
@@ -107,8 +117,10 @@ worklist's evidence list, which won on source order and broke the layout. The cl
 - `e2e/specs/workflow-round-scrubber.spec.ts` drives the built dashboard over a run grown to
   the reported 3/11/9 shape: three tiles with their count badges, the strip as one row
   (measured against a tile's own height), exactly one tray belonging to the round being read,
-  a failed capture still visible as a chip inside a collapsed round, `aria-expanded` moving
-  with the tray, the newest capture opening by default, nothing in the strip moving when a
-  chip is picked, and every chip in the tray sharing one width.
+  a failed capture still visible as a chip in the open round's tray, the `1 failed` and
+  `2 failed` markers on rounds whose trays are CLOSED, no marker on a round with nothing
+  failed, `aria-expanded` moving with the tray, the newest capture opening by default, nothing
+  in the strip moving when a chip is picked, and every chip in the tray sharing one width. The
+  collapsed-round marker assertion was confirmed to fail when the marker is not rendered.
 - The three existing specs that asserted one tile per submission now assert one tile per
   round, its badge and its tray.

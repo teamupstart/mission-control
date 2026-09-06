@@ -548,4 +548,13 @@ export interface BinSpec {
    * kind of rule a third backend gets wrong silently. `binEnv` (`bin.ts`) applies it.
    */
   dropEnv: readonly string[];
+  /**
+   * An actionable reason this adapter cannot run on the current host, or null when its
+   * transport and launch mechanics have been validated there.
+   *
+   * This is part of binary availability rather than adapter policy: every generic caller
+   * must refuse an unsupported host before it probes the filesystem, starts a process, or
+   * opens a socket. Optional keeps existing all-platform adapters terse.
+   */
+  unsupportedReason?: (platform: NodeJS.Platform) => string | null;
 }

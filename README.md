@@ -73,6 +73,13 @@ The diff is scoped to what that agent changed. Files support pull request-style 
 guided review that walks the agent through one thread at a time. A terminal in the same working copy
 is one click away in the terminal or multiplexer you actually use.
 
+Mission Control supports tmux, Herdr, and cmux through one multiplexer registry. Herdr support
+requires stable Herdr 0.8.2 or newer on protocol 20 and currently runs on macOS and Linux. It uses
+the default local Herdr server only, and `HERDR_BIN` can point at a non-standard installation.
+Mission Control can create, discover, write, safely paste into, capture, focus, rename, close,
+detach from, and reattach to Herdr workspaces. See [Harnesses and terminal
+backends](docs/harnesses-and-terminals.md#herdr) for the compatibility and focus boundaries.
+
 Read more in [Sessions and conversations](docs/sessions.md) and
 [the file review UI](docs/ui.md#walk-the-agent-through-your-review).
 

@@ -14,10 +14,7 @@ import {
   type SetupRowView,
   type SetupStatus,
 } from "@shared/setup-catalog.ts";
-import {
-  MULTIPLEXER_IDS,
-  type TerminalBackendId,
-} from "@shared/terminal.ts";
+import type { TerminalBackendId } from "@shared/terminal.ts";
 
 import { ghBin } from "../config.ts";
 import { defaultEnvironmentDeps, environmentCheckViews } from "../environment/index.ts";
@@ -27,8 +24,8 @@ import { PIPELINE_PROVIDERS } from "../pipelines/providers.ts";
 import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
-import { resolveBin } from "../terminal/bin.ts";
-import { EMULATORS, MULTIPLEXERS } from "../terminal/registry.ts";
+import { binUnsupportedReason, resolveBin } from "../terminal/bin.ts";
+import { terminalBackendBin } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
@@ -55,6 +52,8 @@ async function agentStatus(id: SetupDependencyId, deps: SetupDeps): Promise<Setu
 }
 
 async function terminalStatus(id: TerminalBackendId, deps: SetupDeps): Promise<SetupStatus> {
+  const unsupported = deps.backendUnsupported?.(id);
+  if (unsupported) return { state: "needs-setup", why: unsupported, evidence: null };
   const path = await deps.installedBackend(id);
   return path ? { state: "satisfied", evidence: path } : { state: "missing" };
 }
@@ -157,6 +156,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
   tmux: (deps) => terminalStatus("tmux", deps),
   cmux: (deps) => terminalStatus("cmux", deps),
+  herdr: (deps) => terminalStatus("herdr", deps),
   wezterm: (deps) => terminalStatus("wezterm", deps),
   ghostty: (deps) => terminalStatus("ghostty", deps),
   "gh-cli": ghCliStatus,
@@ -197,11 +197,10 @@ export function defaultSetupDeps(): SetupDeps {
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     agentBin: resolveAgentBin,
     installedBackend: async (id) => {
-      const spec = MULTIPLEXER_IDS.includes(id as never)
-        ? MULTIPLEXERS[id as keyof typeof MULTIPLEXERS].bin
-        : EMULATORS[id as keyof typeof EMULATORS].bin;
+      const spec = terminalBackendBin(id);
       return resolveBinPath(resolveBin(spec));
     },
+    backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id)),
     ghBin,
     resolveBinPath,
     runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),

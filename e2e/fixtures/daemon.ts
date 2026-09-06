@@ -248,6 +248,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const workspace = join(home, "workspace");
   const port = await freeLoopbackPort();
   const { recordDir, bins } = writeFakeAgents(home);
+  const herdrEnabled = extraEnv.MC_E2E_HERDR === "1";
   const piOnLoginShellOnly = extraEnv.MC_E2E_PI_LOGIN_SHELL_ONLY === "1";
   const piOnVersionManagerShimOnly =
     extraEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY === "1";
@@ -374,10 +375,13 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // it was handed - the exact command line a click asked a terminal to run. See
     // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
     CMUX_BIN: bins.cmux,
+    // Herdr is opt-in because its fake owns a real disposable Unix socket and process tree.
+    // Every other spec sees a known missing path, never the operator's installed Herdr.
+    HERDR_BIN: herdrEnabled ? bins.herdr : join(home, "missing-herdr"),
     // Setup reports these registered emulators too. Pin both to absent paths inside the
     // disposable home so a developer's installed apps cannot make the browser result differ
     // from CI. Specs that need one can still override it through `daemonEnv` below.
-    WEZTERM_BIN: join(home, "missing-wezterm"),
+    WEZTERM_BIN: herdrEnabled ? bins.wezterm : join(home, "missing-wezterm"),
     GHOSTTY_BIN: join(home, "missing-ghostty"),
     ITERM_BIN: join(home, "missing-iterm"),
     // The keep-awake provider, redirected at a fake that records its argv. With the

@@ -54,11 +54,13 @@ export type TerminalEnumeration =
  * more specific answer - which is today's tmux-beats-wezterm precedence, preserved exactly
  * and now stated as a rule rather than as the arm order of an if/else.
  *
- * Three things a backend can be skipped for, and only one of them is a capability:
+ * Four things a backend can be skipped for, and only one of them is a capability:
  *
  *   - `list` is null. An emulator that cannot be enumerated is a legitimate, declared state,
  *     and it simply contributes no panes. (No shipped backend declares it - Ghostty was
  *     expected to and does not; see `ghostty.ts`.)
+ *   - the adapter does not support this host. `binPresent` asks the shared `BinSpec` gate
+ *     before touching the filesystem, so an unsupported transport cannot accidentally run.
  *   - the binary is not installed. `binPresent` answers that from the filesystem rather than
  *     by running anything, which is what keeps a registered-but-absent adapter off the
  *     1500ms poll tick: discovery sweeps every backend, so a failed `fork`+`execve` per

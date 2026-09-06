@@ -54,12 +54,37 @@ export function binEnv(spec: BinSpec, base: NodeJS.ProcessEnv = process.env): No
  * not possibly answer.
  */
 export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (binUnsupportedReason(spec)) return false;
   const bin = resolveBin(spec);
   if (!bin) return false;
   // An absolute or relative path either exists or does not; an env override is taken on
   // trust in `resolveBin`, so re-testing it here is what catches a stale `WEZTERM_BIN`.
   // `onPath` (`util/exec.ts`) is the walk itself, shared with the "Open in" targets.
   return onPath(bin, env);
+}
+
+/** The shared host gate consumed before any backend-specific filesystem or runtime work. */
+export function binUnsupportedReason(
+  spec: BinSpec,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  return spec.unsupportedReason?.(platform) ?? null;
+}
+
+export interface BinAvailabilityDeps {
+  installed: (spec: BinSpec) => boolean;
+  unsupported?: (spec: BinSpec) => string | null;
+}
+
+/** One availability decision: host support wins, then installation is probed. */
+export function binUnavailableReason(
+  spec: BinSpec,
+  label: string,
+  deps: BinAvailabilityDeps,
+): string | null {
+  const unsupported = (deps.unsupported ?? binUnsupportedReason)(spec);
+  if (unsupported) return unsupported;
+  return deps.installed(spec) ? null : `${label} is not installed`;
 }
 
 /**

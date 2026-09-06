@@ -30,7 +30,16 @@ import {
 export interface FakeAgents {
   /** Directory the fakes write their invocation records into. */
   recordDir: string;
-  bins: { claude: string; codex: string; pi: string; cmux: string; keepAwake: string; gh: string };
+  bins: {
+    claude: string;
+    codex: string;
+    pi: string;
+    cmux: string;
+    herdr: string;
+    wezterm: string;
+    keepAwake: string;
+    gh: string;
+  };
 }
 
 export type FakePiCatalogMode = "success" | "failure";
@@ -213,6 +222,173 @@ if (dir) {
 }
 if (process.env.MC_E2E_CMUX_MODE === "unknown") {
   setInterval(() => {}, 1000);
+}
+`;
+
+/**
+ * A disposable Herdr-compatible default server for the one E2E spec that opts into it.
+ * It implements only Mission Control's bounded protocol surface, records every mutation,
+ * and starts a free fake `claude` descendant for PID-ancestry discovery. No real Herdr or
+ * agent binary is reachable from this process.
+ */
+const FAKE_HERDR = `#!/usr/bin/env node
+const { appendFileSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
+const { createServer } = require("node:net");
+const { join } = require("node:path");
+const { spawn } = require("node:child_process");
+const argv = process.argv.slice(2);
+const home = process.env.MISSION_HOME;
+const socketPath = join(home, "fake-herdr.sock");
+const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
+const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
+if (argv[0] === "status" && argv[1] === "server") {
+  if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
+    status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
+  } else {
+    const running = existsSync(socketPath);
+    status({ status: running ? "running" : "not_running", running, version: running ? "0.8.2" : null, protocol: running ? 20 : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
+  }
+  process.exit(0);
+}
+if (argv[0] === "server") {
+  if (!existsSync(socketPath)) {
+    const child = spawn(process.execPath, [__filename, "serve", String(process.ppid)], {
+      detached: true,
+      env: process.env,
+      stdio: "ignore",
+    });
+    child.unref();
+  }
+  process.exit(0);
+}
+if (argv[0] !== "serve") process.exit(0);
+
+rmSync(socketPath, { force: true });
+let serial = 0;
+const workspaces = new Map();
+const agents = new Map();
+const record = (request) => appendFileSync(recordPath, JSON.stringify(request) + "\\n");
+const stopAgent = (paneId) => {
+  const child = agents.get(paneId);
+  if (!child) return;
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  agents.delete(paneId);
+};
+const ensureAgent = (pane) => {
+  if (agents.has(pane.pane_id)) return agents.get(pane.pane_id).pid;
+  const fakeDir = join(home, "fake-herdr-agent");
+  mkdirSync(fakeDir, { recursive: true });
+  const agentBin = join(fakeDir, "claude");
+  const script = join(fakeDir, "agent.mjs");
+  if (!existsSync(agentBin)) symlinkSync(process.execPath, agentBin);
+  writeFileSync(script, "setInterval(() => {}, 1000);\\n");
+  const command = JSON.stringify(agentBin) + " " + JSON.stringify(script);
+  // Discovery deliberately ignores headless agents. The script utility gives this fake the same real
+  // controlling tty an agent has inside a Herdr pane, while remaining portable across the
+  // two supported hosts. Cleanup kills its detached process group.
+  const args = process.platform === "darwin"
+    ? ["-q", "/dev/null", agentBin, script]
+    : ["-q", "-c", command, "/dev/null"];
+  const child = spawn("/usr/bin/script", args, {
+    cwd: pane.cwd,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  agents.set(pane.pane_id, child);
+  pane.shell_pid = child.pid;
+  return child.pid;
+};
+// Stable Herdr closes a non-subscription connection after its first response.
+const ok = (socket, id, result = { type: "ok" }) => socket.end(JSON.stringify({ id, result }) + "\\n");
+const server = createServer((socket) => {
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    const lines = buffer.split("\\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line) continue;
+      const request = JSON.parse(line);
+      record(request);
+      const p = request.params || {};
+      if (request.method === "session.snapshot") {
+        const values = [...workspaces.values()];
+        ok(socket, request.id, {
+          type: "session_snapshot",
+          snapshot: {
+            version: "0.8.2", protocol: 20,
+            workspaces: values.map((x) => ({ workspace_id: x.workspaceId, label: x.label })),
+            tabs: values.map((x) => ({ tab_id: x.tabId, workspace_id: x.workspaceId, number: 1, label: "main" })),
+            panes: values.flatMap((x) => x.panes.map((pane) => ({ pane_id: pane.pane_id, workspace_id: x.workspaceId, tab_id: x.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd }))),
+            layouts: [], agents: [],
+          },
+        });
+      } else if (request.method === "pane.process_info") {
+        const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: pane?.shell_pid || null, tty: null, foreground_processes: [] } });
+      } else if (request.method === "workspace.create") {
+        serial += 1;
+        const workspaceId = "fake-workspace-" + serial;
+        const tabId = workspaceId + ":tab";
+        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: null };
+        workspaces.set(workspaceId, { workspaceId, tabId, label: p.label, panes: [pane] });
+        ok(socket, request.id, {
+          type: "workspace_created",
+          workspace: { workspace_id: workspaceId, label: p.label },
+          tab: { tab_id: tabId, workspace_id: workspaceId, number: 1, label: "main" },
+          root_pane: { pane_id: pane.pane_id, workspace_id: workspaceId, tab_id: tabId, cwd: pane.cwd, foreground_cwd: pane.cwd },
+        });
+      } else if (request.method === "pane.send_input") {
+        const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        if (pane && Array.isArray(p.keys) && p.keys.includes("enter")) ensureAgent(pane);
+        ok(socket, request.id);
+      } else if (request.method === "pane.split") {
+        const workspace = [...workspaces.values()].find((x) => x.panes.some((pane) => pane.pane_id === p.target_pane_id));
+        const pane = { pane_id: workspace.workspaceId + ":side", cwd: p.cwd, shell_pid: null };
+        workspace.panes.push(pane);
+        ok(socket, request.id, { type: "pane_created", pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
+      } else if (request.method === "pane.read") {
+        ok(socket, request.id, { type: "pane_read", read: { pane_id: p.pane_id, text: "fake Herdr pane output" } });
+      } else if (request.method === "workspace.rename") {
+        const workspace = workspaces.get(p.workspace_id);
+        if (workspace) workspace.label = p.label;
+        ok(socket, request.id);
+      } else if (request.method === "workspace.close") {
+        const workspace = workspaces.get(p.workspace_id);
+        if (workspace) for (const pane of workspace.panes) stopAgent(pane.pane_id);
+        workspaces.delete(p.workspace_id);
+        ok(socket, request.id);
+      } else {
+        ok(socket, request.id);
+      }
+    }
+  });
+});
+// The server process is deliberately reparented, matching stable Herdr's
+// detached_server_daemon capability. Keep the original disposable daemon PID only as a
+// cleanup watchdog so a failed E2E worker cannot leave this fake behind.
+const parentPid = Number(argv[1]);
+const leave = () => {
+  for (const paneId of agents.keys()) stopAgent(paneId);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 100).unref();
+};
+process.on("SIGTERM", leave);
+process.on("SIGINT", leave);
+setInterval(() => {
+  try { process.kill(parentPid, 0); } catch { leave(); }
+}, 100).unref();
+server.listen(socketPath);
+`;
+
+const FAKE_WEZTERM = `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, \`wezterm-\${Date.now()}-\${process.pid}.json\`), JSON.stringify({ argv: process.argv.slice(2) }, null, 2));
 }
 `;
 
@@ -434,6 +610,14 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(cmux, FAKE_CMUX);
   chmodSync(cmux, 0o755);
 
+  const herdr = join(binDir, "fake-herdr");
+  writeFileSync(herdr, FAKE_HERDR);
+  chmodSync(herdr, 0o755);
+
+  const wezterm = join(binDir, "fake-wezterm");
+  writeFileSync(wezterm, FAKE_WEZTERM);
+  chmodSync(wezterm, 0o755);
+
   const keepAwake = join(binDir, "fake-caffeinate");
   writeFileSync(keepAwake, FAKE_KEEP_AWAKE);
   chmodSync(keepAwake, 0o755);
@@ -442,5 +626,5 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(gh, FAKE_GH);
   chmodSync(gh, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, keepAwake, gh } };
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh } };
 }

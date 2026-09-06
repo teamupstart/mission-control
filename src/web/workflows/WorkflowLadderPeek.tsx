@@ -396,17 +396,27 @@ export function WorkflowLadderPeek({
   detail,
   onOpenRun,
   progressMeter = false,
+  workflowDetails = true,
 }: {
   summary: WorkflowRunSummary;
   detail: WorkflowRunDetail;
   onOpenRun: () => void;
   progressMeter?: boolean;
+  /**
+   * Whether this peek states WHY - the objection, block or wait sentence.
+   *
+   * The Board card's `workflowDetails` Display item, which ships off. The projection above
+   * is unchanged either way: which rung is consequential, what its members are doing and
+   * which stages were carried are all facts about progress, and only the sentence naming a
+   * reviewer's reasoning is somebody else's reading on somebody else's card.
+   */
+  workflowDetails?: boolean;
 }): React.JSX.Element {
   const projection = workflowLadderPeekProjection(summary, detail);
   const view = projection.view;
   const stages = progressMeter ? projection.stages : null;
   const showMeter = view !== null && stages !== null;
-  const sentence = view?.sentence ? splitSentence(view.sentence) : null;
+  const sentence = workflowDetails && view?.sentence ? splitSentence(view.sentence) : null;
   return (
     <Tooltip label={`Open ${summary.workflowName} v${summary.workflowVersion} in Runs`}>
       <a

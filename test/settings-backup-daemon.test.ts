@@ -114,7 +114,6 @@ test("daemon startup creates and verifies today's v1 logical settings snapshot",
     MISSION_CONDUCTOR_BIN: fakeBin,
     AI_CONDUCTOR_REGISTRY: join(fixtureRoot, "conductor-registry.json"),
     MISSION_PRODUCT_ISSUES_REPO: "example/settings-backup-test",
-    MISSION_PRODUCT_ISSUE_CONSENT_CMD: fakeBin,
     ANTHROPIC_API_KEY: "",
     OPENAI_API_KEY: "",
   });

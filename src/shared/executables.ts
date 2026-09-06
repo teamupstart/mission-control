@@ -15,6 +15,7 @@ export const EXECUTABLE_IDS = [
   "jira",
   "conductor",
   "tmux",
+  "herdr",
   "cmux",
   "wezterm",
   "ghostty",

@@ -11,6 +11,7 @@ import type {
   PipelineInstallerRuntime,
   PipelineEngineerCapabilities,
   PipelineCommissionReadiness,
+  EngineerReadinessEvidence,
   EngineerFailureEvidence,
   PipelineCommissionRetention,
   EngineerRetirementEvidence,
@@ -162,6 +163,10 @@ export type PipelineEngineerResult<T> =
 /** Optional provider-sanctioned Engineer lifecycle surface. Dispatch remains inactive in Phase 2. */
 export interface PipelineEngineerLifecycle {
   capability(): Promise<PipelineEngineerResult<PipelineEngineerCapabilities>>;
+  /** Non-mutating environment check performed before Mission Control reserves a retry. */
+  readinessProbe?(input: {
+    repoRoot: string;
+  }): Promise<PipelineEngineerResult<EngineerReadinessEvidence>>;
   create(input: {
     repoRoot: string;
     idea: string;

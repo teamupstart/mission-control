@@ -7671,6 +7671,50 @@ export class WorkflowStore {
     };
   }
 
+  /** One capped append-order window across a bounded set of related event kinds. */
+  listEventsOfKinds(kinds: readonly string[], limit: number): {
+    rows: Array<{
+      eventId: string | null;
+      runId: string;
+      timestamp: number;
+      kind: string;
+      payload: unknown;
+    }>;
+    truncated: boolean;
+  } {
+    if (kinds.length === 0) return { rows: [], truncated: false };
+    const placeholders = kinds.map(() => "?").join(", ");
+    const rows = this.db.prepare(
+      `SELECT event_id, run_id, ts, event_kind, payload_json FROM workflow_events
+        WHERE event_kind IN (${placeholders})
+        ORDER BY id DESC
+        LIMIT ?`,
+    ).all(...kinds, limit + 1) as Array<{
+      event_id: string | null;
+      run_id: string;
+      ts: number;
+      event_kind: string;
+      payload_json: string;
+    }>;
+    const truncated = rows.length > limit;
+    return {
+      rows: rows.slice(0, limit).reverse().map((row) => ({
+        eventId: row.event_id,
+        runId: String(row.run_id),
+        timestamp: Number(row.ts),
+        kind: row.event_kind,
+        payload: ((): unknown => {
+          try {
+            return JSON.parse(row.payload_json);
+          } catch {
+            return null;
+          }
+        })(),
+      })),
+      truncated,
+    };
+  }
+
   listEventPage(runId: string, after = 0, limit = DEFAULT_DETAIL_PAGE_SIZE): WorkflowEventPage {
     const rows = (this.db.prepare(
       `SELECT * FROM workflow_events

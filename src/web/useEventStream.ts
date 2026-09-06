@@ -22,6 +22,7 @@ import type {
 } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
 import {
+  pipelineCommissionFrameMayReplace,
   pipelineRunKey,
   pipelineRunKeyOf,
   type PipelineCommission,
@@ -245,6 +246,7 @@ export function useEventStream(): MissionState {
     esRef.current = es;
 
     es.onopen = () => {
+      if (esRef.current !== es) return;
       setConnected(true);
       // A change announced while the channel was down reached nobody, and this config is not
       // part of the reconnect snapshot - so treat regaining the stream as a reason to re-read.
@@ -256,6 +258,7 @@ export function useEventStream(): MissionState {
       setArchivesRevision((n) => n + 1);
     };
     es.onerror = () => {
+      if (esRef.current !== es) return;
       setConnected(false);
       // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
       // off it instead of storming for everything that changed during the gap.
@@ -275,6 +278,11 @@ export function useEventStream(): MissionState {
     };
 
     es.onmessage = (ev) => {
+      // StrictMode closes its first mount before opening the retained stream, but a browser
+      // may still deliver frames already buffered on that closed source. Only the currently
+      // owned stream may update state, or an older commission frame can overwrite recovery
+      // completion that the retained stream already delivered.
+      if (esRef.current !== es) return;
       let msg: ServerEvent;
       try {
         msg = JSON.parse(ev.data) as ServerEvent;
@@ -504,9 +512,11 @@ export function useEventStream(): MissionState {
           });
           break;
         case "pipeline_commission_upsert":
-          setPipelineCommissions((prev) =>
-            new Map(prev).set(msg.commission.id, msg.commission),
-          );
+          setPipelineCommissions((prev) => {
+            const current = prev.get(msg.commission.id);
+            if (current && !pipelineCommissionFrameMayReplace(current, msg.commission)) return prev;
+            return new Map(prev).set(msg.commission.id, msg.commission);
+          });
           break;
         case "pipeline_commission_remove":
           setPipelineCommissions((prev) => {

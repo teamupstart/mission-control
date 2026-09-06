@@ -37,6 +37,40 @@ Multiplexer and emulator adapters can compose for one visible session. The bindi
 chooses the innermost pane for writing and capture, while focus walks outward to the
 application that can show it to the operator.
 
+The multiplexer registry contains tmux, Herdr, and cmux in that order. The order preserves an
+inner tmux pane as the most specific identity, then prefers a persistent Herdr workspace over the
+outer self-hosting cmux surface when more than one backend can describe a process.
+
+## Herdr
+
+Mission Control supports stable Herdr 0.8.2 or newer on protocol 20. Set `HERDR_BIN` to an
+executable path to override the normal `herdr` lookup on `PATH`. Setup, passive discovery, launch,
+and pane actions all use the same binary contract.
+
+The initial adapter is allowlisted to macOS and Linux. It uses a Unix socket and POSIX `env -u`
+namespace scrubbing. Windows named-pipe transport and Windows-compatible environment scrubbing are
+not yet supported, and other platforms have not been validated. Herdr stays visible but disabled
+on those hosts with the reason **Herdr integration is supported on macOS and Linux only**.
+
+This version controls only Herdr's default local server session. It deliberately clears inherited
+Herdr session, socket, workspace, tab, and pane selectors for status, startup, and full-client
+launches. Named Herdr servers are outside this compatibility boundary.
+
+Through the common multiplexer controls, Mission Control can create and discover workspaces, write
+text and keys, apply multiline bracket-aware paste without submitting it, capture visible pane
+text, focus an agent inside Herdr, rename a workspace, close it, detach a client, and reattach a
+normal full client. Passive discovery and actions on an existing pane never start a stopped
+server. Workspace creation is the only path that may start the default server.
+
+Stable Herdr does not expose attached-client tty identities. Mission Control can still select the
+correct agent inside Herdr, but if no already-correlated terminal host can be raised, Focus opens a
+normal full Herdr client through the existing terminal fallback. Repeated Focus may therefore open
+another client. Mission Control never uses direct-attach takeover.
+
+Detaching a normal Herdr client leaves the server-owned panes and their processes running, so a
+later full client can reattach. Stopping the Herdr server is different: Mission Control does not
+claim arbitrary pane processes survive a full server stop.
+
 The emulator registry currently contains WezTerm, Ghostty, and iTerm2 in that order. iTerm2
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
 windows, tabs, and split sessions, addresses every action by the session's stable unique ID,

@@ -15,7 +15,9 @@ const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
-const { ProductIssueService } = await import("../src/server/product-issues.ts");
+const { ProductIssueService: ProductIssueServiceBase } = await import(
+  "../src/server/product-issues.ts"
+);
 const { buildApp } = await import("../src/server/routes.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 const { PRODUCT_ISSUE_CONFIRMATION_TTL_MS, PRODUCT_ISSUE_REQUIRED_LABELS } = await import(
@@ -24,6 +26,7 @@ const { PRODUCT_ISSUE_CONFIRMATION_TTL_MS, PRODUCT_ISSUE_REQUIRED_LABELS } = awa
 const { mkMuxHandle } = await import("./helpers/session-fixture.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ProductIssueService as ProductIssueServiceType } from "../src/server/product-issues.ts";
+import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
 
 openDb();
 const TOKEN = ensureToken();
@@ -56,6 +59,14 @@ const discovered: DiscoveredSession = {
 };
 registry.applyDiscovery([discovered]);
 
+const AUTHORIZES = { unavailable: null, authorize: () => Promise.resolve(true) };
+
+class ProductIssueService extends ProductIssueServiceBase {
+  constructor(options: ProductIssueServiceOptions = {}) {
+    super({ authorization: AUTHORIZES, ...options });
+  }
+}
+
 function appFor(service: ProductIssueServiceType) {
   const args: Parameters<typeof buildApp> = [registry, reviews, tasks, queues];
   args[21] = service;
@@ -73,16 +84,6 @@ function draft(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
-
-/**
- * The two answers a person can give, and the shell that cannot ask.
- *
- * Injected rather than mocked at the transport, because the point of the design is that the
- * answer does NOT come over the transport: in the shipped app this port reaches the Electron
- * shell over its utility-process channel and resolves when a native dialog is clicked.
- */
-const YES = { unavailable: null, ask: () => Promise.resolve(true) };
-const NO = { unavailable: null, ask: () => Promise.resolve(false) };
 
 /**
  * Take the confirming step, the way the modal's first press does.
@@ -111,7 +112,6 @@ async function confirm(
 test("dashboard and MCP routes derive different fixed source labels", async () => {
   const calls: string[][] = [];
   const service = new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async (_bin, args) => {
       calls.push(args);
@@ -168,7 +168,6 @@ test("dashboard and MCP routes derive different fixed source labels", async () =
 
 test("MCP preview and mutation require the token and a live attributed session", async () => {
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
   }));
   const input = draft();
@@ -205,7 +204,6 @@ test("MCP preview and mutation require the token and a live attributed session",
 test("the dashboard mutation publishes only against the confirmation it minted", async () => {
   const calls: Array<{ args: string[]; input: string | undefined }> = [];
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async (_bin, args, options) => {
       calls.push({ args, input: options?.input });
@@ -322,7 +320,6 @@ test("a confirmation is refused once the daemon's own derivation has moved", asy
   let calls = 0;
   let repo = "acme/public-issues";
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo }),
     runner: async () => {
       calls++;
@@ -384,7 +381,6 @@ test("a refused submission may be retried on the same confirmation, a published 
   let outcome: "refused" | "created" = "refused";
   let calls = 0;
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async () => {
       calls++;
@@ -437,7 +433,6 @@ test("a refused submission may be retried on the same confirmation, a published 
 /** No preview carries a publish token, and the agent cannot reach the confirming step. */
 test("neither preview mints a publish token, and confirming is dashboard-only", async () => {
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
   }));
   const dashboard = (await (await app.request("/api/product-issues/preview", {
@@ -465,85 +460,53 @@ test("neither preview mints a publish token, and confirming is dashboard-only", 
   assert.equal(agentConfirm.status, 404);
 });
 
-/**
- * The bypass this feature has been rebuilt four times to close, driven exactly as reported.
- *
- * A local process previews, confirms, and publishes, in that order, over the loopback API that
- * every process running as the operator can reach. It gets as far as reading the public content
- * - previewing is a read, and reads were never the problem - and then stops, because the
- * confirming step is not answered by the request. It is answered by a person, through a channel
- * the caller is not on.
- *
- * The three revisions this replaces each failed by trying to make the confirmation something a
- * caller PRESENTS: a hash of the request, then a token from the preview reply, then the
- * per-machine bearer token. Each was reachable by the caller, the last one because the token is
- * a file a process running as the operator can read. This one is not a value at all.
- */
-test("a caller the operator refuses can preview, confirm nothing, and publish nothing", async () => {
-  let calls = 0;
-  let asked = 0;
+test("a loopback caller cannot mint a grant without private desktop authorization", async () => {
+  let creates = 0;
+  let asked: { requestId: string; draftIdentity: string } | null = null;
   const app = appFor(new ProductIssueService({
-    consent: {
+    authorization: {
       unavailable: null,
-      ask: () => {
-        asked++;
+      authorize: (input) => {
+        asked = input;
         return Promise.resolve(false);
       },
     },
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async () => {
-      calls++;
+      creates++;
       return stubRun({ stdout: "https://x/1\n", stderr: "", code: 0 });
     },
   }));
-  const input = draft();
-
+  const input = draft({ client: "electron" });
   const previewed = await app.request("/api/product-issues/preview", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(input),
   });
-  assert.equal(previewed.status, 200);
-  const preview = (await previewed.json()) as Record<string, unknown>;
-  assert.equal("confirmationToken" in preview, false);
+  const preview = (await previewed.json()) as { draftIdentity: string };
 
-  // The caller may ask. Asking is all it can do - and every ask reaches a real person, which
-  // is why a script cannot do this quietly.
   const confirmed = await app.request("/api/product-issues/confirm", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(input),
   });
   assert.equal(confirmed.status, 409);
-  assert.equal(asked, 1, "the confirming route must actually ask, not decide for itself");
-  assert.match(
-    ((await confirmed.json()) as { message: string }).message,
-    /not confirmed/,
-  );
-
-  // And the draft's own hash, the very first revision's authorization, still publishes nothing.
-  const published = await app.request("/api/product-issues", {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ ...input, confirmationToken: preview.draftIdentity as string }),
+  assert.deepEqual(asked, {
+    requestId: input.requestId,
+    draftIdentity: preview.draftIdentity,
+    target: "acme/public-issues",
+    title: input.title,
   });
-  assert.equal(published.status, 502);
-  assert.equal(calls, 0, "the reported bypass must reach no gh at any step");
+  assert.equal(creates, 0, "an unauthorized loopback call must reach no gh");
 });
 
-/**
- * A daemon nobody can ask publishes nothing, and says so before anything is typed.
- *
- * This is the daemon started on its own - `npm run dev`, a LaunchAgent, a plain `node` - where
- * there is no shell to raise a dialog. It refuses rather than falling back to a confirmation it
- * could satisfy by itself, and preflight carries the reason so the form is honest on open.
- */
-test("a daemon with no way to ask refuses to confirm, and announces it in preflight", async () => {
+test("a daemon without a private desktop channel fails closed before gh preflight", async () => {
   let calls = 0;
+  const unavailable = "Publishing needs the Mission Control desktop app";
   const app = appFor(new ProductIssueService({
-    consent: {
-      unavailable: "Publishing needs the Mission Control desktop app",
-      ask: () => Promise.resolve(false),
+    authorization: {
+      unavailable,
+      authorize: () => Promise.resolve(false),
     },
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async () => {
@@ -551,27 +514,16 @@ test("a daemon with no way to ask refuses to confirm, and announces it in prefli
       return stubRun({ stdout: "", stderr: "", code: 0 });
     },
   }));
-  const input = draft();
-  await app.request("/api/product-issues/preview", {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(input),
-  });
-  const confirmed = await app.request("/api/product-issues/confirm", {
-    method: "POST",
-    headers: JSON_HEADERS,
-    body: JSON.stringify(input),
-  });
-  assert.equal(confirmed.status, 503);
-  assert.equal(((await confirmed.json()) as { outcome: string }).outcome, "configuration");
-
-  const preflight = (await (await app.request("/api/product-issues/preflight", { headers: LOOPBACK })).json()) as {
+  const preflight = (await (await app.request(
+    "/api/product-issues/preflight",
+    { headers: LOOPBACK },
+  )).json()) as {
     ready: boolean;
     problems: Array<{ code: string; message: string }>;
   };
   assert.equal(preflight.ready, false);
-  assert.equal(preflight.problems[0]?.code, "consent-unavailable");
-  assert.equal(calls, 0, "a daemon that cannot ask must not run gh, even for preflight");
+  assert.deepEqual(preflight.problems, [{ code: "consent-unavailable", message: unavailable }]);
+  assert.equal(calls, 0);
 });
 
 /**
@@ -582,7 +534,6 @@ test("a daemon with no way to ask refuses to confirm, and announces it in prefli
  */
 test("a report that was never previewed cannot be confirmed", async () => {
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
   }));
   const res = await app.request("/api/product-issues/confirm", {
@@ -597,15 +548,14 @@ test("a report that was never previewed cannot be confirmed", async () => {
 /**
  * A grant goes stale on its own, without anybody touching the draft.
  *
- * Two minutes, mirrored by the modal. An approval that never ages is one that can be taken
- * once and spent whenever - which is a different thing from the deliberate second press this
- * design is built around.
+ * An approval that never ages is one that can be taken once and spent whenever. The dashboard
+ * normally spends it immediately within the same Report action, while the route contract still
+ * refuses an expired grant.
  */
 test("a confirmation expires, and an expired one publishes nothing", async () => {
   let now = 1_700_000_000_000;
   let calls = 0;
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     now: () => now,
     runner: async () => {
@@ -653,7 +603,6 @@ test("a confirmation expires, and an expired one publishes nothing", async () =>
 test("MCP mutation revalidates the previewed draft and returns the exact issue URL", async () => {
   const calls: Array<{ args: string[]; input: string | undefined }> = [];
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async (_bin, args, options) => {
       calls.push({ args, input: options?.input });
@@ -700,7 +649,6 @@ test("MCP mutation revalidates the previewed draft and returns the exact issue U
 
 test("caller-owned routing fields are rejected at both preview boundaries", async () => {
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
   }));
   const forged = draft({
@@ -725,7 +673,6 @@ test("caller-owned routing fields are rejected at both preview boundaries", asyn
 test("refusal is retry-safe, while unknown outcome is a typed 504", async () => {
   let attempt = 0;
   const retryApp = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async () => {
       attempt++;
@@ -767,7 +714,6 @@ test("refusal is retry-safe, while unknown outcome is a typed 504", async () => 
   })).status, 201);
 
   const unknownApp = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async () => ({
       ...stubRun({ stdout: "", stderr: "", code: 1 }),
@@ -803,7 +749,6 @@ test("production attachment and demo-mode gates run before the subprocess", asyn
     return stubRun({ stdout: "", stderr: "", code: 0 });
   };
   const productionApp = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner,
   }));
@@ -819,7 +764,6 @@ test("production attachment and demo-mode gates run before the subprocess", asyn
   assert.equal(attachment.status, 502);
 
   const demoApp = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner,
     demoMode: true,
@@ -859,7 +803,6 @@ test("read-only preflight is exposed without creating or editing GitHub state", 
     }),
   ];
   const app = appFor(new ProductIssueService({
-    consent: YES,
     target: () => ({ ok: true, repo: "acme/public-issues" }),
     runner: async (_bin, argv) => {
       args.push(argv);

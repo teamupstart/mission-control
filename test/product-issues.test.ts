@@ -43,7 +43,7 @@ const {
   productIssuesRepo,
 } = await import("../src/server/config.ts");
 const {
-  ProductIssueService,
+  ProductIssueService: ProductIssueServiceBase,
   PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
   productIssueCreateArgs,
   productIssueLabels,
@@ -58,21 +58,19 @@ const {
 const { stubRun } = await import("../src/server/util/exec.ts");
 import type { SavedUpload } from "../src/server/uploads.ts";
 import type { ProductIssueRunner } from "../src/server/product-issues.ts";
+import type { ProductIssueServiceOptions } from "../src/server/product-issues.ts";
 import type { ProductIssueRequest } from "../src/shared/product-issues.ts";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const target = () => ({ ok: true as const, repo: "acme/public-issues" });
+const AUTHORIZES = { unavailable: null, authorize: () => Promise.resolve(true) };
 
-/**
- * Somebody is at the machine and answers the publish dialog.
- *
- * Every service below gets one, because a service WITHOUT one refuses to publish and reports
- * `consent-unavailable` from preflight before it ever runs `gh` - which is correct behaviour
- * for a daemon nobody can ask, and would quietly turn each case here into a test of that one
- * thing. `product-issue-consent.test.ts` and `product-issues-http.test.ts` own that path.
- */
-const CONSENTS = { unavailable: null, ask: () => Promise.resolve(true) };
+class ProductIssueService extends ProductIssueServiceBase {
+  constructor(options: ProductIssueServiceOptions = {}) {
+    super({ authorization: AUTHORIZES, ...options });
+  }
+}
 
 function request(overrides: Partial<ProductIssueRequest> = {}): ProductIssueRequest {
   return {
@@ -236,7 +234,6 @@ test("preview and submission re-derive the agent source and send the body on std
     });
   };
   const service = new ProductIssueService({
-      consent: CONSENTS,
     runner,
     target,
     version: "9.8.7",
@@ -281,7 +278,6 @@ test("preview and submission re-derive the agent source and send the body on std
 test("retry-safe refusals release a request while unknown outcomes block duplicates", async () => {
   let attempts = 0;
   const retrying = new ProductIssueService({
-      consent: CONSENTS,
     target,
     runner: async () => {
       attempts++;
@@ -306,7 +302,6 @@ test("retry-safe refusals release a request while unknown outcomes block duplica
 
   let unknownCalls = 0;
   const uncertain = new ProductIssueService({
-      consent: CONSENTS,
     target,
     runner: async () => {
       unknownCalls++;
@@ -327,7 +322,6 @@ test("a concurrent double submit runs one external writer", async () => {
   });
   let calls = 0;
   const service = new ProductIssueService({
-      consent: CONSENTS,
     target,
     runner: async () => {
       calls++;
@@ -355,7 +349,6 @@ test("production rejects attachments and demo mode remains inert before any gh c
     return stubRun({ stdout: "", stderr: "", code: 0 });
   };
   const production = new ProductIssueService({
-      consent: CONSENTS,
     target,
     runner,
     attachments: PRODUCT_ISSUE_ATTACHMENTS_DISABLED,
@@ -389,7 +382,6 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
     let calls = 0;
     const args: string[][] = [];
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       runner: async (_bin, argv) => {
         args.push(argv);
@@ -402,7 +394,6 @@ test("preflight distinguishes binary, auth, repository, and label failures", asy
   await t.test("invalid target", async () => {
     let calls = 0;
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target: () => productIssuesRepo("not-a-repo"),
       runner: async () => {
         calls++;
@@ -464,7 +455,6 @@ test("preflight enables attachments only for stable gh 2.99.0 or newer", async (
   ] as const) {
     await t.test(version, async () => {
       const service = new ProductIssueService({
-        consent: CONSENTS,
         target,
         attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: () => null },
         runner: async (_bin, args) => {
@@ -507,7 +497,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     const second = saveImageUpload(pngHead, "second.png");
     let argv: string[] = [];
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
@@ -540,7 +529,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     let versionCalls = 0;
     let issueCreates = 0;
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
@@ -573,7 +561,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     let versionChecks = 0;
     let issueCreates = 0;
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
@@ -599,7 +586,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     const upload = saveImageUpload(pngHead, "partial.png");
     let issueCreates = 0;
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
@@ -638,7 +624,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
     const upload = saveImageUpload(pngHead, "partial-no-url.png");
     let issueCreates = 0;
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: resolveImageUpload },
       runner: async (_bin, args) => {
@@ -669,7 +654,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
   ): Promise<string> {
     let issueCreates = 0;
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload },
       runner: async (_bin, args) => {
@@ -756,7 +740,6 @@ test("the injected attachment capability re-resolves, sniffs, bounds, and isolat
   });
   await t.test("count bound", async () => {
     const service = new ProductIssueService({
-      consent: CONSENTS,
       target,
       attachments: { enabled: true, uploadRoot: UPLOADS_DIR, resolveUpload: () => null },
     });

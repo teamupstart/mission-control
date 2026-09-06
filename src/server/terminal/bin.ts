@@ -44,10 +44,16 @@ export function resolveBin(spec: BinSpec): string {
  * carry their own injected list. Returns a copy, so callers cannot mutate `process.env`.
  */
 export function binEnv(spec: BinSpec, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  if (spec.id) return executableChildEnv(base, executableSpec(spec.id).dropEnv);
+  const dropEnv = binDropEnv(spec);
+  if (spec.id) return executableChildEnv(base, dropEnv);
   const env = { ...base };
-  for (const key of spec.dropEnv) delete env[key];
+  for (const key of dropEnv) delete env[key];
   return env;
+}
+
+/** Environment keys the catalog or an injected compatibility spec excludes. */
+export function binDropEnv(spec: BinSpec): readonly string[] {
+  return spec.id ? executableSpec(spec.id).dropEnv : spec.dropEnv;
 }
 
 /**
@@ -65,6 +71,7 @@ export function binEnv(spec: BinSpec, base: NodeJS.ProcessEnv = process.env): No
  * not possibly answer.
  */
 export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (binUnsupportedReason(spec)) return false;
   if (spec.id) return locateExecutableSync(spec.id) !== null;
   const bin = resolveBin(spec);
   if (!bin) return false;
@@ -73,6 +80,30 @@ export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env):
   // `onPath` remains only for injected compatibility specs; production specs use the
   // catalog-backed check above.
   return onPath(bin, env);
+}
+
+/** The shared host gate consumed before any backend-specific filesystem or runtime work. */
+export function binUnsupportedReason(
+  spec: BinSpec,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  return spec.unsupportedReason?.(platform) ?? null;
+}
+
+export interface BinAvailabilityDeps {
+  installed: (spec: BinSpec) => boolean;
+  unsupported?: (spec: BinSpec) => string | null;
+}
+
+/** One availability decision: host support wins, then installation is probed. */
+export function binUnavailableReason(
+  spec: BinSpec,
+  label: string,
+  deps: BinAvailabilityDeps,
+): string | null {
+  const unsupported = (deps.unsupported ?? binUnsupportedReason)(spec);
+  if (unsupported) return unsupported;
+  return deps.installed(spec) ? null : `${label} is not installed`;
 }
 
 /**

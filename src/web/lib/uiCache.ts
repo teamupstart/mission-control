@@ -2,6 +2,7 @@ import {
   CONVERSATION_VIEWS,
   LAYOUT_MODES,
   LINE_DENSITIES,
+  seedHiddenDisplayItems,
   UI_CONFIG_DEFAULTS,
 } from "@shared/protocol.ts";
 import type { ConversationView, LayoutMode, LineDensity, UiConfig } from "@shared/protocol.ts";
@@ -130,6 +131,12 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
     hiddenDisplayItems: raw?.hiddenDisplayItems
       ? [...raw.hiddenDisplayItems]
       : [...UI_CONFIG_DEFAULTS.hiddenDisplayItems],
+    // The seed marker rides along so a cache written by THIS build is not seeded a second
+    // time on the next cold paint, which would put back an item the operator has since
+    // switched on. `??` rather than `||` for the trap the booleans below name: a stored 0
+    // is a real answer, and it means "owed every seed".
+    hiddenDisplayItemsSeed:
+      raw?.hiddenDisplayItemsSeed ?? UI_CONFIG_DEFAULTS.hiddenDisplayItemsSeed,
     // `??` and not `||`, which is the whole hazard for a boolean that DEFAULTS TO TRUE: a
     // stored `false` is the operator's answer, and `||` would read it as absent and hand back
     // the default - re-grouping the board on every cold paint for the one person who turned it
@@ -163,9 +170,18 @@ export function readLegacySettings(): UiConfig | null {
   });
 }
 
-/** The cached config, or the shipped defaults. Safe to call at module load. */
+/**
+ * The cached config, or the shipped defaults. Safe to call at module load.
+ *
+ * Seeded through the SAME shared migration the daemon runs, and that is not belt-and-braces.
+ * This copy is what the first paint reads, synchronously, before `hydrateUiConfig` has been
+ * anywhere - so a cache written by an older build would draw a ships-hidden item switched ON
+ * for a frame and then have it vanish, which reads as a rendering fault. The daemon's seeding
+ * is what makes the answer durable; this is what makes the correction invisible.
+ */
 export function readCache(): UiConfig {
-  return coerce(parseJson<Partial<UiConfig>>(read(CACHE_KEY)));
+  const raw = parseJson<Partial<UiConfig>>(read(CACHE_KEY));
+  return coerce(seedHiddenDisplayItems(raw) as Partial<UiConfig> | null);
 }
 
 /** Mirror the daemon's copy locally, so the next load paints it without waiting. */

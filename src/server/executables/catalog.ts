@@ -79,6 +79,16 @@ export const EXECUTABLE_SPECS: Record<ExecutableId, ExecutableSpec> = {
   jira: spec("jira", "Jira CLI", "jira", "JIRA_BIN"),
   conductor: spec("conductor", "ai-conductor", "conduct-ts", "CONDUCTOR_BIN"),
   tmux: spec("tmux", "tmux", "tmux", "TMUX_BIN"),
+  herdr: spec("herdr", "Herdr", "herdr", "HERDR_BIN", {
+    legacyEnv: ["HERDR_BIN"],
+    dropEnv: [
+      "HERDR_SESSION",
+      "HERDR_SOCKET_PATH",
+      "HERDR_WORKSPACE_ID",
+      "HERDR_TAB_ID",
+      "HERDR_PANE_ID",
+    ],
+  }),
   cmux: spec("cmux", "cmux", "cmux", "CMUX_BIN", {
     legacyEnv: ["CMUX_BIN"],
     candidates: appCandidates("cmux.app", "Contents/Resources/bin/cmux"),

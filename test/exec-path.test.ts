@@ -60,17 +60,17 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
           ]),
           [null, null, null],
         );
-        assert.equal(readFileSync(shellLog, "utf8"), "x", "one batch shares one shell probe");
+        assert.equal(readFileSync(shellLog, "utf8"), "xx", "one batch shares initialization and first-miss probes");
 
         assert.equal(await resolveBinPath("another-missing-terminal"), null);
         assert.equal(await resolveBinPath("pi"), null);
-        assert.equal(readFileSync(shellLog, "utf8"), "x", "repeated misses stay on cooldown");
+        assert.equal(readFileSync(shellLog, "utf8"), "xx", "repeated misses stay on cooldown");
 
         process.env.MC_TEST_LOGIN_PATH = `${installed}${delimiter}/usr/bin${delimiter}/bin`;
         await refreshProcessPathFromLoginShell({ force: true });
         assert.equal(await resolveBinPath("pi"), pi);
         assert.equal((process.env.PATH ?? "").split(delimiter).includes(installed), true);
-        assert.equal(readFileSync(shellLog, "utf8"), "xx", "an explicit re-check forces one read");
+        assert.equal(readFileSync(shellLog, "utf8"), "xxx", "an explicit re-check forces one read");
       },
     );
   } finally {

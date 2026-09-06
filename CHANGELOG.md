@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.8.0](https://github.com/teamupstart/mission-control/compare/v1.7.1...v1.8.0) (2026-09-06)
+
+
+### Features
+
+* **board:** print the jump keycap on the Console rail too ([#921](https://github.com/teamupstart/mission-control/issues/921)) ([f1cfd3b](https://github.com/teamupstart/mission-control/commit/f1cfd3b1960103af83354d232acc128c1a88df04))
+* **board:** put a card's workflow details behind a Display setting ([#911](https://github.com/teamupstart/mission-control/issues/911)) ([2b1a4a9](https://github.com/teamupstart/mission-control/commit/2b1a4a92116bdc070a1dbbee9d2ac6dd41e9c620))
+* **pipelines:** recover failed Engineer attempts ([#916](https://github.com/teamupstart/mission-control/issues/916)) ([5d90f2c](https://github.com/teamupstart/mission-control/commit/5d90f2ca8d0255e80d65177fd950a40ec1b9e79f))
+* **setup:** warn when the GitHub CLI is older than 2.100.0 ([#913](https://github.com/teamupstart/mission-control/issues/913)) ([d08fe3f](https://github.com/teamupstart/mission-control/commit/d08fe3f89a613de6aaad16b7414b1424c65a3ed7))
+* **terminal:** integrate stable Herdr multiplexer ([#919](https://github.com/teamupstart/mission-control/issues/919)) ([979ebde](https://github.com/teamupstart/mission-control/commit/979ebdee84cfa79dadd2ecd79e096653c780e059))
+* **workflows:** measure evidence preflight outcomes ([#914](https://github.com/teamupstart/mission-control/issues/914)) ([346ea14](https://github.com/teamupstart/mission-control/commit/346ea149fe85f5f75b3eab04e570d4d2f63c0a3a))
+* **workflows:** route Code Design reviews through Codex Sol ([#923](https://github.com/teamupstart/mission-control/issues/923)) ([9b278b6](https://github.com/teamupstart/mission-control/commit/9b278b61383ec712fde622fe8f39af058d28496d))
+
+
+### Bug Fixes
+
+* **codex:** read conversation prose from item_completed rollout records ([#915](https://github.com/teamupstart/mission-control/issues/915)) ([0a28c19](https://github.com/teamupstart/mission-control/commit/0a28c19102ad840885534451c25930a710b7bd06))
+* make iTerm2 handoffs reliable ([#917](https://github.com/teamupstart/mission-control/issues/917)) ([9643f37](https://github.com/teamupstart/mission-control/commit/9643f37efdfd742931886f8ea5d59babbaf6a74d))
+* **packaging:** disable implicit release publishing ([#909](https://github.com/teamupstart/mission-control/issues/909)) ([865c985](https://github.com/teamupstart/mission-control/commit/865c98570eb5a884886b58e737895aa87a1195b3))
+* **sessions:** recover Claude SDK authentication ([#922](https://github.com/teamupstart/mission-control/issues/922)) ([0e82cb3](https://github.com/teamupstart/mission-control/commit/0e82cb3d8b2eefb6280edb727303b5b7a9f0981a))
+* **tasks:** name generated titles after the work ([#920](https://github.com/teamupstart/mission-control/issues/920)) ([d44ca60](https://github.com/teamupstart/mission-control/commit/d44ca6007ea26150f7cd02fa275c6eaa8c9900f7))
+
 ## [1.7.1](https://github.com/teamupstart/mission-control/compare/v1.7.0...v1.7.1) (2026-09-05)
 
 

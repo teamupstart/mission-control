@@ -87,6 +87,32 @@ test("a multiplexer wins the axis, and the emulator is not consulted at all", as
   assert.equal(tabs, 0);
 });
 
+test("an unsupported multiplexer is excluded before installation or home operations", () => {
+  const herdr = fakeMultiplexer({
+    id: "herdr",
+    label: "Herdr",
+    bin: {
+      env: "HERDR_BIN",
+      candidates: ["herdr"],
+      dropEnv: [],
+      unsupportedReason: () => "Herdr integration is supported on macOS and Linux only",
+    },
+    sessions: sessions(),
+  });
+  let herdrInstallationProbes = 0;
+  const terminalDeps: HomeDeps = {
+    ...fakeTerminals(fakeMultiplexer(), fakeEmulator()),
+    installed: (spec) => {
+      if (spec === herdr.bin) herdrInstallationProbes += 1;
+      return true;
+    },
+  };
+  terminalDeps.multiplexers.herdr = herdr;
+
+  assert.equal(homeBackends(terminalDeps).some((backend) => backend.id === "herdr"), false);
+  assert.equal(herdrInstallationProbes, 0);
+});
+
 test("with no multiplexer installed, a dispatch still lands - in an emulator tab", async () => {
   // The whole point of giving the interface a spawn capability: a machine with no tmux was
   // simply unable to dispatch, and said so only as an ENOENT inside a task error.

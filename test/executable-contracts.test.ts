@@ -87,6 +87,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/standards.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Git standards reader" },
   ],
+  "src/server/terminal/herdr-client.ts": [
+    { operation: "spawn", command: "executable", contract: "resolved-path-parameter", reason: "Herdr path resolved by the catalog-backed status probe before server startup" },
+  ],
   "src/server/util/exec.ts": [
     { operation: "execFile", command: "resolved", contract: "locator-result", reason: "shared locator-backed execution primitive" },
   ],

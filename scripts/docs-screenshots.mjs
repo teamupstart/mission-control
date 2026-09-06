@@ -140,6 +140,41 @@ async function capture(page, baseURL, shot) {
   if (shot.cleanup) await shot.cleanup(page);
 }
 
+async function putJson(url, body) {
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`[docs:screenshots] PUT ${url} answered ${res.status}: ${await res.text()}`);
+  }
+}
+
+/**
+ * Retire the first-run chrome before any frame is taken.
+ *
+ * These captures run against a state root this script rebuilds every time, so the profile is
+ * always brand new - and a brand new profile auto-starts the `See the work` tour over whatever
+ * route was asked for, and raises the machine-setup reminder above the dashboard. Neither is
+ * the surface a README figure documents, and a tour card centred on the fleet hides the one
+ * thing `fleet-board.png` exists to show.
+ *
+ * Both are retired through the routes their own controls call, before the first page load,
+ * rather than dismissed in the browser or hidden in CSS: the tour flag is consumed when a tour
+ * starts, so a browser-side exit races the frame it was meant to clear, and the reminder's
+ * dismissal is bound to the exact attention set of the observation it came from.
+ */
+async function retireFirstRunChrome(baseURL) {
+  await putJson(`${baseURL}/api/ui/config`, { guidedTour: false });
+  const checks = await (await fetch(`${baseURL}/api/setup/checks`)).json();
+  if (!checks?.banner?.visible) return;
+  await putJson(`${baseURL}/api/setup/checks`, {
+    snapshotToken: checks.snapshotToken,
+    acknowledged: checks.banner.attentionRowIds,
+  });
+}
+
 async function main() {
   const screenshots = requestedScreenshots(process.argv.slice(2));
   const needsFleet = screenshots.some((shot) => shot.name === "fleet-board");
@@ -169,6 +204,8 @@ async function main() {
         { timeoutMs: 60_000 },
       );
     }
+
+    await retireFirstRunChrome(daemon.baseURL);
 
     browser = await chromium.launch();
     const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, reducedMotion: "reduce" });

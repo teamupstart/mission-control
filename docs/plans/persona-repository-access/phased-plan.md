@@ -27,7 +27,7 @@ No phase may revive or consume those task contracts. The files in this planning 
 
 ## Repository investigation
 
-The plan was rechecked against `origin/main` at `298a7b2b4a975bb6f4d9953ac5f19b9669129935`, after PR #770 merged. The old PR changed planning artifacts only; no Persona repository-access implementation exists.
+The plan was rechecked again on 2026-09-04 against `origin/main` at `3459720f` (`v1.7.1`). No Persona repository-access implementation exists. The local-MCP architecture and three serial phases remain valid, with the current-state amendments below controlling implementation.
 
 ### Contracts that remain current
 
@@ -36,7 +36,9 @@ The plan was rechecked against `origin/main` at `298a7b2b4a975bb6f4d9953ac5f19b9
 - `src/server/db.ts` creates tables before `migrate()`. Any index that names a new column must be created beside its `addColumn` migration, not in the initial boot block alone.
 - Built-in Personas are generated application data, not rows in `personas`. `PersonaManager` and `WorkflowStore` reject ordinary update and archive operations for them.
 - `WorkflowStore.publishWorkflow` currently reuses a version by `(workflow_id, source_draft_revision)` before it projects the resolved Persona catalog. Publication must compare a canonical resolved graph fingerprint as well.
-- `captureStableWorkflowContext` is the existing stable checkout boundary. It samples repository identity and status around evidence capture and is the only correct place to attach exact-state sealing.
+- `captureStableWorkflowContext` is the existing stable checkout boundary. It samples repository identity and status around evidence capture and is the correct place to prepare an exact-state candidate, but not to create its durable claim.
+- Workflow submission capture now resolves `workflowCheckoutPath` per repository run. Repository artifacts must seal that resolved checkout and retain one claim per submission/run.
+- `WorkflowManager.captureAndActivate` validates external artifact expectations before raw-context persistence, freezes reserved evidence, captures daemon-owned image/text artifacts, compacts context, and applies evidence-readiness policy before activation. Repository candidates must be discarded on guard failure and promoted only after those gates pass.
 - `computeSessionDiff` is prompt evidence with a 1.2 MB patch cap and bounded untracked rendering. Its base semantics are reusable, but its output cannot serve repository-wide access.
 - `src/server/git/ensemble-snapshot.ts` proves the private-index and private-ref pattern, while collapsing the index and working tree into one commit. Repository review must keep HEAD, index, and worktree layers distinct.
 - `WorkflowEngine.runAttempt` currently makes one fresh tool-less `LlmRunner.run` call. `handleInfrastructureFailure` already owns retry scheduling and the final `infrastructure_error` block.
@@ -46,10 +48,11 @@ The plan was rechecked against `origin/main` at `298a7b2b4a975bb6f4d9953ac5f19b9
 - Inspector's `DENY_PATHS` and `scrubSecrets` are useful precedents, but its provider-side tool grant is Claude-only. The repository policy must move below both providers into the MCP and artifact boundary.
 - `WorkflowRunDetail` already pages events and LLM calls. Repository query audits need their own bounded page or summary rather than being folded into the compact SSE run summary.
 - Workflow retention and startup reconciliation already run under `WorkflowManager`. Repository artifact cleanup belongs in that daemon-owned lifecycle and must keep SQLite writes in the daemon.
-- `PersonaEditor` treats all built-in fields as read-only and short-circuits save. Repository access therefore needs a dedicated mutation path and control instead of weakening the general built-in edit guard.
+- `PersonaEditor` treats all built-in fields as read-only and short-circuits save. Repository access therefore needs a dedicated mutation path and control instead of weakening the general built-in edit guard. Imported and plugin-managed Personas now carry provenance; reimport and synchronization must preserve operator-owned repository access.
+- Evidence currently has eight stable kinds with a uniform quote/path/line schema. The metadata-only repository handle must be an appended discriminated-union branch while the existing eight branches retain their exact identifiers and wire shapes.
 - Browser-visible changes require a built-dashboard Playwright spec, accessible selectors, and fake Claude and Codex providers.
 
-### New discrepancy resolved during phasing
+### Discrepancies resolved during phasing and revalidation
 
 The approved plan requires both Git history and omission of sensitive blob contents from the portable artifact. A normal Git bundle cannot satisfy both because reachable commits and trees pull every referenced blob into the bundle.
 
@@ -62,6 +65,8 @@ The implementation will use a versioned sparse Git object artifact instead of a 
 5. Derive status from the captured manifest. Never run an unrestricted diff or show and filter its output afterwards.
 
 This preserves original Git identities for log, show, and blame on an explicit bounded range while ensuring a provider process cannot recover secret-bearing blob bodies from the artifact. Revisions outside the retained manifest set are denied as `revision_out_of_range`. For a retained commit, `git_show` patch mode compares a true root with the empty tree, compares a non-root only when its recorded first parent is retained, and otherwise returns `history_boundary` with no patch. Frontier log/blame results carry explicit truncation without consulting the original checkout. Phase 1 proves that the MCP operates safely over a sparse object database and establishes the history policy; Phase 2 owns producing and validating that exact artifact set.
+
+The current capture pipeline adds a second ordering constraint. Phase 2 must expose private prepare, promote, release, and discard operations plus one `WorkflowStore.commitRepositoryCaptureActivation` transaction owner. Phase 3 prepares the candidate within stable capture, then preserves external artifact validation and reserved-evidence capture. It promotes the digest and a provisional submission claim only after those gates pass and before raw context persistence, then uses that single owner to activate the claim and mark the submission `running` together. A failure of either write rolls back both. Any intervening failure releases the provisional claim, and startup reconciles a crash-stranded provisional claim. A repository artifact is capability input and never satisfies criterion-mapped evidence readiness.
 
 ## Sizing and phase count
 
@@ -123,23 +128,24 @@ Independent review work inside a phase may run in parallel, but each phase is on
 
 ### Established by Phase 1, consumed by Phases 2 and 3
 
-- `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, safe query audit metadata, and opaque metadata-only repository evidence handles.
+- `src/shared/repository-access.ts` is the browser-safe source for append-only access modes, operation kinds, daemon-minted operation-instance ids, input/output envelopes, denial and failure codes, cursor metadata, budgets, workload requests, ordered workload events, cancellation generations, terminal results, repository-evidence protocol capability, safe query audit metadata, and opaque metadata-only repository evidence handles with canonical half-open 1-based line, 0-based raw-byte, and independent old/new diff range variants.
 - The MCP operation set is closed: `read`, `search`, `glob`, `git_status`, `git_diff`, `git_show`, `git_log`, and `git_blame`.
 - `RepositoryHistoryPolicyV1` fixes the retained range at a deterministic all-parent breadth-first prefix capped before 2,048 commits or 512 MiB of incremental unique allowed historical blobs. Descriptor membership, not generic reachability, controls history queries; boundary and out-of-range results are typed and auditable.
 - `RepositoryViewDescriptor` names a verified manifest and sparse object/materialized view, including the immutable retained-revision/frontier fields. It never names the original checkout.
 - Path policy and secret scrubbing are shared pure modules. The MCP applies them for both providers; provider prompts do not enforce access.
 - `PersonaWorkloadExecutor` accepts a versioned request and supports dispatch, ordered event replay after a sequence, cancellation by generation, and reconciliation by workload id.
-- `LocalPersonaWorkloadExecutor` uses injected artifact materialization and event persistence boundaries. Phase 2 supplies the artifact implementation; Phase 3 supplies durable ingestion.
+- `LocalPersonaWorkloadExecutor` uses injected artifact materialization and event persistence boundaries. Its trusted supervisor binds submission, workload, Workflow attempt, locator, and digest identity before materialization. Phase 2 supplies the artifact implementation; Phase 3 supplies durable ingestion.
 - Repository bodies travel only between the provider and local MCP. Workload events carry safe query/evidence-handle metadata and the final verdict, never response bodies, evidence excerpts, or quote fields.
 - The separate repository MCP bundle has no Mission Control credentials or HTTP client and is included in build and smoke verification.
 
 ### Established by Phase 2, consumed by Phase 3
 
 - `WorkflowRepositoryArtifact` is digest-owned and identified by artifact format version, canonical manifest digest, opaque locator, captured base/HEAD/index/worktree identities, repository/history policy versions, retained-revision/frontier metadata, byte counts, state, and cleanup state. `WorkflowRepositorySnapshotClaim` gives each submission an independent durable claim on that digest.
-- `WorkflowRepositoryArtifactService.seal`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact lifecycle entry points.
+- `WorkflowRepositoryArtifactService.prepare`, `promote`, `discard`, `materialize`, `verify`, `release`, and `reconcile` are the only repository artifact service entry points. Preparation creates no durable claim and promotion creates only a provisional claim. The separate single-owner `WorkflowStore.commitRepositoryCaptureActivation` transaction is the only path that may activate that claim and mark the submission `running`; either both writes commit or neither does. Materialization accepts only an active-request-bound request and revalidates the submission's active ready digest/locator claim before filesystem access.
 - The artifact contains original commit/tree identities and all allowed blobs for the exact policy-retained revision prefix, but no sensitive blob bodies. Denied entries remain visible only as classified metadata; source-base objects outside the prefix remain diff-only.
 - Capture candidates use a dedicated namespace under Mission Control state, never the repository worktree or common Git directory as durable storage.
-- A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no active claim remains before removing bytes. Startup reconciliation deletes only zero-claim paths whose digest ownership is proven.
+- Each pending candidate publishes an atomic daemon-owned marker before artifact bytes. Startup removes only immediate contained candidates whose marker identity and root kind agree; malformed or unowned entries are quarantined/reported, and periodic cleanup preserves candidates in the live in-memory registry.
+- A digest-level database row owns every durable artifact and per-submission claim rows own references to it. Claim release and zero-claim cleanup enqueue happen atomically; deletion rechecks that no provisional or active claim remains before removing bytes. Startup reconciliation releases provisional claims whose submissions never atomically reached `running`, then deletes only zero-claim paths whose digest ownership is proven.
 - Historical submissions without an artifact claim row remain valid prompt-only submissions. An access-enabled Phase 3 attempt requires an active claim joined to a ready artifact and never reconstructs from a live checkout.
 
 ### Established by Phase 3
@@ -148,9 +154,13 @@ Independent review work inside a phase may run in parallel, but each phase is on
 - `PersonaSnapshot.repositoryAccess` is non-optional after parse because the schema defaults missing historical values to `none`.
 - Publication identity is `(workflow_id, source_draft_revision, source_snapshot_fingerprint)` over canonical resolved graph JSON.
 - A repository-enabled attempt owns exactly one durable workload id and one current cancellation generation.
+- Repository capture binds to the specific per-repository run checkout. External-artifact validation and reserved submission evidence complete before candidate promotion and raw-context persistence; the promoted claim remains provisional until it activates atomically with the submission's `running` transition.
+- The `repository` evidence kind is appended as a metadata-only discriminated-union branch. Existing evidence kinds keep their current identifiers and wire shapes. Repository handle metadata binds snapshot/workload/attempt, daemon-minted operation-instance id plus separate operation kind, item ordinal, approved path, and one canonical half-open range: 1-based line, 0-based raw-byte, or independent old/new diff intervals. Repository capability artifacts do not contribute to evidence-readiness coverage.
+- New imported Personas default to `none`; reimport and plugin synchronization preserve the operator-owned access value.
 - Workload event ingestion is append-only and idempotent by `(workload_id, sequence)`. Conflicting duplicates or gaps are infrastructure failures.
 - Query audit and evidence-handle persistence stores metadata only and is paged independently from Workflow events and LLM calls.
-- Evidence references to repository content contain only `operationId` plus opaque `evidenceHandleId`. The engine resolves daemon-owned same-attempt returned-item/path/range metadata before accepting the verdict and rejects quote, excerpt, and free-form path/range fields.
+- Evidence references to repository content contain only daemon-minted `operationId` plus opaque `evidenceHandleId`. The engine resolves daemon-owned same-attempt operation kind, returned-item/path, and canonical half-open line/raw-byte/old-new-diff range metadata before accepting the verdict and rejects quote, excerpt, and free-form path/range fields.
+- Read-enabled dispatch requires a writer-disabled compatibility-floor build to land first with newer-schema startup refusal and dormant repository-evidence parsing/preservation, followed by verified daemon/executor/parser capability matching before citation writers are enabled. Normal rollback disables feature writes and returns to that floor against the live additive schema, preserving unrelated writes; the pre-migration copy is disaster recovery only, and any downgrade below the floor uses a stopped-daemon targeted export/down-conversion/replay procedure rather than whole-database restoration.
 - `none` access preserves the historical prompt, provider call, fingerprint, and verdict path byte for byte.
 
 ## Ownership matrix
@@ -230,8 +240,9 @@ After Phase 3, the implementation must re-prove these cross-phase properties:
 1. An access-off Persona produces the same prompt, provider options, capture fingerprints, and verdict behavior as `main` before the feature.
 2. An access-enabled Persona cannot return a verdict without a verified artifact and functioning repository MCP.
 3. Claude and Codex expose the same eight operations and use the same security and audit path.
-4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted.
+4. A submitted dirty checkout remains exact after the original worktree is reset, released, or deleted; a crash before candidate promote/discard leaves no unbounded pending artifact; and a failure or crash after promotion but before activation releases the provisional claim without deleting shared bytes still claimed elsewhere.
 5. No sensitive blob body appears in the artifact, MCP response for a denied operation, audit database, run export, logs, or browser.
 6. History selection is deterministic at both ceilings; the three `git_show` patch cases, frontier log/blame behavior, and `revision_out_of_range` denial work after source removal and are identical for Claude and Codex.
-7. Repository evidence handles validate one same-attempt returned item and exact range without any response body, excerpt, quote, or provider-supplied path entering daemon state.
-8. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.
+7. Repository evidence handles validate one same-attempt returned item through the canonical operation-instance identity and half-open line, raw-byte, or old/new diff coordinates without any response body, excerpt, quote, or provider-supplied path entering daemon state.
+8. Mixed-version executor/parser and frozen-reader fixtures enforce the compatibility floor before repository-enabled provider launch or verdict persistence; feature-disable rollback preserves repository citations and unrelated writes in the live database; and exceptional targeted downgrade/replay passes frozen-target-reader verification without a whole-database restore.
+9. Local workload events can be replayed after a cursor without duplicate effects, matching the contract a future remote adapter will implement.

@@ -22,7 +22,7 @@ export interface AppMenuHandlers {
  * Chords this template gives up WHILE the renderer is claiming them, and takes back when it
  * is not.
  *
- * `⌘0`, `⌘-` and `⌘=` are the last three of the Board card's twelve jump shortcuts (see
+ * `⌘0`, `⌘-` and `⌘=` are the last three of the fleet's twelve session jump shortcuts (see
  * `src/web/lib/card-shortcuts.ts`), and each is also the default accelerator of a zoom role
  * in Electron's stock `viewMenu`. Both cannot have them at once, because a menu accelerator
  * is registered with the system and is handled before the renderer sees the keystroke.
@@ -78,20 +78,24 @@ function zoomWindow(window: unknown, step: number | "reset"): void {
 
 export interface AppMenuState {
   /**
-   * Whether the dashboard is currently claiming ⌘0/⌘-/⌘= for Board card jumps.
+   * Whether the dashboard is currently claiming ⌘0/⌘-/⌘= for the fleet's session jumps.
    *
-   * Follows the PREFERENCE (and the layout that can use it), not the live card count, and
-   * that is deliberate. The set of slots a board is filling changes every time a session
+   * Follows the PREFERENCE (and the page that can use it), not the live session count, and
+   * that is deliberate. The set of slots the fleet is filling changes every time a session
    * appears or leaves, and a zoom shortcut that worked until a tenth agent showed up and
-   * then silently stopped would be worse than one that is plainly the board's for as long
+   * then silently stopped would be worse than one that is plainly the fleet's for as long
    * as the feature is on. So it moves when a person moves it: unchecking Jump shortcut, or
-   * leaving the Board layout, hands these keys straight back to zoom.
+   * leaving Fleet for the Library, Runs or Settings, hands these keys straight back to zoom.
    *
-   * The consequence to own is the other side of that: while the feature is on and the board
-   * is holding fewer than ten cards, these three keys belong to a board that has no card to
-   * give them to, and do nothing in the desktop app. That is a stated rule rather than an
-   * accident - the number row is the board's while the board is using it - and `docs/ui.md`
-   * says so where an operator reads it.
+   * NOT the layout. Both fleet layouts print these keycaps and answer these chords - the
+   * Board on its cards, the Console on its rail rows - so a claim that stood down on the
+   * Console would leave a rail drawing twelve keys three of which the menu had taken back.
+   *
+   * The consequence to own is the other side of that: while the feature is on and the fleet
+   * is holding fewer than ten sessions, these three keys belong to a fleet that has no
+   * session to give them to, and do nothing in the desktop app. That is a stated rule rather
+   * than an accident - the number row is the fleet's while the fleet is using it - and
+   * `docs/ui.md` says so where an operator reads it.
    */
   rendererOwnsNumberRow: boolean;
 }

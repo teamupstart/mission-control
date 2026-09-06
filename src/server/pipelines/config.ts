@@ -1,5 +1,7 @@
 import {
+  activePipelineRepos,
   PipelinesConfigSchema,
+  type PipelineProviderId,
   type PipelinesConfig,
   type PipelinesConfigInput,
 } from "@shared/pipeline.ts";
@@ -23,4 +25,14 @@ export function setPipelinesConfig(patch: PipelinesConfigInput): PipelinesConfig
   const next = PipelinesConfigSchema.parse(patch);
   setAppConfig(CONFIG_ENTRY, next);
   return next;
+}
+
+export const PIPELINE_RECOVERY_CONSENT_WITHDRAWN =
+  "Pipeline recovery is unavailable because repository consent was withdrawn";
+
+/** Live authorization for a provider read or mutation scoped to one repository. */
+export function pipelineRepoConsented(provider: PipelineProviderId, repoRoot: string): boolean {
+  return activePipelineRepos(getPipelinesConfig()).some(
+    (repo) => repo.provider === provider && repo.repoRoot === repoRoot,
+  );
 }

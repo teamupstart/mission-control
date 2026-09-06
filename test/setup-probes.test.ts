@@ -100,6 +100,46 @@ test("missing, needs-setup, and unknown stay distinct", async () => {
   assert.deepEqual(plugin, { state: "unknown", why: "Claude Code's plugin record could not be read.", evidence: "EACCES" });
 });
 
+test("an unsupported Herdr host is actionable without probing installation", async () => {
+  let installationProbes = 0;
+  const status = await SETUP_PROBES.herdr(deps({
+    backendUnsupported: (id) => id === "herdr" ? "Herdr integration is supported on macOS and Linux only" : null,
+    installedBackend: async () => {
+      installationProbes += 1;
+      return "/tools/herdr";
+    },
+  }));
+  assert.deepEqual(status, {
+    state: "needs-setup",
+    why: "Herdr integration is supported on macOS and Linux only",
+    evidence: null,
+  });
+  assert.equal(installationProbes, 0);
+});
+
+test("an outdated GitHub CLI reports needs-setup, and a current one stays satisfied", async () => {
+  const outdated = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.4.0 (2021-08-10)\n", stderr: "", code: 0 }),
+  }));
+  assert.equal(outdated.state, "needs-setup");
+  assert.match(outdated.state === "needs-setup" ? outdated.why : "", /2\.100\.0/);
+
+  const current = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.100.0 (2024-01-01)\n", stderr: "", code: 0 }),
+  }));
+  assert.deepEqual(current, { state: "satisfied", evidence: "/tools/gh" });
+
+  const unparseable = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => ({ ...stubRun({ stdout: "", stderr: "timed out", code: null }), outcomeUnknown: true }),
+  }));
+  assert.equal(unparseable.state, "satisfied");
+
+  const nonzeroExit = await SETUP_PROBES["gh-cli"](deps({
+    runCommand: async () => stubRun({ stdout: "gh version 2.4.0 (2021-08-10)\n", stderr: "some other error", code: 1 }),
+  }));
+  assert.deepEqual(nonzeroExit, { state: "satisfied", evidence: "/tools/gh" });
+});
+
 test("a schema-invalid Claude plugin record is unknown rather than missing", async () => {
   const pluginsDir = mkdtempSync(join(tmpdir(), "mission-setup-plugins-"));
   try {
@@ -142,6 +182,16 @@ test("one thrown probe becomes its own unknown row", async () => {
   assert.equal(row?.status.state, "unknown");
   assert.match(row?.status.state === "unknown" ? row.status.why : "", /broken probe/);
   assert.equal(view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "claude-cli")?.status.state, "satisfied");
+});
+
+test("conductor provenance is reported only for the path that was probed", async () => {
+  const status = await SETUP_PROBES["ai-conductor"](deps({
+    executableDiagnostic: async () => ({ path: "/different/conduct-ts", source: "Login shell" }),
+  }));
+  assert.deepEqual(status, {
+    state: "satisfied",
+    evidence: "/tools/conduct-ts 1.2.3",
+  });
 });
 
 test("dependency rows project their catalog requirement without adding a second opinion", async () => {

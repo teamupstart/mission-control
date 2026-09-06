@@ -260,20 +260,14 @@ screenshot locators, never repository metadata or filesystem paths. See
 [Public product issue reporting](security.md#public-product-issue-reporting) for what the
 environment line and image locators may contain and what they never contain.
 
-**Publishing takes two presses and a system dialog.** **Report publicly** does not publish. It
-asks Mission Control to confirm, and Mission Control puts a system dialog in front of you naming
-the repository and quoting your title, defaulting to Cancel. Say no and nothing is published and
-your draft is untouched. Say yes and the button renames itself to name that repository - **Publish
-to owner/name** - with a line beside it saying the same. That second press is the one that files a
-public issue, and nothing is fetched in between, so what you read is what goes. Editing anything
-takes the confirmation back and the button returns to **Report publicly**; so does leaving it for
-two minutes.
-
-**A daemon running outside the desktop app cannot publish.** It has no way to show you that
-dialog, so it says so when the form opens rather than at the moment you press. The full public
-body is still on screen, so you can file it yourself. See
-[Public product issue reporting](security.md#public-product-issue-reporting) for why the
-confirmation cannot live in the browser.
+**Publishing takes one press.** Once the daemon-derived preview is ready, **Report publicly**
+has its trusted control click captured by the isolated desktop preload, authorizes that exact
+preview through the desktop shell, and files it without a warning dialog or
+a second button press. The button stays busy through the internal authorization, confirmation,
+and submission requests, so another press cannot race the first one. If the derived content
+changes before publication, Mission Control refuses it and refreshes the preview rather than
+publishing content that was not shown. A report opened from a standalone browser cannot publish,
+because it has no private desktop authorization channel.
 
 **Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
 WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with
@@ -284,7 +278,7 @@ missing instead of offering a retry that would create a duplicate.
 
 Your draft **survives closing the dialog**. Close it to go and re-read the thing you are
 reporting and the words are still there when you come back. Two things clear it: **Clear**,
-which you press on purpose, and a confirmed submission, after which the next opening starts
+which you press on purpose, and a successful submission, after which the next opening starts
 empty because that report is already filed.
 
 Four things can come back, and they are deliberately different:
@@ -292,7 +286,7 @@ Four things can come back, and they are deliberately different:
 | Outcome | What you see | What to do |
 | --- | --- | --- |
 | **Reported** | The target repository and a **View GitHub issue** link | Nothing. The draft is retired; reopening starts fresh |
-| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and confirm again - nothing was published |
+| **Refused** | What GitHub CLI objected to, with the draft untouched | Fix it and report again - nothing was published |
 | **Cannot report** | The specific missing piece - `gh auth login`, an unreachable repository, a label the target does not have | An operator fixes the configuration; the button stays disabled until preflight passes |
 | **Unknown** | "Check the target repository before reporting this again", and a disabled button | Go and look. The issue may or may not exist, and a second press is how a duplicate gets filed under your name |
 
@@ -708,17 +702,34 @@ available:
   a recurring mission, an ensemble - are always drawn, because no preference should be able
   to make a session that needs you look like one that does not; each of them already draws
   nothing when it has nothing to say. Nor are the things that *are* the card: the tone
-  spine, the name, the agent dot and the **held** tag. The **defaults draw exactly the facts
-  the previous release drew**, so upgrading states nothing new about a session; the one new
-  fact, the **worktree**, starts off. The [**jump shortcut**](#jumping-straight-to-a-board-card)
-  is the exception and ships on, because it is not a fact about the session but the keycap
-  for a key that opens the card - and a chord nobody can see is a chord nobody presses.
-  Switched on, the worktree prints the checkout's directory name in the
-  branch row with the whole path on hover - the leaf rather than the path, because a pool
-  worktree path is sixty characters of bookkeeping and that row is two cells sharing one
-  line. The choice is per browser and stored through the daemon, so it survives a reload;
-  a second dashboard tab already open picks it up on its next load rather than live, which
-  is true of every Display preference.
+  spine, the name, the agent dot and the **held** tag. The defaults are **today's card, not
+  everything this build knows how to draw**, so upgrading puts no new fact on any card. Two
+  items start off: the **worktree**, which no card drew before, and **Workflow details**,
+  which is the one item that used to be unconditional (see the next point). The
+  [**jump shortcut**](#jumping-straight-to-a-session) is the one exception and ships ON,
+  because it is not a fact about the session but the keycap for a key that opens it - and a
+  chord nobody can see is a chord nobody presses. That one item covers both fleet layouts:
+  the card's keycap and the Console rail's. Switch the worktree on and it prints the
+  checkout's directory name in the branch row with the whole path on hover - the leaf rather
+  than the path, because a pool worktree path is sixty characters of bookkeeping and that row
+  is two cells sharing one line. The choice is per browser and stored through the daemon, so
+  it survives a reload; a second dashboard tab already open picks it up on its next load
+  rather than live, which is true of every Display preference.
+- **A card under review states its progress, not its reasons.** That is what **Workflow
+  details** governs. Unchecked, a card with a
+  bound run draws the run's name and state, its whole stage track, which stage it is on and
+  how much repair budget is left - and stops there. Checked, it adds the sentence naming what
+  objected or what the run is waiting on, and the **Show full workflow** control (and its
+  <kbd>v</kbd> chord) that opens the whole actionable ladder inside the tile. The reasoning
+  is column height: on a full board that sentence and that control are a paragraph of
+  somebody else's reading per card, and the run's complete evidence was never further away
+  than the card's own link into Runs. It ships off on an **upgrade** too, not just for a
+  fresh profile: the stored list of hidden items is your own answer and is never merged with
+  a newer default, so this item is added to it once, on the first read after upgrading -
+  after which checking the box sticks. Your other choices in this panel are untouched.
+  **Workflow** and **Workflow progress bar** are separate items and are unaffected - the
+  first removes the panel entirely, the second trades the whole stage track for the single
+  consequential rung.
 - **The same panel governs the conversation header.** Under **Conversation header** in that
   checklist sit the console detail's two facts above the transcript - the session's
   **working directory** and its **Git branch**. Both ship visible, so nothing moves until you
@@ -1367,7 +1378,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌘</kbd><kbd>K</kbd> | Open [the palette](#the-palette-k) over workflows, runs, ensembles, Personas, actions, missions and settings - it opens where you are and never navigates to open; press again to close | Anywhere |
 | <kbd>⇧</kbd><kbd>F10</kbd> or the Menu key | Open the [context menu](#context-menus) for the focused item or text field | Anywhere |
 | <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
-| <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab | Selected Board card with a workflow |
+| <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
@@ -1396,34 +1407,39 @@ names the layouts where a shortcut's target exists:
 | <kbd>⌥</kbd><kbd>↑</kbd> <kbd>⌥</kbd><kbd>↓</kbd> | Move the focused reviewer within its stage | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 | <kbd>Delete</kbd> | Remove the focused reviewer or stage, after a confirmation naming what goes | [Workflows](workflows.md#workflows-and-personas) → Pipeline |
 
-### Jumping straight to a Board card
+### Jumping straight to a session
 
-Each Board card prints a key in its top-right corner - <kbd>⌘</kbd><kbd>1</kbd> through
+Every session on Fleet prints a key - <kbd>⌘</kbd><kbd>1</kbd> through
 <kbd>⌘</kbd><kbd>9</kbd>, then <kbd>⌘</kbd><kbd>0</kbd>, <kbd>⌘</kbd><kbd>-</kbd> and
-<kbd>⌘</kbd><kbd>=</kbd> - and pressing it opens that card's console view, the same place
-<kbd>Enter</kbd> on the card would take you. It works from the overview and from inside the
-console, where it re-points the open detail at another card without a trip back out. It also
-works while the cursor is in a reply box, because every one of these chords carries
-<kbd>⌘</kbd>.
+<kbd>⌘</kbd><kbd>=</kbd> - and pressing it opens that session's console view, the same place
+<kbd>Enter</kbd> on it would take you. On the **Board** the key is in the card's top-right
+corner; on the **Console** it is on the rail row, immediately left of the row's
+**working** / **idle** state word. It works from the overview and from inside the console,
+where it re-points the open detail at another session without a trip back out. It also works
+while the cursor is in a reply box, because every one of these chords carries <kbd>⌘</kbd>.
+
+Both layouts draw the **same** numbering, because there is only one: the rail is the board's
+status columns read end to end, so switching layout re-draws the same twelve keys against the
+same twelve sessions rather than renumbering them.
 
 **In the desktop app all twelve are the app's while this is switched on.** There are no
 browser tabs to select, and the View menu hands <kbd>⌘</kbd><kbd>0</kbd>,
-<kbd>⌘</kbd><kbd>-</kbd> and <kbd>⌘</kbd><kbd>=</kbd> over for as long as the Board is using
+<kbd>⌘</kbd><kbd>-</kbd> and <kbd>⌘</kbd><kbd>=</kbd> over for as long as Fleet is using
 them - a menu accelerator is registered with the system and would otherwise be handled before
 the dashboard ever saw the keystroke. Page zoom keeps its **Zoom In**, **Zoom Out** and
 **Actual Size** items throughout, so it is always one click away, and **it gets its keyboard
-shortcuts back the moment the Board stops claiming them**: uncheck **Jump shortcut**, switch to
-the Console layout, or simply leave Fleet for the Library, Runs or Settings, and
+shortcuts back the moment Fleet stops claiming them**: uncheck **Jump shortcut**, or simply
+leave Fleet for the Library, Runs or Settings, and
 <kbd>⌘</kbd><kbd>0</kbd>/<kbd>⌘</kbd><kbd>-</kbd>/<kbd>⌘</kbd><kbd>=</kbd> zoom again exactly as
-they always did. Ownership follows the page and the preference, not the cards: the number row
-is the Board's whenever you are on Fleet in the Board layout with this switched on, and it is
-zoom's every other time.
+they always did. Ownership follows the page and the preference, not the sessions and not the
+layout: the number row is Fleet's whenever you are on Fleet - Console or Board - with this
+switched on, and it is zoom's every other time.
 
-That follows the *preference*, not the card count. While the feature is on, the number row
-belongs to the Board even where it has no card to give a key to - so on a board of three
-cards, <kbd>⌘</kbd><kbd>-</kbd> does nothing in the desktop app rather than zooming. The
+That follows the *preference*, not the session count. While the feature is on, the number row
+belongs to Fleet even where it has no session to give a key to - so on a fleet of three
+sessions, <kbd>⌘</kbd><kbd>-</kbd> does nothing in the desktop app rather than zooming. The
 alternative was a zoom shortcut that worked until a tenth agent appeared and then silently
-stopped, which is worse than a key that is plainly the Board's for as long as you have the
+stopped, which is worse than a key that is plainly Fleet's for as long as you have the
 feature switched on.
 
 **In a plain browser tab, some of them may stay the browser's.** These twelve are also
@@ -1432,33 +1448,34 @@ tab and <kbd>⌘</kbd><kbd>0</kbd> / <kbd>⌘</kbd><kbd>-</kbd> / <kbd>⌘</kbd>
 shrink and enlarge the page. A browser resolves its own window shortcuts, and which of them it
 lets a page claim is its decision and differs between browsers - no page can override that
 either way. The dashboard asks for the keystroke, so where the browser offers the page the
-choice the card jump wins, and where the browser reserves the key it keeps it and the jump
+choice the jump wins, and where the browser reserves the key it keeps it and the jump
 does not happen. The keys are the same and the keycaps read the same on both surfaces, rather
-than the card teaching one chord in the app and another in a tab; if you would rather have
+than the fleet teaching one chord in the app and another in a tab; if you would rather have
 your browser's keys back, uncheck **Jump shortcut** and the chords go down with the keycaps.
 
 The keys belong to **positions**, not to sessions. They are handed out down the board and
 across its status columns - the first card in **needs you** is <kbd>⌘</kbd><kbd>1</kbd> and
-the count carries on into **working** and **idle** rather than restarting - so as cards
-finish and move, the numbering closes up behind them and the top card is always
-<kbd>⌘</kbd><kbd>1</kbd>. Twelve keys is what the number row has: a thirteenth visible card
-plainly carries no keycap rather than a chord nobody can press, and a card hidden inside a
-folded repository frame claims no key either.
+the count carries on into **working** and **idle** rather than restarting, and the Console
+rail is that same walk read top to bottom - so as sessions finish and move, the numbering
+closes up behind them and the first one is always <kbd>⌘</kbd><kbd>1</kbd>. Twelve keys is
+what the number row has: a thirteenth visible session plainly carries no keycap rather than a
+chord nobody can press, and a session hidden inside a folded repository frame claims no key
+either.
 
 They are deliberately **not** in the shortcut list below, because there is no one action to
-name - <kbd>⌘</kbd><kbd>4</kbd> means "the fourth card" or it means nothing - and nothing an
+name - <kbd>⌘</kbd><kbd>4</kbd> means "the fourth session" or it means nothing - and nothing an
 operator could usefully rebind. They are switched on and off with the other card items, at
-**Settings → Display → Session display → Jump shortcut**, which takes down the keycaps and
-the chords together.
+**Settings → Display → Session display → Jump shortcut**, which takes down the keycaps on both
+layouts and the chords together.
 
 The twelve are also **reserved from the shortcut list**, so no action can be bound to one.
 That is the same rule <kbd>Enter</kbd> follows and for the same reason: the jump runs ahead of
-the action, so an action bound to <kbd>⌘</kbd><kbd>4</kbd> would keep working in the Console
-and on every other page and silently stop working on the Board, and a shortcut that works in
-some layouts and not others is the one thing the table promises not to do. Pressing one while
+the action, so an action bound to <kbd>⌘</kbd><kbd>4</kbd> would keep working on every other
+page and silently stop working on Fleet, and a shortcut that works in some places and not
+others is the one thing the table promises not to do. Pressing one while
 recording says so instead of accepting it. If you had already bound an action to one of these
 before upgrading, that binding is dropped on read and the action returns to its own default -
-so it works everywhere again rather than being shadowed on the Board.
+so it works everywhere again rather than being shadowed on Fleet.
 
 Every shortcut managed by the shortcut list is **customizable**. Open **Settings** - the ⚙ gear
 in the top bar, or (in the desktop app)
@@ -1471,8 +1488,8 @@ trying to reuse an assigned key is refused inline. You can reset any one shortcu
 of them); if another custom binding has claimed that shortcut's default, resetting clears
 the override and leaves the shortcut unset until its default is free. The arrow keys,
 <kbd>Enter</kbd>, <kbd>Esc</kbd>, the Menu key and bare <kbd>Tab</kbd> drive structural navigation
-and can't be reassigned; neither can the Board's twelve
-[card jump chords](#jumping-straight-to-a-board-card); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
+and can't be reassigned; neither can Fleet's twelve
+[session jump chords](#jumping-straight-to-a-session); <kbd>⇧</kbd><kbd>F10</kbd> is the customizable context-menu action and
 <kbd>⇧</kbd><kbd>Tab</kbd> remains bindable. The pipeline
 editor's four rows above and the Files tab's <kbd>p</kbd> / <kbd>e</kbd> / <kbd>m</kbd> / <kbd>u</kbd> / <kbd>d</kbd> controls
 are in-surface keys rather than fleet chords - they only exist while their surface is active - so
@@ -1494,7 +1511,8 @@ Complete and Kill in the Console
 footer; the Console's Conversation, Work queue, Diff and Files tabs; the Files toolbar's Preview,
 Editor and Comment controls; Dispatch and the Fleet,
 Library and Runs segments in the top bar; the Board tile's workflow disclosure and its
-[jump key](#jumping-straight-to-a-board-card); the Diff reader's
+[jump key](#jumping-straight-to-a-session), which the Console rail row prints beside its state
+word; the Diff reader's
 Open in Files action; the **← Library** row at the top of every Library authoring rail; and the
 settings rail's search box. Visible **Delete** controls carry the same resolved keycap; compact
 icon-only Delete controls name it in their tooltip. They

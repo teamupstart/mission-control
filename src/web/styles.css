@@ -1826,12 +1826,17 @@ button.wf-run-version:focus-visible {
   gap: 6px;
 }
 
-/* The button carries the shared `workflow-<tone>` class, which sets `color`. Nothing here
-   may set colour ON the button, or the tone loses to it on source order - the state line
-   inherits it and the name overrides only itself. */
+/* The tile carries the shared `workflow-<tone>` class, which sets `color`. Nothing here may
+   set colour ON the tile, or the tone loses to it on source order - the state line inherits
+   it and the name overrides only itself.
+
+   `align-content: start` because the strip is a flex row that stretches every tile to the
+   tallest one. Without it a short tile's two lines are pulled apart to fill a neighbour's
+   height, which reads as a layout bug rather than as alignment. */
 .wf-run-round {
   display: grid;
-  gap: 2px;
+  align-content: start;
+  gap: 3px;
   justify-items: start;
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -1851,6 +1856,14 @@ button.wf-run-version:focus-visible {
   background: color-mix(in srgb, var(--working) 12%, var(--panel));
 }
 
+/* The round's name and its capture count share a line, so the count reads as a property of
+   the round rather than as a second fact underneath its state. */
+.wf-run-round-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .wf-run-round-name {
   color: var(--fg);
   font-size: 11.5px;
@@ -1859,6 +1872,100 @@ button.wf-run-version:focus-visible {
 
 .wf-run-round-state {
   font-size: 10px;
+}
+
+/* Static text - see `roundEvidenceCountLabel`. A badge that changed with the selection would
+   move this tile's width, and the tiles after it, on every chip a reader picks. */
+.wf-run-round-count {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+/* The failure marker, drawn on the tile itself. It carries `workflow-failed` for its tone, so
+   nothing here may set `color`. Present whether or not the round opens a tray, because a
+   collapsed round is exactly where a mid-round failure would otherwise be invisible. */
+.wf-run-round-failed {
+  border: 1px solid color-mix(in srgb, currentColor 45%, var(--border));
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The open round's captures.
+ *
+ * NOT `.wf-run-evidence`: that name is already taken, six hundred lines below, by the
+ * worklist's evidence list - `display: grid` with a list indent - which would win on source
+ * order and has nothing to do with this.
+ */
+.wf-run-tray {
+  display: grid;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--working) 34%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--working) 6%, var(--panel));
+  padding: 9px 11px;
+}
+
+.wf-run-tray-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* A GRID rather than a wrapping flex row, and that is the fix for the mockup's one ugliness:
+   a chip is as wide as its state sentence, so `Under review` beside `Waiting for evidence
+   readiness` left the tray ragged and its rows unreadable as rows. Equal columns that fill
+   the width give eleven chips a shape, and `auto-fill` means a three-capture round spends
+   three cells rather than stretching them across the panel. */
+.wf-run-tray-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 5px;
+}
+
+/* The chip carries its own `workflow-<tone>` class, so its name line inherits that tone and
+   nothing here may set `color` on the chip itself. */
+.wf-run-tray-chip {
+  display: grid;
+  gap: 1px;
+  justify-items: start;
+  align-content: start;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  font: inherit;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wf-run-tray-chip:hover {
+  border-color: var(--working);
+}
+
+.wf-run-tray-chip.active {
+  border-color: color-mix(in srgb, var(--working) 60%, var(--border));
+  background: color-mix(in srgb, var(--working) 14%, var(--panel));
+}
+
+.wf-run-tray-chip-name {
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.wf-run-tray-chip-state {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
 }
 
 .wf-run-stale {
@@ -24136,6 +24243,31 @@ span.line-run-prov {
   color: var(--tone-color, var(--neutral));
   white-space: nowrap;
 }
+/* Room enough for the states a quiet fleet is made of - "working", "idle", "starting",
+   "exited" - so the ⌘-number keycap to their left lands in a COLUMN down the rail rather
+   than stepping in and out with the length of the word beside it.
+
+   A min-width and not a width: "needs an answer" and "3 to review" are honest labels and take
+   the room they need, which moves that row's key and no other. `em`, so it tracks the label's
+   own size rather than pinning a pixel count the density rungs would outgrow.
+
+   Only on a line that HAS a key. With the display item off there is no column to line up, and
+   reserving the width anyway would open a gap between a held pill and the state word it
+   qualifies - a cost paid on every row of a rail that had nothing to gain by it. */
+.rail-state-line:has(.kb-hint) .rail-state {
+  min-width: 4.2em;
+  text-align: right;
+}
+/* The jump keycap, first on the state line and so left of the state word.
+   Deliberately NOT restyled from the shared `.kb-hint` at rest: the whole gesture is "read the
+   row, press the number", and a key that had to be hovered to be read would be one you would
+   rather have clicked past. Brighter on the row under the cursor or on the selection, which is
+   the row the key is about to open - the same pairing the Board card draws. */
+.rail-row:hover .rail-state-line .kb-hint,
+.rail-row.selected .rail-state-line .kb-hint {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 38%, var(--border));
+}
 /* The row-sized held mark: the tile's and the card's pill, at rail density. The spine
    recolours through `--tone-color` below, so the row reads held even collapsed to a sliver. */
 .rail-held {
@@ -31753,18 +31885,6 @@ body.foreman-sidecar-open .modal-backdrop {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* The state between the two presses: confirmed, not yet published. Drawn on --attention
-   rather than --idle because it is the one moment in this dialog where the next press is
-   irreversible, and it must not read like the neutral "here is your issue" notice below. */
-.feedback-armed {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
-  background: color-mix(in srgb, var(--attention) 10%, transparent);
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
 .feedback-created {
   margin: 0;
   padding: 10px 12px;
@@ -31774,9 +31894,13 @@ body.foreman-sidecar-open .modal-backdrop {
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
-/* The created-issue link, which takes the primary button's place in the footer. An <a> and
-   not a button on purpose: it opens the issue, so it has to be middle-clickable and
-   copyable like every other link to a public URL. */
+/* Keep the terminal actions together at the right edge: closing is the ordinary next move,
+   while the created-issue link remains the primary, middle-clickable destination. */
+.feedback-created-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .feedback-created-action {
   text-decoration: none;
 }

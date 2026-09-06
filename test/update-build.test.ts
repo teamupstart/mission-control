@@ -362,7 +362,9 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: (line) => logged.push(line),
-    timeoutMs: 1000,
+    // Leave enough time for the nested Node process to start under the suite's eight-way CI
+    // contention. The exit bound below is the behavior this case is exercising.
+    timeoutMs: 2_000,
     exitTimeoutMs: 400,
   });
 
@@ -467,7 +469,9 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: (line) => logged.push(line),
-    timeoutMs: 1000,
+    // The fake must first record its escaped descendant. A 200 ms launch allowance raced Node
+    // startup under the full suite and made this assertion describe scheduler load instead.
+    timeoutMs: 2_000,
     exitTimeoutMs: 300,
   });
   assert.equal(first.ok, false);
@@ -482,7 +486,7 @@ setInterval(() => {}, 1000);
     signal: new AbortController().signal,
     onStage: () => {},
     log: (line) => logged.push(line),
-    timeoutMs: 1000,
+    timeoutMs: 2_000,
     exitTimeoutMs: 300,
   });
   assert.equal(second.ok, false);

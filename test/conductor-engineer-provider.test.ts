@@ -41,7 +41,7 @@ else {
     state: command === "run-cancel" ? "cancelled" : "created",
     readinessRequired: true,
     integrationOwner: flag("--integration-owner") || "commission-owner-1",
-    readiness: command === "run-readiness" ? {
+    readiness: command === "run-readiness" || command === "readiness-probe" ? {
       status: mode === "blocked-readiness" ? "blocked" : "ready",
       code: mode === "blocked-readiness" ? "authentication_required" : "ready",
       summary: mode === "blocked-readiness"
@@ -62,6 +62,13 @@ else {
     retirement: null,
   };
   if (command === "capabilities") console.log(JSON.stringify({schemaVersion:1, engineerLifecycleEventsV1:true, engineerReadinessV1:true, engineerWorktreeRetirementV1:true, engineerRetainedReviewWorktreesV1:true, engineerOwnedAttemptsV1:true}));
+  else if (command === "readiness-probe") {
+    const evidence = {...base.readiness};
+    delete evidence.permitted;
+    delete evidence.checkedAt;
+    console.log(JSON.stringify(evidence));
+    if (mode === "blocked-readiness") process.exitCode = 1;
+  }
   else if (command === "run-create" || command === "run-cancel") console.log(JSON.stringify(base));
   else if (command === "run-readiness") {
     const expected = ["engineer", "run-readiness", "--run-id", runId, "--repo-root", repoRoot];
@@ -141,6 +148,16 @@ test("a blocked readiness snapshot is evidence even though the provider exits on
     assert.equal(answer.value.readiness?.status, "blocked");
     assert.equal(answer.value.readiness?.permitted, false);
     assert.equal(answer.value.readiness?.code, "authentication_required");
+  }
+});
+
+test("recovery readiness probes before reserving a provider attempt", async () => {
+  process.env.FAKE_CONDUCTOR_MODE = "blocked-readiness";
+  const answer = await CONDUCTOR_ENGINEER_LIFECYCLE.readinessProbe!({ repoRoot: "/repo/demo" });
+  assert.equal(answer.ok, true);
+  if (answer.ok) {
+    assert.equal(answer.value.status, "blocked");
+    assert.equal(answer.value.code, "authentication_required");
   }
 });
 

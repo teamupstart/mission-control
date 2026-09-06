@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
+import { displayItemsShowing } from "../fixtures/display-items.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -189,8 +190,13 @@ test("capture the authoring and run surfaces", async ({ dashboard, daemon }) => 
   await expect(dashboard.locator("article.wf-run-action")).toBeVisible();
   await shoot(dashboard, "05-run-waiting-on-action");
 
-  // 5. The Board ladder, where the same run is read as one vertical chain.
-  await api(daemon, "/api/ui/config", { layout: "board" }, "PUT");
+  // 5. The Board ladder, where the same run is read as one vertical chain. The disclosure
+  //    that opens it is a Display item that ships OFF, so it is asked for here as a
+  //    precondition; `board-card-workflow-details.spec.ts` owns the default and the checkbox.
+  await api(daemon, "/api/ui/config", {
+    layout: "board",
+    hiddenDisplayItems: displayItemsShowing("workflowDetails"),
+  }, "PUT");
   await dashboard.goto(`${daemon.baseURL}/#/fleet`);
   await dashboard.reload();
   await dashboard.getByRole("button", { name: "Show full workflow" }).click();
@@ -320,9 +326,14 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
   }, { timeout: 180_000 }).toBe("completed");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${run.run.id}`);
-  // Two entries under ONE repair round, and the sentence saying the second cost no round.
-  await expect(dashboard.getByRole("group", { name: "Select a round" }).locator(".wf-run-round-name"))
-    .toHaveText(["Round 1 · evidence 1", "Round 1 · evidence 2"]);
+  // ONE tile for ONE repair round, its two captures in the tray below it, and the sentence
+  // saying the second cost no round.
+  const scrubber = dashboard.getByRole("group", { name: "Select a round" });
+  await expect(scrubber.locator(".wf-run-round-name")).toHaveText(["Round 1"]);
+  await expect(
+    dashboard.getByRole("group", { name: "Select evidence in round 1" })
+      .locator(".wf-run-tray-chip"),
+  ).toHaveCount(2);
   await expect(dashboard.locator(".wf-run-notice"))
     .toContainText("does not spend a repair round");
   await shoot(dashboard, "08-completed-continuation");
@@ -401,10 +412,30 @@ test("capture a completed continuation", async ({ dashboard, daemon }) => {
         strip.scrollLeft += element.getBoundingClientRect().left - strip.getBoundingClientRect().left;
       });
       if ((dashboard.viewportSize()?.width ?? 0) > 900) {
+        // The PAIR this frame is named for, and only the pair.
+        //
+        // `end` used to be asserted here too, and the claim became arithmetically
+        // impossible when the shipped pipeline grew: at 1440 the strip is 818px wide
+        // between the workflow rail and the settings panel, while Stage 4 opens at 1402
+        // and the Complete terminus closes at 2306. Three consecutive items spanning
+        // 904px do not fit in 818px at ANY scroll position, so no product change could
+        // satisfy it and the failure said nothing about the strip. The reachability it
+        // was reaching for is asserted below, where it can be true.
         expect(await entirelyInsideStrip(evidenceAndDocs)).toBe(true);
         expect(await entirelyInsideStrip(pullRequest)).toBe(true);
-        expect(await entirelyInsideStrip(end)).toBe(true);
       }
     },
   });
+
+  // The tail is REACHABLE, which is the claim a scrollable strip actually owes a reader:
+  // scrolled to its far end, the last two items are both wholly on screen. This fails if
+  // the strip's own padding, a sticky element, or a terminus wider than the scrollport ever
+  // leaves the end of a pipeline impossible to see, and it is measured at the one viewport
+  // where the strip has room to be judged.
+  await dashboard.setViewportSize({ width: 1440, height: 900 });
+  await shipped.evaluate((strip) => { strip.scrollLeft = strip.scrollWidth; });
+  await expect.poll(async () => entirelyInsideStrip(end), {
+    message: "the Complete terminus should be wholly visible at the strip's far end",
+  }).toBe(true);
+  expect(await entirelyInsideStrip(pullRequest)).toBe(true);
 });

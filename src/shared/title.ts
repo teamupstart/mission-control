@@ -17,9 +17,101 @@ const TITLE_MINOR_WORDS = new Set([
   "the", "to", "vs", "via", "with",
 ]);
 
+/**
+ * Leading words a generated title never keeps.
+ *
+ * A card names the work, not the request for it: "Herdr Multiplexer", never "Implement Herdr
+ * Multiplexer" and never "We should implement the Herdr multiplexer". Both are the same
+ * sentence with the same subject, and the framing is the part that is identical on every card
+ * in the column - so it is the part that costs the operator the scan and buys nothing. It is
+ * also spent budget: of the 60 characters a card carries, "We should implement" takes nineteen
+ * before the name starts, and the git branch cut from the title inherits the same waste.
+ *
+ * Two groups, one pass: the request framing an operator types when dictating ("we should",
+ * "can you", "please"), and the bare verb "implement", which names no outcome that the object
+ * after it does not already name. Deliberately NOT here: `Fix`, `Add`, `Remove`, `Migrate`,
+ * `Document` - the prompt asks for those, because each says something about the work that its
+ * object cannot.
+ */
+/**
+ * Greetings, which matter less for themselves than for what they hide.
+ *
+ * The match is anchored, so an unstripped "Hey," in front of "could you please" put that whole
+ * phrase out of reach and a dictated task still carried `hey-could-you-please-look-at-the` as
+ * its branch. The loop takes the greeting off first and the framing behind it on the next pass.
+ *
+ * A TRAILING COMMA IS REQUIRED, and that is the whole reason this is separate from the phrases
+ * below rather than another entry among them. Sharing their tail - which absorbs a hyphen - made
+ * "Hi-fidelity mockups for the board" into "Fidelity mockups for the board" and "OK Computer
+ * playlist widget" into "Computer playlist widget", eating a word that was part of the name. The
+ * comma is what distinguishes someone greeting you from someone using the word: dictation writes
+ * "Hey, can you", never "Hey can you". A greeting without one is left alone on purpose.
+ */
+const TITLE_GREETING = "(?:hey|hi|hello|ok(?:ay)?)\\s*,";
+const TITLE_PREAMBLE_PHRASES = [
+  "please",
+  "kindly",
+  "(?:can|could|would|will)\\s+(?:you|we|i)(?:\\s+please)?",
+  "(?:i|we|you)\\s+(?:should|shall|must|ought\\s+to|could)",
+  "(?:i|we)\\s+(?:want|need)(?:\\s+to)?",
+  "(?:i|we)(?:'d|\\s+would)\\s+like\\s+(?:you\\s+)?to",
+  "let'?s",
+  // `implement` and `implementing`, but deliberately NOT `implements`: that one is a Java
+  // keyword before it is a verb, and "implements Cloneable in the adapter" is a first line a
+  // task really has, where the words after it do not name the work on their own.
+  "implement(?:ing)?",
+];
+/**
+ * The separators a removed phrase can leave stranded at the front - "Implement: the parser",
+ * "We should - rename it". The two long dashes are written as escapes rather than literally,
+ * because this repository's prose does not carry a dash a reader cannot type.
+ */
+const TITLE_PREAMBLE_TAIL = "[\\s,:;.\\u2013\\u2014-]*";
+const TITLE_PREAMBLE = new RegExp(
+  // The greeting carries its own comma and so must NOT take the `\b` the phrases need: a word
+  // boundary between a comma and the space after it does not exist, and appending one here made
+  // the whole alternative unmatchable.
+  `^(?:${TITLE_GREETING}|(?:${TITLE_PREAMBLE_PHRASES.join("|")})\\b)${TITLE_PREAMBLE_TAIL}`,
+  "i",
+);
+
+/**
+ * Drop the request framing from the front of a generated title.
+ *
+ * Applied to BOTH title tiers - the model's reply and the first-line heuristic behind it - from
+ * this one definition, because a convention enforced on one tier and not the other is a
+ * convention the operator sees broken every time a provider is slow.
+ *
+ * Runs until nothing more matches, so a stacked preamble ("We should implement X") loses all of
+ * it rather than one layer. Never returns empty: a title that is nothing BUT preamble
+ * ("implement") is the only name the task has, and a blank card is worse than a vague one -
+ * `Task.title` is `NOT NULL` for that reason.
+ */
+export function stripTitlePreamble(text: string): string {
+  const original = text.trim();
+  let out = original;
+  for (;;) {
+    const next = out.replace(TITLE_PREAMBLE, "").trim();
+    // An empty `next` is the all-preamble case: keep the last thing that was still a name.
+    if (!next || next === out) break;
+    out = next;
+  }
+  // Re-capitalise only when something was actually removed, so an untouched title keeps the
+  // casing the model or the operator chose and a stripped one still reads like a heading.
+  if (out === original) return out;
+  // And only when the newly exposed first word is entirely lowercase. A word already carrying
+  // a capital is a proper name, an acronym or a symbol - `iOS`, `useEffect`, `App.tsx` - which
+  // is the same reason `deriveFullTitle` skips those word by word. Uppercasing character one
+  // unconditionally turned "Please iOS session support" into "IOS session support", corrupting
+  // the name precisely when a preamble was there to remove.
+  const [firstWord = ""] = out.split(/\s+/);
+  return /[A-Z]/.test(firstWord) ? out : out.charAt(0).toUpperCase() + out.slice(1);
+}
+
 /** The complete first-line title behind the bounded title stored on an untitled task. */
 export function deriveFullTitle(intent: string): string {
-  const line = intent.split("\n").map((part) => part.trim()).find(Boolean) ?? "task";
+  const first = intent.split("\n").map((part) => part.trim()).find(Boolean) ?? "task";
+  const line = stripTitlePreamble(first);
   const title = line
     .split(/\s+/)
     .map((word, index) => {

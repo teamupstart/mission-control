@@ -112,7 +112,10 @@ import {
 } from "../llm/review-scheduler.ts";
 import {
   TEST_EVIDENCE_AUDIT_SCAN_LIMIT,
+  TEST_EVIDENCE_PREFLIGHT_EVENT_KINDS,
   aggregateTestEvidenceAudit,
+  evidenceReadinessEvaluatedEvent,
+  type TestEvidencePreflightEventRow,
 } from "./test-evidence-audit.ts";
 import type { CheckRunDeps, CheckScheduler } from "./checks.ts";
 import type { CheckAttemptRef } from "./check-runtime.ts";
@@ -963,9 +966,15 @@ export class WorkflowManager {
    */
   testEvidenceAudit(limit = TEST_EVIDENCE_AUDIT_SCAN_LIMIT): TestEvidenceAuditAggregate {
     const window = this.store.listEventsOfKind("test_evidence_audit", limit);
+    const preflightWindow = this.store.listEventsOfKinds(
+      TEST_EVIDENCE_PREFLIGHT_EVENT_KINDS,
+      limit,
+    );
     return aggregateTestEvidenceAudit(window.rows, {
       scanLimit: limit,
       truncated: window.truncated,
+    }, preflightWindow.rows as TestEvidencePreflightEventRow[], {
+      truncated: preflightWindow.truncated,
     });
   }
 
@@ -6176,6 +6185,21 @@ export class WorkflowManager {
           message: "The captured evidence did not satisfy this submission's activation guard",
           current: this.store.getRun(run.id),
         };
+      }
+      if (version) {
+        const evaluated = evidenceReadinessEvaluatedEvent({
+          submission: runnable,
+          readiness,
+          coverage: frozenCoverage,
+          version,
+        });
+        this.store.appendEvent(
+          run.id,
+          "evidence_readiness_evaluated",
+          evaluated.payload,
+          Date.now(),
+          evaluated.eventId,
+        );
       }
       if (enforcingReadiness && readiness?.status === "gaps") {
         const waitedAt = Date.now();

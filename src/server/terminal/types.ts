@@ -525,12 +525,20 @@ export interface TerminalEmulator {
  * unreachable with no way to say so, and nothing sanitized tmux's inherited environment at
  * all.
  */
-interface CatalogBinSpec {
+interface BinHostSupport {
+  /**
+   * An actionable reason this adapter cannot run on the current host, or null when its
+   * transport and launch mechanics have been validated there.
+   */
+  unsupportedReason?: (platform: NodeJS.Platform) => string | null;
+}
+
+interface CatalogBinSpec extends BinHostSupport {
   /** Production backends carry only the identity of their authoritative catalog entry. */
   id: import("@shared/executables.ts").ExecutableId;
 }
 
-interface CompatibilityBinSpec {
+interface CompatibilityBinSpec extends BinHostSupport {
   /** Anonymous injected specs have no catalog identity. */
   id?: undefined;
   /** Env var that overrides everything, or null when the injected spec has no convention. */

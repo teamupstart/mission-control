@@ -369,7 +369,7 @@ test("the shipped workflow is readable through the existing workflow routes", as
   const shipped = summaries.find((item) => item.id === BUILTIN_ID);
   assert.ok(shipped, "a fresh database lists the built-in with no operator gesture");
   assert.equal(shipped.builtin, true);
-  assert.equal(shipped.publishedVersion, 13, "the newest shipped version is the current one");
+  assert.equal(shipped.publishedVersion, 14, "the newest shipped version is the current one");
 
   const detail = await request(`/api/workflows/${BUILTIN_ID}`);
   assert.equal(detail.status, 200);
@@ -378,21 +378,21 @@ test("the shipped workflow is readable through the existing workflow routes", as
     versions: Array<{ version: number }>;
   };
   assert.equal(detailBody.workflow.builtin, true);
-  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@13`);
+  assert.equal(detailBody.workflow.currentVersionId, `${BUILTIN_ID}@14`);
   // Newest first, and prior versions are STILL served: bindings pinned to them resolve
   // through the same route after the catalog gained version 8.
   assert.deepEqual(
     detailBody.versions.map((version) => version.version),
-    [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    [14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
   );
 
   const versions = await request(`/api/workflows/${BUILTIN_ID}/versions`);
   assert.equal(versions.status, 200);
   assert.deepEqual(
     ((await versions.json()) as Array<{ version: number }>).map((version) => version.version),
-    [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    [14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
   );
-  for (const number of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+  for (const number of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
     const version = await request(`/api/workflows/${BUILTIN_ID}/versions/${number}`);
     assert.equal(version.status, 200, `version ${number} is no longer served`);
     const versionBody = await version.json() as {
@@ -490,7 +490,26 @@ test("the shipped workflow is readable through the existing workflow routes", as
   };
   assert.equal(readinessVersion.evidenceReadinessPolicy, "criterion_mapped_v1");
   assert.deepEqual(readinessVersion.graph, slopVersion.graph);
-  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/14`)).status, 404);
+  const routedVersion = await (await request(`/api/workflows/${BUILTIN_ID}/versions/14`)).json() as {
+    evidenceReadinessPolicy: string;
+    graph: { nodes: Array<{
+      kind: string;
+      persona?: { sourcePersonaId: string; runner: string | null; model: string | null };
+    }> };
+  };
+  assert.equal(routedVersion.evidenceReadinessPolicy, "criterion_mapped_v1");
+  const reviewers = routedVersion.graph.nodes.filter((node) => node.kind === "persona");
+  assert.equal(reviewers.length, 7);
+  for (const node of reviewers) {
+    assert.equal(node.persona?.runner, "codex");
+    assert.equal(
+      node.persona?.model,
+      node.persona?.sourcePersonaId === "builtin:code-design-reviewer"
+        ? "gpt-5.6-sol"
+        : "gpt-5.6-terra",
+    );
+  }
+  assert.equal((await request(`/api/workflows/${BUILTIN_ID}/versions/15`)).status, 404);
 });
 
 test("the shipped workflow duplicates through the same create boundary as the dashboard", async () => {

@@ -38,6 +38,7 @@ import type { SdkEvent } from "../src/server/harness/types.ts";
 /** A hand-driven query: frames go in when the test says so, controls are recorded. */
 class FakeQuery implements ClaudeSdkQuery {
   readonly control: string[] = [];
+  iterationStarts = 0;
   usageCalls = 0;
   usageResponse: ClaudeSdkUsageResponse = {
     rate_limits_available: false,
@@ -86,12 +87,19 @@ class FakeQuery implements ClaudeSdkQuery {
     this.control.push(`model:${model}`);
   }
 
+  async return(): Promise<IteratorResult<ClaudeSdkMessage, void>> {
+    this.control.push("return");
+    this.end();
+    return { value: undefined, done: true };
+  }
+
   async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(): Promise<ClaudeSdkUsageResponse> {
     this.usageCalls += 1;
     return this.usageResponse;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<ClaudeSdkMessage> {
+    this.iterationStarts += 1;
     for (;;) {
       const next = this.queued.shift();
       if (next) {
@@ -130,6 +138,7 @@ function fakeDeps(): { deps: ClaudeSdkDeps; started: Promise<Harnessed> } {
       // what makes `send()` observable at all: it resolves when the message is ACCEPTED.
       void (async () => {
         for await (const turn of prompt) turns.push(turn);
+        query.end();
       })();
       resolveStarted({ query, options, turns });
       return query;
@@ -535,6 +544,354 @@ test("a resumed Claude stream accepts a continuation without replaying the old i
   assert.equal(turns.length, 1);
   assert.equal(turns[0]?.message.content, "continue from the current checkout");
   await handle.stop();
+});
+
+test("an authentication failure before binding exits as unresumable", async () => {
+  const { deps, started } = fakeDeps();
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const { query } = await started;
+  query.emit({
+    type: "assistant",
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+  } as ClaudeSdkMessage);
+  query.emit({
+    type: "result",
+    subtype: "error_during_execution",
+    errors: ["Not logged in · Please run /login"],
+  } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const terminal = collect(handle.events, (event) => event.kind === "exited");
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await assert.rejects(
+      handle.send({ text: "retry after external login" }),
+      /authentication failed before this conversation could be resumed/,
+    );
+    const events = await Promise.race([
+      terminal,
+      new Promise<SdkEvent[]>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("unresumable authentication failure did not exit")),
+          100,
+        );
+      }),
+    ]);
+    const exited = events.find((event) => event.kind === "exited");
+    assert.equal(exited?.kind === "exited" && exited.resumable, false);
+    assert.match(exited?.kind === "exited" ? exited.reason : "", /could be resumed/);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    await handle.stop();
+  }
+});
+
+test("an authentication failure reloads credentials by resuming on the next turn", async () => {
+  const starts: Harnessed[] = [];
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        query.end();
+      })();
+      return query;
+    },
+  };
+
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const first = starts[0]!;
+  first.query.emit(INIT("agent-auth-recovery"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  first.query.emit({
+    type: "assistant",
+    session_id: "agent-auth-recovery",
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+  });
+  first.query.emit({
+    type: "result",
+    subtype: "error_during_execution",
+    session_id: "agent-auth-recovery",
+    errors: ["Not logged in · Please run /login"],
+    uuid: "auth-failure-result",
+    total_cost_usd: 10,
+    modelUsage: {
+      "claude-opus-5": {
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 10,
+      },
+    },
+  } as ClaudeSdkMessage);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  assert.equal(
+    await handle.sendIfIdle({ text: "continue after external login" }),
+    "started",
+  );
+  const recoveryEvents = await collect(
+    handle.events,
+    (event) => event.kind === "state" && event.state === "working",
+  );
+  assert.equal(
+    recoveryEvents.some((event) => event.kind === "exited"),
+    false,
+    "draining the stale process must not end the session",
+  );
+  assert.equal(starts.length, 2, "the stale SDK process is replaced exactly once");
+  assert.equal(starts[1]!.options.resume, "agent-auth-recovery");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts[1]!.turns[0]?.message.content, "continue after external login");
+
+  starts[1]!.query.emit(INIT("agent-auth-recovery"));
+  starts[1]!.query.emit({
+    type: "result",
+    subtype: "success",
+    session_id: "agent-auth-recovery",
+    uuid: "recovered-result",
+    total_cost_usd: 20,
+    modelUsage: {
+      "claude-opus-5": {
+        inputTokens: 2_000,
+        outputTokens: 200,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 20,
+      },
+    },
+  } as ClaudeSdkMessage);
+  const recovered = (await collect(handle.events, (event) => event.kind === "turn_done"))
+    .find((event) => event.kind === "turn_done");
+  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.costUsd, 20);
+  assert.equal(recovered?.kind === "turn_done" && recovered.usage?.input, 2_000);
+  await handle.stop();
+});
+
+test("a failed authentication recovery remains resumable for a later turn", async () => {
+  const starts: Harnessed[] = [];
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        query.end();
+      })();
+      return query;
+    },
+  };
+
+  const failAuthentication = (query: FakeQuery): void => {
+    query.emit({
+      type: "assistant",
+      session_id: "agent-auth-retry",
+      error: "authentication_failed",
+      message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+    });
+    query.emit({
+      type: "result",
+      subtype: "error_during_execution",
+      session_id: "agent-auth-retry",
+      errors: ["Not logged in · Please run /login"],
+    });
+  };
+
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  starts[0]!.query.emit(INIT("agent-auth-retry"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  failAuthentication(starts[0]!.query);
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  assert.equal(await handle.send({ text: "retry before login completes" }), "started");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts.length, 2);
+  assert.equal(starts[1]!.options.resume, "agent-auth-retry");
+  failAuthentication(starts[1]!.query);
+  starts[1]!.query.end();
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await handle.send({ text: "continue after login completes" }), "started");
+  const retryEvents = await collect(
+    handle.events,
+    (event) => event.kind === "state" && event.state === "working",
+  );
+  assert.equal(
+    retryEvents.some((event) => event.kind === "exited"),
+    false,
+    "an ended authentication-failed replacement must remain recoverable",
+  );
+  assert.equal(starts.length, 3);
+  assert.equal(starts[2]!.options.resume, "agent-auth-retry");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts[2]!.turns[0]?.message.content, "continue after login completes");
+
+  starts[2]!.query.emit(INIT("agent-auth-retry"));
+  starts[2]!.query.emit({
+    type: "result",
+    subtype: "success",
+    session_id: "agent-auth-retry",
+  });
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  failAuthentication(starts[2]!.query);
+  starts[2]!.query.end();
+  await collect(handle.events, (event) => event.kind === "turn_done");
+  await new Promise((resolve) => setImmediate(resolve));
+  const terminal = collect(handle.events, (event) => event.kind === "exited");
+  await handle.stop();
+  const stopped = await terminal;
+  assert.equal(
+    stopped.some((event) => event.kind === "exited"),
+    true,
+    "stopping an ended authentication-failed query must still end the session",
+  );
+});
+
+test("overlapping sends share one authentication recovery and one resumed subprocess", async () => {
+  const starts: Harnessed[] = [];
+  let observeStaleClose!: () => void;
+  const staleCloseObserved = new Promise<void>((resolve) => {
+    observeStaleClose = resolve;
+  });
+  let releaseStaleDrain!: () => void;
+  const staleDrainReleased = new Promise<void>((resolve) => {
+    releaseStaleDrain = resolve;
+  });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      void (async () => {
+        for await (const turn of prompt) turns.push(turn);
+        if (launchIndex === 0) {
+          observeStaleClose();
+          await staleDrainReleased;
+        }
+        query.end();
+      })();
+      return query;
+    },
+  };
+
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const stale = starts[0]!.query;
+  stale.emit(INIT("agent-auth-overlap"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit({
+    type: "assistant",
+    session_id: "agent-auth-overlap",
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+  });
+  stale.emit({
+    type: "result",
+    subtype: "error_during_execution",
+    session_id: "agent-auth-overlap",
+    errors: ["Not logged in · Please run /login"],
+  });
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const first = handle.send({ text: "first recovery message" });
+  await staleCloseObserved;
+  const second = handle.send({ text: "second overlapping message" });
+  const idleOnly = handle.sendIfIdle({ text: "idle-only overlapping message" });
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseStaleDrain();
+
+  assert.deepEqual(await Promise.all([first, second, idleOnly]), ["started", "steered", null]);
+  assert.equal(starts.length, 2, "overlapping sends must launch exactly one replacement");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    starts[1]!.turns.map((turn) => turn.message.content),
+    ["first recovery message", "second overlapping message"],
+  );
+  assert.equal(starts[1]!.options.resume, "agent-auth-overlap");
+  await handle.stop();
+});
+
+test("a stop racing authentication relaunch disposes the fresh query before attachment", async () => {
+  const starts: Harnessed[] = [];
+  let observeRelaunch!: () => void;
+  const relaunchStarted = new Promise<void>((resolve) => {
+    observeRelaunch = resolve;
+  });
+  let releaseRelaunch!: () => void;
+  const relaunchReleased = new Promise<void>((resolve) => {
+    releaseRelaunch = resolve;
+  });
+  const deps: ClaudeSdkDeps = {
+    executable: async () => "/fake/bin/claude",
+    env: () => ({ PATH: "/usr/bin" }),
+    query: async ({ prompt, options }) => {
+      const query = new FakeQuery();
+      const turns: ClaudeSdkUserMessage[] = [];
+      const launchIndex = starts.length;
+      starts.push({ query, options, turns });
+      if (launchIndex === 0) {
+        void (async () => {
+          for await (const turn of prompt) turns.push(turn);
+          query.end();
+        })();
+      } else {
+        observeRelaunch();
+        await relaunchReleased;
+      }
+      return query;
+    },
+  };
+
+  const handle = await claudeSdkSpec(deps).launch(launchOpts());
+  const stale = starts[0]!.query;
+  stale.emit(INIT("agent-auth-stop-race"));
+  await collect(handle.events, (event) => event.kind === "bound");
+  stale.emit({
+    type: "assistant",
+    session_id: "agent-auth-stop-race",
+    error: "authentication_failed",
+    message: { role: "assistant", content: [{ type: "text", text: "Not logged in" }] },
+  });
+  stale.emit({
+    type: "result",
+    subtype: "error_during_execution",
+    session_id: "agent-auth-stop-race",
+    errors: ["Not logged in · Please run /login"],
+  });
+  await collect(handle.events, (event) => event.kind === "turn_done");
+
+  const terminal = collect(handle.events, (event) => event.kind === "exited");
+  const recovering = handle.send({ text: "continue after external login" });
+  await relaunchStarted;
+  try {
+    await handle.stop();
+    releaseRelaunch();
+    await assert.rejects(recovering, /this session's driver has stopped/);
+    assert.equal(starts.length, 2);
+    assert.deepEqual(starts[1]!.query.control, ["return"]);
+    assert.equal(starts[1]!.query.iterationStarts, 0, "the stopped session must not attach it");
+    const events = await terminal;
+    const exited = events.find((event) => event.kind === "exited");
+    assert.equal(exited?.kind === "exited" && exited.resumable, true);
+  } finally {
+    releaseRelaunch();
+    starts[1]?.query.end();
+    await handle.stop();
+  }
 });
 
 test("an ordinary tool becomes a permission ask, and Yes allows it", async () => {

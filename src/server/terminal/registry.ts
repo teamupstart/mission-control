@@ -1,12 +1,18 @@
 import { backendPaneToken, innermostPane, type PaneHandles } from "@shared/pane.ts";
-import type { TerminalHandle } from "@shared/terminal.ts";
+import {
+  MULTIPLEXER_IDS,
+  type TerminalBackendId,
+  type TerminalHandle,
+} from "@shared/terminal.ts";
 import { cmuxMultiplexer } from "./cmux.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
 import { ghosttyEmulator } from "./ghostty.ts";
+import { herdrMultiplexer } from "./herdr.ts";
 import { itermEmulator } from "./iterm.ts";
 import { tmuxMultiplexer } from "./tmux.ts";
 import { weztermEmulator } from "./wezterm.ts";
 import type {
+  BinSpec,
   EmulatorId,
   EmulatorPane,
   EmulatorTarget,
@@ -72,7 +78,11 @@ import type {
  * is here to enforce.
  */
 export function multiplexers(exec: TerminalExec = defaultExec): Record<MultiplexerId, Multiplexer> {
-  return { tmux: tmuxMultiplexer(exec), cmux: cmuxMultiplexer(exec) };
+  return {
+    tmux: tmuxMultiplexer(exec),
+    herdr: herdrMultiplexer(exec),
+    cmux: cmuxMultiplexer(exec),
+  };
 }
 
 export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, TerminalEmulator> {
@@ -82,6 +92,15 @@ export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, 
 export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = multiplexers();
 
 export const EMULATORS: Record<EmulatorId, TerminalEmulator> = emulators();
+
+function isMultiplexerId(id: TerminalBackendId): id is MultiplexerId {
+  return MULTIPLEXER_IDS.includes(id as MultiplexerId);
+}
+
+/** Resolve a terminal registry id to the binary spec owned by its adapter. */
+export function terminalBackendBin(id: TerminalBackendId): BinSpec {
+  return isMultiplexerId(id) ? MULTIPLEXERS[id].bin : EMULATORS[id].bin;
+}
 
 /**
  * Both registries as one injectable object - the seam the LIFECYCLE operations are driven

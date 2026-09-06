@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, normalize, resolve as resolvePath } from "node:path";
 import type {
   ExecutableDiagnostic,
@@ -74,7 +74,7 @@ function prefixedEnv(
 function executableFile(path: string): boolean {
   try {
     accessSync(path, constants.X_OK);
-    return true;
+    return statSync(path).isFile();
   } catch {
     return false;
   }
@@ -194,8 +194,11 @@ export class ExecutableLocator {
   private readonly isExecutable: (path: string) => boolean;
   private inheritedPath: string | null = null;
   private initialized = false;
+  private postInitializationRefreshGeneration: number | null = null;
   private snapshotValue: ExecutableEnvironmentSnapshot | null = null;
   private refreshInFlight: Promise<ExecutableEnvironmentSnapshot> | null = null;
+  private refreshInFlightForced = false;
+  private forcedRefreshQueued: Promise<ExecutableEnvironmentSnapshot> | null = null;
   private readonly positive = new Map<string, ResolvedExecutable>();
   private readonly negative = new Map<string, { generation: number; at: number }>();
 
@@ -228,18 +231,36 @@ export class ExecutableLocator {
     ) {
       return current;
     }
-    if (this.refreshInFlight) return await this.refreshInFlight;
+    if (this.refreshInFlight) {
+      if (!options.force || this.refreshInFlightForced) return await this.refreshInFlight;
+      if (!this.forcedRefreshQueued) {
+        const active = this.refreshInFlight;
+        const queued = active.then(async () => await this.refresh({ force: true }));
+        this.forcedRefreshQueued = queued;
+        const clearQueued = () => {
+          if (this.forcedRefreshQueued === queued) this.forcedRefreshQueued = null;
+        };
+        void queued.then(clearQueued, clearQueued);
+      }
+      return await this.forcedRefreshQueued;
+    }
     this.inheritedPath ??= this.env.PATH ?? "";
     const pending = this.probe({ ...this.env, PATH: this.inheritedPath })
       .catch((): LoginShellResult => ({ path: null, problem: "login shell failed" }))
       .then((shell) => this.installSnapshot(shell));
     this.refreshInFlight = pending;
+    this.refreshInFlightForced = options.force === true;
+    const wasInitialized = this.initialized;
     try {
       const snapshot = await pending;
+      if (wasInitialized) this.postInitializationRefreshGeneration = snapshot.generation;
       this.initialized = true;
       return snapshot;
     } finally {
-      if (this.refreshInFlight === pending) this.refreshInFlight = null;
+      if (this.refreshInFlight === pending) {
+        this.refreshInFlight = null;
+        this.refreshInFlightForced = false;
+      }
     }
   }
 
@@ -282,9 +303,9 @@ export class ExecutableLocator {
     ) {
       return null;
     }
-    this.negative.set(key, { generation: snapshot.generation, at: now });
-    const refreshed = await this.refresh();
-    if (refreshed.generation === snapshot.generation) return null;
+    const refreshed = await this.refresh({
+      force: this.postInitializationRefreshGeneration !== snapshot.generation,
+    });
     const resolved = this.resolveSync(spec);
     if (!resolved) this.negative.set(key, { generation: refreshed.generation, at: this.now() });
     return resolved;
@@ -373,6 +394,7 @@ export class ExecutableLocator {
   ): ResolvedExecutable | null {
     const override = this.override(spec);
     if (override) {
+      if (isPathCommand(override.value) && !isAbsolute(override.value)) return null;
       const found = this.find(override.value, snapshot.entries);
       if (found) {
         return this.result(spec, found.path, "operator-override", override.name, snapshot, baseEnv);

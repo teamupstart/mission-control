@@ -7,7 +7,7 @@
 // The template itself is `./menu-template.ts`, which imports no electron runtime and is
 // therefore unit-testable. This file is the install, and it is RE-installable: the View
 // menu's three zoom accelerators are held or given up depending on whether the dashboard is
-// currently claiming the number row for Board card jumps, so the menu is rebuilt whenever
+// currently claiming the number row for the fleet's session jumps, so the menu is rebuilt whenever
 // that answer changes.
 
 import { app, Menu } from "electron";

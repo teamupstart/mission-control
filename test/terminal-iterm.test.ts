@@ -7,6 +7,7 @@ import { binPresent, ITERM_BIN, resolveBin } from "../src/server/terminal/bin.ts
 import { itermEmulator, parseItermSessions } from "../src/server/terminal/iterm.ts";
 import { shellCommand } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
+import { itermPaneToken } from "../src/shared/pane.ts";
 
 interface Call {
   bin: string;
@@ -65,7 +66,7 @@ test("detects only the configured app bundle without a PATH fallback", () => {
 
 test("enumerates every window, tab, and session through one stdin script", async () => {
   const encoded = [
-    "w0t0p0:UUID%25A",
+    "UUID%25A",
     "2",
     "91",
     "api%1Fworker",
@@ -77,7 +78,7 @@ test("enumerates every window, tab, and session through one stdin script", async
   const run = recorder([stubRun({ stdout: encoded, stderr: "", code: 0 })]);
   const panes = await itermEmulator(run.exec).list!();
   assert.deepEqual(panes, [{
-    paneId: "w0t0p0:UUID%A",
+    paneId: "UUID%A",
     tabId: "2",
     windowId: "91",
     tabTitle: `api${US}worker`,
@@ -116,6 +117,12 @@ test("rejects malformed records and normalizes missing optional fields", () => {
     tty: null,
     cwd: null,
   });
+});
+
+test("normalizes iTerm2's positional environment prefix to its stable AppleScript session ID", () => {
+  assert.equal(itermPaneToken("w12t3p4:52C60FCA-8285-4B97-A87E-4D2EA9859F87"), "iterm:52C60FCA-8285-4B97-A87E-4D2EA9859F87");
+  assert.equal(itermPaneToken("52C60FCA-8285-4B97-A87E-4D2EA9859F87"), "iterm:52C60FCA-8285-4B97-A87E-4D2EA9859F87");
+  assert.equal(itermPaneToken("w0t0p0:"), null);
 });
 
 test("list failures stay local to iTerm2", async () => {
@@ -230,9 +237,13 @@ test("retitle changes the containing tab found by session id", async () => {
 });
 
 test("spawn preserves cwd and argv boundaries, stamps title, and returns the new target", async () => {
-  const result = "w0t4p0:NEW-ID\n";
-  const run = recorder([stubRun({ stdout: result, stderr: "", code: 0 }), stubRun({ stdout: "", stderr: "", code: 0 })]);
-  const spawned = await itermEmulator(run.exec).spawn!.tab({
+  const markerPath = "/private/tmp/mission-iterm-spawn/session-id";
+  const run = recorder([stubRun({ stdout: "", stderr: "", code: 0 }), stubRun({ stdout: "", stderr: "", code: 0 })]);
+  const spawned = await itermEmulator(run.exec, () => ({
+    path: markerPath,
+    read: () => "w0t4p0:NEW-ID\n",
+    cleanup: () => undefined,
+  })).spawn!.tab({
     cwd: "/tmp/work tree; $(not-run)",
     argv: ["/bin/zsh", "-l", "it's $HOME; echo nope"],
     title: "feature tab",
@@ -240,13 +251,14 @@ test("spawn preserves cwd and argv boundaries, stamps title, and returns the new
   assert.deepEqual(spawned, {
     ok: true,
     outcomeUnknown: false,
-    target: { paneId: "w0t4p0:NEW-ID", tabId: "1" },
+    target: { paneId: "NEW-ID", tabId: "1" },
   });
   assert.equal(run.calls.length, 2);
   const launchScript = run.calls[0]!.input!;
-  const innerLaunch = `cd -- ${shellCommand(["/tmp/work tree; $(not-run)"])} && exec ${shellCommand(["/bin/zsh", "-l", "it's $HOME; echo nope"])}`;
+  const innerLaunch = `cd -- ${shellCommand(["/tmp/work tree; $(not-run)"])} && /usr/bin/printf '%s' "$ITERM_SESSION_ID" > ${shellCommand([markerPath])} && exec ${shellCommand(["/bin/zsh", "-l", "it's $HOME; echo nope"])}`;
   assert.ok(launchScript.includes(appleScriptString(shellCommand(["/bin/sh", "-c", innerLaunch]))));
-  assert.ok(launchScript.includes("return id of newSession"));
+  assert.equal(launchScript.includes("return id of newSession"), false);
+  assert.equal(launchScript.includes("current tab of newWindow"), false);
   assert.equal(launchScript.includes("setItermTabTitle"), false, "mutating a just-created iTerm2 tab reference hangs");
   assert.equal(launchScript.includes("count of tabs of newWindow"), false, "iTerm2 hangs while counting through a newly created window reference");
   assert.equal(launchScript.includes("index of newTab"), false, "iTerm2 rejects reads of its tab index property");
@@ -255,10 +267,10 @@ test("spawn preserves cwd and argv boundaries, stamps title, and returns the new
   assert.ok(titleScript.includes('my setItermTabTitle(targetTab, "feature tab")'));
   assert.ok(titleScript.includes('set name of current session of terminalTab to requestedTitle'));
   assert.equal(titleScript.includes("set title of terminalTab"), false, "tab naming must use iTerm2's working session-name setter");
-  assert.ok(titleScript.includes('set targetId to "w0t4p0:NEW-ID"'));
+  assert.ok(titleScript.includes('set targetId to "NEW-ID"'));
 
   const retitleRun = recorder();
-  await itermEmulator(retitleRun.exec).retitle!({ paneId: "w0t4p0:NEW-ID", tabId: "1" }, "feature tab");
+  await itermEmulator(retitleRun.exec).retitle!({ paneId: "NEW-ID", tabId: "1" }, "feature tab");
   assert.equal(titleScript, onlyScript(retitleRun.calls), "spawn must reuse the public retitle script exactly");
   for (const call of run.calls) {
     assert.equal(call.bin, "/usr/bin/osascript");
@@ -266,12 +278,47 @@ test("spawn preserves cwd and argv boundaries, stamps title, and returns the new
   }
 });
 
+test("spawn trusts the launched session marker when iTerm2 leaves the create Apple Event hanging", async () => {
+  let cleaned = false;
+  const run = recorder([{
+    stdout: "",
+    stderr: "timed out",
+    code: 1,
+    outcomeUnknown: true,
+    overflowed: false,
+  }]);
+  const spawned = await itermEmulator(run.exec, () => ({
+    path: "/private/tmp/mission-iterm-spawn/session-id",
+    read: () => "w0t4p0:MARKED-ID\n",
+    cleanup: () => {
+      cleaned = true;
+    },
+  })).spawn!.tab({
+    cwd: "/tmp/worktree",
+    argv: ["/bin/zsh", "-l"],
+    title: "",
+  });
+
+  assert.deepEqual(spawned, {
+    ok: true,
+    outcomeUnknown: false,
+    target: { paneId: "MARKED-ID", tabId: "1" },
+  });
+  assert.equal(cleaned, true);
+  assert.match(run.calls[0]!.input!, /\$ITERM_SESSION_ID/);
+  assert.match(run.calls[0]!.input!, /mission-iterm-spawn/);
+});
+
 test("a title failure after iTerm2 created the window does not revoke launch success", async () => {
   const run = recorder([
-    stubRun({ stdout: "w0t4p0:NEW-ID\n", stderr: "", code: 0 }),
+    stubRun({ stdout: "", stderr: "", code: 0 }),
     stubRun({ stdout: "", stderr: "iTerm2 session no longer exists (-1728)", code: 1 }),
   ]);
-  const spawned = await itermEmulator(run.exec).spawn!.tab({
+  const spawned = await itermEmulator(run.exec, () => ({
+    path: "/private/tmp/mission-iterm-spawn/session-id",
+    read: () => "w0t4p0:NEW-ID\n",
+    cleanup: () => undefined,
+  })).spawn!.tab({
     cwd: "/tmp/worktree",
     argv: ["/bin/zsh", "-l"],
     title: "feature tab",
@@ -279,7 +326,7 @@ test("a title failure after iTerm2 created the window does not revoke launch suc
   assert.deepEqual(spawned, {
     ok: true,
     outcomeUnknown: false,
-    target: { paneId: "w0t4p0:NEW-ID", tabId: "1" },
+    target: { paneId: "NEW-ID", tabId: "1" },
   });
 });
 

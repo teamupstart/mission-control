@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { executableSpec } from "../src/server/executables/catalog.ts";
 import {
   createHerdrClient,
   HERDR_MIN_VERSION,
@@ -268,7 +269,8 @@ test("creation readiness alone starts a stopped server and polls until compatibl
   let spawnErrorHandled = false;
   let clock = 0;
   const original = new Map<string, string | undefined>();
-  for (const key of HERDR_BIN.dropEnv) {
+  const dropEnv = executableSpec("herdr").dropEnv;
+  for (const key of dropEnv) {
     original.set(key, process.env[key]);
     process.env[key] = `ambient-${key}`;
   }
@@ -279,7 +281,7 @@ test("creation readiness alone starts a stopped server and polls until compatibl
         assert.deepEqual(args, ["server"]);
         assert.equal(options.detached, true);
         assert.equal(options.stdio, "ignore");
-        for (const key of HERDR_BIN.dropEnv) assert.equal(options.env?.[key], undefined, key);
+        for (const key of dropEnv) assert.equal(options.env?.[key], undefined, key);
         return {
           on(event) {
             assert.equal(event, "error");
@@ -431,14 +433,15 @@ test("passive operations never start a stopped or incompatible Herdr server", as
 test("every status probe drops all default-session selectors", async () => {
   const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
   const original = new Map<string, string | undefined>();
-  for (const key of HERDR_BIN.dropEnv) {
+  const dropEnv = executableSpec("herdr").dropEnv;
+  for (const key of dropEnv) {
     original.set(key, process.env[key]);
     process.env[key] = `ambient-${key}`;
   }
   try {
     await createHerdrClient(execStatus("/tmp/no.sock", calls), HERDR_BIN).probe();
     assert.equal(calls.length, 1);
-    for (const key of HERDR_BIN.dropEnv) assert.equal(calls[0]!.env?.[key], undefined, key);
+    for (const key of dropEnv) assert.equal(calls[0]!.env?.[key], undefined, key);
   } finally {
     for (const [key, value] of original) {
       if (value === undefined) delete process.env[key];

@@ -1,4 +1,5 @@
-import { binEnv, binUnsupportedReason, resolveBin } from "./bin.ts";
+import { binDropEnv, binEnv, binUnsupportedReason, resolveBin } from "./bin.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import {
   asTerminal,
   createHerdrClient,
@@ -17,18 +18,8 @@ import type {
 
 export const HERDR_UNSUPPORTED_REASON = "Herdr integration is supported on macOS and Linux only";
 
-const HERDR_ENV_SELECTORS = [
-  "HERDR_SESSION",
-  "HERDR_SOCKET_PATH",
-  "HERDR_WORKSPACE_ID",
-  "HERDR_TAB_ID",
-  "HERDR_PANE_ID",
-] as const;
-
 export const HERDR_BIN: BinSpec = {
-  env: "HERDR_BIN",
-  candidates: ["herdr"],
-  dropEnv: HERDR_ENV_SELECTORS,
+  id: "herdr",
   unsupportedReason: (platform) =>
     platform === "darwin" || platform === "linux" ? null : HERDR_UNSUPPORTED_REASON,
 };
@@ -166,8 +157,8 @@ export function herdrMultiplexer(
       },
 
       attachArgv: () => [
-        "env",
-        ...HERDR_ENV_SELECTORS.flatMap((name) => ["-u", name]),
+        FIXED_OS_EXECUTABLES.env,
+        ...binDropEnv(HERDR_BIN).flatMap((name) => ["-u", name]),
         resolveBin(HERDR_BIN),
       ],
 

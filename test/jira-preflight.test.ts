@@ -126,6 +126,7 @@ function machine(opts: {
 }): void {
   process.env.PATH = `${opts.cli ? withJira : noJira}:/usr/bin:/bin`;
   for (const [key, value] of [
+    ["MISSION_JIRA_BIN", opts.cli ? join(withJira, "jira") : undefined],
     ["JIRA_EMAIL", opts.email],
     ["JIRA_API_TOKEN", opts.token],
     ["FAKE_JIRA_MODE", opts.mode],
@@ -146,6 +147,7 @@ function callsIn(path: string): string[] {
 const PATH_BEFORE = process.env.PATH;
 after(() => {
   process.env.PATH = PATH_BEFORE;
+  delete process.env.MISSION_JIRA_BIN;
   delete process.env.JIRA_EMAIL;
   delete process.env.JIRA_API_TOKEN;
   delete process.env.FAKE_JIRA_MODE;

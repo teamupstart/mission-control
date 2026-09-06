@@ -147,10 +147,9 @@ function emulatorView(
  * sentence, because "we found no terminal" and "we did not look" read identically as an
  * empty menu, and the fix for the first is a sentence away.
  *
- * Nothing is cached here, for `binPresent`'s reason: it reads the filesystem and spawns
- * nothing, and the discovery sweep already does the same on a 1500ms tick. The browser
- * caches the result for 60s instead, where a stale answer costs one wasted click rather
- * than a wrong one.
+ * Installation answers come from the shared locator generation, so the 1500ms discovery
+ * sweep is cheap and every backend sees the same positive or negative result. The Setup
+ * refresh action advances that generation after an install or PATH change.
  */
 export function terminalTargetViews(
   deps: TerminalTargetDeps = defaultTerminalTargetDeps,

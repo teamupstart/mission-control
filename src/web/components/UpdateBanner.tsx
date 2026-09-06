@@ -26,7 +26,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
 
   if (snapshot.phase === "preparing" && snapshot.cancelling) {
     return (
-      <section className="app-banner app-banner-update" role="status">
+      <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>{UPDATE_COPY.cancelling.title(snapshot.newVersion)}</strong>
           <p>{UPDATE_COPY.cancelling.detail}</p>
@@ -38,7 +38,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   if (snapshot.phase === "preparing") {
     const { label, percent, step, steps } = updatePrepareProgress(snapshot.stage);
     return (
-      <section className="app-banner app-banner-update" role="status">
+      <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           {/* Same words as the native dialog, from the one owner both read. */}
           <strong>{UPDATE_COPY.preparing.title(snapshot.newVersion)}</strong>
@@ -73,7 +73,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
 
   if (snapshot.phase === "ready") {
     return (
-      <section className="app-banner app-banner-success" role="status">
+      <section className="app-banner app-banner-success" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>{UPDATE_COPY.ready.title(snapshot.newVersion)}</strong>
           <p>{UPDATE_COPY.ready.detail}</p>
@@ -92,7 +92,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
 
   if (snapshot.phase === "applying") {
     return (
-      <section className="app-banner app-banner-update" role="status">
+      <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>{UPDATE_COPY.applying.title(snapshot.newVersion)}</strong>
           <p>{UPDATE_COPY.applying.detail}</p>
@@ -103,7 +103,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
 
   if (snapshot.phase === "error") {
     return (
-      <section className="app-banner app-banner-error" role="status">
+      <section className="app-banner app-banner-error" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>The update check failed.</strong>
           <p>{snapshot.message}</p>
@@ -131,7 +131,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
 
   if (snapshot.phase === "available") {
     return (
-      <section className="app-banner app-banner-update" role="status">
+      <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>Mission Control {snapshot.newVersion} is available</strong>
           <p>{releaseSummary(snapshot.releaseNotes)}</p>
@@ -151,7 +151,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   if ((snapshot.phase === "idle" || snapshot.phase === "disabled")
     && snapshot.lastOutcome?.result === "failure") {
     return (
-      <section className="app-banner app-banner-error" role="status">
+      <section className="app-banner app-banner-error" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>Mission Control {snapshot.lastOutcome.targetVersion} could not be installed.</strong>
           <p>{snapshot.lastOutcome.message}</p>
@@ -171,7 +171,7 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   if ((snapshot.phase === "idle" || snapshot.phase === "disabled")
     && snapshot.lastOutcome?.result === "success") {
     return (
-      <section className="app-banner app-banner-success" role="status">
+      <section className="app-banner app-banner-success" role="status" aria-label="Mission Control update">
         <strong>Mission Control updated successfully to {snapshot.lastOutcome.targetVersion}.</strong>
         <div className="app-banner-actions">
           <Tooltip label="Hide this update confirmation">

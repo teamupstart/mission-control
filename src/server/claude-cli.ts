@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { unwrapEnvelope } from "./llm/structured.ts";
-import { resolveAgentBin } from "./harness/index.ts";
+import { locateExecutable } from "./executables/locator.ts";
 import { claudeImageUserMessage } from "./llm/claude-input.ts";
 import { validateLlmImages } from "./llm/images.ts";
 import {
@@ -42,10 +42,9 @@ import type { LlmImageInput } from "@shared/llm.ts";
  * it predates this module's move out of `foreman/` and may be set in an existing
  * environment, so dropping it would break those silently rather than loudly.
  *
- * Still resolved at MODULE LOAD, which several tests depend on - they point the env at a
- * fake bin in a preamble that runs before this import.
+ * Resolution happens per run, so refresh can make a newly installed executable available
+ * without restarting this process.
  */
-const CLAUDE_BIN = resolveAgentBin("claude");
 /**
  * Default cap on a single run so a hung child can't stall its caller. Sized for the
  * full reviewer (Opus reading a 60-turn head+tail window with the whole POLICY), which is the most
@@ -153,12 +152,14 @@ export interface ClaudeRunOptions {
 
 type ClaudeOutputFormat = "json" | "stream-json";
 
-function runClaudeRaw(
+async function runClaudeRaw(
   prompt: string,
   opts: ClaudeRunOptions,
   outputFormat: ClaudeOutputFormat,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
+  const executable = await locateExecutable("claude");
+  if (!executable) throw new Error('agent binary "claude" not found in the executable environment');
+  return await new Promise((resolve, reject) => {
     let images: ReturnType<typeof validateLlmImages>;
     try {
       // Refuse a missing, changed, spoofed, or oversized file before argv reaches spawn.
@@ -236,7 +237,7 @@ function runClaudeRaw(
     const env = headlessEnv();
     const child = (() => {
       try {
-        return spawn(CLAUDE_BIN, args, {
+        return spawn(executable.path, args, {
           cwd: opts.cwd ?? HEADLESS_CWD,
           stdio: ["pipe", "pipe", "pipe"],
           env,

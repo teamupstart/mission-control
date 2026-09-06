@@ -76,11 +76,7 @@ import type {
  * stale, and if the daemon was started inside cmux it names the very instance whose panes we
  * want.
  */
-export const CMUX_BIN: BinSpec = {
-  env: "CMUX_BIN",
-  candidates: ["/Applications/cmux.app/Contents/Resources/bin/cmux", "cmux"],
-  dropEnv: ["CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_TAB_ID"],
-};
+export const CMUX_BIN: BinSpec = { id: "cmux" };
 
 /**
  * cmux takes key NAMES like tmux, and its spelling happens to be this interface's own -

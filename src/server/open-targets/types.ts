@@ -16,8 +16,10 @@ export interface OpenDeps {
   /** `process.platform` on the daemon. */
   platform: NodeJS.Platform;
   env: NodeJS.ProcessEnv;
-  /** Whether a bare command name resolves on PATH. `onPath` in production. */
+  /** Whether a bare command name resolves in the shared executable environment. */
   installed: (bin: string, env: NodeJS.ProcessEnv) => boolean;
+  /** Absolute shared-locator answer. Optional only for injected compatibility test deps. */
+  resolveBin?: (bin: string, env: NodeJS.ProcessEnv) => string | null;
 }
 
 /** The command that opens one file. argv, never a shell string. */

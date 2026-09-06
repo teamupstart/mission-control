@@ -16,6 +16,7 @@ This guide expands the architecture rules referenced by the root `AGENTS.md`. Re
 | GitHub Inspector | `src/server/inspector/worker.ts` | Daemon-owned PR review state |
 | SDK supervisor | `src/server/sdk/supervisor.ts` | Daemon-owned embedded sessions |
 | Terminal registry | `src/server/terminal/registry.ts` | Multiplexer and emulator mechanisms |
+| Executable environment | `src/server/executables/` | Daemon-owned executable specifications, absolute resolution, provenance, refresh, and child PATH |
 | Hook bridges | `hooks/` | Small Node processes that post hook events to the daemon |
 
 The live browser channel is SSE only. Do not add browser polling.
@@ -28,21 +29,53 @@ process exit, including crashes; orderly shutdown closes SQLite before releasing
 file and its metadata remain at the same path across restarts and upgrades and are not a state
 or database migration.
 
+## Executable environment and subprocesses
+
+Every process that can own or launch daemon work initializes `ExecutableLocator`: the direct
+daemon, Electron main before it adopts or spawns a daemon, and the separate Foreman worker. The
+locator captures inherited PATH once, performs one bounded login-shell read, and installs one
+ordered child PATH before state ownership, discovery, or background work begins. A compatible
+daemon adopted by Electron has already performed the same initialization in its own process.
+
+`EXECUTABLE_SPECS` is the only registry for configurable built-in commands. Each specification
+declares the command, prefixed override suffix, retained legacy overrides, supported absolute
+candidates, and environment keys its child must not inherit. `ExecutableLocator` resolves a
+specification to one absolute path plus provenance and a child environment. Detection, Setup,
+model discovery, terminal actuation, pipeline integration, updater work, and launch consume that
+same answer. A caller must not run `which`, hand-walk PATH, or carry its own application candidate
+list.
+
+Resolution is bounded and deterministic: per-tool override, supported absolute candidate,
+operator search directory, inherited PATH, login-shell PATH, supported version-manager directory,
+then OS default directory. There is no recursive or unbounded scan. Successful and failed answers
+are generation-scoped. Misses may trigger one cooldown-bounded refresh; **Settings > Setup** forces
+a refresh and reports the selected path and source.
+
+There are two explicit exceptions:
+
+- Operator-authored Workflow commands are dynamic by design. They run as direct argv inside the
+  shared child environment, under the Workflow process supervisor. Their resolved record carries
+  `id: null` so it cannot impersonate a built-in catalog entry.
+- Truly fixed OS utilities are absolute paths declared in `FIXED_OS_EXECUTABLES`. The class is
+  currently `/usr/bin/env`, `/bin/sh`, and `/usr/bin/osascript`. Do not add a bare command to this
+  class.
+
 ## Session ownership
 
 The Registry owns the session map. Terminal discovery and `SdkSupervisor` are its only producers.
 
 Startup order matters:
 
-1. Acquire the resolved state-home lock, then open and migrate the database.
-2. Read resumable SDK rows once and publish a bounded, inert restoring-session projection.
-3. Bind HTTP and serve the built dashboard. Health means the authenticated daemon is reachable,
+1. Initialize the daemon-owned executable environment.
+2. Acquire the resolved state-home lock, then open and migrate the database.
+3. Read resumable SDK rows once and publish a bounded, inert restoring-session projection.
+4. Bind HTTP and serve the built dashboard. Health means the authenticated daemon is reachable,
    not that every persisted SDK driver is ready.
-4. Restore the prepared SDK rows serially in the background.
-5. Register or evict every restored session through the existing Registry lifecycle, replacing
+5. Restore the prepared SDK rows serially in the background.
+6. Register or evict every restored session through the existing Registry lifecycle, replacing
    each projection by the same stable id.
-6. Start terminal discovery only after the owned SDK restore promise settles.
-7. Reconcile task, workflow, and review bindings after the first completed observation.
+7. Start terminal discovery only after the owned SDK restore promise settles.
+8. Reconcile task, workflow, and review bindings after the first completed observation.
 
 Restoring-session rows are not `Session` objects. They have no driver and participate in no Line,
 Sitrep, notification, selection, action, workflow, Foreman, or automation path. The supervisor owns

@@ -31,6 +31,7 @@ const { claimNextPendingTurn, createPendingTurn, listPendingTurns } = await impo
 const { interruptSession } = await import("../src/server/sdk/control.ts");
 const { HARNESS_CAPABILITIES } = await import("../src/shared/harness-capabilities.ts");
 const { bindSession } = await import("../src/server/terminal/registry.ts");
+const { resolveBin, TMUX_BIN } = await import("../src/server/terminal/bin.ts");
 
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 type TaskManager = import("../src/server/tasks.ts").TaskManager;
@@ -268,7 +269,7 @@ test("a terminal session is stopped by writing Escape into its pane", async () =
   const response = await interrupt(app, session.id);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, stoppedTurn: true, droppedQueued: 0 });
-  assert.deepEqual(pane.argv, ["tmux send-keys -t %1 -- Escape"]);
+  assert.deepEqual(pane.argv, [`${resolveBin(TMUX_BIN)} send-keys -t %1 -- Escape`]);
 });
 
 test("a pane in copy-mode is refused with 409 and is NOT pulled out of it", async () => {
@@ -314,7 +315,7 @@ test("a pane interrupt that found no turn running leaves the queue alone", async
   assert.equal(result.droppedQueued, undefined);
   assert.deepEqual(dropped, [], "nothing queued was deleted for a stop that did not happen");
   // The Escape still went, because the reading is a tick old and the opposite race is real.
-  assert.deepEqual(pane.argv, ["tmux send-keys -t %1 -- Escape"]);
+  assert.deepEqual(pane.argv, [`${resolveBin(TMUX_BIN)} send-keys -t %1 -- Escape`]);
 });
 
 test("a session with no pane to write to is a 500, not a silent success", async () => {

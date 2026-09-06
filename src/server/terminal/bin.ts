@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import type { BinSpec } from "./types.ts";
 import { onPath } from "../util/exec.ts";
+import { executableChildEnv, locateExecutableSync } from "../executables/locator.ts";
+import { executableSpec } from "../executables/catalog.ts";
 
 /**
  * Reaching a backend's CLI, once: which binary, in what environment, and whether it is
@@ -10,16 +12,24 @@ import { onPath } from "../util/exec.ts";
  * gone now, along with the last call sites outside this directory, so this is the one
  * implementation of the rule rather than the fifth copy of it.
  *
- * Nothing here is cached: an operator installing wezterm, or exporting `WEZTERM_BIN`, should
- * not have to restart the daemon, and the cost is a handful of `existsSync` calls on paths
- * that are almost always the first hit.
+ * Catalog-backed specs share the daemon locator's generation cache. A manual refresh clears
+ * both positive and negative answers, so installation and configuration changes do not need
+ * a daemon restart.
  */
 export function resolveBin(spec: BinSpec): string {
+  if (spec.id) {
+    const declared = executableSpec(spec.id);
+    // A bound backend can outlive its installed binary. Keep the command name as the
+    // failure token so the shared runner reports `executable "tmux" was not found`
+    // instead of treating an empty argv0 as a PATH directory. Successful resolution
+    // remains absolute, and the runner resolves this fallback again before any spawn.
+    return locateExecutableSync(spec.id)?.path ?? declared.command;
+  }
   const override = spec.env ? process.env[spec.env] : undefined;
   if (override) return override;
   for (const c of spec.candidates) {
-    // The bare name (no separator) cannot be tested with existsSync - it is resolved by
-    // the OS against PATH at spawn time, which is what makes it the fallback.
+    // This branch exists only for injected compatibility specs. Every production backend
+    // has an id and returns through the catalog-backed locator above.
     if (!c.includes("/")) continue;
     if (existsSync(c)) return c;
   }
@@ -30,13 +40,20 @@ export function resolveBin(spec: BinSpec): string {
  * The environment this backend's CLI should run in: the caller's, minus the vars that would
  * pin it to a server instance the daemon merely happens to have been launched inside.
  *
- * See `BinSpec.dropEnv` for why both shipped backends have one. Returns a copy, so a caller
- * merging its own vars in cannot mutate `process.env`.
+ * Catalog-backed specs read their scrub list from the executable catalog. Compatibility specs
+ * carry their own injected list. Returns a copy, so callers cannot mutate `process.env`.
  */
 export function binEnv(spec: BinSpec, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const dropEnv = binDropEnv(spec);
+  if (spec.id) return executableChildEnv(base, dropEnv);
   const env = { ...base };
-  for (const key of spec.dropEnv) delete env[key];
+  for (const key of dropEnv) delete env[key];
   return env;
+}
+
+/** Environment keys the catalog or an injected compatibility spec excludes. */
+export function binDropEnv(spec: BinSpec): readonly string[] {
+  return spec.id ? executableSpec(spec.id).dropEnv : spec.dropEnv;
 }
 
 /**
@@ -55,11 +72,13 @@ export function binEnv(spec: BinSpec, base: NodeJS.ProcessEnv = process.env): No
  */
 export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env): boolean {
   if (binUnsupportedReason(spec)) return false;
+  if (spec.id) return locateExecutableSync(spec.id) !== null;
   const bin = resolveBin(spec);
   if (!bin) return false;
   // An absolute or relative path either exists or does not; an env override is taken on
   // trust in `resolveBin`, so re-testing it here is what catches a stale `WEZTERM_BIN`.
-  // `onPath` (`util/exec.ts`) is the walk itself, shared with the "Open in" targets.
+  // `onPath` remains only for injected compatibility specs; production specs use the
+  // catalog-backed check above.
   return onPath(bin, env);
 }
 
@@ -94,9 +113,9 @@ export function binUnavailableReason(
  */
 
 /**
- * No env override, deliberately: tmux has no `TMUX_BIN` convention, so nothing invents one.
- * The bare name is the only candidate, which is what every inline `run("tmux", …)` call site
- * already assumes - this spec is where a real path goes if one is ever needed.
+ * Tmux has no raw `TMUX_BIN` convention. The shared catalog nevertheless supports the
+ * prefixed operator contract (`MISSION_TMUX_BIN`, plus historical prefixes) without claiming
+ * ownership of an unprefixed variable.
  *
  * **`dropEnv` is empty on purpose, and the temptation is `TMUX`.** It looks like the exact
  * counterpart of `WEZTERM_UNIX_SOCKET`: tmux reads it as `socket_path,pid,session_id` and
@@ -124,11 +143,7 @@ export function binUnavailableReason(
  * that commit removed was the second reason and not the first: dropping `TMUX` still trades
  * one server's sessions for another's rather than revealing both.
  */
-export const TMUX_BIN: BinSpec = {
-  env: null,
-  candidates: ["tmux"],
-  dropEnv: [],
-};
+export const TMUX_BIN: BinSpec = { id: "tmux" };
 
 /**
  * `WEZTERM_UNIX_SOCKET` is dropped because a daemon launched from inside a wezterm pane
@@ -138,11 +153,7 @@ export const TMUX_BIN: BinSpec = {
  * them. Dropping it lets wezterm resolve its live default socket, exactly as a plain shell
  * would.
  */
-export const WEZTERM_BIN: BinSpec = {
-  env: "WEZTERM_BIN",
-  candidates: ["/Applications/WezTerm.app/Contents/MacOS/wezterm", "wezterm"],
-  dropEnv: ["WEZTERM_UNIX_SOCKET"],
-};
+export const WEZTERM_BIN: BinSpec = { id: "wezterm" };
 
 /**
  * Ghostty, where this spec answers ONLY "is it installed" - the resolved binary is not what
@@ -165,15 +176,7 @@ export const WEZTERM_BIN: BinSpec = {
  * reads pins the adapter to one instance, because there is no CLI holding a socket to be
  * pinned to. Apple Events address the running app by bundle id.
  */
-export const GHOSTTY_BIN: BinSpec = {
-  env: "GHOSTTY_BIN",
-  candidates: ["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
-  dropEnv: [],
-};
+export const GHOSTTY_BIN: BinSpec = { id: "ghostty" };
 
 /** iTerm2 is detected from its macOS app bundle and driven through Apple Events. */
-export const ITERM_BIN: BinSpec = {
-  env: "ITERM_BIN",
-  candidates: ["/Applications/iTerm.app/Contents/MacOS/iTerm2"],
-  dropEnv: [],
-};
+export const ITERM_BIN: BinSpec = { id: "iterm" };

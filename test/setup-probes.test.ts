@@ -184,6 +184,16 @@ test("one thrown probe becomes its own unknown row", async () => {
   assert.equal(view.rows.find((candidate) => candidate.rowId.source === "dependency" && candidate.rowId.id === "claude-cli")?.status.state, "satisfied");
 });
 
+test("conductor provenance is reported only for the path that was probed", async () => {
+  const status = await SETUP_PROBES["ai-conductor"](deps({
+    executableDiagnostic: async () => ({ path: "/different/conduct-ts", source: "Login shell" }),
+  }));
+  assert.deepEqual(status, {
+    state: "satisfied",
+    evidence: "/tools/conduct-ts 1.2.3",
+  });
+});
+
 test("dependency rows project their catalog requirement without adding a second opinion", async () => {
   const view = await setupChecksView(deps());
   const familyIndexes = view.rows.map((row) => SETUP_FAMILY_IDS.indexOf(row.family));

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveAgentBin } from "../harness/index.ts";
+import { locateExecutable } from "../executables/locator.ts";
 import { killLiveCodexSdkRuns, runCodexSdkOneShot, type CodexSdkDeps } from "./codex-sdk.ts";
 import { DEFAULT_CODEX_TRANSPORT, type CodexTransport } from "@shared/llm.ts";
 import { codexTokenSplit } from "../harness/codex/usage.ts";
@@ -17,8 +17,6 @@ import {
   cleanupAgentSubprocessEnv,
   dropPaneIdentityEnv,
 } from "../agent-subprocess-env.ts";
-
-const CODEX_BIN = resolveAgentBin("codex");
 
 // Process-local, and a function pointer rather than a direct `codexTransportChoice` call,
 // for the two reasons `claude.ts` states beside its own: this module cannot import
@@ -283,12 +281,14 @@ export const codexRunner: LlmRunner = {
       const refusal = grantRefusal(codexRunner.sandbox, grant);
       throw new Error(`codex runner refused the tool grant: ${refusal ?? "unsupported grant"}`);
     }
+    const executable = await locateExecutable("codex");
+    if (!executable) throw new Error('agent binary "codex" not found in the executable environment');
     // The typed transport, when the operator has selected it. Resolved per call for the
     // reason every other LLM config read is - a Settings edit must reach the next run
     // rather than the next daemon restart. It spawns the SAME binary (see `codex-sdk.ts`),
     // so this is a choice about how the reply is parsed, never about what is executed.
     if (resolveCodexTransport() === "sdk") {
-      const sdk = await runCodexSdkOneShot(prompt, CODEX_BIN, opts, codexSdkDeps);
+      const sdk = await runCodexSdkOneShot(prompt, executable.path, opts, codexSdkDeps);
       // Accounted exactly like the exec transport, through the same reporter. The SDK's
       // `Turn.usage` carries the same field names `codexTokenSplit` already reads off
       // `turn.completed`, so this is one shape reaching one ledger rather than a second
@@ -328,7 +328,7 @@ export const codexRunner: LlmRunner = {
         const env = headlessEnv();
         const child = (() => {
           try {
-            return spawn(CODEX_BIN, args, {
+            return spawn(executable.path, args, {
               cwd: tmpdir(),
               stdio: ["pipe", "pipe", "pipe"],
               env,

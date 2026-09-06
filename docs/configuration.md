@@ -4,6 +4,7 @@
 |-----|---------|---------|
 | `MISSION_PORT` | `7317` | daemon / dashboard port |
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, logical settings snapshots, native worktree pools, and disposable Git worktrees) |
+| `MISSION_EXECUTABLE_PATHS` | unset | colon-separated absolute directories searched before inherited PATH. Use this escape hatch for a private tool directory that is not exported by the login shell. `FLEET_EXECUTABLE_PATHS` and `HARNESS_EXECUTABLE_PATHS` remain compatible fallbacks. Relative entries are ignored, and Mission Control never scans below a listed directory |
 | `MISSION_WORKSPACE_DIRS` | unset | colon-separated launch-time override for **Settings → Repositories**. While set, it is the effective repository-index list and the saved list stays read-only. Without it, the removable saved defaults are `~/workspace`, `~/code`, `~/dev`, and `~/upstart` |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
 | `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](sessions.md#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
@@ -73,6 +74,16 @@
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](attention-and-alerts.md#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](sessions.md#cost-telemetry) installers edit. Overridable so tests never touch your real one |
+
+Every configurable built-in command is declared in the executable catalog. Its override uses
+`MISSION_<TOOL>_BIN`, then the compatible `FLEET_` and `HARNESS_` forms. This applies to agent
+CLIs, `gh`, Git, Node.js, npm, Jira, Conductor, the legacy Treehouse bridge, terminal backends,
+desktop launchers, and the bounded process utilities Mission Control invokes. Existing raw `WEZTERM_BIN`, `CMUX_BIN`,
+`GHOSTTY_BIN`, and `ITERM_BIN` values remain supported after the prefixed chain, as does
+`FOREMAN_CLAUDE_BIN` for Claude. An override may be an absolute executable or a command name
+resolved in the shared executable environment. **Settings > Setup** shows the selected absolute
+path and its source. See [Harnesses and terminal backends](harnesses-and-terminals.md) for the
+complete deterministic resolution order and refresh behavior.
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
 shortcuts, alert delivery, and message formatting all live in the

@@ -26,7 +26,7 @@ import {
   PIPELINE_CALLER_CREDENTIAL_FILE_ENV,
   PIPELINE_CALLER_CREDENTIAL_TTL_MS,
 } from "@shared/pipeline.ts";
-import { run } from "./util/exec.ts";
+import { executableChildEnv, locateExecutable } from "./executables/locator.ts";
 
 // The one place that knows how to hand a LAUNCHING agent our own MCP server.
 //
@@ -164,22 +164,29 @@ export interface MissionMcpDescriptor {
   env: Record<string, string>;
 }
 
-/** Resolved once per daemon lifetime - it cannot change while we run, and it may shell out. */
-let cachedRuntime: { command: string; env: Record<string, string> } | undefined;
+interface MissionMcpRuntime {
+  command: string;
+  env: NodeJS.ProcessEnv;
+}
 
-async function resolveRuntime(): Promise<{ command: string; env: Record<string, string> }> {
+type LocateNodeRuntime = () => Promise<{ path: string; env: NodeJS.ProcessEnv } | null>;
+
+export async function resolveMissionMcpRuntime(
+  execPath: string,
+  locateNode: LocateNodeRuntime = async () => await locateExecutable("node"),
+): Promise<MissionMcpRuntime> {
+  if (/^node(\.exe)?$/.test(basename(execPath))) return { command: execPath, env: {} };
+  const found = await locateNode();
+  if (found) return { command: found.path, env: found.env };
+  return { command: execPath, env: { ELECTRON_RUN_AS_NODE: "1" } };
+}
+
+/** Resolved once per daemon lifetime - it cannot change while we run, and it may shell out. */
+let cachedRuntime: MissionMcpRuntime | undefined;
+
+async function resolveRuntime(): Promise<MissionMcpRuntime> {
   if (cachedRuntime) return cachedRuntime;
-  // Already a real node (dev, or a daemon started directly): use it, no subprocess needed.
-  if (/^node(\.exe)?$/.test(basename(process.execPath))) {
-    return (cachedRuntime = { command: process.execPath, env: {} });
-  }
-  const which = await run("which", ["node"]);
-  const found = which.stdout.trim().split("\n")[0];
-  if (which.code === 0 && found && existsSync(found)) {
-    return (cachedRuntime = { command: found, env: {} });
-  }
-  // No system node - run the Electron binary in node mode, exactly as integrations.ts does.
-  return (cachedRuntime = { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: "1" } });
+  return (cachedRuntime = await resolveMissionMcpRuntime(process.execPath));
 }
 
 /**
@@ -461,7 +468,7 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
         // The descriptor's env is an OVERLAY on the inherited environment, which is how
         // Claude and Codex both apply an `env` block. Probing with a bare `descriptor.env`
         // would strip PATH and HOME and fail for a reason the real launch never hits.
-        env: { ...process.env, ...descriptor.env },
+        env: { ...executableChildEnv(), ...descriptor.env },
       });
     } catch (err) {
       resolve({ ok: false, reason: `it could not be started (${errText(err)})` });

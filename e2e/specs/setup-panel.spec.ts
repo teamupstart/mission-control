@@ -149,6 +149,7 @@ test.describe("login-shell binaries", () => {
     await expect(pi).toContainText("Pi");
     await expectRowStatus(page, "dependency-pi-cli", "Ready");
     await expect(pi).toContainText("login-bin/pi");
+    await expect(pi.locator(".setup-source")).toHaveText("Source: login shell");
     await expect(pi.getByText("Missing", { exact: true })).not.toBeVisible();
 
     if (process.env.MC_E2E_EVIDENCE === "1") {

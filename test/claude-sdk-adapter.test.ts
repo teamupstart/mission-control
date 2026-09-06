@@ -8,6 +8,7 @@ import {
   sdkPermissionMode,
 } from "../src/server/harness/claude/sdk.ts";
 import { sdkSubprocessEnv } from "../src/server/harness/claude/sdk-deps.ts";
+import { executableLocator } from "../src/server/executables/locator.ts";
 import { driverDialog } from "../src/server/sdk/dialog.ts";
 import type {
   ClaudeSdkDeps,
@@ -1249,7 +1250,7 @@ test("the subprocess env drops the daemon's own pane, or every hook binds to it"
   // terminal would hand its own down, and `findSessionByEnv` prefers a pane key over
   // everything else - so every embedded session's hooks would land on one stranger's card.
   const env = sdkSubprocessEnv({ PATH: "/bin", TMUX_PANE: "%3", WEZTERM_PANE: "7", ITERM_SESSION_ID: "w0t0p0:UUID", TERM_PROGRAM: "x" });
-  assert.equal(env.PATH, "/bin");
+  assert.equal(env.PATH, executableLocator.snapshot().path);
   assert.equal(env.TMUX_PANE, undefined);
   assert.equal(env.WEZTERM_PANE, undefined);
   assert.equal(env.ITERM_SESSION_ID, undefined);

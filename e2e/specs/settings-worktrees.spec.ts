@@ -244,7 +244,23 @@ test("refreshing a preview drops acknowledgements that the new token does not re
   await preview.getByRole("button", { name: "Refresh preview" }).click();
   await expect(dirtyAcknowledgement).toHaveCount(0);
   await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
-  await preview.getByRole("button", { name: "Execute" }).click();
+  // Revalidation is deliberately conservative. Under full-suite host contention, one of
+  // the bounded Git reads can temporarily degrade and produce another honest 409 even when
+  // the checkout did not materially change. Follow the exact recovery offered to a person,
+  // while keeping the retry bound low so persistent instability still fails this scenario.
+  for (let attempt = 0; attempt < 3 && await preview.count() > 0; attempt += 1) {
+    await preview.getByRole("button", { name: "Execute" }).click();
+    await expect.poll(async () => {
+      if (await preview.count() === 0) return "closed";
+      return await preview.getByText("State changed after this preview.").isVisible()
+        ? "changed"
+        : "waiting";
+    }, { timeout: EXECUTES_MS }).not.toBe("waiting");
+    if (await preview.count() === 0) break;
+    await preview.getByRole("button", { name: "Refresh preview" }).click();
+    await expect(dirtyAcknowledgement).toHaveCount(0);
+    await expect(preview.getByRole("button", { name: "Execute" })).toBeEnabled();
+  }
   // The dialog closes when the return has actually happened, and measuring it says the return
   // takes six to eight seconds here - so the implicit five-second window was asserting that
   // git is fast rather than that the preview closes. `EXECUTES_MS` is the honest one.

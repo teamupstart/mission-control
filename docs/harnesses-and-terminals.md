@@ -5,20 +5,27 @@ vendor-specific conditionals through the application. A harness describes an age
 capabilities. Terminal backends describe how Mission Control can discover, focus, capture,
 or write a concrete pane.
 
-For the machine's current binary presence and terminal composition, open **Settings → Setup**.
-It uses the same harness and terminal binary resolvers as launch, so an environment override
-cannot make the launcher and setup report disagree. The panel only links to or copies remedies;
-it never installs or executes them.
+For the machine's current binary presence and terminal composition, open **Settings > Setup**.
+Each ready executable row shows the absolute path and where Mission Control found it. The same
+resolved path and child environment are then used for detection, model discovery, installation
+probes, and launch. The panel only links to or copies remedies; it never installs them itself.
 
-Bare agent commands are first resolved on the daemon's current `PATH`. If that snapshot misses,
-Mission Control refreshes `PATH` asynchronously from the user's login shell and retries. Concurrent
-misses share one read, and repeated misses use a short negative-cache window instead of repeatedly
-sourcing shell startup files. Each explicit Setup inspection forces one fresh shared snapshot, so a
-CLI installed or moved by a version manager becomes available to both Setup and dispatch without a
-daemon restart. Mise, asdf, and Volta shim directories are always included as a backstop when shell
-startup is unavailable or times out. Their documented `XDG_DATA_HOME`, `ASDF_DATA_DIR`, and
-`VOLTA_HOME` overrides take precedence over the standard per-user locations. Mise's more
-specific `MISE_DATA_DIR` and `MISE_SHIMS_DIR` overrides take precedence over its XDG location.
+The daemon initializes one executable environment before it opens state or starts discovery. This
+happens for direct CLI and LaunchAgent starts, Electron-spawned daemons, Electron-adopted compatible
+daemons, and the separate Foreman worker. Resolution has a fixed order:
+
+1. A per-tool `MISSION_`, `FLEET_`, or `HARNESS_` override, followed by retained legacy names.
+2. Supported absolute application locations, including `/Applications` and `~/Applications`.
+3. Absolute directories from `MISSION_EXECUTABLE_PATHS` and its legacy prefix forms.
+4. The PATH inherited by the process, then one bounded login-shell PATH reading.
+5. Supported version-manager and OS locations.
+
+No step scans the filesystem. Login-shell reads time out after five seconds, concurrent reads
+coalesce, and misses share a 30-second negative cache. An explicit Setup re-check forces a new
+snapshot, so an install or shell PATH change becomes visible without restarting the daemon. Mise,
+asdf, and Volta locations are compatibility backstops rather than the primary answer. The resolver
+honors `XDG_DATA_HOME`, `MISE_DATA_DIR`, `MISE_SHIMS_DIR`, `ASDF_DATA_DIR`, and `VOLTA_HOME` before
+their standard per-user locations.
 
 The browser-safe capability registry lives in
 [`src/shared/harness-capabilities.ts`](../src/shared/harness-capabilities.ts). The daemon's

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
+import { executableSpec } from "../src/server/executables/catalog.ts";
 import { binUnsupportedReason, resolveBin } from "../src/server/terminal/bin.ts";
 import {
   HERDR_BIN,
@@ -356,24 +357,25 @@ test("uncertain command delivery preserves the created workspace and outcome", a
 
 test("default-session selectors are scrubbed from probes, server environment, and full-client attach", () => {
   const base: NodeJS.ProcessEnv = { PATH: "/bin", KEEP: "yes" };
-  for (const key of HERDR_BIN.dropEnv) base[key] = "ambient";
+  const dropEnv = executableSpec("herdr").dropEnv;
+  for (const key of dropEnv) base[key] = "ambient";
   const clean = herdrEnvironment(base);
   assert.equal(clean.KEEP, "yes");
-  for (const key of HERDR_BIN.dropEnv) assert.equal(clean[key], undefined, key);
+  for (const key of dropEnv) assert.equal(clean[key], undefined, key);
 
   const previous = process.env.HERDR_BIN;
-  process.env.HERDR_BIN = "/opt/herdr/bin/herdr";
+  process.env.HERDR_BIN = process.execPath;
   try {
-    assert.equal(resolveBin(HERDR_BIN), "/opt/herdr/bin/herdr");
+    assert.equal(resolveBin(HERDR_BIN), process.execPath);
     const argv = herdrMultiplexer().sessions!.attachArgv!("ignored-default-session-workspace");
     assert.deepEqual(argv, [
-      "env",
+      "/usr/bin/env",
       "-u", "HERDR_SESSION",
       "-u", "HERDR_SOCKET_PATH",
       "-u", "HERDR_WORKSPACE_ID",
       "-u", "HERDR_TAB_ID",
       "-u", "HERDR_PANE_ID",
-      "/opt/herdr/bin/herdr",
+      process.execPath,
     ]);
     assert.equal(argv.includes("--takeover"), false);
     assert.equal(argv.includes("attach"), false);

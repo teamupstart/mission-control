@@ -179,7 +179,7 @@ export interface HerdrClientDeps {
 
 const defaultDeps: HerdrClientDeps = {
   connect: (socketPath) => createConnection(socketPath) as Socket,
-  spawnDetached: (bin, args, options) => spawn(bin, [...args], options),
+  spawnDetached: (executable, args, options) => spawn(executable, [...args], options),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: Date.now,
   nextId: (() => {
@@ -533,7 +533,8 @@ export function createHerdrClient(
       return notReady();
     }
     try {
-      const child = deps.spawnDetached(bin(), ["server"], {
+      const executable = bin();
+      const child = deps.spawnDetached(executable, ["server"], {
         detached: true,
         stdio: "ignore",
         env: env(),

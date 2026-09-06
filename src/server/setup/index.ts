@@ -1,4 +1,5 @@
 import type { AgentType } from "@shared/types.ts";
+import { EXECUTABLE_SOURCE_LABELS, type ExecutableId } from "@shared/executables.ts";
 import {
   ENVIRONMENT_CHECK_INFO,
   type EnvironmentCheckView,
@@ -31,6 +32,7 @@ import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/e
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupSkillsRead } from "./types.ts";
+import { locateExecutable } from "../executables/locator.ts";
 
 type SetupProbe = (deps: SetupDeps) => Promise<SetupStatus>;
 
@@ -40,7 +42,19 @@ const DEPENDENCY_AGENT: Partial<Record<SetupDependencyId, AgentType>> = {
   "pi-cli": "pi",
 };
 
-async function present(bin: string, deps: SetupDeps): Promise<SetupStatus> {
+const AGENT_EXECUTABLE: Record<AgentType, ExecutableId> = {
+  claude: "claude",
+  codex: "codex",
+  pi: "pi",
+};
+
+async function present(bin: string, deps: SetupDeps, id?: ExecutableId): Promise<SetupStatus> {
+  if (id && deps.executableDiagnostic) {
+    const resolved = await deps.executableDiagnostic(id);
+    return resolved
+      ? { state: "satisfied", evidence: resolved.path, source: resolved.source }
+      : { state: "missing" };
+  }
   const path = await deps.resolveBinPath(bin);
   return path ? { state: "satisfied", evidence: path } : { state: "missing" };
 }
@@ -48,12 +62,18 @@ async function present(bin: string, deps: SetupDeps): Promise<SetupStatus> {
 async function agentStatus(id: SetupDependencyId, deps: SetupDeps): Promise<SetupStatus> {
   const agent = DEPENDENCY_AGENT[id];
   if (!agent) throw new Error(`no agent for ${id}`);
-  return present(deps.agentBin(agent), deps);
+  return present(deps.agentBin(agent), deps, AGENT_EXECUTABLE[agent]);
 }
 
 async function terminalStatus(id: TerminalBackendId, deps: SetupDeps): Promise<SetupStatus> {
   const unsupported = deps.backendUnsupported?.(id);
   if (unsupported) return { state: "needs-setup", why: unsupported, evidence: null };
+  if (deps.executableDiagnostic) {
+    const resolved = await deps.executableDiagnostic(id);
+    return resolved
+      ? { state: "satisfied", evidence: resolved.path, source: resolved.source }
+      : { state: "missing" };
+  }
   const path = await deps.installedBackend(id);
   return path ? { state: "satisfied", evidence: path } : { state: "missing" };
 }
@@ -75,7 +95,7 @@ function ghVersionAtLeast(versionOutput: string, minimum: string): boolean | nul
 }
 
 async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
-  const status = await present(deps.ghBin(), deps);
+  const status = await present(deps.ghBin(), deps, "gh");
   if (status.state !== "satisfied") return status;
   const result = await deps.runCommand(status.evidence, ["--version"]);
   const atLeast = !result.outcomeUnknown && result.code === 0
@@ -147,7 +167,12 @@ async function conductorStatus(deps: SetupDeps): Promise<SetupStatus> {
   const probe = await deps.conductorProbe();
   if (!probe.found || !probe.binPath) return { state: "missing" };
   const version = probe.version ? ` ${probe.version}` : "";
-  return { state: "satisfied", evidence: `${probe.binPath}${version}` };
+  const diagnostic = await deps.executableDiagnostic?.("conductor");
+  return {
+    state: "satisfied",
+    evidence: `${probe.binPath}${version}`,
+    ...(diagnostic?.path === probe.binPath ? { source: diagnostic.source } : {}),
+  };
 }
 
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
@@ -195,6 +220,12 @@ export function defaultSetupDeps(): SetupDeps {
   return {
     environment,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
+    executableDiagnostic: async (id) => {
+      const resolved = await locateExecutable(id);
+      return resolved
+        ? { path: resolved.path, source: EXECUTABLE_SOURCE_LABELS[resolved.source] }
+        : null;
+    },
     agentBin: resolveAgentBin,
     installedBackend: async (id) => {
       const spec = terminalBackendBin(id);

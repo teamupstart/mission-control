@@ -13,7 +13,7 @@ import {
   parseUpdateProgressLine,
   type UpdatePrepareStage,
 } from "../shared/update-stages.mjs";
-import { loginShellPath } from "../server/util/path-env.ts";
+import { executableChildEnv } from "../server/executables/locator.ts";
 import { sanitizeLogLine } from "./update-log.ts";
 
 /**
@@ -46,9 +46,9 @@ export const CANCEL_EXIT_TIMEOUT_MS = 10_000;
  */
 export function updateChildEnvironment(
   current: NodeJS.ProcessEnv = process.env,
-  path: string = loginShellPath(),
+  path?: string,
 ): NodeJS.ProcessEnv {
-  return { ...current, PATH: path };
+  return path === undefined ? executableChildEnv(current) : { ...current, PATH: path };
 }
 
 /**

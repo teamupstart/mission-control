@@ -16,6 +16,7 @@ import type {
 } from "./app-server/protocol.ts";
 import { CLIENT_INFO } from "./sdk.ts";
 import { spawnAppServer } from "./sdk-deps.ts";
+import { resolveBinPath } from "../../util/exec.ts";
 
 // Discover the configured Codex installation's models through one app-server request.
 //
@@ -350,7 +351,9 @@ export async function discoverCodexModels(
 
   let transport: AppServerTransport;
   try {
-    transport = await (deps.connect ?? spawnProbeConnection)(executable);
+    const resolved = deps.connect ? executable : await resolveBinPath(executable);
+    if (!resolved) return failure("process_failed");
+    transport = await (deps.connect ?? spawnProbeConnection)(resolved);
   } catch {
     return failure("process_failed");
   }

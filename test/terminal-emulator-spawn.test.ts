@@ -16,7 +16,7 @@ import { join } from "node:path";
 //
 // Driven through a fake `wezterm` on WEZTERM_BIN rather than a stubbed exec, deliberately.
 // A real child process exercises the actual argv, the actual exit code, and the
-// `WEZTERM_BIN.dropEnv` socket strip - and that last one only ever shows up in a spawned
+// executable catalog's wezterm socket strip - and that last one only ever shows up in a spawned
 // environment, so a fake exec could not assert it at all.
 
 const home = mkdtempSync(join(tmpdir(), "mission-emu-spawn-"));

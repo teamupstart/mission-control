@@ -1,10 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
-import { run } from "../../util/exec.ts";
-import { resolveBinSpec } from "../bin.ts";
+import { locateExecutable } from "../../executables/locator.ts";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
-import { codexBin } from "./bin.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
 // The ONE module that starts a `codex app-server` process.
@@ -24,17 +21,9 @@ import type { AppServerTransport } from "./app-server/client.ts";
  * looks dispatched while nothing is running is the outcome that rule exists to prevent.
  */
 export async function codexExecutable(): Promise<string> {
-  const configured = resolveBinSpec(codexBin);
-  if (configured.includes("/")) {
-    if (existsSync(configured)) return configured;
-    throw new Error(`the configured codex binary "${configured}" does not exist`);
-  }
-  const which = await run("which", [configured]);
-  const found = which.stdout.trim().split("\n")[0];
-  if (which.code !== 0 || !found || !existsSync(found)) {
-    throw new Error(`agent binary "${configured}" not found on PATH`);
-  }
-  return found;
+  const executable = await locateExecutable("codex");
+  if (!executable) throw new Error('agent binary "codex" not found in the executable environment');
+  return executable.path;
 }
 
 /** How long to let a closing server finish before the process is killed outright. */

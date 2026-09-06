@@ -12,6 +12,7 @@ import type {
 } from "@shared/types.ts";
 import { browserImageMediaTypeForPath } from "@shared/browser-images.ts";
 import { run } from "./util/exec.ts";
+import { locateExecutable } from "./executables/locator.ts";
 
 export const MAX_SESSION_FILE_ENTRIES = 10_000;
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
@@ -55,12 +56,14 @@ function assertGitTreePath(relativePath: string): void {
   }
 }
 
-function gitBuffer(cwd: string, args: string[], maxBuffer: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
+async function gitBuffer(cwd: string, args: string[], maxBuffer: number): Promise<Buffer> {
+  const executable = await locateExecutable("git");
+  if (!executable) throw new Error("Git was not found in the executable environment");
+  return await new Promise((resolve, reject) => {
     execFile(
-      "git",
+      executable.path,
       ["-C", cwd, ...args],
-      { encoding: "buffer", timeout: 15_000, maxBuffer },
+      { encoding: "buffer", timeout: 15_000, maxBuffer, env: executable.env },
       (error, stdout) => {
         if (error) reject(error);
         else resolve(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));

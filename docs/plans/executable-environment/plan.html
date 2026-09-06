@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Executable environment and locator</title>
+<style>
+:root{color-scheme:light dark;--bg:#faf9f7;--panel:#fff;--text:#202124;--muted:#62676e;--line:#ddd8d0;--accent:#9b5d18;--soft:#f6eee3;--ok:#26734d;font-family:system-ui,-apple-system,sans-serif} @media(prefers-color-scheme:dark){:root{--bg:#101318;--panel:#171b21;--text:#edf0f4;--muted:#a0a8b4;--line:#303640;--accent:#f2a646;--soft:#241d14;--ok:#46c78c}} *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);line-height:1.55} main{max-width:980px;margin:auto;padding:48px 24px 96px} h1{font-size:clamp(2rem,5vw,3.3rem);line-height:1.05;margin:.2em 0} h2{margin-top:2.2em;border-bottom:1px solid var(--line);padding-bottom:.35em} h3{margin-top:1.7em} p,li{color:var(--muted)} code{font-family:ui-monospace,monospace;background:var(--soft);padding:.12em .35em;border-radius:4px;color:var(--text)} .eyebrow{font:700 12px ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)} .lead{font-size:1.15rem;max-width:72ch}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin:18px 0}.flow{overflow-x:auto}.flow svg{min-width:850px;width:100%;height:auto}.box{fill:var(--panel);stroke:var(--line);stroke-width:2}.core{fill:var(--soft);stroke:var(--accent)} .arrow{stroke:var(--accent);stroke-width:2;fill:none;marker-end:url(#arrow)} svg text{fill:var(--text);font:13px ui-monospace,monospace}.muted{fill:var(--muted)} table{width:100%;border-collapse:collapse;min-width:650px}th,td{padding:11px 13px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font:700 11px ui-monospace,monospace;text-transform:uppercase;color:var(--accent)}td{color:var(--muted)}.table{overflow-x:auto;border:1px solid var(--line);border-radius:10px}.pill{display:inline-block;border:1px solid var(--ok);color:var(--ok);border-radius:99px;padding:3px 9px;font:700 11px ui-monospace,monospace}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">Mission Control architecture plan</div>
+<h1>Executable environment and locator</h1>
+<p class="lead">One daemon-owned environment snapshot will decide which executable Mission Control detects and launches. Every successful answer is an absolute path with provenance and the exact child environment that produced it.</p>
+<p><span class="pill">Approved by task brief</span> &nbsp; 2026-09-04</p>
+
+<h2>Outcome and boundary</h2>
+<div class="card"><p>Tools are discoverable through explicit overrides, operator directories, inherited PATH, a bounded login shell, supported version-manager directories, or OS defaults. No recursive scan is permitted. Pi completion events, the work-queue bridge, and broader Pi RPC parity remain separate work.</p></div>
+
+<h2>Flow</h2>
+<div class="card flow"><svg viewBox="0 0 920 390" role="img" aria-label="Executable environment data and launch flow">
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--accent)"/></marker></defs>
+<rect class="box" x="20" y="25" width="190" height="54" rx="9"/><text x="42" y="50">Inherited PATH</text><text class="muted" x="42" y="68">launch-time input</text>
+<rect class="box" x="20" y="105" width="190" height="54" rx="9"/><text x="42" y="130">Bounded login shell</text><text class="muted" x="42" y="148">timeout + coalescing</text>
+<rect class="box" x="20" y="185" width="190" height="54" rx="9"/><text x="42" y="210">Supported locations</text><text class="muted" x="42" y="228">OS + version managers</text>
+<rect class="box" x="20" y="265" width="190" height="54" rx="9"/><text x="42" y="290">Operator inputs</text><text class="muted" x="42" y="308">directories + overrides</text>
+<rect class="box core" x="300" y="120" width="220" height="100" rx="12"/><text x="330" y="150">Environment builder</text><text class="muted" x="330" y="174">ordered, deduplicated</text><text class="muted" x="330" y="196">versioned snapshot</text>
+<rect class="box core" x="610" y="120" width="220" height="100" rx="12"/><text x="646" y="150">Binary locator</text><text class="muted" x="646" y="174">absolute path</text><text class="muted" x="646" y="196">source + child env</text>
+<rect class="box" x="610" y="275" width="220" height="62" rx="9"/><text x="638" y="301">Explicit refresh</text><text class="muted" x="638" y="321">Setup or cache miss</text>
+<path class="arrow" d="M210 52L300 145"/><path class="arrow" d="M210 132L300 160"/><path class="arrow" d="M210 212L300 180"/><path class="arrow" d="M210 292L300 198"/><path class="arrow" d="M520 170L610 170"/><path class="arrow" d="M720 275L720 222"/>
+<path class="arrow" d="M830 145L895 75"/><text x="838" y="63">Diagnostics</text><path class="arrow" d="M830 170L900 170"/><text x="838" y="158">Detection</text><path class="arrow" d="M830 195L895 255"/><text x="838" y="276">Execution</text>
+</svg></div>
+
+<h2>Binary classes</h2><div class="table"><table><thead><tr><th>Class</th><th>Contract</th><th>Examples</th></tr></thead><tbody>
+<tr><td>Configurable</td><td>Declared spec and shared locator</td><td>Agents, git, GitHub, Jira, pipelines, terminals, launchers</td></tr>
+<tr><td>Fixed OS</td><td>Declared absolute path, never searched</td><td><code>/bin/sh</code>, <code>/usr/bin/env</code>, <code>/usr/bin/osascript</code></td></tr>
+<tr><td>Operator command</td><td>Repository-owned argv, shared environment resolution</td><td>Workflow checks and installers</td></tr>
+<tr><td>Runtime</td><td>Already-running absolute executable</td><td>Node and Electron-as-Node helpers</td></tr>
+</tbody></table></div>
+
+<h2>Resolution precedence</h2><ol><li>Tool-specific prefixed override, then retained raw legacy names.</li><li>Declared absolute candidates, including terminal app bundles.</li><li>Operator search directories.</li><li>Inherited PATH.</li><li>Login-shell PATH.</li><li>Supported version-manager directories.</li><li>Supported OS defaults.</li></ol>
+
+<h2>Implementation</h2>
+<h3>1. Foundation</h3><p>Introduce the registry, versioned snapshot, provenance records, bounded shell probe, shared positive and negative caches, and focused unit coverage.</p>
+<h3>2. Detection and launch identity</h3><p>Route harnesses, model discovery, terminals, Setup, pipelines, task sources, open targets, workers, updater, and general command execution through one contract.</p>
+<h3>3. Process boundaries</h3><p>Initialize in daemon, Electron, and standalone Foreman entry points. Preserve the snapshot through child-specific security overlays.</p>
+<h3>4. Diagnostics and enforcement</h3><p>Show path provenance in Setup, make Re-check force a refresh, and reject new undeclared literal subprocess commands in tests.</p>
+<h3>5. Verification</h3><p>Run focused unit, integration, Playwright, Electron, typecheck, lint, build, smoke, and full-suite checks. Register final command and rendered UI evidence for the next Persona.</p>
+
+<h2>Acceptance evidence</h2><div class="table"><table><thead><tr><th>Behavior</th><th>Proof</th></tr></thead><tbody>
+<tr><td>Minimal GUI PATH and failed shell</td><td>Locator unit tests and Playwright daemon fixture</td></tr>
+<tr><td>XDG and version managers</td><td>Table-driven path-source tests</td></tr>
+<tr><td>Stale adopted daemon and post-start install</td><td>Forced-refresh integration and Re-check E2E</td></tr>
+<tr><td>Detection equals launch</td><td>Captured absolute argv0 and snapshot generation</td></tr>
+<tr><td>Visible path and source</td><td>Setup render and Playwright assertions</td></tr>
+<tr><td>Future architecture enforcement</td><td>Production source scan backed by exhaustive registries</td></tr>
+</tbody></table></div>
+</main></body></html>

@@ -1,4 +1,5 @@
 import type { BinSpec } from "../types.ts";
+import { executableSpec } from "../../executables/catalog.ts";
 
 /**
  * The `claude` CLI.
@@ -9,8 +10,9 @@ import type { BinSpec } from "../types.ts";
  * `claude-cli.ts` alone, which is exactly the split this spec closes - it now resolves for
  * a dispatched session too, matching what the README has always said it aliases.
  */
+const declared = executableSpec("claude");
 export const claudeBin: BinSpec = {
-  env: "CLAUDE_BIN",
-  legacyEnv: ["FOREMAN_CLAUDE_BIN"],
-  command: "claude",
+  env: declared.overrideEnv!,
+  legacyEnv: declared.legacyEnv,
+  command: declared.command,
 };

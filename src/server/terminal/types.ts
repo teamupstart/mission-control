@@ -525,8 +525,23 @@ export interface TerminalEmulator {
  * unreachable with no way to say so, and nothing sanitized tmux's inherited environment at
  * all.
  */
-export interface BinSpec {
-  /** Env var that overrides everything, or null when the backend has no such convention. */
+interface BinHostSupport {
+  /**
+   * An actionable reason this adapter cannot run on the current host, or null when its
+   * transport and launch mechanics have been validated there.
+   */
+  unsupportedReason?: (platform: NodeJS.Platform) => string | null;
+}
+
+interface CatalogBinSpec extends BinHostSupport {
+  /** Production backends carry only the identity of their authoritative catalog entry. */
+  id: import("@shared/executables.ts").ExecutableId;
+}
+
+interface CompatibilityBinSpec extends BinHostSupport {
+  /** Anonymous injected specs have no catalog identity. */
+  id?: undefined;
+  /** Env var that overrides everything, or null when the injected spec has no convention. */
   env: string | null;
   /**
    * Candidates tried in order. The last is conventionally the bare name, i.e. "hope it is
@@ -548,13 +563,6 @@ export interface BinSpec {
    * kind of rule a third backend gets wrong silently. `binEnv` (`bin.ts`) applies it.
    */
   dropEnv: readonly string[];
-  /**
-   * An actionable reason this adapter cannot run on the current host, or null when its
-   * transport and launch mechanics have been validated there.
-   *
-   * This is part of binary availability rather than adapter policy: every generic caller
-   * must refuse an unsupported host before it probes the filesystem, starts a process, or
-   * opens a socket. Optional keeps existing all-platform adapters terse.
-   */
-  unsupportedReason?: (platform: NodeJS.Platform) => string | null;
 }
+
+export type BinSpec = CatalogBinSpec | CompatibilityBinSpec;

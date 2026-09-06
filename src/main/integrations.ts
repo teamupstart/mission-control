@@ -27,6 +27,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
 import { writeOtelEnv } from "@shared/claude-settings.ts";
+import { locateCommandSync } from "../server/executables/locator.ts";
 // One definition of the event vocabulary, on the harness that fires it - this file and
 // `hooks/install.mjs` each used to hold a copy, hand-kept, with nothing catching drift.
 // Imported from the spec's own module rather than through `harness/index.ts`: this file
@@ -188,20 +189,22 @@ function editHooks(uninstall: boolean, hookCommand: (script: string, event: stri
  */
 function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): string {
   try {
+    const executable = locateCommandSync(spec.cli);
+    if (!executable) throw new Error(`${spec.cli} was not found`);
     if (!add) {
-      execFileSync(spec.cli, ["mcp", "remove", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName], {
+      execFileSync(executable.path, ["mcp", "remove", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName], {
         stdio: "ignore",
         timeout: 15000,
-        env: { ...process.env, PATH: process.env.PATH },
+        env: executable.env,
       });
       return "MCP server removed.";
     }
     const { env, argv } = runtime.mcpArgs(mcp);
     const envFlags = env.flatMap((e) => [spec.envFlag, e]);
     execFileSync(
-      spec.cli,
+      executable.path,
       ["mcp", "add", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName, ...envFlags, "--", ...argv],
-      { stdio: "ignore", timeout: 15000 },
+      { stdio: "ignore", timeout: 15000, env: executable.env },
     );
     return "MCP review server registered.";
   } catch {

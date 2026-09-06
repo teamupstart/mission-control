@@ -135,6 +135,19 @@ test("a satisfied row states its evidence relative to home and keeps the absolut
   assert.doesNotMatch(html, /title="/, "the native title attribute is not this app's tooltip");
 });
 
+test("a satisfied executable row names its resolver source", () => {
+  const ready = {
+    ...CLAUDE,
+    status: {
+      state: "satisfied",
+      evidence: `${HOME}/.local/bin/claude`,
+      source: "login shell",
+    },
+  } as SetupRowView;
+  const html = render([ready], "setup/family-agents");
+  assert.match(html, /class="setup-source">Source: login shell/);
+});
+
 test("evidence outside the home directory gets no tooltip repeating what is on screen", () => {
   const brew = { ...CMUX, status: { state: "satisfied", evidence: "/opt/homebrew/bin/cmux" } } as SetupRowView;
   const html = render([CLAUDE, brew, GH_CLI], "setup/family-terminals");

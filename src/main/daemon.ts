@@ -17,7 +17,7 @@ import {
   daemonHealthCompatibility,
   type DaemonCompatibility,
 } from "@shared/daemon-protocol.ts";
-import { loginShellPath } from "../server/util/path-env.ts";
+import { executableChildEnv } from "../server/executables/locator.ts";
 import { serveProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
 
@@ -29,7 +29,7 @@ export interface DaemonController {
 
 const HEALTH_URL = `${BASE_URL}/api/health`;
 const REQUIRED_DAEMON_CAPABILITY =
-  DAEMON_PROTOCOL_CAPABILITIES.criterionMappedWorkflowEvidence;
+  DAEMON_PROTOCOL_CAPABILITIES.daemonExecutableEnvironment;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -96,11 +96,7 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
     entry: opts.serverEntry,
     serviceName: "mission-control-daemon",
     logPath: opts.logPath,
-    env: {
-      ...process.env,
-      PATH: loginShellPath(),
-      MISSION_WEB_DIR: opts.webDir,
-    },
+    env: executableChildEnv({ ...process.env, MISSION_WEB_DIR: opts.webDir }),
     // A Report click is armed in the shell over IPC and consumed here over the private
     // utility-process port. A loopback caller has access to neither side of that handoff.
     onSpawn: serveProductIssueAuthorization,

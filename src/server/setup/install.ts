@@ -14,6 +14,7 @@ import type {
   TerminalLaunchOutcome,
   TerminalLaunchSpec,
 } from "../terminal/targets.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 
 const NPM_PACKAGE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 const BREW_PACKAGE = /^[a-z0-9][a-z0-9+._@-]*$/;
@@ -175,14 +176,14 @@ export async function executeSetupInstall(
       );
       if (!prepared.ok) return refused(body.id, info.label, prepared.error);
       const argv = [
-        "/usr/bin/env",
+        FIXED_OS_EXECUTABLES.env,
         ...Object.entries(prepared.terminalEnv).map(([name, value]) => `${name}=${value}`),
         ...prepared.argv,
       ];
       launch = {
         name: prepared.title,
         cwd: prepared.cwd,
-        argv: ["/bin/sh", "-c", setupInstallerShell(argv)],
+        argv: [FIXED_OS_EXECUTABLES.sh, "-c", setupInstallerShell(argv)],
       };
       break;
     }
@@ -197,7 +198,7 @@ export async function executeSetupInstall(
       launch = {
         name: `Install ${info.label}`,
         cwd: deps.homeDir,
-        argv: ["/bin/sh", "-c", setupInstallerShell(remedy.argv)],
+        argv: [FIXED_OS_EXECUTABLES.sh, "-c", setupInstallerShell(remedy.argv)],
       };
       break;
   }

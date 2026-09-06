@@ -10,6 +10,7 @@ import {
 } from "@shared/pipeline.ts";
 
 import { mainRepoRoot } from "../../util/git.ts";
+import { executableChildEnv } from "../../executables/locator.ts";
 import { run, type RunResult } from "../../util/exec.ts";
 import type { PipelineInstallerRuntimePreparation } from "../types.ts";
 
@@ -71,7 +72,7 @@ const DEFAULT_DEPS: ConductorInstallerDeps = {
 };
 
 const DEFAULT_RUNTIME_DEPS: ConductorInstallerRuntimeDeps = {
-  path: () => process.env.PATH ?? "",
+  path: () => executableChildEnv().PATH ?? "",
   nodeExecPath: (path) =>
     run("node", ["-p", "process.execPath"], {
       env: { ...process.env, PATH: path },

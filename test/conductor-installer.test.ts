@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -25,6 +26,7 @@ import {
   recognizedConductorRemote,
   verifyConductorInstallerCheckout,
 } from "../src/server/pipelines/conductor/installer.ts";
+import { withProcessEnv } from "./helpers/process-env.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-conductor-installer-")));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -121,6 +123,43 @@ test("installer runtime preflight distinguishes unsupported and supported Node v
   assert.equal(unavailable.current, null);
   assert.equal(unavailable.supported, false);
   assert.match(unavailable.detail, /could not determine/);
+});
+
+test("installer runtime preflight probes the Node selected by its exact PATH", async () => {
+  const binDir = join(root, "exact-node-bin");
+  const node = join(binDir, "node");
+  const pathLog = join(root, "exact-node-path.log");
+  mkdirSync(binDir);
+  writeFileSync(
+    node,
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "-p" ]; then',
+      '  printf "%s\\n" "$0"',
+      '  printf "%s" "$PATH" > "$MC_TEST_NODE_PATH_LOG"',
+      "else",
+      '  printf "v26.7.0\\n"',
+      "fi",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(node, 0o755);
+
+  await withProcessEnv(
+    {
+      MISSION_NODE_BIN: undefined,
+      FLEET_NODE_BIN: undefined,
+      HARNESS_NODE_BIN: undefined,
+      MC_TEST_NODE_PATH_LOG: pathLog,
+    },
+    async () => {
+      const prepared = await conductorInstallerRuntimePreparation({ path: () => binDir });
+      assert.equal(prepared.reading.current, "26.7.0");
+      assert.equal(prepared.reading.supported, true);
+      assert.equal(readFileSync(pathLog, "utf8"), binDir);
+      assert.equal(prepared.terminalEnv.PATH?.split(delimiter)[0], binDir);
+    },
+  );
 });
 
 test("recognized upstream HTTPS and SSH remotes normalize to one credential-free label", () => {

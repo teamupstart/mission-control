@@ -68,6 +68,31 @@ A new MCP **tool** carries two more obligations, and skipping either is silent. 
 
 Every mutating route requires a Zod schema in `protocol.ts` and `parseBody`. Do not hand-parse JSON.
 
+## Executable and child-process changes
+
+A new configurable subprocess integration is incomplete until all of these move together:
+
+1. Append a stable id to `EXECUTABLE_IDS` in `src/shared/executables.ts`.
+2. Add the exhaustive `ExecutableSpec` in `src/server/executables/catalog.ts`, including its
+   override suffix, supported absolute candidates, and child environment exclusions.
+3. Resolve once through `ExecutableLocator` and pass the returned absolute path and child
+   environment to both detection and execution. Do not add `which`, `command -v`, a local PATH
+   walk, or a second login-shell probe.
+   The shared `run()` helper resolves an explicitly supplied child `PATH` as one bounded locator
+   snapshot, then launches with the returned environment after applying the specification's
+   environment exclusions.
+4. Add Setup diagnostics when the tool is operator-facing, including path and source.
+5. Add focused locator or integration tests. A visible Setup change also needs Playwright coverage.
+6. Update `docs/configuration.md` and the relevant operator guide.
+
+`test/executable-contracts.test.ts` scans production sources for undeclared literal commands and
+parses `node:child_process` imports and calls, including renamed imports and namespace calls. Every
+direct call must match the test's structured, call-level boundary registry. A transport may accept
+an already resolved absolute path, and a Workflow supervisor may accept operator-authored argv,
+but neither a source comment nor a file-level exemption can grant that boundary. Fixed OS utilities
+must be absolute entries in `FIXED_OS_EXECUTABLES`; a command that can vary by installation does
+not belong there.
+
 ## Database changes
 
 For a new column on an existing table:

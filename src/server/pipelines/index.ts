@@ -27,7 +27,7 @@ import {
 } from "@shared/pipeline.ts";
 
 import { envVar } from "../config.ts";
-import { onPath } from "../util/exec.ts";
+import { locateCommandSync } from "../executables/locator.ts";
 import {
   appendPipelineEvents,
   deletePipelineEventsForRepo,
@@ -174,7 +174,7 @@ export function pipelineRepoStatuses(): PipelineRepoStatus[] {
  *
  * This backs the append-only `SettingsStatus.pipelines.present` compatibility fact. The
  * Conductor Settings destination is permanent, so the value no longer gates navigation.
- * It is answered WITHOUT a subprocess: `onPath` walks `PATH` with `existsSync`.
+ * It is answered without a subprocess by the shared executable locator.
  *
  * It deliberately asks a WEAKER question than `probePipelineProvider`. What version the
  * binary is and which repositories it manages are the panel's questions, and the panel is
@@ -186,7 +186,7 @@ export function pipelinesPresent(): boolean {
   const config = getPipelinesConfig();
   if (config.enabled || config.repos.length > 0) return true;
   return PIPELINE_PROVIDER_IDS.some((provider) =>
-    onPath(PIPELINE_PROVIDERS[provider].binForPresence()),
+    locateCommandSync(PIPELINE_PROVIDERS[provider].binForPresence()) !== null,
   );
 }
 

@@ -18,10 +18,9 @@ import {
   type UpdatePrepareStage,
   type UpdateSnapshot,
 } from "../shared/update.ts";
-// Still used here, by `runGh` below: the `gh` CLI lives on the login shell's PATH, which is not
-// Electron's. What moved to `update-build.ts` was a different consumer - the environment handed
-// to the staged build and the detached helper, which needed the same PATH for git and npm.
-import { loginShellPath } from "../server/util/path-env.ts";
+// The updater asks the same locator as the daemon before it invokes `gh`, so detection and
+// execution retain one absolute identity even when Electron started with a minimal PATH.
+import { locateExecutable } from "../server/executables/locator.ts";
 import { bundleShortVersion } from "./bundle-version.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
@@ -298,15 +297,17 @@ export async function latestStableRelease(run: GhRunner): Promise<ReleaseInfo | 
   return { ...release, body: typeof body === "string" ? body : "" };
 }
 
-export function runGh(args: string[]): Promise<CommandResult> {
-  return new Promise((resolve) => {
+export async function runGh(args: string[]): Promise<CommandResult> {
+  const executable = await locateExecutable("gh");
+  if (!executable) return { code: 1, stdout: "", stderr: "GitHub CLI was not found.", errorCode: "ENOENT" };
+  return await new Promise((resolve) => {
     execFile(
-      "gh",
+      executable.path,
       args,
       {
         encoding: "utf8",
         timeout: 30_000,
-        env: { ...process.env, PATH: loginShellPath() },
+        env: executable.env,
       },
       (error, stdout, stderr) => {
         const coded = error as NodeJS.ErrnoException & { code?: string | number };

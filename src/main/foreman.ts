@@ -1,4 +1,4 @@
-import { loginShellPath } from "../server/util/path-env.ts";
+import { executableChildEnv } from "../server/executables/locator.ts";
 import { superviseUtilityProcess } from "./utility-supervisor.ts";
 import type { UtilityProcessController } from "./utility-supervisor.ts";
 
@@ -28,9 +28,6 @@ export function startForeman(opts: StartForemanOptions): ForemanController {
     cwd: opts.cwd,
     captureChildOutput: false,
     includeFailureDetails: false,
-    env: {
-      ...process.env,
-      PATH: loginShellPath(),
-    },
+    env: executableChildEnv(),
   });
 }

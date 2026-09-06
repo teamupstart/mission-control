@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { normTty } from "../discovery/tty.ts";
 import { normalizeItermSessionId } from "@shared/pane.ts";
 import { ITERM_BIN } from "./bin.ts";
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { appleScriptString, appleScriptText } from "./applescript.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
@@ -234,7 +235,7 @@ export function itermEmulator(
   spawnMarkerFactory: SpawnMarkerFactory = createSpawnMarker,
 ): TerminalEmulator {
   const osa = (script: string, timeoutMs: number) =>
-    exec("/usr/bin/osascript", [], { input: script, timeoutMs });
+    exec(FIXED_OS_EXECUTABLES.osascript, [], { input: script, timeoutMs });
   const command = async (script: string, fallback: string) =>
     actionResult(await osa(script, ACTION_TIMEOUT_MS), fallback);
 

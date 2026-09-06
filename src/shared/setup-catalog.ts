@@ -273,7 +273,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
 };
 
 export type SetupStatus =
-  | { state: "satisfied"; evidence: string }
+  | { state: "satisfied"; evidence: string; source?: string }
   | { state: "missing" }
   | { state: "needs-setup"; why: string; evidence: string | null }
   | { state: "unknown"; why: string; evidence: string | null };

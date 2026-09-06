@@ -16,15 +16,17 @@ One family is read at a time: the rail carries each family's ready count and mar
 with gaps, and the pane beside it holds that family's rows. It opens on the family holding a
 required gap, then any gap, and stays where you put it - a **Re-check** that repairs the
 family you are reading reports into that family rather than moving the rail. A satisfied row
-is one line: its name and the path or evidence Mission Control found, written relative to your
-home directory, with the absolute path on hover. Missing rows explain what capability is
+shows its name, the path or evidence Mission Control found, and the source of an executable
+path, such as inherited PATH, login shell, operator override, or version-manager location.
+Paths are written relative to your home directory, with the absolute path on hover. Missing rows explain what capability is
 unavailable and provide a documentation link or copyable command. A runnable package-manager remedy also offers **Run in a terminal**:
 choose an available backend and Mission Control opens a visible terminal running the catalog's
 fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
-The optional iTerm2 row uses the same `/Applications/iTerm.app` or `ITERM_BIN` filesystem
+The optional iTerm2 row uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
+configured `ITERM_BIN` filesystem
 check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is
 `brew install --cask iterm2`; Automation permission is requested only when an already-running
 iTerm2 is controlled or when you explicitly launch through it. See

@@ -39,12 +39,12 @@ import { getAppConfig, setAppConfig } from "../db.ts";
 // reads `node:os`, and the dashboard imports the resolvers.
 //
 // What is deliberately NOT here is `llmStatus`, which lives in `./status.ts`. It is the only
-// thing that needs `allLlmRunners()`, and that one import pulls in every provider adapter -
-// including `claude-cli.ts`, which freezes `MISSION_CLAUDE_BIN` at module load. This file is
-// read by the Inspector's and Foreman's configs to resolve the app-wide rung of their
-// ladders, and through `settings-status.ts` that reaches `registry.ts`; carrying the adapters
-// along would put the operator's real `claude` binary into the module graph of anything that
-// asks what provider a subsystem inherits. Reading a preference should not load a spawner.
+// thing that needs `allLlmRunners()`, and that one import pulls in every provider adapter.
+// This file is read by the Inspector's and Foreman's configs to resolve the app-wide rung of
+// their ladders, and through `settings-status.ts` that reaches `registry.ts`; carrying the
+// adapters along would pull executable resolution and spawning into the module graph of
+// anything that asks what provider a subsystem inherits. Reading a preference should not
+// load a spawner.
 
 const CONFIG_ENTRY = APP_CONFIG_ENTRIES.llm;
 

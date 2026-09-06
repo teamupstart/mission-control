@@ -41,6 +41,7 @@ const {
   missionMcpDescriptorForPipelineTask,
   missionMcpPaths,
   missionMcpProductIssueClient,
+  resolveMissionMcpRuntime,
   missionMcpToolName,
   verifyMissionMcpTools,
   verifyMissionMcpToolsForRunningSession,
@@ -94,6 +95,20 @@ test("the descriptor points at the ONE resolved server path with an absolute run
   // The agent launches this as an EXTERNAL process, so a bare `node` off the spawned
   // shell's PATH is not good enough.
   assert.ok(d.command.startsWith("/"), `runtime should be absolute, got ${d.command}`);
+});
+
+test("a located Node runtime keeps the locator-owned child environment", async () => {
+  const runtime = await resolveMissionMcpRuntime(
+    "/Applications/Mission Control.app/Contents/MacOS/Mission Control",
+    async () => ({
+      path: "/custom/node/bin/node",
+      env: { PATH: "/custom/node/bin", NODE_OPTIONS: "--require=/custom/register.cjs" },
+    }),
+  );
+  assert.deepEqual(runtime, {
+    command: "/custom/node/bin/node",
+    env: { PATH: "/custom/node/bin", NODE_OPTIONS: "--require=/custom/register.cjs" },
+  });
 });
 
 test("Pipeline task scoping clones the descriptor and puts its capability in a private file", () => {

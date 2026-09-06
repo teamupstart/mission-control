@@ -30,6 +30,7 @@ import {
 } from "./updater.ts";
 import type { UpdateSnapshot } from "../shared/update.ts";
 import { UPDATE_COPY } from "../shared/update-copy.ts";
+import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
 
 app.setName("Mission Control");
 
@@ -224,6 +225,9 @@ app.on("before-quit", () => {
 });
 
 app.whenReady().then(async () => {
+  // Finder, Dock, and LaunchAgent environments are routinely minimal. Build the same
+  // bounded executable snapshot the daemon owns before the shell starts any child process.
+  await initializeExecutableEnvironment();
   // Auto-grant the Notification permission for the daemon/Vite origin so the
   // dashboard's "Enable desktop alerts" resolves to `granted` (OS-level delivery
   // is still governed by System Settings → Notifications → Mission Control).

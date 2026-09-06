@@ -29,6 +29,7 @@ import {
   conductorInstallerTerminalArgv,
 } from "./installer.ts";
 import { resolveBinPath } from "../../util/exec.ts";
+import { FIXED_OS_EXECUTABLES } from "../../executables/catalog.ts";
 import {
   MAX_RUNS_PER_REPO,
   readConductState,
@@ -352,7 +353,7 @@ export function conductorEngineerArgv(
   bin: string,
   intent: string,
 ): string[] {
-  return ["/usr/bin/env", "-u", "CLAUDECODE", bin, "engineer", "--idea", intent];
+  return [FIXED_OS_EXECUTABLES.env, "-u", "CLAUDECODE", bin, "engineer", "--idea", intent];
 }
 
 /**

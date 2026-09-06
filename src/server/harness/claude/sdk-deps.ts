@@ -1,8 +1,5 @@
-import { existsSync } from "node:fs";
 import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
-import { run } from "../../util/exec.ts";
-import { resolveBinSpec } from "../bin.ts";
-import { claudeBin } from "./bin.ts";
+import { locateExecutable } from "../../executables/locator.ts";
 import type {
   ClaudeSdkDeps,
   ClaudeSdkOneShotDeps,
@@ -31,17 +28,9 @@ import type {
  * was asked for must not leave a card that looks dispatched and is running something else.
  */
 export async function claudeExecutable(): Promise<string> {
-  const configured = resolveBinSpec(claudeBin);
-  if (configured.includes("/")) {
-    if (existsSync(configured)) return configured;
-    throw new Error(`the configured claude binary "${configured}" does not exist`);
-  }
-  const which = await run("which", [configured]);
-  const found = which.stdout.trim().split("\n")[0];
-  if (which.code !== 0 || !found || !existsSync(found)) {
-    throw new Error(`agent binary "${configured}" not found on PATH`);
-  }
-  return found;
+  const executable = await locateExecutable("claude");
+  if (!executable) throw new Error('agent binary "claude" not found in the executable environment');
+  return executable.path;
 }
 
 /**

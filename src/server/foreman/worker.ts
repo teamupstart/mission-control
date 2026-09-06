@@ -119,6 +119,7 @@ import {
 } from "./ship-shepherd.ts";
 import type { ShipShepherdDecision } from "./ship-shepherd.ts";
 import type { WorkflowStagedEvidenceList } from "@shared/workflow.ts";
+import { initializeExecutableEnvironment } from "../executables/locator.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -316,6 +317,9 @@ function startLeaseRenewal(client: ForemanClient): void {
 }
 
 async function main(): Promise<void> {
+  // A standalone Foreman has no Electron parent to enrich its environment. Initialize the
+  // same contract before any model runner can resolve or launch an agent CLI.
+  await initializeExecutableEnvironment();
   const client = new ForemanClient();
   // The daemon installs the same runner with a DB-backed resolver. This separate process
   // must not import that config module, so its resolver closes over the HTTP-refreshed

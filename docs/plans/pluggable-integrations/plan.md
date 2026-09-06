@@ -470,7 +470,7 @@ for every backend. Six deltas, each forced by something real:
   `WEZTERM_UNIX_SOCKET` dropped, so writes and captures address the same mux the pane ids
   were enumerated on.
 
-`TMUX` is still NOT in `TMUX_BIN.dropEnv`, and this was the commit that was supposed to
+`TMUX` is still NOT in the tmux executable catalog entry's `dropEnv`, and this was the commit that was supposed to
 add it. It cannot: the writes that moved are only some of them. Focus, rename, kill and
 `dispatcher.ts`'s spawn/teardown are eleven inline `run("tmux", …)` calls that still
 inherit `TMUX`, and scrubbing it for pane I/O alone would put keystrokes on one server

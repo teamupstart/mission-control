@@ -48,6 +48,14 @@ test("standalone repository MCP has no Mission Control, credential, database, or
   assert.doesNotMatch(names.map((file) => readFileSync(join(root, file), "utf8")).join("\n"), /MISSION_TOKEN|Authorization:\s*Bearer|\bfetch\s*\(/u);
 });
 
+test("standalone repository MCP reads its config through one no-follow file handle", () => {
+  const source = readFileSync(join(root, "src", "repository-mcp", "server.ts"), "utf8");
+  assert.match(source, /open\(configPath, constants\.O_RDONLY \| constants\.O_NOFOLLOW\)/u);
+  assert.match(source, /configHandle\.stat\(\)/u);
+  assert.match(source, /configHandle\.readFile\("utf8"\)/u);
+  assert.doesNotMatch(source, /lstatSync\(configPath\)|readFile\(configPath/u);
+});
+
 test("Persona workload executor remains unreachable from production Workflow code", () => {
   const imports = sourceFiles(join(root, "src"))
     .filter((file) => !file.includes(`${join("workflows", "persona-workload")}/`))

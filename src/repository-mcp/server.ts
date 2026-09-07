@@ -1,5 +1,5 @@
-import { appendFile, readFile } from "node:fs/promises";
-import { lstatSync } from "node:fs";
+import { constants } from "node:fs";
+import { appendFile, open } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -25,11 +25,18 @@ const RuntimeConfigSchema = z.object({
 
 const configPath = process.env[REPOSITORY_MCP_CONFIG_ENV];
 if (!configPath) throw new Error(`${REPOSITORY_MCP_CONFIG_ENV} is required`);
-const configStat = lstatSync(configPath);
-if (!configStat.isFile() || configStat.isSymbolicLink() || (configStat.mode & 0o077) !== 0) {
-  throw new Error("repository MCP config must be a private regular file");
+const configHandle = await open(configPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+let configText: string;
+try {
+  const configStat = await configHandle.stat();
+  if (!configStat.isFile() || (configStat.mode & 0o077) !== 0) {
+    throw new Error("repository MCP config must be a private regular file");
+  }
+  configText = await configHandle.readFile("utf8");
+} finally {
+  await configHandle.close();
 }
-const config = RuntimeConfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
+const config = RuntimeConfigSchema.parse(JSON.parse(configText));
 
 const reader = new RepositoryReader({
   descriptor: config.descriptor,

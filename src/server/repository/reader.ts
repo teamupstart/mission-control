@@ -690,9 +690,6 @@ export class RepositoryReader {
       if (signal.aborted) throw error;
       return this.finishFailure(request.operation, operationInstanceId, "unavailable", "audit_unavailable", "repository audit sink is unavailable", startedAt, inputHash, false);
     }
-    if (signal.aborted || this.now() - this.usage.startedAt >= this.options.budgets.maxAttemptMs) {
-      throw Object.assign(new Error("repository call deadline exceeded"), { code: "deadline_exceeded" });
-    }
     return RepositoryOperationResultSchema.parse({ operation: request.operation, operationInstanceId, status: "ok", code: null, message: null, items, byteCount, itemCount: items.length, truncated, truncationReason: pending.reason, continuationCursor: pending.next === null ? null : this.cursor(request.operation, inputHash, pending.next), historyBoundary: pending.history ? { truncated: this.descriptor.omittedParents.length > 0, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });
   }
 

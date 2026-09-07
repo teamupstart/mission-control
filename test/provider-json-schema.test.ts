@@ -42,7 +42,9 @@ const { ShipRecoveryReviewWireSchema } = await import(
   "../src/server/foreman/ship-recovery-review.ts"
 );
 const { TriageReportSchema } = await import("../src/server/foreman/triage.ts");
-const { CompactionSchema } = await import("../src/server/workflows/context.ts");
+const { CompactionSchema, CriterionReconciliationSchema } = await import(
+  "../src/server/workflows/context.ts"
+);
 const { ConsensusResultSchema } = await import("../src/shared/ensemble-strategies/consensus.ts");
 const { BestOfNComparisonResultSchema } = await import(
   "../src/shared/ensemble-strategies/best-of-n.ts"
@@ -68,6 +70,7 @@ const SCHEMAS = [
   { identifier: "ShipRecoveryReviewWireSchema", schema: ShipRecoveryReviewWireSchema },
   { identifier: "TriageReportSchema", schema: TriageReportSchema },
   { identifier: "CompactionSchema", schema: CompactionSchema },
+  { identifier: "CriterionReconciliationSchema", schema: CriterionReconciliationSchema },
   { identifier: "ConsensusResultSchema", schema: ConsensusResultSchema },
   { identifier: "BestOfNComparisonResultSchema", schema: BestOfNComparisonResultSchema },
   { identifier: "PanelBallotSchema", schema: PanelBallotSchema },
@@ -233,6 +236,7 @@ test("a null optional never widens the answer a strict field is allowed to give"
 
 const CONTROLS = [
   { identifier: "CompactionSchema", schema: CompactionSchema },
+  { identifier: "CriterionReconciliationSchema", schema: CriterionReconciliationSchema },
   { identifier: "ConsensusResultSchema", schema: ConsensusResultSchema },
   { identifier: "BestOfNComparisonResultSchema", schema: BestOfNComparisonResultSchema },
   { identifier: "PanelBallotSchema", schema: PanelBallotSchema },

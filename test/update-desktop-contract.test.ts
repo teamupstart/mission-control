@@ -1,10 +1,56 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 import { UPDATE_COPY } from "../src/shared/update-copy.ts";
 
 function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+}
+
+function sandboxedPreloadUsesOnlySafeImports(contents: string): boolean {
+  const tree = ts.createSourceFile(
+    "src/preload/index.ts",
+    contents,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let safe = true;
+
+  const visit = (node: ts.Node): void => {
+    let specifier: string | null = null;
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      specifier = node.moduleSpecifier.text;
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression &&
+      ts.isStringLiteralLike(node.moduleReference.expression)
+    ) {
+      specifier = node.moduleReference.expression.text;
+    } else if (
+      ts.isCallExpression(node) &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteralLike(node.arguments[0]!) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === "require"))
+    ) {
+      specifier = node.arguments[0]!.text;
+    }
+
+    if (specifier?.startsWith("node:")) {
+      safe = false;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return safe;
 }
 
 function objectBlock(contents: string, property: string): string {
@@ -32,6 +78,25 @@ function functionBlock(contents: string, name: string): string {
   }
   return "";
 }
+
+test("the sandbox import guard covers every Node module specifier form", () => {
+  const unsafeImports = [
+    'import "node:crypto";',
+    'import crypto from "node:crypto";',
+    'import * as crypto from "node:crypto";',
+    'import { randomUUID } from "node:crypto";',
+    'export { randomUUID } from "node:crypto";',
+    'import crypto = require("node:crypto");',
+    'void import("node:crypto");',
+    'const crypto = require("node:crypto");',
+  ];
+
+  assert.deepEqual(
+    unsafeImports.map(sandboxedPreloadUsesOnlySafeImports),
+    unsafeImports.map(() => false),
+  );
+  assert.equal(sandboxedPreloadUsesOnlySafeImports('import { contextBridge } from "electron";'), true);
+});
 
 test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
   const main = source("src/main/index.ts");
@@ -74,6 +139,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         updatePush.includes('did-finish-load'),
       preloadHasOneGroupedNamespace:
         (preload.match(/\bupdates\s*:\s*\{/g) ?? []).length === 1 && updatePreload.length > 0,
+      preloadUsesOnlySandboxSafeImports: sandboxedPreloadUsesOnlySafeImports(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
           "getState,check,apply,install,cancel,defer,onState" &&
@@ -109,6 +175,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       mainSubscribesOnce: true,
       mainGuardsUpdateStateSend: true,
       preloadHasOneGroupedNamespace: true,
+      preloadUsesOnlySandboxSafeImports: true,
       preloadExposesExactMethods: true,
       preloadDropsEventAndUnsubscribes: true,
       preloadLeaksNoDiagnostics: true,

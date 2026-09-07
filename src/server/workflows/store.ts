@@ -6928,6 +6928,44 @@ export class WorkflowStore {
     ).all(runId) as unknown[]).map(parseWorkflowDeliveryRow);
   }
 
+  /**
+   * Confirmed packets that can still appear in one session's bounded transcript window.
+   *
+   * The delivery ledger and its post-send transcript anchors are the durable authorship source
+   * for workflow context capture. Only confirmed sends with an anchor qualify: prepared,
+   * refused, uncertain, and unanchored packets cannot identify a transcript turn. Newest first
+   * and capped beyond the transcript window so a long-lived session cannot make context capture
+   * scan or retain an unbounded payload history.
+   */
+  listDeliveredTranscriptAnchors(
+    sessionId: string,
+    noteKey: string,
+    limit = 200,
+  ): Array<{ payload: string; transcriptAnchor: number }> {
+    return (this.db.prepare(
+      `SELECT d.payload,
+              CAST(json_extract(e.payload_json, '$.transcriptAnchor') AS INTEGER)
+                AS transcript_anchor
+         FROM workflow_deliveries d
+         JOIN workflow_events e
+           ON e.run_id = d.run_id
+          AND e.event_kind = 'delivery_delivered'
+          AND json_extract(e.payload_json, '$.deliveryId') = d.id
+        WHERE d.session_id = ? AND d.note_key = ?
+          AND d.delivered_at IS NOT NULL AND d.payload_pruned_at IS NULL
+          AND d.payload <> ''
+          AND json_type(e.payload_json, '$.transcriptAnchor') = 'integer'
+        ORDER BY d.delivered_at DESC, d.id DESC
+        LIMIT ?`,
+    ).all(sessionId, noteKey, limit) as Array<{
+      payload: string;
+      transcript_anchor: number;
+    }>).map((row) => ({
+      payload: row.payload,
+      transcriptAnchor: row.transcript_anchor,
+    }));
+  }
+
   listDeliveriesByState(state: WorkflowDelivery["state"]): WorkflowDelivery[] {
     return (this.db.prepare(
       `SELECT * FROM workflow_deliveries WHERE state = ? ORDER BY created_at ASC, id ASC`,

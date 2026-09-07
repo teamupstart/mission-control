@@ -72,6 +72,19 @@ test("delivery rows are immutable packets claimed prepared to sending exactly on
   assert.equal(store.claimDeliverySend(delivery.id, true), null);
 });
 
+test("confirmed workflow payloads remain available for transcript attribution after restart", () => {
+  const store = seededStore("attribution");
+  const delivered = prepare(store, "attribution", "evidence_readiness");
+  store.claimDeliverySend(delivered.id);
+  store.confirmDeliverySend(delivered.id, 1_234, true, 11);
+
+  const restarted = new WorkflowStore();
+  assert.deepEqual(
+    restarted.listDeliveredTranscriptAnchors("session-attribution", "note-attribution"),
+    [{ payload: "repair exactly once", transcriptAnchor: 1_234 }],
+  );
+});
+
 test("positive refusal is explicitly retryable while uncertain delivery never auto-retries", () => {
   const store = seededStore("states");
   const delivery = prepare(store, "states");

@@ -25,6 +25,7 @@ import {
   ConversationViewToggle,
   TranscriptPanel,
   type TranscriptHandle,
+  type TranscriptScrollDistance,
 } from "../TranscriptPanel.tsx";
 import { SessionLaunchers } from "../LaunchMenu.tsx";
 import { useSessionConversationView } from "../../lib/conversation-view.ts";
@@ -263,14 +264,25 @@ export function ConsoleDetail({
   }, [view.workflowsTabRequest, session.id]);
 
   useEffect(() => {
-    const scroll = (direction: -1 | 1, fromReader: boolean): boolean => {
+    const scroll = (
+      direction: -1 | 1,
+      fromReader: boolean,
+      distance: TranscriptScrollDistance,
+    ): boolean => {
+      // Page keys belong only to Conversation here. Unlike arrows, they claim the open
+      // transcript from either focus zone, so reading does not require a preliminary Tab.
+      if (distance === "page") {
+        if (tab !== "conversation") return false;
+        transcriptRef.current?.scrollByKeyboard(direction, distance);
+        return true;
+      }
       if (tab === "files") {
         const handled = filesRef.current?.handleArrow(direction, fromReader) ?? false;
         if (handled) return true;
       }
       if (!fromReader) return false;
       if (tab === "conversation") {
-        transcriptRef.current?.scrollByArrow(direction);
+        transcriptRef.current?.scrollByKeyboard(direction, distance);
       } else {
         const el = paneRef.current;
         if (el) el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });

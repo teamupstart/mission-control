@@ -26,6 +26,7 @@ export type RemoteProbe<T> =
 /** Bounded because these run in front of a dispatch a person is waiting on. */
 const LOCAL_TIMEOUT_MS = 15_000;
 const NETWORK_TIMEOUT_MS = 30_000;
+const MAX_FETCH_ATTEMPTS = 3;
 
 type Run = typeof run;
 
@@ -41,6 +42,23 @@ function failure(step: string, result: Awaited<ReturnType<Run>>): RemoteProbe<ne
     // matters as "what is true", that is still an unknown rather than a "no".
     outcomeUnknown: result.outcomeUnknown || result.overflowed,
   };
+}
+
+/**
+ * Git protects a remote-tracking ref with a compare-and-swap. Two fetches that read the
+ * same predecessor can therefore race: the winner advances the ref, and the loser reports
+ * that the ref "is at" the winner's value rather than the value it "expected". That is a
+ * completed, retry-safe local refusal, not an unknown network outcome or a broken checkout.
+ */
+function staleRemoteTrackingRef(result: Awaited<ReturnType<Run>>): boolean {
+  return (
+    result.code !== 0 &&
+    !result.outcomeUnknown &&
+    !result.overflowed &&
+    /\bcannot lock ref 'refs\/remotes\/origin\/[^']+': is at [0-9a-f]{40,64} but expected [0-9a-f]{40,64}\b/i.test(
+      result.stderr,
+    )
+  );
 }
 
 /** The exact remote names `git remote` listed - one per line, no parsing beyond trimming. */
@@ -119,11 +137,18 @@ export async function originConfigured(
 
 /** Bring `origin`'s refs up to date, or refuse. Never falls back to what is already local. */
 export async function fetchOrigin(root: string, execute: Run = run): Promise<RemoteProbe<void>> {
-  const fetched = await execute("git", ["-C", root, "fetch", "origin"], {
-    timeoutMs: NETWORK_TIMEOUT_MS,
-  });
-  if (failed(fetched)) return failure("git fetch origin", fetched);
-  return { ok: true, value: undefined };
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+    const fetched = await execute("git", ["-C", root, "fetch", "origin"], {
+      timeoutMs: NETWORK_TIMEOUT_MS,
+    });
+    if (!failed(fetched)) return { ok: true, value: undefined };
+    if (!staleRemoteTrackingRef(fetched) || attempt === MAX_FETCH_ATTEMPTS) {
+      return failure("git fetch origin", fetched);
+    }
+    // The conflicting writer already changed the ref before Git emitted this error, so the
+    // next fetch can start immediately from that settled value. A delay is unnecessary.
+  }
+  throw new Error("unreachable fetch attempt state");
 }
 
 /**

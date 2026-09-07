@@ -38,7 +38,7 @@ process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
 // These tests fake agent shutdown and exercise real archive/worktree cleanup. Do not let an
 // optional operator Herdr installation turn that boundary into a live server dependency.
-process.env.MISSION_HERDR_BIN = join(home, "missing-herdr");
+process.env.HERDR_BIN = join(home, "missing-herdr");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");
@@ -51,7 +51,7 @@ const { openDb } = await import("../src/server/db.ts");
 
 const db = openDb();
 after(() => {
-  delete process.env.MISSION_HERDR_BIN;
+  delete process.env.HERDR_BIN;
   rmSync(home, { recursive: true, force: true });
 });
 beforeEach(() => {

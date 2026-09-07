@@ -29,8 +29,13 @@ process.env.HARNESS_HOME = join(home, "state");
 const { WORKTREES_DIR } = await import("../src/server/config.ts");
 const { provisionWorktree, resolveDispatchBase, resolveTaskBases, verifyPinnedBase } =
   await import("../src/server/dispatcher.ts");
-const { currentRemoteDefaultSha, originConfigured, parseLsRemoteHeadSha, parseSymrefHeadBranch } =
-  await import("../src/server/git/remote-default.ts");
+const {
+  currentRemoteDefaultSha,
+  fetchOrigin,
+  originConfigured,
+  parseLsRemoteHeadSha,
+  parseSymrefHeadBranch,
+} = await import("../src/server/git/remote-default.ts");
 const { verifyHeadIs } = await import("../src/server/git/ensemble-snapshot.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -217,6 +222,82 @@ test("a configured origin that cannot be fetched fails rather than falling back 
   git(clone, "remote", "set-url", "origin", join(home, "no-such-repository"));
 
   await assert.rejects(resolveDispatchBase(clone), /could not freeze .*remote default branch/);
+});
+
+test("a stale-ref fetch race is retried because the competing fetch already made progress", async () => {
+  let attempts = 0;
+  const result = await fetchOrigin("/anywhere", async () => {
+    attempts += 1;
+    return attempts === 1
+      ? {
+          stdout: "",
+          stderr:
+            `error: cannot lock ref 'refs/remotes/origin/main': is at ${"1".repeat(40)} ` +
+            `but expected ${"2".repeat(40)}\n`,
+          code: 1,
+          outcomeUnknown: false,
+          overflowed: false,
+        }
+      : { stdout: "", stderr: "", code: 0, outcomeUnknown: false, overflowed: false };
+  });
+
+  assert.deepEqual(result, { ok: true, value: undefined });
+  assert.equal(attempts, 2);
+});
+
+test("a fetch refusal that is not a stale-ref race is not retried", async () => {
+  let attempts = 0;
+  const result = await fetchOrigin("/anywhere", async () => {
+    attempts += 1;
+    return {
+      stdout: "",
+      stderr: "fatal: could not read from remote repository",
+      code: 128,
+      outcomeUnknown: false,
+      overflowed: false,
+    };
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(attempts, 1);
+});
+
+test("a stale non-origin ref refusal is not retried", async () => {
+  let attempts = 0;
+  const result = await fetchOrigin("/anywhere", async () => {
+    attempts += 1;
+    return {
+      stdout: "",
+      stderr:
+        `error: cannot lock ref 'refs/tags/v1.0.0': is at ${"1".repeat(40)} ` +
+        `but expected ${"2".repeat(40)}\n`,
+      code: 1,
+      outcomeUnknown: false,
+      overflowed: false,
+    };
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(attempts, 1);
+});
+
+test("stale-ref retries stay bounded", async () => {
+  let attempts = 0;
+  const result = await fetchOrigin("/anywhere", async () => {
+    attempts += 1;
+    return {
+      stdout: "",
+      stderr:
+        `error: cannot lock ref 'refs/remotes/origin/main': is at ${"3".repeat(40)} ` +
+        `but expected ${"4".repeat(40)}\n`,
+      code: 1,
+      outcomeUnknown: false,
+      overflowed: false,
+    };
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(attempts, 3);
 });
 
 test("a remote that advertises no branch as HEAD is refused, not approximated", async () => {

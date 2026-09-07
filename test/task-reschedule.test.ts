@@ -23,6 +23,8 @@ import type { TaskArchiveGate } from "../src/server/tasks.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-task-reschedule-"));
 process.env.HARNESS_HOME = home;
+// These tests exercise reschedule ordering, not an operator's installed terminal backends.
+process.env.HERDR_BIN = join(home, "missing-herdr");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");

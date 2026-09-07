@@ -33,7 +33,9 @@ before any tree or agent exists. So does a `git remote` listing that never answe
 listing that succeeded and did not name `origin` establishes a repository with no remote, and only
 that repository freezes its current local `HEAD` instead. The remote is asked rather than the
 checkout's cached `refs/remotes/origin/HEAD`, because a fetch does not refresh that cache after a
-server-side default-branch rename.
+server-side default-branch rename. When another fetch wins Git's remote-tracking-ref update race,
+Mission Control retries that known-safe local refusal up to two times. Authentication, network,
+timeout, overflow, and every other fetch failure still fail closed without an automatic retry.
 
 An explicit pinned base bypasses all of this: it is verified to be a real full commit ID in that
 repository and used unchanged, with no fetch. A pin names one commit in one repository, so a

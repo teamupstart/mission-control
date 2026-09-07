@@ -274,6 +274,32 @@ test("worktree reads cannot return success after the absolute attempt deadline",
   }
 });
 
+test("repository calls cannot return success after audit crosses the absolute attempt deadline", async () => {
+  const fixture = repositoryViewFixture();
+  let clock = 0;
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 1_000, maxItemsPerCall: 10, maxCallMs: 5_000 },
+      now: () => clock,
+      audit: {
+        async append(metadata) {
+          if (metadata.status === "ok") clock = 1_000;
+        },
+      },
+    });
+
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 1 } }, new AbortController().signal);
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.code, "deadline_exceeded");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("glob treats brackets as literal path characters", async () => {
   const fixture = repositoryViewFixture();
   try {

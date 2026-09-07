@@ -34,7 +34,7 @@ import { scrubSecrets } from "../security/scrub.ts";
 const execFileAsync = promisify(execFile);
 
 export interface RepositoryAuditSink {
-  append(metadata: RepositoryQueryAuditMetadata): Promise<void>;
+  append(metadata: RepositoryQueryAuditMetadata, signal: AbortSignal): Promise<void>;
 }
 
 export interface RepositoryReaderIdentity {
@@ -222,7 +222,7 @@ export class RepositoryReader {
       if (deadlineSignal.aborted || this.now() - this.usage.startedAt >= this.options.budgets.maxAttemptMs) {
         throw Object.assign(new Error("repository call deadline exceeded"), { code: "deadline_exceeded" });
       }
-      return await this.finishSuccess(request, operationInstanceId, inputHash, pending, startedAt);
+      return await this.finishSuccess(request, operationInstanceId, inputHash, pending, startedAt, callSignal);
     } catch (error) {
       const failure = this.failureOf(error, signal, deadlineSignal);
       return this.finishFailure(operation, operationInstanceId, failure.status, failure.code, failure.message, startedAt, inputHash);
@@ -663,7 +663,7 @@ export class RepositoryReader {
     return metadata.data.position;
   }
 
-  private async finishSuccess(request: RepositoryOperationRequest, operationInstanceId: string, inputHash: string, pending: { items: PendingItem[]; next: number | null; reason: RepositoryOperationResult["truncationReason"]; history?: boolean }, startedAt: number): Promise<RepositoryOperationResult> {
+  private async finishSuccess(request: RepositoryOperationRequest, operationInstanceId: string, inputHash: string, pending: { items: PendingItem[]; next: number | null; reason: RepositoryOperationResult["truncationReason"]; history?: boolean }, startedAt: number, signal: AbortSignal): Promise<RepositoryOperationResult> {
     const truncated = pending.next !== null;
     const handles: RepositoryEvidenceHandleMetadata[] = [];
     const items = pending.items.map((item, index) => {
@@ -685,15 +685,21 @@ export class RepositoryReader {
     // reservation rather than making already-refused concurrent work retroactively safe.
     this.usage.bytes += byteCount;
     const audit: RepositoryQueryAuditMetadata = { operationInstanceId, operation: request.operation, normalizedInputHash: inputHash, status: "ok", failureCode: null, byteCount, itemCount: items.length, truncated, durationMs: Math.max(0, this.now() - startedAt), handles };
-    try { await this.options.audit.append(audit); }
-    catch { return this.finishFailure(request.operation, operationInstanceId, "unavailable", "audit_unavailable", "repository audit sink is unavailable", startedAt, inputHash, false); }
+    try { await this.options.audit.append(audit, signal); }
+    catch (error) {
+      if (signal.aborted) throw error;
+      return this.finishFailure(request.operation, operationInstanceId, "unavailable", "audit_unavailable", "repository audit sink is unavailable", startedAt, inputHash, false);
+    }
+    if (signal.aborted || this.now() - this.usage.startedAt >= this.options.budgets.maxAttemptMs) {
+      throw Object.assign(new Error("repository call deadline exceeded"), { code: "deadline_exceeded" });
+    }
     return RepositoryOperationResultSchema.parse({ operation: request.operation, operationInstanceId, status: "ok", code: null, message: null, items, byteCount, itemCount: items.length, truncated, truncationReason: pending.reason, continuationCursor: pending.next === null ? null : this.cursor(request.operation, inputHash, pending.next), historyBoundary: pending.history ? { truncated: this.descriptor.omittedParents.length > 0, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });
   }
 
   private async finishFailure(operation: RepositoryOperationId, operationInstanceId: string, status: Exclude<RepositoryOperationResult["status"], "ok">, code: RepositoryFailureCode, message: string, startedAt: number, inputHash = sha256("invalid"), audit = true): Promise<RepositoryOperationResult> {
     if (audit) {
       const metadata: RepositoryQueryAuditMetadata = { operationInstanceId, operation, normalizedInputHash: inputHash, status, failureCode: code, byteCount: 0, itemCount: 0, truncated: false, durationMs: Math.max(0, this.now() - startedAt), handles: [] };
-      try { await this.options.audit.append(metadata); }
+      try { await this.options.audit.append(metadata, AbortSignal.timeout(this.options.budgets.maxCallMs)); }
       catch { code = "audit_unavailable"; message = "repository audit sink is unavailable"; status = "unavailable"; }
     }
     return RepositoryOperationResultSchema.parse({ operation, operationInstanceId, status, code, message, items: [], byteCount: 0, itemCount: 0, truncated: false, truncationReason: null, continuationCursor: null, historyBoundary: code === "history_boundary" ? { truncated: true, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });

@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { appendFile, open } from "node:fs/promises";
+import { open, writeFile } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -44,8 +44,8 @@ const reader = new RepositoryReader({
   budgets: config.budgets,
   cursorSecret: Buffer.from(config.cursorSecret, "base64url"),
   audit: {
-    async append(metadata: RepositoryQueryAuditMetadata) {
-      await appendFile(config.auditPath, `${JSON.stringify(metadata)}\n`, { encoding: "utf8", mode: 0o600, flag: "a" });
+    async append(metadata: RepositoryQueryAuditMetadata, signal: AbortSignal) {
+      await writeFile(config.auditPath, `${JSON.stringify(metadata)}\n`, { encoding: "utf8", mode: 0o600, flag: "a", signal });
     },
   },
 });

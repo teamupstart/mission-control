@@ -56,6 +56,15 @@ test("standalone repository MCP reads its config through one no-follow file hand
   assert.doesNotMatch(source, /lstatSync\(configPath\)|readFile\(configPath/u);
 });
 
+test("worktree files open no-follow and non-blocking before post-open type validation", () => {
+  const source = readFileSync(join(root, "src", "server", "repository", "reader.ts"), "utf8");
+  const opened = source.indexOf("constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK");
+  const verified = source.indexOf("const openedStat = await file.stat()", opened);
+  const read = source.indexOf("await file.readFile({ signal })", verified);
+  assert.notEqual(opened, -1);
+  assert.equal(opened < verified && verified < read, true);
+});
+
 test("Persona workload executor remains unreachable from production Workflow code", () => {
   const imports = sourceFiles(join(root, "src"))
     .filter((file) => !file.includes(`${join("workflows", "persona-workload")}/`))

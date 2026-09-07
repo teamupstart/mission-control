@@ -291,7 +291,7 @@ export class RepositoryReader {
       return value;
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw Object.assign(new Error("materialized file changed type"), { code: "view_unavailable" });
-    const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
     try {
       const openedStat = await file.stat();
       if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });

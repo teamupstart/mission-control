@@ -24,6 +24,7 @@ import { REPOSITORY_MCP_CONFIG_ENV } from "../../../repository-mcp/config.ts";
 import {
   PERSONA_WORKLOAD_ALLOWED_TOOLS,
   type PersonaProviderLaunch,
+  type PersonaProviderResult,
   type PersonaWorkloadProviderAdapter,
 } from "./provider.ts";
 
@@ -96,6 +97,7 @@ class PersonaWorkloadDeadlineError extends Error {
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_RETAINED_TERMINAL_WORKLOADS = 32;
+const TERMINAL_RECONCILIATION_MS = 100;
 
 function failureResult(
   error: unknown,
@@ -151,6 +153,33 @@ function settleBeforeAbort<T>(
   });
 }
 
+async function settleDuringReconciliation<T>(operation: Promise<T>): Promise<T | null> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation.catch(() => null),
+      new Promise<null>((resolve) => {
+        timeout = setTimeout(() => resolve(null), TERMINAL_RECONCILIATION_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function providerLlmCall(
+  request: PersonaWorkloadRequest,
+  prompt: string,
+  result: PersonaProviderResult,
+): PersonaLlmCall {
+  return {
+    callId: request.llmCall.callId,
+    inputBytes: llmRunInputBytes(prompt, request.images),
+    outputBytes: Buffer.byteLength(result.rawVerdict),
+    providerUsage: result.usage,
+  };
+}
+
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   private readonly workloads = new Map<string, WorkloadState>();
   private readonly idempotencyKeys = new Map<string, string>();
@@ -195,7 +224,6 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       terminal: null,
       cancellationGeneration: request.cancellationGeneration,
     };
-    const deadlineController = new AbortController();
     this.idempotencyKeys.set(request.workloadId, request.idempotencyKey);
     const abort = () => state.controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
@@ -206,15 +234,13 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       if (state.controller.signal.aborted) return;
       const remaining = request.deadline - this.now();
       if (remaining <= 0) {
-        const reason = new PersonaWorkloadDeadlineError();
-        deadlineController.abort(reason);
-        state.controller.abort(reason);
+        state.controller.abort(new PersonaWorkloadDeadlineError());
         return;
       }
       deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
     };
     enforceDeadline();
-    void this.run(state, request, deadlineController.signal)
+    void this.run(state, request)
       .finally(() => {
         if (deadlineTimer) clearTimeout(deadlineTimer);
         signal.removeEventListener("abort", abort);
@@ -248,16 +274,14 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     state.controller.abort(new Error(`Persona workload cancelled at generation ${generation}`));
   }
 
-  private async run(
-    state: WorkloadState,
-    request: PersonaWorkloadRequest,
-    deadlineSignal: AbortSignal,
-  ): Promise<void> {
+  private async run(state: WorkloadState, request: PersonaWorkloadRequest): Promise<void> {
     this.emit(state, { kind: "accepted", cancellationGeneration: state.cancellationGeneration });
     let lease: RepositoryViewLease | null = null;
     let workDir: string | null = null;
     let auditPath: string | null = null;
     let llmCall: PersonaLlmCall | null = null;
+    let prompt: string | null = null;
+    let providerOperation: Promise<PersonaProviderResult> | null = null;
     const emittedAuditIds = new Set<string>();
     try {
       if (request.deadline <= this.now()) {
@@ -269,7 +293,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
           materializationRequest(request),
           state.controller.signal,
         ),
-        deadlineSignal,
+        state.controller.signal,
         (lateLease) => lateLease.release(),
       );
       const descriptor = RepositoryViewDescriptorSchema.parse(lease.descriptor);
@@ -295,7 +319,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         cursorSecret: randomBytes(32).toString("base64url"),
         auditPath,
       }), { mode: 0o600, flag: "wx" });
-      const prompt = workloadPrompt(request);
+      prompt = workloadPrompt(request);
       const launch: PersonaProviderLaunch = {
         provider: request.provider,
         model: request.model,
@@ -318,19 +342,15 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         hostedSearchMaximum: request.hostedSearchMaximum,
       };
       this.emit(state, { kind: "provider_started", provider: request.provider, model: request.model });
-      const providerResult = await settleBeforeAbort(
-        this.options.providers[request.provider].run(
-          launch,
-          state.controller.signal,
-        ),
-        deadlineSignal,
+      providerOperation = this.options.providers[request.provider].run(
+        launch,
+        state.controller.signal,
       );
-      llmCall = {
-        callId: request.llmCall.callId,
-        inputBytes: llmRunInputBytes(prompt, request.images),
-        outputBytes: Buffer.byteLength(providerResult.rawVerdict),
-        providerUsage: providerResult.usage,
-      };
+      const providerResult = await settleBeforeAbort(
+        providerOperation,
+        state.controller.signal,
+      );
+      llmCall = providerLlmCall(request, prompt, providerResult);
       if (state.controller.signal.aborted) {
         throw state.controller.signal.reason instanceof Error
           ? state.controller.signal.reason
@@ -366,6 +386,15 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       };
       this.complete(state, result);
     } catch (error) {
+      if (
+        providerOperation
+        && prompt
+        && state.controller.signal.aborted
+        && !(state.controller.signal.reason instanceof PersonaWorkloadDeadlineError)
+      ) {
+        const lateProviderResult = await settleDuringReconciliation(providerOperation);
+        if (lateProviderResult) llmCall = providerLlmCall(request, prompt, lateProviderResult);
+      }
       if (auditPath) {
         try {
           this.emitNewAudits(state, await this.readAudits(auditPath), emittedAuditIds);

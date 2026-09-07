@@ -622,6 +622,47 @@ test("the workload deadline aborts provider execution and releases the repositor
   }
 });
 
+test("dispatch cancellation completes when provider execution ignores its signal", async () => {
+  const fixture = repositoryViewFixture();
+  let providerStarted = false;
+  let releases = 0;
+  const provider: PersonaWorkloadProviderAdapter = {
+    id: "claude",
+    async run() {
+      providerStarted = true;
+      return new Promise(() => {});
+    },
+  };
+  const executor = new LocalPersonaWorkloadExecutor({
+    materializer: {
+      async materialize() {
+        return {
+          descriptor: fixture.descriptor,
+          async release() { releases += 1; },
+        };
+      },
+    },
+    providers: { claude: provider, codex: { ...provider, id: "codex" } },
+    repositoryMcpEntrypoint: "/tmp/repository-mcp.mjs",
+  });
+  try {
+    const controller = new AbortController();
+    const collecting = collectWithinDeadline(executor.dispatch(request("claude", fixture.descriptor.snapshotDigest), controller.signal));
+    while (!providerStarted) await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort(new Error("operator cancelled"));
+    const events = await collecting;
+    const completed = events.at(-1);
+    assert.equal(completed?.kind, "completed");
+    if (completed?.kind === "completed") {
+      assert.equal(completed.result.kind, "failed");
+      assert.equal(completed.result.kind === "failed" ? completed.result.code : null, "cancelled");
+    }
+    assert.equal(releases, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("cancellation generations are monotonic and replay cannot revive a workload", async () => {
   const fixture = repositoryViewFixture();
   let started = false;

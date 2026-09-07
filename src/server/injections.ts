@@ -25,7 +25,7 @@ import type { TurnOrigin } from "@shared/types.ts";
  * without this module learning what a scout is.
  */
 
-/** Fingerprint -> who typed it, per session. Hashes rather than the payloads themselves:
+/** Fingerprint -> who typed it, per session. Collision-resistant hashes rather than the payloads themselves:
  *  a fix prompt runs to kilobytes, and this only ever answers "was this text ours, and
  *  whose?" - never "what did we say?". */
 const seen = new Map<string, Map<string, TurnOrigin>>();
@@ -47,7 +47,7 @@ const SESSIONS = 500;
 export function injectionFingerprint(text: string): string {
   // Trimmed: the pane gets exactly what was passed, but a turn's recorded text has been
   // through `conversationText` and a trim on the way back out.
-  return createHash("sha1").update(text.trim()).digest("base64");
+  return createHash("sha256").update(text.trim()).digest("base64");
 }
 
 /** Told about every recorded non-human delivery, after it is remembered here. */

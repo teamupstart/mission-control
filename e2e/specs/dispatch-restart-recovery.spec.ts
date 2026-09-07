@@ -49,6 +49,18 @@ async function captureLiveFailure(page: Page): Promise<void> {
   );
 }
 
+async function captureRefRaceRecovery(page: Page): Promise<void> {
+  if (!process.env.MC_E2E_EVIDENCE) return;
+  mkdirSync(EVIDENCE, { recursive: true });
+  await page.locator("main.board").screenshot({
+    path: join(EVIDENCE, "git-ref-race-retried.png"),
+  });
+  // eslint-disable-next-line no-console
+  console.log("OBSERVED the task running after Mission Control retried a stale-ref fetch race");
+  // eslint-disable-next-line no-console
+  console.log("CAPTURED e2e/.artifacts/dispatch-restart-recovery/git-ref-race-retried.png");
+}
+
 async function seedBacklogTask(daemon: DaemonHandle, title = TITLE): Promise<string> {
   const response = await fetch(`${daemon.baseURL}/api/tasks`, {
     method: "POST",
@@ -195,4 +207,29 @@ test("a live git preflight failure returns to Backlog with its error and retries
   await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
     "running",
   );
+});
+
+test.describe("transient Git ref contention", () => {
+  test.use({ daemonEnv: { MC_E2E_GIT_FETCH_REF_RACE: "1" } });
+
+  test("a stale-ref fetch race is retried without returning the task to Backlog", async ({
+    dashboard,
+    daemon,
+  }) => {
+    const title = "Start after a concurrent fetch";
+    const taskId = await seedBacklogTask(daemon, title);
+    await useBoardLayout(dashboard, daemon);
+    daemon.failNextGitFetchWithRefRace();
+
+    const card = dashboard.locator(".bl-card", { hasText: title });
+    await card.getByRole("button", { name: "launch new agent" }).click();
+
+    await expect(
+      dashboard.getByRole("button", { name: `Open ${title}`, exact: true }),
+    ).toBeVisible({ timeout: 60_000 });
+    await expect.poll(async () => (await taskState(daemon, taskId))?.status ?? null).toBe(
+      "running",
+    );
+    await captureRefRaceRecovery(dashboard);
+  });
 });

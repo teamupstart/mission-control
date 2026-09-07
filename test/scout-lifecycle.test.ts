@@ -36,6 +36,7 @@ import type { ArchiveSubject } from "../src/server/archives/task-gateway.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-scout-lifecycle-"));
 process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
+process.env.HERDR_BIN = join(home, "missing-herdr");
 
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager, ScoutArchiveNotReadyError, TaskStatusConflictError } = await import("../src/server/tasks.ts");

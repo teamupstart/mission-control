@@ -108,6 +108,8 @@ export interface DaemonHandle {
   installFakeGh(): void;
   /** Remove that fake GitHub CLI so a later Setup read observes a regression. */
   removeFakeGh(): void;
+  /** Make the next daemon-side `git fetch origin` report Git's stale-ref race. */
+  failNextGitFetchWithRefRace(): void;
   /** Start the real standalone Foreman worker against this isolated daemon and fake agents. */
   startForeman(): Promise<void>;
   /**
@@ -254,12 +256,39 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
   const piOnVersionManagerShimOnly =
     extraEnv.MC_E2E_PI_VERSION_MANAGER_SHIM_ONLY === "1";
   const codexOnDaemonPathOnly = extraEnv.MC_E2E_CODEX_ON_DAEMON_PATH_ONLY === "1";
+  const gitFetchRefRace = extraEnv.MC_E2E_GIT_FETCH_REF_RACE === "1";
   const conductorNodeVersion = extraEnv.MC_E2E_CONDUCTOR_NODE_VERSION;
   const loginShell = join(home, "fake-login-shell");
   const loginPiBin = join(home, "login-bin", "pi");
   const versionManagerPiBin = join(home, "tool-data", "mise-shims", "pi");
   const versionManagerRuntimeBin = join(home, "version-manager-runtime-bin");
   const daemonPathBin = join(home, "daemon-path-bin");
+  const gitFetchRefRaceMarker = join(home, "git-fetch-ref-race");
+  if (gitFetchRefRace) {
+    const fakeGit = join(home, "bin", "git");
+    mkdirSync(dirname(fakeGit), { recursive: true });
+    writeFileSync(
+      fakeGit,
+      [
+        "#!/usr/bin/env node",
+        "const { existsSync, unlinkSync } = require('node:fs');",
+        "const { spawnSync } = require('node:child_process');",
+        `const marker = ${JSON.stringify(gitFetchRefRaceMarker)};`,
+        `const realPath = ${JSON.stringify(process.env.PATH ?? "")};`,
+        "const args = process.argv.slice(2);",
+        "if (args[0] === '-C' && args[2] === 'fetch' && args[3] === 'origin' && existsSync(marker)) {",
+        "  unlinkSync(marker);",
+        "  process.stderr.write(\"error: cannot lock ref 'refs/remotes/origin/main': is at \" + '1'.repeat(40) + \" but expected \" + '2'.repeat(40) + \"\\n\");",
+        "  process.exit(1);",
+        "}",
+        "const result = spawnSync('git', args, { env: { ...process.env, PATH: realPath }, stdio: 'inherit' });",
+        "if (result.error) throw result.error;",
+        "process.exit(result.status ?? 1);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeGit, 0o755);
+  }
   if (codexOnDaemonPathOnly) {
     mkdirSync(daemonPathBin, { recursive: true });
     copyFileSync(bins.codex, join(daemonPathBin, "codex"));
@@ -345,6 +374,13 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     rmSync(ghInstallBin, { force: true });
   };
 
+  const failNextGitFetchWithRefRace = (): void => {
+    if (!gitFetchRefRace) {
+      throw new Error("this daemon did not enable the fake Git fetch ref race");
+    }
+    writeFileSync(gitFetchRefRaceMarker, "fail once\n");
+  };
+
   const isolatedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     // The OS home, NOT the state dir. Claude transcripts are derived from `homedir()` as
@@ -360,6 +396,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     PATH:
       conductorNodeVersion === undefined
         ? [
+            ...(gitFetchRefRace ? [join(home, "bin")] : []),
             ...(codexOnDaemonPathOnly ? [daemonPathBin] : []),
             process.env.PATH ?? "",
           ].filter(Boolean).join(delimiter)
@@ -687,6 +724,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     installFakeConductor,
     installFakeGh,
     removeFakeGh,
+    failNextGitFetchWithRefRace,
     readLog: () => log,
     startForeman,
     crash,

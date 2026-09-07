@@ -5913,6 +5913,10 @@ export class WorkflowManager {
           this.registry,
           binding,
           this.priorFeedback(run.id),
+          this.store.listDeliveredTranscriptAnchors(
+            binding.sessionId ?? "",
+            binding.noteKey,
+          ),
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,

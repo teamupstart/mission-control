@@ -3311,6 +3311,11 @@ function migrate(d: DatabaseSync): void {
   // has appended the durable audit event and compacted that exact run family.
   addColumn(d, "workflow_runs", "evidence_pruned_at", "INTEGER");
   addColumn(d, "workflow_deliveries", "payload_pruned_at", "INTEGER");
+  d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_transcript_attribution
+      ON workflow_deliveries(session_id, note_key, delivered_at DESC)
+      WHERE delivered_at IS NOT NULL AND payload_pruned_at IS NULL;
+  `);
   // Per-run operator-disabled verdict nodes (auto-pass). Nullable with no default: a run
   // written before the column existed genuinely had nothing disabled, and NULL is exactly
   // that. It lives on the run rather than the immutable version because the disable is

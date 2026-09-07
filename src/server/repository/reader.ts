@@ -33,6 +33,7 @@ import { scrubSecrets } from "../security/scrub.ts";
 
 const execFileAsync = promisify(execFile);
 const FAILURE_AUDIT_RESERVE_MS = 100;
+const REPOSITORY_AUDIT_COMMITTED = Symbol("repositoryAuditCommitted");
 
 export interface RepositoryAuditSink {
   append(metadata: RepositoryQueryAuditMetadata, signal: AbortSignal): Promise<void>;
@@ -268,7 +269,10 @@ export class RepositoryReader {
       return await this.finishSuccess(request, operationInstanceId, inputHash, pending, startedAt, callSignal);
     } catch (error) {
       const failure = this.failureOf(error, signal, deadlineSignal);
-      return this.finishFailure(operation, operationInstanceId, failure.status, failure.code, failure.message, startedAt, inputHash);
+      const auditCommitted = typeof error === "object"
+        && error !== null
+        && (error as { [REPOSITORY_AUDIT_COMMITTED]?: unknown })[REPOSITORY_AUDIT_COMMITTED] === true;
+      return this.finishFailure(operation, operationInstanceId, failure.status, failure.code, failure.message, startedAt, inputHash, !auditCommitted);
     }
   }
 
@@ -733,6 +737,12 @@ export class RepositoryReader {
     catch (error) {
       if (signal.aborted) throw error;
       return this.finishFailure(request.operation, operationInstanceId, "unavailable", "audit_unavailable", "repository audit sink is unavailable", startedAt, inputHash, false);
+    }
+    if (signal.aborted || this.now() - this.usage.startedAt >= this.options.budgets.maxAttemptMs) {
+      throw Object.assign(new Error("repository call deadline exceeded"), {
+        code: "deadline_exceeded",
+        [REPOSITORY_AUDIT_COMMITTED]: true,
+      });
     }
     return RepositoryOperationResultSchema.parse({ operation: request.operation, operationInstanceId, status: "ok", code: null, message: null, items, byteCount, itemCount: items.length, truncated, truncationReason: pending.reason, continuationCursor: pending.next === null ? null : this.cursor(request.operation, inputHash, pending.next), historyBoundary: pending.history ? { truncated: this.descriptor.omittedParents.length > 0, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });
   }

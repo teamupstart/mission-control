@@ -360,6 +360,37 @@ test("repository audit records one deadline failure when audit crosses the attem
   }
 });
 
+test("an active success audit that crosses the attempt deadline cannot return repository data", async () => {
+  const fixture = repositoryViewFixture();
+  const audits: RepositoryQueryAuditMetadata[] = [];
+  let currentTime = 0;
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 1_000, maxItemsPerCall: 10, maxCallMs: 5_000 },
+      now: () => currentTime,
+      audit: {
+        async append(metadata) {
+          audits.push(metadata);
+          currentTime = 1_000;
+        },
+      },
+    });
+
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 1 } }, new AbortController().signal);
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.code, "deadline_exceeded");
+    assert.deepEqual(result.items, []);
+    assert.equal(result.continuationCursor, null);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.operationInstanceId, result.operationInstanceId);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("failure audit wait cannot extend the absolute attempt deadline", async () => {
   const fixture = repositoryViewFixture();
   let currentTime = 0;

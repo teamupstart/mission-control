@@ -265,6 +265,7 @@ export function reconcileWorkflowCriterionMappings(
     .flatMap((mapping) => mapping.matchedClientCriterionIds)
     .filter((id) => currentClaimIds.has(id) && !ambiguousProposedIds.has(id)));
   for (const claim of coverage) {
+    if (ambiguousProposedIds.has(claim.clientCriterionId)) continue;
     const indexes = owners.get(normalizedCriterionText(claim.criterion));
     if (!indexes || indexes.size !== 1) continue;
     matches[[...indexes][0]!]!.push(claim.clientCriterionId);

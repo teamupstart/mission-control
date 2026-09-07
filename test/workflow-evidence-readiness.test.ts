@@ -484,7 +484,7 @@ test("source compaction semantically maps differently worded coverage outside st
 test("source compaction fails closed when one claim is proposed for multiple criteria", async () => {
   const claim = {
     clientCriterionId: "shared-source-claim",
-    criterion: "The complete workflow behavior is verified",
+    criterion: "The material workflow outcome is verified",
     proofClass: "focused_execution" as const,
     repositoryScope: "all" as const,
     links: [{ clientItemId: "source-run", role: "execution" as const }],
@@ -518,16 +518,16 @@ test("source compaction fails closed when one claim is proposed for multiple cri
       kind: "ok",
       value: {
         constraints: [],
-        acceptanceCriteria: ["The first outcome is verified", "The second outcome is verified"],
+        acceptanceCriteria: ["The material workflow outcome is verified", "The supporting outcome is verified"],
         canonicalCriteria: [
           {
-            text: "The first outcome is verified",
+            text: claim.criterion,
             material: true,
             suggestedProofClass: "focused_execution",
           },
           {
-            text: "The second outcome is verified",
-            material: true,
+            text: "The supporting outcome is verified",
+            material: false,
             suggestedProofClass: "focused_execution",
           },
         ],
@@ -546,7 +546,7 @@ test("source compaction fails closed when one claim is proposed for multiple cri
   assert.deepEqual(
     context.criterionMappings?.map((mapping) => mapping.matchedClientCriterionIds),
     [[], []],
-    "an ambiguous model proposal must not establish either canonical owner",
+    "an ambiguous model proposal must not regain an owner through exact-text fallback",
   );
   const evidence = [{
     clientItemId: "source-run",

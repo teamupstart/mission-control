@@ -16,6 +16,7 @@
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -142,6 +143,8 @@ interface HarnessOptions {
   deliveryMode?: "preview" | "live";
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
+  /** Exercise the published fresh-evidence preflight on every evaluator-bound submission. */
+  evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
   verdict?: () => "pass" | "fail";
   /**
    * Wire both actions off Session directly rather than in a chain, so they become ready in
@@ -178,6 +181,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
    */
   const full = (sha: string): string =>
     ([...sha].map((char) => char.charCodeAt(0).toString(16)).join("") + "0".repeat(40)).slice(0, 40);
+  const contentTree = { oid: full("reviewed-tree") };
   const repository = { root: "/repo", branch: "feature" as string | null };
   /**
    * The commit evidence capture records, when it must differ from the one the PROOF read.
@@ -200,6 +204,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     }),
     adoptedPullRequests: () => adopted,
     resolveCommit: async (_root, headSha) => full(headSha),
+    resolveCommitTree: async () => contentTree.oid,
     requireSkill: options.requireSkill
       ?? (() => ({ ok: true, command: "/mission-pull-request" })),
     inject: (async (
@@ -228,6 +233,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
         session: { agent: "claude" as const, name: sessionId, cwd: "/repo", branch: "feature" },
         evidence: {
           headSha: captureHead.sha ?? head.sha,
+          contentTreeOid: contentTree.oid,
           diffFingerprint: `diff-${captureHead.sha ?? head.sha}`,
           diff: `patch at ${captureHead.sha ?? head.sha}`,
           diffTruncated: false,
@@ -255,7 +261,22 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
       };
     },
     boundaryChanged: async () => false,
-    compactContext: async (raw) => fallbackWorkflowContext(raw, null),
+    compactContext: async (raw) => options.evidenceReadinessPolicy === "criterion_mapped_v1"
+      ? {
+          ...fallbackWorkflowContext(raw, null),
+          canonicalCriteria: [{
+            id: "criterion-reviewed-content",
+            text: "The reviewed content is ready to ship",
+            material: true,
+            suggestedProofClass: "focused_execution",
+          }],
+          criterionMappings: [{
+            criterionId: "criterion-reviewed-content",
+            matchedClientCriterionIds: ["reviewed-content"],
+          }],
+          compaction: { status: "model", runner: "claude", model: "fake", error: null },
+        }
+      : fallbackWorkflowContext(raw, null),
     engine: {
       runnerFor: () => runner(() => verdictChoice()),
       resolveExecution: () => ({
@@ -365,6 +386,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     description: "",
     draft: { nodes, edges } as never,
     completionPolicy: { kind: "none" },
+    evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     // The resumption observer is the OTHER way a parked round reopens and would race the
     // assertions below about which path produced round two.
     resumptionPolicy: "manual",
@@ -476,6 +498,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     injected,
     head,
     captureHead,
+    contentTree,
     full,
     repository,
     adopted,
@@ -485,6 +508,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
     reportIdle,
     reportWorking,
     runActionTurn,
+    evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "off",
     setVerdict: (next: () => "pass" | "fail") => { verdictChoice = next; },
     stop: () => manager.stop(),
   };
@@ -500,6 +524,34 @@ async function runToAction(h: Harness): Promise<string> {
   });
   assert.equal(bound.ok, true, "the binding was refused");
   const bindingId = bound.ok ? bound.value.id : "";
+  if (h.evidenceReadinessPolicy === "criterion_mapped_v1") {
+    const evidenceId = `reviewed-content-command-${h.sessionId}`;
+    const output = "reviewed content passed\n";
+    h.store.stageWorkflowEvidence(bound.ok ? bound.value.noteKey : "", [{
+      id: `reviewed-content-evidence-${h.sessionId}`,
+      clientItemId: evidenceId,
+      sourceKind: "command",
+      evidenceKind: "text",
+      sourceRoot: "/repo",
+      sourceLocator: "node --test reviewed-content.test.ts",
+      inlineContent: output,
+      commandExitCode: 0,
+      displayName: "node --test reviewed-content.test.ts",
+      caption: "Reviewed content passed focused verification",
+      repositoryScope: "repo-01",
+      mimeType: "text/plain",
+      bytes: Buffer.byteLength(output),
+      sha256: createHash("sha256").update(output).digest("hex"),
+    }], Date.now(), null, [{
+        id: `reviewed-content-coverage-${h.sessionId}`,
+        sourceRoot: "/repo",
+        clientCriterionId: "reviewed-content",
+        criterion: "The reviewed content is ready to ship",
+        proofClass: "focused_execution",
+        repositoryScope: "repo-01",
+        links: [{ clientItemId: evidenceId, role: "execution" }],
+    }]);
+  }
   const submitted = await h.manager.submit(bindingId, { requestId: `submit-${h.sessionId}` });
   assert.equal(submitted.ok, true, "the submission failed");
   const runId = submitted.ok ? submitted.value.run.id : "";
@@ -1233,6 +1285,159 @@ test("a Code Quality Judge repair must pass before the verified pull request act
       false,
       "a local completion unexpectedly waited for GitHub Inspector",
     );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a terminal pull request continuation reaches End without starting a new readiness cycle", async () => {
+  const h = await harness("terminal-pr-readiness", {
+    pullRequest: true,
+    evidenceReadinessPolicy: "criterion_mapped_v1",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) =>
+        delivery.kind === "session_action" && delivery.state === "delivered"),
+      "the pull request action never followed the passing judge",
+    );
+
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    h.adoptPr({ atHead: "head-2" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "completed",
+      "the terminal continuation was incorrectly parked for evidence readiness",
+    );
+
+    const [parent, child] = h.store.listSubmissions(runId);
+    assert.ok(parent);
+    assert.ok(child);
+    assert.equal(child.parentSubmissionId, parent.id);
+    assert.equal(child.readiness, null);
+    assert.equal(
+      h.store.listDeliveries(runId).some((delivery) => delivery.kind === "evidence_readiness"),
+      false,
+    );
+    assert.equal(
+      h.store.listEvents(runId).filter((event) =>
+        event.kind === "evidence_readiness_evaluated"
+        && (event.payload as { segment?: number }).segment === 1).length,
+      0,
+    );
+    assert.deepEqual(
+      h.store.listAttempts(child.id).map((attempt) => attempt.nodeId),
+      ["end"],
+    );
+    assert.equal(
+      h.store.listAttempts(parent.id).filter((attempt) => attempt.nodeId === "upstream").length,
+      1,
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("changed pull request content blocks instead of completing on the parent verdict", async () => {
+  const h = await harness("terminal-pr-content-changed", { pullRequest: true });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the pull request packet was never delivered",
+    );
+    h.head.sha = "packaging-head";
+    h.contentTree.oid = h.full("changed-tree");
+    h.runActionTurn();
+    h.adoptPr({ atHead: "packaging-head" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getRun(runId)?.currentPhase === "session_action_blocked",
+      "changed published content did not block shipping",
+    );
+
+    const attempt = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
+    assert.equal(attempt.state, "error");
+    assert.match(attempt.error ?? "", /published_content_changed/);
+    const child = h.store.listSubmissions(runId)[1]!;
+    assert.equal(
+      h.store.listAttempts(child.id).some((item) => item.nodeId === "end"),
+      false,
+    );
+    assert.equal(
+      h.store.listDeliveries(runId).some((delivery) => delivery.kind === "evidence_readiness"),
+      false,
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("a mid-graph pull request continuation still requires fresh criterion evidence", async () => {
+  const h = await harness("midgraph-pr-readiness", {
+    pullRequest: true,
+    downstream: true,
+    evidenceReadinessPolicy: "criterion_mapped_v1",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the pull request packet was never delivered",
+    );
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    h.adoptPr({ atHead: "head-2" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
+      "the evaluator-bound continuation skipped fresh readiness",
+    );
+
+    const child = h.store.listSubmissions(runId)[1]!;
+    assert.equal(child.readiness?.status, "gaps");
+    assert.equal(
+      h.store.listDeliveries(runId).some((delivery) => delivery.kind === "evidence_readiness"),
+      true,
+    );
+    assert.equal(
+      h.store.listAttempts(child.id).some((item) => item.nodeId === "downstream"),
+      false,
+    );
+  } finally {
+    await h.stop();
+  }
+});
+
+test("terminal pull request recovery remains idempotent after verified completion", async () => {
+  const h = await harness("terminal-pr-recovery", {
+    pullRequest: true,
+    evidenceReadinessPolicy: "criterion_mapped_v1",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(
+      () => h.store.listDeliveries(runId).some((delivery) => delivery.state === "delivered"),
+      "the pull request packet was never delivered",
+    );
+    h.head.sha = "head-2";
+    h.runActionTurn();
+    h.adoptPr({ atHead: "head-2" });
+    await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "shipping did not complete");
+
+    await h.manager.stop();
+    h.manager.start();
+    for (let tick = 0; tick < 3; tick += 1) await h.manager.sweepSessionActions(SETTLED());
+    const submissions = h.store.listSubmissions(runId);
+    assert.deepEqual(submissions.map((item) => [item.round, item.segment]), [[1, 0], [1, 1]]);
+    assert.equal(
+      h.store.listAttempts(submissions[1]!.id).filter((item) => item.nodeId === "end").length,
+      1,
+    );
+    assert.equal(h.injected.length, 1);
   } finally {
     await h.stop();
   }

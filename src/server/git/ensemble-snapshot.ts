@@ -1,7 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { run } from "../util/exec.ts";
+import { captureWorktreeTree, isolatedGitEnvironment } from "./worktree-tree.ts";
 
 // Turning a live agent's working tree into an artifact you can compare, keep, and put back.
 //
@@ -110,73 +108,43 @@ export async function captureWorktreeSnapshot(input: {
   const ref = ensembleSnapshotRef(input.ensembleId, input.artifactId);
   const { worktreePath } = input;
 
-  // Outside the worktree on purpose: a stray index inside it would show up as untracked
-  // content in the very snapshot we are taking.
-  const indexDir = mkdtempSync(join(tmpdir(), "mission-snapshot-"));
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    GIT_INDEX_FILE: join(indexDir, "index"),
+  const env = isolatedGitEnvironment({
     GIT_AUTHOR_NAME: "Mission Control",
     GIT_AUTHOR_EMAIL: "mission-control@localhost",
     GIT_COMMITTER_NAME: "Mission Control",
     GIT_COMMITTER_EMAIL: "mission-control@localhost",
-  };
-  // An INHERITED repository pointer would beat `-C`, so a daemon that happened to be
-  // started from inside a git operation would capture somebody else's tree into our ref -
-  // and it would look like it worked. Cheap to rule out, unpleasant to diagnose.
-  for (const inherited of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY"]) {
-    delete env[inherited];
-  }
+  });
+  const captured = await captureWorktreeTree(worktreePath, { objectStorage: "repository" });
+  const parentSha = captured.headOid;
+  const treeSha = captured.treeOid;
 
-  try {
-    const head = await git(worktreePath, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env);
-    const parentSha = head.code === 0 && SHA.test(head.stdout.trim()) ? head.stdout.trim() : null;
-
-    // An unborn branch is a real state (a freshly `git init`ed tree), and it snapshots fine -
-    // there is simply nothing to seed the index with and no parent to give the commit.
+  const message = `mission-control ensemble snapshot ${input.ensembleId} ${input.artifactId}`;
+  const snapshotSha = requireSha(
+    "the commit from git commit-tree",
     requireOk(
-      "git read-tree",
-      await git(worktreePath, parentSha ? ["read-tree", parentSha] : ["read-tree", "--empty"], env),
-    );
-    requireOk("git add -A", await git(worktreePath, ["add", "-A"], env));
-    const treeSha = requireSha(
-      "the tree from git write-tree",
-      requireOk("git write-tree", await git(worktreePath, ["write-tree"], env)),
-    );
-
-    const message = `mission-control ensemble snapshot ${input.ensembleId} ${input.artifactId}`;
-    const snapshotSha = requireSha(
-      "the commit from git commit-tree",
-      requireOk(
-        "git commit-tree",
-        await git(
-          worktreePath,
-          ["commit-tree", treeSha, ...(parentSha ? ["-p", parentSha] : []), "-m", message],
-          env,
-        ),
+      "git commit-tree",
+      await git(
+        worktreePath,
+        ["commit-tree", treeSha, ...(parentSha ? ["-p", parentSha] : []), "-m", message],
+        env,
       ),
-    );
+    ),
+  );
 
-    requireOk("git update-ref", await git(worktreePath, ["update-ref", ref, snapshotSha], env));
+  requireOk("git update-ref", await git(worktreePath, ["update-ref", ref, snapshotSha], env));
 
-    // Read it back before claiming it exists. Everything downstream - evaluation, restore,
-    // finalization - trusts that this ref resolves to this commit, and the one moment we can
-    // cheaply prove it is now.
-    const stored = requireOk(
-      "git rev-parse (verifying the snapshot ref)",
-      await git(worktreePath, ["rev-parse", "--verify", `${ref}^{commit}`], env),
-    );
-    if (stored !== snapshotSha) {
-      throw new Error(`snapshot ref ${ref} resolved to ${stored}, expected ${snapshotSha}`);
-    }
-
-    return { ref, snapshotSha, treeSha, parentSha };
-  } finally {
-    // The index file is scratch, and leaving it behind would leak a tree-sized file per
-    // capture into the temp dir. `finally` rather than a success path: a failed capture is
-    // exactly when the file is largest and least wanted.
-    rmSync(indexDir, { recursive: true, force: true });
+  // Read it back before claiming it exists. Everything downstream - evaluation, restore,
+  // finalization - trusts that this ref resolves to this commit, and the one moment we can
+  // cheaply prove it is now.
+  const stored = requireOk(
+    "git rev-parse (verifying the snapshot ref)",
+    await git(worktreePath, ["rev-parse", "--verify", `${ref}^{commit}`], env),
+  );
+  if (stored !== snapshotSha) {
+    throw new Error(`snapshot ref ${ref} resolved to ${stored}, expected ${snapshotSha}`);
   }
+
+  return { ref, snapshotSha, treeSha, parentSha };
 }
 
 /** Where a snapshot ref points now, or null when it is gone. */

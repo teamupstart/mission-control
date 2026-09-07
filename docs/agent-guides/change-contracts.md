@@ -379,6 +379,14 @@ match author ids and suggest a proof class, but deterministic code owns
 canonical ids, role gaps, scope checks, evidence identity, and readiness status. Proof-class
 suggestions remain warnings and never become a hard gate.
 
+Readiness has one graph-defined boundary. A `refinementReason: session_action` child skips
+criterion-mapped readiness only when every node reachable from its source action's `complete`
+port is End. The durable child, immutable `(round, segment)` lineage, action seal, and receipt
+remain mandatory. No evidence-readiness delivery or evaluator attempt is created. If any
+Persona or Check is reachable, submission-local fresh coverage remains mandatory. Use
+`sessionActionContinuationReachesOnlyEnd`; do not infer this boundary from a built-in version,
+action name, position, or current run status.
+
 ## One workflow run is one repository
 
 Concurrency lives at the binding and run layer. Nothing below a run knows a session can review
@@ -481,7 +489,8 @@ A SessionAction is a durable side effect, not an evaluator:
 
 - Its proof is: an OPEN pull request in Mission Control's adoption ledger, on the same
   repository root and branch as the bound checkout, whose last observed remote head is the
-  exact commit the continuation captured. `Session.prUrl` is a lookup hint and satisfies
+  exact commit the continuation captured. That commit's resolved Git tree must also equal the
+  `contentTreeOid` captured on the parent judged submission. `Session.prUrl` is a lookup hint and satisfies
   nothing; neither does a branch name, nor a pull request merely existing.
 - It never talks to a provider. The GitHub Inspector poller is the only thing that does, and
   `inspector_prs.observed_head_sha` / `observed_state` / `head_ref_name` are the durable form
@@ -496,6 +505,11 @@ A SessionAction is a durable side effect, not an evaluator:
   the head the CHILD holds, not the live one. Re-deciding against a moving HEAD sets an
   expectation the immutable child can never satisfy, and the action waits forever while the
   head keeps moving.
+- Commit identity is not content identity. A packaging commit may differ from the reviewed
+  commit while preserving the accepted tree. A different published tree blocks with the
+  append-only `published_content_changed` code and must not reach End on the prior verdict.
+  Missing historical tree proof blocks as `capture_failed`; absence is never treated as
+  equivalence.
 - Only a closed or merged pull request AT the reviewed commit blocks. Everything else waits,
   including a provider that could not be reached: waiting is recoverable and a block is not.
 - The adapter's view of the ledger is NOT `loadOpenInspectorPrs()`. The poller records a closure
@@ -593,6 +607,10 @@ A SessionAction is a durable side effect, not an evaluator:
   `continuationNodeAttemptId` columns and verifies both ends. This is the one deliberate
   cross-submission read, and it is provenance the runtime wrote rather than a relationship
   inferred from ordering.
+- **Terminal PR continuations read as shipping.** A completed Pull Request child whose only
+  reachable consumer is End is labelled `verified shipping`, with `review + shipping` on its
+  round. This is derived from the same shared graph predicate and the completed persisted proof,
+  so a blocked or evaluator-bound child never receives completion wording.
 
 ## The GitHub Inspector footer
 

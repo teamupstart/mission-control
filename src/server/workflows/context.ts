@@ -37,6 +37,7 @@ import { noteKeyFor } from "../registry.ts";
 import { readStandards } from "../standards.ts";
 import { run } from "../util/exec.ts";
 import { FULL_SHA } from "./commit-id.ts";
+import { captureWorktreeTree } from "../git/worktree-tree.ts";
 
 const MAX_GOAL = 16_000;
 const MAX_DECISIONS = 200;
@@ -773,13 +774,17 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
   statusTruncated: boolean;
   statusFingerprint: string;
   standards: ReturnType<typeof readStandards>;
+  contentTreeOid: string;
   repositoryFingerprint: string;
 }> {
   const work = await readRepositoryWorkEvidence(cwd);
   const { diff, statusFingerprint } = work;
+  if (!cwd) throw new Error("Could not capture repository content tree without a checkout");
+  const { treeOid: contentTreeOid } = await captureWorktreeTree(cwd);
   const standards = readStandards(diff.repoRoot, changedPaths(diff.patch));
   const repositoryFingerprint = sha(JSON.stringify({
     headSha: diff.headSha,
+    contentTreeOid,
     patch: diff.patch,
     patchTruncated: diff.truncated,
     statusFingerprint,
@@ -790,7 +795,7 @@ async function readRepositoryEvidence(cwd: string | null): Promise<{
       truncated: doc.truncated,
     })),
   }));
-  return { ...work, standards, repositoryFingerprint };
+  return { ...work, standards, contentTreeOid, repositoryFingerprint };
 }
 
 function sourceFingerprintFields(
@@ -806,6 +811,7 @@ function sourceFingerprintFields(
       source: item.source,
     })),
     headSha: context.evidence.headSha,
+    contentTreeOid: context.evidence.contentTreeOid ?? null,
     diffFingerprint: context.evidence.diffFingerprint,
     transcriptAnchor,
     standards: context.evidence.standards.map((doc) => ({
@@ -940,6 +946,7 @@ export async function readWorkflowContextRaw(
     statusTruncated,
     statusFingerprint,
     standards,
+    contentTreeOid,
     repositoryFingerprint,
   } = await readRepositoryEvidence(checkout);
   const decisions = boundedDecisions([
@@ -977,6 +984,7 @@ export async function readWorkflowContextRaw(
     },
     evidence: {
       headSha: diff.headSha,
+      contentTreeOid,
       diffFingerprint: sha(JSON.stringify({ patch: diff.patch, statusFingerprint })),
       diff: boundedDiff,
       diffTruncated: diff.truncated || boundedDiff !== diff.patch,

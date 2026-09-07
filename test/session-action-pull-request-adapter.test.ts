@@ -27,6 +27,7 @@ const REPO = "/repo";
 const BRANCH = "feature/x";
 const HEAD = "a".repeat(40);
 const OTHER_HEAD = "b".repeat(40);
+const TREE = "c".repeat(40);
 const SESSION = "sess-1";
 
 const pr = (
@@ -63,6 +64,7 @@ const decide = (
     repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: HEAD, headCommittedAt: 4_000 },
     adoptedPullRequests: adopted,
     capturedHeadOid: null,
+    acceptedContentTreeOid: TREE,
     ...patch,
   });
 
@@ -80,6 +82,7 @@ test("an open adopted pull request at the local head completes, with its provena
     repositoryRoot: REPO,
     branch: BRANCH,
     expectedHeadOid: HEAD,
+    acceptedContentTreeOid: TREE,
     observedAt: 1_000,
   });
 });
@@ -327,6 +330,7 @@ const expectation: SessionActionContinuationExpectation = {
   repositoryRoot: REPO,
   branch: BRANCH,
   expectedHeadOid: HEAD,
+  acceptedContentTreeOid: TREE,
   observedAt: 1_000,
 };
 
@@ -335,19 +339,71 @@ test("a capture at the proven commit satisfies the expectation", () => {
     ADAPTER.validateCapture(expectation, {
       context: {} as WorkflowContextSnapshot,
       capturedHeadOid: HEAD,
+      capturedCommitTreeOid: TREE,
     }),
     null,
   );
+});
+
+test("a packaging commit may change commit identity while preserving reviewed content", () => {
+  const packagingHead = "d".repeat(40);
+  const packagingExpectation = { ...expectation, expectedHeadOid: packagingHead };
+  assert.equal(
+    ADAPTER.validateCapture(packagingExpectation, {
+      context: {} as WorkflowContextSnapshot,
+      capturedHeadOid: packagingHead,
+      capturedCommitTreeOid: TREE,
+    }),
+    null,
+  );
+});
+
+test("published content that differs from the reviewed tree is a durable block", () => {
+  const validation = ADAPTER.validateCapture(expectation, {
+    context: {} as WorkflowContextSnapshot,
+    capturedHeadOid: HEAD,
+    capturedCommitTreeOid: "d".repeat(40),
+  });
+  assert.equal(validation?.kind, "blocked");
+  if (!validation || validation.kind !== "blocked") return;
+  assert.equal(validation.code, "published_content_changed");
+  assert.match(validation.detail, /prior verdict does not cover/);
+});
+
+test("missing historical accepted-tree proof is a durable block", () => {
+  const validation = ADAPTER.validateCapture(
+    { ...expectation, acceptedContentTreeOid: null },
+    {
+      context: {} as WorkflowContextSnapshot,
+      capturedHeadOid: HEAD,
+      capturedCommitTreeOid: TREE,
+    },
+  );
+  assert.equal(validation?.kind, "blocked");
+  if (!validation || validation.kind !== "blocked") return;
+  assert.equal(validation.code, "capture_failed");
+  assert.match(validation.detail, /no server-owned content-tree proof/);
+});
+
+test("a transient failure to resolve the published tree remains retryable", () => {
+  const validation = ADAPTER.validateCapture(expectation, {
+    context: {} as WorkflowContextSnapshot,
+    capturedHeadOid: HEAD,
+    capturedCommitTreeOid: null,
+  });
+  assert.equal(validation?.kind, "waiting");
+  assert.match(validation?.detail ?? "", /could not be resolved/);
 });
 
 test("a capture at any other commit is refused, in the sentence a reader needs", () => {
   const problem = ADAPTER.validateCapture(expectation, {
     context: {} as WorkflowContextSnapshot,
     capturedHeadOid: OTHER_HEAD,
+    capturedCommitTreeOid: TREE,
   });
   assert.ok(problem);
-  assert.match(problem, /bbbbbbbbbbbb/);
-  assert.match(problem, /aaaaaaaaaaaa/);
+  assert.match(problem?.detail ?? "", /bbbbbbbbbbbb/);
+  assert.match(problem?.detail ?? "", /aaaaaaaaaaaa/);
 });
 
 test("a capture whose commit could not be identified is refused, never assumed", () => {
@@ -356,9 +412,10 @@ test("a capture whose commit could not be identified is refused, never assumed",
   const problem = ADAPTER.validateCapture(expectation, {
     context: {} as WorkflowContextSnapshot,
     capturedHeadOid: null,
+    capturedCommitTreeOid: null,
   });
   assert.ok(problem);
-  assert.match(problem, /could not be identified/);
+  assert.match(problem?.detail ?? "", /could not be identified/);
 });
 
 test("a pull request action refuses an expectation that is not its own", () => {
@@ -367,6 +424,7 @@ test("a pull request action refuses an expectation that is not its own", () => {
   const problem = ADAPTER.validateCapture({ kind: "none" }, {
     context: {} as WorkflowContextSnapshot,
     capturedHeadOid: HEAD,
+    capturedCommitTreeOid: TREE,
   });
   assert.ok(problem);
 });
@@ -408,6 +466,7 @@ test("the persisted expectation and the resolver agree on what a full commit id 
         repositoryRoot: REPO,
         branch: BRANCH,
         expectedHeadOid: value,
+        acceptedContentTreeOid: TREE,
         observedAt: 1,
       }).success,
       accepted,

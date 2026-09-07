@@ -4,6 +4,7 @@ import {
 } from "@shared/workflow.ts";
 import type {
   SessionActionCompletionCapability,
+  SessionActionBlockCode,
   SessionActionCompletionDecision,
   SessionActionCompletionKind,
   SessionActionContinuationExpectation,
@@ -57,7 +58,14 @@ export interface SessionActionAdapterContext {
    * which a push can answer.
    */
   capturedHeadOid: string | null;
+  /** Content identity captured on the parent submission that received the accepted verdict. */
+  acceptedContentTreeOid?: string | null;
 }
+
+export type SessionActionCaptureValidation =
+  | { kind: "waiting"; detail: string }
+  | { kind: "blocked"; code: SessionActionBlockCode; detail: string }
+  | null;
 
 /** What the bound session's checkout says about itself, resolved before the adapter runs. */
 export interface SessionActionRepositoryFacts {
@@ -151,6 +159,8 @@ export interface SessionActionCaptureFacts {
    * resolved to exactly one commit in this repository.
    */
   capturedHeadOid: string | null;
+  /** Tree of the captured commit, which is also the proven remote pull request head. */
+  capturedCommitTreeOid?: string | null;
 }
 
 /**
@@ -177,7 +187,7 @@ export interface SessionActionAdapter extends SessionActionCompletionCapability 
   validateCapture(
     expectation: SessionActionContinuationExpectation,
     capture: SessionActionCaptureFacts,
-  ): string | null;
+  ): SessionActionCaptureValidation;
 }
 
 /**
@@ -198,7 +208,11 @@ const sessionTurn: SessionActionAdapter = {
   validateCapture: (expectation) =>
     expectation.kind === "none"
       ? null
-      : "A session turn action does not constrain the continuation capture",
+      : {
+          kind: "blocked",
+          code: "capture_failed",
+          detail: "A session turn action does not constrain the continuation capture",
+        },
 };
 
 /**
@@ -333,6 +347,7 @@ const pullRequest: SessionActionAdapter = {
           repositoryRoot: repository.repositoryId,
           branch: repository.branch,
           expectedHeadOid: target,
+          acceptedContentTreeOid: context.acceptedContentTreeOid,
           observedAt: chosen.observedAt ?? context.now,
         },
       };
@@ -385,18 +400,51 @@ const pullRequest: SessionActionAdapter = {
 
   validateCapture: (expectation, capture) => {
     if (expectation.kind !== "pull_request") {
-      return "A pull request action requires a pull request continuation expectation";
+      return {
+        kind: "blocked",
+        code: "capture_failed",
+        detail: "A pull request action requires a pull request continuation expectation",
+      };
     }
     if (!capture.capturedHeadOid) {
-      return "The commit this continuation captured could not be identified in the repository";
+      return {
+        kind: "waiting",
+        detail: "The commit this continuation captured could not be identified in the repository",
+      };
     }
     // The one check this whole adapter exists to make survive a restart. The pull request was
     // proven to be at `expectedHeadOid`; if the capture is at any other commit then the
     // evidence downstream stages would read is work the pull request does not contain.
     if (capture.capturedHeadOid !== expectation.expectedHeadOid) {
-      return `The captured commit ${capture.capturedHeadOid.slice(0, 12)} is not the commit `
-        + `${expectation.expectedHeadOid.slice(0, 12)} that ${expectation.pullRequestUrl} was `
-        + "proven to be at";
+      return {
+        kind: "waiting",
+        detail: `The captured commit ${capture.capturedHeadOid.slice(0, 12)} is not the commit `
+          + `${expectation.expectedHeadOid.slice(0, 12)} that ${expectation.pullRequestUrl} was `
+          + "proven to be at",
+      };
+    }
+    if (!expectation.acceptedContentTreeOid) {
+      return {
+        kind: "blocked",
+        code: "capture_failed",
+        detail: "The parent judged submission has no server-owned content-tree proof. Start a fresh review before shipping.",
+      };
+    }
+    if (!capture.capturedCommitTreeOid) {
+      return {
+        kind: "waiting",
+        detail: `The content tree of the commit published at ${expectation.pullRequestUrl} `
+          + "could not be resolved in this repository yet",
+      };
+    }
+    if (capture.capturedCommitTreeOid !== expectation.acceptedContentTreeOid) {
+      return {
+        kind: "blocked",
+        code: "published_content_changed",
+        detail: `The published content tree ${capture.capturedCommitTreeOid.slice(0, 12)} differs from `
+          + `the reviewed content tree ${expectation.acceptedContentTreeOid.slice(0, 12)}. `
+          + "The prior verdict does not cover the pull request content. Start a fresh review before shipping.",
+      };
     }
     return null;
   },
@@ -463,7 +511,11 @@ const repoCommit: SessionActionAdapter = {
   validateCapture: (expectation) =>
     expectation.kind === "none"
       ? null
-      : "A repository commit action does not constrain the continuation capture",
+      : {
+          kind: "blocked",
+          code: "capture_failed",
+          detail: "A repository commit action does not constrain the continuation capture",
+        },
 };
 
 export const SESSION_ACTION_ADAPTERS: Record<SessionActionCompletionKind, SessionActionAdapter> = {

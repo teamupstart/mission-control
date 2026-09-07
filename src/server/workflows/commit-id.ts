@@ -148,3 +148,17 @@ export async function resolveCapturedCommit(repoRoot: string, headSha: string): 
       + "submission captured cannot be established",
   );
 }
+
+/** Resolve the complete content tree of one exact commit in this repository. */
+export async function resolveCommitTree(repoRoot: string, commitOid: string): Promise<string> {
+  const commit = await resolveCapturedCommit(repoRoot, commitOid);
+  const result = await run("git", ["-C", repoRoot, "rev-parse", "--verify", `${commit}^{tree}`]);
+  const tree = result.stdout.trim();
+  if (result.code !== 0 || !FULL_SHA.test(tree) || tree.length !== commit.length) {
+    throw new Error(
+      `the content tree for commit ${commit.slice(0, 12)} could not be resolved: `
+      + `${result.stderr.trim() || `exit ${result.code}`}`,
+    );
+  }
+  return tree;
+}

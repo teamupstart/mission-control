@@ -55,7 +55,7 @@ function staleRemoteTrackingRef(result: Awaited<ReturnType<Run>>): boolean {
     result.code !== 0 &&
     !result.outcomeUnknown &&
     !result.overflowed &&
-    /\bcannot lock ref '[^']+': is at [0-9a-f]{40,64} but expected [0-9a-f]{40,64}\b/i.test(
+    /\bcannot lock ref 'refs\/remotes\/origin\/[^']+': is at [0-9a-f]{40,64} but expected [0-9a-f]{40,64}\b/i.test(
       result.stderr,
     )
   );

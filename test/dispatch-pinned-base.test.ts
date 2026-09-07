@@ -262,6 +262,25 @@ test("a fetch refusal that is not a stale-ref race is not retried", async () => 
   assert.equal(attempts, 1);
 });
 
+test("a stale non-origin ref refusal is not retried", async () => {
+  let attempts = 0;
+  const result = await fetchOrigin("/anywhere", async () => {
+    attempts += 1;
+    return {
+      stdout: "",
+      stderr:
+        `error: cannot lock ref 'refs/tags/v1.0.0': is at ${"1".repeat(40)} ` +
+        `but expected ${"2".repeat(40)}\n`,
+      code: 1,
+      outcomeUnknown: false,
+      overflowed: false,
+    };
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(attempts, 1);
+});
+
 test("stale-ref retries stay bounded", async () => {
   let attempts = 0;
   const result = await fetchOrigin("/anywhere", async () => {

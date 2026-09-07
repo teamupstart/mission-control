@@ -512,7 +512,7 @@ export class RepositoryReader {
     const revisionFields = /^([0-9a-f]{40,64})(?= )|^previous ([0-9a-f]{40,64})(?= )/gm;
     const returnedRevisions = [...text.matchAll(revisionFields)].map((match) => (match[1] ?? match[2])!);
     const historyTruncated = returnedRevisions.some((revision) => !this.retained.has(revision));
-    const safe = scrubSecrets(text.replace(
+    const redactedRevisions = text.replace(
       revisionFields,
       (field, headerRevision: string | undefined, previousRevision: string | undefined) => {
         const revision = (headerRevision ?? previousRevision)!;
@@ -520,7 +520,11 @@ export class RepositoryReader {
         const redacted = "0".repeat(revision.length);
         return previousRevision ? `previous ${redacted}` : redacted;
       },
-    ));
+    );
+    // The returned item already carries the approved canonical path. Historical porcelain
+    // path fields can name protected or non-addressable pre-rename paths, so omit them rather
+    // than attempting to decode Git's quoted-path grammar into the public text payload.
+    const safe = scrubSecrets(redactedRevisions.replace(/^(?:filename|previous) .*(?:\n|$)/gm, ""));
     return this.paginate([{ path: entry.path, kind: "blame", text: safe, metadata: { historyTruncated }, range: { kind: "line", startLine: request.startLine, endLineExclusive: request.endLineExclusive } }], position);
   }
 

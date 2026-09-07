@@ -8,6 +8,23 @@ import { RepositoryReader } from "../src/server/repository/reader.ts";
 import type { RepositoryQueryAuditMetadata } from "../src/shared/repository-access.ts";
 import { repositoryViewFixture } from "./helpers/repository-view.ts";
 
+function fixtureGit(root: string, args: string[]): string {
+  return execFileSync("git", [
+    "-c", "commit.gpgsign=false",
+    "-c", `core.hooksPath=${join(root, ".hooks-disabled")}`,
+    "-C", root,
+    ...args,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: join(root, ".gitconfig-disabled"),
+      GIT_TERMINAL_PROMPT: "0",
+    },
+  }).trim();
+}
+
 test("reader returns canonical line, raw-byte, and independent diff handles", async () => {
   const fixture = repositoryViewFixture();
   const audits: RepositoryQueryAuditMetadata[] = [];
@@ -197,20 +214,7 @@ test("reader does not return raw binary repository bytes", async () => {
 
 test("blame redacts non-retained revisions from previous fields", async () => {
   const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
-  const git = (args: string[]): string => execFileSync("git", [
-    "-c", "commit.gpgsign=false",
-    "-c", `core.hooksPath=${join(fixture.root, ".hooks-disabled")}`,
-    "-C", fixture.root,
-    ...args,
-  ], {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: join(fixture.root, ".gitconfig-disabled"),
-      GIT_TERMINAL_PROMPT: "0",
-    },
-  }).trim();
+  const git = (args: string[]): string => fixtureGit(fixture.root, args);
   try {
     const omittedRevision = fixture.descriptor.headRevision;
     git(["add", "source.txt"]);
@@ -247,6 +251,57 @@ test("blame redacts non-retained revisions from previous fields", async () => {
     if (result.items[0]?.kind === "blame") {
       assert.doesNotMatch(result.items[0].text, new RegExp(omittedRevision, "u"));
       assert.equal(result.items[0].metadata.historyTruncated, true);
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("blame omits historical path fields that could disclose denied names", async () => {
+  const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
+  const git = (args: string[]): string => fixtureGit(fixture.root, args);
+  try {
+    git(["checkout", "HEAD", "--", ".env"]);
+    git(["mv", ".env", "safe.txt"]);
+    git(["commit", "-qm", "rename protected file"]);
+    const headRevision = git(["rev-parse", "HEAD"]);
+    const tree = git(["rev-parse", "HEAD^{tree}"]);
+    const blob = git(["rev-parse", "HEAD:safe.txt"]);
+    const descriptor = {
+      ...fixture.descriptor,
+      headRevision,
+      sourceRevision: headRevision,
+      indexTree: tree,
+      worktreeTree: tree,
+      retainedRevisions: [{ id: headRevision, parents: [], incrementalAllowedBlobBytes: 0 }],
+      frontier: [headRevision],
+      retainedCommitCount: 1,
+      entries: [{
+        path: "safe.txt",
+        kind: "file" as const,
+        addressable: true,
+        mode: 0o100644,
+        sensitive: false,
+        worktreePresent: true,
+        indexObjectId: blob,
+        worktreeObjectId: blob,
+        status: "clean" as const,
+      }],
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 64 * 1024, maxResponseBytes: 64 * 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "git_blame", path: "safe.txt", revision: headRevision, startLine: 1, endLineExclusive: 2 }, new AbortController().signal);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.items[0]?.kind, "blame");
+    if (result.items[0]?.kind === "blame") {
+      assert.doesNotMatch(result.items[0].text, /\.env/u);
+      assert.doesNotMatch(result.items[0].text, /^(?:filename|previous) /mu);
     }
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });

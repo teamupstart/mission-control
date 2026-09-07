@@ -116,6 +116,7 @@ function failureResult(
 
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   private readonly workloads = new Map<string, WorkloadState>();
+  private readonly idempotencyKeys = new Map<string, string>();
   private readonly completedWorkloadIds: string[] = [];
   private readonly now: () => number;
   private readonly maxRetainedTerminalWorkloads: number;
@@ -137,10 +138,14 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
 
   dispatch(input: PersonaWorkloadRequest, signal: AbortSignal): AsyncIterable<PersonaWorkloadEvent> {
     const request = PersonaWorkloadRequestSchema.parse(input);
-    const prior = this.workloads.get(request.workloadId);
-    if (prior) {
-      if (prior.idempotencyKey !== request.idempotencyKey) {
+    const knownIdempotencyKey = this.idempotencyKeys.get(request.workloadId);
+    if (knownIdempotencyKey !== undefined) {
+      if (knownIdempotencyKey !== request.idempotencyKey) {
         throw new Error("workload id was reused with a different idempotency key");
+      }
+      const prior = this.workloads.get(request.workloadId);
+      if (!prior) {
+        throw new Error("workload result is no longer available");
       }
       return this.stream(prior, 0);
     }
@@ -153,6 +158,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       terminal: null,
       cancellationGeneration: request.cancellationGeneration,
     };
+    this.idempotencyKeys.set(request.workloadId, request.idempotencyKey);
     const abort = () => state.controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();

@@ -723,6 +723,16 @@ test("the local executor retains only a bounded terminal reconciliation window",
     const replay = await collect(second);
     assert.equal(replay.at(-1)?.kind, "completed");
     assert.equal(providerRuns, 2);
+
+    await assert.rejects(
+      async () => collect(first),
+      /workload result is no longer available/,
+    );
+    await assert.rejects(
+      async () => collect({ ...first, idempotencyKey: "different-key" }),
+      /workload id was reused with a different idempotency key/,
+    );
+    assert.equal(providerRuns, 2);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

@@ -422,6 +422,10 @@ test("every later-phase state parser rejects unknown durable enum values", () =>
     error_code: null,
   };
   assert.equal(parseWorkflowLlmCallRow(call).purpose, "context_compaction");
+  assert.equal(
+    parseWorkflowLlmCallRow({ ...call, purpose: "context_reconciliation" }).purpose,
+    "context_reconciliation",
+  );
   assert.throws(() => parseWorkflowLlmCallRow({ ...call, purpose: "unknown" }), WorkflowRowError);
   assert.throws(() => parseWorkflowLlmCallRow({ ...call, error_code: "x".repeat(201) }), WorkflowRowError);
 });

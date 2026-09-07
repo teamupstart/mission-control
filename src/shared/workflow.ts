@@ -2360,7 +2360,11 @@ export type WorkflowDeliveryState = (typeof WORKFLOW_DELIVERY_STATES)[number];
 export const WORKFLOW_COMPLETION_KINDS = ["drain", "prompted"] as const;
 export type WorkflowCompletionKind = (typeof WORKFLOW_COMPLETION_KINDS)[number];
 
-export const WORKFLOW_LLM_PURPOSES = ["context_compaction", "persona_review"] as const;
+export const WORKFLOW_LLM_PURPOSES = [
+  "context_compaction",
+  "persona_review",
+  "context_reconciliation",
+] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
 export const WORKFLOW_LLM_CALL_STATES = [

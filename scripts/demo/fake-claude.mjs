@@ -351,8 +351,10 @@ export function headlessAnswer(prompt) {
       constraints: [],
       acceptanceCriteria: [],
       canonicalCriteria: [],
-      criterionMappings: [],
     });
+  }
+  if (prompt.includes("Reconcile author coverage claims to stable workflow criteria")) {
+    return JSON.stringify({ criterionMappings: [] });
   }
   // `src/server/goal/prompt.ts`'s `RULES` - the intent/goal reconciler that runs after
   // every human instruction, including the seeded first one.

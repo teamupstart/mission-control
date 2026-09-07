@@ -269,7 +269,8 @@ test("maximum canonical criterion text remains a valid persisted readiness resul
 });
 
 test("compaction isolates stable intent and assigns stable daemon criterion ids", async () => {
-  const prompts: string[] = [];
+  const extractionPrompts: string[] = [];
+  const reconciliationPrompts: string[] = [];
   const raw = {
     primaryGoal: { rawPrompt: "Keep focused execution green", refined: null, sourceNoteKey: "note" },
     humanDecisions: [],
@@ -301,7 +302,7 @@ test("compaction isolates stable intent and assigns stable daemon criterion ids"
     }],
   };
   const execute = async (prompt: string) => {
-    prompts.push(prompt);
+    extractionPrompts.push(prompt);
     return {
       kind: "ok" as const,
       value: {
@@ -312,6 +313,14 @@ test("compaction isolates stable intent and assigns stable daemon criterion ids"
           material: true,
           suggestedProofClass: "focused_execution" as const,
         }],
+      },
+    };
+  };
+  const reconcile = async (prompt: string) => {
+    reconciliationPrompts.push(prompt);
+    return {
+      kind: "ok" as const,
+      value: {
         criterionMappings: [{
           canonicalCriterionOrdinal: 1,
           matchedClientCriterionIds: [focusedClaim.clientCriterionId],
@@ -319,16 +328,83 @@ test("compaction isolates stable intent and assigns stable daemon criterion ids"
       },
     };
   };
-  const first = await compactWorkflowContext(raw, { execute, runner: "codex", model: "test" });
-  const second = await compactWorkflowContext(raw, { execute, runner: "codex", model: "test" });
+  const first = await compactWorkflowContext(raw, { execute, reconcile, runner: "codex", model: "test" });
+  const second = await compactWorkflowContext(raw, { execute, reconcile, runner: "codex", model: "test" });
   assert.equal(first.canonicalCriteria?.[0]?.id, second.canonicalCriteria?.[0]?.id);
   assert.deepEqual(first.criterionMappings?.[0]?.matchedClientCriterionIds, ["criterion-focused"]);
-  assert.match(prompts[0] ?? "", /Keep focused execution green/);
-  assert.match(prompts[0] ?? "", /criterion-focused/);
-  assert.doesNotMatch(prompts[0] ?? "", /focused-command/);
-  assert.doesNotMatch(prompts[0] ?? "", /secret body|src\/a\.ts/);
-  assert.doesNotMatch(prompts[0] ?? "", /node --test focused\.test\.ts/);
-  assert.doesNotMatch(prompts[0] ?? "", /ok 1 - focused behavior/);
+  assert.match(extractionPrompts[0] ?? "", /Keep focused execution green/);
+  assert.doesNotMatch(extractionPrompts[0] ?? "", /criterion-focused|focused-command/);
+  assert.match(reconciliationPrompts[0] ?? "", /criterion-focused/);
+  assert.doesNotMatch(extractionPrompts[0] ?? "", /secret body|src\/a\.ts/);
+  assert.doesNotMatch(extractionPrompts[0] ?? "", /node --test focused\.test\.ts/);
+  assert.doesNotMatch(extractionPrompts[0] ?? "", /ok 1 - focused behavior/);
+});
+
+test("stable extraction excludes coverage and survives source reconciliation failure", async () => {
+  const prompts: Array<{ phase: "extract" | "reconcile"; prompt: string }> = [];
+  const raw = {
+    primaryGoal: { rawPrompt: "Keep stable intent", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [],
+    priorPersonaFeedback: [],
+    session: { agent: "codex" as const, name: "work", cwd: "/repo", branch: "feature" },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "diff",
+      diff: "",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: null,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+      images: [],
+      stagedImageGeneration: 0,
+    },
+    coverage: [{
+      ...focusedClaim,
+      clientCriterionId: "volatile-source-claim",
+      criterion: "Volatile author wording",
+    }],
+  };
+  const context = await compactWorkflowContext(raw, {
+    execute: async (prompt: string) => {
+      prompts.push({ phase: "extract", prompt });
+      return {
+        kind: "ok" as const,
+        value: {
+          constraints: ["Keep compatibility"],
+          acceptanceCriteria: ["Stable intent remains correct"],
+          canonicalCriteria: [{
+            text: "Stable intent remains correct",
+            material: true,
+            suggestedProofClass: "focused_execution" as const,
+          }],
+        },
+      };
+    },
+    reconcile: async (prompt: string) => {
+      prompts.push({ phase: "reconcile", prompt });
+      return { kind: "failed" as const, reason: "invalid mapping response" };
+    },
+    runner: "codex",
+    model: "test",
+  });
+
+  assert.equal(context.compaction.status, "model");
+  assert.deepEqual(context.constraints, ["Keep compatibility"]);
+  assert.deepEqual(context.canonicalCriteria?.map((criterion) => criterion.text), [
+    "Stable intent remains correct",
+  ]);
+  assert.deepEqual(context.criterionMappings, [{
+    criterionId: context.canonicalCriteria?.[0]?.id,
+    matchedClientCriterionIds: [],
+  }]);
+  assert.equal(prompts.length, 2);
+  assert.doesNotMatch(prompts[0]?.prompt ?? "", /volatile-source-claim|Volatile author wording/);
+  assert.match(prompts[1]?.prompt ?? "", /volatile-source-claim|Volatile author wording/);
 });
 
 test("source compaction semantically maps differently worded coverage outside stable criteria", async () => {
@@ -377,6 +453,11 @@ test("source compaction semantically maps differently worded coverage outside st
           material: true,
           suggestedProofClass: "visual",
         }],
+      },
+    }),
+    reconcile: async () => ({
+      kind: "ok",
+      value: {
         criterionMappings: [{
           canonicalCriterionOrdinal: 1,
           matchedClientCriterionIds: [claim.clientCriterionId],
@@ -450,6 +531,11 @@ test("source compaction fails closed when one claim is proposed for multiple cri
             suggestedProofClass: "focused_execution",
           },
         ],
+      },
+    }),
+    reconcile: async () => ({
+      kind: "ok",
+      value: {
         criterionMappings: [
           { canonicalCriterionOrdinal: 1, matchedClientCriterionIds: [claim.clientCriterionId] },
           { canonicalCriterionOrdinal: 2, matchedClientCriterionIds: [claim.clientCriterionId] },

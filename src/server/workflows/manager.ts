@@ -50,6 +50,7 @@ import type {
   WorkflowRunPage,
   WorkflowEventPage,
   WorkflowLlmCallPage,
+  WorkflowLlmPurpose,
   WorkflowExportEnvelope,
   WorkflowStatus,
   TestEvidenceAuditAggregate,
@@ -6031,29 +6032,28 @@ export class WorkflowManager {
         if (compact) {
           context = await this.schedule(() => compact(captured.raw), "capture");
         } else {
-          // What the compaction call REPORTS it resolved, filled in by `onExecution` before its
-          // first attempt runs. Not re-derived from a second config read here: with a provider
-          // per job, an app-wide re-resolution names a different provider than the one the call
-          // used on every installation that set an override, so every row it wrote was wrong.
-          let contextExecution: JobExecution | null = null;
-          const contextCallIds = new Map<number, string>();
-          const observer: StructuredAttemptObserver = {
+          // What each workflow-context call REPORTS it resolved, filled in before its first
+          // attempt runs. Stable extraction and source reconciliation have separate ledger
+          // purposes because they have separate prompts, schemas, and failure boundaries.
+          const contextExecutions = new Map<WorkflowLlmPurpose, JobExecution>();
+          const contextCallIds = new Map<string, string>();
+          const observerFor = (purpose: WorkflowLlmPurpose): StructuredAttemptObserver => ({
             start: (attempt, prompt) => {
               if (!this.captureIsActive(run.id, submission.id)) return false;
               // `onExecution` fires ahead of the first attempt, so this is populated by now. If
               // it somehow is not, skip the row rather than labelling it with a guess - `finish`
               // finds no id and does nothing, and a missing ledger row is far easier to read
               // than one that confidently names the wrong provider.
-              const execution = contextExecution;
+              const execution = contextExecutions.get(purpose);
               if (!execution) return;
               const id = randomUUID();
-              contextCallIds.set(attempt, id);
+              contextCallIds.set(`${purpose}:${attempt}`, id);
               this.store.insertLlmCall({
                 id,
                 runId: run.id,
                 submissionId: submission.id,
                 nodeAttemptId: null,
-                purpose: "context_compaction",
+                purpose,
                 runner: execution.runner,
                 model: execution.model,
                 attempt,
@@ -6068,27 +6068,27 @@ export class WorkflowManager {
               });
             },
             finish: (attempt, result) => {
-              const id = contextCallIds.get(attempt);
+              const id = contextCallIds.get(`${purpose}:${attempt}`);
               if (!id) return;
               this.store.finishLlmCall(
                 id,
                 result.parsed ? "succeeded" : "failed",
                 result.raw ? Buffer.byteLength(result.raw) : 0,
-                result.error
-                  ? "context_compaction_infrastructure"
-                  : result.parsed
-                    ? null
-                    : "context_compaction_parse",
+                result.error ? `${purpose}_infrastructure` : result.parsed ? null : `${purpose}_parse`,
                 Date.now(),
               );
             },
-          };
+          });
           // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
           // call itself reports, which is the same one this ledger row is written from.
           context = await this.schedule(() => compactWorkflowContext(captured.raw, {
-            observer,
+            observer: observerFor("context_compaction"),
+            reconciliationObserver: observerFor("context_reconciliation"),
             onExecution: (execution) => {
-              contextExecution = execution;
+              contextExecutions.set("context_compaction", execution);
+            },
+            onReconciliationExecution: (execution) => {
+              contextExecutions.set("context_reconciliation", execution);
             },
           }), "capture");
         }

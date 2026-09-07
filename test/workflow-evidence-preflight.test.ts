@@ -317,6 +317,12 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
     1,
     "only the source submission may create a context-compaction ledger row",
   );
+  assert.equal(
+    h.store.listLlmCallPage(runId).items
+      .filter((call) => call.purpose === "context_reconciliation").length,
+    1,
+    "only the source submission may reconcile claims through the model",
+  );
 });
 
 test("one changed human decision recompacts once and becomes the next reuse source", async (t) => {
@@ -349,6 +355,8 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   };
   const compactionCount = (runId: string) => h.store.listLlmCallPage(runId).items
     .filter((call) => call.purpose === "context_compaction").length;
+  const reconciliationCount = (runId: string) => h.store.listLlmCallPage(runId).items
+    .filter((call) => call.purpose === "context_reconciliation").length;
 
   await stageGap(0);
   const submitted = await h.manager.submit(h.binding.id, { requestId: "intent-root" });
@@ -360,12 +368,14 @@ test("one changed human decision recompacts once and becomes the next reuse sour
     "initial intent packet did not wait",
   );
   assert.equal(compactionCount(runId), 1);
+  assert.equal(reconciliationCount(runId), 1);
 
   await stageGap(1);
   const reused = await h.manager.retryEvidenceReadiness(runId, submitted.value.submission.id, "intent-reuse", 2);
   assert.equal(reused.ok, true);
   if (!reused.ok) return;
   assert.equal(compactionCount(runId), 1);
+  assert.equal(reconciliationCount(runId), 1);
   const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
   assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
 
@@ -379,6 +389,7 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   assert.equal(changed.ok, true);
   if (!changed.ok) return;
   assert.equal(compactionCount(runId), 2);
+  assert.equal(reconciliationCount(runId), 2);
   const changedContext = WorkflowContextSnapshotSchema.parse(changed.value.submission.context);
   assert.equal(changedContext.compaction.reusedFromSubmissionId, null);
   assert.notEqual(changedContext.intentFingerprint, reusedContext.intentFingerprint);
@@ -388,6 +399,7 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   assert.equal(changedReuse.ok, true);
   if (!changedReuse.ok) return;
   assert.equal(compactionCount(runId), 2);
+  assert.equal(reconciliationCount(runId), 2);
   const changedReuseContext = WorkflowContextSnapshotSchema.parse(changedReuse.value.submission.context);
   assert.equal(changedReuseContext.compaction.reusedFromSubmissionId, changed.value.submission.id);
   assert.equal(changedReuseContext.intentFingerprint, changedContext.intentFingerprint);

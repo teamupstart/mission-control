@@ -703,13 +703,15 @@ and prior Persona feedback. Confirmed workflow packets are matched to the transc
 their durable delivery byte anchor and excluded from both transcript evidence and human decisions,
 including after a daemon restart. A later human turn that repeats the same text remains evidence.
 A deterministic intent fingerprint covers only the raw/refined goal and deduplicated genuine
-human decision content. A cheap provider-neutral compaction call extracts stable constraints and
-canonical criteria from those intent fields only, then uses a separate authored-coverage partition
-to return semantic source-claim mappings. Repository state, transcript evidence, evidence metadata,
-prior Persona feedback, and automated deliveries never enter criterion extraction. Its 45-second
-attempt cannot replace the raw evidence. An unparsable reply gets
-one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
-deterministic visible fallback.
+human decision content. A cheap provider-neutral compaction call receives only those fields and
+extracts stable constraints and canonical criteria. Repository state, transcript evidence,
+evidence metadata, prior Persona feedback, automated deliveries, and author coverage never enter
+criterion extraction. A separate source reconciliation call receives only those stable criteria
+and bounded author claim ids and text. Its schema and failure boundary are independent, so invalid
+mapping output leaves stable extraction intact and fails closed to deterministic mappings. Each
+45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 45-second
+attempt; invalid, timed-out, or unavailable stable compaction produces a deterministic visible
+fallback.
 
 A workflow-bound task whose published graph contains a Persona receives an evidence-readiness
 contract before completion, whatever its kind - a scout dispatched with such a workflow receives
@@ -811,7 +813,9 @@ acceptance criteria, canonical ids/text, materiality, and proof-class suggestion
 a `context_compaction` call. It still freezes its own replacement evidence and coverage, remaps
 the current claim ids, and reruns readiness. A changed human decision causes one fresh compaction;
 subsequent same-intent refinements reuse that new source. Submission events record whether criteria
-were reused and which immutable source supplied them, while the LLM ledger contains actual calls only.
+were reused and which immutable source supplied them. The LLM ledger records stable extraction as
+`context_compaction`, source claim mapping as `context_reconciliation`, and no call for deterministic
+reuse.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.

@@ -525,7 +525,11 @@ test("the player still answers the daemon's other headless callers", () => {
   // shadowing is possible too.
   assert.deepEqual(
     JSON.parse(headlessAnswer("Compact workflow intent without rewriting it.\nsome intent")),
-    { constraints: [], acceptanceCriteria: [], canonicalCriteria: [], criterionMappings: [] },
+    { constraints: [], acceptanceCriteria: [], canonicalCriteria: [] },
+  );
+  assert.deepEqual(
+    JSON.parse(headlessAnswer("Reconcile author coverage claims to stable workflow criteria")),
+    { criterionMappings: [] },
   );
   const goal = JSON.parse(headlessAnswer(
     "You reconcile the intent of an AI coding session\n"

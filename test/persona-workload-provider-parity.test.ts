@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, readFile, rm } from "node:fs/promises";
+import { access, appendFile, readFile, rm } from "node:fs/promises";
 import test from "node:test";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { ClaudeSdkUserMessage } from "../src/server/harness/claude/sdk-types.ts";
@@ -472,6 +472,23 @@ async function collectWithinDeadline(stream: AsyncIterable<PersonaWorkloadEvent>
   }
 }
 
+async function waitFor(check: () => boolean | Promise<boolean>, message: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!await check()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test("local Claude and Codex workloads preserve identical line, byte, diff, evidence, and call-accounting contracts", async () => {
   const fixture = repositoryViewFixture();
   const launches: PersonaProviderLaunch[] = [];
@@ -594,13 +611,15 @@ test("the workload deadline aborts materialization and returns a structured dead
   }
 });
 
-test("the workload deadline aborts provider execution and releases the repository lease", async () => {
+test("the workload deadline completes before a late provider settles and then releases its lease", async () => {
   const fixture = repositoryViewFixture();
   let releases = 0;
+  let resolveProvider!: () => void;
   const provider: PersonaWorkloadProviderAdapter = {
     id: "claude",
     async run() {
-      return new Promise(() => {});
+      await new Promise<void>((resolve) => { resolveProvider = resolve; });
+      return { rawVerdict: JSON.stringify(verdict), usage: null, repositoryToolCalls: [] };
     },
   };
   const executor = new LocalPersonaWorkloadExecutor({
@@ -626,21 +645,27 @@ test("the workload deadline aborts provider execution and releases the repositor
       assert.equal(completed.result.kind, "failed");
       assert.equal(completed.result.kind === "failed" ? completed.result.code : null, "deadline_exceeded");
     }
-    assert.equal(releases, 1);
+    assert.equal(releases, 0);
+    resolveProvider();
+    await waitFor(() => releases === 1, "late provider completion did not release the repository lease");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("dispatch cancellation completes when provider execution ignores its signal", async () => {
+test("dispatch cancellation completes while a late provider retains its repository lease", async () => {
   const fixture = repositoryViewFixture();
   let providerStarted = false;
   let releases = 0;
+  let resolveProvider!: () => void;
+  let providerWorkDir = "";
   const provider: PersonaWorkloadProviderAdapter = {
     id: "claude",
-    async run() {
+    async run(launch) {
       providerStarted = true;
-      return new Promise(() => {});
+      providerWorkDir = launch.workingDirectory;
+      await new Promise<void>((resolve) => { resolveProvider = resolve; });
+      return { rawVerdict: JSON.stringify(verdict), usage: null, repositoryToolCalls: [] };
     },
   };
   const executor = new LocalPersonaWorkloadExecutor({
@@ -657,8 +682,9 @@ test("dispatch cancellation completes when provider execution ignores its signal
   });
   try {
     const controller = new AbortController();
-    const collecting = collectWithinDeadline(executor.dispatch(request("claude", fixture.descriptor.snapshotDigest), controller.signal));
-    while (!providerStarted) await new Promise<void>((resolve) => setImmediate(resolve));
+    const stream = executor.dispatch(request("claude", fixture.descriptor.snapshotDigest), controller.signal);
+    await waitFor(() => providerStarted, "provider did not start");
+    const collecting = collectWithinDeadline(stream);
     controller.abort(new Error("operator cancelled"));
     const events = await collecting;
     const completed = events.at(-1);
@@ -667,7 +693,11 @@ test("dispatch cancellation completes when provider execution ignores its signal
       assert.equal(completed.result.kind, "failed");
       assert.equal(completed.result.kind === "failed" ? completed.result.code : null, "cancelled");
     }
-    assert.equal(releases, 1);
+    assert.equal(releases, 0);
+    assert.equal(await pathExists(providerWorkDir), true);
+    resolveProvider();
+    await waitFor(() => releases === 1, "late provider completion did not release the repository lease");
+    await waitFor(async () => !await pathExists(providerWorkDir), "late provider completion did not remove its work directory");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

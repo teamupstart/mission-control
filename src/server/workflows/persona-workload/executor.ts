@@ -282,7 +282,19 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let llmCall: PersonaLlmCall | null = null;
     let prompt: string | null = null;
     let providerOperation: Promise<PersonaProviderResult> | null = null;
+    let providerSettled = false;
+    let resourcesCleaned = false;
     const emittedAuditIds = new Set<string>();
+    const cleanupResources = async () => {
+      if (resourcesCleaned) return;
+      resourcesCleaned = true;
+      const activeLease = lease;
+      const activeWorkDir = workDir;
+      lease = null;
+      workDir = null;
+      await activeLease?.release().catch(() => {});
+      if (activeWorkDir) await rm(activeWorkDir, { recursive: true, force: true }).catch(() => {});
+    };
     try {
       if (request.deadline <= this.now()) {
         state.controller.abort(new PersonaWorkloadDeadlineError());
@@ -342,10 +354,9 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         hostedSearchMaximum: request.hostedSearchMaximum,
       };
       this.emit(state, { kind: "provider_started", provider: request.provider, model: request.model });
-      providerOperation = this.options.providers[request.provider].run(
-        launch,
-        state.controller.signal,
-      );
+      providerOperation = this.options.providers[request.provider]
+        .run(launch, state.controller.signal)
+        .finally(() => { providerSettled = true; });
       const providerResult = await settleBeforeAbort(
         providerOperation,
         state.controller.signal,
@@ -406,8 +417,11 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       const result = failureResult(error, state.controller.signal, llmCall);
       this.complete(state, result);
     } finally {
-      await lease?.release().catch(() => {});
-      if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
+      if (providerOperation && state.controller.signal.aborted && !providerSettled) {
+        void providerOperation.finally(cleanupResources).catch(() => {});
+      } else {
+        await cleanupResources();
+      }
     }
   }
 

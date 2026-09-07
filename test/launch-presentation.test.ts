@@ -24,6 +24,7 @@ import { mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-launch-presentation-"));
 process.env.MISSION_HOME = home;
+process.env.HERDR_BIN = join(home, "missing-herdr");
 // Binaries that exist, so bin resolution can never be what fails a launch here. The
 // terminal home itself is faked through the dispatcher's `spawn` seam - a test that reached
 // the real backend would open tmux sessions on the machine running the suite.

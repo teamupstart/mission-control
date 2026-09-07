@@ -527,6 +527,10 @@ test("the player still answers the daemon's other headless callers", () => {
     JSON.parse(headlessAnswer("Compact workflow intent without rewriting it.\nsome intent")),
     { constraints: [], acceptanceCriteria: [], canonicalCriteria: [] },
   );
+  assert.deepEqual(
+    JSON.parse(headlessAnswer("Reconcile author coverage claims to stable workflow criteria")),
+    { criterionMappings: [] },
+  );
   const goal = JSON.parse(headlessAnswer(
     "You reconcile the intent of an AI coding session\n"
     + "## The specific unresolved instruction to classify now\nCache the scan\n\nNow output",

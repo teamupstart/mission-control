@@ -269,6 +269,9 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
             text: "The reviewed content is ready to ship",
             material: true,
             suggestedProofClass: "focused_execution",
+          }],
+          criterionMappings: [{
+            criterionId: "criterion-reviewed-content",
             matchedClientCriterionIds: ["reviewed-content"],
           }],
           compaction: { status: "model", runner: "claude", model: "fake", error: null },

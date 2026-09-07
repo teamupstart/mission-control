@@ -347,7 +347,14 @@ export function headlessAnswer(prompt) {
   }
   // `src/server/workflows/context.ts`'s `compactPrompt` - the workflow intent compactor.
   if (prompt.includes("Compact workflow intent without rewriting it.")) {
-    return JSON.stringify({ constraints: [], acceptanceCriteria: [], canonicalCriteria: [] });
+    return JSON.stringify({
+      constraints: [],
+      acceptanceCriteria: [],
+      canonicalCriteria: [],
+    });
+  }
+  if (prompt.includes("Reconcile author coverage claims to stable workflow criteria")) {
+    return JSON.stringify({ criterionMappings: [] });
   }
   // `src/server/goal/prompt.ts`'s `RULES` - the intent/goal reconciler that runs after
   // every human instruction, including the seeded first one.

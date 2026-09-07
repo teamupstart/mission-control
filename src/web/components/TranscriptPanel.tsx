@@ -116,11 +116,25 @@ export interface TranscriptHandle {
   focusReply: () => boolean;
   /** Scroll to the inline Foreman entry for this episode marker, if it's rendered. */
   scrollToEpisode: (marker: string | null) => void;
-  /** Move the conversation reader by one comfortable keyboard step. */
-  scrollByArrow: (direction: -1 | 1) => void;
+  /** Move the conversation reader by an arrow step or a whole visible page. */
+  scrollByKeyboard: (direction: -1 | 1, distance: TranscriptScrollDistance) => void;
   /** Open find-in-conversation and focus its box. Reports false when there is no
    *  panel mounted, so the caller can reveal the conversation first. */
   openFind: () => boolean;
+}
+
+export type TranscriptScrollDistance = "arrow" | "page";
+
+/** Scroll the transcript by the distance promised by its keyboard gesture. */
+export function scrollTranscript(
+  element: Pick<HTMLElement, "clientHeight" | "scrollBy">,
+  direction: -1 | 1,
+  distance: TranscriptScrollDistance,
+): void {
+  const top = distance === "page"
+    ? element.clientHeight
+    : Math.max(80, element.clientHeight * 0.18);
+  element.scrollBy({ top: direction * top });
 }
 
 /**
@@ -558,10 +572,10 @@ export function TranscriptPanel({
       const el = logRef.current?.querySelector(`[data-episode-marker="${CSS.escape(marker)}"]`);
       el?.scrollIntoView({ block: "center", behavior: "smooth" });
     },
-    scrollByArrow: (direction) => {
+    scrollByKeyboard: (direction, distance) => {
       const el = logRef.current;
       if (!el) return;
-      el.scrollBy({ top: direction * Math.max(80, el.clientHeight * 0.18) });
+      scrollTranscript(el, direction, distance);
     },
     openFind: () => {
       // Reopening keeps the last query, like a browser - `ConversationFind` selects it

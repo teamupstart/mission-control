@@ -20,7 +20,10 @@ import { useEventStream } from "./useEventStream.ts";
 import { fitTopbar, observeTopbar } from "./topbarLadder.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import type { SessionLaunchersHandle } from "./components/LaunchMenu.tsx";
-import type { TranscriptFindHandle } from "./components/TranscriptPanel.tsx";
+import type {
+  TranscriptFindHandle,
+  TranscriptScrollDistance,
+} from "./components/TranscriptPanel.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { AttentionInbox } from "./components/AttentionInbox.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
@@ -639,7 +642,11 @@ export function App(): React.JSX.Element {
   const pendingFind = useRef<string | null>(null);
   const detailScrollers = useRef<Map<
     string,
-    (direction: -1 | 1, fromReader: boolean) => boolean
+    (
+      direction: -1 | 1,
+      fromReader: boolean,
+      distance: TranscriptScrollDistance,
+    ) => boolean
   >>(new Map());
   // Tab cycles the open detail's tabs (Conversation -> Work queue -> Gate -> Diff -> Files);
   // ConsoleDetail owns that state, so it registers a stepper here that App's global key
@@ -733,7 +740,11 @@ export function App(): React.JSX.Element {
 
   const registerDetailScroll = useCallback((
     id: string,
-    scroll: ((direction: -1 | 1, fromReader: boolean) => boolean) | null,
+    scroll: ((
+      direction: -1 | 1,
+      fromReader: boolean,
+      distance: TranscriptScrollDistance,
+    ) => boolean) | null,
   ) => {
     if (scroll) detailScrollers.current.set(id, scroll);
     else detailScrollers.current.delete(id);
@@ -2563,6 +2574,29 @@ export function App(): React.JSX.Element {
         return;
       }
 
+      const readerSession = route.page === "fleet"
+        ? layout === "console" ? selected : layout === "board" && boardOpen ? selected : null
+        : null;
+
+      // Conversation page keys are detail-local, fixed gestures like Files Preview's u/d.
+      // They work from the rail as well as from inside the reader, and get first refusal on
+      // bare d before the contextual Delete action. A different detail tab returns false,
+      // preserving Delete there. Text fields and overlays keep ownership of their keys.
+      if (
+        readerSession
+        && !typing
+        && !renamingId
+        && !overlaysRef.current.anyOpen
+        && (chord === "u" || chord === "d")
+      ) {
+        const detailScroll = detailScrollers.current.get(readerSession.id);
+        const fromReader = Boolean(target?.closest(".cdetail"));
+        if (detailScroll?.(chord === "u" ? -1 : 1, fromReader, "page")) {
+          e.preventDefault();
+          return;
+        }
+      }
+
       // Delete is page-contextual rather than fleet-only. Every participating button
       // registers itself in the DOM; resolution prefers the focused row/current surface and
       // fails closed when several destructive controls are otherwise equally plausible.
@@ -2711,8 +2745,6 @@ export function App(): React.JSX.Element {
       // `consoleZone` is still set so the console's rail dimming follows, but it no longer
       // gates anything. `!typing` keeps native Tab in the topbar filter and the reply
       // composer; Shift+Tab outside the reader falls through to the `mode` binding below.
-      const readerSession =
-        layout === "console" ? selected : layout === "board" && boardOpen ? selected : null;
       if (readerSession && !typing) {
         const inReader = Boolean(target?.closest(".cdetail"));
         if (chord === "Tab") {
@@ -2830,7 +2862,7 @@ export function App(): React.JSX.Element {
           ) {
             const detailScroll = detailScrollers.current.get(readerSession.id);
             const fromReader = Boolean(target?.closest(".cdetail"));
-            if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader)) return;
+            if (detailScroll?.(e.key === "ArrowUp" ? -1 : 1, fromReader, "arrow")) return;
           }
           const nextId = moveSelection({
             mode: layout,

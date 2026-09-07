@@ -4,7 +4,6 @@
 // (open a link in the system browser, install the Claude integrations, read the
 // app version). contextIsolation keeps this the only channel into the renderer.
 
-import { randomUUID } from "node:crypto";
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 
@@ -12,7 +11,10 @@ interface ProductIssueAuthorizationInput {
   requestId: string;
   draftIdentity: string;
 }
-const productIssueAuthorizationCapability = randomUUID();
+// This preload is sandboxed, so it cannot import arbitrary Node builtins. Web Crypto belongs
+// to the isolated renderer world and keeps the capability private from the page just as the
+// former Node implementation intended.
+const productIssueAuthorizationCapability = globalThis.crypto.randomUUID();
 let productIssueAuthorizationClaimed = false;
 
 contextBridge.exposeInMainWorld("missionDesktop", {

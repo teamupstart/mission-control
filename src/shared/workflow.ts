@@ -339,6 +339,11 @@ export interface WorkflowCanonicalCriterion {
   text: string;
   material: boolean;
   suggestedProofClass: WorkflowEvidenceProofClass | null;
+}
+
+/** Packet-specific author claim matches for one stable canonical criterion. */
+export interface WorkflowCriterionMapping {
+  criterionId: string;
   matchedClientCriterionIds: string[];
 }
 
@@ -419,12 +424,36 @@ export function workflowEvidenceMissingRoleGaps(
     .map((requirement) => requirement.missingGap);
 }
 
+/** Claim ids assigned to more than one canonical criterion in the same immutable packet. */
+export function workflowCrossCriterionClaimIds(input: {
+  canonicalCriteria: readonly WorkflowCanonicalCriterion[];
+  criterionMappings: readonly WorkflowCriterionMapping[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+}): ReadonlySet<string> {
+  const canonicalIds = new Set(input.canonicalCriteria.map((criterion) => criterion.id));
+  const claimIds = new Set(input.coverage.map((claim) => claim.clientCriterionId));
+  const mappingOwners = new Map<string, Set<string>>();
+  for (const mapping of input.criterionMappings) {
+    if (!canonicalIds.has(mapping.criterionId)) continue;
+    for (const id of mapping.matchedClientCriterionIds) {
+      if (!claimIds.has(id)) continue;
+      const ownerIds = mappingOwners.get(id) ?? new Set<string>();
+      ownerIds.add(mapping.criterionId);
+      mappingOwners.set(id, ownerIds);
+    }
+  }
+  return new Set(
+    [...mappingOwners].filter(([, ownerIds]) => ownerIds.size > 1).map(([id]) => id),
+  );
+}
+
 /**
  * Reconcile one immutable coverage packet with daemon-assigned canonical criteria.
  * Semantic sufficiency remains entirely with the Persona workflow.
  */
 export function evaluateWorkflowEvidenceReadiness(input: {
   canonicalCriteria: readonly WorkflowCanonicalCriterion[];
+  criterionMappings: readonly WorkflowCriterionMapping[];
   coverage: readonly WorkflowEvidenceCoverageClaim[];
   evidence: readonly WorkflowFrozenEvidenceIdentity[];
   unavailableReason?: string | null;
@@ -452,20 +481,29 @@ export function evaluateWorkflowEvidenceReadiness(input: {
         text: "Material acceptance criteria",
         material: true,
         suggestedProofClass: null,
-        matchedClientCriterionIds: [],
       }]
     : input.canonicalCriteria;
   const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
   const evidence = new Map(input.evidence.map((item) => [item.clientItemId, item]));
+  const crossCriterionClaimIds = workflowCrossCriterionClaimIds({
+    canonicalCriteria,
+    criterionMappings: input.criterionMappings,
+    coverage: input.coverage,
+  });
   const criteria = canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
-    const matchedIds = [...new Set(canonical.matchedClientCriterionIds)]
+    const matchedIds = [...new Set(input.criterionMappings
+      .filter((mapping) => mapping.criterionId === canonical.id)
+      .flatMap((mapping) => mapping.matchedClientCriterionIds))]
       .filter((id) => claims.has(id))
       .sort();
-    const claim = matchedIds.length === 1 ? claims.get(matchedIds[0]!)! : null;
+    const crossCriterionAmbiguity = matchedIds.some((id) => crossCriterionClaimIds.has(id));
+    const claim = matchedIds.length === 1 && !crossCriterionAmbiguity
+      ? claims.get(matchedIds[0]!)!
+      : null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
     if (canonical.material && matchedIds.length === 0) gaps.push("missing_coverage");
-    if (matchedIds.length > 1) gaps.push("ambiguous_mapping");
+    if (matchedIds.length > 1 || crossCriterionAmbiguity) gaps.push("ambiguous_mapping");
     const links = claim?.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
       const item = evidence.get(link.clientItemId);
       if (!item) {
@@ -2357,7 +2395,11 @@ export type WorkflowDeliveryState = (typeof WORKFLOW_DELIVERY_STATES)[number];
 export const WORKFLOW_COMPLETION_KINDS = ["drain", "prompted"] as const;
 export type WorkflowCompletionKind = (typeof WORKFLOW_COMPLETION_KINDS)[number];
 
-export const WORKFLOW_LLM_PURPOSES = ["context_compaction", "persona_review"] as const;
+export const WORKFLOW_LLM_PURPOSES = [
+  "context_compaction",
+  "persona_review",
+  "context_reconciliation",
+] as const;
 export type WorkflowLlmPurpose = (typeof WORKFLOW_LLM_PURPOSES)[number];
 
 export const WORKFLOW_LLM_CALL_STATES = [
@@ -3785,10 +3827,17 @@ export interface WorkflowContextSnapshot {
     sourceNoteKey: string;
   };
   humanDecisions: WorkflowHumanDecision[];
+  /**
+   * Digest of only intent-bearing inputs: raw/refined goal and genuine human decision text.
+   * Optional so snapshots captured before stable criterion reuse remain readable.
+   */
+  intentFingerprint?: string;
   constraints: string[];
   acceptanceCriteria: string[];
   /** Defaults to an empty list for snapshots written before criterion reconciliation. */
   canonicalCriteria?: WorkflowCanonicalCriterion[];
+  /** Per-submission author claim matches, separate from stable canonical criterion identity. */
+  criterionMappings?: WorkflowCriterionMapping[];
   priorPersonaFeedback: PersonaFeedbackSummary[];
   session: {
     agent: string;
@@ -3841,6 +3890,8 @@ export interface WorkflowContextSnapshot {
     runner: LlmRunnerId | null;
     model: string | null;
     error: string | null;
+    /** Original submission whose stable criterion extraction this snapshot reused. */
+    reusedFromSubmissionId?: WorkflowSubmissionId | null;
   };
 }
 

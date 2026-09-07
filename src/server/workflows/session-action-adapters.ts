@@ -432,9 +432,9 @@ const pullRequest: SessionActionAdapter = {
     }
     if (!capture.capturedCommitTreeOid) {
       return {
-        kind: "blocked",
-        code: "capture_failed",
-        detail: `The content tree published at ${expectation.pullRequestUrl} could not be resolved.`,
+        kind: "waiting",
+        detail: `The content tree of the commit published at ${expectation.pullRequestUrl} `
+          + "could not be resolved in this repository yet",
       };
     }
     if (capture.capturedCommitTreeOid !== expectation.acceptedContentTreeOid) {

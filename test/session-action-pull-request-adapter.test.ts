@@ -370,6 +370,31 @@ test("published content that differs from the reviewed tree is a durable block",
   assert.match(validation.detail, /prior verdict does not cover/);
 });
 
+test("missing historical accepted-tree proof is a durable block", () => {
+  const validation = ADAPTER.validateCapture(
+    { ...expectation, acceptedContentTreeOid: null },
+    {
+      context: {} as WorkflowContextSnapshot,
+      capturedHeadOid: HEAD,
+      capturedCommitTreeOid: TREE,
+    },
+  );
+  assert.equal(validation?.kind, "blocked");
+  if (!validation || validation.kind !== "blocked") return;
+  assert.equal(validation.code, "capture_failed");
+  assert.match(validation.detail, /no server-owned content-tree proof/);
+});
+
+test("a transient failure to resolve the published tree remains retryable", () => {
+  const validation = ADAPTER.validateCapture(expectation, {
+    context: {} as WorkflowContextSnapshot,
+    capturedHeadOid: HEAD,
+    capturedCommitTreeOid: null,
+  });
+  assert.equal(validation?.kind, "waiting");
+  assert.match(validation?.detail ?? "", /could not be resolved/);
+});
+
 test("a capture at any other commit is refused, in the sentence a reader needs", () => {
   const problem = ADAPTER.validateCapture(expectation, {
     context: {} as WorkflowContextSnapshot,

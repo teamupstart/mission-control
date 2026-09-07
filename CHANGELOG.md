@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.9.2](https://github.com/teamupstart/mission-control/compare/v1.9.1...v1.9.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **conversation:** paginate with u and d ([#934](https://github.com/teamupstart/mission-control/issues/934)) ([84b7854](https://github.com/teamupstart/mission-control/commit/84b78546df4943882127452418f1f7408afaf09a))
+* **desktop:** keep logo clear of window controls ([#935](https://github.com/teamupstart/mission-control/issues/935)) ([ed49e13](https://github.com/teamupstart/mission-control/commit/ed49e13522e0234fcdf5f8079b56ac563df8cf9a))
+* **workflows:** reuse stable criteria across evidence refinements ([#937](https://github.com/teamupstart/mission-control/issues/937)) ([3ded53c](https://github.com/teamupstart/mission-control/commit/3ded53c1a5698cca798a4f4bedc68664be8ffa47))
+* **workflows:** verify terminal pull request shipping ([#939](https://github.com/teamupstart/mission-control/issues/939)) ([f997316](https://github.com/teamupstart/mission-control/commit/f9973167c7b6811192c626fa84692ab9acbd9cf2))
+
 ## [1.9.1](https://github.com/teamupstart/mission-control/compare/v1.9.0...v1.9.1) (2026-09-07)
 
 

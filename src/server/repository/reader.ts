@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { constants, lstatSync, openSync, closeSync, readFileSync, readlinkSync } from "node:fs";
+import { constants } from "node:fs";
+import { lstat, open, readlink } from "node:fs/promises";
 import { promisify } from "node:util";
 import type {
   RepositoryBudgets,
@@ -135,10 +136,6 @@ function resultBytes(items: readonly unknown[]): number {
   return items.reduce<number>((total, item) => total + serializedItemBytes(item), 0);
 }
 
-function combineAbort(signal: AbortSignal, timeoutMs: number): AbortSignal {
-  return AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-}
-
 function parseDiffHunks(text: string, path: string): PendingItem[] {
   const lines = text.split("\n");
   const hunks: PendingItem[] = [];
@@ -213,15 +210,21 @@ export class RepositoryReader {
     }
     const request = parsed.data;
     const inputHash = sha256(stableJson(withoutCursor(request)));
+    let deadlineSignal: AbortSignal | undefined;
     try {
       const remainingAttemptMs = this.chargeCall();
       if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
       const cursorPosition = request.cursor ? this.readCursor(request.cursor, request.operation, inputHash) : 0;
-      const callSignal = combineAbort(signal, Math.min(this.options.budgets.maxCallMs, remainingAttemptMs));
+      deadlineSignal = AbortSignal.timeout(Math.min(this.options.budgets.maxCallMs, remainingAttemptMs));
+      const callSignal = AbortSignal.any([signal, deadlineSignal]);
       const pending = await this.run(request, cursorPosition, callSignal);
+      if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
+      if (deadlineSignal.aborted || this.now() - this.usage.startedAt >= this.options.budgets.maxAttemptMs) {
+        throw Object.assign(new Error("repository call deadline exceeded"), { code: "deadline_exceeded" });
+      }
       return await this.finishSuccess(request, operationInstanceId, inputHash, pending, startedAt);
     } catch (error) {
-      const failure = this.failureOf(error, signal);
+      const failure = this.failureOf(error, signal, deadlineSignal);
       return this.finishFailure(operation, operationInstanceId, failure.status, failure.code, failure.message, startedAt, inputHash);
     }
   }
@@ -266,29 +269,36 @@ export class RepositoryReader {
     return entry;
   }
 
-  private worktreeBytes(entry: RepositoryManifestEntry, signal?: AbortSignal): Buffer {
-    if (signal?.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
+  private async worktreeBytes(entry: RepositoryManifestEntry, signal: AbortSignal): Promise<Buffer> {
+    if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
     const absolute = `${this.descriptor.repositoryRoot}/${entry.path}`;
-    const stat = lstatSync(absolute);
+    const stat = await lstat(absolute);
+    if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
     if (stat.size > this.options.budgets.maxResponseBytes * 4) {
       throw Object.assign(new Error("repository file exceeds the bounded reader limit"), { code: "response_too_large" });
     }
     if (entry.kind === "symlink") {
       if (!stat.isSymbolicLink()) throw Object.assign(new Error("materialized symlink changed type"), { code: "view_unavailable" });
-      const value = Buffer.from(readlinkSync(absolute, { encoding: "buffer" }));
-      if (signal?.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
+      const value = Buffer.from(await readlink(absolute, { encoding: "buffer" }));
+      if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
       this.assertWorktreeObject(entry, value);
       return value;
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw Object.assign(new Error("materialized file changed type"), { code: "view_unavailable" });
-    const fd = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
-      const value = readFileSync(fd);
-      if (signal?.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
+      const openedStat = await file.stat();
+      if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
+      if (!openedStat.isFile()) throw Object.assign(new Error("materialized file changed type"), { code: "view_unavailable" });
+      if (openedStat.size > this.options.budgets.maxResponseBytes * 4) {
+        throw Object.assign(new Error("repository file exceeds the bounded reader limit"), { code: "response_too_large" });
+      }
+      const value = await file.readFile({ signal });
+      if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
       this.assertWorktreeObject(entry, value);
       return value;
     } finally {
-      closeSync(fd);
+      await file.close();
     }
   }
 
@@ -313,7 +323,7 @@ export class RepositoryReader {
 
   private async read(request: Extract<RepositoryOperationRequest, { operation: "read" }>, position: number, signal: AbortSignal) {
     const entry = this.entry(request.path);
-    const bytes = request.layer === "worktree" ? this.worktreeBytes(entry, signal) : await this.indexBytes(entry, signal);
+    const bytes = request.layer === "worktree" ? await this.worktreeBytes(entry, signal) : await this.indexBytes(entry, signal);
     if (!bufferIsText(bytes)) {
       throw new RepositoryPathPolicyError("path_denied", "binary repository content is unavailable");
     }
@@ -393,7 +403,7 @@ export class RepositoryReader {
     for (const [entryIndex, entry] of entries.entries()) {
       if (entryIndex % 32 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
       if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
-      const bytes = this.worktreeBytes(entry, signal);
+      const bytes = await this.worktreeBytes(entry, signal);
       if (!bufferIsText(bytes)) continue;
       const lines = linesOf(bytes.toString("utf8"));
       for (const [index, line] of lines.entries()) {
@@ -535,7 +545,8 @@ export class RepositoryReader {
     this.revision(request.revision);
     const entry = this.entry(request.path);
     if (entry.kind !== "file") throw Object.assign(new Error("blame requires a regular file"), { code: "request_invalid" });
-    const endInclusive = Math.max(request.startLine, request.endLineExclusive - 1);
+    if (request.startLine === request.endLineExclusive) return this.paginate([], position);
+    const endInclusive = request.endLineExclusive - 1;
     const text = await this.git(["blame", "--porcelain", "--root", `-L${request.startLine},${endInclusive}`, request.revision, "--", entry.path], signal);
     const revisionFields = /^([0-9a-f]{40,64})(?= )|^previous ([0-9a-f]{40,64})(?= )/gm;
     const returnedRevisions = [...text.matchAll(revisionFields)].map((match) => (match[1] ?? match[2])!);
@@ -681,8 +692,9 @@ export class RepositoryReader {
     return RepositoryOperationResultSchema.parse({ operation, operationInstanceId, status, code, message, items: [], byteCount: 0, itemCount: 0, truncated: false, truncationReason: null, continuationCursor: null, historyBoundary: code === "history_boundary" ? { truncated: true, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });
   }
 
-  private failureOf(error: unknown, callerSignal: AbortSignal): { status: Exclude<RepositoryOperationResult["status"], "ok">; code: RepositoryFailureCode; message: string } {
+  private failureOf(error: unknown, callerSignal: AbortSignal, deadlineSignal?: AbortSignal): { status: Exclude<RepositoryOperationResult["status"], "ok">; code: RepositoryFailureCode; message: string } {
     if (callerSignal.aborted) return { status: "cancelled", code: "cancelled", message: "repository request cancelled" };
+    if (deadlineSignal?.aborted) return { status: "cancelled", code: "deadline_exceeded", message: "repository call deadline exceeded" };
     if (error instanceof RepositoryPathPolicyError) return { status: error.code === "path_denied" ? "denied" : "invalid", code: error.code, message: error.message };
     const candidate = error as { code?: unknown; name?: unknown; message?: unknown };
     const rawCode = typeof candidate.code === "string" ? candidate.code : "internal";

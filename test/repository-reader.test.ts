@@ -225,6 +225,55 @@ test("in-flight repository calls cannot outlive the remaining attempt deadline",
   }
 });
 
+test("non-Git repository calls preserve internal deadline expiry", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const sourceEntry = fixture.descriptor.entries.find((entry) => entry.path === "source.txt")!;
+    const reader = new RepositoryReader({
+      descriptor: {
+        ...fixture.descriptor,
+        entries: Array.from({ length: 20_000 }, (_, index) => ({
+          ...sourceEntry,
+          path: `file-${index.toString().padStart(5, "0")}.txt`,
+        })),
+      },
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 64 * 1024, maxResponseBytes: 64 * 1024, maxAttemptMs: 10_000, maxItemsPerCall: 20_000, maxCallMs: 1 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "glob", pattern: "**" }, new AbortController().signal);
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.code, "deadline_exceeded");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("worktree reads cannot return success after the absolute attempt deadline", async () => {
+  const fixture = repositoryViewFixture();
+  let nowCalls = 0;
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 1_000, maxItemsPerCall: 10, maxCallMs: 5_000 },
+      now: () => nowCalls++ < 3 ? 0 : 1_000,
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 1 } }, new AbortController().signal);
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.code, "deadline_exceeded");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("glob treats brackets as literal path characters", async () => {
   const fixture = repositoryViewFixture();
   try {
@@ -316,6 +365,33 @@ test("blame redacts non-retained revisions from previous fields", async () => {
       assert.doesNotMatch(result.items[0].text, new RegExp(omittedRevision, "u"));
       assert.equal(result.items[0].metadata.historyTruncated, true);
     }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("blame returns no content for an empty half-open line range", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 64 * 1024, maxResponseBytes: 64 * 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({
+      operation: "git_blame",
+      path: "source.txt",
+      revision: fixture.descriptor.headRevision,
+      startLine: 2,
+      endLineExclusive: 2,
+    }, new AbortController().signal);
+
+    assert.equal(result.status, "ok");
+    assert.deepEqual(result.items, []);
+    assert.equal(result.itemCount, 0);
+    assert.equal(result.byteCount, 0);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

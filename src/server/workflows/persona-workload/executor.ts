@@ -79,11 +79,11 @@ function materializationRequest(request: PersonaWorkloadRequest): RepositoryMate
 }
 
 function workloadPrompt(request: PersonaWorkloadRequest): string {
-  if (request.textEvidence.length === 0) return request.prompt;
-  const blocks = request.textEvidence.map((evidence) =>
+  const personaGuidance = `<persona-guidance id=${JSON.stringify(request.persona.id)} name=${JSON.stringify(request.persona.name)}>\n${request.persona.guidance}\n</persona-guidance>`;
+  const evidenceBlocks = request.textEvidence.map((evidence) =>
     `<submission-evidence id=${JSON.stringify(evidence.id)} kind=${JSON.stringify(evidence.kind)} sha256=${JSON.stringify(evidence.sha256)}>\n${evidence.text}\n</submission-evidence>`,
   );
-  return `${request.prompt}\n\n${blocks.join("\n\n")}`;
+  return [request.prompt, personaGuidance, ...evidenceBlocks].join("\n\n");
 }
 
 type PersonaLlmCall = Extract<PersonaWorkloadResult, { kind: "succeeded" }>["llmCall"];

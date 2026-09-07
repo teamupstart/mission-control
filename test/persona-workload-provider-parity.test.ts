@@ -524,7 +524,17 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
     }
     assert.equal(launches.length, 2);
     assert.deepEqual(launches[0]?.allowedTools, launches[1]?.allowedTools);
-    assert.match(launches[0]!.prompt, /daemon-owned evidence/);
+    assert.equal(launches[0]?.prompt, launches[1]?.prompt);
+    for (const launch of launches) {
+      const personaBoundary = launch.prompt.indexOf("<persona-guidance");
+      const personaGuidance = launch.prompt.indexOf("Review carefully");
+      const personaBoundaryEnd = launch.prompt.indexOf("</persona-guidance>");
+      const evidence = launch.prompt.indexOf("daemon-owned evidence");
+      assert.ok(personaBoundary >= 0);
+      assert.ok(personaBoundary < personaGuidance);
+      assert.ok(personaGuidance < personaBoundaryEnd);
+      assert.ok(personaBoundaryEnd < evidence);
+    }
     assert.equal(launches.some((value) => value.workingDirectory === fixture.root), false);
     for (const events of [claude, codex]) {
       const terminal = events.at(-1);

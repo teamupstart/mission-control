@@ -490,6 +490,61 @@ test("git log denies paths outside the captured descriptor even when retained hi
   }
 });
 
+test("path-filtered git log stops before comparing against an omitted parent", async () => {
+  const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
+  const git = (args: string[]): string => fixtureGit(fixture.root, args);
+  try {
+    const omittedRevision = fixture.descriptor.headRevision;
+    writeFileSync(join(fixture.root, "source.txt"), "middle\n", "utf8");
+    git(["add", "source.txt"]);
+    git(["commit", "-qm", "middle changes source"]);
+    const middleRevision = git(["rev-parse", "HEAD"]);
+    writeFileSync(join(fixture.root, "source.txt"), "head\n", "utf8");
+    git(["add", "source.txt"]);
+    git(["commit", "-qm", "head changes source"]);
+    const headRevision = git(["rev-parse", "HEAD"]);
+    const tree = git(["rev-parse", "HEAD^{tree}"]);
+    const blob = git(["rev-parse", "HEAD:source.txt"]);
+    const descriptor = {
+      ...fixture.descriptor,
+      headRevision,
+      sourceRevision: headRevision,
+      indexTree: tree,
+      worktreeTree: tree,
+      retainedRevisions: [
+        { id: headRevision, parents: [middleRevision], incrementalAllowedBlobBytes: 0 },
+        { id: middleRevision, parents: [omittedRevision], incrementalAllowedBlobBytes: 0 },
+      ],
+      frontier: [middleRevision],
+      omittedParents: [omittedRevision],
+      retainedCommitCount: 2,
+      entries: fixture.descriptor.entries.map((entry) => (
+        entry.path === "source.txt"
+          ? { ...entry, indexObjectId: blob, worktreeObjectId: blob, status: "clean" as const }
+          : entry
+      )),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 64 * 1024, maxResponseBytes: 64 * 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "git_log", path: "source.txt", limit: 10 }, new AbortController().signal);
+
+    assert.equal(result.status, "ok");
+    assert.deepEqual(result.items.map((item) => item.metadata.revision), [headRevision]);
+    assert.deepEqual(result.historyBoundary, {
+      truncated: true,
+      frontier: [middleRevision],
+      omittedParents: [omittedRevision],
+    });
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("search returns a byte-bounded progressing page without collecting later matches", async () => {
   const fixture = repositoryViewFixture();
   try {

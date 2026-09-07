@@ -531,7 +531,11 @@ export class RepositoryReader {
     const items: PendingItem[] = [];
     for (const revision of revisions) {
       if (path) {
-        const changed = await this.git(["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", revision.id, "--", path], signal);
+        const firstParent = revision.parents[0];
+        if (firstParent && !this.retained.has(firstParent)) break;
+        const changed = firstParent
+          ? await this.git(["diff", "--name-only", "--no-ext-diff", "--no-textconv", firstParent, revision.id, "--", path], signal)
+          : await this.git(["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", revision.id, "--", path], signal);
         if (!changed.trim()) continue;
       }
       const text = scrubSecrets(await this.git(["show", "-s", "--format=%H%x00%P%x00%aI%x00%an%x00%s", revision.id], signal));

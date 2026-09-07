@@ -114,6 +114,43 @@ function failureResult(
   };
 }
 
+function settleBeforeAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  releaseLateValue?: (value: T) => Promise<void>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    operation.then(
+      (value) => {
+        if (settled) {
+          if (releaseLateValue) {
+            void Promise.resolve().then(() => releaseLateValue(value)).catch(() => {});
+          }
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   private readonly workloads = new Map<string, WorkloadState>();
   private readonly idempotencyKeys = new Map<string, string>();
@@ -158,6 +195,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       terminal: null,
       cancellationGeneration: request.cancellationGeneration,
     };
+    const deadlineController = new AbortController();
     this.idempotencyKeys.set(request.workloadId, request.idempotencyKey);
     const abort = () => state.controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
@@ -168,13 +206,15 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       if (state.controller.signal.aborted) return;
       const remaining = request.deadline - this.now();
       if (remaining <= 0) {
-        state.controller.abort(new PersonaWorkloadDeadlineError());
+        const reason = new PersonaWorkloadDeadlineError();
+        deadlineController.abort(reason);
+        state.controller.abort(reason);
         return;
       }
       deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
     };
     enforceDeadline();
-    void this.run(state, request)
+    void this.run(state, request, deadlineController.signal)
       .finally(() => {
         if (deadlineTimer) clearTimeout(deadlineTimer);
         signal.removeEventListener("abort", abort);
@@ -208,7 +248,11 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     state.controller.abort(new Error(`Persona workload cancelled at generation ${generation}`));
   }
 
-  private async run(state: WorkloadState, request: PersonaWorkloadRequest): Promise<void> {
+  private async run(
+    state: WorkloadState,
+    request: PersonaWorkloadRequest,
+    deadlineSignal: AbortSignal,
+  ): Promise<void> {
     this.emit(state, { kind: "accepted", cancellationGeneration: state.cancellationGeneration });
     let lease: RepositoryViewLease | null = null;
     let workDir: string | null = null;
@@ -220,9 +264,13 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         state.controller.abort(new PersonaWorkloadDeadlineError());
         throw state.controller.signal.reason;
       }
-      lease = await this.options.materializer.materialize(
-        materializationRequest(request),
-        state.controller.signal,
+      lease = await settleBeforeAbort(
+        this.options.materializer.materialize(
+          materializationRequest(request),
+          state.controller.signal,
+        ),
+        deadlineSignal,
+        (lateLease) => lateLease.release(),
       );
       const descriptor = RepositoryViewDescriptorSchema.parse(lease.descriptor);
       if (
@@ -270,9 +318,12 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         hostedSearchMaximum: request.hostedSearchMaximum,
       };
       this.emit(state, { kind: "provider_started", provider: request.provider, model: request.model });
-      const providerResult = await this.options.providers[request.provider].run(
-        launch,
-        state.controller.signal,
+      const providerResult = await settleBeforeAbort(
+        this.options.providers[request.provider].run(
+          launch,
+          state.controller.signal,
+        ),
+        deadlineSignal,
       );
       llmCall = {
         callId: request.llmCall.callId,

@@ -211,7 +211,9 @@ Versions 5 through 7 reach End first and then have the completion policy type a 
 run is already successful at the moment the pull request is asked for and nothing proves one
 arrived. In version 8 the pull request is an authored stage: it types the same skill, and its
 `complete` route reaches End only once an open pull request has been observed at the commit the
-continuation captured. End still means the authored graph succeeded - and by the time the
+continuation captured and the content tree at that commit matches the content tree accepted by
+the parent judged submission. A packaging commit may have a new commit id while preserving that
+tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
@@ -408,6 +410,13 @@ the turn finishes, Mission Control captures **fresh evidence** and resumes from 
 keep their attempts on the evidence they actually reviewed. Only a real evaluation failure
 starts round *N+1* back at Session.
 
+There is one deliberate completion boundary. If every node reachable from the action's
+`complete` route is End, the durable continuation is shipping proof rather than a new review
+input. Mission Control still captures and seals that same-round child for crash safety and audit
+history, but it does not apply criterion-mapped readiness, deliver an evidence-repair packet, or
+create a Persona or Check attempt. An action with any reachable Persona or Check keeps the normal
+fresh-evidence rule.
+
 Publishing snapshots the action exactly as it snapshots a Persona - name, description,
 instruction, required skill, completion, source id and source revision. Editing or archiving
 the source afterwards cannot reach a version already published; version history marks the
@@ -429,13 +438,20 @@ What the daemon has to see before the stages below it run, and before End:
 3. that pull request is on the **same repository root and the same branch** as the bound
    session's checkout;
 4. it is **open**, and the last poll saw its remote head at the **exact commit** the
-   continuation captured.
+   continuation captured;
+5. the Git content tree at that remote-head commit is identical to the server-captured content
+   tree accepted by the parent judged submission.
 
 None of that can be satisfied by the session saying so. A pull request URL on the session card
 is a lookup hint and nothing more, the branch name is not proof, and a pull request merely
 existing is not proof. The head comparison is between full object ids on both sides: evidence
 capture records an abbreviated commit, so the abbreviation is resolved against the repository's
 object database rather than prefix-matched.
+
+The tree comparison is content-semantic rather than commit-semantic. A packaging commit may
+change author, message, parent, or commit id without changing reviewed content. If the published
+tree differs, the action blocks durably with `published_content_changed`; the prior verdict is
+not reused and End is not reached. The content must go through a fresh review before shipping.
 
 **Mission Control never polls GitHub for this.** The GitHub Inspector's existing poller is the only
 thing that talks to a provider, and the action reads what it wrote down - which is also why a
@@ -800,6 +816,11 @@ The operator may instead continue through the run detail after entering a reason
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.
 
+A same-round SessionAction continuation whose reachable downstream graph contains only End is
+outside this gate. It is a verified shipping completion with no evaluator consumer, not another
+criterion-evidence cycle. Continuations with a reachable Persona or Check remain submission-local
+and must supply fresh mapped evidence as usual.
+
 `off` remains the default for author-created and duplicated workflows and preserves Phase 1's
 advisory behavior. An unavailable compaction result and model-suggested proof-class mismatch remain
 warnings rather than hard gaps. A null readiness value means historical data or an off-policy
@@ -1016,6 +1037,11 @@ request it verified, and the short commit its remote head was observed at. That 
 only once the proof exists - offering to open a pull request nothing has verified would be the
 claim this whole completion refuses to make.
 
+When that action's only reachable downstream node is End, the child segment is labelled
+**verified shipping** rather than another evidence number. Its notice states that the pull
+request is open at the captured commit, published content matches the prior accepted review, and
+no new evidence review was started.
+
 Each waiting or blocked action also carries the sentence behind its chip, and its own card
 under **Session actions** - separate from the **Review worklist**, which is about what the run
 decided rather than what it did. The card names the snapshot the version froze, what the action
@@ -1109,6 +1135,9 @@ mid-way, then carried on, would say nothing about it from a collapsed tile. That
 failed capture whether or not its tray is open, and independent of what is selected. Exactly
 one tray is open at a time and it belongs to the round being read, which the tile announces
 with `aria-expanded`.
+For a terminal Pull Request continuation, the badge reads **review + shipping** and the child
+chip reads **verified shipping**. The durable child still has its immutable segment identity;
+only its presentation and readiness boundary distinguish shipping proof from evaluator input.
 Selecting a chip says in a sentence which action produced that segment and that it cost no
 repair round. A round with a single segment carries no badge and opens no tray, because there
 is no distinction to draw. A round is therefore always one tile: a run that captured evidence

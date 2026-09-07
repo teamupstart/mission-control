@@ -1490,6 +1490,8 @@ export const SESSION_ACTION_BLOCK_CODES = [
   "delivery_uncertain",
   "capture_failed",
   "expectation_unmet",
+  /** Published pull request content differs from the content accepted by the prior verdict. */
+  "published_content_changed",
   /**
    * The pull request this action's work belongs to is closed or merged.
    *
@@ -1538,6 +1540,8 @@ export type SessionActionContinuationExpectation =
       branch: string;
       /** The commit the pull request's remote head was observed at. */
       expectedHeadOid: string;
+      /** Complete content tree accepted by the parent judged submission. */
+      acceptedContentTreeOid?: string | null;
       /** When that observation was made, so provenance can say how fresh the proof was. */
       observedAt: number;
     };
@@ -1783,6 +1787,37 @@ export function isSessionActionNode(
 export interface PublishedWorkflowGraph {
   nodes: PublishedWorkflowNode[];
   edges: WorkflowEdge[];
+}
+
+/**
+ * Whether an action's successful continuation is shipping-only.
+ *
+ * Every reachable node must be End, so a Persona, Command, join, SessionAction, or missing
+ * route keeps the ordinary fresh-evidence contract. Keeping this browser-safe lets the
+ * runtime and the run UI describe the same immutable published graph without duplicating
+ * traversal rules.
+ */
+export function sessionActionContinuationReachesOnlyEnd(
+  graph: PublishedWorkflowGraph,
+  nodeId: string,
+): boolean {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const pending = graph.edges
+    .filter((edge) => edge.source === nodeId && edge.sourcePort === "complete")
+    .map((edge) => edge.target);
+  if (pending.length === 0) return false;
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const targetId = pending.pop()!;
+    if (visited.has(targetId)) continue;
+    visited.add(targetId);
+    const target = nodes.get(targetId);
+    if (!target || target.kind !== "end") return false;
+    for (const edge of graph.edges) {
+      if (edge.source === targetId) pending.push(edge.target);
+    }
+  }
+  return true;
 }
 
 export const WORKFLOW_DIAGNOSTIC_CODES = [
@@ -3763,6 +3798,8 @@ export interface WorkflowContextSnapshot {
   };
   evidence: {
     headSha: string | null;
+    /** Complete tracked and nonignored worktree content, independent of commit identity. */
+    contentTreeOid?: string | null;
     diffFingerprint: string;
     diff: string;
     diffTruncated: boolean;

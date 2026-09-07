@@ -630,10 +630,12 @@ function SessionActionCard({
   attempt,
   status,
   state,
+  verifiedShipping,
 }: {
   attempt: WorkflowNodeAttempt;
   status: PipelineStatus;
   state: SessionActionProgress | null;
+  verifiedShipping: boolean;
 }): React.JSX.Element {
   const snapshot = attempt.sessionAction;
   const blocked = state?.blocked ?? null;
@@ -659,8 +661,9 @@ function SessionActionCard({
           : state?.wait
             ? actionWaitSentence(state.wait)
             : state?.complete
-              ? "The turn finished, and the fresh evidence the stages below it review was"
-                + " captured."
+              ? verifiedShipping
+                ? "The pull request was verified open at the captured commit, its content matched the prior review, and the workflow reached End."
+                : "The turn finished, and the fresh evidence the stages below it review was captured."
               : attemptStateLabel(attempt.state)}
       </p>
       {blocked && <ErrorLine raw={blocked.detail} />}
@@ -2420,6 +2423,10 @@ export function WorkflowRunView({
                   attempt={attempt}
                   state={state}
                   status={sessionActionStatus(attempt.state, state?.wait ?? null)}
+                  verifiedShipping={Boolean(
+                    viewedRound?.verifiedShipping
+                    && continuationSourceAttempt(detail, viewedRound.submissionId)?.id === attempt.id
+                  )}
                 />
               );
             })}

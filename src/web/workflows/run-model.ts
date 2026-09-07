@@ -31,6 +31,7 @@ import {
   verdictAuthor,
   workflowResumptionWithheldSentence,
   workflowRunGaveUp,
+  sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
@@ -469,6 +470,27 @@ export interface RoundView {
    */
   continuedFrom: string | null;
   refinementReason: WorkflowSubmission["refinementReason"];
+  /** A completed PR continuation whose only reachable consumer is End. */
+  verifiedShipping: boolean;
+}
+
+function submissionIsVerifiedShipping(
+  detail: WorkflowRunDetail,
+  submission: WorkflowSubmission,
+): boolean {
+  if (
+    submission.refinementReason !== "session_action"
+    || submission.continuationNodeId === null
+    || detail.version === null
+  ) return false;
+  const continuation = continuationSourceAttempt(detail, submission.id);
+  const proof = continuation ? provenPullRequest(sessionActionProgress(continuation)) : null;
+  return continuation?.state === "completed"
+    && proof?.acceptedContentTreeOid != null
+    && sessionActionContinuationReachesOnlyEnd(
+      detail.version.graph,
+      submission.continuationNodeId,
+    );
 }
 
 /**
@@ -495,17 +517,23 @@ export function runRounds(
   return submissions.map((submission) => {
     const verdicts = attemptsFor(detail, submission.id).map(verdictOf);
     const changesRequested = verdicts.some((verdict) => verdict?.verdict === "fail");
+    const verifiedShipping = submissionIsVerifiedShipping(detail, submission);
     return {
       submissionId: submission.id,
       round: submission.round,
       segment: submission.segment,
-      label: roundLabelFor(submission, (segmentsPerRound.get(submission.round) ?? 1) > 1),
+      label: roundLabelFor(
+        submission,
+        (segmentsPerRound.get(submission.round) ?? 1) > 1,
+        verifiedShipping,
+      ),
       status: submissionStatus(submission, changesRequested),
       inspectorOnly: submission.mode === "inspector_only",
       continuedFrom: submission.continuationNodeId === null
         ? null
         : nameOfNode(submission.continuationNodeId),
       refinementReason: submission.refinementReason ?? null,
+      verifiedShipping,
     };
   });
 }
@@ -572,11 +600,13 @@ export function runRoundGroups(rounds: readonly RoundView[]): RoundGroupView[] {
  * pick. Static text keeps the whole strip still while the tray does the talking.
  */
 export function roundEvidenceCountLabel(group: RoundGroupView): string {
+  if (group.segments.some((segment) => segment.verifiedShipping)) return "review + shipping";
   return `${group.segments.length} evidence`;
 }
 
 /** A tray chip's own name: one-based for a human, as the round label counts it. */
 export function evidenceChipLabel(segment: RoundView): string {
+  if (segment.verifiedShipping) return "verified shipping";
   return `evidence ${segment.segment + 1}`;
 }
 
@@ -664,12 +694,18 @@ function segmentCounts(submissions: readonly WorkflowSubmission[]): Map<number, 
   return counts;
 }
 
-function roundLabelFor(submission: WorkflowSubmission, continued: boolean): string {
+function roundLabelFor(
+  submission: WorkflowSubmission,
+  continued: boolean,
+  verifiedShipping = false,
+): string {
   return `Round ${submission.round}`
     + (submission.mode === "inspector_only" ? " · GitHub Inspector" : "")
     // One-based for a human. `segment` is a durable zero-based index and stays that way in the
     // field beside this; the label is the only place it is counted for reading.
-    + (continued ? ` · evidence ${submission.segment + 1}` : "");
+    + (continued
+      ? verifiedShipping ? " · verified shipping" : ` · evidence ${submission.segment + 1}`
+      : "");
 }
 
 /**
@@ -684,7 +720,11 @@ export function submissionRoundLabel(
   submission: WorkflowSubmission,
 ): string {
   const counts = segmentCounts(detail.submissions);
-  return roundLabelFor(submission, (counts.get(submission.round) ?? 1) > 1);
+  return roundLabelFor(
+    submission,
+    (counts.get(submission.round) ?? 1) > 1,
+    submissionIsVerifiedShipping(detail, submission),
+  );
 }
 
 /**
@@ -697,6 +737,11 @@ export function submissionRoundLabel(
  */
 export function segmentProvenanceSentence(round: RoundView): string | null {
   if (round.segment === 0) return null;
+  if (round.verifiedShipping) {
+    return "Verified shipping completion. The pull request is open at the captured commit, "
+      + "its published content matches the content accepted by the prior review, and this "
+      + "continuation reached End without another evidence review.";
+  }
   if (round.refinementReason === "evidence_preflight") {
     return `Evidence ${round.segment + 1} of round ${round.round}, captured to repair evidence preflight gaps. This refinement does not spend a Persona repair round.`;
   }
@@ -1540,6 +1585,8 @@ const ACTION_BLOCK_SENTENCES: Record<SessionActionBlockCode, string> = {
   delivery_uncertain: "The write may or may not have landed. Check the pane, then resolve it below.",
   capture_failed: "The turn finished, but fresh evidence could not be captured afterwards.",
   expectation_unmet: "The turn finished without the proof this action's completion requires.",
+  published_content_changed:
+    "The pull request content differs from the content accepted by the prior review, so it must be reviewed again.",
   pull_request_closed:
     "The pull request for this branch is closed or already merged, so this action cannot "
     + "finish against it.",

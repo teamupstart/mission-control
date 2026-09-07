@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { FULL_SHA, resolveCapturedCommit } from "../src/server/workflows/commit-id.ts";
+import { FULL_SHA, resolveCapturedCommit, resolveCommitTree } from "../src/server/workflows/commit-id.ts";
 
 /**
  * What is at stake: this resolver decides which commit a Check's worktree is pinned to, and
@@ -51,6 +51,13 @@ test("a full id for THIS repository short-circuits, and is returned exactly", ()
 
 test("a full id resolves to itself", async () => {
   assert.equal(await resolveCapturedCommit(sha1.repo, sha1.head), sha1.head);
+});
+
+test("a commit tree resolves as content identity rather than commit identity", async () => {
+  assert.equal(
+    await resolveCommitTree(sha1.repo, sha1.head),
+    git(sha1.repo, "rev-parse", `${sha1.head}^{tree}`),
+  );
 });
 
 test("an abbreviation resolves to the one commit it names", async () => {

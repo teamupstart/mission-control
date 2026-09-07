@@ -285,6 +285,15 @@ readiness before that graph can create its first attempt.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.
 
+Shipping keeps a durable same-round SessionAction continuation even when Pull Request routes
+directly to End. `captureAndActivate` classifies that immutable downstream graph before applying
+readiness: only-End reachability skips criterion-mapped readiness because there is no evaluator
+consumer, while any reachable Persona or Check preserves the fresh-evidence gate. The Pull Request
+adapter still seals the child only after the adopted pull request is open on the bound repository
+and branch at the captured commit, and after that commit's Git tree equals the parent judged
+submission's server-captured worktree tree. Commit identity may change for packaging; reviewed
+content may not.
+
 The GitHub Inspector stays in the daemon so it is present in packaged Electron builds and its state survives restarts.
 
 The GitHub Inspector comment marker `mission-inspector:v1` is append-only because it already exists on GitHub. Parse a future version alongside it rather than replacing it.

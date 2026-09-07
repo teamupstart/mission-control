@@ -23,6 +23,9 @@ import {
   continuationSourceAttempt,
   nodeStatusesForSubmission,
   runRounds,
+  evidenceChipLabel,
+  roundEvidenceCountLabel,
+  runRoundGroups,
   segmentProvenanceSentence,
   provenPullRequest,
   sessionActionProgress,
@@ -279,6 +282,7 @@ const PROVEN = {
   repositoryRoot: "/repo",
   branch: "feature/x",
   expectedHeadOid: "a".repeat(40),
+  acceptedContentTreeOid: "c".repeat(40),
   observedAt: 1_700_000_003_000,
 } as const;
 
@@ -415,6 +419,59 @@ test("a repair round holding several segments is labelled by evidence, never as 
   assert.match(sentence, /only the\s+stages after it run again/);
   // Segment zero is not a continuation and gets no sentence at all.
   assert.equal(segmentProvenanceSentence(rounds[0]!), null);
+});
+
+test("a verified terminal pull request segment is shipping completion, not evidence repair", () => {
+  const published = version();
+  published.graph = {
+    nodes: published.graph.nodes
+      .filter((node) => node.id !== REVIEWER)
+      .map((node) => node.id === ACTION && node.kind === "session_action"
+        ? { ...node, action: { ...node.action, completion: { kind: "pull_request" as const } } }
+        : node),
+    edges: [
+      { id: "e1", source: SESSION, sourcePort: "submitted", target: ACTION, targetPort: "activate" },
+      { id: "e2", source: ACTION, sourcePort: "complete", target: END, targetPort: "terminal" },
+    ],
+  };
+  const parent = submission({ id: "sub-0", round: 1, segment: 0, status: "completed" });
+  const child = submission({
+    id: "sub-1",
+    round: 1,
+    segment: 1,
+    parentSubmissionId: parent.id,
+    continuationNodeId: ACTION,
+    continuationNodeAttemptId: "att-1",
+    refinementReason: "session_action",
+    status: "completed",
+  });
+  const actionNode = published.graph.nodes.find((node) => node.id === ACTION);
+  if (!actionNode || actionNode.kind !== "session_action") {
+    throw new Error("expected the terminal pull request action node");
+  }
+  const completed = attempt({
+    id: "att-1",
+    submissionId: parent.id,
+    state: "completed",
+    sessionAction: actionNode.action,
+    output: {
+      outcome: "complete",
+      action: "Pull Request",
+      completion: "pull_request",
+      continuationSubmissionId: child.id,
+      anchor: actionState().anchor,
+      pickedUpAt: 1_700_000_001_000,
+      settledAt: 1_700_000_002_000,
+      expectation: PROVEN,
+    } as unknown as WorkflowNodeAttempt["output"],
+  });
+  const rounds = runRounds(detail({ version: published, submissions: [parent, child], attempts: [completed] }));
+  const shipping = rounds[1]!;
+  assert.equal(shipping.verifiedShipping, true);
+  assert.equal(shipping.label, "Round 1 · verified shipping");
+  assert.equal(evidenceChipLabel(shipping), "verified shipping");
+  assert.equal(roundEvidenceCountLabel(runRoundGroups(rounds)[0]!), "review + shipping");
+  assert.match(segmentProvenanceSentence(shipping) ?? "", /reached End without another evidence review/);
 });
 
 test("the action that authorized a segment is visible WITH that segment", () => {

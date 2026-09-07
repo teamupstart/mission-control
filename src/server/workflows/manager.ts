@@ -87,6 +87,7 @@ import {
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
   workflowEvidenceReadinessPolicyEnforces,
+  sessionActionContinuationReachesOnlyEnd,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
 import {
@@ -144,7 +145,7 @@ import {
   type SessionActionAdoptedPullRequest,
   type SessionActionCaptureFacts,
 } from "./session-action-adapters.ts";
-import { resolveCapturedCommit } from "./commit-id.ts";
+import { resolveCapturedCommit, resolveCommitTree } from "./commit-id.ts";
 import {
   externalSourceKey,
   type EnsureExternalBindingInput,
@@ -318,6 +319,7 @@ export interface WorkflowManagerOptions {
   readRepositoryId?: typeof readWorkflowRepositoryId;
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
+  resolveCommitTree?: (repoRoot: string, commitOid: string) => Promise<string>;
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
@@ -5090,7 +5092,7 @@ export class WorkflowManager {
   ): Promise<void> {
     const resolved = this.resolveSessionAction(attemptId);
     if (!resolved) return;
-    const { attempt, snapshot, binding, run } = resolved;
+    const { attempt, snapshot, binding, run, submission } = resolved;
     let state = resolved.state;
 
     const delivery = state.deliveryId ? this.store.getDelivery(state.deliveryId) : null;
@@ -5196,6 +5198,7 @@ export class WorkflowManager {
     const capturedHeadOid = capturedChild
       ? await this.capturedContinuationHead(capturedChild, repository?.root ?? null)
       : null;
+    const parentContext = WorkflowContextSnapshotSchema.safeParse(submission.context);
     const decision = sessionActionAdapter(snapshot.completion.kind).decide({
       snapshot,
       session,
@@ -5207,6 +5210,9 @@ export class WorkflowManager {
       repository,
       adoptedPullRequests: await this.adoptedPullRequestsForAction(anchor.deliveredAt),
       capturedHeadOid,
+      acceptedContentTreeOid: parentContext.success
+        ? parentContext.data.evidence.contentTreeOid ?? null
+        : null,
     });
     if (decision.kind === "blocked") {
       this.blockSessionAction(attempt.id, decision.code, decision.detail, now);
@@ -5490,12 +5496,24 @@ export class WorkflowManager {
         "The continuation evidence could not be read back after capture.", Date.now());
       return false;
     }
+    const capturedHeadOid = await this.capturedContinuationHead(child, input.repositoryRoot);
+    const capturedCommitTreeOid = capturedHeadOid && input.repositoryRoot
+      ? await (this.options.resolveCommitTree ?? resolveCommitTree)(
+          input.repositoryRoot,
+          capturedHeadOid,
+        ).catch(() => null)
+      : null;
     const capture: SessionActionCaptureFacts = {
       context: context.data,
-      capturedHeadOid: await this.capturedContinuationHead(child, input.repositoryRoot),
+      capturedHeadOid,
+      capturedCommitTreeOid,
     };
-    const problem = adapter.validateCapture(expectation, capture);
-    if (problem) {
+    const validation = adapter.validateCapture(expectation, capture);
+    if (validation?.kind === "blocked") {
+      this.blockSessionAction(attempt.id, validation.code, validation.detail, Date.now());
+      return false;
+    }
+    if (validation) {
       // Deliberately a WAIT rather than a block when the expectation has simply not been met
       // yet: the child row stays reserved, nothing downstream activates, and the next sweep
       // re-checks. A block here would end a run for a race.
@@ -5503,7 +5521,7 @@ export class WorkflowManager {
       this.store.appendEvent(child.runId, "session_action_expectation_unmet", {
         attemptId: attempt.id,
         submissionId: child.id,
-        detail: problem,
+        detail: validation.detail,
       }, Date.now());
       return false;
     }
@@ -6041,7 +6059,7 @@ export class WorkflowManager {
               outputBytes: 0,
               costUsd: null,
               errorCode: null,
-            });
+          });
           },
           finish: (attempt, result) => {
             const id = contextCallIds.get(attempt);
@@ -6086,12 +6104,21 @@ export class WorkflowManager {
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
-      const enforcingReadiness = workflowEvidenceReadinessPolicyEnforces(
-        version?.evidenceReadinessPolicy,
-      );
-      const readiness = frozenCoverage.length === 0 && !enforcingReadiness
+      const shippingOnlyContinuation = submission.refinementReason === "session_action"
+        && submission.continuationNodeId !== null
+        && version !== null
+        && version !== undefined
+        && sessionActionContinuationReachesOnlyEnd(
+          version.graph,
+          submission.continuationNodeId,
+        );
+      const enforcingReadiness = !shippingOnlyContinuation
+        && workflowEvidenceReadinessPolicyEnforces(version?.evidenceReadinessPolicy);
+      const readiness = shippingOnlyContinuation
         ? null
-        : evaluateWorkflowEvidenceReadiness({
+        : frozenCoverage.length === 0 && !enforcingReadiness
+          ? null
+          : evaluateWorkflowEvidenceReadiness({
             canonicalCriteria: context.canonicalCriteria ?? [],
             coverage: frozenCoverage,
             evidence: this.store.submissionFrozenEvidenceIdentities(submission.id),
@@ -6099,7 +6126,7 @@ export class WorkflowManager {
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
               : null,
             enforceCoverage: enforcingReadiness,
-          });
+            });
       const runnable = this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(context),
         evidence: workflowJson(context.evidence),
@@ -6190,7 +6217,7 @@ export class WorkflowManager {
           current: this.store.getRun(run.id),
         };
       }
-      if (version) {
+      if (version && !shippingOnlyContinuation) {
         const evaluated = evidenceReadinessEvaluatedEvent({
           submission: runnable,
           readiness,

@@ -165,7 +165,7 @@ const actionWait = async (daemon: DaemonHandle, runId: string): Promise<string |
   (await api<{ summary: { actionWait?: string | null } }>(daemon, `/api/workflow-runs/${runId}`))
     .summary.actionWait ?? null;
 
-test("a pull request action names each stray, then completes with its provenance", async ({
+test("a pull request action names each stray, then completes as verified shipping", async ({
   dashboard,
   daemon,
 }) => {
@@ -311,6 +311,12 @@ test("a pull request action names each stray, then completes with its provenance
   // Those are the same here, and the point of printing it is that a reader can tell when they
   // are not.
   await expect(card).not.toContainText("Awaiting");
+  const shippingNotice = dashboard.locator('[role="status"]', {
+    hasText: "Verified shipping completion",
+  });
+  await expect(shippingNotice).toContainText("Verified shipping completion");
+  await expect(shippingNotice).toContainText("without another evidence review");
+  await expect(dashboard.getByRole("button", { name: /verified shipping/i })).toBeVisible();
   await shoot(dashboard, "13-pr-verified-provenance");
 });
 

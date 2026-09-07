@@ -4592,6 +4592,7 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     repositoryRoot: z.string().min(1).max(4_000),
     branch: z.string().min(1).max(400),
     expectedHeadOid: CommitOidSchema,
+    acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
     observedAt: z.number().int(),
   }),
 ]);
@@ -5217,6 +5218,7 @@ export const WorkflowContextSnapshotSchema = z.object({
   }),
   evidence: z.object({
     headSha: z.string().max(100).nullable(),
+    contentTreeOid: CommitOidSchema.nullable().optional().default(null),
     diffFingerprint: z.string().min(1).max(200),
     diff: z.string(),
     diffTruncated: z.boolean(),

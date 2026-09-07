@@ -9,6 +9,7 @@ import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   normalizeWorkflowName,
   personaSnapshotIsOutdated,
+  sessionActionContinuationReachesOnlyEnd,
 } from "../src/shared/workflow.ts";
 import type {
   PublishedWorkflowGraph,
@@ -67,6 +68,18 @@ test("No-Mistakes Review preserves evidence readiness from version 13 onward", (
       true,
     );
   }
+});
+
+test("No-Mistakes Review terminates its Pull Request action directly at End", () => {
+  const builtin = BUILTIN_WORKFLOWS[0]!;
+  const current = builtin.versions.at(-1)!;
+  const pullRequest = current.graph.nodes.find((node) =>
+    node.kind === "session_action" && node.action.completion.kind === "pull_request");
+  assert.ok(pullRequest && pullRequest.kind === "session_action");
+  assert.equal(
+    sessionActionContinuationReachesOnlyEnd(current.graph, pullRequest.id),
+    true,
+  );
 });
 
 test("the shipped graph validates clean against the real built-in Persona catalog", () => {

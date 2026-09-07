@@ -308,6 +308,48 @@ test("blame omits historical path fields that could disclose denied names", asyn
   }
 });
 
+test("git log denies paths outside the captured descriptor even when retained history contains them", async () => {
+  const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
+  const git = (args: string[]): string => fixtureGit(fixture.root, args);
+  try {
+    writeFileSync(join(fixture.root, "retired.txt"), "historical content\n", "utf8");
+    git(["add", "retired.txt"]);
+    git(["commit", "-qm", "add retired file"]);
+    const addedRevision = git(["rev-parse", "HEAD"]);
+    rmSync(join(fixture.root, "retired.txt"));
+    git(["add", "-u", "retired.txt"]);
+    git(["commit", "-qm", "remove retired file"]);
+    const headRevision = git(["rev-parse", "HEAD"]);
+    const tree = git(["rev-parse", "HEAD^{tree}"]);
+    const descriptor = {
+      ...fixture.descriptor,
+      headRevision,
+      sourceRevision: headRevision,
+      indexTree: tree,
+      retainedRevisions: [
+        { id: headRevision, parents: [addedRevision], incrementalAllowedBlobBytes: 0 },
+        { id: addedRevision, parents: [], incrementalAllowedBlobBytes: 0 },
+      ],
+      frontier: [addedRevision],
+      retainedCommitCount: 2,
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 64 * 1024, maxResponseBytes: 64 * 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "git_log", path: "retired.txt", limit: 10 }, new AbortController().signal);
+
+    assert.equal(result.status, "denied");
+    assert.equal(result.code, "path_denied");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("search returns a byte-bounded progressing page without collecting later matches", async () => {
   const fixture = repositoryViewFixture();
   try {

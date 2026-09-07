@@ -171,7 +171,7 @@ Implement:
 - `git_status`: manifest-backed exact captured classification, never live `git status`;
 - `git_diff`: only the four approved layer pairs, optional validated scope, explicit literal allowlist before content generation;
 - `git_show`: captured HEAD or a revision in the descriptor's retained set with fixed metadata format; patch mode has exactly three cases: compare a true root with the empty tree, compare a non-root only when its recorded first parent is retained, or return `history_boundary` with no patch when that first parent is omitted; reject outside revisions as `revision_out_of_range`;
-- `git_log`: descriptor-retained ancestry only, fixed metadata-only format, optional validated allowed path, no patch/stat/name flags, and explicit terminal boundary metadata;
+- `git_log`: descriptor-retained ancestry only, fixed metadata-only format, optional path that must resolve to an approved descriptor entry, no patch/stat/name flags, and explicit terminal boundary metadata;
 - `git_blame`: bounded allowed regular file/range against the retained view, with boundary attribution and `historyTruncated`; omit Git's historical filename and previous-path fields because the returned item already carries the approved canonical path.
 
 Binary repository payloads are denied. Phase 1 does not return raw base64 or implement a safe bounded binary preview; byte windows remain available for UTF-8 repository text and keep raw-blob byte coordinates.

@@ -498,14 +498,14 @@ export class RepositoryReader {
   }
 
   private async log(request: Extract<RepositoryOperationRequest, { operation: "git_log" }>, position: number, signal: AbortSignal) {
-    if (request.path) approveRepositoryPath(request.path);
+    const path = request.path ? this.entry(request.path).path : null;
     const start = request.revision ? this.descriptor.retainedRevisions.findIndex((item) => item.id === request.revision) : 0;
     if (request.revision && start < 0) throw Object.assign(new Error("revision is outside the retained history"), { code: "revision_out_of_range" });
     const revisions = this.descriptor.retainedRevisions.slice(Math.max(0, start), Math.max(0, start) + request.limit);
     const items: PendingItem[] = [];
     for (const revision of revisions) {
-      if (request.path) {
-        const changed = await this.git(["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", revision.id, "--", request.path], signal);
+      if (path) {
+        const changed = await this.git(["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", revision.id, "--", path], signal);
         if (!changed.trim()) continue;
       }
       const text = scrubSecrets(await this.git(["show", "-s", "--format=%H%x00%P%x00%aI%x00%an%x00%s", revision.id], signal));

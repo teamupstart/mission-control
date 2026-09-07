@@ -4853,12 +4853,23 @@ export const WorkflowCanonicalCriterionSchema = z.object({
     .refine(
       (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
       `Workflow canonical criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
-    ),
+  ),
   material: z.boolean(),
   suggestedProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
-  matchedClientCriterionIds: z.array(
+});
+
+const WorkflowMatchedClientCriterionIdsSchema = z.array(
     z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
-  ).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+  ).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims);
+
+export const WorkflowCriterionMappingSchema = z.object({
+  criterionId: z.string().min(1).max(200),
+  matchedClientCriterionIds: WorkflowMatchedClientCriterionIdsSchema,
+});
+
+const WorkflowCanonicalCriterionInputSchema = WorkflowCanonicalCriterionSchema.extend({
+  /** Historical snapshots stored packet-specific mappings inside the stable criterion. */
+  matchedClientCriterionIds: WorkflowMatchedClientCriterionIdsSchema.optional(),
 });
 
 export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceReadinessResult> = z.object({
@@ -5192,18 +5203,26 @@ export const WorkflowCheckEvidenceSchema = z.object({
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
 });
 
-export const WorkflowContextSnapshotSchema = z.object({
+const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
     refined: z.string().max(16_000).nullable(),
     sourceNoteKey: z.string().min(1).max(1_000),
   }),
   humanDecisions: z.array(WorkflowHumanDecisionSchema).max(200),
+  intentFingerprint: z.string().length(64).optional(),
   constraints: z.array(z.string().max(4_000)).max(100),
   acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
-  canonicalCriteria: z.array(WorkflowCanonicalCriterionSchema)
+  canonicalCriteria: z.array(WorkflowCanonicalCriterionInputSchema)
     .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
     .default([]),
+  criterionMappings: z.array(WorkflowCriterionMappingSchema)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+    .refine(
+      (mappings) => new Set(mappings.map((mapping) => mapping.criterionId)).size === mappings.length,
+      "Workflow criterion mappings must be unique by canonical criterion id",
+    )
+    .optional(),
   priorPersonaFeedback: z.array(z.object({
     personaName: z.string().max(WORKFLOW_LIMITS.personaName),
     summary: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
@@ -5275,7 +5294,36 @@ export const WorkflowContextSnapshotSchema = z.object({
     runner: z.enum(LLM_RUNNER_IDS).nullable(),
     model: z.string().max(500).nullable(),
     error: z.string().max(8_000).nullable(),
+    reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
   }),
+});
+
+export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.transform((value) => {
+  const legacyMappings = value.canonicalCriteria.flatMap((criterion) =>
+    criterion.matchedClientCriterionIds === undefined
+      ? []
+      : [{
+          criterionId: criterion.id,
+          matchedClientCriterionIds: criterion.matchedClientCriterionIds,
+        }]);
+  return {
+    ...value,
+    canonicalCriteria: value.canonicalCriteria.map((criterion) => {
+      const { matchedClientCriterionIds: _legacyMapping, ...stable } = criterion;
+      return stable;
+    }),
+    criterionMappings: value.criterionMappings ?? legacyMappings,
+  };
+}).superRefine((value, ctx) => {
+  const criterionIds = new Set(value.canonicalCriteria.map((criterion) => criterion.id));
+  value.criterionMappings.forEach((mapping, index) => {
+    if (criterionIds.has(mapping.criterionId)) return;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["criterionMappings", index, "criterionId"],
+      message: "Workflow criterion mapping names an unknown canonical criterion",
+    });
+  });
 }).refine((value) => jsonAtMost(value, WORKFLOW_EXECUTION_LIMITS.contextJsonBytes), {
   message: `Workflow context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
 });

@@ -22,12 +22,16 @@ const {
   probeMatchesEvidence,
   readWorkflowEvidenceProbe,
   readWorkflowContextRaw,
+  reconcileWorkflowCriterionMappings,
   workflowReviewDecision,
   workflowContextFingerprint,
+  workflowIntentFingerprint,
   WORKFLOW_TRANSCRIPT_LIMITS,
 } = await import("../src/server/workflows/context.ts");
 const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { forgetInjections, recordInjection } = await import("../src/server/injections.ts");
+const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
+const { evaluateWorkflowEvidenceReadiness } = await import("../src/shared/workflow.ts");
 
 const raw = {
   primaryGoal: { rawPrompt: "goal", refined: "refined", sourceNoteKey: "n1" },
@@ -310,6 +314,146 @@ test("source fingerprints are deterministic and ignore compaction prose", () => 
   assert.equal(probeMatchesEvidence({ ...matchingProbe, stagedImageGeneration: 2 }, withImage.evidence), false);
 });
 
+test("intent fingerprints include only goals and genuine decision content", () => {
+  const sameIntent = {
+    ...raw,
+    humanDecisions: [
+      { ...raw.humanDecisions[0]!, source: { kind: "transcript" as const, id: "new-source" } },
+      { ...raw.humanDecisions[0]!, source: { kind: "foreman_episode" as const, id: "duplicate" } },
+    ],
+    priorPersonaFeedback: [{
+      personaName: "Auditor",
+      summary: "Add more evidence",
+      requestedChanges: ["Capture output"],
+    }],
+    evidence: {
+      ...raw.evidence,
+      headSha: "def",
+      diffFingerprint: "different-diff",
+      diff: "different patch and status",
+      workingTreeDirty: true,
+      workingTreeStatus: [" M src/changed.ts"],
+      transcriptAnchor: 999,
+    },
+    coverage: [{
+      clientCriterionId: "changed-claim",
+      criterion: "Tests pass",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const,
+      links: [],
+    }],
+    evidenceMetadata: [{
+      clientItemId: "changed-evidence",
+      kind: "artifact" as const,
+      caption: "Different evidence",
+      repositoryScope: "all",
+      exitCode: 0,
+    }],
+  };
+  assert.equal(workflowIntentFingerprint(sameIntent), workflowIntentFingerprint(raw));
+  assert.notEqual(
+    workflowIntentFingerprint({
+      ...sameIntent,
+      humanDecisions: [{
+        decision: "A genuinely different decision",
+        rationale: null,
+        source: { kind: "transcript" as const, id: "changed" },
+      }],
+    }),
+    workflowIntentFingerprint(raw),
+  );
+});
+
+test("replacement claim ids reconcile by stable criterion text and fail closed on ambiguity", () => {
+  const canonical = [{
+    id: "criterion-stable",
+    text: "Tests remain green",
+    material: true,
+    suggestedProofClass: "focused_execution" as const,
+  }];
+  const sourceMappings = [{
+    criterionId: "criterion-stable",
+    matchedClientCriterionIds: ["old-id"],
+  }];
+  const sourceCoverage = [{
+    clientCriterionId: "old-id",
+    criterion: "All focused tests pass",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [],
+  }];
+  const replacement = {
+    ...sourceCoverage[0]!,
+    clientCriterionId: "new-id",
+  };
+  assert.deepEqual(
+    reconcileWorkflowCriterionMappings(
+      canonical,
+      [replacement],
+      { sourceCoverage, sourceMappings },
+    )[0]
+      ?.matchedClientCriterionIds,
+    ["new-id"],
+  );
+  const ambiguousCoverage = [replacement, { ...replacement, clientCriterionId: "ambiguous-id" }];
+  const ambiguousMappings = reconcileWorkflowCriterionMappings(
+    canonical,
+    ambiguousCoverage,
+    { sourceCoverage, sourceMappings },
+  );
+  assert.deepEqual(
+    ambiguousMappings[0]?.matchedClientCriterionIds,
+    ["ambiguous-id", "new-id"],
+  );
+  assert.deepEqual(
+    evaluateWorkflowEvidenceReadiness({
+      canonicalCriteria: canonical,
+      criterionMappings: ambiguousMappings,
+      coverage: ambiguousCoverage,
+      evidence: [],
+    }).gapCodes,
+    ["ambiguous_mapping"],
+  );
+  assert.deepEqual(
+    reconcileWorkflowCriterionMappings(
+      canonical,
+      [{ ...replacement, clientCriterionId: "old-id", criterion: "Unrelated claim" }],
+      { sourceCoverage, sourceMappings },
+    )[0]?.matchedClientCriterionIds,
+    [],
+    "an old id with changed criterion text must not inherit its prior mapping",
+  );
+});
+
+test("historical context snapshots remain readable without intent reuse provenance", () => {
+  const current = fallbackWorkflowContext(raw, null);
+  const {
+    intentFingerprint: _intentFingerprint,
+    criterionMappings: _criterionMappings,
+    ...historical
+  } = current;
+  const { reusedFromSubmissionId: _reusedFromSubmissionId, ...historicalCompaction } =
+    historical.compaction;
+  const parsed = WorkflowContextSnapshotSchema.safeParse({
+    ...historical,
+    canonicalCriteria: [{
+      id: "legacy-criterion",
+      text: "Legacy mapped criterion",
+      material: true,
+      suggestedProofClass: "focused_execution",
+      matchedClientCriterionIds: ["legacy-claim"],
+    }],
+    compaction: historicalCompaction,
+  });
+  assert.equal(parsed.success, true);
+  if (!parsed.success) return;
+  assert.deepEqual(parsed.data.criterionMappings, [{
+    criterionId: "legacy-criterion",
+    matchedClientCriterionIds: ["legacy-claim"],
+  }]);
+  assert.equal(Object.hasOwn(parsed.data.canonicalCriteria[0]!, "matchedClientCriterionIds"), false);
+});
+
 test("resolved plan decisions preserve the reviewed plan and response", () => {
   const decision = workflowReviewDecision({
     id: "plan-review",
@@ -467,8 +611,8 @@ test("compaction preserves raw intent and visibly degrades on infrastructure fai
             text: "Tests pass",
             material: true,
             suggestedProofClass: "focused_execution",
-            matchedClientCriterionIds: [],
           }],
+          criterionMappings: [],
         },
       };
     },

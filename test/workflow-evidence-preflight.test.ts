@@ -7,6 +7,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
+import type { WorkflowHumanDecision } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-evidence-preflight-"));
 process.env.MISSION_HOME = home;
@@ -15,8 +16,10 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { Registry } = await import("../src/server/registry.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
+const { LLM_RUNNERS } = await import("../src/server/llm/index.ts");
 const { fallbackWorkflowContext, compactWorkflowContext } =
   await import("../src/server/workflows/context.ts");
+const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -68,7 +71,15 @@ async function waitFor(check: () => boolean, message: string): Promise<void> {
   }
 }
 
-async function harness(t: TestContext, id: string, beforeReadContext?: () => Promise<void>) {
+async function harness(
+  t: TestContext,
+  id: string,
+  beforeReadContext?: () => Promise<void>,
+  options: {
+    humanDecisions?: () => WorkflowHumanDecision[];
+    recordCompactionLedger?: boolean;
+  } = {},
+) {
   const registry = new Registry();
   registry.applyDiscovery([discovered(id)]);
   const store = new WorkflowStore(openDb());
@@ -113,6 +124,24 @@ async function harness(t: TestContext, id: string, beforeReadContext?: () => Pro
   const published = store.publishWorkflow(workflowId, 1, `preflight-version-${id}`, 2);
   assert.equal(published.ok, true);
   if (!published.ok) throw new Error("workflow did not publish");
+  const compactionValue = {
+    constraints: [],
+    acceptanceCriteria: ["Rendered workflow state is inspectable"],
+    canonicalCriteria: [{
+      text: "Rendered workflow state is inspectable",
+      material: true,
+      suggestedProofClass: "visual" as const,
+    }],
+    criterionMappings: [{
+      canonicalCriterionOrdinal: 1,
+      matchedClientCriterionIds: ["claim-0"],
+    }],
+  };
+  if (options.recordCompactionLedger) {
+    const run = LLM_RUNNERS.claude.run;
+    LLM_RUNNERS.claude.run = async () => JSON.stringify(compactionValue);
+    t.after(() => { LLM_RUNNERS.claude.run = run; });
+  }
   const injected: string[] = [];
   const manager = new WorkflowManager(registry, store, {
     inject: (async (
@@ -131,7 +160,7 @@ async function harness(t: TestContext, id: string, beforeReadContext?: () => Pro
       await beforeReadContext?.();
       const raw = {
         primaryGoal: { rawPrompt: "Render the final workflow state", refined: null, sourceNoteKey: binding.noteKey },
-        humanDecisions: [],
+        humanDecisions: options.humanDecisions?.() ?? [],
         priorPersonaFeedback: [],
         session: { agent: "claude" as const, name: id, cwd: repositoryRoot, branch: "feature" },
         evidence: {
@@ -163,23 +192,14 @@ async function harness(t: TestContext, id: string, beforeReadContext?: () => Pro
       };
     },
     boundaryChanged: async () => false,
-    compactContext: async (raw) => compactWorkflowContext(raw, {
-      runner: "claude",
-      model: "fake",
-      execute: async () => ({
-        kind: "ok",
-        value: {
-          constraints: [],
-          acceptanceCriteria: ["Rendered workflow state is inspectable"],
-          canonicalCriteria: [{
-            text: "Rendered workflow state is inspectable",
-            material: true,
-            suggestedProofClass: "visual",
-            matchedClientCriterionIds: (raw.coverage ?? []).map((claim) => claim.clientCriterionId),
-          }],
-        },
-      }),
-    }),
+    ...(!options.recordCompactionLedger ? {
+      compactContext: async (raw: Parameters<typeof compactWorkflowContext>[0]) =>
+        compactWorkflowContext(raw, {
+          runner: "claude",
+          model: "fake",
+          execute: async () => ({ kind: "ok", value: compactionValue }),
+        }),
+    } : {}),
     engine: {
       runnerFor: () => passingRunner,
       resolveExecution: () => ({
@@ -195,6 +215,183 @@ async function harness(t: TestContext, id: string, beforeReadContext?: () => Pro
   if (!binding.ok) throw new Error("binding was refused");
   return { registry, store, manager, binding: binding.value, injected };
 }
+
+test("fifteen replacement evidence packets reuse stable intent criteria and rerun readiness", async (t) => {
+  const h = await harness(t, "stable-evidence-preflight", undefined, {
+    recordCompactionLedger: true,
+  });
+  const criterion = "Rendered workflow state is inspectable";
+  const stageReplacement = async (ordinal: number, ready: boolean) => {
+    const executionId = `execution-${ordinal}`;
+    const renderedId = `rendered-${ordinal}`;
+    await h.manager.stageAgentEvidence("stable-evidence-preflight", {
+      images: [],
+      commandOutputs: [
+        {
+          kind: "command",
+          clientItemId: executionId,
+          command: `verify replacement ${ordinal}`,
+          exitCode: 0,
+          output: `replacement ${ordinal} passed\n`,
+          caption: `Replacement ${ordinal} execution`,
+          repositoryScope: "all",
+        },
+        ...(ready ? [{
+          kind: "command" as const,
+          clientItemId: renderedId,
+          command: `capture replacement ${ordinal}`,
+          exitCode: 0,
+          output: `replacement ${ordinal} rendered\n`,
+          caption: `Replacement ${ordinal} rendered output`,
+          repositoryScope: "all" as const,
+        }] : []),
+      ],
+      coverage: [{
+        clientCriterionId: `claim-${ordinal}`,
+        criterion,
+        proofClass: "visual",
+        repositoryScope: "all",
+        links: [
+          { clientItemId: executionId, role: "execution" },
+          ...(ready ? [{ clientItemId: renderedId, role: "rendered_output" as const }] : []),
+        ],
+      }],
+    });
+  };
+
+  await stageReplacement(0, false);
+  const submitted = await h.manager.submit(h.binding.id, { requestId: "stable-root" });
+  assert.equal(submitted.ok, true);
+  if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  await waitFor(
+    () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
+    "initial packet did not wait for missing rendered output",
+  );
+
+  let parentId = submitted.value.submission.id;
+  for (let ordinal = 1; ordinal <= 15; ordinal++) {
+    const ready = ordinal === 15;
+    await stageReplacement(ordinal, ready);
+    const retry = await h.manager.retryEvidenceReadiness(
+      runId,
+      parentId,
+      `stable-refinement-${ordinal}`,
+      1_000 + ordinal,
+    );
+    assert.equal(retry.ok, true);
+    if (!retry.ok) return;
+    parentId = retry.value.submission.id;
+    if (!ready) {
+      assert.equal(h.store.getRun(runId)?.status, "waiting_for_evidence_readiness");
+    }
+  }
+  await waitFor(() => h.store.getRun(runId)?.status === "completed", "final packet did not activate");
+
+  const submissions = h.store.listSubmissions(runId);
+  assert.equal(submissions.length, 16);
+  const contexts = submissions.map((submission) => WorkflowContextSnapshotSchema.parse(submission.context));
+  const stableCriteria = contexts.map((context) => context.canonicalCriteria);
+  for (const criteria of stableCriteria.slice(1)) assert.deepEqual(criteria, stableCriteria[0]);
+  assert.deepEqual(submissions[0]?.readiness?.gapCodes, ["missing_rendered_output"]);
+  assert.equal(submissions.at(-1)?.readiness?.status, "ready");
+  assert.deepEqual(
+    h.store.listSubmissionCoverage(submissions.at(-1)!.id).map((claim) => claim.clientCriterionId),
+    ["claim-15"],
+  );
+  assert.deepEqual(contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds, ["claim-15"]);
+  const captureEvents = h.store.listEvents(runId)
+    .filter((event) => event.kind === "submission_captured");
+  assert.equal(captureEvents.length, 16);
+  assert.match(JSON.stringify(captureEvents[0]?.payload), /"criteriaReused":false/);
+  for (const event of captureEvents.slice(1)) {
+    assert.match(JSON.stringify(event.payload), /"criteriaReused":true/);
+    assert.match(
+      JSON.stringify(event.payload),
+      new RegExp(`"criteriaSourceSubmissionId":"${submissions[0]!.id}"`),
+    );
+  }
+  assert.equal(
+    h.store.listLlmCallPage(runId).items
+      .filter((call) => call.purpose === "context_compaction").length,
+    1,
+    "only the source submission may create a context-compaction ledger row",
+  );
+});
+
+test("one changed human decision recompacts once and becomes the next reuse source", async (t) => {
+  let decisions: WorkflowHumanDecision[] = [];
+  const h = await harness(t, "intent-change-preflight", undefined, {
+    humanDecisions: () => decisions,
+    recordCompactionLedger: true,
+  });
+  const stageGap = async (ordinal: number) => {
+    const clientItemId = `intent-execution-${ordinal}`;
+    await h.manager.stageAgentEvidence("intent-change-preflight", {
+      images: [],
+      commandOutputs: [{
+        kind: "command",
+        clientItemId,
+        command: `verify intent ${ordinal}`,
+        exitCode: 0,
+        output: `intent ${ordinal} passed\n`,
+        caption: `Intent ${ordinal} execution`,
+        repositoryScope: "all",
+      }],
+      coverage: [{
+        clientCriterionId: `intent-claim-${ordinal}`,
+        criterion: "Rendered workflow state is inspectable",
+        proofClass: "visual",
+        repositoryScope: "all",
+        links: [{ clientItemId, role: "execution" }],
+      }],
+    });
+  };
+  const compactionCount = (runId: string) => h.store.listLlmCallPage(runId).items
+    .filter((call) => call.purpose === "context_compaction").length;
+
+  await stageGap(0);
+  const submitted = await h.manager.submit(h.binding.id, { requestId: "intent-root" });
+  assert.equal(submitted.ok, true);
+  if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  await waitFor(
+    () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
+    "initial intent packet did not wait",
+  );
+  assert.equal(compactionCount(runId), 1);
+
+  await stageGap(1);
+  const reused = await h.manager.retryEvidenceReadiness(runId, submitted.value.submission.id, "intent-reuse", 2);
+  assert.equal(reused.ok, true);
+  if (!reused.ok) return;
+  assert.equal(compactionCount(runId), 1);
+  const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
+  assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
+
+  decisions = [{
+    decision: "Also preserve keyboard navigation",
+    rationale: "Accessibility is part of the requested outcome",
+    source: { kind: "transcript", id: "human-intent-change" },
+  }];
+  await stageGap(2);
+  const changed = await h.manager.retryEvidenceReadiness(runId, reused.value.submission.id, "intent-change", 3);
+  assert.equal(changed.ok, true);
+  if (!changed.ok) return;
+  assert.equal(compactionCount(runId), 2);
+  const changedContext = WorkflowContextSnapshotSchema.parse(changed.value.submission.context);
+  assert.equal(changedContext.compaction.reusedFromSubmissionId, null);
+  assert.notEqual(changedContext.intentFingerprint, reusedContext.intentFingerprint);
+
+  await stageGap(3);
+  const changedReuse = await h.manager.retryEvidenceReadiness(runId, changed.value.submission.id, "intent-change-reuse", 4);
+  assert.equal(changedReuse.ok, true);
+  if (!changedReuse.ok) return;
+  assert.equal(compactionCount(runId), 2);
+  const changedReuseContext = WorkflowContextSnapshotSchema.parse(changedReuse.value.submission.context);
+  assert.equal(changedReuseContext.compaction.reusedFromSubmissionId, changed.value.submission.id);
+  assert.equal(changedReuseContext.intentFingerprint, changedContext.intentFingerprint);
+});
 
 test("automatic readiness sweep does not join a live manual preflight capture", async (t) => {
   let holdCapture = false;

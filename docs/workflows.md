@@ -702,8 +702,12 @@ decisions and rationale, repository HEAD and diff, transcript evidence, reposito
 and prior Persona feedback. Confirmed workflow packets are matched to the transcript turn at
 their durable delivery byte anchor and excluded from both transcript evidence and human decisions,
 including after a daemon restart. A later human turn that repeats the same text remains evidence.
-A cheap provider-neutral compaction call may summarize that
-context, but its 45-second attempt cannot replace the raw evidence. An unparsable reply gets
+A deterministic intent fingerprint covers only the raw/refined goal and deduplicated genuine
+human decision content. A cheap provider-neutral compaction call extracts stable constraints and
+canonical criteria from those intent fields only, then uses a separate authored-coverage partition
+to return semantic source-claim mappings. Repository state, transcript evidence, evidence metadata,
+prior Persona feedback, and automated deliveries never enter criterion extraction. Its 45-second
+attempt cannot replace the raw evidence. An unparsable reply gets
 one fresh 45-second attempt; invalid, timed-out, or unavailable compaction produces a
 deterministic visible fallback.
 
@@ -783,11 +787,17 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 explicit retry of a capture fault revives the same submission and therefore the same reserved
 bytes.
 
-Coverage is reserved in the same transaction as its linked evidence and copied to an
-immutable submission table. After evidence bytes are safely captured, context compaction
-returns bounded canonical criteria and advisory matches to the author claim ids. The daemon
-assigns stable canonical ids, resolves links only against evidence frozen for that submission,
-and persists a deterministic readiness result with `ready`, `gaps`, or `unavailable` status.
+Coverage is reserved in the same transaction as its linked evidence and copied to an immutable
+submission table. After evidence bytes are safely captured, the source compaction semantically maps
+the author's claim ids to daemon-assigned canonical ids even when their wording differs. Stable
+canonical identity, text, materiality, and proof suggestion live in `canonicalCriteria`; the current
+packet's claim ids live separately in `criterionMappings`. For a reused source, the mapped prior
+claim text becomes the exact normalized bridge to replacement claim ids, while the prior id itself
+is never reused. Nonmatching, changed, duplicate, or otherwise ambiguous claims therefore remain
+gaps instead of inheriting readiness. Links resolve only against evidence frozen for that
+submission, and the daemon persists a deterministic readiness result with `ready`, `gaps`, or
+`unavailable` status. Historical snapshots with embedded matches normalize into the separate
+mapping representation when read.
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
 
@@ -796,6 +806,12 @@ result before the engine creates any Persona or Check attempt. A structural gap 
 `waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
 original immutable submission inspectable. Newly staged evidence resumes as a child segment in the
 same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
+When that child has the same intent fingerprint as its parent, it reuses the parent's constraints,
+acceptance criteria, canonical ids/text, materiality, and proof-class suggestions without creating
+a `context_compaction` call. It still freezes its own replacement evidence and coverage, remaps
+the current claim ids, and reruns readiness. A changed human decision causes one fresh compaction;
+subsequent same-intent refinements reuse that new source. Submission events record whether criteria
+were reused and which immutable source supplied them, while the LLM ledger contains actual calls only.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.

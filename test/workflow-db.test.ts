@@ -163,9 +163,9 @@ test("submission capture round-trips readiness above the coverage authoring boun
         text: "x".repeat(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
         material: true,
         suggestedProofClass: null,
-        matchedClientCriterionIds: [],
       }),
     ),
+    criterionMappings: [],
     coverage: [],
     evidence: [],
   });

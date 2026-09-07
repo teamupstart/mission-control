@@ -131,7 +131,9 @@ import {
   readWorkflowRepositoryId,
   workflowCheckoutPath,
   workflowContextFingerprint,
+  workflowIntentFingerprint,
   workflowRepositoryFingerprint,
+  reuseWorkflowContextCriteria,
 } from "./context.ts";
 import {
   WorkflowEngine,
@@ -6003,70 +6005,100 @@ export class WorkflowManager {
         evidence: workflowJson(captured.context.evidence),
       }, Date.now());
       let context: WorkflowContextSnapshot;
-      const compact = this.options.compactContext;
-      if (compact) {
-        context = await this.schedule(() => compact(captured.raw), "capture");
+      let criteriaReused = false;
+      const intentFingerprint = workflowIntentFingerprint(captured.raw);
+      const reuseParent = submission.refinementReason === "evidence_preflight"
+        && submission.parentSubmissionId
+        ? this.store.getSubmission(submission.parentSubmissionId)
+        : null;
+      const reuseSource = reuseParent
+        ? WorkflowContextSnapshotSchema.safeParse(reuseParent.context)
+        : null;
+      if (
+        reuseParent
+        && reuseSource?.success
+        && reuseSource.data.intentFingerprint === intentFingerprint
+      ) {
+        context = reuseWorkflowContextCriteria(
+          captured.raw,
+          reuseSource.data,
+          reuseParent.id,
+          this.store.listSubmissionCoverage(reuseParent.id),
+        );
+        criteriaReused = true;
       } else {
-        // What the compaction call REPORTS it resolved, filled in by `onExecution` before its
-        // first attempt runs. Not re-derived from a second config read here: with a provider
-        // per job, an app-wide re-resolution names a different provider than the one the call
-        // used on every installation that set an override, so every row it wrote was wrong.
-        let contextExecution: JobExecution | null = null;
-        const contextCallIds = new Map<number, string>();
-        const observer: StructuredAttemptObserver = {
-          start: (attempt, prompt) => {
-            if (!this.captureIsActive(run.id, submission.id)) return false;
-            // `onExecution` fires ahead of the first attempt, so this is populated by now. If
-            // it somehow is not, skip the row rather than labelling it with a guess - `finish`
-            // finds no id and does nothing, and a missing ledger row is far easier to read
-            // than one that confidently names the wrong provider.
-            const execution = contextExecution;
-            if (!execution) return;
-            const id = randomUUID();
-            contextCallIds.set(attempt, id);
-            this.store.insertLlmCall({
-              id,
-              runId: run.id,
-              submissionId: submission.id,
-              nodeAttemptId: null,
-              purpose: "context_compaction",
-              runner: execution.runner,
-              model: execution.model,
-              attempt,
-              state: "running",
-              startedAt: Date.now(),
-              finishedAt: null,
-              durationMs: null,
-              inputBytes: Buffer.byteLength(prompt),
-              outputBytes: 0,
-              costUsd: null,
-              errorCode: null,
-            });
-          },
-          finish: (attempt, result) => {
-            const id = contextCallIds.get(attempt);
-            if (!id) return;
-            this.store.finishLlmCall(
-              id,
-              result.parsed ? "succeeded" : "failed",
-              result.raw ? Buffer.byteLength(result.raw) : 0,
-              result.error
-                ? "context_compaction_infrastructure"
-                : result.parsed
-                  ? null
-                  : "context_compaction_parse",
-              Date.now(),
-            );
-          },
-        };
-        // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
-        // call itself reports, which is the same one this ledger row is written from.
-        context = await this.schedule(() => compactWorkflowContext(captured.raw, {
-          observer,
-          onExecution: (execution) => {
-            contextExecution = execution;
-          },
-        }), "capture");
+        const compact = this.options.compactContext;
+        if (compact) {
+          context = await this.schedule(() => compact(captured.raw), "capture");
+        } else {
+          // What the compaction call REPORTS it resolved, filled in by `onExecution` before its
+          // first attempt runs. Not re-derived from a second config read here: with a provider
+          // per job, an app-wide re-resolution names a different provider than the one the call
+          // used on every installation that set an override, so every row it wrote was wrong.
+          let contextExecution: JobExecution | null = null;
+          const contextCallIds = new Map<number, string>();
+          const observer: StructuredAttemptObserver = {
+            start: (attempt, prompt) => {
+              if (!this.captureIsActive(run.id, submission.id)) return false;
+              // `onExecution` fires ahead of the first attempt, so this is populated by now. If
+              // it somehow is not, skip the row rather than labelling it with a guess - `finish`
+              // finds no id and does nothing, and a missing ledger row is far easier to read
+              // than one that confidently names the wrong provider.
+              const execution = contextExecution;
+              if (!execution) return;
+              const id = randomUUID();
+              contextCallIds.set(attempt, id);
+              this.store.insertLlmCall({
+                id,
+                runId: run.id,
+                submissionId: submission.id,
+                nodeAttemptId: null,
+                purpose: "context_compaction",
+                runner: execution.runner,
+                model: execution.model,
+                attempt,
+                state: "running",
+                startedAt: Date.now(),
+                finishedAt: null,
+                durationMs: null,
+                inputBytes: Buffer.byteLength(prompt),
+                outputBytes: 0,
+                costUsd: null,
+                errorCode: null,
+              });
+            },
+            finish: (attempt, result) => {
+              const id = contextCallIds.get(attempt);
+              if (!id) return;
+              this.store.finishLlmCall(
+                id,
+                result.parsed ? "succeeded" : "failed",
+                result.raw ? Buffer.byteLength(result.raw) : 0,
+                result.error
+                  ? "context_compaction_infrastructure"
+                  : result.parsed
+                    ? null
+                    : "context_compaction_parse",
+                Date.now(),
+              );
+            },
+          };
+          // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
+          // call itself reports, which is the same one this ledger row is written from.
+          context = await this.schedule(() => compactWorkflowContext(captured.raw, {
+            observer,
+            onExecution: (execution) => {
+              contextExecution = execution;
+            },
+          }), "capture");
+        }
+        // Injected compactors remain a supported test/embedding seam. Stamp the daemon-owned
+        // intent identity and clear reuse provenance regardless of how the compactor was supplied.
+        context = WorkflowContextSnapshotSchema.parse({
+          ...context,
+          intentFingerprint,
+          compaction: { ...context.compaction, reusedFromSubmissionId: null },
+        });
       }
       const currentRun = this.store.getRun(run.id);
       const currentSubmission = this.store.getSubmission(submission.id);
@@ -6093,6 +6125,7 @@ export class WorkflowManager {
         ? null
         : evaluateWorkflowEvidenceReadiness({
             canonicalCriteria: context.canonicalCriteria ?? [],
+            criterionMappings: context.criterionMappings ?? [],
             coverage: frozenCoverage,
             evidence: this.store.submissionFrozenEvidenceIdentities(submission.id),
             unavailableReason: context.compaction.status === "fallback"
@@ -6179,6 +6212,9 @@ export class WorkflowManager {
         evidenceFingerprint: fingerprint,
         previousFingerprint: previousFingerprint ?? null,
         compaction: context.compaction.status,
+        criteriaReused,
+        criteriaSourceSubmissionId:
+          context.compaction.reusedFromSubmissionId ?? submission.id,
         readiness: readiness?.status ?? "not_evaluated",
       }, Date.now());
       if (beforeActivate && !(await beforeActivate(runnable))) {

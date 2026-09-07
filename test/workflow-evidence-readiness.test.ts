@@ -96,6 +96,7 @@ test("one policy predicate and evaluator own enforced zero-coverage readiness", 
 
   const readiness = evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: [],
+    criterionMappings: [],
     coverage: [],
     evidence: [],
     enforceCoverage: true,
@@ -116,6 +117,7 @@ test("one policy predicate and evaluator own enforced zero-coverage readiness", 
 
   const advisory = evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: [],
+    criterionMappings: [],
     coverage: [],
     evidence: [],
   });
@@ -159,6 +161,9 @@ test("the proof matrix and readiness evaluator preserve author authority", () =>
       text: focusedClaim.criterion,
       material: true,
       suggestedProofClass: "visual",
+    }],
+    criterionMappings: [{
+      criterionId: "canonical-1",
       matchedClientCriterionIds: [focusedClaim.clientCriterionId],
     }],
     coverage: [focusedClaim],
@@ -178,12 +183,14 @@ test("the proof matrix and readiness evaluator preserve author authority", () =>
   );
   assert.equal(evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: [],
+    criterionMappings: [],
     coverage: [focusedClaim],
     evidence: [],
     unavailableReason: "provider unavailable",
   }).status, "unavailable");
   assert.equal(evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: [],
+    criterionMappings: [],
     coverage: [focusedClaim],
     evidence: [],
   }).status, "unavailable", "an empty model reconciliation must not read as ready");
@@ -193,6 +200,9 @@ test("the proof matrix and readiness evaluator preserve author authority", () =>
       text: focusedClaim.criterion,
       material: true,
       suggestedProofClass: null,
+    }],
+    criterionMappings: [{
+      criterionId: "canonical-all",
       matchedClientCriterionIds: [focusedClaim.clientCriterionId],
     }],
     coverage: [{ ...focusedClaim, repositoryScope: "all" }],
@@ -210,6 +220,9 @@ test("the proof matrix and readiness evaluator preserve author authority", () =>
       text: "Supporting visual context",
       material: false,
       suggestedProofClass: "visual",
+    }],
+    criterionMappings: [{
+      criterionId: "canonical-supporting",
       matchedClientCriterionIds: ["criterion-supporting"],
     }],
     coverage: [{
@@ -241,9 +254,9 @@ test("maximum canonical criterion text remains a valid persisted readiness resul
         text: "x".repeat(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
         material: true,
         suggestedProofClass: null,
-        matchedClientCriterionIds: [],
       }),
     ),
+    criterionMappings: [],
     coverage: [],
     evidence: [],
   });
@@ -255,7 +268,7 @@ test("maximum canonical criterion text remains a valid persisted readiness resul
   assert.equal(WorkflowEvidenceReadinessResultSchema.safeParse(readiness).success, true);
 });
 
-test("compaction exposes bounded metadata and assigns stable daemon criterion ids", async () => {
+test("compaction isolates stable intent and assigns stable daemon criterion ids", async () => {
   const prompts: string[] = [];
   const raw = {
     primaryGoal: { rawPrompt: "Keep focused execution green", refined: null, sourceNoteKey: "note" },
@@ -298,6 +311,9 @@ test("compaction exposes bounded metadata and assigns stable daemon criterion id
           text: focusedClaim.criterion,
           material: true,
           suggestedProofClass: "focused_execution" as const,
+        }],
+        criterionMappings: [{
+          canonicalCriterionOrdinal: 1,
           matchedClientCriterionIds: [focusedClaim.clientCriterionId],
         }],
       },
@@ -306,9 +322,168 @@ test("compaction exposes bounded metadata and assigns stable daemon criterion id
   const first = await compactWorkflowContext(raw, { execute, runner: "codex", model: "test" });
   const second = await compactWorkflowContext(raw, { execute, runner: "codex", model: "test" });
   assert.equal(first.canonicalCriteria?.[0]?.id, second.canonicalCriteria?.[0]?.id);
-  assert.match(prompts[0] ?? "", /focused-command/);
+  assert.deepEqual(first.criterionMappings?.[0]?.matchedClientCriterionIds, ["criterion-focused"]);
+  assert.match(prompts[0] ?? "", /Keep focused execution green/);
+  assert.match(prompts[0] ?? "", /criterion-focused/);
+  assert.doesNotMatch(prompts[0] ?? "", /focused-command/);
+  assert.doesNotMatch(prompts[0] ?? "", /secret body|src\/a\.ts/);
   assert.doesNotMatch(prompts[0] ?? "", /node --test focused\.test\.ts/);
   assert.doesNotMatch(prompts[0] ?? "", /ok 1 - focused behavior/);
+});
+
+test("source compaction semantically maps differently worded coverage outside stable criteria", async () => {
+  const claim = {
+    clientCriterionId: "criterion-source",
+    criterion: "A screenshot demonstrates the completed workflow result",
+    proofClass: "visual" as const,
+    repositoryScope: "all" as const,
+    links: [
+      { clientItemId: "source-run", role: "execution" as const },
+      { clientItemId: "source-image", role: "rendered_output" as const },
+    ],
+  };
+  const context = await compactWorkflowContext({
+    primaryGoal: { rawPrompt: "Make the completed workflow visible", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [],
+    priorPersonaFeedback: [],
+    session: { agent: "claude", name: "source", cwd: null, branch: null },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "source-diff",
+      diff: "",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: null,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+      images: [],
+      stagedImageGeneration: 0,
+    },
+    coverage: [claim],
+  }, {
+    runner: "claude",
+    model: "fake",
+    execute: async () => ({
+      kind: "ok",
+      value: {
+        constraints: [],
+        acceptanceCriteria: ["The final state can be inspected"],
+        canonicalCriteria: [{
+          text: "The final state can be inspected",
+          material: true,
+          suggestedProofClass: "visual",
+        }],
+        criterionMappings: [{
+          canonicalCriterionOrdinal: 1,
+          matchedClientCriterionIds: [claim.clientCriterionId],
+        }],
+      },
+    }),
+  });
+  assert.equal(Object.hasOwn(context.canonicalCriteria?.[0] ?? {}, "matchedClientCriterionIds"), false);
+  assert.deepEqual(context.criterionMappings, [{
+    criterionId: context.canonicalCriteria?.[0]?.id,
+    matchedClientCriterionIds: [claim.clientCriterionId],
+  }]);
+  assert.equal(evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    criterionMappings: context.criterionMappings ?? [],
+    coverage: [claim],
+    evidence: [
+      { clientItemId: "source-run", evidenceId: "source-run-evidence", repositoryScope: "all" },
+      { clientItemId: "source-image", evidenceId: "source-image-evidence", repositoryScope: "all" },
+    ],
+  }).status, "ready");
+});
+
+test("source compaction fails closed when one claim is proposed for multiple criteria", async () => {
+  const claim = {
+    clientCriterionId: "shared-source-claim",
+    criterion: "The complete workflow behavior is verified",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [{ clientItemId: "source-run", role: "execution" as const }],
+  };
+  const context = await compactWorkflowContext({
+    primaryGoal: { rawPrompt: "Verify both workflow outcomes", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [],
+    priorPersonaFeedback: [],
+    session: { agent: "claude", name: "source", cwd: null, branch: null },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "source-diff",
+      diff: "",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: null,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+      images: [],
+      stagedImageGeneration: 0,
+    },
+    coverage: [claim],
+  }, {
+    runner: "claude",
+    model: "fake",
+    execute: async () => ({
+      kind: "ok",
+      value: {
+        constraints: [],
+        acceptanceCriteria: ["The first outcome is verified", "The second outcome is verified"],
+        canonicalCriteria: [
+          {
+            text: "The first outcome is verified",
+            material: true,
+            suggestedProofClass: "focused_execution",
+          },
+          {
+            text: "The second outcome is verified",
+            material: true,
+            suggestedProofClass: "focused_execution",
+          },
+        ],
+        criterionMappings: [
+          { canonicalCriterionOrdinal: 1, matchedClientCriterionIds: [claim.clientCriterionId] },
+          { canonicalCriterionOrdinal: 2, matchedClientCriterionIds: [claim.clientCriterionId] },
+        ],
+      },
+    }),
+  });
+  assert.deepEqual(
+    context.criterionMappings?.map((mapping) => mapping.matchedClientCriterionIds),
+    [[], []],
+    "an ambiguous model proposal must not establish either canonical owner",
+  );
+  const evidence = [{
+    clientItemId: "source-run",
+    evidenceId: "source-run-evidence",
+    repositoryScope: "all" as const,
+  }];
+  assert.deepEqual(evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    criterionMappings: context.criterionMappings ?? [],
+    coverage: [claim],
+    evidence,
+  }).gapCodes, ["missing_coverage"]);
+
+  const duplicateMappings = (context.canonicalCriteria ?? []).map((criterion) => ({
+    criterionId: criterion.id,
+    matchedClientCriterionIds: [claim.clientCriterionId],
+  }));
+  assert.deepEqual(evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    criterionMappings: duplicateMappings,
+    coverage: [claim],
+    evidence,
+  }).gapCodes, ["ambiguous_mapping"]);
 });
 
 test("coverage stages idempotently and freezes with the submission", async () => {

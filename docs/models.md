@@ -86,11 +86,15 @@ fallback, so a missing or logged-out provider degrades their output rather than 
 dispatch. An Ensemble evaluation is different: a provider failure or invalid reply fails its
 durable, bounded attempt, and the engine never invents a recommendation or a question set.
 
-Workflow-context compaction receives bounded change metadata, evidence metadata, and authored
-coverage, never evidence bodies, source locators, or absolute paths. Its criterion text,
-materiality, proof-class suggestion, and author-id matches are advisory semantic output. The
-daemon assigns canonical criterion ids and applies the fixed proof-role matrix. A failed call
-records readiness as unavailable when coverage exists, but never blocks Phase 1 execution.
+Workflow-context compaction receives a stable intent partition containing only the raw/refined goal
+and genuine human decision content. Repository state, transcript evidence, evidence metadata, prior
+Persona feedback, and automated deliveries stay out of criterion extraction. A separate authored
+coverage partition lets the same source call semantically reconcile claim ids after extracting the
+criteria. The daemon stores those packet-specific mappings outside the stable canonical criterion
+records, deterministically remaps replacement ids by stable normalized criterion text, and applies
+the fixed proof-role matrix. Same-intent evidence-preflight children reuse their parent's stable
+criteria without another model call. A failed source call records readiness as unavailable when
+coverage exists, but never blocks Phase 1 execution.
 
 ## Foreman's four roles
 

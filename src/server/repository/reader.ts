@@ -32,6 +32,7 @@ import {
 import { scrubSecrets } from "../security/scrub.ts";
 
 const execFileAsync = promisify(execFile);
+const FAILURE_AUDIT_RESERVE_MS = 100;
 
 export interface RepositoryAuditSink {
   append(metadata: RepositoryQueryAuditMetadata, signal: AbortSignal): Promise<void>;
@@ -180,6 +181,27 @@ function assertPatchIsText(text: string): void {
   }
 }
 
+function settleBeforeAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    operation.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export class RepositoryReader {
   private readonly descriptor: RepositoryViewDescriptor;
   private readonly entries: Map<string, RepositoryManifestEntry>;
@@ -248,10 +270,10 @@ export class RepositoryReader {
       throw Object.assign(new Error("repository call budget exhausted"), { code: "budget_exhausted" });
     }
     const remainingAttemptMs = this.options.budgets.maxAttemptMs - (this.now() - this.usage.startedAt);
-    if (remainingAttemptMs <= 0) {
+    if (remainingAttemptMs <= FAILURE_AUDIT_RESERVE_MS) {
       throw Object.assign(new Error("repository attempt deadline exceeded"), { code: "deadline_exceeded" });
     }
-    return remainingAttemptMs;
+    return remainingAttemptMs - FAILURE_AUDIT_RESERVE_MS;
   }
 
   private async run(request: RepositoryOperationRequest, position: number, signal: AbortSignal): Promise<{ items: PendingItem[]; next: number | null; reason: RepositoryOperationResult["truncationReason"]; history?: boolean }> {
@@ -703,8 +725,12 @@ export class RepositoryReader {
   private async finishFailure(operation: RepositoryOperationId, operationInstanceId: string, status: Exclude<RepositoryOperationResult["status"], "ok">, code: RepositoryFailureCode, message: string, startedAt: number, inputHash = sha256("invalid"), audit = true): Promise<RepositoryOperationResult> {
     if (audit) {
       const metadata: RepositoryQueryAuditMetadata = { operationInstanceId, operation, normalizedInputHash: inputHash, status, failureCode: code, byteCount: 0, itemCount: 0, truncated: false, durationMs: Math.max(0, this.now() - startedAt), handles: [] };
-      try { await this.options.audit.append(metadata, AbortSignal.timeout(this.options.budgets.maxCallMs)); }
-      catch { code = "audit_unavailable"; message = "repository audit sink is unavailable"; status = "unavailable"; }
+      const remainingAttemptMs = this.options.budgets.maxAttemptMs - (this.now() - this.usage.startedAt);
+      if (remainingAttemptMs > 0) {
+        const auditSignal = AbortSignal.timeout(Math.min(this.options.budgets.maxCallMs, remainingAttemptMs));
+        try { await settleBeforeAbort(this.options.audit.append(metadata, auditSignal), auditSignal); }
+        catch { code = "audit_unavailable"; message = "repository audit sink is unavailable"; status = "unavailable"; }
+      }
     }
     return RepositoryOperationResultSchema.parse({ operation, operationInstanceId, status, code, message, items: [], byteCount: 0, itemCount: 0, truncated: false, truncationReason: null, continuationCursor: null, historyBoundary: code === "history_boundary" ? { truncated: true, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });
   }

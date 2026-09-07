@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { RepositoryJsonlAuditSink } from "../src/server/repository/jsonl-audit.ts";
 import { RepositoryReader } from "../src/server/repository/reader.ts";
 import type { RepositoryQueryAuditMetadata } from "../src/shared/repository-access.ts";
 import { repositoryViewFixture } from "./helpers/repository-view.ts";
@@ -305,6 +306,53 @@ test("repository audit records one deadline failure when audit crosses the attem
     assert.equal(audits[0]?.status, "cancelled");
     assert.equal(audits[0]?.failureCode, "deadline_exceeded");
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("failure audit wait cannot extend the absolute attempt deadline", async () => {
+  const fixture = repositoryViewFixture();
+  let currentTime = 0;
+  let releaseActive!: () => void;
+  let markActiveStarted!: () => void;
+  const activeStarted = new Promise<void>((resolve) => { markActiveStarted = resolve; });
+  const activeReleased = new Promise<void>((resolve) => { releaseActive = resolve; });
+  const sink = new RepositoryJsonlAuditSink("unused", async () => {
+    markActiveStarted();
+    await activeReleased;
+  });
+  const active = sink.append({
+    operationInstanceId: "active-operation",
+    operation: "read",
+    normalizedInputHash: "a".repeat(64),
+    status: "ok",
+    failureCode: null,
+    byteCount: 1,
+    itemCount: 1,
+    truncated: false,
+    durationMs: 1,
+    handles: [],
+  }, new AbortController().signal);
+  try {
+    await activeStarted;
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 1_000, maxItemsPerCall: 10, maxCallMs: 5_000 },
+      now: () => currentTime,
+      audit: sink,
+    });
+    currentTime = 800;
+    const startedAt = Date.now();
+
+    const result = await reader.execute({ operation: "not-a-repository-operation" }, new AbortController().signal);
+
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.code, "audit_unavailable");
+    assert.ok(Date.now() - startedAt < 500, "a queued failure audit must return within the remaining attempt lifetime");
+  } finally {
+    releaseActive();
+    await active;
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

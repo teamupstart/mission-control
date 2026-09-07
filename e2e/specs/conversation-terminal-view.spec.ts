@@ -153,6 +153,57 @@ async function seedRun(card: Locator, reply: Locator): Promise<void> {
   await expect(card.getByText(`Mock reply to: ${TOOL_RUN}`)).toBeVisible();
 }
 
+test("u and d paginate the conversation with or without reader focus", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dispatch(dashboard, daemon, "paginate the conversation from either focus zone");
+  const sessionRow = dashboard
+    .getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row")
+    .first();
+  await sessionRow.click();
+
+  const card = dashboard.locator(".console-detail");
+  await openConversation(card);
+  const reply = card.getByPlaceholder(/^Reply to this session/);
+  const longTurn = Array.from(
+    { length: 80 },
+    (_, index) => `conversation page line ${String(index + 1).padStart(2, "0")}`,
+  ).join("\n");
+  await reply.fill(longTurn);
+  await reply.press("Enter");
+  const log = card.locator(".transcript-log");
+  await expect(log).toContainText("Mock reply to: conversation page line 01", {
+    timeout: 15_000,
+  });
+
+  const overflow = await log.evaluate((element) => element.scrollHeight - element.clientHeight);
+  expect(overflow, "the conversation must have enough overflow to paginate").toBeGreaterThan(400);
+
+  await log.evaluate((element) => { element.scrollTop = 0; });
+  await sessionRow.focus();
+  await expect(sessionRow).toBeFocused();
+  await dashboard.keyboard.press("d");
+  await expect
+    .poll(() => log.evaluate((element) => Math.abs(element.scrollTop - element.clientHeight)))
+    .toBeLessThan(2);
+  await expect(dashboard.getByRole("dialog", { name: /Delete/i })).toHaveCount(0);
+  await shoot(dashboard, card, "00-conversation-page-down-from-rail");
+
+  await card.locator(".detail-body").focus();
+  await expect(card.locator(".detail-body")).toBeFocused();
+  await dashboard.keyboard.press("u");
+  await expect.poll(() => log.evaluate((element) => Math.abs(element.scrollTop))).toBeLessThan(2);
+  await shoot(dashboard, card, "00-conversation-page-up-from-reader");
+
+  // Printable page keys still belong to the composer while the operator is typing.
+  await reply.focus();
+  await dashboard.keyboard.press("d");
+  await expect(reply).toHaveValue("d");
+  await expect.poll(() => log.evaluate((element) => Math.abs(element.scrollTop))).toBeLessThan(2);
+});
+
 test("the terminal rendering draws the conversation as one stream", async ({ dashboard, daemon }) => {
   await dispatch(dashboard, daemon, "exercise the terminal rendering");
   const sessionRow = dashboard

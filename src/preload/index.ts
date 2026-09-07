@@ -11,15 +11,10 @@ interface ProductIssueAuthorizationInput {
   requestId: string;
   draftIdentity: string;
 }
-// Sandboxed preloads cannot import Node's crypto module. A failed top-level import prevents
-// every desktop capability below from being exposed, including the update-state bridge. Web
-// Crypto is available in the preload's isolated world, so mint the private one-use capability
-// there without widening the sandbox or weakening its entropy.
-const authorizationBytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
-const productIssueAuthorizationCapability = Array.from(
-  authorizationBytes,
-  (byte) => byte.toString(16).padStart(2, "0"),
-).join("");
+// This preload is sandboxed, so it cannot import arbitrary Node builtins. Web Crypto belongs
+// to the isolated renderer world and keeps the capability private from the page just as the
+// former Node implementation intended.
+const productIssueAuthorizationCapability = globalThis.crypto.randomUUID();
 let productIssueAuthorizationClaimed = false;
 
 contextBridge.exposeInMainWorld("missionDesktop", {

@@ -9,7 +9,7 @@ import type {
 } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 import type { SessionLaunchersHandle } from "../LaunchMenu.tsx";
-import type { TranscriptFindHandle } from "../TranscriptPanel.tsx";
+import type { TranscriptFindHandle, TranscriptScrollDistance } from "../TranscriptPanel.tsx";
 import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 import type { WorkflowBindingSummary, WorkflowRunSummary } from "@shared/workflow.ts";
 import type { EnsembleSummary } from "@shared/ensemble.ts";
@@ -165,10 +165,14 @@ export interface SessionViewProps {
   /** Register the mounted transcript's find surface, so the fleet-wide chord can open
    *  it on whichever conversation is selected. */
   registerFind: (id: string, handle: TranscriptFindHandle | null) => void;
-  /** Register the open detail pane's owner for vertical reader and file-navigation arrows. */
+  /** Register the open detail pane's owner for vertical reader and file-navigation keys. */
   registerDetailScroll: (
     id: string,
-    scroll: ((direction: -1 | 1, fromReader: boolean) => boolean) | null,
+    scroll: ((
+      direction: -1 | 1,
+      fromReader: boolean,
+      distance: TranscriptScrollDistance,
+    ) => boolean) | null,
   ) => void;
   /** Read App's live overlay registry before a tab-local shortcut acts. */
   isOverlayOpen?: () => boolean;

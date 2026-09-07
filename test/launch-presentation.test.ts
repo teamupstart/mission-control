@@ -64,6 +64,7 @@ after(() => {
   for (const root of assignRoots) rmSync(root, { recursive: true, force: true });
   delete process.env.MISSION_CLAUDE_BIN;
   delete process.env.MISSION_PI_BIN;
+  delete process.env.HERDR_BIN;
 });
 
 openDb();

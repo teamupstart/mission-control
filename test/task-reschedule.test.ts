@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
+import type { TaskArchiveGate } from "../src/server/tasks.ts";
 
 /**
  * What is at stake: a prerequisite that was cancelled or failed while the work it stood
@@ -35,6 +36,29 @@ function setup() {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   return { registry, tasks };
+}
+
+/** Hold reschedule inside its real pre-teardown archive boundary without probing host terminals. */
+function setupPausedCleanup() {
+  const registry = new Registry();
+  let entered!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const archives: TaskArchiveGate = {
+    ensureReady: async () => ({ ok: true }),
+    settleBeforeCleanup: async () => {
+      entered();
+      await paused;
+      return { ok: true };
+    },
+  };
+  const tasks = new TaskManager(registry, undefined, undefined, undefined, archives);
+  return { registry, tasks, entered: waiting, release };
 }
 
 test("a cancelled task is put back into a clean, enabled backlog row", async () => {
@@ -127,15 +151,16 @@ test("rescheduling a task that does not exist is a plain refusal", async () => {
 });
 
 test("rescheduling does not resurrect a task removed during resource teardown", async () => {
-  const { registry, tasks } = setup();
+  const { registry, tasks, entered, release } = setupPausedCleanup();
   registry.upsertTask(mkTask({
     id: "removed-during-teardown",
     status: "failed",
-    homeName: "mission-test-reschedule-race-removed",
   }));
 
   const pending = tasks.reschedule("removed-during-teardown");
+  await entered;
   registry.removeTask("removed-during-teardown");
+  release();
   const r = await pending;
 
   assert.deepEqual(r, { ok: false, error: "no such task" });
@@ -146,14 +171,14 @@ test("rescheduling does not resurrect a task removed during resource teardown", 
 });
 
 test("a reschedule reservation refuses duplicate reschedules and every completion", async () => {
-  const { registry, tasks } = setup();
+  const { registry, tasks, entered, release } = setupPausedCleanup();
   registry.upsertTask(mkTask({
     id: "resolving",
     status: "failed",
-    homeName: "mission-test-reschedule-race-resolving",
   }));
 
   const pending = tasks.reschedule("resolving");
+  await entered;
   const duplicate = await tasks.reschedule("resolving");
   assert.deepEqual(duplicate, { ok: false, error: "task is being rescheduled" });
   // The stopped-only dead-blocker completion is refused...
@@ -170,21 +195,23 @@ test("a reschedule reservation refuses duplicate reschedules and every completio
   );
   assert.equal(registry.getTask("resolving")!.status, "failed");
 
+  release();
   assert.equal((await pending).ok, true);
   assert.equal(registry.getTask("resolving")!.status, "backlog");
 });
 
 test("rescheduling does not overwrite a status changed during resource teardown", async () => {
-  const { registry, tasks } = setup();
+  const { registry, tasks, entered, release } = setupPausedCleanup();
   registry.upsertTask(mkTask({
     id: "completed-during-teardown",
     status: "failed",
-    homeName: "mission-test-reschedule-race-completed",
   }));
 
   const pending = tasks.reschedule("completed-during-teardown");
+  await entered;
   const current = registry.getTask("completed-during-teardown")!;
   registry.upsertTask({ ...current, status: "done", outcome: "finished elsewhere" });
+  release();
   const r = await pending;
 
   assert.equal(r.ok, false);

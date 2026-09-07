@@ -36,6 +36,8 @@ import type { ArchiveSubject } from "../src/server/archives/task-gateway.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-scout-lifecycle-"));
 process.env.MISSION_HOME = home;
 process.env.HARNESS_HOME = home;
+// These tests fake agent shutdown and exercise real archive/worktree cleanup. Do not let an
+// optional operator Herdr installation turn that boundary into a live server dependency.
 process.env.HERDR_BIN = join(home, "missing-herdr");
 
 const { Registry } = await import("../src/server/registry.ts");
@@ -48,7 +50,10 @@ const { clearArchiveTables } = await import("../src/server/archives/store.ts");
 const { openDb } = await import("../src/server/db.ts");
 
 const db = openDb();
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  delete process.env.HERDR_BIN;
+  rmSync(home, { recursive: true, force: true });
+});
 beforeEach(() => {
   clearArchiveCaptureJobs(db);
   clearArchiveTables(db);

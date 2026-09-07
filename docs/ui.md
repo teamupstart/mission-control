@@ -670,6 +670,9 @@ available:
   <kbd>Tab</kbd> reaches it whatever a click last left focused - except while you are typing
   in the filter or the reply box, where <kbd>Tab</kbd> stays native. In the focused inline
   Diff reader the arrows move through its file list instead.
+  On Conversation, <kbd>d</kbd> pages the transcript down and <kbd>u</kbd> pages it back up
+  whether focus is on the session rail or inside the reader. The letter keys stand down while
+  you are typing and <kbd>d</kbd> claims the conversation before the global Delete action.
   In Files Preview, <kbd>d</kbd> pages the rendered document down and <kbd>u</kbd> pages it
   back up, both from the file list and after <kbd>Tab</kbd> enters the document. Preview claims
   <kbd>Tab</kbd> instead of walking controls rendered inside the file. <kbd>⇧</kbd><kbd>Tab</kbd>
@@ -1380,6 +1383,7 @@ names the layouts where a shortcut's target exists:
 | <kbd>e</kbd> | Open the review queue waiting on you. Uses the selected session when it is the one asking; otherwise jumps to the first session in fleet order that is. Unclaimed when nothing anywhere is waiting. This is the keyboard equivalent of clicking the amber **to review** badge | Any session with a pending review |
 | <kbd>v</kbd> | On the **Board** overview, show the selected card's full workflow or collapse it back to the active-rung preview. This is the keyboard equivalent of **Show full workflow** / **Collapse workflow** and never opens Conversation or another session-detail tab. Unclaimed while **Workflow details** is unchecked, which is how it ships - there is no disclosure to drive | Selected Board card with a workflow, with **Workflow details** on |
 | <kbd>g</kbd> | Show the selected session's conversation. **Console / Board drill-in** reveals the Conversation tab; the **Board** overview opens the drill-in, which starts there | Selected session |
+| <kbd>u</kbd> / <kbd>d</kbd> | Page the open conversation up or down, from either the session rail or the reader. Conversation claims <kbd>d</kbd> before the global Delete action | Console or Board drill-in with Conversation open |
 | <kbd>y</kbd> | Show the selected session's **Workflows** tab and workflow ladder. On the **Board** overview it drills in first; <kbd>w</kbd> opens the Library instead | Selected session |
 | <kbd>d</kbd> | Use the current **Delete** button. A focused row wins, followed by the current item or the only visible Delete control; the shortcut does nothing rather than guess between unrelated destructive rows | Focused row or active surface with Delete available |
 | <kbd>⇧</kbd><kbd>D</kbd> | Open the selected session's Console/Board Diff tab | Selected session |

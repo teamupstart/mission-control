@@ -6,6 +6,7 @@ import {
   adjacentFilePath,
   scrollActiveFileReader,
 } from "../src/web/components/FileWorkspace.tsx";
+import { scrollTranscript } from "../src/web/components/TranscriptPanel.tsx";
 
 // The browser path spans App's global key handler and two nested arrow owners. Pin
 // that wiring here: a typecheck alone cannot tell that Preview gets first refusal before
@@ -25,23 +26,33 @@ test("the open detail gets first refusal on vertical arrows before session navig
   // the session rail.
   assert.match(branch, /const fromReader = Boolean\(target\?\.closest\("\.cdetail"\)\)/);
   assert.match(branch, /detailScrollers\.current\.get\(readerSession\.id\)/);
-  assert.match(branch, /if \(detailScroll\?\.\([\s\S]*fromReader\)\) return/);
+  assert.match(branch, /if \(detailScroll\?\.\([\s\S]*fromReader, "arrow"\)\) return/);
 });
 
-test("Conversation and Files register their actual arrow owners", () => {
+test("Conversation and Files register their actual keyboard scroll owners", () => {
   const detail = source("components/layouts/ConsoleDetail.tsx");
-  assert.match(detail, /transcriptRef\.current\?\.scrollByArrow\(direction\)/);
+  assert.match(detail, /transcriptRef\.current\?\.scrollByKeyboard\(direction, distance\)/);
   assert.match(detail, /filesRef\.current\?\.handleArrow\(direction, fromReader\)/);
   assert.match(detail, /if \(!fromReader\) return false/);
 
   const transcript = source("components/TranscriptPanel.tsx");
-  assert.match(transcript, /logRef\.current[\s\S]*scrollBy\(\{ top:/);
+  assert.match(transcript, /logRef\.current[\s\S]*scrollTranscript\(el, direction, distance\)/);
 
   const files = source("components/FileWorkspace.tsx");
   assert.match(files, /scrollActiveFileReader\(root, direction\)/);
   assert.match(files, /previewable && mode === "preview"/);
   assert.match(files, /focusFileList: \(\) =>/);
   assert.match(files, /focusCurrentFileRow\(root\)/);
+});
+
+test("Conversation page navigation moves by one whole visible transcript height", () => {
+  const target = reader(500);
+
+  scrollTranscript(target.element, 1, "page");
+  scrollTranscript(target.element, -1, "page");
+  scrollTranscript(target.element, 1, "arrow");
+
+  assert.deepEqual(target.moves, [500, -500, 90]);
 });
 
 test("Preview Escape and Shift+Tab return to the selected file before the session rail", () => {

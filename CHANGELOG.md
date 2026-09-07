@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.9.0](https://github.com/teamupstart/mission-control/compare/v1.8.0...v1.9.0) (2026-09-07)
+
+
+### Features
+
+* unify executable discovery and child-process environments ([#927](https://github.com/teamupstart/mission-control/issues/927)) ([e000aa6](https://github.com/teamupstart/mission-control/commit/e000aa6aa0f3d828accffe6633d6654c2426730c))
+* **workflows:** draw one tile per round in the run scrubber ([#926](https://github.com/teamupstart/mission-control/issues/926)) ([57abd3f](https://github.com/teamupstart/mission-control/commit/57abd3f75db96bb15a63b25861c98aafae79a10a))
+
+
+### Bug Fixes
+
+* **docs:** retire the first-run chrome before a documentation capture ([#899](https://github.com/teamupstart/mission-control/issues/899)) ([071f9db](https://github.com/teamupstart/mission-control/commit/071f9db88c9ba7c8955e3fada038ee5c59edefca))
+* **feedback:** publish product reports in one click ([#928](https://github.com/teamupstart/mission-control/issues/928)) ([6cc08dd](https://github.com/teamupstart/mission-control/commit/6cc08ddb23deb2166fa64d31bc8e14a9b626e7b7))
+* **terminal:** make iTerm2 launches observable ([#929](https://github.com/teamupstart/mission-control/issues/929)) ([16535ab](https://github.com/teamupstart/mission-control/commit/16535ab1bea1b7108e6d9a908acb3a38e3a892ea))
+* **workflows:** preserve delivery attribution across restarts ([#931](https://github.com/teamupstart/mission-control/issues/931)) ([3cc334a](https://github.com/teamupstart/mission-control/commit/3cc334a76c8cdeaf4d060cc2a094106c068be4f2))
+
 ## [1.8.0](https://github.com/teamupstart/mission-control/compare/v1.7.1...v1.8.0) (2026-09-06)
 
 

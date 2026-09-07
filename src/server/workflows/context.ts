@@ -536,17 +536,21 @@ async function reconcileSourceWorkflowCriteria(
       },
     );
   }
-  const proposedMappings: WorkflowCriterionMapping[] = result.kind === "ok"
-    ? result.value.criterionMappings.flatMap((mapping) => {
-        const criterion = criteria[mapping.canonicalCriterionOrdinal - 1];
-        return criterion
-          ? [{
-              criterionId: criterion.id,
-              matchedClientCriterionIds: mapping.matchedClientCriterionIds,
-            }]
-          : [];
-      })
-    : [];
+  if (result.kind === "failed") {
+    return criteria.map((criterion) => ({
+      criterionId: criterion.id,
+      matchedClientCriterionIds: [],
+    }));
+  }
+  const proposedMappings: WorkflowCriterionMapping[] = result.value.criterionMappings.flatMap((mapping) => {
+    const criterion = criteria[mapping.canonicalCriterionOrdinal - 1];
+    return criterion
+      ? [{
+          criterionId: criterion.id,
+          matchedClientCriterionIds: mapping.matchedClientCriterionIds,
+        }]
+      : [];
+  });
   return reconcileWorkflowCriterionMappings(criteria, coverage, { proposedMappings });
 }
 

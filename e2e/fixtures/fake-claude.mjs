@@ -427,15 +427,25 @@ function headlessAnswer(prompt) {
   }
   if (prompt.includes("Compact workflow intent without rewriting it.")) {
     const input = JSON.parse(prompt.slice(prompt.lastIndexOf("\n\n") + 2));
-    const claims = Array.isArray(input.authorCoverage) ? input.authorCoverage : [];
+    const criterion = input.refinedGoal || input.rawGoal || "The submitted workflow outcome is correct";
     return JSON.stringify({
       constraints: [],
-      acceptanceCriteria: claims.map((claim) => claim.criterion),
-      canonicalCriteria: claims.map((claim) => ({
-        text: claim.criterion,
+      acceptanceCriteria: [criterion],
+      canonicalCriteria: [{
+        text: criterion,
         material: true,
-        suggestedProofClass: claim.declaredProofClass,
-        matchedClientCriterionIds: [claim.clientCriterionId],
+        suggestedProofClass: "visual",
+      }],
+    });
+  }
+  if (prompt.includes("Reconcile author coverage claims to stable workflow criteria without rewriting either.")) {
+    const input = JSON.parse(prompt.slice(prompt.lastIndexOf("\n\n") + 2));
+    const criteria = Array.isArray(input.canonicalCriteria) ? input.canonicalCriteria : [];
+    const claims = Array.isArray(input.authorCoverage) ? input.authorCoverage : [];
+    return JSON.stringify({
+      criterionMappings: criteria.slice(0, claims.length).map((criterion, ordinal) => ({
+        canonicalCriterionOrdinal: criterion.canonicalCriterionOrdinal,
+        matchedClientCriterionIds: [claims[ordinal].clientCriterionId],
       })),
     });
   }

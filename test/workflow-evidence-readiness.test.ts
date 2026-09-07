@@ -366,7 +366,7 @@ test("stable extraction excludes coverage and survives source reconciliation fai
     coverage: [{
       ...focusedClaim,
       clientCriterionId: "volatile-source-claim",
-      criterion: "Volatile author wording",
+      criterion: "Stable intent remains correct",
     }],
   };
   const context = await compactWorkflowContext(raw, {
@@ -402,9 +402,19 @@ test("stable extraction excludes coverage and survives source reconciliation fai
     criterionId: context.canonicalCriteria?.[0]?.id,
     matchedClientCriterionIds: [],
   }]);
+  assert.deepEqual(evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    criterionMappings: context.criterionMappings ?? [],
+    coverage: raw.coverage,
+    evidence: [{
+      clientItemId: command.clientItemId,
+      evidenceId: "focused-command-evidence",
+      repositoryScope: "repo-01",
+    }],
+  }).gapCodes, ["missing_coverage"]);
   assert.equal(prompts.length, 2);
-  assert.doesNotMatch(prompts[0]?.prompt ?? "", /volatile-source-claim|Volatile author wording/);
-  assert.match(prompts[1]?.prompt ?? "", /volatile-source-claim|Volatile author wording/);
+  assert.doesNotMatch(prompts[0]?.prompt ?? "", /volatile-source-claim/);
+  assert.match(prompts[1]?.prompt ?? "", /volatile-source-claim/);
 });
 
 test("source compaction semantically maps differently worded coverage outside stable criteria", async () => {

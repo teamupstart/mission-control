@@ -6018,6 +6018,7 @@ export class WorkflowManager {
       if (
         reuseParent
         && reuseSource?.success
+        && reuseSource.data.compaction.status === "model"
         && reuseSource.data.intentFingerprint === intentFingerprint
       ) {
         context = reuseWorkflowContextCriteria(

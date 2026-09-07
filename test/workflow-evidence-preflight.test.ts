@@ -78,6 +78,7 @@ async function harness(
   options: {
     humanDecisions?: () => WorkflowHumanDecision[];
     recordCompactionLedger?: boolean;
+    compactContext?: typeof compactWorkflowContext;
   } = {},
 ) {
   const registry = new Registry();
@@ -192,12 +193,18 @@ async function harness(
       };
     },
     boundaryChanged: async () => false,
-    ...(!options.recordCompactionLedger ? {
+    ...(options.compactContext ? {
+      compactContext: options.compactContext,
+    } : !options.recordCompactionLedger ? {
       compactContext: async (raw: Parameters<typeof compactWorkflowContext>[0]) =>
         compactWorkflowContext(raw, {
           runner: "claude",
           model: "fake",
           execute: async () => ({ kind: "ok", value: compactionValue }),
+          reconcile: async () => ({
+            kind: "ok",
+            value: { criterionMappings: compactionValue.criterionMappings },
+          }),
         }),
     } : {}),
     engine: {
@@ -323,6 +330,113 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
     1,
     "only the source submission may reconcile claims through the model",
   );
+});
+
+test("fallback compaction retries before becoming a stable criteria reuse source", async (t) => {
+  let compactionCalls = 0;
+  const h = await harness(t, "fallback-retry-preflight", undefined, {
+    compactContext: async (raw) => {
+      compactionCalls += 1;
+      return compactWorkflowContext(raw, {
+        runner: "claude",
+        model: "fake",
+        execute: async () => ({
+          kind: "ok",
+          value: {
+            constraints: [],
+            acceptanceCriteria: ["Rendered workflow state is inspectable"],
+            canonicalCriteria: [{
+              text: "Rendered workflow state is inspectable",
+              material: true,
+              suggestedProofClass: "visual",
+            }],
+          },
+        }),
+        reconcile: async () => ({
+          kind: "ok",
+          value: {
+            criterionMappings: [{
+              canonicalCriterionOrdinal: 1,
+              matchedClientCriterionIds: raw.coverage?.[0]
+                ? [raw.coverage[0].clientCriterionId]
+                : [],
+            }],
+          },
+        }),
+      });
+    },
+  });
+  const stageGap = async (ordinal: number) => {
+    const clientItemId = `fallback-execution-${ordinal}`;
+    await h.manager.stageAgentEvidence("fallback-retry-preflight", {
+      images: [],
+      commandOutputs: [{
+        kind: "command",
+        clientItemId,
+        command: "verify fallback retry",
+        exitCode: 0,
+        output: "fallback retry passed\n",
+        caption: "Fallback retry execution",
+        repositoryScope: "all",
+      }],
+      coverage: [{
+        clientCriterionId: `fallback-claim-${ordinal}`,
+        criterion: "Rendered workflow state is inspectable",
+        proofClass: "visual",
+        repositoryScope: "all",
+        links: [{ clientItemId, role: "execution" }],
+      }],
+    });
+  };
+
+  await stageGap(0);
+  const submitted = await h.manager.submit(h.binding.id, { requestId: "fallback-root" });
+  assert.equal(submitted.ok, true);
+  if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  await waitFor(
+    () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
+    "fallback source did not wait for evidence readiness",
+  );
+  const sourceContext = WorkflowContextSnapshotSchema.parse(submitted.value.submission.context);
+  assert.equal(sourceContext.compaction.status, "model");
+  openDb().prepare(
+    "UPDATE workflow_submissions SET context_json = ? WHERE id = ?",
+  ).run(JSON.stringify({
+    ...sourceContext,
+    compaction: {
+      ...sourceContext.compaction,
+      status: "fallback",
+      error: "provider unavailable",
+    },
+  }), submitted.value.submission.id);
+
+  await stageGap(1);
+  const retried = await h.manager.retryEvidenceReadiness(
+    runId,
+    submitted.value.submission.id,
+    "fallback-provider-recovered",
+    2,
+  );
+  assert.equal(retried.ok, true);
+  if (!retried.ok) return;
+  const recoveredContext = WorkflowContextSnapshotSchema.parse(retried.value.submission.context);
+  assert.equal(compactionCalls, 2);
+  assert.equal(recoveredContext.compaction.status, "model");
+  assert.equal(recoveredContext.compaction.reusedFromSubmissionId, null);
+
+  await stageGap(2);
+  const reused = await h.manager.retryEvidenceReadiness(
+    runId,
+    retried.value.submission.id,
+    "fallback-source-now-stable",
+    3,
+  );
+  assert.equal(reused.ok, true);
+  if (!reused.ok) return;
+  assert.equal(compactionCalls, 2);
+  const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
+  assert.equal(reusedContext.compaction.reusedFromSubmissionId, retried.value.submission.id);
 });
 
 test("one changed human decision recompacts once and becomes the next reuse source", async (t) => {

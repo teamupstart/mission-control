@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/teamupstart/mission-control/compare/v1.9.0...v1.9.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **git:** retry stale remote ref races ([#932](https://github.com/teamupstart/mission-control/issues/932)) ([45e816f](https://github.com/teamupstart/mission-control/commit/45e816f4e7579647500daa7e253d485fa004b592))
+
 ## [1.9.0](https://github.com/teamupstart/mission-control/compare/v1.8.0...v1.9.0) (2026-09-07)
 
 

@@ -214,10 +214,10 @@ export class RepositoryReader {
     const request = parsed.data;
     const inputHash = sha256(stableJson(withoutCursor(request)));
     try {
-      this.chargeCall();
+      const remainingAttemptMs = this.chargeCall();
       if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
       const cursorPosition = request.cursor ? this.readCursor(request.cursor, request.operation, inputHash) : 0;
-      const callSignal = combineAbort(signal, this.options.budgets.maxCallMs);
+      const callSignal = combineAbort(signal, Math.min(this.options.budgets.maxCallMs, remainingAttemptMs));
       const pending = await this.run(request, cursorPosition, callSignal);
       return await this.finishSuccess(request, operationInstanceId, inputHash, pending, startedAt);
     } catch (error) {
@@ -233,14 +233,16 @@ export class RepositoryReader {
       : "read";
   }
 
-  private chargeCall(): void {
+  private chargeCall(): number {
     this.usage.calls += 1;
     if (this.usage.calls > this.options.budgets.maxCalls) {
       throw Object.assign(new Error("repository call budget exhausted"), { code: "budget_exhausted" });
     }
-    if (this.now() - this.usage.startedAt > this.options.budgets.maxAttemptMs) {
+    const remainingAttemptMs = this.options.budgets.maxAttemptMs - (this.now() - this.usage.startedAt);
+    if (remainingAttemptMs <= 0) {
       throw Object.assign(new Error("repository attempt deadline exceeded"), { code: "deadline_exceeded" });
     }
+    return remainingAttemptMs;
   }
 
   private async run(request: RepositoryOperationRequest, position: number, signal: AbortSignal): Promise<{ items: PendingItem[]; next: number | null; reason: RepositoryOperationResult["truncationReason"]; history?: boolean }> {
@@ -320,16 +322,28 @@ export class RepositoryReader {
       if (start >= bytes.byteLength) {
         return { items: [], next: null, reason: null };
       }
-      const end = Math.min(bytes.byteLength, start + request.window.maxBytes, start + this.options.budgets.maxResponseBytes);
-      const returned = bytes.subarray(start, end);
-      if (!bufferIsText(returned)) {
+      if (!bufferIsText(bytes.subarray(0, start))) {
         throw Object.assign(new Error("byte window must align to UTF-8 text boundaries"), { code: "request_invalid" });
       }
-      return {
-        items: [{ path: entry.path, kind: "text" as const, text: scrubSecrets(returned.toString("utf8")), range: { kind: "byte" as const, startByte: start, endByteExclusive: end, encoding: "raw" as const } }],
-        next: end < bytes.byteLength ? end : null,
-        reason: end < bytes.byteLength ? "bytes" as const : null,
-      };
+      let end = Math.min(bytes.byteLength, start + request.window.maxBytes, start + this.options.budgets.maxResponseBytes);
+      while (end > start) {
+        const returned = bytes.subarray(start, end);
+        if (!bufferIsText(returned)) {
+          end -= 1;
+          continue;
+        }
+        const item: PendingItem = { path: entry.path, kind: "text", text: scrubSecrets(returned.toString("utf8")), range: { kind: "byte", startByte: start, endByteExclusive: end, encoding: "raw" } };
+        const excessBytes = pendingItemBytes(item, 1) - this.options.budgets.maxResponseBytes;
+        if (excessBytes <= 0) {
+          return {
+            items: [item],
+            next: end < bytes.byteLength ? end : null,
+            reason: end < bytes.byteLength ? "bytes" as const : null,
+          };
+        }
+        end -= Math.max(1, excessBytes);
+      }
+      throw Object.assign(new Error("one repository byte window item exceeds the response limit"), { code: "response_too_large" });
     }
     if (!bufferIsText(bytes)) throw Object.assign(new Error("line windows require UTF-8 text"), { code: "request_invalid" });
     const lines = linesOf(bytes.toString("utf8"));
@@ -340,16 +354,18 @@ export class RepositoryReader {
     const maximum = Math.min(request.window.maxLines, this.options.budgets.maxItemsPerCall);
     let endIndex = Math.min(lines.length, startIndex + maximum);
     let text = scrubSecrets(lines.slice(startIndex, endIndex).join("\n"));
-    while (Buffer.byteLength(text) > this.options.budgets.maxResponseBytes && endIndex > startIndex) {
+    let item: PendingItem = { path: entry.path, kind: "text", text, range: { kind: "line", startLine: startIndex + 1, endLineExclusive: endIndex + 1 } };
+    while (pendingItemBytes(item, 1) > this.options.budgets.maxResponseBytes && endIndex > startIndex) {
       endIndex -= 1;
       text = scrubSecrets(lines.slice(startIndex, endIndex).join("\n"));
+      item = { path: entry.path, kind: "text", text, range: { kind: "line", startLine: startIndex + 1, endLineExclusive: endIndex + 1 } };
     }
     if (endIndex === startIndex) {
       throw Object.assign(new Error("one complete repository line exceeds the response limit"), { code: "response_too_large" });
     }
     const truncated = endIndex < lines.length;
     return {
-      items: [{ path: entry.path, kind: "text" as const, text, range: { kind: "line" as const, startLine: startIndex + 1, endLineExclusive: endIndex + 1 } }],
+      items: [item],
       next: truncated ? endIndex : null,
       reason: truncated ? (endIndex - startIndex < maximum ? "bytes" as const : "lines" as const) : null,
     };

@@ -161,6 +161,70 @@ test("line windows fail when no complete line fits the response budget", async (
   }
 });
 
+test("byte windows reserve response space for the item envelope and return a progressing page", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const content = `${"é".repeat(300)}\n`;
+    writeFileSync(join(fixture.root, "source.txt"), content, "utf8");
+    const worktreeObjectId = createHash("sha1")
+      .update(`blob ${Buffer.byteLength(content)}\0`)
+      .update(content)
+      .digest("hex");
+    const descriptor = {
+      ...fixture.descriptor,
+      entries: fixture.descriptor.entries.map((entry) => (
+        entry.path === "source.txt" ? { ...entry, worktreeObjectId } : entry
+      )),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 256, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      cursorSecret: Buffer.alloc(32, 7),
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "byte", startByte: 0, maxBytes: 256 } }, new AbortController().signal);
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.truncationReason, "bytes");
+    assert.ok(result.byteCount <= 256);
+    assert.ok(result.continuationCursor);
+    assert.equal(result.items[0]?.kind, "text");
+    if (result.items[0]?.kind === "text") {
+      assert.equal(result.items[0].range.kind, "byte");
+      if (result.items[0].range.kind === "byte") {
+        assert.ok(result.items[0].range.endByteExclusive > 0);
+        assert.equal(result.items[0].range.endByteExclusive % 2, 0);
+      }
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("in-flight repository calls cannot outlive the remaining attempt deadline", async () => {
+  const fixture = repositoryViewFixture();
+  let nowCalls = 0;
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 1_000, maxItemsPerCall: 10, maxCallMs: 5_000 },
+      now: () => nowCalls++ === 0 ? 0 : 999,
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "git_show", revision: fixture.descriptor.headRevision, patch: false, paths: [] }, new AbortController().signal);
+
+    assert.equal(result.status, "cancelled");
+    assert.equal(result.code, "deadline_exceeded");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("glob treats brackets as literal path characters", async () => {
   const fixture = repositoryViewFixture();
   try {

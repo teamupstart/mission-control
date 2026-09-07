@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstat, open, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { RepositoryJsonlAuditSink } from "../src/server/repository/jsonl-audit.ts";
@@ -136,6 +137,55 @@ test("worktree reads fail closed when materialized bytes change after capture", 
     assert.equal(result.continuationCursor, null);
     assert.deepEqual(audits[0]?.handles, []);
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("worktree reads reject a regular file swapped to a FIFO without blocking", { skip: process.platform === "win32" }, async () => {
+  const fixture = repositoryViewFixture();
+  const source = join(fixture.root, "source.txt");
+  const original = join(fixture.root, "source.original.txt");
+  let swapped = false;
+  let unblock: NodeJS.Timeout | undefined;
+  try {
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 5_000 },
+      audit: { async append() {} },
+      worktreeFileSystem: {
+        async lstat(path) {
+          const captured = await lstat(path);
+          if (path === source) {
+            renameSync(source, original);
+            execFileSync("mkfifo", [source]);
+            swapped = true;
+          }
+          return captured;
+        },
+        open,
+        readlink: (path) => readlink(path, { encoding: "buffer" }),
+      },
+    });
+
+    // If O_NONBLOCK regresses, release the pending FIFO reader so the test fails
+    // on its elapsed-time assertion instead of hanging the worker indefinitely.
+    unblock = setTimeout(() => {
+      const descriptor = openSync(source, constants.O_WRONLY | constants.O_NONBLOCK);
+      closeSync(descriptor);
+    }, 1_500);
+    const startedAt = Date.now();
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 1 } }, new AbortController().signal);
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(swapped, true);
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.code, "view_unavailable");
+    assert.deepEqual(result.items, []);
+    assert.equal(result.continuationCursor, null);
+    assert.ok(elapsedMs < 1_000, `FIFO rejection took ${elapsedMs}ms`);
+  } finally {
+    if (unblock) clearTimeout(unblock);
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, readlink } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, open, readlink, type FileHandle } from "node:fs/promises";
 import { promisify } from "node:util";
 import type {
   RepositoryBudgets,
@@ -43,6 +43,12 @@ export interface RepositoryReaderIdentity {
   workflowAttemptId: string;
 }
 
+export interface RepositoryReaderWorktreeFileSystem {
+  lstat(path: string): Promise<Stats>;
+  open(path: string, flags: number): Promise<FileHandle>;
+  readlink(path: string): Promise<Buffer>;
+}
+
 export interface RepositoryReaderOptions {
   descriptor: RepositoryViewDescriptor;
   identity: RepositoryReaderIdentity;
@@ -50,6 +56,7 @@ export interface RepositoryReaderOptions {
   cursorSecret?: Uint8Array;
   audit: RepositoryAuditSink;
   now?: () => number;
+  worktreeFileSystem?: RepositoryReaderWorktreeFileSystem;
 }
 
 interface MutableBudget {
@@ -79,6 +86,12 @@ const GIT_CONFIG = [
   "-c", "protocol.file.allow=never",
   "-c", "remote.origin.promisor=false",
 ] as const;
+
+const DEFAULT_WORKTREE_FILE_SYSTEM: RepositoryReaderWorktreeFileSystem = {
+  lstat,
+  open,
+  readlink: (path) => readlink(path, { encoding: "buffer" }),
+};
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -209,6 +222,7 @@ export class RepositoryReader {
   private readonly secret: Buffer;
   private readonly now: () => number;
   private readonly usage: MutableBudget;
+  private readonly worktreeFileSystem: RepositoryReaderWorktreeFileSystem;
 
   constructor(private readonly options: RepositoryReaderOptions) {
     this.descriptor = RepositoryViewDescriptorSchema.parse(options.descriptor);
@@ -225,6 +239,7 @@ export class RepositoryReader {
     this.secret = Buffer.from(options.cursorSecret ?? randomBytes(32));
     if (this.secret.byteLength < 32) throw new Error("repository cursor secret must be at least 32 bytes");
     this.now = options.now ?? Date.now;
+    this.worktreeFileSystem = options.worktreeFileSystem ?? DEFAULT_WORKTREE_FILE_SYSTEM;
     this.usage = { calls: 0, bytes: 0, startedAt: this.now() };
   }
 
@@ -300,20 +315,20 @@ export class RepositoryReader {
   private async worktreeBytes(entry: RepositoryManifestEntry, signal: AbortSignal): Promise<Buffer> {
     if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
     const absolute = `${this.descriptor.repositoryRoot}/${entry.path}`;
-    const stat = await lstat(absolute);
+    const stat = await this.worktreeFileSystem.lstat(absolute);
     if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
     if (stat.size > this.options.budgets.maxResponseBytes * 4) {
       throw Object.assign(new Error("repository file exceeds the bounded reader limit"), { code: "response_too_large" });
     }
     if (entry.kind === "symlink") {
       if (!stat.isSymbolicLink()) throw Object.assign(new Error("materialized symlink changed type"), { code: "view_unavailable" });
-      const value = Buffer.from(await readlink(absolute, { encoding: "buffer" }));
+      const value = await this.worktreeFileSystem.readlink(absolute);
       if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
       this.assertWorktreeObject(entry, value);
       return value;
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw Object.assign(new Error("materialized file changed type"), { code: "view_unavailable" });
-    const file = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
+    const file = await this.worktreeFileSystem.open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK);
     try {
       const openedStat = await file.stat();
       if (signal.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });

@@ -4,7 +4,6 @@
 // (open a link in the system browser, install the Claude integrations, read the
 // app version). contextIsolation keeps this the only channel into the renderer.
 
-import { randomUUID } from "node:crypto";
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
 
@@ -12,7 +11,15 @@ interface ProductIssueAuthorizationInput {
   requestId: string;
   draftIdentity: string;
 }
-const productIssueAuthorizationCapability = randomUUID();
+// Sandboxed preloads cannot import Node's crypto module. A failed top-level import prevents
+// every desktop capability below from being exposed, including the update-state bridge. Web
+// Crypto is available in the preload's isolated world, so mint the private one-use capability
+// there without widening the sandbox or weakening its entropy.
+const authorizationBytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
+const productIssueAuthorizationCapability = Array.from(
+  authorizationBytes,
+  (byte) => byte.toString(16).padStart(2, "0"),
+).join("");
 let productIssueAuthorizationClaimed = false;
 
 contextBridge.exposeInMainWorld("missionDesktop", {

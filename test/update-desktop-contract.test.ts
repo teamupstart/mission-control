@@ -74,6 +74,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         updatePush.includes('did-finish-load'),
       preloadHasOneGroupedNamespace:
         (preload.match(/\bupdates\s*:\s*\{/g) ?? []).length === 1 && updatePreload.length > 0,
+      preloadUsesOnlySandboxSafeImports: !/from ["']node:/.test(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
           "getState,check,apply,install,cancel,defer,onState" &&
@@ -109,6 +110,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       mainSubscribesOnce: true,
       mainGuardsUpdateStateSend: true,
       preloadHasOneGroupedNamespace: true,
+      preloadUsesOnlySandboxSafeImports: true,
       preloadExposesExactMethods: true,
       preloadDropsEventAndUnsubscribes: true,
       preloadLeaksNoDiagnostics: true,

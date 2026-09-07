@@ -591,3 +591,46 @@ test("path-only repository results consume response bytes and paginate", async (
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("concurrent repository calls reserve the cumulative byte budget before audit", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const calibration = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "calibration", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+    const sample = await calibration.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 1 } }, new AbortController().signal);
+    assert.equal(sample.status, "ok");
+
+    let releaseAudits!: () => void;
+    const auditsReleased = new Promise<void>((resolve) => { releaseAudits = resolve; });
+    let auditCount = 0;
+    const reader = new RepositoryReader({
+      descriptor: fixture.descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: sample.byteCount * 2 - 1, maxResponseBytes: 4096, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: {
+        async append() {
+          auditCount += 1;
+          if (auditCount === 2) releaseAudits();
+          await auditsReleased;
+        },
+      },
+    });
+    const request = { operation: "read" as const, path: "source.txt", layer: "worktree" as const, window: { kind: "line" as const, startLine: 1, maxLines: 1 } };
+
+    const results = await Promise.all([
+      reader.execute(request, new AbortController().signal),
+      reader.execute(request, new AbortController().signal),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === "ok").length, 1);
+    const refused = results.find((result) => result.status !== "ok");
+    assert.equal(refused?.status, "unavailable");
+    assert.equal(refused?.code, "budget_exhausted");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

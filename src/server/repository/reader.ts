@@ -676,10 +676,13 @@ export class RepositoryReader {
     if (this.usage.bytes + byteCount > this.options.budgets.maxAttemptBytes) {
       return this.finishFailure(request.operation, operationInstanceId, "unavailable", "budget_exhausted", "repository byte budget exhausted", startedAt, inputHash);
     }
+    // Reserve synchronously before the audit await so concurrent calls observe one
+    // cumulative attempt budget. Audit failure remains fail-closed and consumes the
+    // reservation rather than making already-refused concurrent work retroactively safe.
+    this.usage.bytes += byteCount;
     const audit: RepositoryQueryAuditMetadata = { operationInstanceId, operation: request.operation, normalizedInputHash: inputHash, status: "ok", failureCode: null, byteCount, itemCount: items.length, truncated, durationMs: Math.max(0, this.now() - startedAt), handles };
     try { await this.options.audit.append(audit); }
     catch { return this.finishFailure(request.operation, operationInstanceId, "unavailable", "audit_unavailable", "repository audit sink is unavailable", startedAt, inputHash, false); }
-    this.usage.bytes += byteCount;
     return RepositoryOperationResultSchema.parse({ operation: request.operation, operationInstanceId, status: "ok", code: null, message: null, items, byteCount, itemCount: items.length, truncated, truncationReason: pending.reason, continuationCursor: pending.next === null ? null : this.cursor(request.operation, inputHash, pending.next), historyBoundary: pending.history ? { truncated: this.descriptor.omittedParents.length > 0, frontier: this.descriptor.frontier, omittedParents: this.descriptor.omittedParents } : null });
   }
 

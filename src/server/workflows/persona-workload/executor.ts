@@ -43,7 +43,8 @@ export interface PersonaWorkloadExecutor {
 }
 
 interface WorkloadState {
-  request: PersonaWorkloadRequest;
+  workloadId: string;
+  idempotencyKey: string;
   controller: AbortController;
   events: PersonaWorkloadEvent[];
   waiters: Set<() => void>;
@@ -63,6 +64,7 @@ export interface LocalPersonaWorkloadExecutorOptions {
   repositoryMcpEntrypoint: string;
   nodeCommand?: string;
   now?: () => number;
+  maxRetainedTerminalWorkloads?: number;
 }
 
 function materializationRequest(request: PersonaWorkloadRequest): RepositoryMaterializationRequest {
@@ -93,6 +95,7 @@ class PersonaWorkloadDeadlineError extends Error {
 }
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const DEFAULT_RETAINED_TERMINAL_WORKLOADS = 32;
 
 function failureResult(
   error: unknown,
@@ -113,10 +116,20 @@ function failureResult(
 
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
   private readonly workloads = new Map<string, WorkloadState>();
+  private readonly completedWorkloadIds: string[] = [];
   private readonly now: () => number;
+  private readonly maxRetainedTerminalWorkloads: number;
 
   constructor(private readonly options: LocalPersonaWorkloadExecutorOptions) {
     this.now = options.now ?? Date.now;
+    this.maxRetainedTerminalWorkloads = options.maxRetainedTerminalWorkloads ?? DEFAULT_RETAINED_TERMINAL_WORKLOADS;
+    if (
+      !Number.isSafeInteger(this.maxRetainedTerminalWorkloads)
+      || this.maxRetainedTerminalWorkloads < 1
+      || this.maxRetainedTerminalWorkloads > DEFAULT_RETAINED_TERMINAL_WORKLOADS
+    ) {
+      throw new Error(`terminal workload retention must be between 1 and ${DEFAULT_RETAINED_TERMINAL_WORKLOADS}`);
+    }
     if (options.providers.claude.id !== "claude" || options.providers.codex.id !== "codex") {
       throw new Error("Persona workload provider registry is not exhaustive");
     }
@@ -126,13 +139,14 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     const request = PersonaWorkloadRequestSchema.parse(input);
     const prior = this.workloads.get(request.workloadId);
     if (prior) {
-      if (prior.request.idempotencyKey !== request.idempotencyKey) {
+      if (prior.idempotencyKey !== request.idempotencyKey) {
         throw new Error("workload id was reused with a different idempotency key");
       }
       return this.stream(prior, 0);
     }
     const state: WorkloadState = {
-      request,
+      workloadId: request.workloadId,
+      idempotencyKey: request.idempotencyKey,
       controller: new AbortController(),
       events: [],
       waiters: new Set(),
@@ -154,7 +168,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       deadlineTimer = setTimeout(enforceDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
     };
     enforceDeadline();
-    void this.run(state)
+    void this.run(state, request)
       .finally(() => {
         if (deadlineTimer) clearTimeout(deadlineTimer);
         signal.removeEventListener("abort", abort);
@@ -188,8 +202,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     state.controller.abort(new Error(`Persona workload cancelled at generation ${generation}`));
   }
 
-  private async run(state: WorkloadState): Promise<void> {
-    const request = state.request;
+  private async run(state: WorkloadState, request: PersonaWorkloadRequest): Promise<void> {
     this.emit(state, { kind: "accepted", cancellationGeneration: state.cancellationGeneration });
     let lease: RepositoryViewLease | null = null;
     let workDir: string | null = null;
@@ -294,8 +307,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         verdict,
         llmCall,
       };
-      state.terminal = result;
-      this.emit(state, { kind: "completed", result });
+      this.complete(state, result);
     } catch (error) {
       if (auditPath) {
         try {
@@ -306,8 +318,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         }
       }
       const result = failureResult(error, state.controller.signal, llmCall);
-      state.terminal = result;
-      this.emit(state, { kind: "completed", result });
+      this.complete(state, result);
     } finally {
       await lease?.release().catch(() => {});
       if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => {});
@@ -332,13 +343,24 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     }
   }
 
+  private complete(state: WorkloadState, result: PersonaWorkloadResult): void {
+    state.terminal = result;
+    this.emit(state, { kind: "completed", result });
+    this.completedWorkloadIds.push(state.workloadId);
+    while (this.completedWorkloadIds.length > this.maxRetainedTerminalWorkloads) {
+      const workloadId = this.completedWorkloadIds.shift()!;
+      const retained = this.workloads.get(workloadId);
+      if (retained?.terminal) this.workloads.delete(workloadId);
+    }
+  }
+
   private emit(
     state: WorkloadState,
     payload: EventPayload,
   ): void {
     const event = {
       ...payload,
-      workloadId: state.request.workloadId,
+      workloadId: state.workloadId,
       sequence: state.events.length + 1,
       timestamp: this.now(),
     } as PersonaWorkloadEvent;

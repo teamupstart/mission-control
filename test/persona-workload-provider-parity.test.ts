@@ -690,3 +690,40 @@ test("a provider result arriving after cancellation preserves only audit and cal
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("the local executor retains only a bounded terminal reconciliation window", async () => {
+  const fixture = repositoryViewFixture();
+  let providerRuns = 0;
+  const failing: PersonaWorkloadProviderAdapter = {
+    id: "claude",
+    async run() {
+      providerRuns += 1;
+      throw new Error("synthetic provider failure");
+    },
+  };
+  const executor = new LocalPersonaWorkloadExecutor({
+    materializer: { async materialize() { return { descriptor: fixture.descriptor, async release() {} }; } },
+    providers: { claude: failing, codex: { ...failing, id: "codex" } },
+    repositoryMcpEntrypoint: "/tmp/repository-mcp.mjs",
+    maxRetainedTerminalWorkloads: 1,
+  });
+  const collect = async (input: PersonaWorkloadRequest) => {
+    const events: PersonaWorkloadEvent[] = [];
+    for await (const event of executor.dispatch(input, new AbortController().signal)) events.push(event);
+    return events;
+  };
+  try {
+    const first = { ...request("claude", fixture.descriptor.snapshotDigest), workloadId: "workload-first", idempotencyKey: "key-first" };
+    const second = { ...request("claude", fixture.descriptor.snapshotDigest), workloadId: "workload-second", idempotencyKey: "key-second" };
+    await collect(first);
+    await collect(second);
+
+    assert.equal((await executor.reconcile(first.workloadId, 0)).state, "unknown");
+    assert.equal((await executor.reconcile(second.workloadId, 0)).state, "completed");
+    const replay = await collect(second);
+    assert.equal(replay.at(-1)?.kind, "completed");
+    assert.equal(providerRuns, 2);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});

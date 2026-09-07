@@ -29,6 +29,7 @@ process.env.MISSION_HOME = home;
 // the real backend would open tmux sessions on the machine running the suite.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_PI_BIN = "/bin/echo";
+process.env.MISSION_HERDR_BIN = join(home, "missing-herdr");
 
 const { openDb } = await import("../src/server/db.ts");
 const {
@@ -63,6 +64,7 @@ after(() => {
   for (const root of assignRoots) rmSync(root, { recursive: true, force: true });
   delete process.env.MISSION_CLAUDE_BIN;
   delete process.env.MISSION_PI_BIN;
+  delete process.env.MISSION_HERDR_BIN;
 });
 
 openDb();

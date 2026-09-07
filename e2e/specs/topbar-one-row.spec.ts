@@ -26,6 +26,31 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const EVIDENCE = artifactsDir("topbar-one-row");
 
+test("the desktop title bar keeps its brand clear of the native window controls", async ({
+  dashboard,
+}) => {
+  // The ordinary E2E browser has no native shell. Apply the class that main.tsx derives from
+  // the preload bridge; desktop-preload-electron.test.ts owns that preceding bridge boundary.
+  await dashboard.evaluate(() => document.documentElement.classList.add("is-desktop"));
+  await dashboard.setViewportSize({ width: 1000, height: 700 });
+
+  const topbar = dashboard.locator("header.topbar");
+  const brand = topbar.locator(".brand");
+  await expect(brand).toBeVisible();
+  const left = (await brand.boundingBox())?.x ?? 0;
+
+  // Electron pins the last macOS traffic light inside the first 80px. The full-width
+  // Console and Board shells reserve 84px so the app mark never paints beneath it.
+  expect(left, `the brand starts at x=${left}px inside the native controls`).toBeGreaterThanOrEqual(84);
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.mouse.move(0, 200);
+    await topbar.screenshot({ path: `${EVIDENCE}desktop-traffic-light-inset.png` });
+    console.log(`CAPTURED ${EVIDENCE}desktop-traffic-light-inset.png (brand x=${left}px)`);
+  }
+});
+
 /** The daemon's loopback token, which the cost ingest route requires. */
 function token(daemon: DaemonHandle): string {
   return readFileSync(join(daemon.home, "token"), "utf8").trim();

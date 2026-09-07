@@ -545,20 +545,22 @@ test("source compaction fails closed when one claim is proposed for multiple cri
   });
   assert.deepEqual(
     context.criterionMappings?.map((mapping) => mapping.matchedClientCriterionIds),
-    [[], []],
-    "an ambiguous model proposal must not regain an owner through exact-text fallback",
+    [[claim.clientCriterionId], [claim.clientCriterionId]],
+    "an ambiguous model proposal must remain visible without text-fallback reassignment",
   );
   const evidence = [{
     clientItemId: "source-run",
     evidenceId: "source-run-evidence",
     repositoryScope: "all" as const,
   }];
-  assert.deepEqual(evaluateWorkflowEvidenceReadiness({
+  const readiness = evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: context.canonicalCriteria ?? [],
     criterionMappings: context.criterionMappings ?? [],
     coverage: [claim],
     evidence,
-  }).gapCodes, ["missing_coverage"]);
+  });
+  assert.equal(readiness.status, "gaps");
+  assert.deepEqual(readiness.gapCodes, ["ambiguous_mapping"]);
 
   const duplicateMappings = (context.canonicalCriteria ?? []).map((criterion) => ({
     criterionId: criterion.id,

@@ -371,3 +371,41 @@ test("search returns a byte-bounded progressing page without collecting later ma
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("path-only repository results consume response bytes and paginate", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const sourceEntry = fixture.descriptor.entries.find((entry) => entry.path === "source.txt")!;
+    const descriptor = {
+      ...fixture.descriptor,
+      entries: Array.from({ length: 100 }, (_, index) => ({
+        ...sourceEntry,
+        path: `file-${index.toString().padStart(3, "0")}.txt`,
+      })),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 512, maxResponseBytes: 512, maxAttemptMs: 10_000, maxItemsPerCall: 100_000, maxCallMs: 1_000 },
+      cursorSecret: Buffer.alloc(32, 6),
+      audit: { async append() {} },
+    });
+
+    const first = await reader.execute({ operation: "glob", pattern: "**" }, new AbortController().signal);
+
+    assert.equal(first.status, "ok");
+    assert.equal(first.truncationReason, "bytes");
+    assert.ok(first.byteCount > 0);
+    assert.ok(first.byteCount <= 512);
+    assert.ok(first.items.length > 0);
+    assert.ok(first.items.length < descriptor.entries.length);
+    assert.ok(first.continuationCursor);
+
+    const second = await reader.execute({ operation: "glob", pattern: "**", cursor: first.continuationCursor! }, new AbortController().signal);
+    assert.equal(second.status, "unavailable");
+    assert.equal(second.code, "budget_exhausted");
+    assert.equal(second.byteCount, 0);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

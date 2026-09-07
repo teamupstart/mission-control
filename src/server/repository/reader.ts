@@ -116,11 +116,23 @@ function bufferIsText(bytes: Buffer): boolean {
   return Buffer.from(text, "utf8").equals(bytes);
 }
 
-function resultBytes(items: readonly PendingItem[]): number {
-  return items.reduce((total, item) => {
-    if (item.text !== undefined) return total + Buffer.byteLength(item.text);
-    return total;
-  }, 0);
+const EVIDENCE_HANDLE_SIZE_PLACEHOLDER = `reh_${"x".repeat(32)}`;
+
+function serializedItemBytes(item: unknown): number {
+  return Buffer.byteLength(JSON.stringify(item));
+}
+
+function pendingItemBytes(item: PendingItem, ordinal: number): number {
+  return serializedItemBytes({
+    ...item,
+    ordinal,
+    metadata: item.metadata ?? {},
+    ...(item.path && item.range ? { evidenceHandleId: EVIDENCE_HANDLE_SIZE_PLACEHOLDER } : {}),
+  });
+}
+
+function resultBytes(items: readonly unknown[]): number {
+  return items.reduce<number>((total, item) => total + serializedItemBytes(item), 0);
 }
 
 function combineAbort(signal: AbortSignal, timeoutMs: number): AbortSignal {
@@ -381,7 +393,7 @@ export class RepositoryReader {
           return { items: matches, next: matchPosition, reason: "items" as const };
         }
         const item: PendingItem = { path: entry.path, kind: "text", text: scrubSecrets(lines.slice(start, end).join("\n")), metadata: { matchLine: index + 1 }, range: { kind: "line", startLine: start + 1, endLineExclusive: end + 1 } };
-        const itemBytes = resultBytes([item]);
+        const itemBytes = pendingItemBytes(item, matches.length + 1);
         if (responseBytes + itemBytes > this.options.budgets.maxResponseBytes) {
           if (matches.length === 0) {
             throw Object.assign(new Error("one repository search match exceeds the response limit"), { code: "response_too_large" });
@@ -535,7 +547,7 @@ export class RepositoryReader {
     while (index < items.length && selected.length < this.options.budgets.maxItemsPerCall) {
       if (signal?.aborted) throw Object.assign(new Error("repository request cancelled"), { code: "cancelled" });
       const item = items[index]!;
-      const size = resultBytes([item]);
+      const size = pendingItemBytes(item, selected.length + 1);
       if (selected.length > 0 && bytes + size > this.options.budgets.maxResponseBytes) break;
       if (size > this.options.budgets.maxResponseBytes) throw Object.assign(new Error("one repository item exceeds the response limit"), { code: "response_too_large" });
       selected.push(item);
@@ -631,6 +643,9 @@ export class RepositoryReader {
       return { ...item, ordinal, metadata: item.metadata ?? {}, evidenceHandleId: handleId };
     });
     const byteCount = resultBytes(items);
+    if (byteCount > this.options.budgets.maxResponseBytes) {
+      return this.finishFailure(request.operation, operationInstanceId, "unavailable", "response_too_large", "repository response exceeds the byte limit", startedAt, inputHash);
+    }
     if (this.usage.bytes + byteCount > this.options.budgets.maxAttemptBytes) {
       return this.finishFailure(request.operation, operationInstanceId, "unavailable", "budget_exhausted", "repository byte budget exhausted", startedAt, inputHash);
     }

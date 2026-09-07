@@ -418,6 +418,16 @@ if (process.argv.includes("--setting-sources=")) {
  * there would leave every browser-driven session permanently fail-closed. Everything else,
  * including the titler, keeps the fixed title reply below.
  */
+function untrustedJsonInput(prompt, name) {
+  const marker = `${name}-untrusted`;
+  const markerAt = prompt.indexOf(marker);
+  const fenceAt = prompt.lastIndexOf("\n", markerAt) + 1;
+  const bodyAt = prompt.indexOf("\n", markerAt) + 1;
+  const fence = prompt.slice(fenceAt, markerAt);
+  const closingAt = prompt.indexOf(`\n${fence}`, bodyAt);
+  return JSON.parse(prompt.slice(bodyAt, closingAt).trim());
+}
+
 function headlessAnswer(prompt) {
   if (
     prompt.includes(SLOW_WORKFLOW_CONTEXT)
@@ -439,7 +449,7 @@ function headlessAnswer(prompt) {
     });
   }
   if (prompt.includes("Reconcile author coverage claims to stable workflow criteria without rewriting either.")) {
-    const input = JSON.parse(prompt.slice(prompt.lastIndexOf("\n\n") + 2));
+    const input = untrustedJsonInput(prompt, "workflow-criterion-reconciliation");
     const criteria = Array.isArray(input.canonicalCriteria) ? input.canonicalCriteria : [];
     const claims = Array.isArray(input.authorCoverage) ? input.authorCoverage : [];
     return JSON.stringify({

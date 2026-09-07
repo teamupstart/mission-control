@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, writeFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -9,7 +9,8 @@ import {
   RepositoryToolInputSchemas,
   RepositoryViewDescriptorSchema,
 } from "@shared/repository-access.ts";
-import type { RepositoryOperationId, RepositoryQueryAuditMetadata } from "@shared/repository-access.ts";
+import type { RepositoryOperationId } from "@shared/repository-access.ts";
+import { RepositoryJsonlAuditSink } from "../server/repository/jsonl-audit.ts";
 import { RepositoryReader } from "../server/repository/reader.ts";
 import { REPOSITORY_MCP_CONFIG_ENV } from "./config.ts";
 
@@ -37,17 +38,14 @@ try {
   await configHandle.close();
 }
 const config = RuntimeConfigSchema.parse(JSON.parse(configText));
+const audit = new RepositoryJsonlAuditSink(config.auditPath);
 
 const reader = new RepositoryReader({
   descriptor: config.descriptor,
   identity: { workloadId: config.workloadId, workflowAttemptId: config.workflowAttemptId },
   budgets: config.budgets,
   cursorSecret: Buffer.from(config.cursorSecret, "base64url"),
-  audit: {
-    async append(metadata: RepositoryQueryAuditMetadata, signal: AbortSignal) {
-      await writeFile(config.auditPath, `${JSON.stringify(metadata)}\n`, { encoding: "utf8", mode: 0o600, flag: "a", signal });
-    },
-  },
+  audit,
 });
 
 const descriptions: Record<RepositoryOperationId, string> = {

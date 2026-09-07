@@ -174,6 +174,12 @@ function assertPatchHeaders(text: string, allowed: ReadonlySet<string>): void {
   }
 }
 
+function assertPatchIsText(text: string): void {
+  if (/^(?:Binary files .* differ|GIT binary patch)$/mu.test(text)) {
+    throw new RepositoryPathPolicyError("path_denied", "binary repository diff is unavailable");
+  }
+}
+
 export class RepositoryReader {
   private readonly descriptor: RepositoryViewDescriptor;
   private readonly entries: Map<string, RepositoryManifestEntry>;
@@ -494,6 +500,7 @@ export class RepositoryReader {
     pathLoop: for (const path of allowed) {
       const patch = await this.git(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", from, to, "--", path], signal);
       assertPatchHeaders(patch, allowset);
+      assertPatchIsText(patch);
       for (const hunk of parseDiffHunks(scrubSecrets(patch), path)) {
         if (ordinal++ < position) continue;
         items.push(hunk);

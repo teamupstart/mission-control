@@ -360,6 +360,38 @@ test("reader does not return raw binary repository bytes", async () => {
   }
 });
 
+test("git diff denies binary changes instead of returning an empty success", async () => {
+  const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
+  const git = (args: string[]): string => fixtureGit(fixture.root, args);
+  try {
+    writeFileSync(join(fixture.root, "source.txt"), Buffer.from([0x61, 0x00, 0x62]));
+    git(["add", "source.txt"]);
+    const indexTree = git(["write-tree"]);
+    const indexObjectId = git(["rev-parse", ":source.txt"]);
+    const descriptor = {
+      ...fixture.descriptor,
+      indexTree,
+      entries: fixture.descriptor.entries.map((entry) => (
+        entry.path === "source.txt" ? { ...entry, indexObjectId } : entry
+      )),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 4096, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "git_diff", layers: "head:index", paths: ["source.txt"] }, new AbortController().signal);
+
+    assert.equal(result.status, "denied");
+    assert.equal(result.code, "path_denied");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("blame redacts non-retained revisions from previous fields", async () => {
   const fixture = repositoryViewFixture({ preserveSensitiveObject: true });
   const git = (args: string[]): string => fixtureGit(fixture.root, args);

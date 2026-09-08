@@ -77,9 +77,9 @@ export function repositoryPathDenied(path: string): boolean {
   const segments = canonical.split("/").map((segment) => segment.toLocaleLowerCase("en-US"));
   const base = segments.at(-1)!;
   if (segments.some((segment) => DENIED_SEGMENTS.has(segment))) return true;
-  if (base === ".env" || base.startsWith(".env.")) return true;
+  if (base === ".env" || base === ".envrc" || base.startsWith(".env.") || base.startsWith(".envrc.")) return true;
   if (DENIED_BASENAMES.has(base)) return true;
-  if (base.startsWith("credentials.")) return true;
+  if (base.startsWith("credentials.") || base.startsWith("secrets.")) return true;
   if (DENIED_SUFFIXES.some((suffix) => base.endsWith(suffix))) return true;
   return DENIED_KEY_PREFIXES.some((prefix) => base.startsWith(prefix));
 }

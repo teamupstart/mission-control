@@ -20,10 +20,22 @@ test("repository paths reject traversal, host syntax, lossy forms, and option-li
 });
 
 test("repository sensitive matching is case-aware and includes Inspector families plus git internals", () => {
-  for (const path of [".git/config", "src/.ENV.production", "keys/ID_RSA_backup", "config/Credentials.JSON", "cert/client.PEM", ".codex/auth.json"]) {
+  for (const path of [
+    ".git/config",
+    "src/.ENV.production",
+    "config/.envrc",
+    "config/.ENVRC.local",
+    "config/secrets.yml",
+    "config/SECRETS.yaml",
+    "keys/ID_RSA_backup",
+    "config/Credentials.JSON",
+    "cert/client.PEM",
+    ".codex/auth.json",
+  ]) {
     assert.equal(repositoryPathDenied(path), true, path);
   }
   assert.equal(repositoryPathDenied("src/environment.ts"), false);
+  assert.equal(repositoryPathDenied("docs/secrets-management.md"), false);
 });
 
 test("non-UTF-8 Git names are listable by stable marker but cannot become request paths", () => {

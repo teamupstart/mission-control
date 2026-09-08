@@ -23,7 +23,6 @@ const {
   agentSubprocessEnv,
   cleanupAgentSubprocessEnv,
   dropPaneIdentityEnv,
-  headlessAgentSubprocessEnv,
   isolatedAgentArgv,
 } = await import("../src/server/agent-subprocess-env.ts");
 const {
@@ -35,7 +34,6 @@ const {
   readClientToken,
   readToken,
 } = await import("../src/shared/harness-runtime.mjs");
-const { executableLocator } = await import("../src/server/executables/locator.ts");
 
 after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -65,25 +63,6 @@ test("pane identity scrubbing removes only terminal pane ownership", () => {
   assert.equal(env.ITERM_SESSION_ID, undefined);
   assert.equal(env.TERM_PROGRAM, "iTerm.app");
   assert.equal(env.ORDINARY_TOOL_SETTING, "kept");
-});
-
-test("the provider-neutral headless environment drops daemon terminal identity", () => {
-  const env = headlessAgentSubprocessEnv({
-    PATH: "/bin",
-    TMUX_PANE: "%3",
-    WEZTERM_PANE: "7",
-    ITERM_SESSION_ID: "w0t0p0:UUID",
-    TERM_PROGRAM: "x",
-  });
-  try {
-    assert.equal(env.PATH, executableLocator.snapshot().path);
-    assert.equal(env.TMUX_PANE, undefined);
-    assert.equal(env.WEZTERM_PANE, undefined);
-    assert.equal(env.ITERM_SESSION_ID, undefined);
-    assert.equal(env.TERM_PROGRAM, undefined);
-  } finally {
-    cleanupAgentSubprocessEnv(env);
-  }
 });
 
 test("agent launch env replaces every inherited state alias and preserves loopback access", () => {

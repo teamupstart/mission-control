@@ -73,7 +73,7 @@ function fakeDeps(
         executableCalls += 1;
         return "/fake/bin/claude";
       },
-      // The production dependency is headlessAgentSubprocessEnv(), whose contract is that pane
+      // The production dependency is sdkSubprocessEnv(), whose contract is that pane
       // identity is already absent. Keep the fake at that seam and assert the independent
       // headless marker added by the one-shot adapter below.
       env: () => ({ PATH: "/usr/bin" }),

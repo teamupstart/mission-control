@@ -58,10 +58,10 @@ test("the types the adapter speaks are all present", () => {
   }
 });
 
-test("only the two dedicated Codex adapters speak app-server", async () => {
-  // C10: the protocol is spoken only inside the interactive Codex adapter and the isolated
-  // Persona workload adapter. A `thread/start` anywhere else is a place the vendor's
-  // vocabulary leaks to, instead of remaining behind one of those provider-specific seams.
+test("no other module speaks app-server", async () => {
+  // C10: the protocol is spoken only inside `harness/codex/sdk.ts` and its bindings module.
+  // A `thread/start` anywhere else is a second place the vendor's vocabulary leaks to, and
+  // the reason the adapter can absorb an experimental protocol's drift on its own.
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const run = promisify(execFile);
@@ -77,10 +77,9 @@ test("only the two dedicated Codex adapters speak app-server", async () => {
     ],
     { cwd: `${here}..` },
   ).catch((err: { stdout?: string }) => ({ stdout: err.stdout ?? "" }));
-  // The pruned binding roots are params and results, so no method name survives into
-  // `protocol.ts` itself.
+  // One file, and not even the bindings: the pruned roots are params and results, so no
+  // method name survives into `protocol.ts` at all.
   assert.deepEqual(stdout.split("\n").filter(Boolean).sort(), [
     "src/server/harness/codex/sdk.ts",
-    "src/server/workflows/persona-workload/codex.ts",
   ]);
 });

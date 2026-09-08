@@ -27,10 +27,10 @@
 // would fail for anyone who had not built first - reporting a missing build as a broken
 // daemon. This runs after `npm run build`, where the artifact is guaranteed to exist.
 
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -401,119 +401,6 @@ async function smokeMcp() {
   console.log(`[smoke] mcp bundle publishes all ${declared.length} declared tools`);
 }
 
-/** Prove the separate credential-free repository MCP publishes and executes eight tools. */
-async function smokeRepositoryMcp() {
-  const root = await mkdtemp(join(tmpdir(), "mc-repository-mcp-smoke-"));
-  const auditPath = join(root, "audit.jsonl");
-  const configPath = join(root, "config.json");
-  const fixtureGit = (args, options = {}) => execFileSync("git", [
-    "-c", "commit.gpgsign=false",
-    "-c", `core.hooksPath=${join(root, ".hooks-disabled")}`,
-    "-C", root,
-    ...args,
-  ], {
-    ...options,
-    env: {
-      ...process.env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: join(root, ".gitconfig-disabled"),
-      GIT_TERMINAL_PROMPT: "0",
-    },
-  });
-  try {
-    fixtureGit(["init", "-q"]);
-    fixtureGit(["config", "user.email", "smoke@example.test"]);
-    fixtureGit(["config", "user.name", "Smoke"]);
-    await writeFile(join(root, "hello.txt"), "hello repository MCP\n", "utf8");
-    fixtureGit(["add", "hello.txt"]);
-    fixtureGit(["commit", "-qm", "fixture"]);
-    const head = fixtureGit(["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const tree = fixtureGit(["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
-    const blob = fixtureGit(["rev-parse", "HEAD:hello.txt"], { encoding: "utf8" }).trim();
-    await writeFile(auditPath, "", { mode: 0o600 });
-    await writeFile(configPath, JSON.stringify({
-      schemaVersion: 1,
-      descriptor: {
-        schemaVersion: 1,
-        snapshotDigest: "1".repeat(64),
-        artifactLocator: "smoke-artifact",
-        manifestPath: join(root, "manifest.json"),
-        repositoryRoot: root,
-        objectDirectory: join(root, ".git", "objects"),
-        headRevision: head,
-        sourceRevision: head,
-        indexTree: tree,
-        worktreeTree: tree,
-        historyPolicy: { version: 1, traversal: "all_parent_breadth_first", root: "captured_head", maxCommits: 2048, maxIncrementalAllowedBlobBytes: 536870912, overflow: "stop_before_overflow", timestampCutoff: null },
-        retainedRevisions: [{ id: head, parents: [], incrementalAllowedBlobBytes: 21 }],
-        frontier: [],
-        omittedParents: [],
-        retainedCommitCount: 1,
-        retainedAllowedBlobBytes: 21,
-        entries: [{ path: "hello.txt", kind: "file", addressable: true, mode: 33188, sensitive: false, worktreePresent: true, indexObjectId: blob, worktreeObjectId: blob, status: "clean" }],
-      },
-      workloadId: "smoke-workload",
-      workflowAttemptId: "smoke-attempt",
-      budgets: { maxCalls: 8, maxAttemptBytes: 1048576, maxResponseBytes: 65536, maxAttemptMs: 30000, maxItemsPerCall: 100, maxCallMs: 5000 },
-      cursorSecret: Buffer.alloc(32, 7).toString("base64url"),
-      auditPath,
-    }), { mode: 0o600 });
-    const contract = await readFile(resolve("src/shared/repository-access.ts"), "utf8");
-    const operationBlock = /export const REPOSITORY_OPERATION_IDS = \[([\s\S]*?)\] as const;/.exec(contract)?.[1] ?? "";
-    const expected = [...operationBlock.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
-    const child = spawn(process.execPath, ["dist/repository-mcp/server.mjs"], {
-      env: {
-        MISSION_REPOSITORY_MCP_CONFIG: configPath,
-        ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (data) => (stderr += data));
-    const send = (message) => child.stdin.write(`${JSON.stringify(message)}\n`);
-    const result = await new Promise((resolveResult) => {
-      let pending = "";
-      const timer = setTimeout(() => resolveResult({ error: "repository MCP handshake timed out" }), MCP_HANDSHAKE_MS);
-      const done = (value) => { clearTimeout(timer); resolveResult(value); };
-      child.on("error", (error) => done({ error: error.message }));
-      child.stdout.on("data", (data) => {
-        pending += data;
-        for (;;) {
-          const newline = pending.indexOf("\n");
-          if (newline < 0) break;
-          const line = pending.slice(0, newline).trim();
-          pending = pending.slice(newline + 1);
-          if (!line) continue;
-          const message = JSON.parse(line);
-          if (message.id === 1) {
-            send({ jsonrpc: "2.0", method: "notifications/initialized" });
-            send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-          } else if (message.id === 2) {
-            const names = message.result?.tools?.map((tool) => tool.name) ?? [];
-            send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "read", arguments: { path: "hello.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 5 } } } });
-            if (JSON.stringify(names) !== JSON.stringify(expected)) done({ error: `repository MCP published ${JSON.stringify(names)} instead of ${JSON.stringify(expected)}` });
-          } else if (message.id === 3) {
-            const structured = message.result?.structuredContent;
-            if (structured?.status !== "ok" || structured?.items?.[0]?.text !== "hello repository MCP") {
-              done({ error: "repository MCP read query returned the wrong fixture result" });
-            } else done({ ok: true });
-          }
-        }
-      });
-      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "repository-smoke", version: "1" } } });
-    });
-    await reap(child);
-    if (result.error) {
-      fail(result.error);
-      if (stderr.trim()) console.error(stderr.trimEnd());
-      return;
-    }
-    console.log("[smoke] repository MCP publishes eight tools and serves a fixture read");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
 async function declaredTaskExtraRepoLimit() {
   const source = await readFile(resolve("src/shared/protocol.ts"), "utf8");
   const value = /export const MAX_TASK_EXTRA_REPOS = (\d+);/.exec(source)?.[1];
@@ -682,7 +569,6 @@ await smokeNativeKeepAwake();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
-await smokeRepositoryMcp();
 await smokeSatellitePaths();
 await smokeMermaidRenderer();
 if (process.exitCode) process.exit(process.exitCode);

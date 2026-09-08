@@ -533,10 +533,19 @@ export type TriagePosture = "off" | "shadow" | "on";
  * least specific condition. This mirrors `foremanMayActLive`, which reads an absent `mode` as
  * "not live" rather than as permission to send.
  *
+ * That fallback is deliberately NOT the shipped default, and stayed put when the default moved
+ * to `on`. The two answer different questions. `ForemanConfigSchema` answers "what should a
+ * fresh install run", where a considered product choice belongs. This answers "what should a
+ * value nobody could validate run", where the only safe answer is the conservative one - and a
+ * value that reached here unvalidated is corruption or version skew, not a preference. Keeping
+ * them equal would mean the schema could never ship the acting posture without also making it
+ * what garbage decays into.
+ *
  * The parameter is `unknown` on purpose. `ForemanClient.getConfig` parses the daemon's response
  * through `ForemanConfigSchema`, so a validated `cfg.triage` is the normal case and this returns
- * it unchanged - but this function exists for the case where that guarantee does not hold, and
- * typing it as the enum would be claiming the very thing it is here to stop depending on.
+ * it unchanged - an absent key included, which the schema fills with its own default before this
+ * ever sees it. This function exists for the case where that guarantee does not hold, and typing
+ * it as the enum would be claiming the very thing it is here to stop depending on.
  */
 export function triagePosture(triage: unknown): TriagePosture {
   switch (triage) {

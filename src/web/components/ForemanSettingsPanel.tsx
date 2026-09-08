@@ -414,7 +414,10 @@ export function ForemanSettingsPanel({
 }): React.JSX.Element {
   const { config, status, episodes, update, error } = state;
   const allowlist = config?.repoAllowlist ?? [];
-  const triage = config?.triage ?? "shadow";
+  // Same rule as the two skip flags below: an absence renders as the schema default the
+  // daemon is already enforcing, so a web build newer than its daemon never draws a posture
+  // the server is not running. The radios stay `disabled` until `config` lands either way.
+  const triage = config?.triage ?? "on";
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
   // A web build newer than its daemon can receive neither key. Render those absences as on,

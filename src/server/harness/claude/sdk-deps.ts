@@ -1,4 +1,4 @@
-import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
+import { headlessAgentSubprocessEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
 import type {
   ClaudeSdkDeps,
@@ -31,29 +31,6 @@ export async function claudeExecutable(): Promise<string> {
   const executable = await locateExecutable("claude");
   if (!executable) throw new Error('agent binary "claude" not found in the executable environment');
   return executable.path;
-}
-
-/**
- * The subprocess environment: `process.env` minus the daemon's OWN terminal identity.
- *
- * That subtraction is load-bearing rather than tidy. Machine-installed
- * `~/.claude/settings.json` hooks fire inside this subprocess exactly as they do in a pane,
- * and `harness-hook.mjs` reports inherited pane identity as the pane it believes it is
- * running in. A daemon started from a terminal would hand its own pane down to every
- * embedded session it launches, and `findSessionByEnv` prefers a pane key over every other
- * match - so every hook from every embedded session would land on whichever card holds the
- * daemon's terminal. Dropping pane identity makes those hooks fall through to their
- * session-id match, which is the truthful one for a session that has no pane at all.
- */
-export function sdkSubprocessEnv(
-  base: NodeJS.ProcessEnv = process.env,
-  cwd?: string,
-  stateHome?: string,
-): Record<string, string | undefined> {
-  const env = agentSubprocessEnv(base, { loopbackAccess: true, cwd, stateHome });
-  dropPaneIdentityEnv(env);
-  delete env.TERM_PROGRAM;
-  return env;
 }
 
 /**
@@ -112,12 +89,12 @@ async function startQuery(params: StartQueryParams): Promise<ClaudeSdkQuery> {
 export const defaultClaudeSdkDeps: ClaudeSdkDeps = {
   query: startQuery,
   executable: claudeExecutable,
-  env: (cwd, stateHome) => sdkSubprocessEnv(process.env, cwd, stateHome),
+  env: (cwd, stateHome) => headlessAgentSubprocessEnv(process.env, cwd, stateHome),
 };
 
 /** The same lazy vendor import and binary/env answers, narrowed for one fresh query. */
 export const defaultClaudeSdkOneShotDeps: ClaudeSdkOneShotDeps = {
   query: startQuery,
   executable: claudeExecutable,
-  env: (cwd) => sdkSubprocessEnv(process.env, cwd),
+  env: (cwd) => headlessAgentSubprocessEnv(process.env, cwd),
 };

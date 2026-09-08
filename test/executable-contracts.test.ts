@@ -34,6 +34,7 @@ interface ChildProcessBoundary {
   contract:
     | "bootstrap-login-shell"
     | "current-runtime"
+    | "declared-executable"
     | "locator-result"
     | "operator-command"
     | "resolved-path-parameter"
@@ -81,6 +82,10 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/mission-mcp.ts": [
     { operation: "spawn", command: "descriptor.command", contract: "current-runtime", reason: "absolute Node or Electron runtime recorded in the MCP descriptor" },
   ],
+  "src/server/repository/reader.ts": [
+    { operation: "execFile", command: '"git"', contract: "declared-executable", reason: "standalone repository reader uses catalog-declared Git with hardened argv and environment policy" },
+    { operation: "execFile", command: '"git"', contract: "declared-executable", reason: "promisified repository Git reader uses the same catalog-declared executable and hardened policy" },
+  ],
   "src/server/session-files.ts": [
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved Git file reader" },
   ],
@@ -122,6 +127,7 @@ function externalCalls(file: string, source: string): {
   const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const childBindings = new Map<string, string>();
   const childNamespaces = new Set<string>();
+  const promisifyBindings = new Set<string>();
   const runBindings = new Set<string>();
   const runNamespaces = new Set<string>();
 
@@ -147,6 +153,9 @@ function externalCalls(file: string, source: string): {
         if (importedFrom === "node:child_process" && CHILD_PROCESS_METHODS.has(importedName)) {
           childBindings.set(element.name.text, importedName);
         }
+        if (importedFrom === "node:util" && importedName === "promisify") {
+          promisifyBindings.add(element.name.text);
+        }
         if (/(?:^|\/)util\/exec\.ts$/.test(importedFrom) && importedName === "run") {
           runBindings.add(element.name.text);
         }
@@ -171,6 +180,24 @@ function externalCalls(file: string, source: string): {
     ts.forEachChild(node, registerRequire);
   }
   registerRequire(tree);
+
+  function registerPromisifiedChildBinding(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.initializer
+      && ts.isCallExpression(node.initializer)
+      && ts.isIdentifier(node.initializer.expression)
+      && promisifyBindings.has(node.initializer.expression.text)
+      && node.initializer.arguments.length === 1
+      && ts.isIdentifier(node.initializer.arguments[0]!)
+    ) {
+      const operation = childBindings.get(node.initializer.arguments[0]!.text);
+      if (operation) childBindings.set(node.name.text, operation);
+    }
+    ts.forEachChild(node, registerPromisifiedChildBinding);
+  }
+  registerPromisifiedChildBinding(tree);
 
   const childProcess: ExternalCall[] = [];
   const sharedRun: ExternalCall[] = [];
@@ -236,6 +263,10 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === "shell";
     case "current-runtime":
       return ["args.node", "descriptor.command", "request.node"].includes(boundary.command);
+    case "declared-executable": {
+      const command = literalCommand(boundary.command);
+      return command !== null && Object.values(EXECUTABLE_SPECS).some((spec) => spec.command === command);
+    }
     case "locator-result":
       return boundary.command === "executable.path" || boundary.command === "resolved";
     case "operator-command":
@@ -280,14 +311,18 @@ test("the child-process scanner follows import aliases and namespace calls", () 
     "fixture.ts",
     [
       'import { spawn as nodeSpawn } from "node:child_process";',
+      'import { execFile as nodeExecFile } from "node:child_process";',
+      'import { promisify as makePromise } from "node:util";',
       'import * as cp from "node:child_process";',
       'import childProcess from "node:child_process";',
       'const required = require("node:child_process");',
+      'const execFileAsync = makePromise(nodeExecFile);',
       "// executable-contract: comments grant no exemption",
       'nodeSpawn("aliased-tool", []);',
       'cp.spawn("namespaced-tool", []);',
       'childProcess["spawn"]("default-import-tool", []);',
       'required.spawn("required-tool", []);',
+      'execFileAsync("promisified-tool", []);',
     ].join("\n"),
   );
   assert.deepEqual(
@@ -297,6 +332,7 @@ test("the child-process scanner follows import aliases and namespace calls", () 
       { operation: "spawn", command: '"namespaced-tool"' },
       { operation: "spawn", command: '"default-import-tool"' },
       { operation: "spawn", command: '"required-tool"' },
+      { operation: "execFile", command: '"promisified-tool"' },
     ],
   );
 });

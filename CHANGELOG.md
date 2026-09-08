@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/teamupstart/mission-control/compare/v1.9.2...v1.10.0) (2026-09-08)
+
+
+### Features
+
+* **settings:** choose a terminal per harness ([#940](https://github.com/teamupstart/mission-control/issues/940)) ([df02731](https://github.com/teamupstart/mission-control/commit/df0273184445357b4c36c7a10bc5949888d50eaa))
+
 ## [1.9.2](https://github.com/teamupstart/mission-control/compare/v1.9.1...v1.9.2) (2026-09-07)
 
 

@@ -108,6 +108,14 @@ shell.
 The Claude status hooks installed by `make init` take effect for sessions started
 after installation. Re-run `npm run install-hooks` after changing hook configuration.
 
+Install them from a durable clone. The installer writes absolute paths into
+`~/.claude/settings.json`, and those paths do not follow a checkout that is later renamed
+or removed: every Claude session on the machine then fails every hook event with
+`MODULE_NOT_FOUND`. Settings -> Setup carries a **Claude Code hooks** row that names a dead
+path when one appears, and
+[troubleshooting.md](troubleshooting.md#every-claude-turn-prints-a-hook-error-with-module_not_found)
+covers the repair.
+
 ## Verify the checkout
 
 ```sh

@@ -16,7 +16,10 @@ import { substantivePrompt } from "./scaffolding.ts";
 //
 // Readers:
 //   - `registry.applyHook` - `toState` and `promptText`
-//   - `hooks/install.mjs` and `src/main/integrations.ts` - `events` / `matcherEvents`
+//   - `hooks/install.mjs` and `src/main/integrations.ts` - `events` / `matcherEvents`,
+//     and `isMissionHookCommand` to find their own entries again
+//   - `src/server/environment/claude-hooks.ts` - `missionHookScriptPath`, to check that the
+//     path an installer baked still resolves
 
 /**
  * The events we install a bridge for, in install order.
@@ -156,3 +159,77 @@ export const claudeHooks: HookSpec = {
   workCycleSignal,
   promptText,
 };
+
+// --- what one of OUR hook commands looks like in somebody else's settings file ---------
+//
+// Both installers bake an ABSOLUTE path to a script this repository ships, into
+// `~/.claude/settings.json`, and then have to find their own entries again later - to
+// replace them on a re-run, to remove them on `--uninstall`, and (since the outage below)
+// to notice when the path they baked has stopped resolving. That is three readers of one
+// fact, which is the same reason `EVENTS` lives here rather than in each installer.
+//
+// It was previously two facts that did not agree. `hooks/install.mjs` matched the literal
+// `harness-hook.mjs`, which is its own script's name; `src/main/integrations.ts` matched
+// `harness-hook`, but the script IT installs is `dist/satellites/hook.mjs` - a path with no
+// `harness-hook` anywhere in it. So the packaged app's "Install Claude integrations"
+// stripped nothing before appending, duplicating every hook group on each press, and its
+// uninstall removed nothing at all. Naming both scripts here is what makes each installer
+// recognise the other's work, so an operator who has used both ends up with one bridge
+// rather than two.
+//
+// The outage this exists for: these paths must outlive the install, and sometimes do not.
+// A checkout gets renamed or deleted, and every Claude session on the machine then fails
+// every hook event with MODULE_NOT_FOUND and prints the stack into the transcript, with
+// nothing pointing back at the settings file that caused it. `hooks/install-checks.mjs`
+// refuses the one cause it can see beforehand (a transient pooled checkout);
+// `src/server/environment/claude-hooks.ts` reports the rest afterwards.
+
+/**
+ * The scripts an install of ours can name, by file name.
+ *
+ * Anchored at both ends - a path separator (or the start of the value) before, the end of
+ * the string after - so this matches the last segment of a path and never a coincidence
+ * inside a directory name. Backslashes are accepted alongside slashes purely so a
+ * hand-copied Windows-style path is still recognised as ours; nothing here writes one.
+ */
+const HOOK_SCRIPT = /(?:^|[\\/])(?:harness-hook\.mjs|satellites[\\/]hook\.mjs)$/;
+
+/**
+ * The substrings that identify a command as ours when it is being REMOVED.
+ *
+ * Deliberately looser than `missionHookScriptPath` below, and the asymmetry is the point:
+ * stripping wants to be generous, because anything of ours left behind fires a second time
+ * for every event, while reporting wants to be exact, because a warning about a path we
+ * merely guessed at is a note the operator cannot act on.
+ */
+export const MISSION_HOOK_MARKERS = ["harness-hook.mjs", "satellites/hook.mjs"] as const;
+
+/** Whether a settings.json hook command is one an installer of ours wrote. */
+export function isMissionHookCommand(command: string): boolean {
+  return MISSION_HOOK_MARKERS.some((marker) => command.includes(marker));
+}
+
+/**
+ * The script path inside one of our hook commands, or null when it cannot be read exactly.
+ *
+ * The commands we write are `"<node>" "<script>" <Event>`, optionally preceded by
+ * `ELECTRON_RUN_AS_NODE=1`, so the script is a quoted argument - quoted precisely because
+ * the packaged app's path contains a space (`Mission Control.app`). Quoted arguments are
+ * therefore tried first and taken whole; the unquoted fallback exists only for a
+ * hand-edited command, where a whitespace-delimited token is the best a reader can do.
+ *
+ * Absolute paths only. That is what separates a real argument from a fragment of a wrapped
+ * command such as `sh -c "node ./harness-hook.mjs"`, where the quoted value ends with our
+ * script's name and is not a path at all. A caller is going to `stat` whatever comes back
+ * and tell the operator it is missing, so "not sure" has to be null rather than a guess.
+ */
+export function missionHookScriptPath(command: string): string | null {
+  for (const match of command.matchAll(/"([^"]*)"/g)) {
+    const value = match[1] ?? "";
+    if (value.startsWith("/") && HOOK_SCRIPT.test(value)) return value;
+  }
+  for (const token of command.split(/\s+/)) {
+    if (token.startsWith("/") && HOOK_SCRIPT.test(token)) return token;
+  }
+  return null;
+}

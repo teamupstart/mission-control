@@ -373,6 +373,22 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     enables: "Until setup finishes, UpstartClaw tools cannot authenticate reliably in dispatched sessions.",
     remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
   },
+  // `required`, unlike its neighbour, and the difference is what the row's presence means.
+  // An environment row exists only while its check is warning (see `environmentRow`), and
+  // this one warns only when hooks ARE installed and their script has gone: a state strictly
+  // worse than never installing them, since every event on the machine now fails loudly
+  // instead of quietly not existing. So the row cannot nag a machine that opted out, and
+  // when it does appear the setup banner is exactly where it belongs.
+  "mission-hook-script": {
+    family: "extensions",
+    requirement: "required",
+    enables: "While a hook path is dead, every Claude hook event on this machine fails and terminal sessions report no state.",
+    remedy: {
+      kind: "command",
+      argv: ["npm", "run", "install-hooks"],
+      note: "Re-point the hooks at a checkout that exists. Run it from a durable clone, never a pooled worktree.",
+    },
+  },
 };
 
 /** The required capability row derived from terminal target composition. */

@@ -7,6 +7,7 @@ import {
   type EnvironmentCheckView,
 } from "@shared/environment-checks.ts";
 
+import { claudeHookScriptCheck } from "./claude-hooks.ts";
 import { upstartclawSetupCheck } from "./upstartclaw.ts";
 import type {
   EnvironmentCheckImpl,
@@ -35,6 +36,7 @@ import type {
  */
 export const ENVIRONMENT_CHECKS: Record<EnvironmentCheckId, EnvironmentCheckImpl> = {
   "upstartclaw-core-setup": upstartclawSetupCheck,
+  "mission-hook-script": claudeHookScriptCheck,
 };
 
 /**

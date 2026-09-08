@@ -23,6 +23,23 @@ pair on the existing `TaskSourceImpl` contract, so a kind declares what it can d
 call sites never test `inst.kind`. That is the same split `push` already made, and the same
 one `HARNESS_CAPABILITIES` / `HARNESSES` makes.
 
+### Decisions locked with the operator
+
+Taken in plan review; the alternatives each replaced are not carried forward.
+
+- **Delivery is a durable ledger plus a worker**, not a best-effort in-process listener. The
+  table and the 20s worker below are that decision.
+- **Both triggers ship**: a pull request first linked to the task, and the task completing.
+- **A Jira issue is resolved through a target status named per source**, matched against the
+  transitions available from the issue's current status, refusing with the available names when
+  it does not fit. Not comment-only, and not a silent fall-back to a comment.
+- **The pull request is linked onto a Jira issue as a remote link AND a comment.** Putting the
+  Jira key in the branch we cut - the only route to Jira's own development panel - was
+  considered and **declined**; see Out of scope.
+- **Resolving a GitHub issue closes it**, with the reason configurable per source.
+- **A resolve is off by default and held for a 5 minute settle window**, with a live re-check
+  before the transition is spent.
+
 ### What already exists that this builds on
 
 | Thing | Where | What it gives us |
@@ -412,8 +429,9 @@ in a notification.
 
 A note on Jira's own development panel, which this cannot populate: that panel is filled by the
 Jira/GitHub application matching an issue key in a branch name, commit message or pull request
-title. It is not writable over the API. What Mission Control *can* do is make the match happen,
-by putting the issue key in the branch it cuts - see the open decisions.
+title. It is not writable over the API, and no amount of commenting reaches it. Making the match
+happen - by putting the issue key in the branch Mission Control cuts - was considered in review
+and declined, so the remote link is what a person follows instead. See Out of scope.
 
 **`resolve`** is a two-step because Jira makes it one:
 
@@ -604,6 +622,12 @@ Fixture work this needs, and it is the part with a real hazard in it:
 - **Per-task overrides.** Consent is per source. A per-task switch is a reasonable follow-up and
   a bad first release: it doubles the state a person has to reason about before they have used
   the feature once.
+- **Putting the Jira issue key in the branch name.** Declined in plan review. It is the only
+  route to Jira's native development panel, and it is also the one option here that changes
+  something outside this feature: every Jira-swept task's branch, and therefore its worktree
+  slug, its pull request head and anything an operator has that reads those. A remote link plus
+  a comment covers the need without touching dispatch, and the branch change stays available as
+  its own decision later.
 - **Auto-dispatch, in any form.** Unchanged and still deliberate.
 
 ## Risks

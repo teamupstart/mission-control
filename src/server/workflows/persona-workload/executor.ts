@@ -268,7 +268,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
 
   async cancel(workloadId: string, generation: number): Promise<void> {
     const state = this.workloads.get(workloadId);
-    if (!state || state.terminal || generation <= state.cancellationGeneration) return;
+    if (!state || generation <= state.cancellationGeneration) return;
     state.cancellationGeneration = generation;
     this.emit(state, { kind: "cancel_requested", generation });
     state.controller.abort(new Error(`Persona workload cancelled at generation ${generation}`));

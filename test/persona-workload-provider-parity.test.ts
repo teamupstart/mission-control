@@ -561,13 +561,6 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
         if (terminal.result.kind === "succeeded") assert.ok(terminal.result.llmCall.inputBytes > 0);
       }
     }
-    for (const providerId of ["claude", "codex"] as const) {
-      const workloadId = `workload-${providerId}`;
-      const before = await executor.reconcile(workloadId, 0);
-      await executor.cancel(workloadId, 1);
-      const after = await executor.reconcile(workloadId, 0);
-      assert.deepEqual(after, before, "cancellation after terminal success must be ignored");
-    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

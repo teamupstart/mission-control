@@ -1,11 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { writeGhPullRequests } from "../fixtures/fake-agents.ts";
 import { expect, test } from "../fixtures/test.ts";
 
 const EVIDENCE = artifactsDir("fleet-pr-filter");
@@ -48,22 +46,6 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<SessionRow> {
 }
 
 async function announcePullRequest(daemon: DaemonHandle, session: SessionRow): Promise<void> {
-  // Keep the provider's next reconciliation aligned with the hook. An empty fake-gh result
-  // correctly retracts the synthetic chip, which made the Board-to-Console assertion race
-  // the 20-second poll whenever a loaded CI runner kept this test alive that long.
-  const headRefOid = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: session.cwd,
-    encoding: "utf8",
-  }).trim();
-  writeGhPullRequests(daemon.home, [{
-    cwd: session.cwd,
-    url: PR_URL,
-    number: PR_NUMBER,
-    state: "OPEN",
-    createdAt: new Date().toISOString(),
-    mergedAt: null,
-    headRefOid,
-  }]);
   const token = readFileSync(join(daemon.home, "token"), "utf8").trim();
   const response = await fetch(`${daemon.baseURL}/hooks/Stop`, {
     method: "POST",

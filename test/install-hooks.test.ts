@@ -163,6 +163,50 @@ test("uninstall removes only our hooks and keeps the user's", () => {
   });
 });
 
+/**
+ * The packaged app's hooks are REPLACED by an install here, not stacked on top of.
+ *
+ * The two installers write different scripts - this one writes `hooks/harness-hook.mjs`,
+ * the desktop app writes `dist/satellites/hook.mjs` from inside its bundle - and each used
+ * to recognise only its own. So an operator who had pressed "Install Claude integrations"
+ * and then ran this script ended up with both wired to every event, and every hook fired
+ * twice: two `SessionStart` posts, two `Stop` posts, one of them from a bundle that may not
+ * even still be installed. `isMissionHookCommand` is the single definition both now read,
+ * and this pins the direction that used to be silent.
+ */
+const SATELLITE_COMMAND =
+  '"/opt/homebrew/bin/node" "/Applications/Mission Control.app/Contents/Resources/app/dist/satellites/hook.mjs" Stop';
+const SETTINGS_WITH_PACKAGED_HOOKS = `{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": ${JSON.stringify(SATELLITE_COMMAND)} }] },
+      { "hooks": [{ "type": "command", "command": "my-own-hook" }] }
+    ]
+  }
+}
+`;
+
+test("an install replaces the packaged app's hooks instead of doubling them", () => {
+  withTempSettings(SETTINGS_WITH_PACKAGED_HOOKS, (path) => {
+    runInstaller(path);
+    const text = readFileSync(path, "utf8");
+    const s = parse(text) as any;
+    assert.ok(!text.includes("satellites/hook.mjs"), "the packaged app's entry is gone, not kept alongside");
+    const cmds = s.hooks.Stop.flatMap((g: any) => g.hooks.map((h: any) => h.command));
+    assert.equal(cmds.filter((c: string) => c.includes(MARKER)).length, 1, "exactly one bridge per event");
+    assert.ok(cmds.includes("my-own-hook"), "and somebody else's hook is still untouched");
+  });
+});
+
+test("uninstall removes the packaged app's hooks too", () => {
+  withTempSettings(SETTINGS_WITH_PACKAGED_HOOKS, (path) => {
+    runInstaller(path, ["--uninstall"]);
+    const text = readFileSync(path, "utf8");
+    assert.ok(!text.includes("satellites/hook.mjs"), "an abandoned bundle's entry is ours to remove");
+    assert.match(text, /my-own-hook/, "and only ours");
+  });
+});
+
 test("refuses to touch a malformed settings file", () => {
   withTempSettings('{ "model": "opus", oops }', (path) => {
     const before = readFileSync(path, "utf8");

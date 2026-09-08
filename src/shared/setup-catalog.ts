@@ -373,6 +373,30 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     enables: "Until setup finishes, UpstartClaw tools cannot authenticate reliably in dispatched sessions.",
     remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
   },
+  // `required`, unlike its neighbour, and the difference is what the row's presence means.
+  // An environment row exists only while its check is warning (see `environmentRow`), and
+  // this one warns only when hooks ARE installed and their script has gone: a state strictly
+  // worse than never installing them, since every event on the machine now fails loudly
+  // instead of quietly not existing. So the row cannot nag a machine that opted out, and
+  // when it does appear the setup banner is exactly where it belongs.
+  "mission-hook-script": {
+    family: "extensions",
+    requirement: "required",
+    enables: "While a hook path is dead, every Claude hook event on this machine fails and terminal sessions report no state.",
+    // The note carries BOTH repairs because the row cannot tell which installer wrote the
+    // dead path. The check fires identically for this repo's `hooks/harness-hook.mjs` and
+    // for the packaged app's `dist/satellites/hook.mjs`, and someone who only ever pressed
+    // "Install Claude integrations" may have no checkout to run an npm script in at all.
+    // Offering them a command they cannot run, with no hint that a button exists, is a
+    // required row they can only dismiss. Conditioning the structured remedy on the missing
+    // script would mean carrying a remedy on `EnvironmentCheckView`, which is a wire
+    // contract change for one row; naming both here costs a sentence.
+    remedy: {
+      kind: "command",
+      argv: ["npm", "run", "install-hooks"],
+      note: "Re-point the hooks at a checkout that exists, from a durable clone rather than a pooled worktree. If you installed from the desktop app and have no checkout, press Install Claude integrations in Settings instead.",
+    },
+  },
 };
 
 /** The required capability row derived from terminal target composition. */

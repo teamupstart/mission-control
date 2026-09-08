@@ -32,7 +32,7 @@
  * append-only tuples in `docs/agent-guides/change-contracts.md`: add at the end, never
  * rename, never reorder.
  */
-export const ENVIRONMENT_CHECK_IDS = ["upstartclaw-core-setup"] as const;
+export const ENVIRONMENT_CHECK_IDS = ["upstartclaw-core-setup", "mission-hook-script"] as const;
 export type EnvironmentCheckId = (typeof ENVIRONMENT_CHECK_IDS)[number];
 
 /**
@@ -59,6 +59,13 @@ export const ENVIRONMENT_CHECK_INFO: Record<EnvironmentCheckId, EnvironmentCheck
   "upstartclaw-core-setup": {
     id: "upstartclaw-core-setup",
     label: "UpstartClaw core setup",
+  },
+  "mission-hook-script": {
+    id: "mission-hook-script",
+    // Named for the file it is about rather than for Mission Control, because the reader is
+    // looking at a note in a dispatch dialog and needs to know which of their configurations
+    // it concerns. The remedy sentence is where our own installer gets named.
+    label: "Claude Code hooks",
   },
 };
 

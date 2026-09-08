@@ -36,6 +36,37 @@ Codex differs: its hooks are launch-scoped, so only a Mission Control-dispatched
 session receives them. See [precise session status](sessions.md#precise-status-claude-hooks) and
 [the Codex hook behavior](sessions.md#precise-status-for-codex-hooks-that-ride-on-the-dispatch).
 
+## Every Claude turn prints a hook error with `MODULE_NOT_FOUND`
+
+```
+UserPromptSubmit hook error
+Error: Cannot find module '/Users/you/workspace/ai-harness/hooks/harness-hook.mjs'
+code: 'MODULE_NOT_FOUND'
+```
+
+`npm run install-hooks` and the desktop app's **Install Claude integrations** both bake an
+absolute path into `~/.claude/settings.json`. The path does not follow a checkout that is
+later renamed, moved, or deleted, so Claude Code goes on running it for every event, in
+every session on the machine, and every one of them fails. Nothing in the stack names
+Mission Control or the settings file, and the sessions report no state while it lasts.
+
+Mission Control reports this itself rather than leaving you to read the stack. The
+**Claude Code hooks** row in Settings -> Setup names the dead path and how many events run
+it, the setup banner raises it as a required gap, and the Dispatch form repeats the note
+before an agent goes out on the machine.
+
+The fix is to re-run the installer from a checkout that still exists:
+
+```sh
+cd <your durable clone> && npm run install-hooks
+```
+
+Run it from a durable clone rather than a pooled worktree. An install from a pool slot
+bakes a path the pool will reclaim, which is this same outage with a shorter fuse, and the
+installer refuses one outright for that reason. Packaged-app users press **Install Claude
+integrations** instead; either installer now replaces the other's entries rather than
+stacking a second bridge beside them.
+
 ## Playwright cannot find Chromium
 
 If the end-to-end run reports `browserType.launch: Executable doesn't exist`, install

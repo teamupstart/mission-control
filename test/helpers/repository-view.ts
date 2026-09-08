@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepositoryViewDescriptor } from "../../src/shared/repository-access.ts";
@@ -45,6 +45,11 @@ export function repositoryViewFixture(options: { preserveSensitiveObject?: boole
   const indexBlob = git(root, ["rev-parse", ":source.txt"]);
   writeFileSync(join(root, "source.txt"), "alpha\nbeta staged\ngamma worktree\n", "utf8");
   const worktreeBlob = git(root, ["hash-object", "-w", "source.txt"]);
+  const worktreeBytes = readFileSync(join(root, "source.txt"));
+  const worktreeObjectSha256 = createHash("sha256")
+    .update(`blob ${worktreeBytes.byteLength}\0`)
+    .update(worktreeBytes)
+    .digest("hex");
   const worktreeTree = git(root, ["mktree"], `100644 blob ${worktreeBlob}\tsource.txt\n`);
   const envBlob = git(root, ["rev-parse", "HEAD:.env"]);
   rmSync(join(root, ".env"));
@@ -72,8 +77,8 @@ export function repositoryViewFixture(options: { preserveSensitiveObject?: boole
       retainedCommitCount: 1,
       retainedAllowedBlobBytes: 0,
       entries: [
-        { path: "source.txt", kind: "file", addressable: true, mode: 0o100644, sensitive: false, worktreePresent: true, indexObjectId: indexBlob, worktreeObjectId: worktreeBlob, status: "staged_modified+worktree_modified" },
-        { path: ".env", kind: "file", addressable: true, mode: 0o100644, sensitive: true, worktreePresent: false, indexObjectId: null, worktreeObjectId: null, status: "clean" },
+        { path: "source.txt", kind: "file", addressable: true, mode: 0o100644, sensitive: false, worktreePresent: true, indexObjectId: indexBlob, worktreeObjectId: worktreeBlob, worktreeObjectSha256, status: "staged_modified+worktree_modified" },
+        { path: ".env", kind: "file", addressable: true, mode: 0o100644, sensitive: true, worktreePresent: false, indexObjectId: null, worktreeObjectId: null, worktreeObjectSha256: null, status: "clean" },
       ],
     },
   };

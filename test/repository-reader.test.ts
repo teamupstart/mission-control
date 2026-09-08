@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, open, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,6 +25,14 @@ function fixtureGit(root: string, args: string[]): string {
       GIT_TERMINAL_PROMPT: "0",
     },
   }).trim();
+}
+
+function gitBlobDigest(algorithm: "sha1" | "sha256", value: string | Buffer): string {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  return createHash(algorithm)
+    .update(`blob ${bytes.byteLength}\0`)
+    .update(bytes)
+    .digest("hex");
 }
 
 test("reader returns canonical line, raw-byte, and independent diff handles", async () => {
@@ -141,6 +149,32 @@ test("worktree reads fail closed when materialized bytes change after capture", 
   }
 });
 
+test("worktree reads require an independent SHA-256 integrity match", async () => {
+  const fixture = repositoryViewFixture();
+  try {
+    const descriptor = {
+      ...fixture.descriptor,
+      entries: fixture.descriptor.entries.map((entry) => (
+        entry.path === "source.txt" ? { ...entry, worktreeObjectSha256: "0".repeat(64) } : entry
+      )),
+    };
+    const reader = new RepositoryReader({
+      descriptor,
+      identity: { workloadId: "w", workflowAttemptId: "a" },
+      budgets: { maxCalls: 8, maxAttemptBytes: 4096, maxResponseBytes: 1024, maxAttemptMs: 10_000, maxItemsPerCall: 10, maxCallMs: 1_000 },
+      audit: { async append() {} },
+    });
+
+    const result = await reader.execute({ operation: "read", path: "source.txt", layer: "worktree", window: { kind: "line", startLine: 1, maxLines: 1 } }, new AbortController().signal);
+
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.code, "view_unavailable");
+    assert.deepEqual(result.items, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("worktree reads reject a regular file swapped to a FIFO without blocking", { skip: process.platform === "win32" }, async () => {
   const fixture = repositoryViewFixture();
   const source = join(fixture.root, "source.txt");
@@ -217,14 +251,12 @@ test("byte windows reserve response space for the item envelope and return a pro
   try {
     const content = `${"é".repeat(300)}\n`;
     writeFileSync(join(fixture.root, "source.txt"), content, "utf8");
-    const worktreeObjectId = createHash("sha1")
-      .update(`blob ${Buffer.byteLength(content)}\0`)
-      .update(content)
-      .digest("hex");
+    const worktreeObjectId = gitBlobDigest("sha1", content);
+    const worktreeObjectSha256 = gitBlobDigest("sha256", content);
     const descriptor = {
       ...fixture.descriptor,
       entries: fixture.descriptor.entries.map((entry) => (
-        entry.path === "source.txt" ? { ...entry, worktreeObjectId } : entry
+        entry.path === "source.txt" ? { ...entry, worktreeObjectId, worktreeObjectSha256 } : entry
       )),
     };
     const reader = new RepositoryReader({
@@ -462,14 +494,12 @@ test("reader does not return raw binary repository bytes", async () => {
   try {
     const content = Buffer.from([0x61, 0x00, 0x62]);
     writeFileSync(join(fixture.root, "source.txt"), content);
-    const worktreeObjectId = createHash("sha1")
-      .update(`blob ${content.byteLength}\0`)
-      .update(content)
-      .digest("hex");
+    const worktreeObjectId = gitBlobDigest("sha1", content);
+    const worktreeObjectSha256 = gitBlobDigest("sha256", content);
     const descriptor = {
       ...fixture.descriptor,
       entries: fixture.descriptor.entries.map((entry) => (
-        entry.path === "source.txt" ? { ...entry, worktreeObjectId } : entry
+        entry.path === "source.txt" ? { ...entry, worktreeObjectId, worktreeObjectSha256 } : entry
       )),
     };
     const reader = new RepositoryReader({
@@ -542,7 +572,7 @@ test("blame redacts non-retained revisions from previous fields", async () => {
       retainedCommitCount: 1,
       entries: fixture.descriptor.entries.map((entry) => (
         entry.path === "source.txt"
-          ? { ...entry, indexObjectId: blob, worktreeObjectId: blob, status: "clean" as const }
+          ? { ...entry, indexObjectId: blob, worktreeObjectId: blob, worktreeObjectSha256: gitBlobDigest("sha256", readFileSync(join(fixture.root, "source.txt"))), status: "clean" as const }
           : entry
       )),
     };
@@ -621,6 +651,7 @@ test("blame omits historical path fields that could disclose denied names", asyn
         worktreePresent: true,
         indexObjectId: blob,
         worktreeObjectId: blob,
+        worktreeObjectSha256: gitBlobDigest("sha256", readFileSync(join(fixture.root, "safe.txt"))),
         status: "clean" as const,
       }],
     };
@@ -716,7 +747,7 @@ test("path-filtered git log stops before comparing against an omitted parent", a
       retainedCommitCount: 2,
       entries: fixture.descriptor.entries.map((entry) => (
         entry.path === "source.txt"
-          ? { ...entry, indexObjectId: blob, worktreeObjectId: blob, status: "clean" as const }
+          ? { ...entry, indexObjectId: blob, worktreeObjectId: blob, worktreeObjectSha256: gitBlobDigest("sha256", readFileSync(join(fixture.root, "source.txt"))), status: "clean" as const }
           : entry
       )),
     };
@@ -746,14 +777,12 @@ test("search returns a byte-bounded progressing page without collecting later ma
   try {
     const content = "hit\n".repeat(3_000);
     writeFileSync(join(fixture.root, "source.txt"), content, "utf8");
-    const worktreeObjectId = createHash("sha1")
-      .update(`blob ${Buffer.byteLength(content)}\0`)
-      .update(content)
-      .digest("hex");
+    const worktreeObjectId = gitBlobDigest("sha1", content);
+    const worktreeObjectSha256 = gitBlobDigest("sha256", content);
     const descriptor = {
       ...fixture.descriptor,
       entries: fixture.descriptor.entries.map((entry) => (
-        entry.path === "source.txt" ? { ...entry, worktreeObjectId } : entry
+        entry.path === "source.txt" ? { ...entry, worktreeObjectId, worktreeObjectSha256 } : entry
       )),
     };
     const reader = new RepositoryReader({

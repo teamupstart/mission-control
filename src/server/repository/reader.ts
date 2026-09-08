@@ -350,12 +350,20 @@ export class RepositoryReader {
   }
 
   private assertWorktreeObject(entry: RepositoryManifestEntry, bytes: Buffer): void {
-    if (!entry.worktreePresent || !entry.worktreeObjectId) {
+    if (!entry.worktreePresent || !entry.worktreeObjectId || !entry.worktreeObjectSha256) {
       throw Object.assign(new Error("captured worktree object is unavailable"), { code: "view_unavailable" });
+    }
+    const header = `blob ${bytes.byteLength}\0`;
+    const integrityDigest = createHash("sha256")
+      .update(header)
+      .update(bytes)
+      .digest("hex");
+    if (integrityDigest !== entry.worktreeObjectSha256) {
+      throw Object.assign(new Error("materialized worktree bytes fail the captured integrity check"), { code: "view_unavailable" });
     }
     const algorithm = entry.worktreeObjectId.length === 40 ? "sha1" : "sha256";
     const actual = createHash(algorithm)
-      .update(`blob ${bytes.byteLength}\0`)
+      .update(header)
       .update(bytes)
       .digest("hex");
     if (actual !== entry.worktreeObjectId) {

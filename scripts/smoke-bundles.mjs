@@ -28,6 +28,7 @@
 // daemon. This runs after `npm run build`, where the artifact is guaranteed to exist.
 
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -430,6 +431,11 @@ async function smokeRepositoryMcp() {
     const head = fixtureGit(["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const tree = fixtureGit(["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
     const blob = fixtureGit(["rev-parse", "HEAD:hello.txt"], { encoding: "utf8" }).trim();
+    const helloBytes = await readFile(join(root, "hello.txt"));
+    const worktreeObjectSha256 = createHash("sha256")
+      .update(`blob ${helloBytes.byteLength}\0`)
+      .update(helloBytes)
+      .digest("hex");
     await writeFile(auditPath, "", { mode: 0o600 });
     await writeFile(configPath, JSON.stringify({
       schemaVersion: 1,
@@ -450,7 +456,7 @@ async function smokeRepositoryMcp() {
         omittedParents: [],
         retainedCommitCount: 1,
         retainedAllowedBlobBytes: 21,
-        entries: [{ path: "hello.txt", kind: "file", addressable: true, mode: 33188, sensitive: false, worktreePresent: true, indexObjectId: blob, worktreeObjectId: blob, status: "clean" }],
+        entries: [{ path: "hello.txt", kind: "file", addressable: true, mode: 33188, sensitive: false, worktreePresent: true, indexObjectId: blob, worktreeObjectId: blob, worktreeObjectSha256, status: "clean" }],
       },
       workloadId: "smoke-workload",
       workflowAttemptId: "smoke-attempt",

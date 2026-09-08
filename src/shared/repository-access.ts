@@ -489,8 +489,25 @@ export const RepositoryManifestEntrySchema = z.object({
   worktreePresent: z.boolean(),
   indexObjectId: GitObjectIdSchema.nullable(),
   worktreeObjectId: GitObjectIdSchema.nullable(),
+  worktreeObjectSha256: Sha256Schema.nullable(),
   status: z.string().max(64),
-}).strict();
+}).strict().superRefine((entry, ctx) => {
+  const readableWorktreeObject = entry.worktreePresent && entry.kind !== "submodule";
+  if (readableWorktreeObject && (!entry.worktreeObjectId || !entry.worktreeObjectSha256)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["worktreeObjectSha256"],
+      message: "readable worktree objects require Git and SHA-256 identities",
+    });
+  }
+  if (!entry.worktreePresent && (entry.worktreeObjectId || entry.worktreeObjectSha256)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["worktreeObjectSha256"],
+      message: "absent worktree objects cannot carry content identities",
+    });
+  }
+});
 export type RepositoryManifestEntry = z.infer<typeof RepositoryManifestEntrySchema>;
 
 export const RepositoryViewDescriptorSchema = z.object({

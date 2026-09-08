@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why evidence preflight kept sending the Retry Pi Models task back</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f2;
+    --surface-1: #fcfcfb;
+    --surface-2: #ececea;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #78766f;
+    --rule: #dbdad5;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --accent-soft: #eaf1fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface-0: #121211;
+      --surface-1: #1a1a19;
+      --surface-2: #232322;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #9b998f;
+      --rule: #34342f;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --accent-soft: #1d2634;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font: 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  header.masthead { border-bottom: 2px solid var(--text-primary); padding-bottom: 1.25rem; margin-bottom: 2rem; }
+  .eyebrow { font-size: .75rem; letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); margin: 0 0 .6rem; }
+  h1 { font-size: 2.1rem; line-height: 1.16; margin: 0 0 .75rem; letter-spacing: -.02em; }
+  .question { font-size: 1.02rem; color: var(--text-secondary); margin: 0; max-width: 52rem; }
+  h2 { font-size: 1.35rem; margin: 3rem 0 .9rem; letter-spacing: -.01em; padding-bottom: .4rem; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.02rem; margin: 1.9rem 0 .5rem; }
+  p { margin: 0 0 1rem; max-width: 52rem; }
+  ul, ol { max-width: 52rem; padding-left: 1.25rem; }
+  li { margin-bottom: .45rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .855em; background: var(--surface-2); padding: .1em .38em; border-radius: 4px; }
+  .finding { background: var(--surface-1); border: 1px solid var(--rule); border-left: 4px solid var(--series-2); border-radius: 8px; padding: 1.25rem 1.4rem; margin: 1.75rem 0; }
+  .finding p:last-child { margin-bottom: 0; }
+  .finding strong { color: var(--text-primary); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .85rem; margin: 1.75rem 0 2rem; }
+  .tile { background: var(--surface-1); border: 1px solid var(--rule); border-radius: 8px; padding: .95rem 1rem; }
+  .tile .num { font-size: 1.85rem; font-weight: 640; letter-spacing: -.03em; line-height: 1.05; display: block; }
+  .tile .lab { font-size: .8rem; color: var(--text-secondary); margin-top: .35rem; display: block; }
+  figure { margin: 1.75rem 0; background: var(--surface-1); border: 1px solid var(--rule); border-radius: 8px; padding: 1.2rem 1.25rem 1rem; }
+  figcaption { font-size: .82rem; color: var(--text-secondary); margin-top: .85rem; padding-top: .7rem; border-top: 1px solid var(--rule); }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .8rem; color: var(--text-secondary); margin: 0 0 .9rem; }
+  .legend span { display: inline-flex; align-items: center; gap: .4rem; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  table { border-collapse: collapse; width: 100%; font-size: .845rem; margin: 1rem 0 1.5rem; }
+  th, td { text-align: left; padding: .48rem .6rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.flag td { background: var(--accent-soft); }
+  .rec { border: 1px solid var(--rule); border-radius: 8px; background: var(--surface-1); padding: 1.1rem 1.25rem; margin: 1rem 0; }
+  .rec h3 { margin-top: 0; display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+  .badge { font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; padding: .18em .55em; border-radius: 999px; border: 1px solid var(--rule); color: var(--text-secondary); background: var(--surface-2); font-weight: 600; }
+  .badge.p1 { background: var(--series-2); color: #fff; border-color: transparent; }
+  .badge.p2 { background: var(--series-1); color: #fff; border-color: transparent; }
+  .cite { color: var(--text-muted); font-size: .82rem; }
+  a { color: var(--series-1); }
+  .gap-note { font-size: .93rem; color: var(--text-secondary); }
+  footer { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--rule); font-size: .82rem; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<main>
+
+<header class="masthead">
+  <p class="eyebrow">Mission Control scout report</p>
+  <h1>The evidence preflight loop is fed by its own output</h1>
+  <p class="question"><strong>Question asked:</strong> Evidence preflight sent the "Update Retry pi models login prompt"
+  work back for repair many times. Do we require new evidence to be collected for every submission? If sufficient
+  evidence was provided on a prior run, reattaching it seems excessive unless recent changes could have corrupted it.
+  How do we make evidence sufficient more reliably and cut the token spend of preflight kickbacks?</p>
+</header>
+
+<div class="finding">
+  <p><strong>Short answer to the question as asked: yes, the system does require freshly staged evidence for every
+  submission, and it should not.</strong> Staged evidence is consumed one way at capture (<code>staged</code> to
+  <code>reserved</code>), so the next submission starts from an empty tray. Re-staging a byte-identical item is a silent
+  no-op that does not attach it, and re-staging under the same id throws "already reserved", which is why the agent had to
+  mint fresh id prefixes (<code>repair-2-</code>, <code>g5-</code>, <code>g6-</code>, <code>r7-</code>, <code>r8-</code>)
+  every round. On this one task, 70 evidence registrations produced only 28 distinct artifacts, and the same screenshot
+  was registered nine separate times.</p>
+  <p><strong>But that is the second-order problem, not the reason this task looped.</strong> The dominant cause is a
+  closed feedback loop. Mission Control types its own repair packet into the session; the Claude
+  <code>UserPromptSubmit</code> hook captures it as a human instruction into <code>session_goals.prompt</code>; context
+  compaction reads exactly that column as its raw goal and derives the acceptance criteria from it. From submission 3.1
+  onward the No-Mistakes Review was reviewing the change against criteria distilled from its own complaint text. Six of
+  the eight failing verdicts on this run were artifacts of that loop, not findings about the code.</p>
+  <p><strong>The displayed goal is not the polluted one, and that is why this is invisible.</strong>
+  <code>session_goals</code> keeps four separate columns. The dashboard renders <code>text</code>, the durable objective,
+  which <code>captureAcceptedPrompt</code> writes only on the first prompt. Across all 16 sessions on this machine,
+  <code>text</code> and <code>objective</code> are clean in every single one. It is <code>prompt</code> and
+  <code>focus</code>, which nothing renders under the title, that get overwritten, in 6 of those 16 sessions, and
+  <code>prompt</code> is the one the workflow reads.</p>
+</div>
+
+<div class="tiles">
+  <div class="tile"><span class="num">6 of 8</span><span class="lab">failing verdicts caused by evidence plumbing, not by the code</span></div>
+  <div class="tile"><span class="num">72%</span><span class="lab">of Persona review input spent on those six rounds</span></div>
+  <div class="tile"><span class="num">31 of 41</span><span class="lab">submissions whose compaction goal was a workflow packet, while 0 of 16 displayed goals ever changed</span></div>
+  <div class="tile"><span class="num">41.6%</span><span class="lab">of all evidence registrations in the live database are byte-identical duplicates</span></div>
+  <div class="tile"><span class="num">4.6%</span><span class="lab">share of this run's model input consumed by preflight itself</span></div>
+</div>
+
+<h2>The causal chain</h2>
+
+<p>Five independent mechanisms compose into one loop. Each is small; together they made an eight-round review out of a
+two-finding change.</p>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-label="Flow diagram. A repair packet is typed into the session pane; the Claude prompt hook captures it as the session Goal; context compaction derives acceptance criteria from that Goal; the criteria change every round so author coverage never matches; preflight reports gaps and emits a new repair packet, closing the loop. A side branch shows personas reading the packet text out of the transcript while the prompt never renders the coverage that answers it.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5">
+    <g fill="var(--surface-2)" stroke="var(--rule)">
+      <rect x="8" y="26" width="168" height="52" rx="7"/>
+      <rect x="228" y="26" width="168" height="52" rx="7"/>
+      <rect x="448" y="26" width="168" height="52" rx="7"/>
+      <rect x="668" y="26" width="168" height="52" rx="7"/>
+      <rect x="338" y="150" width="188" height="52" rx="7"/>
+      <rect x="620" y="150" width="216" height="52" rx="7"/>
+    </g>
+    <g fill="var(--text-primary)" text-anchor="middle">
+      <text x="92" y="47">1. Repair packet typed</text><text x="92" y="63" fill="var(--text-secondary)">into the session pane</text>
+      <text x="312" y="47">2. Prompt hook accepts it</text><text x="312" y="63" fill="var(--text-secondary)">as the session Goal</text>
+      <text x="532" y="47">3. Compaction derives</text><text x="532" y="63" fill="var(--text-secondary)">criteria from that Goal</text>
+      <text x="752" y="47">4. Criteria move, so</text><text x="752" y="63" fill="var(--text-secondary)">coverage never matches</text>
+      <text x="432" y="171">5. Preflight reports gaps</text><text x="432" y="187" fill="var(--text-secondary)">and emits a new packet</text>
+      <text x="728" y="171">Side branch: Personas read the</text><text x="728" y="187" fill="var(--text-secondary)">packet, cannot see the coverage</text>
+    </g>
+    <g stroke="var(--series-2)" stroke-width="2" fill="none" color="var(--series-2)" marker-end="url(#ah)">
+      <path d="M180,52 L222,52"/>
+      <path d="M400,52 L442,52"/>
+      <path d="M620,52 L662,52"/>
+      <path d="M752,82 L752,120 L530,120 L530,146"/>
+      <path d="M338,176 L120,176 L92,176 L92,84"/>
+    </g>
+    <g stroke="var(--series-1)" stroke-width="2" fill="none" color="var(--series-1)" marker-end="url(#ah)" stroke-dasharray="5 4">
+      <path d="M526,176 L616,176"/>
+    </g>
+    <text x="200" y="196" fill="var(--series-2)" font-size="11.5" font-weight="600">the loop closes here</text>
+    <text x="620" y="234" fill="var(--text-secondary)" font-size="11.5">Personas then reject for "no declared, linked</text>
+    <text x="620" y="250" fill="var(--text-secondary)" font-size="11.5">author-controlled coverage" that provably existed</text>
+    <text x="620" y="266" fill="var(--text-secondary)" font-size="11.5">in the frozen submission (5 to 8 rows each round).</text>
+  </g>
+</svg>
+<figcaption>Each numbered step is a small local decision. The loop only exists because nothing in the chain treats
+Mission Control's own text as machine output once it has been written into a pane.</figcaption>
+</figure>
+
+<h3>1. Delivered packets land in the Goal column the workflow reads</h3>
+<p>This session is an SDK session (<code>sdk:1a43686b</code>), and an SDK session has <strong>two</strong> doors into the
+Goal pipeline. The supervisor door is guarded: <code>deliverToDriver</code> passes a goal-capture payload to
+<code>supervisor.send</code> only when <code>origin === "human"</code>, and <code>runtimePromptInjector</code>, which is
+what the workflow manager is wired with at <code>src/server/index.ts:307</code>, never supplies an origin at all. So the
+supervisor correctly declines to capture a workflow delivery.</p>
+<p>The second door is not guarded. The delivery still reaches the Claude CLI, which fires <code>UserPromptSubmit</code>,
+and <code>captureHookGoalPrompt</code> forwards whatever the hook reports to <code>captureAcceptedPrompt</code>. Its only
+guard is <code>isSeededLaunchEcho</code>, which the code's own comment scopes to the launch echo at work-cycle generation
+zero. Everything after that is captured. The delivery path does record the text as machine-authored through
+<code>rememberInjection(session.id, payload, "workflow")</code>, but it does so <em>after</em> <code>inject()</code> has
+resolved, and the Goal pipeline never consults <code>originOf</code> in any case: only
+<code>transcript-attribution.ts</code>, <code>scouts/prompt-collector.ts</code> and <code>retro-worthiness.ts</code> read
+that origin memory.</p>
+<p><code>captureAcceptedPrompt</code> then writes <code>prompt</code>, <code>focus</code> and <code>promptRevision</code>
+on every call, but writes <code>objective</code> and <code>text</code> only when <code>firstObjective</code> is true. That
+asymmetry is deliberate and is exactly what makes the defect invisible on the card while still reaching the workflow.</p>
+<p class="cite"><code>src/server/registry.ts:7350</code> &middot; <code>src/server/registry.ts:7399</code> &middot;
+<code>src/server/registry.ts:7433</code> &middot; <code>src/server/sdk/deliver.ts:62</code> &middot;
+<code>src/server/index.ts:307</code> &middot; <code>src/server/workflows/manager.ts:5859</code> &middot;
+<code>src/server/injections.ts:115</code></p>
+
+<figure>
+<p style="margin:0 0 .5rem;font-size:.85rem;color:var(--text-secondary)">The live <code>session_goals</code> row for this
+session, read directly. The first two columns are what a person sees; the third is what the workflow reads.</p>
+<table style="margin-bottom:0">
+<thead><tr><th>Column</th><th>Rendered anywhere?</th><th>Value for note <code>5d723104</code></th></tr></thead>
+<tbody>
+<tr><td><code>text</code></td><td>Yes, under the session title</td><td>Improve 'Retry pi models' error to recommend or detect login requirement</td></tr>
+<tr><td><code>objective</code></td><td>Drives completion, not shown verbatim</td><td>When a user clicks the 'Retry pi models' button it returns an error message but doesn't hi&hellip;</td></tr>
+<tr class="flag"><td><code>prompt</code></td><td><strong>No.</strong> Read by workflow context capture</td><td>Workflow review failed. This is a repair round; address the review packet below. Original user goal: Workflow review fai&hellip;</td></tr>
+<tr class="flag"><td><code>focus</code></td><td>No</td><td>Workflow review failed. This is a repair round; address the review packet below&hellip;</td></tr>
+</tbody>
+</table>
+<figcaption><code>prompt_revision</code> is 9 and <code>resolved_prompt_revision</code> is 6, so three workflow packets
+are currently queued for the intent reconciler to classify against the objective. Across all 16 sessions on this machine,
+<code>text</code> and <code>objective</code> are polluted in <strong>zero</strong>, while <code>prompt</code> is a workflow
+packet in <strong>6</strong>. The six are the six highest by <code>prompt_revision</code>, which is what a session held by
+a workflow looks like.</figcaption>
+</figure>
+
+<p class="gap-note"><strong>One latent consequence worth naming.</strong> The reconciler may change the objective when it
+classifies a prompt as <code>amend</code>, <code>replace</code> or <code>initial</code>
+(<code>src/server/goal/refiner.ts:299</code>). Nothing has been promoted yet, which is why the cards are clean, but three
+workflow packets are sitting in that queue right now, and each one costs a refiner call to classify text this system
+wrote itself.</p>
+
+<h3>2. The overwritten Goal is the only input to acceptance criteria</h3>
+<p><code>intentFingerprintFields</code> returns exactly <code>{ rawGoal, refinedGoal, decisions }</code>, and that object
+is both the entire compaction prompt and the entire intent fingerprint. When <code>rawGoal</code> becomes a repair packet,
+the canonical acceptance criteria become a restatement of the complaint. The refined goal survived at a constant 72 bytes
+throughout this run, so a stable description of the work was available and simply was not the field being read.</p>
+<p class="cite"><code>src/server/workflows/context.ts:201</code> &middot; <code>src/server/workflows/context.ts:477</code>
+&middot; <code>src/server/workflows/context.ts:923</code></p>
+
+<h3>3. Because the fingerprint moves, criteria reuse never fires</h3>
+<p><code>reuseWorkflowContextCriteria</code> exists precisely to hold criteria stable across preflight refinements, and it
+is gated on the child's intent fingerprint matching its parent's. On this run the fingerprint changed on all eleven
+submissions, so the optimisation never fired once: every submission paid for a fresh compaction call, and the criteria set
+drifted from four items to three to six to five to seven and finally to two. The author is asked to map coverage onto a
+target that moves underneath them.</p>
+<p class="cite"><code>src/server/workflows/context.ts:596</code> &middot; <code>src/server/workflows/manager.ts:6023</code></p>
+
+<h3>4. Repair packets also leak in as "human decisions"</h3>
+<p><code>transcriptDecision</code> treats any user-role transcript turn whose <code>origin</code> is
+<code>undefined</code> as a human decision. Attribution is best-effort: it matches a delivery to a turn only when the
+delivery recorded a transcript anchor and the payload fingerprint still matches within a twelve-message window, and the
+origin memory is in-process and bounded. Whatever slips through becomes a decision, and decisions feed compaction. By
+round 8 the decision list held one real user sentence and seven workflow packets, several of which quoted an earlier
+packet under the heading "Original user goal".</p>
+<p class="cite"><code>src/server/workflows/context.ts:371</code> &middot; <code>src/server/workflows/context.ts:445</code>
+&middot; <code>src/server/injections.ts:80</code></p>
+
+<h3>5. Personas read the preflight's vocabulary and cannot see the answer</h3>
+<p>The Persona prompt renders the transcript verbatim as <code>workflow-transcript</code>, so every Persona reads the
+preflight's instruction "Declare and link an author-controlled coverage claim for this criterion". The same prompt builder
+contains <strong>zero</strong> references to coverage: it renders acceptance criteria, an image manifest, a text artifact
+manifest, Check evidence, the diff, the transcript and standards, but never <code>canonicalCriteria</code> or
+<code>criterionMappings</code>. So <code>nmr-code-quality-judge</code> was told a requirement exists and given no way to
+observe that it was met. It failed the submission five times on exactly that ground, while the frozen submission held five
+to eight coverage rows each time.</p>
+<p class="cite"><code>src/server/workflows/prompt.ts:71</code> &middot; <code>src/server/workflows/prompt.ts:132</code>
+&middot; <code>src/server/workflows/feedback.ts:277</code> &middot;
+<code>src/server/workflows/store.ts</code> table <code>workflow_submission_evidence_coverage</code></p>
+
+<h2>Where the tokens actually went</h2>
+
+<p>Run <code>55cdbfef</code> ran eight rounds against a repair budget of seven, so it reached the highest round the budget
+permits and is currently parked. It made 39 Persona review calls totalling 6,287,757 input bytes. Preflight, meaning
+context compaction plus criterion reconciliation, made 21 calls totalling 302,463 input bytes. <strong>Preflight is not the
+expensive thing. Preflight is 4.6% of the model input, and the rounds it failed to prevent are the other 95%.</strong></p>
+
+<figure>
+<p class="legend">
+  <span><i class="swatch" style="background:var(--series-1)"></i>Persona input, round rejected on a genuine code finding</span>
+  <span><i class="swatch" style="background:var(--series-2)"></i>Persona input, round rejected on an evidence-plumbing artifact</span>
+  <span><i class="swatch" style="background:var(--series-3)"></i>Preflight input (compaction and reconciliation)</span>
+</p>
+<svg viewBox="0 0 900 420" role="img" aria-label="Grouped horizontal bar chart of model input bytes per submission for run 55cdbfef. Submission 1.0 used 929,019 Persona bytes and was rejected on a genuine code finding. Submissions 2.0, 3.0 and 7.0 were held at preflight and ran no Persona at all, costing only 8,690, 14,720 and 46,667 preflight bytes. Submissions 2.1, 3.1, 4.0, 5.0, 7.1 and 8.0 used 635,924, 627,175, 698,031, 767,451, 895,899 and 918,827 Persona bytes and were each rejected on an evidence-plumbing artifact. Submission 6.0 used 815,431 Persona bytes and was rejected on a genuine code finding. Preflight bars are never more than 47,576 bytes.">
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5">
+    <g stroke="var(--rule)" stroke-width="1">
+      <line x1="86" y1="26" x2="86" y2="382"/>
+      <line x1="233.7" y1="26" x2="233.7" y2="382" stroke-dasharray="2 4"/>
+      <line x1="381.4" y1="26" x2="381.4" y2="382" stroke-dasharray="2 4"/>
+      <line x1="529.1" y1="26" x2="529.1" y2="382" stroke-dasharray="2 4"/>
+      <line x1="676.8" y1="26" x2="676.8" y2="382" stroke-dasharray="2 4"/>
+    </g>
+    <g fill="var(--text-muted)" font-size="10.5" text-anchor="middle">
+      <text x="86" y="18">0</text><text x="233.7" y="18">250 KB</text><text x="381.4" y="18">500 KB</text>
+      <text x="529.1" y="18">750 KB</text><text x="676.8" y="18">1000 KB</text>
+    </g>
+    <g fill="var(--text-secondary)" text-anchor="end" font-size="11">
+      <text x="78" y="45">1.0</text><text x="78" y="77">2.0</text><text x="78" y="109">2.1</text><text x="78" y="141">3.0</text>
+      <text x="78" y="173">3.1</text><text x="78" y="205">4.0</text><text x="78" y="237">5.0</text><text x="78" y="269">6.0</text>
+      <text x="78" y="301">7.0</text><text x="78" y="333">7.1</text><text x="78" y="365">8.0</text>
+    </g>
+    <g>
+      <rect x="86" y="32" width="548.9" height="13" rx="4" fill="var(--series-1)"/>
+      <rect x="86" y="47" width="2.7" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="79" width="5.1" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="96" width="375.7" height="13" rx="4" fill="var(--series-2)"/>
+      <rect x="86" y="111" width="6.7" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="143" width="8.7" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="160" width="370.5" height="13" rx="4" fill="var(--series-2)"/>
+      <rect x="86" y="175" width="12.3" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="192" width="412.4" height="13" rx="4" fill="var(--series-2)"/>
+      <rect x="86" y="207" width="16.4" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="224" width="453.4" height="13" rx="4" fill="var(--series-2)"/>
+      <rect x="86" y="239" width="20.6" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="256" width="481.8" height="13" rx="4" fill="var(--series-1)"/>
+      <rect x="86" y="271" width="24.5" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="303" width="27.6" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="320" width="529.2" height="13" rx="4" fill="var(--series-2)"/>
+      <rect x="86" y="335" width="26.0" height="8" rx="3" fill="var(--series-3)"/>
+      <rect x="86" y="352" width="542.7" height="13" rx="4" fill="var(--series-2)"/>
+      <rect x="86" y="367" width="28.1" height="8" rx="3" fill="var(--series-3)"/>
+    </g>
+    <g fill="var(--text-primary)" font-size="10.5" font-variant-numeric="tabular-nums">
+      <text x="643" y="42">929 KB</text>
+      <text x="470" y="106">636 KB</text>
+      <text x="465" y="170">627 KB</text>
+      <text x="507" y="202">698 KB</text>
+      <text x="548" y="234">767 KB</text>
+      <text x="576" y="266">815 KB</text>
+      <text x="624" y="330">896 KB</text>
+      <text x="637" y="362">919 KB</text>
+    </g>
+    <g fill="var(--text-muted)" font-size="10.5" font-style="italic">
+      <text x="100" y="86">held at preflight, no Persona ran (9 KB)</text>
+      <text x="103" y="150">held at preflight, no Persona ran (15 KB)</text>
+      <text x="122" y="310">held at preflight, no Persona ran (47 KB)</text>
+    </g>
+  </g>
+</svg>
+<figcaption>Model input bytes per submission, run <code>55cdbfef</code>, No-Mistakes Review v14. The three aqua-only rows
+are preflight interceptions that worked exactly as designed: each spent under 47 KB and avoided a Persona round worth
+roughly 700 KB. The six orange rows are the failure mode: full Persona rounds spent rejecting the submission for reasons
+that were not about the code. Full figures in <a href="evidence.csv">evidence.csv</a>.</figcaption>
+</figure>
+
+<h3>Verdict attribution, round by round</h3>
+<table>
+<thead><tr><th>Submission</th><th>Readiness</th><th class="num">Criteria</th><th class="num">Coverage rows frozen</th><th>Failing node</th><th>What it was really about</th></tr></thead>
+<tbody>
+<tr><td>1.0</td><td>unavailable</td><td class="num">0</td><td class="num">3</td><td><code>nmr-slop-filter</code></td><td>Genuine: a speculative fixture comment</td></tr>
+<tr class="flag"><td>2.0</td><td>gaps</td><td class="num">4</td><td class="num">1</td><td>held at preflight</td><td>No coverage manifest supplied</td></tr>
+<tr class="flag"><td>2.1</td><td>ready</td><td class="num">3</td><td class="num">3</td><td><code>nmr-test-evidence</code></td><td>Artifact: the round 1 screenshot was not carried forward, so "no reviewer-visible rendered UI evidence is registered"</td></tr>
+<tr class="flag"><td>3.0</td><td>gaps</td><td class="num">6</td><td class="num">1</td><td>held at preflight</td><td>Criteria set changed under the author</td></tr>
+<tr class="flag"><td>3.1</td><td>ready</td><td class="num">5</td><td class="num">5</td><td><code>nmr-code-quality-judge</code></td><td>Artifact: "no declared, linked author-controlled coverage for any material criterion"</td></tr>
+<tr class="flag"><td>4.0</td><td>ready</td><td class="num">5</td><td class="num">5</td><td><code>nmr-code-quality-judge</code></td><td>Artifact: "still lacks declared and linked coverage claims for all five acceptance criteria"</td></tr>
+<tr class="flag"><td>5.0</td><td>ready</td><td class="num">5</td><td class="num">5</td><td><code>nmr-code-quality-judge</code></td><td>Artifact: "does not show the required author-controlled coverage claims"</td></tr>
+<tr><td>6.0</td><td>ready</td><td class="num">5</td><td class="num">5</td><td><code>nmr-code-design</code></td><td>Genuine: the new capability contract's shape</td></tr>
+<tr class="flag"><td>7.0</td><td>gaps</td><td class="num">7</td><td class="num">6</td><td>held at preflight</td><td>Two new criteria appeared, invented from the previous packet</td></tr>
+<tr class="flag"><td>7.1</td><td>ready</td><td class="num">2</td><td class="num">8</td><td><code>nmr-code-quality-judge</code></td><td>Artifact: "two material acceptance criteria remain uncovered"</td></tr>
+<tr class="flag"><td>8.0</td><td>ready</td><td class="num">2</td><td class="num">8</td><td><code>nmr-code-quality-judge</code></td><td>Artifact: "still has no declared or linked author-controlled coverage for either"</td></tr>
+</tbody>
+</table>
+<p class="gap-note">Every row where the judge reported absent coverage had between five and eight coverage rows frozen in
+<code>workflow_submission_evidence_coverage</code> for that exact submission, and preflight had already evaluated those
+same rows as <code>ready</code>. The judge is not wrong about what it can see; the prompt never showed it.</p>
+
+<h2>The Goal was replaced by the complaint</h2>
+
+<p>This is the single most load-bearing observation in the report, and it is a direct read of the frozen context on each
+submission. <code>primaryGoal.rawPrompt</code> holds the real user sentence for the first four submissions and a Mission
+Control packet for every submission after that.</p>
+
+<table>
+<thead><tr><th>Submission</th><th class="num">Raw goal bytes</th><th>Opening of the raw goal fed to compaction</th><th class="num">Human decisions</th></tr></thead>
+<tbody>
+<tr><td>1.0</td><td class="num">413</td><td>when a user clicks the "Retry pi models" button it returns an error message but&hellip;</td><td class="num">1</td></tr>
+<tr><td>2.0</td><td class="num">413</td><td>when a user clicks the "Retry pi models" button it returns an error message but&hellip;</td><td class="num">2</td></tr>
+<tr><td>2.1</td><td class="num">413</td><td>when a user clicks the "Retry pi models" button it returns an error message but&hellip;</td><td class="num">3</td></tr>
+<tr><td>3.0</td><td class="num">413</td><td>when a user clicks the "Retry pi models" button it returns an error message but&hellip;</td><td class="num">4</td></tr>
+<tr class="flag"><td>3.1</td><td class="num">2924</td><td><strong># Evidence preflight needs repair</strong> Workflow: No-Mistakes Review v14&hellip;</td><td class="num">5</td></tr>
+<tr class="flag"><td>4.0</td><td class="num">4005</td><td><strong>Workflow review failed. This is a repair round</strong>&hellip; Original user goal: # Evidence preflight&hellip;</td><td class="num">6</td></tr>
+<tr class="flag"><td>5.0</td><td class="num">4005</td><td><strong>Workflow review failed. This is a repair round</strong>&hellip; Original user goal: Workflow review failed&hellip;</td><td class="num">7</td></tr>
+<tr class="flag"><td>6.0</td><td class="num">4005</td><td><strong>Workflow review failed. This is a repair round</strong>&hellip; Original user goal: Workflow review failed&hellip;</td><td class="num">8</td></tr>
+<tr class="flag"><td>7.0</td><td class="num">4005</td><td><strong>Workflow review failed. This is a repair round</strong>&hellip;</td><td class="num">8</td></tr>
+<tr class="flag"><td>7.1</td><td class="num">2173</td><td><strong># Evidence preflight needs repair</strong> Workflow: No-Mistakes Review v14&hellip;</td><td class="num">8</td></tr>
+<tr class="flag"><td>8.0</td><td class="num">4005</td><td><strong>Workflow review failed. This is a repair round</strong>&hellip;</td><td class="num">8</td></tr>
+</tbody>
+</table>
+
+<p>Note the nesting in rows 5.0 onward: the packet's own "Original user goal:" field already contains a previous packet.
+That nesting has a single, findable cause. <code>src/server/workflows/feedback.ts:381</code> composes the repair packet
+with the line <code>bounded(context.primaryGoal.rawPrompt)</code> under the heading "Original user goal:". Because
+<code>rawPrompt</code> resolves to <code>goal.prompt</code>, and <code>goal.prompt</code> is by then the previous packet,
+each round wraps the last one. The two canonical criteria at submissions 7.1 and 8.0 are word for word the two gaps named
+in the 7.0 repair packet, which is the loop stated as plainly as it can be. Full data in
+<a href="goal-overwrite.csv">goal-overwrite.csv</a>.</p>
+<p>Both consumers reach for the same field. <code>src/server/workflows/context.ts:923</code> resolves
+<code>rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL)</code>, and <code>goal.prompt</code> is the volatile
+column. <code>goal.objective</code>, the column designed to hold the durable completion contract, sits right beside it,
+is non-null for all 16 sessions on this machine, and is clean in all 16.</p>
+
+<p>This is not confined to one task. Across every submission in the live state database, <strong>31 of 41</strong> carry a
+raw goal beginning with either "# Evidence preflight needs repair" or "Workflow review failed. This is a repair round".
+Of the readiness-evaluated submissions, 26 reported gaps, 11 reported ready and one was unavailable, so roughly two thirds
+of enforced submissions are being held. Polluted-goal submissions reported gaps 21 times out of 29; clean-goal submissions
+reported gaps 5 times out of 9. The sample is small and I would not lean on that ratio, but the mechanism does not depend
+on it.</p>
+
+<h2>Evidence really is re-collected every round</h2>
+
+<p>Confirming the premise in the question. Capture flips each staged row to <code>reserved</code> and binds it to that
+submission's group key; a later submission with a different group key selects only rows that are still <code>staged</code>.
+Re-staging an identical item short-circuits as a no-op, so it stays attached to the old submission and does not join the
+new one. Re-staging a changed item under the same client id throws "already reserved". The practical consequence is that an
+agent must invent a new id for every artifact every round, which is exactly the id pattern in the database.</p>
+
+<figure>
+<svg viewBox="0 0 900 260" role="img" aria-label="Horizontal bar chart of how many times each distinct artifact was registered for the Retry Pi Models note. The signed-out notice PNG was registered 9 times, the repository typecheck output 5 times, and the screenshot capture run, fixture state, fixture diff and fake-agents current state 4 times each.">
+  <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5">
+    <g stroke="var(--rule)" stroke-width="1">
+      <line x1="330" y1="24" x2="330" y2="228"/>
+    </g>
+    <g fill="var(--text-secondary)" text-anchor="end" font-size="11.5">
+      <text x="322" y="42">Signed-out notice screenshot (38.6 KB PNG)</text>
+      <text x="322" y="76">Repository typecheck output</text>
+      <text x="322" y="110">Screenshot capture command run</text>
+      <text x="322" y="144">Fixture current state</text>
+      <text x="322" y="178">Fixture diff</text>
+      <text x="322" y="212">fake-agents.ts current state</text>
+    </g>
+    <g fill="var(--series-1)">
+      <rect x="330" y="30" width="459" height="15" rx="4"/>
+      <rect x="330" y="64" width="255" height="15" rx="4"/>
+      <rect x="330" y="98" width="204" height="15" rx="4"/>
+      <rect x="330" y="132" width="204" height="15" rx="4"/>
+      <rect x="330" y="166" width="204" height="15" rx="4"/>
+      <rect x="330" y="200" width="204" height="15" rx="4"/>
+    </g>
+    <g fill="var(--text-primary)" font-size="11" font-variant-numeric="tabular-nums">
+      <text x="799" y="42">9 registrations</text>
+      <text x="595" y="76">5</text>
+      <text x="544" y="110">4</text>
+      <text x="544" y="144">4</text>
+      <text x="544" y="178">4</text>
+      <text x="544" y="212">4</text>
+    </g>
+  </g>
+</svg>
+<figcaption>Byte-identical artifacts registered repeatedly for note <code>5d723104</code>. Across the whole note, 70
+registrations produced 28 distinct SHA-256 digests. Image evidence was 9 registrations of a single 38,600-byte PNG, so
+347,400 bytes were frozen to preserve 38,600. Across the entire live database the figure is 190 registrations for 111
+distinct artifacts, or 41.6% duplication.</figcaption>
+</figure>
+
+<p>The system already stores what it needs to answer "could this have been corrupted by the recent changes": every staged
+row carries <code>sha256</code>, <code>bytes</code>, <code>source_locator</code> and a repository scope, and every
+submission carries a repository fingerprint. Deciding whether an accepted artifact is still valid is a hash comparison,
+not a judgment call.</p>
+
+<h2>Recommendations: make the pipeline smaller, not taller</h2>
+
+<p>The instinct on finding this loop is to add a guard for each leak. That would be the wrong move: the loop exists
+because the pipeline already has two gates, two goal columns, two attribution mechanisms and a coverage vocabulary that
+only one of the gates understands. Every fix below either <strong>changes one field</strong> or <strong>removes a
+layer</strong>. None of them adds a component.</p>
+
+<div class="rec">
+<h3><span class="badge p1">1</span> Read the durable objective, not the latest prompt. One field.</h3>
+<p><code>src/server/workflows/context.ts:923</code> currently resolves
+<code>rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL)</code>. Point it at <code>goal.objective</code>, the
+column whose stated purpose is "durable completion contract", with <code>text</code> as the fallback it already has.</p>
+<p>That single substitution collapses most of this report:</p>
+<ul>
+  <li>Compaction stops seeing repair packets, so canonical criteria stop being derived from complaints.</li>
+  <li><code>feedback.ts:381</code> stops nesting packets under "Original user goal:", because it reads the same field.</li>
+  <li>The intent fingerprint stops changing every submission, so <code>reuseWorkflowContextCriteria</code> finally fires.
+  Criteria become stable for the run <em>without building anything to make them stable</em>, and this run's 21 context
+  calls become roughly 2.</li>
+</ul>
+<p>It also needs no guard on the hook, no reordering of <code>rememberInjection</code>, and no new origin plumbing. Those
+were three separate fixes in my first draft; this replaces all of them. Whether a workflow packet lands in
+<code>goal.prompt</code> stops mattering to the workflow.</p>
+<p class="cite">One line in <code>src/server/workflows/context.ts</code>. Worth a focused test pinning that a workflow
+delivery cannot change a run's intent fingerprint.</p>
+</div>
+
+<div class="rec">
+<h3><span class="badge p1">2</span> Stop mining the transcript for "human decisions". Delete code.</h3>
+<p>The decisions list is assembled from three sources: resolved workflow reviews, Foreman episodes, and
+<code>humanTranscriptDecisions(contextTranscript)</code>. The first two are structured, durable and unambiguously human.
+The third treats <em>any</em> user-role turn whose <code>origin</code> is <code>undefined</code> as a decision, and its
+correctness depends on a transcript anchor, a twelve-message search window and a bounded in-process origin map all
+holding at once. When any of them misses, a packet becomes a decision and feeds compaction.</p>
+<p>Drop the third source from the decisions list. Nothing is lost for review, because Personas already receive the full
+transcript separately as <code>workflow-transcript</code>. What narrows is only the input to criteria derivation, which is
+exactly where a stable, deliberately-authored list belongs. With item 1 this makes the intent fingerprint genuinely
+constant across a run.</p>
+<p class="cite">Removes a call and lets <code>transcriptDecision</code> and <code>humanTranscriptDecisions</code> go with
+it. <code>src/server/workflows/context.ts:371</code>, <code>:381</code>, <code>:953</code></p>
+</div>
+
+<div class="rec">
+<h3><span class="badge p1">3</span> Park <code>criterion_mapped_v1</code>. Remove the whole second gate.</h3>
+<p>This is the layer to delete rather than repair. Look at what the enforcing policy actually caught. Across every
+readiness-evaluated submission, 26 were held and 11 passed. On this run every single hold was
+<code>missing_coverage</code> or <code>ambiguous_mapping</code>, which means <em>the manifest did not line up with the
+model's criteria list</em>. Not one hold was "the proof is genuinely absent". The one real evidence gap on this run, the
+missing screenshot at 2.1, sailed through preflight as <code>ready</code> and was caught by the Test Evidence Auditor,
+which is the component that was already doing this job.</p>
+<p>Publishing the next No-Mistakes Review version with <code>evidenceReadinessPolicy: "off"</code> is an append-only data
+change in <code>src/server/workflows/builtin-workflows.ts</code>. No migration, no deletion, no behaviour change to any
+earlier version, and the machinery stays on disk for any workflow that opts in later. In one move it removes:</p>
+<ul>
+  <li>a second gate with its own wait state, delivery kind and refinement-segment lineage;</li>
+  <li>a <code>context_reconciliation</code> model call on every submission;</li>
+  <li>the proof-class and proof-role vocabulary, which is the vocabulary the Personas read out of the transcript and then
+  re-raised as a requirement they could not verify;</li>
+  <li>the need for recommendation 3 in my first draft entirely. There is no coverage to render to a Persona if there is
+  no coverage.</li>
+</ul>
+<p>The Test Evidence Auditor remains the single authority on whether evidence proves the claim, which is what the original
+design intended before a second opinion was inserted ahead of it.</p>
+</div>
+
+<div class="rec">
+<h3><span class="badge p1">4</span> Carry evidence forward inside a run. Widen one query.</h3>
+<p>Answering the question directly: no, we should not require fresh evidence on every submission, and fixing this does not
+need an inheritance subsystem. The reservation selector today is:</p>
+<p style="margin:0 0 1rem"><code>WHERE note_key = ? AND (state = 'staged' OR reserved_group_key = ?) AND (repository_scope = 'all' OR source_root = ?)</code></p>
+<p>Widen it to also admit rows reserved by this run's previous submission, and re-verify each inherited row by comparing
+its stored <code>sha256</code> against its <code>source_locator</code> before freezing it into the child. That is one
+query plus one hash comparison. The freeze path already copies bytes, so nothing new is needed downstream, and the
+"could recent changes have corrupted it" question is answered by the digest the row already carries rather than by
+judgment.</p>
+<p>Two smaller changes in the same place finish it:</p>
+<ul>
+  <li>Turn the "already reserved" throw into a re-stage. An agent re-registering an artifact under the same id is
+  expressing intent, and refusing it is what forced the <code>g5-</code>, <code>g6-</code>, <code>r7-</code>,
+  <code>r8-</code> id churn.</li>
+  <li>Deduplicate by digest on freeze, so registering a <code>sha256</code> that already exists reuses the stored blob.
+  That alone reclaims 347,400 bytes down to 38,600 for this run's screenshot.</li>
+</ul>
+<p class="cite"><code>src/server/workflows/store.ts:8931</code> (selector), <code>:4604</code> and <code>:4622</code>
+(re-stage), <code>src/server/workflows/images.ts:642</code> (freeze). The existing unchanged-evidence refusal at
+<code>src/server/workflows/manager.ts:6194</code> already compares the repository fingerprint rather than the evidence, so
+inheriting evidence does not weaken it.</p>
+</div>
+
+<div class="rec">
+<h3><span class="badge p2">5</span> Only if a structural gate is still wanted: one deterministic rule</h3>
+<p>If item 3 feels like giving up a real protection, replace the whole coverage apparatus with the single rule that would
+have caught the one genuine evidence gap on this run: <strong>if the diff touches a UI surface and the submission freezes
+no image evidence, hold.</strong> Changed paths and <code>workflow_submission_images</code> are both already present at
+capture. No model call, no author manifest, no proof classes, no reconciliation, no new vocabulary for a Persona to
+misread. One predicate, deterministic, explainable in a sentence.</p>
+<p>That is the honest scope of what a pre-review structural check can know. Everything beyond it is semantic, and semantic
+is the Auditor's job.</p>
+</div>
+
+<div class="rec">
+<h3><span class="badge p2">6</span> Two cheap assertions, so this cannot recur silently</h3>
+<ul>
+  <li><strong>Assert the run's intent fingerprint never changes mid-run.</strong> With items 1 and 2 it should be constant
+  by construction, so this is a one-line invariant that would have failed loudly at submission 3.1 instead of costing five
+  rounds.</li>
+  <li><strong>Surface the disagreement that already has a name.</strong>
+  <code>docs/plans/criterion-mapped-evidence-preflight/plan.md</code> lists "Auditor rejection after a preflight-ready
+  result" as a metric for finding blind spots. It fired five consecutive times here and nothing acted on it. If item 3 is
+  taken, this becomes moot; if the policy is kept anywhere, make it an operator-visible signal rather than a counter.</li>
+</ul>
+</div>
+
+<h3>What this is worth, and what it costs</h3>
+<p>Items 1 through 4 are one field, one deletion, one policy value and one widened query. Together, on this run, they
+would have removed six of the eight failing verdicts and about 4.54 MB of the 6.29 MB of Persona review input, leaving the
+two genuine findings. Item 1 alone also cuts the per-submission context calls from two to roughly zero after the first.</p>
+<p>The pipeline that comes out the other side is smaller than the one that went in: one gate instead of two, one goal
+field instead of two competing ones, one model call per run instead of two per submission, and evidence that persists
+across a round instead of being re-collected. <strong>The problem was never that preflight runs. It is that its output is
+fed back into its own input, and that a second gate was added in front of a judge who was already doing the work.</strong></p>
+
+<h2>What I did not establish</h2>
+<ul>
+  <li><strong>I did not reproduce the Goal overwrite in a test.</strong> The chain is established from live data plus
+  reading the code path, not from an instrumented run. Two of its links are now direct reads rather than inferences: the
+  frozen <code>context_json</code> on each submission shows the packet as <code>primaryGoal.rawPrompt</code>, and the live
+  <code>session_goals</code> row shows <code>prompt</code> and <code>focus</code> holding the packet while
+  <code>text</code> and <code>objective</code> hold the real goal. The <em>door</em> is narrowed but not proven: the
+  supervisor door is demonstrably closed for workflow deliveries (<code>deliverToDriver</code> passes a goal payload only
+  for <code>origin === "human"</code>, and <code>runtimePromptInjector</code> never passes an origin), which leaves the
+  <code>UserPromptSubmit</code> hook via <code>captureHookGoalPrompt</code> as the remaining unguarded path, supported by
+  the code's own note that both doors are live for a dispatched SDK session. I did not instrument a delivery to watch the
+  hook fire. It also stops mattering under recommendation 1, which makes the workflow indifferent to what lands in
+  <code>goal.prompt</code>.</li>
+  <li><strong>I did not measure dollar cost.</strong> <code>workflow_llm_calls.cost_usd</code> is null for every row in this
+  run, so all figures here are input and output bytes, not tokens or spend. Byte ratios are a reasonable proxy for relative
+  spend within one model, and I have used them only that way.</li>
+  <li><strong>I did not test the fixes.</strong> No code was changed. Item 4 in particular has a real design question I did
+  not resolve: whether an inherited artifact should be presented to the Auditor as equal to a fresh one, or explicitly
+  labelled as inherited so the Auditor can weigh its age. I recommend labelling, but that is a judgment, not a finding.</li>
+  <li><strong>The correlation between goal pollution and preflight gaps is weak evidence.</strong> 21 of 29 against 5 of 9
+  on a 41-submission sample is directionally consistent and statistically unremarkable. The argument in this report rests on
+  the mechanism and on the round-by-round verdict attribution, not on that ratio.</li>
+  <li><strong>I did not audit other workflows.</strong> Only No-Mistakes Review v13 and v14 enforce the policy, and only run
+  <code>55cdbfef</code> was traced end to end. Four other runs show the same goal-pollution signature but were not analysed
+  verdict by verdict.</li>
+  <li><strong>I did not check whether the operator override path was ever used.</strong>
+  <code>workflow_submission_readiness_overrides</code> exists and offers a documented escape hatch that nobody appears to
+  have reached for on this run; whether that is because it is hard to find or simply was not wanted, I do not know.</li>
+</ul>
+
+<footer>
+  <p>Scout report. Source data read from the live Mission Control state database read-only on 2026-09-08; run
+  <code>55cdbfef-e1e8-4bfa-b0ef-e84e90725fd3</code>, binding note <code>5d723104-a665-43e2-aee0-829d3749e636</code>,
+  No-Mistakes Review v14. Attached data: <a href="evidence.csv">evidence.csv</a>,
+  <a href="goal-overwrite.csv">goal-overwrite.csv</a>.</p>
+</footer>
+
+</main>
+</body>
+</html>

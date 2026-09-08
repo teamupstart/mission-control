@@ -215,4 +215,15 @@ test("workload requests require submission, workload, attempt, artifact, evidenc
   });
   assert.equal(result.success, true);
   assert.equal(PersonaWorkloadRequestSchema.safeParse({ ...(result.success ? result.data : {}), workflowAttemptId: undefined }).success, false);
+  const imageReference = {
+    id: "image-1",
+    mimeType: "image/png" as const,
+    bytes: 128,
+    sha256: "b".repeat(64),
+  };
+  assert.equal(PersonaWorkloadRequestSchema.safeParse({ ...(result.success ? result.data : {}), images: [imageReference] }).success, true);
+  assert.equal(PersonaWorkloadRequestSchema.safeParse({
+    ...(result.success ? result.data : {}),
+    images: [{ ...imageReference, path: "/tmp/caller-controlled.png" }],
+  }).success, false);
 });

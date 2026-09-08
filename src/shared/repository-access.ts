@@ -592,13 +592,13 @@ export const RepositoryEvidenceCompatibilityFloorSchema = z.object({
   preserveRepositoryEvidence: z.literal(true),
 }).strict();
 
-const WorkloadImageSchema = z.object({
+export const PersonaWorkloadImageReferenceSchema = z.object({
   id: OpaqueIdSchema,
-  path: z.string().min(1).max(4_096),
   mimeType: z.enum(RASTER_IMAGE_MIME_TYPES),
   bytes: z.number().int().positive(),
   sha256: Sha256Schema,
 }).strict();
+export type PersonaWorkloadImageReference = z.infer<typeof PersonaWorkloadImageReferenceSchema>;
 
 const TextEvidenceSchema = z.object({
   id: OpaqueIdSchema,
@@ -622,7 +622,7 @@ export const PersonaWorkloadRequestSchema = z.object({
   provider: z.enum(LLM_RUNNER_IDS),
   model: z.string().min(1).max(500),
   prompt: z.string().min(1).max(8 * 1024 * 1024),
-  images: z.array(WorkloadImageSchema).max(8),
+  images: z.array(PersonaWorkloadImageReferenceSchema).max(8),
   textEvidence: z.array(TextEvidenceSchema).max(128),
   artifactLocator: OpaqueIdSchema,
   artifactDigest: Sha256Schema,

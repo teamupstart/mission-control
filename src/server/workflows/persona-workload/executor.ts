@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   PersonaWorkloadEvent,
+  PersonaWorkloadImageReference,
   PersonaWorkloadReconciliation,
   PersonaWorkloadRequest,
   PersonaWorkloadResult,
@@ -18,8 +19,10 @@ import {
   RepositoryViewDescriptorSchema,
 } from "@shared/repository-access.ts";
 import { PersonaVerdictProviderWireSchema, PersonaVerdictSchema } from "@shared/protocol.ts";
-import { llmRunInputBytes } from "@shared/llm.ts";
+import { llmRunInputBytes, type LlmImageInput } from "@shared/llm.ts";
 import { providerJsonSchema } from "../../llm/json-schema.ts";
+import { validateLlmImages } from "../../llm/images.ts";
+import { scrubSecrets } from "../../security/scrub.ts";
 import { REPOSITORY_MCP_CONFIG_ENV } from "../../../repository-mcp/config.ts";
 import {
   PERSONA_WORKLOAD_ALLOWED_TOOLS,
@@ -63,6 +66,13 @@ export interface LocalPersonaWorkloadExecutorOptions {
   materializer: RepositoryArtifactMaterializer;
   providers: Record<"claude" | "codex", PersonaWorkloadProviderAdapter>;
   repositoryMcpEntrypoint: string;
+  imageResolver?: {
+    resolve(
+      submissionId: string,
+      images: readonly PersonaWorkloadImageReference[],
+      signal: AbortSignal,
+    ): Promise<readonly LlmImageInput[]>;
+  };
   nodeCommand?: string;
   now?: () => number;
   maxRetainedTerminalWorkloads?: number;
@@ -100,17 +110,20 @@ const DEFAULT_RETAINED_TERMINAL_WORKLOADS = 32;
 const TERMINAL_RECONCILIATION_MS = 100;
 
 function failureResult(
-  error: unknown,
+  _error: unknown,
   signal: AbortSignal,
   llmCall: PersonaLlmCall | null,
 ): PersonaWorkloadResult {
   const deadlineExceeded = signal.reason instanceof PersonaWorkloadDeadlineError;
-  const failure = deadlineExceeded ? signal.reason : error;
-  const message = failure instanceof Error ? failure.message : String(failure);
+  const message = deadlineExceeded
+    ? "Persona workload deadline exceeded"
+    : signal.aborted
+      ? "Persona workload cancelled"
+      : "Persona workload provider unavailable";
   return {
     kind: "failed",
     code: deadlineExceeded ? "deadline_exceeded" : signal.aborted ? "cancelled" : "provider_unavailable",
-    message: message.slice(0, 4_000) || "Persona workload failed",
+    message,
     retryable: true,
     llmCall,
   };
@@ -171,13 +184,53 @@ function providerLlmCall(
   request: PersonaWorkloadRequest,
   prompt: string,
   result: PersonaProviderResult,
+  images: readonly LlmImageInput[],
 ): PersonaLlmCall {
   return {
     callId: request.llmCall.callId,
-    inputBytes: llmRunInputBytes(prompt, request.images),
+    inputBytes: llmRunInputBytes(prompt, images),
     outputBytes: Buffer.byteLength(result.rawVerdict),
-    providerUsage: result.usage,
+    providerUsage: safeProviderUsage(result.usage),
   };
+}
+
+const PROVIDER_USAGE_FIELDS = new Set([
+  "input_tokens",
+  "output_tokens",
+  "cache_creation_input_tokens",
+  "cache_read_input_tokens",
+  "total_tokens",
+  "cached_input_tokens",
+  "reasoning_output_tokens",
+  "inputTokens",
+  "outputTokens",
+  "cachedInputTokens",
+  "reasoningOutputTokens",
+]);
+
+const IMAGE_FILE_EXTENSIONS: Record<LlmImageInput["mimeType"], string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
+function safeProviderUsage(usage: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!usage) return null;
+  const safe = Object.fromEntries(Object.entries(usage).filter(([name, value]) =>
+    PROVIDER_USAGE_FIELDS.has(name)
+    && typeof value === "number"
+    && Number.isFinite(value)
+    && value >= 0
+  ));
+  return Object.keys(safe).length > 0 ? safe : null;
+}
+
+function scrubProviderValue(value: unknown): unknown {
+  if (typeof value === "string") return scrubSecrets(value);
+  if (Array.isArray(value)) return value.map(scrubProviderValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, scrubProviderValue(child)]));
 }
 
 export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
@@ -282,6 +335,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
     let llmCall: PersonaLlmCall | null = null;
     let prompt: string | null = null;
     let providerOperation: Promise<PersonaProviderResult> | null = null;
+    let providerImages: readonly LlmImageInput[] = [];
     let providerSettled = false;
     let resourcesCleaned = false;
     const emittedAuditIds = new Set<string>();
@@ -319,6 +373,40 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
       workDir = await mkdtemp(join(tmpdir(), "mission-persona-workload-"));
       const providerCwd = join(workDir, "provider");
       await mkdir(providerCwd, { mode: 0o700 });
+      if (request.images.length > 0) {
+        if (!this.options.imageResolver) throw new Error("Persona workload image resolver is unavailable");
+        const resolvedImages = await settleBeforeAbort(
+          this.options.imageResolver.resolve(request.submissionId, request.images, state.controller.signal),
+          state.controller.signal,
+        );
+        const validatedImages = validateLlmImages(resolvedImages);
+        if (
+          validatedImages.length !== request.images.length
+          || validatedImages.some((image, index) => {
+            const reference = request.images[index];
+            return !reference
+              || image.id !== reference.id
+              || image.mimeType !== reference.mimeType
+              || image.bytes !== reference.bytes
+              || image.sha256 !== reference.sha256;
+          })
+        ) {
+          throw new Error("resolved workload images do not match the authorized references");
+        }
+        const imageDir = join(providerCwd, "images");
+        await mkdir(imageDir, { mode: 0o700 });
+        providerImages = await Promise.all(validatedImages.map(async (image, index) => {
+          const path = join(imageDir, `${index}.${IMAGE_FILE_EXTENSIONS[image.mimeType]}`);
+          await writeFile(path, image.data, { mode: 0o600, flag: "wx" });
+          return Object.freeze({
+            id: image.id,
+            path,
+            mimeType: image.mimeType,
+            bytes: image.bytes,
+            sha256: image.sha256,
+          });
+        }));
+      }
       auditPath = join(workDir, "repository-audit.jsonl");
       const configPath = join(workDir, "repository-mcp.json");
       await writeFile(auditPath, "", { mode: 0o600, flag: "wx" });
@@ -337,7 +425,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         model: request.model,
         workingDirectory: providerCwd,
         prompt,
-        images: request.images,
+        images: providerImages,
         outputSchema: providerJsonSchema(PersonaVerdictProviderWireSchema),
         deadline: request.deadline,
         budgets: request.budgets,
@@ -361,7 +449,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         providerOperation,
         state.controller.signal,
       );
-      llmCall = providerLlmCall(request, prompt, providerResult);
+      llmCall = providerLlmCall(request, prompt, providerResult, providerImages);
       if (state.controller.signal.aborted) {
         throw state.controller.signal.reason instanceof Error
           ? state.controller.signal.reason
@@ -381,9 +469,9 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         throw new Error("repository audit journal reused an operation-instance id");
       }
       this.emitNewAudits(state, audits, emittedAuditIds);
-      const providerVerdict = PersonaVerdictProviderWireSchema.parse(
+      const providerVerdict = PersonaVerdictProviderWireSchema.parse(scrubProviderValue(
         JSON.parse(providerResult.rawVerdict),
-      );
+      ));
       const verdict = PersonaVerdictSchema.parse(providerVerdict);
       if (state.controller.signal.aborted) {
         throw state.controller.signal.reason instanceof Error
@@ -404,7 +492,7 @@ export class LocalPersonaWorkloadExecutor implements PersonaWorkloadExecutor {
         && !(state.controller.signal.reason instanceof PersonaWorkloadDeadlineError)
       ) {
         const lateProviderResult = await settleDuringReconciliation(providerOperation);
-        if (lateProviderResult) llmCall = providerLlmCall(request, prompt, lateProviderResult);
+        if (lateProviderResult) llmCall = providerLlmCall(request, prompt, lateProviderResult, providerImages);
       }
       if (auditPath) {
         try {

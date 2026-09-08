@@ -442,7 +442,11 @@ test("Claude and Codex adapters propagate cancellation into their live provider 
   assert.ok(transport.sent.some((frame) => frame.method === "turn/interrupt"));
 });
 
-function request(provider: "claude" | "codex", descriptorDigest: string): PersonaWorkloadRequest {
+function request(
+  provider: "claude" | "codex",
+  descriptorDigest: string,
+  images: PersonaWorkloadRequest["images"] = [],
+): PersonaWorkloadRequest {
   return {
     schemaVersion: 1,
     workloadId: `workload-${provider}`,
@@ -453,7 +457,7 @@ function request(provider: "claude" | "codex", descriptorDigest: string): Person
     provider,
     model: "test-model",
     prompt: "Review",
-    images: [],
+    images,
     textEvidence: [{ id: "text-1", kind: "submission", text: "daemon-owned evidence", sha256: "b".repeat(64) }],
     artifactLocator: "fixture-artifact",
     artifactDigest: descriptorDigest,
@@ -520,6 +524,9 @@ async function pathExists(path: string): Promise<boolean> {
 
 test("local Claude and Codex workloads preserve identical line, byte, diff, evidence, and call-accounting contracts", async () => {
   const fixture = repositoryViewFixture();
+  const sourceImage = writeImageDescriptor(fixture.root, "submission.png", PNG_IMAGE, "image/png", "submission-image");
+  const { path: _sourcePath, ...imageReference } = sourceImage;
+  const leakedToken = `github_pat_${"A".repeat(24)}`;
   const launches: PersonaProviderLaunch[] = [];
   const materializations: unknown[] = [];
   const ranges: RepositoryEvidenceRange[] = [
@@ -531,6 +538,10 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
     id,
     async run(value) {
       launches.push(value);
+      assert.equal(value.images.length, 1);
+      assert.notEqual(value.images[0]!.path, sourceImage.path);
+      assert.equal(value.images[0]!.path.startsWith(`${value.workingDirectory}/images/`), true);
+      assert.deepEqual(await readFile(value.images[0]!.path), PNG_IMAGE);
       const configPath = value.repositoryMcp.env.MISSION_REPOSITORY_MCP_CONFIG!;
       const config = JSON.parse(await readFile(configPath, "utf8")) as { auditPath: string; descriptor: { snapshotDigest: string }; workloadId: string; workflowAttemptId: string };
       for (const [index, range] of ranges.entries()) {
@@ -540,7 +551,15 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
         row.handles[0]!.workflowAttemptId = config.workflowAttemptId;
         await appendFile(config.auditPath, `${JSON.stringify(row)}\n`);
       }
-      return { rawVerdict: JSON.stringify(verdict), usage: { inputTokens: 5 }, repositoryToolCalls: ["mcp__repository__read", "mcp__repository__read", "mcp__repository__git_diff"] };
+      return {
+        rawVerdict: JSON.stringify({
+          ...verdict,
+          summary: `The workload completed with ${leakedToken}`,
+          approvalDetails: { ...verdict.approvalDetails, reason: `Evidence is consistent with ${leakedToken}` },
+        }),
+        usage: { inputTokens: 5, diagnostic: leakedToken },
+        repositoryToolCalls: ["mcp__repository__read", "mcp__repository__read", "mcp__repository__git_diff"],
+      };
     },
   });
   const executor = new LocalPersonaWorkloadExecutor({
@@ -552,11 +571,18 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
     },
     providers: { claude: provider("claude"), codex: provider("codex") },
     repositoryMcpEntrypoint: "/tmp/repository-mcp.mjs",
+    imageResolver: {
+      async resolve(submissionId, images) {
+        assert.ok(submissionId.startsWith("submission-"));
+        assert.deepEqual(images, [imageReference]);
+        return [sourceImage];
+      },
+    },
   });
   try {
     const collect = async (providerId: "claude" | "codex") => {
       const events: PersonaWorkloadEvent[] = [];
-      for await (const event of executor.dispatch(request(providerId, fixture.descriptor.snapshotDigest), new AbortController().signal)) events.push(event);
+      for await (const event of executor.dispatch(request(providerId, fixture.descriptor.snapshotDigest, [imageReference]), new AbortController().signal)) events.push(event);
       return events;
     };
     const claude = await collect("claude");
@@ -587,7 +613,12 @@ test("local Claude and Codex workloads preserve identical line, byte, diff, evid
       assert.equal(terminal?.kind, "completed");
       if (terminal?.kind === "completed") {
         assert.equal(terminal.result.kind, "succeeded");
-        if (terminal.result.kind === "succeeded") assert.ok(terminal.result.llmCall.inputBytes > 0);
+        if (terminal.result.kind === "succeeded") {
+          assert.ok(terminal.result.llmCall.inputBytes > 0);
+          assert.equal(terminal.result.llmCall.providerUsage?.diagnostic, undefined);
+          assert.doesNotMatch(JSON.stringify(terminal.result.verdict), /github_pat_/);
+          assert.match(JSON.stringify(terminal.result.verdict), /\[redacted\]/);
+        }
       }
     }
     for (const providerId of ["claude", "codex"] as const) {
@@ -793,7 +824,7 @@ test("a provider result arriving after cancellation preserves only audit and cal
       if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       return {
         rawVerdict: JSON.stringify(verdict),
-        usage: { inputTokens: 5, outputTokens: 3 },
+        usage: { inputTokens: 5, outputTokens: 3, diagnostic: `github_pat_${"B".repeat(24)}` },
         repositoryToolCalls: ["mcp__repository__read", "mcp__repository__git_diff"],
       };
     },
@@ -818,6 +849,7 @@ test("a provider result arriving after cancellation preserves only audit and cal
       assert.equal(completed.result.kind, "failed");
       assert.equal(completed.result.kind === "failed" ? completed.result.code : null, "cancelled");
       assert.equal(completed.result.llmCall?.providerUsage?.outputTokens, 3);
+      assert.equal(completed.result.llmCall?.providerUsage?.diagnostic, undefined);
     }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -831,7 +863,7 @@ test("the local executor retains only a bounded terminal reconciliation window",
     id: "claude",
     async run() {
       providerRuns += 1;
-      throw new Error("synthetic provider failure");
+      throw new Error(`synthetic provider failure github_pat_${"C".repeat(24)}`);
     },
   };
   const executor = new LocalPersonaWorkloadExecutor({
@@ -849,10 +881,16 @@ test("the local executor retains only a bounded terminal reconciliation window",
     const first = { ...request("claude", fixture.descriptor.snapshotDigest), workloadId: "workload-first", idempotencyKey: "key-first" };
     const second = { ...request("claude", fixture.descriptor.snapshotDigest), workloadId: "workload-second", idempotencyKey: "key-second" };
     await collect(first);
-    await collect(second);
+    const secondEvents = await collect(second);
 
     assert.equal((await executor.reconcile(first.workloadId, 0)).state, "unknown");
     assert.equal((await executor.reconcile(second.workloadId, 0)).state, "completed");
+    const completed = secondEvents.at(-1);
+    assert.equal(completed?.kind, "completed");
+    if (completed?.kind === "completed" && completed.result.kind === "failed") {
+      assert.equal(completed.result.message, "Persona workload provider unavailable");
+      assert.doesNotMatch(completed.result.message, /github_pat_/);
+    }
     const replay = await collect(second);
     assert.equal(replay.at(-1)?.kind, "completed");
     assert.equal(providerRuns, 2);

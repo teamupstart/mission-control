@@ -96,9 +96,17 @@ function createScript(script: string): void {
 }
 
 async function openDispatch(page: Page) {
+  // Arm the wait BEFORE the click: `DispatchModal` fires `fetchEnvironmentChecks()` on mount,
+  // and every absence assertion below is on a note that only exists once that answer lands.
+  // Waiting on dialog visibility alone lets `toBeHidden()` pass against a form whose check is
+  // still in flight, which is a green assertion that proves nothing - the note would be absent
+  // either way. Settling the response first is what makes "no note" mean "the daemon said
+  // there is nothing to warn about".
+  const settled = page.waitForResponse((res) => res.url().includes("/api/environment/checks"));
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
+  await settled;
   return dialog;
 }
 

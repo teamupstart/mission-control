@@ -233,6 +233,35 @@ test("an entry under an event this build no longer installs is still counted", a
   assert.match(view.warning ?? "", /1 hook event\b/);
 });
 
+// jsonc-parser hands back a best-effort value for malformed input. A file that does not parse
+// is one Claude Code cannot apply either, so a path recovered from it names a bridge that is
+// not running: warning would accuse the operator of a dead hook when their problem is broken
+// JSON. Comments and trailing commas are NOT malformed and must still be read.
+test("a settings file with real parse errors is refused, even when a dead path is recoverable", async () => {
+  const dead = `"/opt/homebrew/bin/node" "${STALE}" Stop`;
+  const broken = `{ "hooks": { "Stop": [ { "hooks": [ { "command": ${JSON.stringify(dead)} } ] } ] }, oops }`;
+  const view = await hookCheck({ [SETTINGS]: text(broken) });
+  assert.equal(view.warning, null, view.warning ?? "");
+
+  // The tolerated shapes still work, so this did not become a strict JSON parser.
+  const jsonc = `{
+    // a comment the operator left
+    "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": ${JSON.stringify(dead)} } ] } ] },
+  }`;
+  const ok = await hookCheck({ [SETTINGS]: text(jsonc) });
+  assert.ok(ok.warning?.includes(STALE), ok.warning ?? "");
+});
+
+// The one case where parse errors are OURS rather than the operator's: the read stopped at its
+// bound, so the tail is unterminated by construction. Refusing here would mean a settings file
+// larger than the bound could never be checked at all.
+test("a truncated read still reports, because its parse errors are the reader's own", async () => {
+  const dead = `"/opt/homebrew/bin/node" "${STALE}" Stop`;
+  const cut = `{ "hooks": { "Stop": [ { "hooks": [ { "command": ${JSON.stringify(dead)} } ] } ] }`;
+  const view = await hookCheck({ [SETTINGS]: text(cut, true) });
+  assert.ok(view.warning?.includes(STALE), view.warning ?? "");
+});
+
 test("a settings file it cannot make sense of produces silence, not an accusation", async () => {
   for (const body of ["", "not json at all", "[]", JSON.stringify({ hooks: "yes" })]) {
     const view = await hookCheck({ [SETTINGS]: text(body) });

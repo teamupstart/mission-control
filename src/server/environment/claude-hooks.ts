@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { parse } from "jsonc-parser";
+import { parse, type ParseError } from "jsonc-parser";
 
 import { ENVIRONMENT_CHECK_INFO } from "@shared/environment-checks.ts";
 
@@ -157,13 +157,21 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
     // warning this check has not earned.
     if (!read.ok) return { warning: null, detail: null };
 
-    // A truncated read is processed rather than abandoned, unlike a check that measures a
-    // file's size. Every finding below requires a complete absolute path ending in one of
-    // our own script names, and a cut-off string cannot fabricate one: truncation can only
-    // remove entries from this walk, never invent one. So the worst a huge settings file
-    // costs is a stale entry going unreported, which is where this check already sits for
-    // everything it cannot parse.
-    const settings = parse(read.text, [], { allowTrailingComma: true });
+    // jsonc-parser is fault-tolerant by contract: it returns a best-effort value AND fills
+    // `errors`, so passing `[]` and ignoring it means reading a reconstruction of a file that
+    // was never validated. That matters here beyond tidiness. A settings file that does not
+    // parse is one Claude Code cannot apply either, so a hook path salvaged from the wreckage
+    // names a bridge that is not running - and this check would be accusing the operator of a
+    // dead path when their real problem is broken JSON.
+    //
+    // Truncation is the one exception, and has to be, or a settings file larger than the read
+    // bound could never be checked at all: an unterminated tail always parses with errors, and
+    // those errors are OURS - we cut the file - not the operator's. Findings from a partial
+    // read stay sound because each one needs a complete quoted absolute path ending in a known
+    // script name, which truncation can remove but cannot fabricate.
+    const errors: ParseError[] = [];
+    const settings = parse(read.text, errors, { allowTrailingComma: true });
+    if (errors.length > 0 && !read.truncated) return { warning: null, detail: null };
 
     const missing: { script: string; events: number }[] = [];
     for (const [script, events] of scriptsInUse(settings)) {

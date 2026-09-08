@@ -819,6 +819,10 @@ export function ConsoleDetail({
               onCommentInFiles={view.onCommentInFiles
                 ? (path) => view.onCommentInFiles?.(session.id, path)
                 : undefined}
+              // `onOpenFilePath`, not `onOpenFile`: the card holds an exact checkout-relative
+              // path, and the prose handler would read a trailing `:12` in a filename as a
+              // line number. The same call the diff viewer's "Open in Files" makes.
+              onViewInFiles={(path) => view.onOpenFilePath(session.id, path)}
               files={view.files}
               registerFind={view.registerFind}
               resetNonce={view.resetNonces[session.id] ?? 0}

@@ -232,6 +232,76 @@ test("an HTML artifact is previewed inline and hands commenting to Files", async
   await expect(restoredCard.getByRole("button", { name: `Comment on ${REPORT} in Files` })).toBeVisible();
 });
 
+/**
+ * View and Comment are two buttons because they were one, and that one conflated two asks.
+ *
+ * The card previews the report in a 420px frame. The only way out of it was "Comment in
+ * Files", so an operator who simply wanted to READ the thing at full size had to arm comment
+ * mode to get there and then turn it off - and the arming is not cosmetic, it changes what a
+ * click inside the rendered document does.
+ *
+ * The distinguishing claim is the LAST one, and it is why both buttons are exercised in one
+ * test rather than two: each lands on the same file in the same Preview, and the only
+ * difference between them is the state of a control on the other side of the app. Two
+ * separate tests would each pass with both buttons wired to the same handler.
+ */
+test("View opens the artifact in Files without arming comment mode", async ({
+  dashboard: page,
+  daemon,
+}) => {
+  await dispatch(page, daemon);
+  const live = await session(daemon);
+  write(live.cwd, REPORT, REPORT_SOURCE);
+  write(live.cwd, CSS, "#finding { font-weight: 700; }\n");
+  await inject(daemon, live.id, REPORT_TURN);
+  await setPresentation(page, daemon, "console", "chat");
+
+  const sessions = page.getByRole("navigation", { name: "Sessions" });
+  await sessions.getByRole("button", { name: /Prepare an HTML Artifact Preview/i }).click();
+  const card = artifactCard(page);
+  await expect(card).toBeVisible();
+
+  // The faces are the bare verbs; the accessible names carry the path. Asserted because the
+  // labels are what an operator scans, and a card that read "Comment in Files / View in
+  // Files" would be back to naming the destination twice.
+  await expect(card.getByRole("button", { name: `Comment on ${REPORT} in Files` }))
+    .toHaveText("Comment");
+  const view = card.getByRole("button", { name: `View ${REPORT} in Files` });
+  await expect(view).toHaveText("View");
+
+  await view.click();
+
+  const tabs = page.getByRole("tablist", { name: "Session detail" });
+  await expect(tabs.getByRole("tab", { name: /Files$/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("option", { name: REPORT })).toHaveAttribute("aria-selected", "true");
+  // Preview, not the editor. An `.html` report opening as source would be the whole feature
+  // failing quietly - the file is still "open", just not readable.
+  await expect(page.getByRole("button", { name: "Preview", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  // The rendered document is really there, not just a selected row in the file list.
+  await expect(page.frameLocator("iframe.html-preview").getByRole("heading", {
+    name: "Conversation artifact",
+  })).toBeVisible();
+
+  const commentMode = page.getByRole("button", { name: "Comment mode" });
+  await expect(commentMode).toHaveAttribute("aria-pressed", "false");
+
+  // The same card, the other button, the same destination - and now the mode is armed. This
+  // is the assertion that cannot be satisfied by wiring both buttons to one handler.
+  await tabs.getByRole("tab", { name: /Conversation$/ }).click();
+  await artifactCard(page).getByRole("button", { name: `Comment on ${REPORT} in Files` }).click();
+  await expect(commentMode).toHaveAttribute("aria-pressed", "true");
+
+  // And back: View does not DISARM what Comment armed, because it says nothing about comment
+  // mode at all. An operator who armed it deliberately keeps it.
+  await tabs.getByRole("tab", { name: /Conversation$/ }).click();
+  await artifactCard(page).getByRole("button", { name: `View ${REPORT} in Files` }).click();
+  await expect(page.getByRole("option", { name: REPORT })).toHaveAttribute("aria-selected", "true");
+  await expect(commentMode).toHaveAttribute("aria-pressed", "true");
+});
+
 test("a rejected preview read becomes retryable instead of loading forever", async ({
   dashboard: page,
   daemon,
@@ -302,6 +372,17 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   }));
   expect(nameWidths.scrollWidth).toBeGreaterThan(nameWidths.clientWidth);
   await expect(card.locator(".artifact-dir")).not.toHaveCSS("width", "0px");
+  // Three actions now, not two. The header wraps rather than clipping, so every one of them
+  // stays inside the card - measured, because a button pushed past the right edge is exactly
+  // what a markup assertion cannot see.
+  const cardBox = (await card.boundingBox())!;
+  for (const label of ["Refresh preview of", "Comment on", "View"]) {
+    const button = card.getByRole("button", { name: new RegExp(`^${label} `) });
+    await expect(button).toBeVisible();
+    const box = (await button.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(cardBox.x);
+    expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5);
+  }
   await capture(page, card, "board-narrow.png");
 });
 

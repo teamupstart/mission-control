@@ -198,19 +198,23 @@ test("the artifact header keeps the disclosure, size, and actions as sibling con
     artifacts: [{ path: REPORT }],
     onOpenFile: () => true,
     onCommentInFiles: () => {},
+    onViewInFiles: () => {},
   }));
   const header = html.match(/<header class="artifact-head">([\s\S]*?)<\/header>/)?.[1] ?? "";
-  assert.equal((header.match(/<button/g) ?? []).length, 3);
+  assert.equal((header.match(/<button/g) ?? []).length, 4);
   const disclosure = header.match(/<button[^>]*artifact-disclose[\s\S]*?<\/button>/)?.[0] ?? "";
   assert.equal((disclosure.match(/<button/g) ?? []).length, 1, "no button is nested in the disclosure");
   const disclosureAt = header.indexOf("artifact-disclose");
   const sizeAt = header.indexOf("artifact-size");
   const refreshAt = header.indexOf(`aria-label="Refresh preview of ${REPORT}"`);
   const commentAt = header.indexOf(`aria-label="Comment on ${REPORT} in Files"`);
+  const viewAt = header.indexOf(`aria-label="View ${REPORT} in Files"`);
   assert.ok(disclosureAt < sizeAt && sizeAt < refreshAt && refreshAt < commentAt);
+  assert.ok(commentAt < viewAt, "Comment precedes View");
   assert.match(html, /aria-label="Preview of docs\/reports\/x\/report\.html"/);
   assert.match(html, /aria-label="Refresh preview of docs\/reports\/x\/report\.html"/);
   assert.match(html, /aria-label="Comment on docs\/reports\/x\/report\.html in Files"/);
+  assert.match(html, /aria-label="View docs\/reports\/x\/report\.html in Files"/);
   const controlled = html.match(/aria-controls="([^"]+)"/)?.[1];
   assert.ok(controlled);
   assert.match(html, new RegExp(`id="${controlled}"`));
@@ -222,4 +226,50 @@ test("the artifact header keeps the disclosure, size, and actions as sibling con
   }));
   assert.doesNotMatch(withoutCommentHandler, /Comment in Files/);
   assert.doesNotMatch(withoutCommentHandler, /aria-label="Comment on .* in Files"/);
+});
+
+test("each action renders only for the handler it needs, so neither implies the other", () => {
+  // The two are independent props on purpose. A surface that can open Files but has no
+  // comment path - and the reverse - must draw exactly the control it can honour, or the
+  // card offers a button that silently does nothing.
+  resetArtifactState();
+  const viewOnly = renderToStaticMarkup(createElement(ConversationArtifacts, {
+    sessionId: "s1",
+    artifacts: [{ path: REPORT }],
+    onViewInFiles: () => {},
+  }));
+  assert.match(viewOnly, new RegExp(`aria-label="View ${REPORT} in Files"`));
+  assert.doesNotMatch(viewOnly, /aria-label="Comment on /);
+
+  const commentOnly = renderToStaticMarkup(createElement(ConversationArtifacts, {
+    sessionId: "s1",
+    artifacts: [{ path: REPORT }],
+    onCommentInFiles: () => {},
+  }));
+  assert.match(commentOnly, new RegExp(`aria-label="Comment on ${REPORT} in Files"`));
+  assert.doesNotMatch(commentOnly, /aria-label="View /);
+});
+
+test("the visible labels are the bare verbs, and the paths live on the accessible names", () => {
+  // Two artifacts in one turn, which is what makes the split necessary: the faces read
+  // "Comment" and "View" four times over, so the only thing telling an operator's screen
+  // reader WHICH report each one acts on is the aria-label.
+  resetArtifactState();
+  const other = "docs/reports/y/report.html";
+  const html = renderToStaticMarkup(createElement(ConversationArtifacts, {
+    sessionId: "s1",
+    artifacts: [{ path: REPORT }, { path: other }],
+    onCommentInFiles: () => {},
+    onViewInFiles: () => {},
+  }));
+
+  assert.equal((html.match(/>Comment</g) ?? []).length, 2);
+  assert.equal((html.match(/>View</g) ?? []).length, 2);
+  // The old label is gone: it named the destination twice and left no room for a second
+  // action that goes to the same place.
+  assert.doesNotMatch(html, />Comment in Files</);
+  for (const p of [REPORT, other]) {
+    assert.match(html, new RegExp(`aria-label="Comment on ${p.replaceAll("/", "\\/")} in Files"`));
+    assert.match(html, new RegExp(`aria-label="View ${p.replaceAll("/", "\\/")} in Files"`));
+  }
 });

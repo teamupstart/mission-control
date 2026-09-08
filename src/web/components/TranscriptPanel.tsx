@@ -173,6 +173,7 @@ export function TranscriptPanel({
   onReplyBox,
   onOpenFile,
   onCommentInFiles,
+  onViewInFiles,
   files,
   registerFind,
   resetNonce = 0,
@@ -239,6 +240,8 @@ export function TranscriptPanel({
   onOpenFile?: WorkspaceLinkHandler;
   /** Open one presented artifact in Files with comment mode armed. */
   onCommentInFiles?: (path: string) => void;
+  /** Open one presented artifact in Files, in Preview, with nothing armed. */
+  onViewInFiles?: (path: string) => void;
   /**
    * The session files store, for the checkout listing that decides which bare paths in
    * the prose are real files. Only ever read through `useWorkspacePaths` below - this
@@ -276,6 +279,15 @@ export function TranscriptPanel({
     [],
   );
   const commentHandler = onCommentInFiles ? commentInFiles : undefined;
+  // Held through a ref for `openFile`'s reason: the turn list is memoised on its handlers, and
+  // a fresh closure per render would rebuild every row whenever the detail re-rendered.
+  const viewInFilesRef = useRef(onViewInFiles);
+  viewInFilesRef.current = onViewInFiles;
+  const viewInFiles = useCallback(
+    (path: string) => viewInFilesRef.current?.(path),
+    [],
+  );
+  const viewHandler = onViewInFiles ? viewInFiles : undefined;
   // Hydrated from the history map rather than starting empty, so re-opening a session
   // you had scrolled back through shows that scroll-back immediately instead of blanking
   // to the stream's tail and making you find your place again.
@@ -978,6 +990,7 @@ export function TranscriptPanel({
                   fullCwd={session.cwd}
                   onOpenFile={linkHandler}
                   onCommentInFiles={commentHandler}
+                  onViewInFiles={viewHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                   flashed={row.id === flashedTurnId}
@@ -990,6 +1003,7 @@ export function TranscriptPanel({
                   agentLabel={agentLabel}
                   onOpenFile={linkHandler}
                   onCommentInFiles={commentHandler}
+                  onViewInFiles={viewHandler}
                   filePaths={filePaths}
                   find={findFor(hits, row.id, find?.query ?? "", currentKey)}
                   flashed={row.id === flashedTurnId}
@@ -1503,6 +1517,7 @@ function Turn({
   agentLabel,
   onOpenFile,
   onCommentInFiles,
+  onViewInFiles,
   filePaths,
   find,
   flashed,
@@ -1512,6 +1527,7 @@ function Turn({
   agentLabel: string;
   onOpenFile?: WorkspaceLinkHandler;
   onCommentInFiles?: (path: string) => void;
+  onViewInFiles?: (path: string) => void;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
   /** The "Yours" rail just jumped here, so say so briefly. */
@@ -1589,6 +1605,7 @@ function Turn({
         artifacts={artifacts}
         onOpenFile={onOpenFile}
         onCommentInFiles={onCommentInFiles}
+        onViewInFiles={onViewInFiles}
       />
     </article>
   );
@@ -1675,6 +1692,7 @@ function TerminalTurn({
   fullCwd,
   onOpenFile,
   onCommentInFiles,
+  onViewInFiles,
   filePaths,
   find,
   flashed,
@@ -1688,6 +1706,7 @@ function TerminalTurn({
   fullCwd: string | null;
   onOpenFile?: WorkspaceLinkHandler;
   onCommentInFiles?: (path: string) => void;
+  onViewInFiles?: (path: string) => void;
   filePaths?: ReadonlySet<string> | null;
   find?: RowFind | null;
   /** The "Yours" rail just jumped here, so say so briefly. */
@@ -1759,6 +1778,7 @@ function TerminalTurn({
           artifacts={artifacts}
           onOpenFile={onOpenFile}
           onCommentInFiles={onCommentInFiles}
+          onViewInFiles={onViewInFiles}
         />
       </article>
     );
@@ -1800,6 +1820,7 @@ function TerminalTurn({
         artifacts={artifacts}
         onOpenFile={onOpenFile}
         onCommentInFiles={onCommentInFiles}
+        onViewInFiles={onViewInFiles}
       />
     </article>
   );

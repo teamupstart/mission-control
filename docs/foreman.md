@@ -485,9 +485,18 @@ Pick the posture with the **Cheap tier** control in **Settings → Foreman**:
 
 | Cheap tier | What it does |
 |------|--------------|
-| **shadow** (default) | runs the cheap tier *alongside* the full review, acts on the **full review**, and **records** every divergence - so its accuracy is measured before you trust it |
-| **on** | the cheap tier disposes the easy cases; the full review fires only on route-up |
+| **on** (default) | the cheap tier disposes the easy cases; the full review fires only on route-up |
+| **shadow** | runs the cheap tier *alongside* the full review, acts on the **full review**, and **records** every divergence - so its accuracy is measured before you trust it |
 | **off** | every new prompt gets a full review (the pre-tier behavior) |
+
+**on** ships as the default because **shadow** is the measurement posture, and a default is
+the wrong place for one: it is the most expensive of the three - two concurrent model calls
+per decision, one of which cannot act by construction - and it only pays for itself if you
+come back and read the divergence column. Pick **shadow** when you want that number for your
+own fleet; the safety envelope is the same either way, because a cheap-tier answer passes
+through the same mode + allowlist + auto-approve gate the full reviewer's answers do. An
+install that already has a posture saved keeps it - this default is read only where nobody
+ever chose.
 
 **Shadow's measurement is in the panel**, in the decisions ledger's *Cheap tier* column.
 The panel shows that column only while **shadow** is selected, because that is the only

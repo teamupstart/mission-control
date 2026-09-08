@@ -26,13 +26,17 @@ const client = new ForemanClient();
 test("getConfig applies the schema's defaults to a key an older daemon doesn't serve", async () => {
   // The worker is started separately from the daemon (`npm run foreman`), so a new worker
   // against a pre-triage daemon is an ordinary upgrade-window state. Parsing at the edge is
-  // what turns that into the documented `shadow` default rather than an absent value that the
+  // what turns that into the documented `on` default rather than an absent value that the
   // tier dispatch has to guess about.
+  //
+  // Asserted against the enum member and not against `ForemanConfigSchema.parse({}).triage`,
+  // which would restate the schema to itself and keep passing through any future flip. This
+  // is the layer that decides what a real worker runs on an upgrade, so it names the posture.
   const cfg = await withDaemon(
     { enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true },
     () => client.getConfig(),
   );
-  assert.equal(cfg.triage, "shadow");
+  assert.equal(cfg.triage, "on");
   assert.equal(cfg.mode, "live");
   assert.equal(cfg.enabled, true);
 });

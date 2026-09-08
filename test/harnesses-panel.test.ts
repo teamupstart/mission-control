@@ -311,6 +311,13 @@ test("a fresh card shows the shipped runtime defaults", () => {
   assert.match(html, /They run inside Mission Control on the Agent SDK/);
 });
 
+test("the runtime select recommends the Agent SDK by name, and only it", () => {
+  const html = render({});
+
+  assert.match(html, /<option value="sdk" selected="">Agent SDK \(recommended\)<\/option>/);
+  assert.match(html, /<option value="terminal">Terminal pane<\/option>/);
+});
+
 test("a card describes a terminal choice when an operator selects it", () => {
   const html = render({ sessionRuntime: { claude: "terminal" } });
   assert.match(html, /<option value="terminal" selected/);

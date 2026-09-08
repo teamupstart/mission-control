@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Attachment } from "@shared/attachments.ts";
 import { uploadImage } from "../lib/api.ts";
+import { captureFocusBookmark, restoreFocusBookmark } from "../tour/focus-containment.ts";
+import type { FocusBookmark } from "../tour/focus-containment.ts";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 /**
@@ -270,40 +273,182 @@ export function AttachmentStrip({
   onRemove: (id: string) => void;
   removeContext?: string;
 }): React.JSX.Element | null {
+  /**
+   * Which chip is being previewed, held BY ID rather than as the attachment itself.
+   *
+   * The list is the owner's, and it changes underneath this component: an upload settles,
+   * a chip is removed, a whole draft is discarded. Holding the object would keep a preview
+   * open over an attachment that no longer exists - and worse, over a `previewUrl` the
+   * owner has already handed to `revokeAttachments`, which paints as a broken image inside
+   * a dialog claiming to show the file. Resolving the id against the CURRENT list every
+   * render means the preview simply stops existing when its attachment does, with no
+   * effect to keep the two in step.
+   *
+   * Defensive rather than a path a pointer can walk: while the dialog is up its backdrop
+   * covers the ✕ that would remove the chip. What it guards is the owner mutating the list
+   * from anywhere else - a draft discarded, a queue item submitted, an upload settling -
+   * none of which asks this component's permission.
+   */
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const returnFocus = useRef<FocusBookmark | null>(null);
+  const preview = attachments.find((a) => a.id === previewId) ?? null;
+
+  const open = useCallback((id: string): void => {
+    // Whatever had focus when the preview was asked for, so closing puts it back - in
+    // practice the chip itself, which both routes in focus before they fire: a pointer
+    // press focuses the button, and the keyboard route requires it already. Without this
+    // the dialog takes focus for its close button and hands it to nothing on the way out,
+    // dropping a keyboard user back at the top of the document with a half-written
+    // dispatch several dozen tab stops away.
+    returnFocus.current = captureFocusBookmark(document.activeElement);
+    setPreviewId(id);
+  }, []);
+  const close = useCallback((): void => {
+    setPreviewId(null);
+    const bookmark = returnFocus.current;
+    returnFocus.current = null;
+    if (bookmark) restoreFocusBookmark(bookmark);
+  }, []);
+
   if (attachments.length === 0) return null;
   return (
-    <ul className="attach-strip">
-      {attachments.map((a) => (
-        <li key={a.id} className={`attach-chip is-${a.status}`}>
-          {a.status === "error" ? (
-            // No thumbnail on a rejected drop. The file that failed is usually one
-            // the browser can't paint either, so an <img> here renders as a broken-
-            // image icon - which reads as "the chip is broken" rather than "the file
-            // was refused", right next to the sentence explaining the refusal.
-            <span className="attach-warn" aria-hidden="true">
-              !
-            </span>
-          ) : (
-            <img className="attach-thumb" src={a.previewUrl} alt="" />
-          )}
-          {/* The tooltip goes on the truncated text, NOT on the chip: the chip contains
-              the remove button, and a tooltip wrapping both would put two bubbles on
-              screen the moment you reached for the ✕. */}
-          <Tooltip label={a.status === "error" ? (a.error ?? a.name) : a.name}>
-            <span className="attach-name">{a.status === "error" ? a.error : a.name}</span>
-          </Tooltip>
-          <Tooltip label={`Remove ${a.name} from ${removeContext}`}>
-            <button
-              type="button"
-              className="attach-remove"
-              aria-label={`Remove ${a.name}`}
-              onClick={() => onRemove(a.id)}
-            >
-              ✕
-            </button>
-          </Tooltip>
-        </li>
-      ))}
-    </ul>
+    // A fragment, so the dialog is a SIBLING of the list rather than a child of it. `<ul>`
+    // may contain only `<li>`, `<script>` and `<template>`; an `Overlay`'s root div inside
+    // one is invalid, and assistive technology walking the list would meet the dialog as
+    // list content - announced as another attachment, in a strip whose length is how a
+    // person checks what they attached.
+    <>
+      <ul className="attach-strip">
+        {attachments.map((a) => (
+          <li key={a.id} className={`attach-chip is-${a.status}`}>
+            {a.status === "error" ? (
+              <>
+                {/* No thumbnail on a rejected drop. The file that failed is usually one
+                    the browser can't paint either, so an <img> here renders as a broken-
+                    image icon - which reads as "the chip is broken" rather than "the file
+                    was refused", right next to the sentence explaining the refusal.
+
+                    No preview control either, for the same reason: there is nothing to
+                    show, and a dialog that opened on a broken image would be the same lie
+                    in a larger frame. */}
+                <span className="attach-warn" aria-hidden="true">
+                  !
+                </span>
+                {/* The tooltip goes on the truncated text, NOT on the chip: the chip contains
+                    the remove button, and a tooltip wrapping both would put two bubbles on
+                    screen the moment you reached for the ✕. */}
+                <Tooltip label={a.error ?? a.name}>
+                  <span className="attach-name">{a.error}</span>
+                </Tooltip>
+              </>
+            ) : (
+              /* The thumbnail and the filename together are the preview control, so the
+                 gesture works anywhere on the chip except the ✕ - which removes on its
+                 first click, and so can never be double-clicked into a preview of a file
+                 that is already gone.
+
+                 A real <button>, not a div with a handler: this is the whole keyboard and
+                 assistive-technology route to a feature whose stated gesture is
+                 mouse-only, and its accessible name is what an e2e spec selects by.
+
+                 Its tooltip still leads with the full filename, which is why the name span
+                 carried one - the chip truncates at 220px - and adds the gesture, which is
+                 otherwise undiscoverable. */
+              <Tooltip label={`${a.name} - double-click to preview`}>
+                <button
+                  type="button"
+                  className="attach-open"
+                  aria-label={`Preview ${a.name}`}
+                  // Double-click for the pointer, exactly as asked, and NOT a plain click.
+                  // A single-click handler here would break the requested gesture outright:
+                  // click one opens the dialog, and click two then lands on the backdrop that
+                  // has just appeared under the cursor, which closes it again.
+                  onDoubleClick={() => open(a.id)}
+                  // `detail === 0` is a click no pointer produced - Enter or Space on the
+                  // focused button, or a screen reader's synthesised activation. Those have
+                  // no second click to strand, so they open on the first.
+                  onClick={(e) => {
+                    if (e.detail === 0) open(a.id);
+                  }}
+                >
+                  <img className="attach-thumb" src={a.previewUrl} alt="" />
+                  <span className="attach-name">{a.name}</span>
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label={`Remove ${a.name} from ${removeContext}`}>
+              <button
+                type="button"
+                className="attach-remove"
+                aria-label={`Remove ${a.name}`}
+                onClick={() => onRemove(a.id)}
+              >
+                ✕
+              </button>
+            </Tooltip>
+          </li>
+        ))}
+      </ul>
+      {preview && <AttachmentPreview attachment={preview} onClose={close} />}
+    </>
+  );
+}
+
+/**
+ * One attached image at readable size.
+ *
+ * Rendered from the strip rather than hoisted to a screen, because the strip is the only
+ * thing that knows the list is still alive: five surfaces render chips, and each would
+ * otherwise need its own copy of this dialog and its own answer to "what happens when the
+ * attachment is removed while it is open".
+ *
+ * The image is the local `previewUrl` - the same blob the chip paints - not a fetch of the
+ * uploaded copy. It is already decoded and in memory, it is right even while the upload is
+ * still in flight or has failed, and it means opening a preview costs no request.
+ *
+ * Escape and the ✕ both close, and so does the backdrop, which comes free with `Overlay`
+ * and is the third thing a person tries. Escape closes THIS layer only: the strip is
+ * usually inside another overlay - the dispatch modal, the product-issue modal - and the
+ * registry hands the key to the topmost, so a preview opened over a half-written dispatch
+ * closes without taking the dispatch with it.
+ */
+function AttachmentPreview({
+  attachment,
+  onClose,
+}: {
+  attachment: PendingAttachment;
+  onClose: () => void;
+}): React.JSX.Element {
+  return (
+    <Overlay
+      id={OVERLAY_IDS.attachmentPreview}
+      onClose={onClose}
+      className="modal attach-preview"
+      role="dialog"
+      ariaModal
+      ariaLabel={`Preview of ${attachment.name}`}
+    >
+      <header className="modal-head">
+        <strong className="attach-preview-name">{attachment.name}</strong>
+        <Tooltip label="Close the preview (Escape)">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Close"
+            autoFocus
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </Tooltip>
+      </header>
+      {/* `.modal-body` rather than a bare div: it carries the shell's own inset, so the
+          image clears the panel border without this component knowing what the inset is. */}
+      <div className="modal-body attach-preview-body">
+        {/* Named, not `alt=""`. The chip's thumbnail is decoration beside a filename that
+            is already read out; this IS the content of the dialog. */}
+        <img className="attach-preview-image" src={attachment.previewUrl} alt={attachment.name} />
+      </div>
+    </Overlay>
   );
 }

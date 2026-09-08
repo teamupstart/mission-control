@@ -1600,10 +1600,25 @@ export const ForemanConfigSchema = z.object({
    * (the pre-triage behaviour); `on` = a pure-code Tier 0 + Haiku Tier 1 dispose the
    * easy cases and only route the hard ones up to the full review; `shadow` = run both
    * the cheap tier and the full review, act on the full review, and log every
-   * divergence so the cheap tier's accuracy is measured before it's trusted. Defaults
-   * to `shadow` so the first ship gathers evidence rather than short-circuiting blind.
+   * divergence so the cheap tier's accuracy is measured before it's trusted.
+   *
+   * Ships `on`. It ships as `shadow` no longer because `shadow` was only ever the
+   * EVIDENCE-GATHERING posture, and a default is a bad place to leave one: it is the
+   * most expensive of the three - two concurrent model calls per evaluation, one of
+   * which by construction cannot act - and it buys that only for an operator who then
+   * goes and reads the divergence column. Every install that never opened the panel
+   * paid twice per decision to measure something nobody looked at. The measurement is
+   * still one click away, still the honest way to answer "is the cheap tier safe here",
+   * and the panel still says so under the control.
+   *
+   * This is only read when nobody ever answered. An operator with a persisted posture -
+   * including a `shadow` written by any earlier save, since `setForemanConfig` persists
+   * the whole parsed blob - keeps it, exactly as the `enabled` flip above did. Nothing
+   * about the safety envelope moves with the default: an `on` answer still flows through
+   * the same mode + allowlist + auto-approve gate a Tier 2 answer does, and
+   * `triagePosture` still refuses to READ `on` from anything but the literal string.
    */
-  triage: z.enum(["off", "shadow", "on"]).default("shadow"),
+  triage: z.enum(["off", "shadow", "on"]).default("on"),
   /**
    * Model id for the Tier 1 triage call (a cheap router, not the full reviewer). Falls
    * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default.

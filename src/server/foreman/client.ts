@@ -924,7 +924,7 @@ export class ForemanClient implements ForemanActions {
    * The config, parsed rather than cast. Every other read here casts the response and can
    * afford to: a malformed session list costs a bad log line. This one drives whether Foreman
    * acts and how - so it is validated at the edge, which applies the schema's own defaults to
-   * a key an older daemon doesn't serve yet (`triage` -> `shadow`; the worker is started
+   * a key an older daemon doesn't serve yet (`triage` -> `on`; the worker is started
    * separately from the daemon, so a version skew between them is an ordinary upgrade-window
    * state) and rejects a value outside the enum instead of letting it reach the tier dispatch.
    * A parse failure throws like any other bad read: the caller already logs it and retries,

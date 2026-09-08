@@ -8839,6 +8839,68 @@ mark.find-hit.is-current {
   color: var(--fg);
   background: var(--panel);
 }
+/* The thumbnail and the name are one control now. It reuses the chip's own type and
+   colour rather than looking like a button, because it IS the chip as far as anyone
+   reading the strip is concerned - the affordance is the pointer and the tooltip, and a
+   second bordered box inside a bordered chip would read as a nested widget. */
+.attach-open {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  /* `user-select: none`: double-clicking text selects a word, and the gesture that opens
+     this would otherwise leave the filename highlighted behind the dialog. */
+  user-select: none;
+}
+.attach-open:hover {
+  color: var(--fg);
+}
+/* Keyboard only. A focus ring drawn on hover-reach would put a box around the chip every
+   time the pointer passed over the strip. */
+.attach-open:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+/* ---- attachment preview ---- */
+/* Narrower than the shared 940px: this panel holds one image and its filename, and a
+   dialog wider than the picture it frames reads as a broken layout rather than a large
+   preview. */
+.attach-preview {
+  width: min(720px, 100%);
+}
+.attach-preview-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-preview-body {
+  display: grid;
+  place-items: center;
+  /* Its own backdrop, because a screenshot is usually of THIS app: a dark shot on the
+     panel's own dark surface loses its edges entirely, and there is then no way to tell
+     where the image stops and the dialog starts. */
+  background: var(--bg);
+}
+.attach-preview-image {
+  /* `contain`, never `cover`: this is the one surface whose whole job is showing the
+     picture as it is. Cropping it here would hide the part someone opened it to read. */
+  max-width: 100%;
+  /* Leaves the head and the panel's own padding inside the viewport at the backdrop's
+     48px offset, so a tall screenshot scales down rather than pushing its own dialog off
+     the bottom of the screen. */
+  max-height: min(70vh, 720px);
+  object-fit: contain;
+}
 
 /* ---- dispatch button (topbar) ---- */
 .dispatch-btn {

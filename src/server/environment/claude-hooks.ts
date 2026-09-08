@@ -171,7 +171,15 @@ export const claudeHookScriptCheck: EnvironmentCheckImpl = {
     // script name, which truncation can remove but cannot fabricate.
     const errors: ParseError[] = [];
     const settings = parse(read.text, errors, { allowTrailingComma: true });
-    if (errors.length > 0 && !read.truncated) return { warning: null, detail: null };
+    // `truncated` alone is too blunt an exemption: it says the tail was cut, not that every
+    // error came FROM the cut. A 70 KB settings file with a stray brace on line 3 is both
+    // truncated and genuinely malformed, and tolerating its errors wholesale would report a
+    // dead hook in a file Claude Code cannot apply - the exact accusation this guard exists
+    // to prevent. So an error is forgiven only when it reaches the retained text's end,
+    // which is where our own cut lands; anything earlier is the operator's.
+    const fromOurCut = (error: ParseError): boolean =>
+      read.truncated && error.offset + error.length >= read.text.length;
+    if (errors.some((error) => !fromOurCut(error))) return { warning: null, detail: null };
 
     const missing: { script: string; events: number }[] = [];
     for (const [script, events] of scriptsInUse(settings)) {

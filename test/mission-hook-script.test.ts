@@ -262,6 +262,22 @@ test("a truncated read still reports, because its parse errors are the reader's 
   assert.ok(view.warning?.includes(STALE), view.warning ?? "");
 });
 
+// The sharper half of the truncation exemption: being cut short does not make an EARLIER
+// syntax error forgivable. A large settings file can be both truncated by the reader and
+// genuinely malformed, and Claude Code cannot apply it either way, so a hook path recovered
+// from it still names a bridge that is not running.
+test("an early syntax error is refused even when the read was also truncated", async () => {
+  const dead = `"/opt/homebrew/bin/node" "${STALE}" Stop`;
+  // A stray token near the start, a perfectly recoverable stale hook after it, and enough
+  // padding that the read would genuinely have hit its bound.
+  const padding = " ".repeat(70 * 1024);
+  const body =
+    `{ oops "hooks": { "Stop": [ { "hooks": [ { "command": ${JSON.stringify(dead)} } ] } ] },` +
+    ` "pad": "${padding}"`;
+  const view = await hookCheck({ [SETTINGS]: text(body, true) });
+  assert.equal(view.warning, null, view.warning ?? "");
+});
+
 test("a settings file it cannot make sense of produces silence, not an accusation", async () => {
   for (const body of ["", "not json at all", "[]", JSON.stringify({ hooks: "yes" })]) {
     const view = await hookCheck({ [SETTINGS]: text(body) });

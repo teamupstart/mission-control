@@ -199,6 +199,13 @@ test("the Setup panel carries the dead hook path as a required row with its reme
   installHooks(daemon, stalePath(daemon));
   await dashboard.goto(`${daemon.baseURL}/#/settings/setup`);
 
+  // Re-check before asserting, and this is not ceremony. The dashboard reads
+  // `/api/setup/checks` at startup for the topbar's setup banner and the panel renders that
+  // view, so the answer on screen can predate anything this test wrote - the app was already
+  // loaded by the `dashboard` fixture before `installHooks` ran. Without this the spec is a
+  // race it happens to win on a fast machine, which is exactly how it was first written.
+  await dashboard.getByRole("button", { name: "Re-check" }).click();
+
   await openSetupFamily(dashboard, "extensions");
   const row = setupRow(dashboard, "environment-check-mission-hook-script");
   await expect(row).toContainText("Claude Code hooks");

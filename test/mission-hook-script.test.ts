@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 
 import {
+  MISSION_HOOK_SCRIPTS,
   isMissionHookCommand,
   missionHookScriptPath,
 } from "../src/server/harness/claude/hooks.ts";
+import { ENVIRONMENT_ROW_METADATA } from "../src/shared/setup-catalog.ts";
 import { environmentCheckViews } from "../src/server/environment/index.ts";
 import type { EnvironmentDeps, FileRead } from "../src/server/environment/types.ts";
 
@@ -134,6 +136,35 @@ test("removal recognises a command that reporting will not resolve", () => {
   assert.equal(isMissionHookCommand(`"/opt/homebrew/bin/node" "${SATELLITE}" Stop`), true);
   assert.equal(isMissionHookCommand(repoCommand(LIVE, "Stop")), true);
   assert.equal(isMissionHookCommand("npx --yes some-linter --quiet"), false);
+});
+
+// One list, two predicates derived from it. This is the drift guard: both halves are driven
+// from `MISSION_HOOK_SCRIPTS` rather than from literals, so a script added there without
+// updating a second list cannot make stripping and reporting disagree again.
+test("every declared script is recognised by BOTH predicates, in either spelling", () => {
+  for (const name of MISSION_HOOK_SCRIPTS) {
+    const posix = `/Users/tester/mission-control/${name}`;
+    assert.equal(missionHookScriptPath(`"/opt/homebrew/bin/node" "${posix}" Stop`), posix, name);
+    assert.equal(isMissionHookCommand(`"/opt/homebrew/bin/node" "${posix}" Stop`), true, name);
+
+    // The spelling the two used to disagree on: the regex accepted a backslash separator
+    // while the substring array carried only the forward-slash form, so a command like this
+    // was reportable as ours and not strippable as ours - one bridge removed, one left
+    // firing. Both must answer the same way.
+    const windows = `C:\\Users\\tester\\mission-control\\${name.split("/").join("\\")}`;
+    assert.equal(isMissionHookCommand(`"node.exe" "${windows}" Stop`), true, `strip ${name}`);
+  }
+});
+
+// The Setup row is required and raises the setup banner, so its remedy has to be actionable
+// for BOTH populations the check fires for. A packaged-app user may have no checkout at all.
+test("the Setup row's remedy names the desktop button as well as the npm script", () => {
+  const remedy = ENVIRONMENT_ROW_METADATA["mission-hook-script"].remedy;
+  assert.equal(remedy.kind, "command");
+  if (remedy.kind !== "command") return;
+  assert.deepEqual([...remedy.argv], ["npm", "run", "install-hooks"]);
+  assert.match(remedy.note, /Install Claude integrations/);
+  assert.match(remedy.note, /durable clone/);
 });
 
 // --- the check ---------------------------------------------------------------------------

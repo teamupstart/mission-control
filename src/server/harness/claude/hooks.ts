@@ -185,28 +185,49 @@ export const claudeHooks: HookSpec = {
 // `src/server/environment/claude-hooks.ts` reports the rest afterwards.
 
 /**
- * The scripts an install of ours can name, by file name.
+ * Every script an installer of ours can write, by the tail of its path.
+ *
+ * ONE list. Both predicates below are DERIVED from it rather than restating it, because a
+ * regex here and a substring array there is the same drift this whole section exists to
+ * end: a future installer, or a renamed satellite, would have to be added to both in
+ * lockstep, and missing one puts stripping and reporting back into disagreement. They
+ * already had disagreed - the array carried only the forward-slash spelling while the
+ * regex accepted either separator, so a backslash-separated command was reportable and not
+ * strippable.
+ */
+export const MISSION_HOOK_SCRIPTS = ["harness-hook.mjs", "satellites/hook.mjs"] as const;
+
+/** Either path separator, so a hand-copied Windows-style path is still recognised. */
+const SEP = "[\\\\/]";
+
+const escapeRe = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * One of `MISSION_HOOK_SCRIPTS` as the tail of a path.
  *
  * Anchored at both ends - a path separator (or the start of the value) before, the end of
  * the string after - so this matches the last segment of a path and never a coincidence
- * inside a directory name. Backslashes are accepted alongside slashes purely so a
- * hand-copied Windows-style path is still recognised as ours; nothing here writes one.
+ * inside a directory name. Each `/` inside a script name becomes a separator class, so
+ * `satellites/hook.mjs` matches either spelling exactly as the substring test does.
  */
-const HOOK_SCRIPT = /(?:^|[\\/])(?:harness-hook\.mjs|satellites[\\/]hook\.mjs)$/;
+const HOOK_SCRIPT = new RegExp(
+  `(?:^|${SEP})(?:${MISSION_HOOK_SCRIPTS.map((name) => name.split("/").map(escapeRe).join(SEP)).join("|")})$`,
+);
 
 /**
- * The substrings that identify a command as ours when it is being REMOVED.
+ * Whether a settings.json hook command is one an installer of ours wrote.
  *
  * Deliberately looser than `missionHookScriptPath` below, and the asymmetry is the point:
  * stripping wants to be generous, because anything of ours left behind fires a second time
  * for every event, while reporting wants to be exact, because a warning about a path we
  * merely guessed at is a note the operator cannot act on.
+ *
+ * Separators are normalised before the test so this stays at least as generous as the regex
+ * for every spelling of a path, which is the direction the asymmetry has to run.
  */
-export const MISSION_HOOK_MARKERS = ["harness-hook.mjs", "satellites/hook.mjs"] as const;
-
-/** Whether a settings.json hook command is one an installer of ours wrote. */
 export function isMissionHookCommand(command: string): boolean {
-  return MISSION_HOOK_MARKERS.some((marker) => command.includes(marker));
+  const normalized = command.replace(/\\/g, "/");
+  return MISSION_HOOK_SCRIPTS.some((name) => normalized.includes(name));
 }
 
 /**

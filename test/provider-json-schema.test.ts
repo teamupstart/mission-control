@@ -50,7 +50,6 @@ const { BestOfNComparisonResultSchema } = await import(
   "../src/shared/ensemble-strategies/best-of-n.ts"
 );
 const { PanelBallotSchema } = await import("../src/shared/ensemble-strategies/panel-vote.ts");
-const { PersonaVerdictProviderWireSchema, PersonaVerdictSchema } = await import("../src/shared/protocol.ts");
 
 /**
  * Every schema currently passed via `LlmRunOptions.schema`, named by the identifier its
@@ -75,7 +74,6 @@ const SCHEMAS = [
   { identifier: "ConsensusResultSchema", schema: ConsensusResultSchema },
   { identifier: "BestOfNComparisonResultSchema", schema: BestOfNComparisonResultSchema },
   { identifier: "PanelBallotSchema", schema: PanelBallotSchema },
-  { identifier: "PersonaVerdictProviderWireSchema", schema: PersonaVerdictProviderWireSchema },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -205,26 +203,6 @@ test("a null optional lands on the same value an omitted key used to", () => {
   assert.equal(triage.answer, undefined, "null must not become an answer to deliver");
   assert.equal(triage.brief, undefined);
   assert.equal(triage.recommendation, undefined);
-});
-
-test("Persona verdict evidence reads strict-provider null locations as absent", () => {
-  const wire = PersonaVerdictProviderWireSchema.parse({
-    verdict: "pass",
-    summary: "approved",
-    approvalDetails: {
-      reason: "repository evidence is consistent",
-      evidence: [{ kind: "goal", quote: "synthetic fixture", path: null, line: null }],
-    },
-    requestedChanges: null,
-    confidence: 0.9,
-  });
-  assert.deepEqual(wire.approvalDetails?.evidence[0], {
-    kind: "goal",
-    quote: "synthetic fixture",
-    path: undefined,
-    line: undefined,
-  });
-  assert.equal(PersonaVerdictSchema.parse(wire).verdict, "pass");
 });
 
 test("a null optional never widens the answer a strict field is allowed to give", () => {

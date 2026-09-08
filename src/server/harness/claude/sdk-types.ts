@@ -239,7 +239,7 @@ export interface ClaudeSdkDeps {
   }): Promise<ClaudeSdkQuery>;
   /** The absolute `claude` path to pin the subprocess to. Rejects when it cannot be found. */
   executable(): Promise<string>;
-  /** The subprocess environment. See `headlessAgentSubprocessEnv` for what it subtracts and why. */
+  /** The subprocess environment. See `sdkSubprocessEnv` for what it subtracts and why. */
   env(cwd?: string, stateHome?: string): Record<string, string | undefined>;
 }
 

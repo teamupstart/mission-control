@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased plan: writing back to the task source</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf8; --panel: #ffffff; --ink: #1b1a18; --muted: #5d5a54;
+  --line: #e2ded6; --accent: #7a4f1d; --accent-soft: #f3ece1;
+  --code-bg: #f4f1ec; --shadow: 0 1px 2px rgba(24,20,14,.06), 0 8px 24px rgba(24,20,14,.05);
+  --node: #ffffff; --node-line: #cbc4b7; --node-ink: #26241f;
+  --ext: #f6efe2; --ext-line: #cbb891; --store: #eef2f0; --store-line: #a9bdb4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16151a; --panel: #1d1c22; --ink: #eceaf2; --muted: #a7a3b2;
+    --line: #33313c; --accent: #d9a86a; --accent-soft: #2b2620;
+    --code-bg: #232128; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.35);
+    --node: #262430; --node-line: #4a4657; --node-ink: #e8e5ef;
+    --ext: #302719; --ext-line: #6d5a35; --store: #1f2a28; --store-line: #3f5a52;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.shell { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+h1, h2, h3, h4 { line-height: 1.25; font-weight: 650; letter-spacing: -0.011em; }
+h1 { font-size: 2.05rem; margin: 0 0 1.25rem; }
+h2 {
+  font-size: 1.4rem; margin: 3rem 0 1rem; padding-top: 1.4rem;
+  border-top: 1px solid var(--line);
+}
+h3 { font-size: 1.12rem; margin: 2rem 0 .6rem; }
+h4 { font-size: 1rem; margin: 1.5rem 0 .5rem; color: var(--muted); }
+p { margin: 0 0 1rem; }
+a { color: var(--accent); }
+ul, ol { margin: 0 0 1rem; padding-left: 1.35rem; }
+li { margin: .3rem 0; }
+strong { font-weight: 640; }
+code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .875em; background: var(--code-bg); padding: .12em .38em;
+  border-radius: 4px; border: 1px solid var(--line); white-space: nowrap;
+}
+.codewrap { overflow-x: auto; margin: 0 0 1.25rem; border-radius: 10px; border: 1px solid var(--line); background: var(--code-bg); box-shadow: var(--shadow); }
+pre { margin: 0; padding: 1rem 1.15rem; }
+pre code {
+  background: none; border: 0; padding: 0; white-space: pre;
+  font-size: .82rem; line-height: 1.6; display: block;
+}
+.tablewrap { overflow-x: auto; margin: 0 0 1.4rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow); }
+table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+th, td { text-align: left; padding: .6rem .85rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: var(--accent-soft); font-weight: 620; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+td code { white-space: normal; }
+.toc {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 1rem 1.25rem; margin: 0 0 2.5rem; box-shadow: var(--shadow);
+}
+.toc h2 { border: 0; margin: 0 0 .5rem; padding: 0; font-size: .78rem; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); }
+.toc ol { columns: 2; column-gap: 2rem; margin: 0; padding-left: 1.15rem; font-size: .92rem; }
+@media (max-width: 40rem) { .toc ol { columns: 1; } }
+figure.diagram {
+  margin: 1.5rem 0 1.75rem; padding: 1.25rem; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow-x: auto;
+}
+figure.diagram svg { display: block; max-width: 100%; height: auto; }
+details.src { margin-top: .9rem; font-size: .85rem; color: var(--muted); }
+details.src summary { cursor: pointer; }
+details.src pre { margin-top: .5rem; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; }
+.meta { color: var(--muted); font-size: .9rem; margin: -0.75rem 0 2rem; }
+</style>
+</head>
+<body>
+<main class="shell">
+<nav class="toc"><h2>Contents</h2><ol><li><a href="#what-was-approved">What was approved</a></li><li><a href="#what-the-repository-said">What the repository said</a></li><li><a href="#sizing-and-why-three-phases">Sizing, and why three phases</a></li><li><a href="#phases">Phases</a></li><li><a href="#dependency-graph-and-concurrency">Dependency graph and concurrency</a></li><li><a href="#cross-phase-contracts">Cross-phase contracts</a></li><li><a href="#final-verification">Final verification</a></li><li><a href="#audit">Audit</a></li></ol></nav>
+<h1 id="phased-plan-writing-back-to-the-task-source">Phased plan: writing back to the task source</h1>
+<p>Source plan: <a href="plan.md"><code>plan.md</code></a> (rendered: <a href="plan.html"><code>plan.html</code></a>).</p>
+<h2 id="what-was-approved">What was approved</h2>
+<p>Seven decisions came back from the dashboard review of the source plan. All are requirements here, not open questions:</p>
+<div class="tablewrap"><table><thead><tr><th>Decision</th><th>Taken</th><th>Owned by</th></tr></thead><tbody><tr><td>How a write-back is delivered</td><td>A durable ledger plus a worker</td><td>Phase 1</td></tr><tr><td>Which moments write back</td><td>Both: a pull request first linked to the task, and the task completing</td><td>Phase 1</td></tr><tr><td>How a Jira issue is resolved</td><td>A target status named per source, matched against the transitions available from the issue's current status</td><td>Phase 2</td></tr><tr><td>How the pull request is linked onto a Jira issue</td><td>A remote link keyed by the PR url, <strong>and</strong> a comment. Putting the Jira key in the branch we cut was declined</td><td>Phase 2</td></tr><tr><td>What resolve does to a GitHub issue</td><td>Closes it, with the reason configurable per source</td><td>Phase 1</td></tr><tr><td>When a resolve may fire</td><td>Off by default per source, held for a 5 minute settle window with a live re-check</td><td>Phase 1</td></tr><tr><td>What happens after the plan</td><td>Create this phased implementation plan</td><td>this document</td></tr></tbody></table></div>
+<h2 id="what-the-repository-said">What the repository said</h2>
+<p>Checked before the boundaries were drawn. Three findings changed the shape of the split:</p>
+<ol start="1"><li><strong>The capability/verb pattern already exists.</strong> <code>TaskSourceImpl</code> carries an optional <code>push</code> gated on a required <code>canPush</code>, and <code>test/task-source-contract.test.ts</code> pins the pair. Two more pairs need no new mechanism, and the contract test makes a kind that advertises a verb it does not implement a hard failure. That is what forces Phase 1 to land Jira with <code>canAnnotate: false, canResolve: false</code> and Phase 2 to flip them in the same commit as the implementation, and it is the only edit Phase 2 makes to a Phase 1 file.</li><li><strong>Both observation points are synchronous and cannot await.</strong> <code>acceptPrForEpisode</code> runs inside the PR poller's reconciliation and <code>finishCompletion</code> runs inside <code>session_upsert</code> / <code>session_remove</code> listeners that read the registry on the next line. Neither can spawn a subprocess. This is what makes the ledger structural rather than a durability nicety, and it is why the ledger and the worker cannot be deferred to a later phase.</li><li><strong><code>JIRA_BIN</code> is a hardcoded constant, not a seam.</strong> <code>ghBin()</code> exists precisely because an unfaked <code>gh</code> on a signed-in machine publishes for real; the Jira CLI has the identical exposure with no equivalent seam. <code>jiraBin()</code> therefore ships inside Phase 2 rather than as a later cleanup, because Phase 2 is the first thing that could move a real issue.</li></ol>
+<p>Two things in the source plan survived contact with the code unchanged and are worth recording: <code>PUT /api/task-sources/config</code> takes the whole instance list, so the new <code>writeback</code> field rides it with no route change (which is what makes Phase 1 operable with no web work); and <code>finishCompletion</code> really is the single writer of <code>status: "done"</code>, so there is exactly one place to call.</p>
+<h2 id="sizing-and-why-three-phases">Sizing, and why three phases</h2>
+<p>Estimated non-test implementation lines, counting doc comments (which this repository requires and which are a real share of every file here), excluding tests, fixtures and documentation:</p>
+<div class="tablewrap"><table><thead><tr><th>Area</th><th>Estimate</th></tr></thead><tbody><tr><td>Shared contract</td><td>140 - 170</td></tr><tr><td>Registry (<code>erase</code>, the four exports)</td><td>80 - 100</td></tr><tr><td><code>db.ts</code> table, indexes, helpers</td><td>160 - 200</td></tr><tr><td><code>registry.ts</code> signal and two emissions</td><td>50 - 70</td></tr><tr><td><code>writeback.ts</code> (enqueue, notices, worker)</td><td>280 - 340</td></tr><tr><td><code>tasks.ts</code> seam</td><td>20 - 30</td></tr><tr><td>GitHub verbs</td><td>110 - 150</td></tr><tr><td>Jira verbs, matcher, preflight, <code>jiraBin()</code></td><td>320 - 400</td></tr><tr><td>Daemon wiring</td><td>15 - 25</td></tr><tr><td>Routes and settings status</td><td>60 - 90</td></tr><tr><td>Web (api, hook, panel fieldset)</td><td>200 - 250</td></tr><tr><td><strong>Total</strong></td><td><strong>1,435 - 1,825</strong></td></tr></tbody></table></div>
+<p>Assumptions: the comment density of <code>push.ts</code> (290 lines for one verb and its chokepoint) and <code>jira.ts</code> (1,364 lines for one read path) is the right reference, not a terse codebase's. The estimate is a planning signal, not a promise about diff size.</p>
+<p>Far above the 200-line one-phase threshold, so more than one phase is defensible. The count is three, and each additional boundary earns itself:</p>
+<ul><li><strong>Phase 1 cannot be smaller.</strong> Every cut inside it leaves a dead surface: a ledger nothing writes to, a worker with nothing to deliver, or a trigger with nowhere to put what it saw. It is the smallest set that produces working behavior, and it is testable end to end through a route that already exists.</li><li><strong>Phase 2 is a separate merge unit because it is a separate kind</strong>, which is the seam the registry is built around. Combining it with Phase 1 would put the largest single file in the feature (Jira's two rungs, the transition matcher, the egress-guard assertions) into the same pull request as the foundation, and a reviewer would be reading a state machine and a Jira workflow API in one sitting. It also carries the one irreversible act in the feature and its own safety fix (<code>jiraBin()</code>), which deserve their own review.</li><li><strong>Phase 3 is a separate merge unit because it is the only phase with a UI surface</strong>, and therefore the only one that owes a Playwright spec, a settings anchor and operator documentation. Folding it into Phase 1 would make Phase 1's pull request span a SQLite state machine and a React fieldset; folding it into Phase 2 would serialize it behind Jira for no reason, since it depends on nothing Jira produces.</li></ul>
+<p>No preparation, test-only, documentation-only or cleanup phase exists. Tests, migration compatibility, documentation and fixture safety each ship inside the phase that introduces the behavior they cover.</p>
+<h2 id="phases">Phases</h2>
+<div class="tablewrap"><table><thead><tr><th>#</th><th>Phase</th><th>File</th><th>Depends on</th><th>Delivers</th></tr></thead><tbody><tr><td>1</td><td>The write-back contract, the delivery ledger, and GitHub issues</td><td><a href="phase-1-ledger-triggers-and-github.md"><code>phase-1-ledger-triggers-and-github.md</code></a></td><td>-</td><td>A GitHub source comments the PR and the outcome onto its issue, and closes it after the settle window</td></tr><tr><td>2</td><td>Jira annotate and resolve</td><td><a href="phase-2-jira-writeback.md"><code>phase-2-jira-writeback.md</code></a></td><td>Phase 1</td><td>A Jira source posts a remote link and a comment, and moves the issue to a named target status</td></tr><tr><td>3</td><td>The operator surface</td><td><a href="phase-3-operator-surface.md"><code>phase-3-operator-surface.md</code></a></td><td>Phase 1</td><td>The switches, the queue, retry and discard in Settings, with an e2e spec and the operator docs</td></tr></tbody></table></div>
+<h2 id="dependency-graph-and-concurrency">Dependency graph and concurrency</h2>
+<figure class="diagram"><svg viewBox="0 0 900 280" role="img" aria-label="Phase 1 is a prerequisite of Phase 2 and Phase 3, which have no edge between them and may merge in either order" xmlns="http://www.w3.org/2000/svg"><defs><marker id="pp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--node-line)"/></marker></defs><g font-family="ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif"><rect x="470" y="14" width="420" height="252" rx="14" fill="none" stroke="var(--line)" stroke-dasharray="5 4"/><text x="880" y="36" text-anchor="end" font-size="10.5" fill="var(--muted)" letter-spacing="0.08em">CONCURRENT &#183; MERGE IN EITHER ORDER</text><rect x="20" y="96" width="240" height="92" rx="10" fill="var(--node)" stroke="var(--node-line)" stroke-width="1.6"/><text x="140" y="124" text-anchor="middle" font-size="13" font-weight="650" fill="var(--node-ink)">Phase 1</text><text x="140" y="143" text-anchor="middle" font-size="11" fill="var(--muted)">contract, ledger, triggers,</text><text x="140" y="158" text-anchor="middle" font-size="11" fill="var(--muted)">worker, GitHub issues</text><text x="140" y="176" text-anchor="middle" font-size="10" fill="var(--muted)">the only phase that can go first</text><rect x="500" y="52" width="360" height="78" rx="10" fill="var(--node)" stroke="var(--node-line)"/><text x="680" y="79" text-anchor="middle" font-size="13" font-weight="650" fill="var(--node-ink)">Phase 2</text><text x="680" y="98" text-anchor="middle" font-size="11" fill="var(--muted)">Jira annotate + resolve, and jiraBin()</text><text x="680" y="116" text-anchor="middle" font-size="10" fill="var(--muted)">flips Jira&#39;s two capability flags</text><rect x="500" y="162" width="360" height="78" rx="10" fill="var(--node)" stroke="var(--node-line)"/><text x="680" y="189" text-anchor="middle" font-size="13" font-weight="650" fill="var(--node-ink)">Phase 3</text><text x="680" y="208" text-anchor="middle" font-size="11" fill="var(--muted)">settings surface, routes, e2e spec, docs</text><text x="680" y="226" text-anchor="middle" font-size="10" fill="var(--muted)">never asserts a Jira capability flag</text><path d="M260 128 C 380 128, 400 91, 496 91" fill="none" stroke="var(--node-line)" stroke-width="1.6" marker-end="url(#pp-a)"/><path d="M260 156 C 380 156, 400 201, 496 201" fill="none" stroke="var(--node-line)" stroke-width="1.6" marker-end="url(#pp-a)"/><text x="378" y="104" text-anchor="middle" font-size="10" fill="var(--muted)">contract + ledger</text><text x="378" y="190" text-anchor="middle" font-size="10" fill="var(--muted)">contract + counts</text><text x="20" y="262" font-size="11" fill="var(--muted)">Every phase task also depends on this planning session, so none dispatches before these files reach the default branch.</text></g></svg><details class="src"><summary>Diagram source</summary><pre><code>graph LR
+  P1["Phase 1&lt;br/&gt;contract, ledger, triggers,&lt;br/&gt;worker, GitHub"] --&gt; P2["Phase 2&lt;br/&gt;Jira annotate + resolve"]
+  P1 --&gt; P3["Phase 3&lt;br/&gt;operator surface"]</code></pre></details></figure>
+<p>Direct edges only: Phase 2 depends on Phase 1, Phase 3 depends on Phase 1, and <strong>Phase 3 does not depend on Phase 2</strong>. Every phase task additionally depends on the planning session that wrote these files, so nothing dispatches before the artifacts reach the default branch.</p>
+<p>Concurrency groups:</p>
+<ul><li><strong>Group A:</strong> Phase 1, alone.</li><li><strong>Group B:</strong> Phase 2 and Phase 3, together.</li></ul>
+<p>The two in Group B may merge in either order, which the audit verified rather than assumed:</p>
+<ul><li>They share no owned source file. Phase 2 changes <code>config.ts</code>, <code>jira.ts</code>, two booleans in <code>src/shared/task-source.ts</code>, and the Jira e2e fixture. Phase 3 changes <code>routes.ts</code>, <code>settings-status.ts</code>, the web layer, and the panel spec.</li><li>Two documents are touched by both in disjoint regions, with ownership written into both phase files: <code>e2e/README.md</code> (environment table vs spec inventory) and <code>docs/dispatch-and-backlog.md</code> (the existing <code>### Jira</code> section vs a new <code>### Writing back to the source</code> section).</li><li>Phase 3 is forbidden from asserting either Jira capability boolean, because Phase 2 flips them from false to true. Its disabled-state assertion runs against a synthetic capability instead.</li></ul>
+<p>Merge order: Phase 1, then Phase 2 and Phase 3 in whichever order they become green.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>Phase 1 owns and freezes, and the later phases may only read:</p>
+<ul><li><code>WRITEBACK_SIGNALS</code>, <code>WRITEBACK_ACTIONS</code> - append-only, persisted in the ledger.</li><li><code>WritebackNotice</code>, <code>WritebackResult</code>, <code>WritebackContext</code>, <code>TaskSourceWritebackSchema</code>, <code>TaskSourceWritebackStatus</code>.</li><li>The <code>canAnnotate</code> / <code>canResolve</code> flags and the <code>annotate</code> / <code>resolve</code> slots, reached only through <code>canAnnotateTo</code> / <code>canResolveTo</code> / <code>annotateWith</code> / <code>resolveWith</code>. No call site tests <code>inst.kind</code>.</li><li>The <code>task_source_writeback</code> columns, the unique key <code>(source_id, external_id, signal, action, dedupe_key)</code>, and the five <code>state</code> values.</li><li><code>countWritebacks(sourceId)</code>, and <code>taskSourcesView()</code> returning <code>writeback: []</code> until Phase 3 replaces it.</li><li>The <code>task_pr_linked</code> signal and the <code>WritebackEnqueuer</code> seam on <code>TaskManager</code>.</li></ul>
+<p>Phase 2 owns: <code>jiraBin()</code> as the only way to name the Jira binary; Jira's two capability booleans from its merge onward; <code>MISSION_JIRA_BIN</code> in the e2e daemon fixture; the Jira write-back paragraph in <code>docs/dispatch-and-backlog.md</code>.</p>
+<p>Phase 3 owns: <code>settings-status.ts</code>'s reading of the queue; the two write-back routes; every file under <code>src/web/</code>; <code>e2e/specs/task-source-writeback.spec.ts</code>; and the <code>### Writing back to the source</code> documentation section.</p>
+<h2 id="final-verification">Final verification</h2>
+<p>Each phase runs its own commands, listed in its file. Across the set, the properties that must hold at the end and that no single phase can assert alone:</p>
+<ol start="1"><li>With every write-back switch off - the default, and therefore every existing installation - the ledger stays empty and no subprocess is spawned. Asserted in Phase 1 and unchanged after.</li><li><code>test/task-source-contract.test.ts</code> passes with both kinds' flags matching their slots, which is only fully exercised once Phase 2 has merged.</li><li>No <code>gh</code> or <code>jira</code> subprocess in any test or e2e run resolves to a real binary (<code>MISSION_GH_BIN</code> from before this work, <code>MISSION_JIRA_BIN</code> from Phase 2).</li><li><code>npm test</code>, <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm run build</code>, <code>npm run smoke</code> pass on every phase; <code>npm run test:e2e</code> on Phases 2 and 3.</li><li>The documentation on the default branch describes what the default branch does, at every intermediate merge and not only at the end. That is what the Jira-paragraph ownership split exists to guarantee.</li></ol>
+<h2 id="audit">Audit</h2>
+<p>Performed over the complete set after the last phase file was written.</p>
+<ul><li><strong>Every source-plan requirement is owned by exactly one phase.</strong> Traced item by item across the plan's thirteen implementation steps, its test list and its documentation list.</li><li><strong>Every consumer follows its prerequisite.</strong> Phase 3 consumes <code>countWritebacks</code> and <code>TaskSourceWritebackStatus</code>, both from Phase 1. Phase 2 consumes the contract and the ledger, both from Phase 1. Nothing consumes anything from Phase 3.</li><li><strong>Two hazards were found and fixed during the audit</strong>, and both are recorded in the affected phase files' audit records:</li><li>Phase 1's worker calling <code>publishSettingsStatus</code> was ambiguous about who extends <code>settingsStatus()</code>. Split: Phase 1 triggers the recompute, Phase 3 owns <code>src/server/settings-status.ts</code> and what it counts. No file is edited by both.</li><li>Phase 3 originally documented the Jira write-back that Phase 2 implements, which would have shipped documentation describing something the build could not do if Phase 3 merged first. The Jira paragraph moved to Phase 2, and each phase's documentation is now true at its own merge in either order.</li><li><strong>The final state matches the source plan</strong> with no undocumented cleanup: the last merge, in either Group B order, leaves the contract, the ledger, both kinds, the operator surface, the spec and the documentation all present.</li></ul>
+</main>
+</body>
+</html>

@@ -3,6 +3,7 @@ import { access, appendFile, readFile, rm } from "node:fs/promises";
 import test from "node:test";
 import type { AppServerTransport } from "../src/server/harness/codex/app-server/client.ts";
 import type { ClaudeSdkUserMessage } from "../src/server/harness/claude/sdk-types.ts";
+import { cleanupAgentSubprocessEnv } from "../src/server/agent-subprocess-env.ts";
 import { ClaudePersonaWorkloadAdapter } from "../src/server/workflows/persona-workload/claude.ts";
 import {
   CodexPersonaWorkloadAdapter,
@@ -13,6 +14,7 @@ import type { PersonaProviderLaunch, PersonaWorkloadProviderAdapter } from "../s
 import {
   PERSONA_CODEX_DISABLED_FEATURES,
   PERSONA_WORKLOAD_ALLOWED_TOOLS,
+  personaProviderSubprocessEnv,
 } from "../src/server/workflows/persona-workload/provider.ts";
 import { DEFAULT_REPOSITORY_BUDGETS, REPOSITORY_EVIDENCE_PROTOCOL, REPOSITORY_HISTORY_POLICY_V1 } from "../src/shared/repository-access.ts";
 import type { LlmImageInput } from "../src/shared/llm.ts";
@@ -47,6 +49,33 @@ function launch(provider: "claude" | "codex", images: readonly LlmImageInput[] =
     hostedSearchMaximum: "cached",
   };
 }
+
+test("Persona provider environments omit Mission Control credentials and loopback coordinates", () => {
+  const env = personaProviderSubprocessEnv({
+    PATH: "/usr/bin",
+    ORDINARY_PROVIDER_SETTING: "kept",
+    MISSION_PORT: "7317",
+    MISSION_API_TOKEN: "broad-token",
+    MISSION_API_TOKEN_FILE: "/tmp/broad-token",
+    MISSION_SCOUT_SUBMISSION_CREDENTIAL: "scoped-token",
+    MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE: "/tmp/scoped-token",
+    TMUX_PANE: "%42",
+    TERM_PROGRAM: "tmux",
+  });
+  try {
+    assert.equal(env.ORDINARY_PROVIDER_SETTING, "kept");
+    assert.ok(env.MISSION_HOME);
+    assert.equal(env.MISSION_PORT, undefined);
+    assert.equal(env.MISSION_API_TOKEN, undefined);
+    assert.equal(env.MISSION_API_TOKEN_FILE, undefined);
+    assert.equal(env.MISSION_SCOUT_SUBMISSION_CREDENTIAL, undefined);
+    assert.equal(env.MISSION_SCOUT_SUBMISSION_CREDENTIAL_FILE, undefined);
+    assert.equal(env.TMUX_PANE, undefined);
+    assert.equal(env.TERM_PROGRAM, undefined);
+  } finally {
+    cleanupAgentSubprocessEnv(env);
+  }
+});
 
 test("Claude workload adapter exposes only repository MCP tools across multiple calls and one structured result", async () => {
   let observed: unknown;

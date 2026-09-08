@@ -5,6 +5,7 @@ import {
   REPOSITORY_OPERATION_IDS,
   repositoryMcpToolName,
 } from "@shared/repository-access.ts";
+import { agentSubprocessEnv, dropPaneIdentityEnv } from "../../agent-subprocess-env.ts";
 
 export interface RepositoryMcpLaunchDescriptor {
   serverName: typeof REPOSITORY_MCP_SERVER_NAME;
@@ -62,6 +63,16 @@ export const PERSONA_CODEX_DISABLED_FEATURES = Object.freeze([
   "recommended_plugins",
   "workspace_dependencies",
 ] as const);
+
+/** Build a provider environment without any capability to call Mission Control itself. */
+export function personaProviderSubprocessEnv(
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const env = agentSubprocessEnv(base, { loopbackAccess: false });
+  dropPaneIdentityEnv(env);
+  delete env.TERM_PROGRAM;
+  return env;
+}
 
 export function assertProviderNeutralLaunch(launch: PersonaProviderLaunch): void {
   if (launch.repositoryMcp.serverName !== REPOSITORY_MCP_SERVER_NAME) {

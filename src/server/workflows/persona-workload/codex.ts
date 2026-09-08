@@ -15,13 +15,13 @@ import type {
   UserInput,
 } from "../../harness/codex/app-server/protocol.ts";
 import { codexExecutable, spawnAppServer } from "../../harness/codex/sdk-deps.ts";
-import { headlessAgentSubprocessEnv } from "../../agent-subprocess-env.ts";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   assertProviderNeutralLaunch,
   codexRepositoryMcpArgs,
+  personaProviderSubprocessEnv,
   PERSONA_CODEX_DISABLED_FEATURES,
   type PersonaProviderLaunch,
   type PersonaProviderResult,
@@ -219,7 +219,7 @@ export async function connectIsolatedCodexWorkload(
   await mkdir(isolatedLogRoot, { mode: 0o700, recursive: true });
   const configuredStateRoot = environment.CODEX_HOME || join(homedir(), ".codex");
   const providerEnvironment = {
-    ...headlessAgentSubprocessEnv(environment, cwd),
+    ...personaProviderSubprocessEnv(environment),
     CODEX_HOME: configuredStateRoot,
   };
   const stateArgs = [

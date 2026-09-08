@@ -1,10 +1,10 @@
-import { headlessAgentSubprocessEnv } from "../../agent-subprocess-env.ts";
 import { claudeExecutable } from "../../harness/claude/sdk-deps.ts";
 import type { ClaudeSdkMessage, ClaudeSdkUserMessage } from "../../harness/claude/sdk-types.ts";
 import { claudeImageUserMessage } from "../../llm/claude-input.ts";
 import { validateLlmImages } from "../../llm/images.ts";
 import {
   assertProviderNeutralLaunch,
+  personaProviderSubprocessEnv,
   type PersonaProviderLaunch,
   type PersonaProviderResult,
   type PersonaWorkloadProviderAdapter,
@@ -44,7 +44,7 @@ const defaultClaudeWorkloadDeps: ClaudeWorkloadDeps = {
     return query(params as never) as unknown as AsyncIterable<ClaudeSdkMessage>;
   },
   executable: claudeExecutable,
-  env: (cwd) => headlessAgentSubprocessEnv(process.env, cwd),
+  env: () => personaProviderSubprocessEnv(process.env),
 };
 
 function oneMessage(message: ClaudeSdkUserMessage): AsyncIterable<ClaudeSdkUserMessage> {

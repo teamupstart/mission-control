@@ -174,6 +174,7 @@ export function agentSubprocessEnv(
         env[SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV] = isolatedScoutSubmissionCredentialPath(options.cwd);
       }
     } else {
+      delete env.MISSION_PORT;
       delete env[MISSION_API_TOKEN_ENV];
       delete env[MISSION_API_TOKEN_FILE_ENV];
       delete env[SCOUT_SUBMISSION_CREDENTIAL_ENV];

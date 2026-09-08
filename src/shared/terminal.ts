@@ -65,6 +65,31 @@ export type TerminalBackendId = MultiplexerId | EmulatorId;
  */
 export const TERMINAL_BACKEND_IDS = [...MULTIPLEXER_IDS, ...EMULATOR_IDS] as const;
 
+/** Narrow a stored or wire value without teaching a caller the backend list again. */
+export function isTerminalBackendId(value: unknown): value is TerminalBackendId {
+  return (
+    typeof value === "string" &&
+    TERMINAL_BACKEND_IDS.includes(value as TerminalBackendId)
+  );
+}
+
+/**
+ * A stored terminal preference narrowed for this build.
+ *
+ * `null` is Automatic. An unknown string also runs as Automatic, but remains reportable so
+ * the settings card can say that it ignored a preference written by a newer build instead of
+ * presenting the fallback as the operator's own choice.
+ */
+export function resolveTerminalBackend(value: string | null | undefined): {
+  backend: TerminalBackendId | null;
+  unknown: string | null;
+} {
+  if (value == null) return { backend: null, unknown: null };
+  return isTerminalBackendId(value)
+    ? { backend: value, unknown: null }
+    : { backend: null, unknown: value };
+}
+
 /**
  * One backend, as the browser is told about it.
  *
@@ -91,6 +116,16 @@ export interface TerminalTargetView {
    * into a greyed row that explains neither.
    */
   unavailable: string | null;
+  /** One line describing what a background dispatch creates on this backend. */
+  dispatchBlurb?: string;
+  /**
+   * Null when this backend can host a dispatched session; else why it cannot.
+   *
+   * This differs from `unavailable` for a detached multiplexer. A user-opened terminal
+   * needs an emulator to raise the detached session into a visible window, while a
+   * background dispatch only needs the persistent session itself.
+   */
+  dispatchUnavailable?: string | null;
 }
 
 /**

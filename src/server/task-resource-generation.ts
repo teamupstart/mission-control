@@ -32,7 +32,8 @@ import type { Task } from "@shared/types.ts";
  *    the tuple teardown itself reads. A slot returned and re-leased at the same path under a
  *    new lease id is a different tree wearing the same name, and a partial release that
  *    cleared one repository's path is a different set of resources than the one observed.
- *  - `homeName`, `terminalResourceId`, `sessionId` - terminal ownership, which reclaim can stop
+ *  - `homeName`, `homeBackend`, `terminalResourceId`, `sessionId` - terminal ownership,
+ *    which reclaim can stop
  *    or clear. A generation blind to them would survive a mutation that changed what cleanup
  *    would do.
  *
@@ -48,6 +49,7 @@ export function taskResourceGeneration(task: Task): string {
     id: task.id,
     dispatchedAt: task.dispatchedAt,
     homeName: task.homeName,
+    homeBackend: task.homeBackend ?? null,
     terminalResourceId: task.terminalResourceId,
     sessionId: task.sessionId,
     repos: taskRepoRefs(task).map((ref) => [

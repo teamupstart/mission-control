@@ -91,6 +91,10 @@ dispatch immediately or add the work to the backlog, and attach multiple reposit
 change spans them. Multi-repository tasks keep one conversation while receiving one worktree and,
 when changed, one independently reviewed pull request per repository.
 
+Per-harness settings choose whether dispatched sessions run on the Agent SDK or in a terminal.
+Terminal-backed harnesses can stay on Automatic selection or pin dispatches to tmux, Herdr, cmux,
+WezTerm, Ghostty, or iTerm2 through the detailed terminal chooser.
+
 Mission Control supports five kinds of work:
 
 - **Ship** delivers a change and opens a pull request.

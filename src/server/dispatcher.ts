@@ -34,6 +34,7 @@ import {
   resolveDispatchEffort,
   resolveDispatchModel,
   resolveDispatchRuntime,
+  resolveDispatchTerminalBackend,
 } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
@@ -229,6 +230,8 @@ export class Dispatcher {
        */
       onSessionBound?: (taskId: string) => void;
       resolveRuntime?: typeof resolveDispatchRuntime;
+      /** Exact terminal default for this harness, or null for Automatic. */
+      resolveTerminalBackend?: typeof resolveDispatchTerminalBackend;
       /**
        * What the operator's standing instructions resolve to for these checkouts.
        *
@@ -299,11 +302,8 @@ export class Dispatcher {
       const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
 
-      // The branch and worktree take the git-safe slug; the terminal home (which is what
-      // the card is named after) takes the human-readable label, so an untitled dispatch
-      // reads like a heading instead of `add-a-dark-mode-toggle`.
+      // The branch and worktree take the git-safe slug.
       const slug = slugify(task.title);
-      const label = sessionLabel(task.title);
       const shortId = taskId.slice(0, 6);
 
       // Resolved BEFORE anything is provisioned, so a caller that named a commit this
@@ -317,6 +317,15 @@ export class Dispatcher {
       // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
       // session rather than the next restart, which is all the later position bought.
       const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
+      // Resolved once beside the runtime, and only on the terminal arm. The exact choice is
+      // persisted with the resulting home so a later settings edit cannot re-aim liveness or
+      // teardown at a different backend.
+      const terminalBackend = runtime === "terminal"
+        ? (this.deps.resolveTerminalBackend ?? resolveDispatchTerminalBackend)(task.agent)
+        : null;
+      // The terminal home (which is what the card is named after) takes the human-readable
+      // label, sanitized by the backend that will actually create it.
+      const label = sessionLabel(task.title, terminalBackend);
 
       // A plan task's contract POINTS AT the two planning skills rather than restating them,
       // so their invocations have to be resolved before it can be composed - and a launch that
@@ -718,6 +727,7 @@ export class Dispatcher {
           agentBin,
           agentArgs,
           stateHome,
+          terminalBackend,
         );
         // The terminal cleanup wrapper now owns this home until its agent command exits.
         // An injected spawn seam starts no wrapper, so its disposable fixture can go now.
@@ -728,7 +738,7 @@ export class Dispatcher {
         this.registry.discardLaunchTurn(piMarker);
         throw err;
       }
-      this.patch(taskId, { homeName });
+      this.patch(taskId, { homeName, homeBackend: terminalBackend });
       if (await this.abortIfSettled(taskId)) return;
 
       const discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
@@ -868,7 +878,9 @@ export class Dispatcher {
       // a `homeName`-less task would otherwise read as "no home was ever spawned" - true,
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
-      const alive = embedded ?? (cur.homeName ? await homeAlive(cur.homeName) : false);
+      const alive = embedded ?? (
+        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null) : false
+      );
       if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
@@ -1348,6 +1360,7 @@ export class Dispatcher {
         status: "running",
         sessionId: session.id,
         homeName: null,
+        homeBackend: null,
         terminalResourceId: null,
       });
       // Cover both driver-binding orders, as ordinary embedded dispatch does. A bound
@@ -1383,7 +1396,7 @@ export class Dispatcher {
       command,
       args,
     );
-    this.patch(taskId, { homeName });
+    this.patch(taskId, { homeName, homeBackend: null });
     if (await this.abortIfSettled(taskId)) return;
 
     // The terminal is conductor's live stdin, not an agent session. Agent sessions appear
@@ -1929,6 +1942,7 @@ export class Dispatcher {
       this.patch(taskId, {
         ...releasedTaskResources(task, null),
         homeName: null,
+        homeBackend: null,
         terminalResourceId: null,
       });
       return true;
@@ -2318,6 +2332,8 @@ export async function teardownWorktree(
     /** Position when this shape names one tree during provisioning unwind. */
     position?: number;
     homeName: string | null;
+    /** Exact creator for an explicitly selected home; null/absent keeps legacy Automatic. */
+    homeBackend?: string | null;
     /**
      * The task's secondary repos, when it has any. Optional so the handful of callers that
      * build this shape by hand for a single tree - provisioning's own unwind paths - stay
@@ -2338,7 +2354,7 @@ export async function teardownWorktree(
   manager?: WorktreeManager,
 ): Promise<void> {
   if (task.homeName) {
-    const killed = await killHome(task.homeName);
+    const killed = await killHome(task.homeName, undefined, task.homeBackend ?? null);
     // An adapter lookup that found nothing must not read as "there was nothing to kill".
     // This is the one path where the difference is destructive: we are about to hand the
     // worktree back to the pool, so an agent still running in it loses its checkout with no
@@ -2660,8 +2676,8 @@ export function slugify(title: string): string {
  * Still exported and still named for the session, because the composition it is half of -
  * `sessionLabel(deriveTitle(intent))` - is what an untitled dispatch is named by.
  */
-export function sessionLabel(title: string): string {
-  return homeNameRules().sanitize(title);
+export function sessionLabel(title: string, terminalBackend: string | null = null): string {
+  return homeNameRules(undefined, terminalBackend).sanitize(title);
 }
 
 /**
@@ -2698,21 +2714,26 @@ export async function spawnUniquely(
   agentBin: string,
   agentArgs: readonly string[] = [],
   stateHome?: string,
+  terminalBackend: string | null = null,
 ): Promise<string> {
   const effectiveStateHome = stateHome ?? createDisposableAgentStateHome();
   const argv = isolatedAgentArgv(
     [agentBin, ...agentArgs],
     { cwd, stateHome: effectiveStateHome },
   );
-  const held = await heldHomeNames();
+  const held = await heldHomeNames(undefined, terminalBackend);
   const unique = `${baseName}-${shortId}`;
   const name = held === null || held.has(baseName) ? unique : baseName;
 
   try {
-    const first = await launchHome({ name, cwd, argv, sidePane: true });
+    const first = await launchHome({ name, cwd, argv, sidePane: true }, undefined, terminalBackend);
     if (first.ok) return name;
     if (name === unique) throw new Error(first.error);
-    const retry = await launchHome({ name: unique, cwd, argv, sidePane: true });
+    const retry = await launchHome(
+      { name: unique, cwd, argv, sidePane: true },
+      undefined,
+      terminalBackend,
+    );
     if (retry.ok) return unique;
     throw new Error(retry.error);
   } catch (error) {

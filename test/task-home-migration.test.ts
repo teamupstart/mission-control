@@ -90,6 +90,7 @@ test("openDb backfills a live task's home name from the old tmux_session column"
 
 test("a task that never had a home stays null, not empty", () => {
   assert.equal(getTask("backlog-1")?.homeName, null);
+  assert.equal(getTask("backlog-1")?.homeBackend, null);
 });
 
 test("the old tmux_session column is left intact but no longer read", () => {
@@ -112,6 +113,7 @@ test("the old tmux_session column is left intact but no longer read", () => {
 
 test("a task written after the upgrade round-trips its home name", () => {
   const t = getTask("backlog-1")!;
-  upsertTask({ ...t, homeName: "some-dispatched-home" });
+  upsertTask({ ...t, homeName: "some-dispatched-home", homeBackend: "herdr" });
   assert.equal(getTask("backlog-1")?.homeName, "some-dispatched-home");
+  assert.equal(getTask("backlog-1")?.homeBackend, "herdr");
 });

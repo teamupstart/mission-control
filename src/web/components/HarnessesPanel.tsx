@@ -12,6 +12,7 @@ import {
   resolveSessionRuntime,
   sdkRuntimeUnsupportedWhy,
 } from "@shared/harness-capabilities.ts";
+import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import {
   ModelCatalogNotice,
@@ -21,6 +22,7 @@ import {
 import type { HarnessesState } from "../useHarnesses.ts";
 import { AgentDot, agentAccentStyle } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
+import { TerminalPreferencePicker } from "./TerminalPreferencePicker.tsx";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
 // launches - the auto-mode master toggle, then ONE CARD PER HARNESS carrying that
@@ -138,33 +140,39 @@ function HarnessCard({
   model,
   effort,
   runtime,
+  terminalBackend,
   autoMode,
   disabled,
   onModel,
   onEffort,
   onRuntime,
+  onTerminalBackend,
 }: {
   agent: AgentType;
   label: string;
   model: string | null;
   effort: ThinkingLevel | null;
   runtime: string | null;
+  terminalBackend: string | null;
   autoMode: boolean;
   disabled: boolean;
   onModel: (id: string | null) => void;
   onEffort: (level: ThinkingLevel | null) => void;
   onRuntime: (runtime: SessionRuntime) => void;
+  onTerminalBackend: (backend: TerminalBackendId | null) => void;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const models = resolveModels(agent, model);
   const modelId = `harness-model-${agent}`;
   const effortId = `harness-effort-${agent}`;
   const runtimeId = `harness-runtime-${agent}`;
+  const terminalId = `harness-terminal-${agent}`;
   // Do not guess a runtime while the config is in flight. A new install will resolve to the
   // Agent SDK, but an upgraded installation can still have a legacy Terminal default. Once
   // loaded, the shared gate makes the panel and dispatcher agree about unknown or unsupported
   // stored values too.
   const resolved = runtime === null ? null : resolveSessionRuntime(agent, runtime);
+  const resolvedTerminal = resolveTerminalBackend(terminalBackend);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
   const runtimeNote =
     runtime === null
@@ -172,7 +180,9 @@ function HarnessCard({
       : (sdkWhy ??
         (resolved?.runtime === "sdk"
           ? "They run inside Mission Control on the Agent SDK - no terminal pane, questions answered from the card, and Continue in terminal when you want to take over."
-          : "They run in a terminal pane, as they always have."));
+          : resolvedTerminal.backend
+            ? "They run in a terminal pane using the terminal selected above."
+            : "They run in a terminal pane, selecting an available multiplexer or terminal app automatically."));
   return (
     <div className="harness-card" data-anchor={`harnesses/${agent}`} style={agentAccentStyle(agent)}>
       <div className="harness-card-head">
@@ -241,6 +251,20 @@ function HarnessCard({
             </Tooltip>
           </>
         )}
+        {resolved?.runtime === "terminal" && (
+          <>
+            <label className="harness-card-field-label" htmlFor={terminalId}>
+              Terminal
+            </label>
+            <TerminalPreferencePicker
+              id={terminalId}
+              agentLabel={label}
+              value={terminalBackend}
+              disabled={disabled}
+              onChange={onTerminalBackend}
+            />
+          </>
+        )}
       </div>
       <ModelCatalogNotice agent={agent} />
       <p className="harness-card-note">
@@ -265,6 +289,15 @@ function HarnessCard({
             <strong>
               This harness is set to the {resolved.unsupported} runtime, which this build has no
               driver for.
+            </strong>
+          </>
+        )}
+        {resolved?.runtime === "terminal" && resolvedTerminal.unknown && (
+          <>
+            {" "}
+            <strong>
+              A stored terminal backend this build doesn&apos;t know (
+              {resolvedTerminal.unknown}) was ignored.
             </strong>
           </>
         )}
@@ -345,11 +378,15 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             model={config?.defaultModel[card.agent] ?? null}
             effort={config?.defaultEffort[card.agent] ?? null}
             runtime={config?.sessionRuntime[card.agent] ?? null}
+            terminalBackend={config?.terminalBackend[card.agent] ?? null}
             autoMode={autoMode}
             disabled={!config}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}
             onEffort={(level) => void update({ defaultEffort: { [card.agent]: level } })}
             onRuntime={(runtime) => void update({ sessionRuntime: { [card.agent]: runtime } })}
+            onTerminalBackend={(backend) =>
+              void update({ terminalBackend: { [card.agent]: backend } })
+            }
           />
         ))}
       </div>

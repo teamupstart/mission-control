@@ -30,6 +30,7 @@ export function mergeHarnessesPatch(
     defaultModel: { ...before.defaultModel, ...patch.defaultModel },
     defaultEffort: { ...before.defaultEffort, ...patch.defaultEffort },
     sessionRuntime: { ...before.sessionRuntime, ...patch.sessionRuntime },
+    terminalBackend: { ...before.terminalBackend, ...patch.terminalBackend },
     kindDefaults: mergeKindDefaults(before.kindDefaults, patch.kindDefaults),
   };
 }

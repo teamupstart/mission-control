@@ -123,6 +123,7 @@ function mkDiscovered(over: Partial<DiscoveredSession>): DiscoveredSession {
 interface TerminalRun {
   registry: InstanceType<typeof Registry>;
   argv: string[];
+  terminalBackend: string | null;
   /** The composed prompt, from the pane paste or (for Pi) from the launch argv. */
   prompt: string;
   sessionId: string;
@@ -154,13 +155,15 @@ async function terminalDispatch(options: {
   );
   const nativeId = `native-${options.taskId}`;
   let argv: string[] = [];
+  let terminalBackend: string | null = null;
   let pasted: string | null = null;
   let sessionId = "";
   const dispatcher = new Dispatcher(registry, async () => {}, {
     resolveRuntime: () => "terminal",
     missionMcpDescriptor: async () => null,
-    spawn: async (_label, _short, cwd, _bin, args) => {
+    spawn: async (_label, _short, cwd, _bin, args, _stateHome, selectedBackend) => {
       argv = [...(args ?? [])];
+      terminalBackend = selectedBackend ?? null;
       const discovered = mkDiscovered({
         agent: options.agent,
         cwd,
@@ -198,8 +201,30 @@ async function terminalDispatch(options: {
   // Pi's turn one travels in the argv rather than through a paste - which is precisely why
   // it is the harness that proves the prompt-prefix path end to end.
   const prompt = pasted ?? String(argv[argv.length - 1]);
-  return { registry, argv, prompt, sessionId, nativeId };
+  return { registry, argv, terminalBackend, prompt, sessionId, nativeId };
 }
+
+test("a saved terminal backend reaches the next launch and stays with its task home", async () => {
+  setHarnessesConfig({ terminalBackend: { claude: "herdr" } });
+  const run = await terminalDispatch({
+    agent: "claude",
+    repo: seedRepo("terminal-backend-repo"),
+    taskId: "terminal-backend-task",
+    intent: "use the configured terminal",
+  });
+
+  assert.equal(run.terminalBackend, "herdr");
+  const task = run.registry.getTask("terminal-backend-task")!;
+  assert.equal(task.homeBackend, "herdr");
+  run.registry.upsertTask({
+    ...task,
+    status: "done",
+    worktreePath: null,
+    homeName: null,
+    homeBackend: null,
+    terminalResourceId: null,
+  });
+});
 
 /** Records what the dispatcher asked the supervisor for, and answers with a card. */
 function fakeSupervisor(registry: InstanceType<typeof Registry>) {

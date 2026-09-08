@@ -3237,6 +3237,7 @@ export function buildApp(
             // the resumed CLI is working in. Null means "could not tell", and only `false`
             // reclaims - see `TerminalLaunchOutcome.homeName` and `homeAlive`.
             homeName: result.homeName ?? null,
+            homeBackend: result.homeName ? backend : null,
             terminalResourceId: null,
             updatedAt: Date.now(),
           });

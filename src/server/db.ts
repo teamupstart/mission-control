@@ -761,6 +761,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       -- Nullable: every task dispatched before this column existed genuinely has no baseline.
       base_sha      TEXT,
       home_name     TEXT,               -- name of the terminal home, any backend (was tmux_session)
+      home_backend  TEXT,               -- exact creator, NULL for automatic or legacy launches
       terminal_resource_id TEXT,
       session_id    TEXT,
       -- Which recurring mission filed this task, and for which instant. All three NULL
@@ -3495,6 +3496,10 @@ function migrate(d: DatabaseSync): void {
   // start that happened to find one NULL row.
   repairBacklogRanks(d);
   addColumn(d, "tasks", "terminal_resource_id", "TEXT");
+  // The exact backend an explicitly configured dispatch used. Nullable with no backfill:
+  // every historical row used Automatic, and preserving that answer keeps its existing
+  // multi-backend liveness and cleanup policy intact.
+  addColumn(d, "tasks", "home_backend", "TEXT");
   // Recurring Missions provenance. Editing the CREATE TABLE block above is not enough:
   // it is `IF NOT EXISTS`, so an operator upgrading into this build keeps the table they
   // already have and every task write would fail on three columns that never appeared.
@@ -5112,6 +5117,7 @@ interface TaskRow {
   worktree_lease_id: string | null;
   base_sha: string | null;
   home_name: string | null;
+  home_backend: string | null;
   terminal_resource_id: string | null;
   session_id: string | null;
   schedule_id: string | null;
@@ -5416,6 +5422,7 @@ function rowToTask(
     baseSha: r.base_sha,
     extraRepos,
     homeName: r.home_name,
+    homeBackend: r.home_backend,
     terminalResourceId: r.terminal_resource_id,
     sessionId: r.session_id,
     scheduleId: r.schedule_id,
@@ -5467,11 +5474,11 @@ export function upsertTask(t: Task): string[] {
          pipeline_provider, pipeline_slug, pipeline_commission_id, pipeline_workspace_path,
          worktree_path, branch, provider, worktree_lease_id,
          base_sha,
-         home_name, terminal_resource_id, session_id,
+         home_name, home_backend, terminal_resource_id, session_id,
          schedule_id, schedule_occurrence_id, scheduled_for,
          status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, dependencies=excluded.dependencies,
@@ -5490,6 +5497,7 @@ export function upsertTask(t: Task): string[] {
          worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, worktree_lease_id=excluded.worktree_lease_id,
          base_sha=excluded.base_sha, home_name=excluded.home_name,
+         home_backend=excluded.home_backend,
          terminal_resource_id=excluded.terminal_resource_id, session_id=excluded.session_id,
          schedule_id=excluded.schedule_id,
          schedule_occurrence_id=excluded.schedule_occurrence_id,
@@ -5514,7 +5522,7 @@ export function upsertTask(t: Task): string[] {
       t.pipelineCommissionId ?? null,
       t.pipelineWorkspacePath ?? null,
       t.worktreePath, t.branch, t.provider, t.worktreeLeaseId, t.baseSha,
-      t.homeName, t.terminalResourceId, t.sessionId,
+      t.homeName, t.homeBackend ?? null, t.terminalResourceId, t.sessionId,
       t.scheduleId, t.scheduleOccurrenceId, t.scheduledFor,
       t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,

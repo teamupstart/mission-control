@@ -6,6 +6,7 @@ import { HarnessesPanel } from "../src/web/components/HarnessesPanel.tsx";
 import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import {
   DEFAULT_HARNESSES_SESSION_RUNTIMES,
+  DEFAULT_HARNESSES_TERMINAL_BACKENDS,
   emptyTaskKindDefaults,
   type HarnessesConfig,
 } from "../src/shared/protocol.ts";
@@ -15,6 +16,7 @@ import {
   type SessionRuntime,
   type ThinkingLevel,
 } from "../src/shared/types.ts";
+import type { TerminalBackendId } from "../src/shared/terminal.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import {
   HARNESS_CAPABILITIES,
@@ -66,6 +68,7 @@ function mkConfig(
     defaultModel?: Partial<Record<AgentType, string | null>>;
     defaultEffort?: Partial<Record<AgentType, ThinkingLevel | null>>;
     sessionRuntime?: Partial<Record<AgentType, SessionRuntime>>;
+    terminalBackend?: Partial<Record<AgentType, TerminalBackendId | null>>;
   } = {},
 ): HarnessesConfig {
   return {
@@ -73,6 +76,7 @@ function mkConfig(
     defaultModel: { ...fullRecord<string | null>(null), ...over.defaultModel },
     defaultEffort: { ...fullRecord<ThinkingLevel | null>(null), ...over.defaultEffort },
     sessionRuntime: { ...DEFAULT_HARNESSES_SESSION_RUNTIMES, ...over.sessionRuntime },
+    terminalBackend: { ...DEFAULT_HARNESSES_TERMINAL_BACKENDS, ...over.terminalBackend },
     kindDefaults: emptyTaskKindDefaults(),
   };
 }
@@ -310,7 +314,40 @@ test("a fresh card shows the shipped runtime defaults", () => {
 test("a card describes a terminal choice when an operator selects it", () => {
   const html = render({ sessionRuntime: { claude: "terminal" } });
   assert.match(html, /<option value="terminal" selected/);
-  assert.match(html, /run in a terminal pane, as they always have/);
+  assert.match(html, /selecting an available multiplexer or terminal app automatically/);
+  assert.match(html, /Terminal preference for Claude Code: Automatic/);
+});
+
+test("a terminal-backed harness gets the detailed terminal chooser and keeps an exact choice", () => {
+  const html = render({
+    sessionRuntime: { claude: "terminal" },
+    terminalBackend: { claude: "herdr" },
+  });
+
+  assert.match(html, /Terminal preference for Claude Code: herdr/);
+  assert.match(html, /using the terminal selected above/);
+  assert.doesNotMatch(html, /Choose a terminal for dispatched Claude Code sessions/);
+});
+
+test("an SDK-backed harness hides its terminal chooser without clearing the stored choice", () => {
+  const html = render({
+    sessionRuntime: { claude: "sdk" },
+    terminalBackend: { claude: "herdr" },
+  });
+
+  assert.doesNotMatch(html, /Terminal preference for Claude Code/);
+  assert.match(html, /Agent SDK/);
+});
+
+test("an unknown stored terminal backend is visible and falls back to Automatic", () => {
+  const html = render({
+    sessionRuntime: { claude: "terminal" },
+    terminalBackend: { claude: "future-terminal" as TerminalBackendId },
+  });
+
+  assert.match(html, /Terminal preference for Claude Code: Automatic/);
+  assert.match(html, /terminal backend this build doesn&#x27;t know \(future-terminal\) was ignored/);
+  assert.match(html, /selecting an available multiplexer or terminal app automatically/);
 });
 
 test("an Agent SDK selection says what changes in the card's own sentence", () => {

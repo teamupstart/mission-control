@@ -128,7 +128,6 @@ import {
   ENSEMBLE_DECISION_STATUSES,
   ENSEMBLE_DRIVER_KEYS,
   ENSEMBLE_EVALUATION_STATUSES,
-  ENSEMBLE_EVALUATOR_KINDS,
   ENSEMBLE_HARD_LIMITS,
   ENSEMBLE_LIMITS,
   ENSEMBLE_LLM_CALL_STATES,
@@ -2302,6 +2301,15 @@ const StoredSessionRuntimeSchema = z.string();
 const SessionRuntimeSchema = z.enum(SESSION_RUNTIMES);
 
 /**
+ * One terminal preference as stored. Null means Automatic; string keeps newer backend ids
+ * readable so one future value cannot make the whole Harnesses config fail to parse.
+ */
+const StoredTerminalBackendSchema = z.string().nullable();
+
+/** What the dashboard may set. Strict: this build writes only registered backend ids. */
+const TerminalBackendSchema = z.enum(TERMINAL_BACKEND_IDS);
+
+/**
  * The runtime an untouched installation uses for each harness. Only harnesses with a
  * declared embedded driver start on the Agent SDK; Pi remains terminal-backed until it
  * has one. Kept beside the schema so the server's first read and the browser's pre-load
@@ -2312,6 +2320,13 @@ export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
   codex: "sdk",
   pi: "terminal",
 } as const satisfies Record<AgentType, SessionRuntime>;
+
+/** An untouched installation keeps the existing automatic backend selection. */
+export const DEFAULT_HARNESSES_TERMINAL_BACKENDS = {
+  claude: null,
+  codex: null,
+  pi: null,
+} as const satisfies Record<AgentType, null>;
 
 /**
  * One task kind's launch defaults: which harness files it, and what that harness launches on.
@@ -2447,6 +2462,19 @@ export const HarnessesConfigSchema = z.object({
       pi: StoredSessionRuntimeSchema.default(DEFAULT_HARNESSES_SESSION_RUNTIMES.pi),
     })
     .default(DEFAULT_HARNESSES_SESSION_RUNTIMES),
+  /**
+   * Which terminal backend each harness uses when its resolved runtime is Terminal.
+   * Null preserves the existing automatic policy: multiplexers in registry order when any
+   * are installed, otherwise terminal apps in registry order. An explicit id is exact and
+   * never silently falls through to a different terminal.
+   */
+  terminalBackend: z
+    .object({
+      claude: StoredTerminalBackendSchema.default(null),
+      codex: StoredTerminalBackendSchema.default(null),
+      pi: StoredTerminalBackendSchema.default(null),
+    })
+    .default(DEFAULT_HARNESSES_TERMINAL_BACKENDS),
   /**
    * What a dispatched task of each KIND runs as, when the task itself did not say.
    *
@@ -2691,6 +2719,13 @@ export const HarnessesConfigPatchSchema = z
         claude: SessionRuntimeSchema.optional(),
         codex: SessionRuntimeSchema.optional(),
         pi: SessionRuntimeSchema.optional(),
+      })
+      .optional(),
+    terminalBackend: z
+      .object({
+        claude: TerminalBackendSchema.nullable().optional(),
+        codex: TerminalBackendSchema.nullable().optional(),
+        pi: TerminalBackendSchema.nullable().optional(),
       })
       .optional(),
     /**

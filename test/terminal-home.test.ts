@@ -140,6 +140,54 @@ test("with no multiplexer installed, a dispatch still lands - in an emulator tab
   assert.deepEqual(opened, [{ title: "api", cwd: "/w/api", argv: SPEC.argv }]);
 });
 
+test("an explicit emulator choice bypasses installed multiplexers", async () => {
+  const opened: string[] = [];
+  const machine = deps(
+    fakeMultiplexer({ sessions: sessions() }),
+    fakeEmulator({
+      spawn: {
+        tab: async () => {
+          opened.push("wezterm");
+          return { ...OK, target: null };
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(homeBackends(machine, "wezterm").map((backend) => backend.id), ["wezterm"]);
+  assert.equal((await launchHome(SPEC, machine, "wezterm")).ok, true);
+  assert.deepEqual(opened, ["wezterm"]);
+});
+
+test("an unavailable explicit choice fails instead of silently choosing another terminal", async () => {
+  const machine = deps(
+    fakeMultiplexer({ sessions: sessions() }),
+    fakeEmulator({ spawn: { tab: async () => ({ ...OK, target: null }) } }),
+    (spec) => spec !== EMU_BIN,
+  );
+
+  const result = await launchHome(SPEC, machine, "wezterm");
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /selected terminal backend wezterm/);
+});
+
+test("an explicit backend owns liveness even when another backend holds the same name", async () => {
+  const machine = deps(
+    fakeMultiplexer({
+      sessions: sessions(),
+      list: async () => [muxPane({ session: "api", sessionName: "api" })],
+    }),
+    fakeEmulator({
+      spawn: { tab: async () => ({ ...OK, target: null }) },
+      list: async () => [],
+    }),
+  );
+
+  assert.equal(await homeAlive("api", machine), true);
+  assert.equal(await homeAlive("api", machine, "wezterm"), false);
+  assert.equal(await homeAlive("api", machine, "future-terminal"), null);
+});
+
 test("a machine with nothing installed is told what would fix it", async () => {
   const r = await launchHome(SPEC, deps(fakeMultiplexer(), fakeEmulator(), () => false));
 

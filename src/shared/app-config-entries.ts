@@ -118,6 +118,7 @@ const harnessesFields = {
   defaultModel: "setting",
   defaultEffort: "setting",
   sessionRuntime: "setting",
+  terminalBackend: "setting",
   kindDefaults: "setting",
 } satisfies Record<keyof HarnessesConfig, AppConfigValueClass>;
 

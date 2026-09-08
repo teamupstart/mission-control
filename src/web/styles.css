@@ -19051,6 +19051,99 @@ button.wf-carried.is-link:focus-visible {
 .harnesses-select:disabled {
   opacity: 0.55;
 }
+/* The detailed terminal preference keeps the compact select silhouette in the card and
+   opens the same row vocabulary as the conversation launcher's terminal chooser. */
+.terminal-pref {
+  position: relative;
+  display: block;
+  min-width: 0;
+  max-width: 250px;
+}
+.terminal-pref-trigger {
+  width: 100%;
+  min-height: 27px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.terminal-pref-trigger:hover:not(:disabled),
+.terminal-pref-trigger[aria-expanded="true"],
+.terminal-pref-trigger:focus-visible {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  outline: none;
+}
+.terminal-pref-trigger:disabled {
+  cursor: default;
+}
+.terminal-pref-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-pref-caret {
+  flex: none;
+  color: var(--dim);
+  font-size: 8px;
+}
+.terminal-pref-pop {
+  right: auto;
+  left: 0;
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+}
+.terminal-pref-head {
+  padding-bottom: 7px;
+}
+.terminal-pref-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+}
+.terminal-pref-group + .terminal-pref-group {
+  border-left: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+}
+.terminal-pref-group > .launch-head {
+  padding-top: 6px;
+}
+.terminal-pref-row[aria-checked="true"] {
+  background: color-mix(in oklab, var(--working) 8%, transparent);
+}
+.terminal-pref-row .launch-text {
+  flex: 1;
+}
+.terminal-pref-check {
+  flex: none;
+  align-self: center;
+  color: var(--idle);
+  font-size: 12px;
+  font-weight: 700;
+}
+.terminal-pref-auto-glyph {
+  color: var(--muted);
+}
+@media (max-width: 900px) {
+  .terminal-pref-pop {
+    right: 0;
+    left: auto;
+    width: min(340px, calc(100vw - 32px));
+  }
+  .terminal-pref-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .terminal-pref-group + .terminal-pref-group {
+    margin-top: 3px;
+    padding-top: 3px;
+    border-top: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+    border-left: 0;
+  }
+}
 /* One card per harness: its model and effort belong together, and the flat two-list
    layout drew each harness twice. The frame matches `.ts-card` - the app's other
    settings card - and grows a left rule in the harness's own accent, which arrives as an

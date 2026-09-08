@@ -13,6 +13,7 @@ import {
 import type { TaskKindDefault } from "@shared/protocol.ts";
 import type { AgentType, SessionRuntime, TaskKind, ThinkingLevel } from "@shared/types.ts";
 import { modelBelongsToAnotherHarness } from "@shared/model.ts";
+import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
 import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
@@ -98,9 +99,10 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
   const next = HarnessesConfigSchema.parse({
     ...cur,
     ...patch,
-    defaultModel: { ...cur.defaultModel, ...(patch.defaultModel ?? {}) },
-    defaultEffort: { ...cur.defaultEffort, ...(patch.defaultEffort ?? {}) },
-    sessionRuntime: { ...cur.sessionRuntime, ...(patch.sessionRuntime ?? {}) },
+    defaultModel: { ...cur.defaultModel, ...patch.defaultModel },
+    defaultEffort: { ...cur.defaultEffort, ...patch.defaultEffort },
+    sessionRuntime: { ...cur.sessionRuntime, ...patch.sessionRuntime },
+    terminalBackend: { ...cur.terminalBackend, ...patch.terminalBackend },
     kindDefaults: merged,
   });
   setAppConfig(CONFIG_ENTRY, next);
@@ -230,4 +232,19 @@ export function resolveDispatchRuntime(agent: AgentType): SessionRuntime {
     );
   }
   return resolved.runtime;
+}
+
+/**
+ * Which exact terminal backend a freshly-dispatched harness should use, or null for the
+ * existing automatic policy. Unknown stored ids fall back safely and remain visible in logs.
+ */
+export function resolveDispatchTerminalBackend(agent: AgentType): TerminalBackendId | null {
+  const resolved = resolveTerminalBackend(getHarnessesConfig().terminalBackend[agent]);
+  if (resolved.unknown) {
+    console.warn(
+      `[mission-control] the stored terminal backend ${JSON.stringify(resolved.unknown)} for ` +
+        `${agent} is not one this build knows - selecting a terminal automatically instead`,
+    );
+  }
+  return resolved.backend;
 }

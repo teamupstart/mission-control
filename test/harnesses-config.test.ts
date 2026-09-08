@@ -13,7 +13,12 @@ const home = mkdtempSync(join(tmpdir(), "mission-harnesses-cfg-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
-const { getHarnessesConfig, setHarnessesConfig } = await import("../src/server/harnesses.ts");
+const {
+  getHarnessesConfig,
+  resolveDispatchTerminalBackend,
+  setHarnessesConfig,
+} = await import("../src/server/harnesses.ts");
+const { HarnessesConfigPatchSchema } = await import("../src/shared/protocol.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -31,6 +36,51 @@ test("new installations default supported harnesses to the Agent SDK", () => {
     codex: "sdk",
     pi: "terminal",
   });
+});
+
+test("new installations select terminal backends automatically", () => {
+  assert.deepEqual(getHarnessesConfig().terminalBackend, {
+    claude: null,
+    codex: null,
+    pi: null,
+  });
+});
+
+test("an exact terminal preference persists per harness and patches independently", () => {
+  setHarnessesConfig({ terminalBackend: { claude: "herdr", codex: "wezterm" } });
+  const next = setHarnessesConfig({ terminalBackend: { claude: "ghostty" } });
+
+  assert.equal(next.terminalBackend.claude, "ghostty");
+  assert.equal(next.terminalBackend.codex, "wezterm");
+  assert.equal(resolveDispatchTerminalBackend("claude"), "ghostty");
+  assert.equal(resolveDispatchTerminalBackend("pi"), null);
+});
+
+test("terminal preference writes accept only registered backends and Automatic", () => {
+  assert.equal(
+    HarnessesConfigPatchSchema.safeParse({ terminalBackend: { claude: "herdr" } }).success,
+    true,
+  );
+  assert.equal(
+    HarnessesConfigPatchSchema.safeParse({ terminalBackend: { claude: null } }).success,
+    true,
+  );
+  assert.equal(
+    HarnessesConfigPatchSchema.safeParse({ terminalBackend: { claude: "quantum" } }).success,
+    false,
+  );
+});
+
+test("an unknown stored terminal backend falls back without making the config unreadable", () => {
+  openDb()
+    .prepare(`INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)`)
+    .run(
+      "harnesses",
+      JSON.stringify({ terminalBackend: { claude: "future-terminal" } }),
+    );
+
+  assert.equal(getHarnessesConfig().terminalBackend.claude, "future-terminal");
+  assert.equal(resolveDispatchTerminalBackend("claude"), null);
 });
 
 test("enabling persists and reads back on", () => {

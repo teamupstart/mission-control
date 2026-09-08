@@ -18,12 +18,14 @@ import type { NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
  * free name. A machine with no tmux could not dispatch at all, and nothing said so - the
  * spawn simply failed with an ENOENT the operator had to read out of a task error.
  *
- * ## One axis, chosen once
+ * ## One backend policy, chosen once
  *
- * `homeBackends` returns MULTIPLEXERS if any is installed, and emulators only if none is.
- * That is the precedence rule `enumerateTerminals` already declares - multiplexers before
- * emulators, because a multiplexer pane lives inside an emulator pane and is the inner, more
- * specific answer - applied to creation instead of to naming.
+ * In Automatic mode, `homeBackends` returns MULTIPLEXERS if any is installed, and emulators
+ * only if none is. With an explicit preference it returns only that exact backend. Automatic
+ * follows the precedence rule `enumerateTerminals` already declares -
+ * multiplexers before emulators, because a multiplexer pane lives inside an emulator pane
+ * and is the inner, more specific answer - applied to creation instead of to naming. An
+ * explicit preference returns that one backend only, across either axis.
  *
  * Picking the axis ONCE, in one function every caller shares, is the load-bearing part. The
  * four questions here are asked at four different moments in a task's life, minutes or a
@@ -124,7 +126,10 @@ export interface HomeBackend {
  * Empty is a legitimate answer - a machine with neither a multiplexer nor a scriptable
  * terminal - and every caller below has a defined behaviour for it. None of them is silence.
  */
-export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
+export function homeBackends(
+  deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
+): HomeBackend[] {
   const mux: HomeBackend[] = [];
   for (const id of MULTIPLEXER_IDS) {
     const backend = deps.multiplexers[id];
@@ -158,8 +163,6 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
       kill: sessions.kill,
     });
   }
-  if (mux.length) return mux;
-
   const emu: HomeBackend[] = [];
   for (const id of EMULATOR_IDS) {
     const backend = deps.emulators[id];
@@ -187,15 +190,21 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
       kill: null,
     });
   }
-  return emu;
+  if (preferredBackend !== null) {
+    return [...mux, ...emu].filter((backend) => backend.id === preferredBackend);
+  }
+  return mux.length ? mux : emu;
 }
 
 /** The naming rules a dispatched home will be created under. */
-export function homeNameRules(deps: HomeDeps = defaultHomeDeps): NameRules {
+export function homeNameRules(
+  deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
+): NameRules {
   // `PLAIN_NAMES` when nothing is installed, so a name can still be cut from a title on a
   // machine that cannot host one - the dispatch fails at `launchHome`, with its own message,
   // rather than at a name that came back empty three steps earlier.
-  return homeBackends(deps)[0]?.names ?? PLAIN_NAMES;
+  return homeBackends(deps, preferredBackend)[0]?.names ?? PLAIN_NAMES;
 }
 
 /**
@@ -206,8 +215,15 @@ export function homeNameRules(deps: HomeDeps = defaultHomeDeps): NameRules {
  * caller must fall back to a name that is unique by construction rather than assume it is
  * free.
  */
-export async function heldHomeNames(deps: HomeDeps = defaultHomeDeps): Promise<Map<string, string> | null> {
-  const backends = homeBackends(deps).filter((b) => b.held);
+export async function heldHomeNames(
+  deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
+): Promise<Map<string, string> | null> {
+  const selected = homeBackends(deps, preferredBackend);
+  // If a selected backend cannot enumerate homes, nobody else may answer on its behalf.
+  // A confident false from another terminal would let startup reclaim a live checkout.
+  if (preferredBackend !== null && selected.some((backend) => !backend.held)) return null;
+  const backends = selected.filter((backend) => backend.held);
   if (!backends.length) return null;
   const maps = await Promise.all(backends.map((b) => b.held!()));
   return new Map(maps.flatMap((m) => [...m]));
@@ -222,23 +238,26 @@ export type LaunchResult =
  * Open a terminal home for a dispatched agent on whichever backend is configured.
  *
  * Tries each backend on the chosen axis in order, so a machine with two multiplexers
- * installed and the first one wedged still dispatches. The last failure is what the operator
- * is told, because it is the one that is still true.
+ * installed and the first one wedged still dispatches. An explicit choice is attempted once
+ * and never falls through to a different terminal. The last failure is what the operator is
+ * told, because it is the one that is still true.
  */
 export async function launchHome(
   spec: HomeSpec,
   deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
 ): Promise<LaunchResult> {
-  const backends = homeBackends(deps);
+  const backends = homeBackends(deps, preferredBackend);
   if (!backends.length) {
     return {
       ok: false,
       // Names what would fix it. A dispatch that fails here fails on every task until
       // something is installed, so "no terminal backend" alone would send the operator
       // looking at their agent binary.
-      error:
-        "no terminal backend can host a dispatched agent - install one of " +
-        [...MULTIPLEXER_IDS, ...EMULATOR_IDS].join(", "),
+      error: preferredBackend
+        ? `the selected terminal backend ${preferredBackend} cannot host a dispatched agent on this machine`
+        : "no terminal backend can host a dispatched agent - install one of " +
+          [...MULTIPLEXER_IDS, ...EMULATOR_IDS].join(", "),
     };
   }
   let last = "";
@@ -257,8 +276,9 @@ export async function launchHome(
 export async function homeAlive(
   name: string,
   deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
 ): Promise<boolean | null> {
-  const held = await heldHomeNames(deps);
+  const held = await heldHomeNames(deps, preferredBackend);
   return held === null ? null : held.has(name);
 }
 
@@ -282,14 +302,16 @@ export interface KillHomeResult {
  *
  * "Every backend" rather than the first, because a name is all we record: with two
  * multiplexers installed there is no field saying which one made this home, so the honest
- * act is to ask both. Killing a name that does not exist there is a no-op that reports a
- * failure, which is why `ok` is true if ANY kill landed.
+ * act is to ask both. An explicit choice asks only its recorded backend. Killing a name that
+ * does not exist there is a no-op that reports a failure, which is why `ok` is true if ANY
+ * kill landed.
  */
 export async function killHome(
   name: string,
   deps: HomeDeps = defaultHomeDeps,
+  preferredBackend: string | null = null,
 ): Promise<KillHomeResult> {
-  const killers = homeBackends(deps).filter((b) => b.kill);
+  const killers = homeBackends(deps, preferredBackend).filter((b) => b.kill);
   if (!killers.length) return { ok: false, asked: false };
   let error: string | undefined;
   let ok = false;

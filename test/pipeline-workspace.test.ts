@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -316,11 +317,19 @@ test("Git validation yields to the event loop instead of blocking registry work"
   git(repo, "commit", "-qm", "base");
   git(repo, "worktree", "add", "-qb", "spec/slow", worktree);
   const slowGit = join(bin, "git");
-  writeFileSync(slowGit, `#!/bin/sh\nsleep 0.2\nexec ${JSON.stringify(gitBin)} "$@"\n`);
+  const slowGitInvoked = join(home, "slow-git-invoked");
+  writeFileSync(
+    slowGit,
+    '#!/bin/sh\n: > "$MISSION_TEST_SLOW_GIT_INVOKED"\nsleep 0.2\nexec "$MISSION_TEST_REAL_GIT" "$@"\n',
+  );
   chmodSync(slowGit, 0o700);
 
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${bin}:${previousPath ?? ""}`;
+  const previousGitBin = process.env.MISSION_GIT_BIN;
+  const previousSlowGitInvoked = process.env.MISSION_TEST_SLOW_GIT_INVOKED;
+  const previousRealGit = process.env.MISSION_TEST_REAL_GIT;
+  process.env.MISSION_GIT_BIN = slowGit;
+  process.env.MISSION_TEST_SLOW_GIT_INVOKED = slowGitInvoked;
+  process.env.MISSION_TEST_REAL_GIT = gitBin;
   let settled = false;
   try {
     const resolving = resolvePipelineWorkspace({
@@ -367,8 +376,14 @@ test("Git validation yields to the event loop instead of blocking registry work"
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     assert.equal(settled, false, "the delayed Git child must not stall timers");
     await resolving;
+    assert.equal(existsSync(slowGitInvoked), true, "the test must exercise the delayed Git shim");
   } finally {
-    process.env.PATH = previousPath;
+    if (previousGitBin === undefined) delete process.env.MISSION_GIT_BIN;
+    else process.env.MISSION_GIT_BIN = previousGitBin;
+    if (previousSlowGitInvoked === undefined) delete process.env.MISSION_TEST_SLOW_GIT_INVOKED;
+    else process.env.MISSION_TEST_SLOW_GIT_INVOKED = previousSlowGitInvoked;
+    if (previousRealGit === undefined) delete process.env.MISSION_TEST_REAL_GIT;
+    else process.env.MISSION_TEST_REAL_GIT = previousRealGit;
   }
 });
 

@@ -160,6 +160,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     provider: null,
     worktreeLeaseId: null,
     homeName: null,
+    homeBackend: null,
     terminalResourceId: null,
     sessionId: null,
     // Not a scheduled task. Every fixture built here is ordinary work; the schedule

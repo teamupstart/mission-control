@@ -2215,6 +2215,7 @@ export class TaskManager {
         mergedAt: null,
       })),
       homeName: null,
+      homeBackend: null,
       terminalResourceId: null,
       sessionId: null,
       // Null for every human or external caller - the dispatch form, an MCP tool, a task
@@ -2675,7 +2676,11 @@ export class TaskManager {
             return pipelineRecoveryConsentFailure(this.registry.getTask(id) ?? task);
           }
           if (task.homeName) {
-            const stopped = await killHome(task.homeName);
+            const stopped = await killHome(
+              task.homeName,
+              undefined,
+              task.homeBackend ?? null,
+            );
             if (!stopped.asked || !stopped.ok) {
               throw new Error(stopped.error ?? `no terminal backend could stop ${task.homeName}`);
             }
@@ -2684,6 +2689,7 @@ export class TaskManager {
               this.registry.upsertTask({
                 ...current,
                 homeName: null,
+                homeBackend: null,
                 terminalResourceId: null,
                 updatedAt: Date.now(),
               });
@@ -3730,9 +3736,9 @@ export class TaskManager {
       if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
       return;
     }
-    const alive = await homeAlive(t.homeName);
+    const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null);
     if (alive === false) return;
-    const stopped = await killHome(t.homeName);
+    const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null);
     if (!stopped.asked || !stopped.ok) {
       throw new Error(stopped.error ?? `no terminal backend could stop ${t.homeName}`);
     }
@@ -3962,6 +3968,7 @@ export class TaskManager {
       // `releasedTaskResources` splits it on what was reclaimed.
       ...releasedTaskResources(cur, reclaimed),
       homeName: teardownError === null ? null : cur.homeName,
+      homeBackend: teardownError === null ? null : cur.homeBackend,
       terminalResourceId: teardownError === null ? null : cur.terminalResourceId,
       completedAt: now,
       updatedAt: now,
@@ -4497,6 +4504,7 @@ export class TaskManager {
         // Everything came back: this path returns early when the teardown throws.
         ...releasedTaskResources(cur, null),
         homeName: null,
+        homeBackend: null,
         terminalResourceId: null,
         sessionId: null,
         pipelineRun: null,
@@ -4687,6 +4695,7 @@ export class TaskManager {
           ...after,
           ...releasedTaskResources(after, null),
           homeName: null,
+          homeBackend: null,
           terminalResourceId: null,
           sessionId: null,
           updatedAt: Date.now(),
@@ -4802,6 +4811,7 @@ export class TaskManager {
       ...cur,
       ...releasedTaskResources(cur, null),
       homeName: null,
+      homeBackend: null,
       terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),
@@ -4945,7 +4955,9 @@ export class TaskManager {
         return;
       }
     }
-    const alive = embedded ?? (t.homeName ? await homeAlive(t.homeName) : null);
+    const alive = embedded ?? (
+      t.homeName ? await homeAlive(t.homeName, undefined, t.homeBackend ?? null) : null
+    );
     if (alive !== false) {
       if (t.status === "dispatching") {
         // An embedded dispatch that was interrupted mid-flight is COMPLETED, not failed,
@@ -5113,6 +5125,7 @@ export class TaskManager {
       error: settledError,
       ...releasedTaskResources(t, null),
       homeName: null,
+      homeBackend: null,
       terminalResourceId: null,
       sessionId: null,
       updatedAt: Date.now(),

@@ -325,6 +325,12 @@ scoped to dispatch, exactly like the model and effort defaults next to it: a Cla
 you started yourself is pane-backed whatever this says, because Mission Control does not own
 your terminal.
 
+When the resolved runtime is Terminal, the same harness card exposes a detailed **Terminal**
+chooser. **Automatic** keeps the registry order and fallback behavior. Choosing tmux, Herdr,
+cmux, WezTerm, Ghostty, or iTerm2 pins the next dispatch to that exact backend; unavailable
+backends stay visible with an explanation and cannot be selected. The choice is retained while
+the runtime is Agent SDK, but it has no effect until the harness returns to Terminal.
+
 **What the Agent SDK runtime changes.** A dispatched session appears as a session detail with no
 pane string under its title (it wears an `◈ Agent SDK` chip instead), and:
 

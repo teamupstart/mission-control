@@ -21,7 +21,6 @@ import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { AutomationRoleCost } from "./llm-spend.ts";
 import type { LineSummary } from "./line.ts";
 import type { ClaudeTransport, CodexTransport, LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
-import type { ResolvedModel } from "./model-choice.ts";
 import type {
   PipelineCommission,
   PipelineCommissionId,
@@ -2153,6 +2152,12 @@ export interface Task {
    * a value that fails to resolve leaves the worktree standing rather than reclaiming it.
    */
   homeName: string | null;
+  /**
+   * The backend that created `homeName`, or null/absent for automatic and legacy launches.
+   * Stored as a string so an older build keeps a newer backend id intact and treats it as
+   * unresolvable instead of confidently probing a different terminal.
+   */
+  homeBackend?: string | null;
   /** Stable backend resource identity used to retain cleanup ownership across renames. */
   terminalResourceId: string | null;
   /**

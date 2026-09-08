@@ -273,6 +273,7 @@ test("settings and headless model fields consume the same live Pi snapshot", () 
     defaultModel: { ...fullRecord<string | null>(null), pi: selected },
     defaultEffort: fullRecord<ThinkingLevel | null>(null),
     sessionRuntime: DEFAULT_HARNESSES_SESSION_RUNTIMES,
+    terminalBackend: { claude: null, codex: null, pi: null },
     kindDefaults: emptyTaskKindDefaults(),
   };
   const spec: ModelChoiceSpec = {
@@ -344,6 +345,7 @@ test("dispatch summaries resolve labels from the same browser catalog", () => {
     defaultModel: { ...fullRecord<string | null>(null), pi: LIVE_CHOICES[1].id },
     defaultEffort: { ...fullRecord<ThinkingLevel | null>(null), pi: "high" },
     sessionRuntime: DEFAULT_HARNESSES_SESSION_RUNTIMES,
+    terminalBackend: { claude: null, codex: null, pi: null },
     kindDefaults: emptyTaskKindDefaults(),
   };
 

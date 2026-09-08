@@ -41,6 +41,25 @@ The multiplexer registry contains tmux, Herdr, and cmux in that order. The order
 inner tmux pane as the most specific identity, then prefers a persistent Herdr workspace over the
 outer self-hosting cmux surface when more than one backend can describe a process.
 
+## Dispatch terminal preference
+
+Each terminal-backed harness has a **Terminal** chooser under **Settings > Harnesses**. The
+shipped value is **Automatic**, which preserves the existing launch policy: use installed
+multiplexers in registry order when any are available, otherwise use installed terminal apps in
+registry order. The detailed chooser groups those two axes, explains what each launch creates,
+and leaves unavailable integrations visible with the reason they cannot be selected.
+
+An explicit tmux, Herdr, cmux, WezTerm, Ghostty, or iTerm2 choice is exact. The next dispatch for
+that harness uses only the selected backend and reports a launch error if it is no longer
+available rather than silently opening somewhere else. The setting is read at dispatch time, so
+a change reaches the next launch without a daemon restart. It is retained while the harness uses
+the Agent SDK runtime and becomes visible again if the runtime returns to Terminal.
+
+The backend that created an explicitly selected terminal home is stored on the task beside its
+home name. Liveness checks and cleanup use that durable backend identity, so changing the setting
+later cannot re-aim an already-running task at another terminal. Historical and Automatic tasks
+keep their existing registry-based lookup behavior.
+
 ## Herdr
 
 Mission Control supports stable Herdr 0.8.2 or newer on protocol 20. Set `HERDR_BIN` to an

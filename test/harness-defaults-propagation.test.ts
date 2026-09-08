@@ -86,6 +86,17 @@ test("an optimistic edit to one harness leaves the others alone", () => {
   assert.equal(after_.defaultModel.codex, "gpt-5.6-sol", "the untouched card must not blank");
 });
 
+test("an optimistic terminal edit leaves the other harness choices alone", () => {
+  const before = mergeHarnessesPatch(baseConfig(), {
+    terminalBackend: { claude: "herdr", codex: "wezterm" },
+  });
+
+  const after_ = mergeHarnessesPatch(before, { terminalBackend: { claude: "ghostty" } });
+
+  assert.equal(after_.terminalBackend.claude, "ghostty");
+  assert.equal(after_.terminalBackend.codex, "wezterm");
+});
+
 test("the optimistic merge agrees with the daemon's merge for the same patch", () => {
   // The panel's merge is a COPY of `setHarnessesConfig`'s. Pinned against the real thing
   // rather than described, because the failure mode is silent: the panel would show one

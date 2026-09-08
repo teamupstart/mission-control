@@ -84,14 +84,21 @@ function multiplexerView(
   mux: Multiplexer,
   deps: TerminalTargetDeps,
 ): Omit<TerminalTargetView, "id"> {
-  const base = { label: mux.label, glyph: mux.glyph };
+  const base = {
+    label: mux.label,
+    glyph: mux.glyph,
+    dispatchBlurb: "New persistent session for each dispatch.",
+  };
   const sessions = mux.sessions;
   if (!sessions) {
     // A multiplexer that only ever attaches to what is already running cannot make one.
-    return { ...base, blurb: "", detail: null, unavailable: `${mux.label} cannot start a session` };
+    const reason = `${mux.label} cannot start a session`;
+    return { ...base, blurb: "", detail: null, unavailable: reason, dispatchUnavailable: reason };
   }
   const unavailable = binUnavailableReason(mux.bin, mux.label, deps);
-  if (unavailable) return { ...base, blurb: "", detail: null, unavailable };
+  if (unavailable) {
+    return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: unavailable };
+  }
   // `attachArgv: null` is this interface's way of saying the backend's sessions are never
   // without a window - cmux draws its own. Such a backend needs nobody's help to be seen.
   if (!sessions.attachArgv) {
@@ -100,6 +107,7 @@ function multiplexerView(
       blurb: "New workspace in the worktree.",
       detail: null,
       unavailable: null,
+      dispatchUnavailable: null,
     };
   }
   const raise = raiser(deps);
@@ -111,6 +119,7 @@ function multiplexerView(
       // The distinction the sentence exists for. tmux IS installed; what is missing is
       // anything to show it in, and telling the operator to install tmux would be wrong.
       unavailable: `${mux.label} sessions open detached - install a terminal that can show one`,
+      dispatchUnavailable: null,
     };
   }
   return {
@@ -118,6 +127,7 @@ function multiplexerView(
     blurb: `New session, raised in ${raise.label}.`,
     detail: "new-session -c",
     unavailable: null,
+    dispatchUnavailable: null,
   };
 }
 
@@ -125,18 +135,32 @@ function emulatorView(
   emulator: TerminalEmulator,
   deps: TerminalTargetDeps,
 ): Omit<TerminalTargetView, "id"> {
-  const base = { label: emulator.label, glyph: emulator.glyph };
+  const base = {
+    label: emulator.label,
+    glyph: emulator.glyph,
+    dispatchBlurb: "New terminal window in the worktree for each dispatch.",
+  };
   if (!emulator.spawn) {
+    const reason = `${emulator.label} cannot open a window from outside`;
     return {
       ...base,
       blurb: "",
       detail: null,
-      unavailable: `${emulator.label} cannot open a window from outside`,
+      unavailable: reason,
+      dispatchUnavailable: reason,
     };
   }
   const unavailable = binUnavailableReason(emulator.bin, emulator.label, deps);
-  if (unavailable) return { ...base, blurb: "", detail: null, unavailable };
-  return { ...base, blurb: "New window in the worktree.", detail: null, unavailable: null };
+  if (unavailable) {
+    return { ...base, blurb: "", detail: null, unavailable, dispatchUnavailable: unavailable };
+  }
+  return {
+    ...base,
+    blurb: "New window in the worktree.",
+    detail: null,
+    unavailable: null,
+    dispatchUnavailable: null,
+  };
 }
 
 /**

@@ -195,6 +195,12 @@ test("a detached-session multiplexer is unavailable until something can raise it
     alone[0]?.unavailable,
     "tmux sessions open detached - install a terminal that can show one",
   );
+  assert.equal(
+    alone[0]?.dispatchUnavailable,
+    null,
+    "a background dispatch needs the detached session, not a visible window",
+  );
+  assert.equal(alone[0]?.dispatchBlurb, "New persistent session for each dispatch.");
   // Telling this operator to install tmux would send them after a thing they already have.
   assert.doesNotMatch(alone[0]?.unavailable ?? "", /tmux is not installed/);
   assert.deepEqual(mux.created, []);

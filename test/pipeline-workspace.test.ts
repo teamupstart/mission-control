@@ -320,12 +320,16 @@ test("Git validation yields to the event loop instead of blocking registry work"
   const slowGitInvoked = join(home, "slow-git-invoked");
   writeFileSync(
     slowGit,
-    `#!/bin/sh\n: > ${JSON.stringify(slowGitInvoked)}\nsleep 0.2\nexec ${JSON.stringify(gitBin)} "$@"\n`,
+    '#!/bin/sh\n: > "$MISSION_TEST_SLOW_GIT_INVOKED"\nsleep 0.2\nexec "$MISSION_TEST_REAL_GIT" "$@"\n',
   );
   chmodSync(slowGit, 0o700);
 
   const previousGitBin = process.env.MISSION_GIT_BIN;
+  const previousSlowGitInvoked = process.env.MISSION_TEST_SLOW_GIT_INVOKED;
+  const previousRealGit = process.env.MISSION_TEST_REAL_GIT;
   process.env.MISSION_GIT_BIN = slowGit;
+  process.env.MISSION_TEST_SLOW_GIT_INVOKED = slowGitInvoked;
+  process.env.MISSION_TEST_REAL_GIT = gitBin;
   let settled = false;
   try {
     const resolving = resolvePipelineWorkspace({
@@ -376,6 +380,10 @@ test("Git validation yields to the event loop instead of blocking registry work"
   } finally {
     if (previousGitBin === undefined) delete process.env.MISSION_GIT_BIN;
     else process.env.MISSION_GIT_BIN = previousGitBin;
+    if (previousSlowGitInvoked === undefined) delete process.env.MISSION_TEST_SLOW_GIT_INVOKED;
+    else process.env.MISSION_TEST_SLOW_GIT_INVOKED = previousSlowGitInvoked;
+    if (previousRealGit === undefined) delete process.env.MISSION_TEST_REAL_GIT;
+    else process.env.MISSION_TEST_REAL_GIT = previousRealGit;
   }
 });
 

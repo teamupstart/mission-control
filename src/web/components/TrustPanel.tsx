@@ -53,12 +53,18 @@ const COLUMNS = [
     key: "workflows",
     label: "Workflows act",
     // ONE cell, both capabilities, because it is one stored list - said in full here since
-    // this tooltip is the only place the second one is visible from the matrix. Each still
-    // needs its own switch on the Workflows panel, which is why this reads "may".
+    // this tooltip is the only place the second one is visible from the matrix.
+    //
+    // It no longer says the two are "armed separately in Workflows settings". Both switches
+    // now ship ON, so on a machine nobody has reconfigured this cell is the LAST gate for
+    // both, and describing the grant as half a decision would understate it at exactly the
+    // moment it is being made. The switches are still there and still turn either off, which
+    // is what the second sentence points at - and the double dagger below this matrix says
+    // when the heavier one is live, naming the repositories.
     title:
       "Workflows may act in this repo: Live repairs typed into its sessions, and workflow "
-      + "Commands run against branch code with the daemon's filesystem authority. Each is "
-      + "still armed separately in Workflows settings.",
+      + "Commands run against branch code with the daemon's filesystem authority. Both are "
+      + "on unless you switched them off in Workflows settings.",
   },
   {
     key: "inspector",

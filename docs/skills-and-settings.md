@@ -460,8 +460,11 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   node may run branch-authored code there with the daemon's filesystem authority, and it is
   not a sandbox. **Turn Commands off** is offered in place. This one is not a contradiction like
   the merge trap - nothing is stuck - it is flagged because a cell reading "allowed" cannot
-  show that on its own and the confirm dialog was agreed to once, months ago. The rail's Trust
-  dot carries this one too.
+  show that on its own. That footnote matters more than it used to: **Allow workflow Commands**
+  now ships on, so on a machine nobody reconfigured, granting the Workflows cell is the whole
+  decision and the confirm dialog behind the switch is never shown. The empty allowlist is what
+  keeps that safe - a fresh install can run a Command nowhere - and this footnote, plus the
+  rail's Trust dot, is what stays visible once you grant one.
 - **The warning outlives the connection.** Both surfaces remember the last **confirmed**
   arming, so a failed config poll cannot retire them. This is a deliberate exception to the
   daemon-reading rule everywhere else in Settings, where a failed read becomes "unknown" and

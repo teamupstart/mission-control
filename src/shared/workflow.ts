@@ -2803,11 +2803,31 @@ export interface WorkflowPolicy {
   defaultWorkflowId: WorkflowId | null;
   retention: WorkflowRetentionConfig;
   /**
-   * Machine-wide consent for running a configured command from a workflow. Off by default -
-   * deliberately NOT following `liveEnabled`, which is now on. Delivery types text a human
-   * reads before anything happens; a check executes an argv on disk unattended, which is a
-   * different question and gets its own answer. `repoAllowlist` is still the other half, and
-   * `checkBlockedReason` is the one place both are asked.
+   * Machine-wide consent for running a configured command from a workflow.
+   *
+   * On by default, on `liveEnabled`'s reasoning and with the same half-gate: `repoAllowlist`
+   * is the other half and still ships empty, so a fresh install may run a command in NO
+   * repository until a human grants one. `checkBlockedReason` asks both in one place and
+   * names which of the two is missing.
+   *
+   * This used to ship off, on the argument that executing an argv is a different question
+   * from typing text a human reads. The question is still different; what changed is where
+   * it gets asked. Two gates that both default closed means the second one never gets read,
+   * and here that cost more than a parked run: an unauthorized Command PASSES with a note,
+   * so the gate an operator built their workflow around silently was not one, and the run
+   * reported green.
+   *
+   * The consent did not disappear - it moved to the grant, which is the only one of the two
+   * that names a repository. Trust's Workflows cell states in full that it permits Commands
+   * to run against branch code with the daemon's filesystem authority, and the moment a
+   * grant exists beside this switch, Trust flies the double dagger and the rail's amber dot
+   * over it, naming those repositories and offering `Turn Commands off` in place. That is
+   * strictly more durable than the one-time confirm dialog it replaces, which was agreed to
+   * once and then never shown again.
+   *
+   * A stored blob written before this field existed is held at `false` by
+   * `getWorkflowPolicy` rather than inheriting this default: that install may already carry
+   * grants, and nobody on it would have been asked anything.
    */
   checksEnabled: boolean;
 }
@@ -2854,7 +2874,8 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
     completedRunDays: 180,
     maxCompletedRuns: 1_000,
   },
-  checksEnabled: false,
+  // Authorised, and gated on `repoAllowlist` exactly as `liveEnabled` is - see the field.
+  checksEnabled: true,
 };
 
 /** The default policy under the legacy wire shape: no commands, because none are stored. */

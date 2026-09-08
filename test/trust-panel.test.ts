@@ -328,7 +328,11 @@ test("the Workflows column names both capabilities its one grant covers", () => 
   }));
   assert.match(html, /Live repairs typed into its sessions/);
   assert.match(html, /workflow Commands run against branch code/);
-  assert.match(html, /armed separately in Workflows settings/);
+  // Not "armed separately in Workflows settings" any more. Both switches ship on, so on an
+  // unreconfigured machine this cell is the last gate for both, and prose that split the
+  // decision in two would understate the grant at the moment it is being made.
+  assert.match(html, /Both are on unless you switched them off in Workflows settings/);
+  assert.doesNotMatch(html, /armed separately/);
 });
 
 test("the add row says it grants nothing, so adding cannot read as consent", () => {

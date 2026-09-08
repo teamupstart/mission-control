@@ -279,9 +279,10 @@ new Treehouse lease.
 
 ### Running a check command
 
-This is what a [Command node](workflows.md#command-nodes) does once you allow workflow Commands
-and grant the repository, and what it does with your machine is worth stating plainly before
-you do.
+This is what a [Command node](workflows.md#command-nodes) does once workflow Commands are
+allowed - they are, unless you switched them off - and you grant the repository, which is the
+gate that ships closed. What it does with your machine is worth stating plainly before you
+grant one.
 
 **Workflow Commands run on Linux and macOS.** On any other platform one reports Not run and
 passes. That is not an oversight: the daemon has to be able to prove afterwards that a

@@ -20,7 +20,39 @@ const CONFIG_ENTRY = APP_CONFIG_ENTRIES.workflows;
  * write, so the only way to reach the fallback is a blob some other build wrote.
  */
 export function getWorkflowPolicy(): WorkflowPolicy {
-  return StoredWorkflowPolicySchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+  return StoredWorkflowPolicySchema.parse(keepPreFieldCommandConsent(getAppConfig(CONFIG_ENTRY)));
+}
+
+/**
+ * Hold `checksEnabled` at off for a config written before the field existed.
+ *
+ * The default now ships ON, and that is a decision about a FRESH install: it arrives with an
+ * empty `repoAllowlist`, so it can run nothing until a human grants a repository through
+ * Trust - and Trust's Workflows cell says in full that the grant covers Commands running
+ * against branch code. The person who arms it is told what they are arming.
+ *
+ * An older stored blob is the case that reasoning does not cover. It can already carry
+ * grants, made against a build where this switch was off and where the grant therefore could
+ * not run anything on its own. Letting `.default()` fill the missing key would arm command
+ * execution in those repositories on upgrade, with no interaction at all - which is the one
+ * thing every gate around this feature exists to prevent. So the absence of the key is read
+ * as what it actually is: a build that predates the switch, whose operator was never asked.
+ *
+ * Precise rather than heuristic. Every write goes through `setWorkflowPolicy`, which persists
+ * the whole parsed policy, so any config saved since the field shipped OWNS the key - as
+ * `false` if they left it off, which is preserved here by the same rule. A missing key means
+ * pre-field, and nothing else. An operator who wants it on flips the switch, which is the
+ * interaction this is protecting.
+ *
+ * Read-time and never written back. A migration that rewrites the row would have to do it
+ * from a path called on every binding gate, delivery decision, check and retention sweep;
+ * normalizing the value on the way past is idempotent and cannot damage a blob this build
+ * only partly understands - the same restraint `dropLegacyCheckCommands` shows below.
+ */
+function keepPreFieldCommandConsent(blob: unknown): unknown {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob ?? {};
+  if (Object.prototype.hasOwnProperty.call(blob, "checksEnabled")) return blob;
+  return { ...(blob as Record<string, unknown>), checksEnabled: false };
 }
 
 export function resolveTaskWorkflowId(workflowId: string | null | undefined): string | null {

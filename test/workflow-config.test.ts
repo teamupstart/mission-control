@@ -190,8 +190,12 @@ test("removing consent leaves no live authorization", () => {
 // wrote must degrade rather than take all of them down. The PUT route is the opposite: a
 // value that silently degraded there would revert in the panel with nothing saying why.
 
-test("check consent defaults off, and the policy blob no longer carries commands", () => {
-  assert.equal(getWorkflowPolicy().checksEnabled, false);
+test("check consent defaults on for a fresh install, and the blob carries no commands", () => {
+  // A fresh install has no stored row at all, which is the ONE case this default speaks for.
+  // It ships on for `liveEnabled`'s reason and behind the same second gate: the allowlist is
+  // empty below, so this authorises a command in no repository.
+  assert.equal(getWorkflowPolicy().checksEnabled, true);
+  assert.equal(getWorkflowPolicy().repoAllowlist.length, 0);
   assert.equal("checkCommands" in getWorkflowPolicy(), false);
 
   const saved = setWorkflowPolicy({
@@ -216,13 +220,41 @@ test("check consent defaults off, and the policy blob no longer carries commands
   assert.deepEqual(getWorkflowPolicy(), DEFAULT_WORKFLOW_POLICY);
 });
 
-test("a config written before checks existed still reads, with consent defaulted off", () => {
-  // The upgrade path: `.default()` covers a blob that simply lacks the fields, and it must
-  // land on the SAFE side rather than inheriting anything from the fields around it.
+test("a config written before checks existed still reads, with consent held off", () => {
+  // The upgrade path, and the reason it is no longer `.default()` doing this work. That blob
+  // ALREADY GRANTS a repository, made on a build where the switch was off and where the grant
+  // therefore could not run anything by itself. Inheriting the new on-by-default would arm
+  // branch-authored code in `/repo` on upgrade with no interaction at all.
+  //
+  // The signal is exact, not a guess about how configured the install looks: every write goes
+  // through `setWorkflowPolicy`, which persists the whole parsed policy, so a blob missing the
+  // key was written before the key existed.
   setAppConfig(APP_CONFIG_ENTRIES.workflows, { liveEnabled: true, repoAllowlist: ["/repo"] });
   const read = getWorkflowPolicy();
   assert.equal(read.liveEnabled, true);
   assert.equal(read.checksEnabled, false);
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] });
+});
+
+test("a stored `false` is preserved, and a stored `true` still reads on", () => {
+  // The other two stored shapes, so the guard above cannot be mistaken for "old configs are
+  // off": it keys on the KEY, not on the value. An operator who read the confirm dialog and
+  // switched Commands off keeps that answer through the default flip - which is the same
+  // promise the pre-field case makes, arrived at from the opposite direction.
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, {
+    liveEnabled: true,
+    repoAllowlist: ["/repo"],
+    checksEnabled: false,
+  });
+  assert.equal(getWorkflowPolicy().checksEnabled, false);
+
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, {
+    liveEnabled: true,
+    repoAllowlist: ["/repo"],
+    checksEnabled: true,
+  });
+  assert.equal(getWorkflowPolicy().checksEnabled, true);
+
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] });
 });
 

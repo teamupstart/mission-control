@@ -114,8 +114,10 @@ test("an unconfigured slot never reaches the executor at all", async () => {
 });
 
 test("consent absent is unavailable, passes, and says which of the two gates refused", async () => {
-  // Switch off, repository allowed: the operator has to go and flip a switch.
-  const offSwitch = await runCheck(at(policyWith({ repoAllowlist: [REPO] })));
+  // Switch off, repository allowed: the operator has to go and flip a switch. `checksEnabled`
+  // is named rather than left to the default, which now ships ON - a case built out of an
+  // absent field would silently stop being the case it says it is.
+  const offSwitch = await runCheck(at(policyWith({ checksEnabled: false, repoAllowlist: [REPO] })));
   assert.equal(offSwitch.kind === "outcome" && offSwitch.outcome.status, "unavailable");
   assert.match(
     offSwitch.kind === "outcome" ? offSwitch.outcome.note : "",
@@ -134,7 +136,7 @@ test("consent absent is unavailable, passes, and says which of the two gates ref
 
 test("consent absent never reaches the executor", async () => {
   const stub = executorReturning({ kind: "exited", exitCode: 0, output: "", truncatedBytes: 0 });
-  await runCheck(at(policyWith({ repoAllowlist: [REPO] })), {
+  await runCheck(at(policyWith({ checksEnabled: false, repoAllowlist: [REPO] })), {
     execute: stub.execute,
   });
   assert.deepEqual(stub.seen, [], "an unauthorized gate must not spawn anything");

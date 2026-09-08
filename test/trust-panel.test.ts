@@ -328,11 +328,17 @@ test("the Workflows column names both capabilities its one grant covers", () => 
   }));
   assert.match(html, /Live repairs typed into its sessions/);
   assert.match(html, /workflow Commands run against branch code/);
-  // Not "armed separately in Workflows settings" any more. Both switches ship on, so on an
+  // Not "armed separately in Workflows settings" any more: both switches ship on, so on an
   // unreconfigured machine this cell is the last gate for both, and prose that split the
   // decision in two would understate the grant at the moment it is being made.
-  assert.match(html, /Both are on unless you switched them off in Workflows settings/);
+  //
+  // Nor "both are on unless you switched them off", which overstated it the other way. A
+  // policy stored before `checksEnabled` existed is held off, so an upgraded machine can
+  // hold this grant and still run no Command. The tooltip names what a NEW installation
+  // ships and sends you to the panel that knows this one.
+  assert.match(html, /New installations ship both on; Workflows settings shows where yours stand/);
   assert.doesNotMatch(html, /armed separately/);
+  assert.doesNotMatch(html, /unless you switched them off/);
 });
 
 test("the add row says it grants nothing, so adding cannot read as consent", () => {

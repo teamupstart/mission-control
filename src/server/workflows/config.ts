@@ -65,11 +65,44 @@ export function resolveTaskWorkflowId(workflowId: string | null | undefined): st
  * Any legacy `checkCommands` on the input is validated by the caller's schema and then
  * dropped here rather than persisted: the catalog is the only durable command authority, and
  * writing a second copy under this key is exactly the drift this split exists to prevent.
+ *
+ * `checksEnabled` is the one field a full replace must not take from the schema, and
+ * `keepStoredCommandConsent` explains why.
  */
 export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
-  const next = WorkflowPolicySchema.parse(input);
+  const next = WorkflowPolicySchema.parse(keepStoredCommandConsent(input));
   setAppConfig(CONFIG_ENTRY, next);
   return next;
+}
+
+/**
+ * Carry the stored command consent onto a write that did not mention it.
+ *
+ * The other half of `keepPreFieldCommandConsent`, and the same single idea: an absent
+ * `checksEnabled` never GRANTS permission, it inherits whatever is already in force.
+ *
+ * `PUT /api/workflows/config` replaces the whole policy, and `WorkflowPolicySchema` fills an
+ * omitted field with the shipped default - which is now `true`. Those two facts together
+ * meant any write that left the field out armed Commands: a caller adjusting retention, an
+ * older client that predates the field, a script setting `defaultWorkflowId`. On a legacy
+ * install that already holds grants, an unrelated preference change would have switched on
+ * branch-authored execution in every one of them, and it would have quietly undone the read
+ * guard above on the first save.
+ *
+ * The default is not wrong, it is just answering a different question. `.default()` speaks
+ * for "no policy exists"; this speaks for "a policy exists and this request is silent about
+ * one field of it". Resolving through `getWorkflowPolicy` gets both right at once: a fresh
+ * install has nothing stored, so the read returns the shipped `true` and an omitting write
+ * still lands on it.
+ *
+ * Only this field. Every other key still replaces wholesale, because that is what keeps an
+ * allowlist removal from being lost in a merge - the reason this function replaces rather
+ * than patches in the first place.
+ */
+function keepStoredCommandConsent(input: WorkflowPolicyInput): WorkflowPolicyInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  if (Object.prototype.hasOwnProperty.call(input, "checksEnabled")) return input;
+  return { ...input, checksEnabled: getWorkflowPolicy().checksEnabled };
 }
 
 /** One legacy `checkCommands` row that survived validation, ready to become an override. */

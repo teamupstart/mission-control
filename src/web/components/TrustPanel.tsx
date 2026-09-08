@@ -58,13 +58,18 @@ const COLUMNS = [
     // It no longer says the two are "armed separately in Workflows settings". Both switches
     // now ship ON, so on a machine nobody has reconfigured this cell is the LAST gate for
     // both, and describing the grant as half a decision would understate it at exactly the
-    // moment it is being made. The switches are still there and still turn either off, which
-    // is what the second sentence points at - and the double dagger below this matrix says
-    // when the heavier one is live, naming the repositories.
+    // moment it is being made.
+    //
+    // But it must not overstate it either, and "both are on unless you turned them off" did:
+    // a policy stored before `checksEnabled` existed is held OFF by `getWorkflowPolicy`, so
+    // an upgraded machine can grant this cell and still run no Command. Pointing at the
+    // Workflows panel rather than asserting a state is the honest form - that panel says
+    // which way each switch actually is, and this tooltip cannot know. The double dagger
+    // below the matrix answers it for real, naming the repositories where Commands are live.
     title:
       "Workflows may act in this repo: Live repairs typed into its sessions, and workflow "
-      + "Commands run against branch code with the daemon's filesystem authority. Both are "
-      + "on unless you switched them off in Workflows settings.",
+      + "Commands run against branch code with the daemon's filesystem authority. New "
+      + "installations ship both on; Workflows settings shows where yours stand.",
   },
   {
     key: "inspector",

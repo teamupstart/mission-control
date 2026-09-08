@@ -258,6 +258,56 @@ test("a stored `false` is preserved, and a stored `true` still reads on", () => 
   setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] });
 });
 
+test("a write that never mentions Commands cannot switch them on", () => {
+  // The hole the read guard alone left open, and the reason consent is resolved on BOTH
+  // sides. `PUT /api/workflows/config` replaces the whole policy and the schema fills an
+  // omitted `checksEnabled` with the shipped default, which is now `true` - so a legacy
+  // install that already holds grants would have had branch-authored execution armed in
+  // every one of them by an operator changing retention, and the read guard undone on the
+  // first save.
+  //
+  // The write is a real one, not a no-op: `defaultWorkflowId` moves, so a fix that simply
+  // refused to persist anything would fail here too.
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, {
+    liveEnabled: true,
+    repoAllowlist: ["/repo"],
+  });
+  assert.equal(getWorkflowPolicy().checksEnabled, false, "the legacy read starts off");
+
+  const saved = setWorkflowPolicy({
+    liveEnabled: true,
+    repoAllowlist: ["/repo"],
+    defaultWorkflowId: "some-workflow",
+  } as never);
+
+  assert.equal(saved.checksEnabled, false, "an unrelated write must not arm Commands");
+  assert.equal(saved.defaultWorkflowId, "some-workflow", "the rest of the write still lands");
+  assert.equal(getWorkflowPolicy().checksEnabled, false, "and it stayed off on the next read");
+
+  // An operator who says so explicitly is still obeyed, in both directions - the guard keys
+  // on the field being ABSENT, never on the value.
+  assert.equal(
+    setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"], checksEnabled: true } as never)
+      .checksEnabled,
+    true,
+  );
+  assert.equal(getWorkflowPolicy().checksEnabled, true);
+
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] });
+});
+
+test("an omitting write on a FRESH install still lands on the shipped default", () => {
+  // The other side of the same resolution, and the case that says this is not just "always
+  // preserve". Nothing is stored, so there is no consent to inherit and the write takes the
+  // shipped `on` - which is what makes a first save through the panel agree with what the
+  // daemon was already enforcing.
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, null as never);
+
+  assert.equal(setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] }).checksEnabled, true);
+
+  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [] });
+});
+
 test("an unreadable stored policy falls back to defaults rather than throwing", () => {
   // A downgrade, or a hand-edited row. Every field is exercised, not only the new ones:
   // before the tolerant read the whole subsystem threw on any of these.

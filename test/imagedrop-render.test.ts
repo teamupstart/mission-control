@@ -124,6 +124,11 @@ test("the strip renders no dialog until one is asked for", () => {
 
   assert.doesNotMatch(html, /modal-backdrop/);
   assert.doesNotMatch(html, /attach-preview/);
+  // And when one does open it is a SIBLING of the list, never a child: `<ul>` takes only
+  // `<li>`, `<script>` and `<template>`, so a dialog inside it is invalid structure that
+  // assistive technology walks as one more attachment. Pinned on the closing tag, because
+  // that is the character a careless edit moves.
+  assert.match(html, /<\/ul>$/);
   // Two chips, two distinguishable preview controls: the accessible name is the only
   // thing telling them apart, since both faces are a thumbnail and a truncated name.
   assert.match(html, /aria-label="Preview screenshot\.png"/);

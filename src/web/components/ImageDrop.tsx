@@ -312,78 +312,85 @@ export function AttachmentStrip({
 
   if (attachments.length === 0) return null;
   return (
-    <ul className="attach-strip">
-      {attachments.map((a) => (
-        <li key={a.id} className={`attach-chip is-${a.status}`}>
-          {a.status === "error" ? (
-            <>
-              {/* No thumbnail on a rejected drop. The file that failed is usually one
-                  the browser can't paint either, so an <img> here renders as a broken-
-                  image icon - which reads as "the chip is broken" rather than "the file
-                  was refused", right next to the sentence explaining the refusal.
+    // A fragment, so the dialog is a SIBLING of the list rather than a child of it. `<ul>`
+    // may contain only `<li>`, `<script>` and `<template>`; an `Overlay`'s root div inside
+    // one is invalid, and assistive technology walking the list would meet the dialog as
+    // list content - announced as another attachment, in a strip whose length is how a
+    // person checks what they attached.
+    <>
+      <ul className="attach-strip">
+        {attachments.map((a) => (
+          <li key={a.id} className={`attach-chip is-${a.status}`}>
+            {a.status === "error" ? (
+              <>
+                {/* No thumbnail on a rejected drop. The file that failed is usually one
+                    the browser can't paint either, so an <img> here renders as a broken-
+                    image icon - which reads as "the chip is broken" rather than "the file
+                    was refused", right next to the sentence explaining the refusal.
 
-                  No preview control either, for the same reason: there is nothing to
-                  show, and a dialog that opened on a broken image would be the same lie
-                  in a larger frame. */}
-              <span className="attach-warn" aria-hidden="true">
-                !
-              </span>
-              {/* The tooltip goes on the truncated text, NOT on the chip: the chip contains
-                  the remove button, and a tooltip wrapping both would put two bubbles on
-                  screen the moment you reached for the ✕. */}
-              <Tooltip label={a.error ?? a.name}>
-                <span className="attach-name">{a.error}</span>
+                    No preview control either, for the same reason: there is nothing to
+                    show, and a dialog that opened on a broken image would be the same lie
+                    in a larger frame. */}
+                <span className="attach-warn" aria-hidden="true">
+                  !
+                </span>
+                {/* The tooltip goes on the truncated text, NOT on the chip: the chip contains
+                    the remove button, and a tooltip wrapping both would put two bubbles on
+                    screen the moment you reached for the ✕. */}
+                <Tooltip label={a.error ?? a.name}>
+                  <span className="attach-name">{a.error}</span>
+                </Tooltip>
+              </>
+            ) : (
+              /* The thumbnail and the filename together are the preview control, so the
+                 gesture works anywhere on the chip except the ✕ - which removes on its
+                 first click, and so can never be double-clicked into a preview of a file
+                 that is already gone.
+
+                 A real <button>, not a div with a handler: this is the whole keyboard and
+                 assistive-technology route to a feature whose stated gesture is
+                 mouse-only, and its accessible name is what an e2e spec selects by.
+
+                 Its tooltip still leads with the full filename, which is why the name span
+                 carried one - the chip truncates at 220px - and adds the gesture, which is
+                 otherwise undiscoverable. */
+              <Tooltip label={`${a.name} - double-click to preview`}>
+                <button
+                  type="button"
+                  className="attach-open"
+                  aria-label={`Preview ${a.name}`}
+                  // Double-click for the pointer, exactly as asked, and NOT a plain click.
+                  // A single-click handler here would break the requested gesture outright:
+                  // click one opens the dialog, and click two then lands on the backdrop that
+                  // has just appeared under the cursor, which closes it again.
+                  onDoubleClick={() => open(a.id)}
+                  // `detail === 0` is a click no pointer produced - Enter or Space on the
+                  // focused button, or a screen reader's synthesised activation. Those have
+                  // no second click to strand, so they open on the first.
+                  onClick={(e) => {
+                    if (e.detail === 0) open(a.id);
+                  }}
+                >
+                  <img className="attach-thumb" src={a.previewUrl} alt="" />
+                  <span className="attach-name">{a.name}</span>
+                </button>
               </Tooltip>
-            </>
-          ) : (
-            /* The thumbnail and the filename together are the preview control, so the
-               gesture works anywhere on the chip except the ✕ - which removes on its
-               first click, and so can never be double-clicked into a preview of a file
-               that is already gone.
-
-               A real <button>, not a div with a handler: this is the whole keyboard and
-               assistive-technology route to a feature whose stated gesture is
-               mouse-only, and its accessible name is what an e2e spec selects by.
-
-               Its tooltip still leads with the full filename, which is why the name span
-               carried one - the chip truncates at 220px - and adds the gesture, which is
-               otherwise undiscoverable. */
-            <Tooltip label={`${a.name} - double-click to preview`}>
+            )}
+            <Tooltip label={`Remove ${a.name} from ${removeContext}`}>
               <button
                 type="button"
-                className="attach-open"
-                aria-label={`Preview ${a.name}`}
-                // Double-click for the pointer, exactly as asked, and NOT a plain click.
-                // A single-click handler here would break the requested gesture outright:
-                // click one opens the dialog, and click two then lands on the backdrop that
-                // has just appeared under the cursor, which closes it again.
-                onDoubleClick={() => open(a.id)}
-                // `detail === 0` is a click no pointer produced - Enter or Space on the
-                // focused button, or a screen reader's synthesised activation. Those have
-                // no second click to strand, so they open on the first.
-                onClick={(e) => {
-                  if (e.detail === 0) open(a.id);
-                }}
+                className="attach-remove"
+                aria-label={`Remove ${a.name}`}
+                onClick={() => onRemove(a.id)}
               >
-                <img className="attach-thumb" src={a.previewUrl} alt="" />
-                <span className="attach-name">{a.name}</span>
+                ✕
               </button>
             </Tooltip>
-          )}
-          <Tooltip label={`Remove ${a.name} from ${removeContext}`}>
-            <button
-              type="button"
-              className="attach-remove"
-              aria-label={`Remove ${a.name}`}
-              onClick={() => onRemove(a.id)}
-            >
-              ✕
-            </button>
-          </Tooltip>
-        </li>
-      ))}
+          </li>
+        ))}
+      </ul>
       {preview && <AttachmentPreview attachment={preview} onClose={close} />}
-    </ul>
+    </>
   );
 }
 

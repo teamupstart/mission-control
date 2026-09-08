@@ -214,7 +214,11 @@ is configuration, and writing to somebody else's tracker is consent.
 
 Kind-specific parameters stay in the kind's own `config`, where the panel already renders them:
 
-- `GithubIssuesConfigSchema` gains `closeReason: z.enum(["completed", "not_planned"]).default("completed")`.
+- `GithubIssuesConfigSchema` gains `closeReason: z.enum(["completed", "not-planned"]).default("completed")`.
+  The stored value is ours; `gh issue close --reason` takes `completed` or `not planned` **with a
+  space**, so the argv builder maps rather than passing through. An unmapped value is not a typo
+  that degrades gracefully, it is a close `gh` rejects on every attempt until the row exhausts
+  its retries.
 - `JiraConfigSchema` gains `resolveTransition: z.string().max(120).default("")` (the target
   status name, e.g. `Done`) and `linkVia: z.enum(["comment", "remote-link", "both"]).default("both")`.
 
@@ -251,9 +255,16 @@ CREATE TABLE IF NOT EXISTS task_source_writeback (
   external_id  TEXT NOT NULL,      -- the item upstream, e.g. owner/repo#123 or MC-431
   signal       TEXT NOT NULL,      -- pr-opened | task-completed
   action       TEXT NOT NULL,      -- annotate | resolve
-  -- What makes this delivery ONE delivery: the pull request url for pr-opened, the task id
-  -- for task-completed. NOT NULL and never empty, because SQLite treats NULLs as DISTINCT
-  -- inside a unique index, and a nullable half would let the same comment be enqueued twice.
+  -- What makes this delivery ONE delivery: the pull request url for pr-opened, and the
+  -- task id PLUS its completedAt for task-completed. The instant is load-bearing rather
+  -- than decoration. A completion inferred from an idle agent can be reversed by
+  -- reopenIfWorkResumed, and the task then completes again for real. Keyed on the task id
+  -- alone, that second, GENUINE completion collides with the first cycle's row - whatever
+  -- state it reached - and ON CONFLICT DO NOTHING discards it in silence, so the issue is
+  -- never resolved at all. Keyed with the instant, each completion cycle is its own
+  -- delivery, while a repeated observation of the SAME completion still dedupes to
+  -- nothing. NOT NULL and never empty, because SQLite treats NULLs as DISTINCT inside a
+  -- unique index, and a nullable half would let the same comment be enqueued twice.
   dedupe_key   TEXT NOT NULL,
   task_id      TEXT,               -- provenance only; never joined on
   payload      TEXT NOT NULL,      -- the WritebackNotice, as JSON
@@ -384,7 +395,8 @@ export function writebackResultFrom(res: RunResult): WritebackResult;
 - `annotate` -> `gh issue comment <url> --body <rendered>`. The body is short and factual: what
   happened, the pull request link, and the task title. It names Mission Control so a person
   reading the thread knows what wrote it.
-- `resolve` -> `gh issue close <url> --reason <cfg.closeReason>`. An already-closed issue is
+- `resolve` -> `gh issue close <url> --reason <mapped>`, where the mapping turns our stored
+  `not-planned` into the `not planned` that `gh` accepts. An already-closed issue is
   read as **success**, not a refusal: the desired state holds, and treating it as a failure
   would burn six retries reaching a state that is already true.
 
@@ -510,9 +522,11 @@ These are the claims the tests exist to defend.
 3. **An unknown outcome is never retried automatically.** The `push.ts` rule, applied to a verb
    where the stakes are higher: a duplicate comment is noise, a duplicate transition can undo a
    human.
-4. **Idempotent by ledger key.** `(source, item, signal, action, dedupe_key)` is unique, so a
-   restart, a re-observation and a repeated tick all cost nothing. Jira remote links are
-   additionally idempotent upstream via `globalId`.
+4. **Idempotent by ledger key, per completion cycle.** `(source, item, signal, action,
+   dedupe_key)` is unique, so a restart, a re-observation and a repeated tick all cost nothing -
+   while a task that reopens and completes again gets a fresh delivery rather than being
+   silently swallowed, because `dedupe_key` carries the completion instant. Jira remote links
+   are additionally idempotent upstream via `globalId`.
 5. **A resolve waits out a settle window and re-checks.** Because
    `settleIfEpisodeFinished` concludes on an idle agent and `reopenIfWorkResumed` can put the
    task back, and closing an issue whose work resumed is the one mistake this feature could make

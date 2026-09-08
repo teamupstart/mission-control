@@ -12,7 +12,7 @@ reachable only by hand-writing the config through the API.
 ## Entry criteria and dependencies
 
 Depends on **Phase 1**, and on nothing else. It needs the contract, the ledger, and
-`countWritebacks(sourceId)`, all of which Phase 1 lands.
+`countWritebacks` / `retryWritebacks` / `discardWritebacks`, all of which Phase 1 lands.
 
 Concurrent with **Phase 2**. This phase renders capabilities rather than kinds, so it is correct
 whether Jira can write back yet or not, and the two phases share no owned file.
@@ -32,6 +32,9 @@ Explicitly **not** in scope:
 - Any change to `src/shared/task-source.ts`. Phase 1 owns it, and Phase 2 owns the two Jira
   boolean flips inside it. This phase reads.
 - Any change to `jira.ts`, `github-issues.ts`, or `writeback.ts`.
+- Any change to `src/server/db.ts`. Every ledger helper this phase needs - `countWritebacks`,
+  `retryWritebacks`, `discardWritebacks` - is landed by Phase 1, which owns that file. This phase
+  calls them from the routes.
 - **Asserting either Jira capability boolean, anywhere.** Phase 2 flips them from false to true,
   so a spec or a unit test that pins Jira's current value would go red the moment the other
   phase merges. The disabled-with-a-reason rendering is pinned against a synthetic capability in
@@ -77,13 +80,13 @@ Verified against the current tree:
 - `taskSourcesView()` returns `writeback: cfg.sources.map((s) => writebackStatusFor(s.id))`,
   built from Phase 1's `countWritebacks`.
 - `POST /api/task-sources/:id/writeback/retry` - body
-  `{ includeUnknown: z.boolean().default(false) }` through `parseBody`. Moves `failed` rows back
-  to `pending` with `attempts` reset and `next_at` now; moves `unknown` rows only when the flag
-  says so. Two flags rather than one because retrying an `unknown` is the operator asserting
+  `{ includeUnknown: z.boolean().default(false) }` through `parseBody`, then Phase 1's
+  `retryWritebacks(id, includeUnknown)`, which moves `failed` rows back to `pending` with
+  `attempts` reset and `next_at` now, and `unknown` rows only when the flag says so. Two flags rather than one because retrying an `unknown` is the operator asserting
   they have looked upstream, and that assertion should be something they made rather than
   something a button did for them. Responds with the refreshed view.
-- `DELETE /api/task-sources/:id/writeback` - discards this source's rows. The counterpart to
-  "Forget seen items", and the way out for somebody who turned a switch on by mistake.
+- `DELETE /api/task-sources/:id/writeback` - Phase 1's `discardWritebacks(id)`. The counterpart
+  to "Forget seen items", and the way out for somebody who turned a switch on by mistake.
 - Both call `publishSettingsStatus(registry)`.
 ### 1b. `src/server/settings-status.ts`
 
@@ -192,8 +195,13 @@ Nothing depends on this phase. It is the last merge in the graph.
 
 ## Cross-phase audit record
 
-- Reconciled against Phase 1. `TaskSourceWritebackStatus` and `countWritebacks` are declared
-  there and consumed here; `taskSourcesView()` returning `writeback: []` in Phase 1 is replaced
+- Review round 1 (PR #944). The two write-back routes had no assigned `db.ts` implementer: the
+  source plan named `retryWritebacks` / `discardWritebacks` inside a step this phase does not
+  own, and this phase's steps named only `routes.ts` and `settings-status.ts`. Both are now
+  explicitly Phase 1's, and `src/server/db.ts` is an explicit non-goal here, so that file keeps
+  the single owner the plan already claims for it.
+- Reconciled against Phase 1. `TaskSourceWritebackStatus` and the three ledger helpers are
+  declared there and consumed here; `taskSourcesView()` returning `writeback: []` in Phase 1 is replaced
   here, so no client ever sees the field missing.
 - Reconciled against Phase 2. Two shared files, disjoint regions: `e2e/README.md` and
   `docs/dispatch-and-backlog.md`, whose ownership split is recorded in both phase files.

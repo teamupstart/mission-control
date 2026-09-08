@@ -109,8 +109,9 @@ Add, browser-safe, no `node:` imports:
 - `TaskSourceWritebackStatus` (the type only; Phase 3 computes it) and its
   `writeback: TaskSourceWritebackStatus[]` slot on `TaskSourcesView`, defaulting to an empty
   array from the route until Phase 3 fills it.
-- `closeReason: z.enum(["completed", "not_planned"]).default("completed")` on
-  `GithubIssuesConfigSchema`.
+- `closeReason: z.enum(["completed", "not-planned"]).default("completed")` on
+  `GithubIssuesConfigSchema`. Our spelling, not `gh`'s - see step 6 for the mapping and why it
+  cannot be a passthrough.
 - `resolveTransition: z.string().max(120).default("")` and
   `linkVia: z.enum(["comment", "remote-link", "both"]).default("both")` on `JiraConfigSchema`,
   with a comment saying Phase 2 implements the verbs that read them and that they are storable
@@ -147,8 +148,14 @@ narrow signature the callers need:
 - `settleWriteback(id, state, patch)` - one write for the outcome, `attempts`, `next_at`,
   `last_error`, `last_detail`, `updated_at`.
 - `cancelWritebacksForSource(sourceId)` - used when a source is removed.
-- `countWritebacks(sourceId)` - the counts Phase 3's status will read. Declared here because it
-  is a DB helper and `db.ts` has one owner; Phase 3 adds the route and the view field.
+- `countWritebacks(sourceId)` - the counts Phase 3's status will read.
+- `retryWritebacks(sourceId, includeUnknown)` - `failed` rows, and `unknown` rows only when the
+  flag says so, back to `pending` with `attempts` reset and `next_at` now.
+- `discardWritebacks(sourceId)` - drop this source's rows.
+
+The last three are landed here and first called in Phase 3, deliberately: `db.ts` has one owner
+in this feature, and all three are plain SQL over a table this phase owns. Phase 3 puts the view
+and the two routes on top of them rather than reaching into a file this phase froze.
 
 ### 4. `src/server/registry.ts`
 
@@ -252,6 +259,10 @@ New `test/task-source-writeback.test.ts`:
 - the same observation enqueued twice inserts once, and `enqueueWriteback` reports that;
 - a completion with `resolve` on writes two rows, the resolve's `next_at` a settle window later,
   and the annotate's `id` lower - which is what orders them without any dependency machinery;
+- a task that completes, is reopened by `reopenIfWorkResumed`, and completes again enqueues a
+  SECOND pair, because `dedupe_key` carries `completedAt`. Assert it against a first cycle left
+  in each reachable state - `delivered`, `cancelled`, `failed`, `unknown` - since the collision
+  this guards against does not care what became of the earlier row;
 - `claimDueWritebacks` returns at most one row per `(source_id, external_id)`;
 - backoff arithmetic across attempts 1..6, and the transition to `failed` at exhaustion;
 - an `outcomeUnknown` result becomes `unknown` and is never returned by a later claim;
@@ -259,9 +270,12 @@ New `test/task-source-writeback.test.ts`:
   calling the implementation at all;
 - an annotate whose task has been deleted still delivers, from the snapshot.
 
-New `test/github-issues-writeback.test.ts`: both argv builders (including `closeReason` and the
-`--repo` passthrough), the comment body, and `writebackResultFrom` across a clean exit, a
-non-zero exit, a killed child, and the already-closed message.
+New `test/github-issues-writeback.test.ts`: both argv builders (including the `--repo`
+passthrough), the comment body, and `writebackResultFrom` across a clean exit, a non-zero exit, a
+killed child, and the already-closed message. Assert the close reason by its exact emitted argv -
+that stored `not-planned` becomes the two-word `not planned` - because that is the whole bug the
+mapping exists to prevent, and a test that only round-trips the schema value would pass while
+every close failed.
 
 Extend `test/task-source-contract.test.ts`: for every kind, `canAnnotate` matches the presence
 of `annotate` and `canResolve` matches the presence of `resolve`, in both directions - the same
@@ -299,10 +313,12 @@ Later phases may rely on, and must not change:
   `WritebackContext`, `TaskSourceWritebackSchema`, `TaskSourceWritebackStatus`, and the
   `canAnnotate` / `canResolve` / `annotate` / `resolve` slots. Append only.
 - The ledger's columns, its unique key `(source_id, external_id, signal, action, dedupe_key)`,
+  what `dedupe_key` holds per signal (the pull request url; the task id plus its `completedAt`),
   and the five `state` values.
 - `canAnnotateTo` / `canResolveTo` / `annotateWith` / `resolveWith` as the only way to reach an
   implementation.
-- `countWritebacks(sourceId)`, which Phase 3 turns into the view's status.
+- `countWritebacks`, `retryWritebacks` and `discardWritebacks`, which Phase 3 puts behind the
+  view and the two routes. `src/server/db.ts` gains nothing after this phase.
 - `taskSourcesView()` returning `writeback: []`, which Phase 3 replaces.
 
 Phase 2 owns exactly two edits inside this phase's files: flipping Jira's `canAnnotate` and
@@ -312,3 +328,18 @@ Nothing else in `src/shared/task-source.ts` moves after this phase.
 ## Cross-phase audit record
 
 - Initial write. No earlier phases to reconcile against.
+- Review round 1 (PR #944). Three corrections, all landing before this phase merges because all
+  three touch contracts it freezes:
+  - `dedupe_key` for `task-completed` was the bare task id, which let a reopened-then-genuinely-
+    completed task collide with its own first cycle and be dropped by `ON CONFLICT DO NOTHING`,
+    so the resolve silently never fired for the completion that counted. It now carries
+    `completedAt`. The unique key tuple is unchanged; what one of its columns holds is not.
+  - `closeReason` stored `not_planned` and was passed straight to `gh issue close --reason`,
+    which takes `not planned` with a space (verified against gh 2.100.0, whose help reads
+    `Reason for closing: {completed|not planned|duplicate}`). Every close configured that way
+    would have failed until it exhausted its retries. The stored spelling is now `not-planned`
+    and step 6 maps it.
+  - `retryWritebacks` / `discardWritebacks` were named in the source plan's `db.ts` step but
+    excluded from this phase's scope and unassigned in Phase 3's, so no phase owned the SQL.
+    They are landed here with the rest of the ledger helpers, matching the treatment
+    `countWritebacks` already had.

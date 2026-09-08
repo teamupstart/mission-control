@@ -139,9 +139,11 @@ Phase 1 owns and freezes, and the later phases may only read:
   through `canAnnotateTo` / `canResolveTo` / `annotateWith` / `resolveWith`. No call site tests
   `inst.kind`.
 - The `task_source_writeback` columns, the unique key
-  `(source_id, external_id, signal, action, dedupe_key)`, and the five `state` values.
-- `countWritebacks(sourceId)`, and `taskSourcesView()` returning `writeback: []` until Phase 3
-  replaces it.
+  `(source_id, external_id, signal, action, dedupe_key)`, what `dedupe_key` holds per signal (the
+  pull request url; the task id plus its `completedAt`, so a reopened-then-recompleted task is a
+  new delivery rather than a silent collision), and the five `state` values.
+- `countWritebacks`, `retryWritebacks` and `discardWritebacks`, and `taskSourcesView()` returning
+  `writeback: []` until Phase 3 replaces it. `src/server/db.ts` has exactly one owner.
 - The `task_pr_linked` signal and the `WritebackEnqueuer` seam on `TaskManager`.
 
 Phase 2 owns: `jiraBin()` as the only way to name the Jira binary; Jira's two capability booleans
@@ -175,11 +177,16 @@ Performed over the complete set after the last phase file was written.
 
 - **Every source-plan requirement is owned by exactly one phase.** Traced item by item across the
   plan's thirteen implementation steps, its test list and its documentation list.
-- **Every consumer follows its prerequisite.** Phase 3 consumes `countWritebacks` and
-  `TaskSourceWritebackStatus`, both from Phase 1. Phase 2 consumes the contract and the ledger,
+- **Every consumer follows its prerequisite.** Phase 3 consumes the three ledger helpers and
+  `TaskSourceWritebackStatus`, all from Phase 1. Phase 2 consumes the contract and the ledger,
   both from Phase 1. Nothing consumes anything from Phase 3.
-- **Two hazards were found and fixed during the audit**, and both are recorded in the affected
-  phase files' audit records:
+- **Three defects were found in review round 1 (PR #944)** and fixed before Phase 1 merges,
+  because each touches a contract Phase 1 freezes: the `task-completed` dedupe key silently
+  dropped a reopened task's real completion; `closeReason` stored a value
+  `gh issue close --reason` does not accept; and the retry / discard SQL was named in the source
+  plan but owned by no phase. Recorded in the Phase 1 and Phase 3 audit records.
+- **Two hazards were found and fixed during the original audit**, and both are recorded in the
+  affected phase files' audit records:
   - Phase 1's worker calling `publishSettingsStatus` was ambiguous about who extends
     `settingsStatus()`. Split: Phase 1 triggers the recompute, Phase 3 owns
     `src/server/settings-status.ts` and what it counts. No file is edited by both.

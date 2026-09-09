@@ -28,7 +28,6 @@ import {
   WorkflowPersonaDirectiveSchema,
   WorkflowPersonaDirectiveSnapshotSchema,
   WorkflowRunStatusSchema,
-  WorkflowInspectorGateStateSchema,
   WorkflowContextSnapshotSchema,
   WorkflowCheckEvidenceSchema,
   WorkflowEvidenceImageSchema,
@@ -71,7 +70,6 @@ import {
   emptyWorkflowCommandView,
   checkRunBudgetSpent,
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
-  workflowRoundLimitParkedPhase,
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
@@ -100,6 +98,13 @@ import {
   type WorkflowSubmissionReadinessOverride,
 } from "@shared/workflow.ts";
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
+import {
+  withInspectorGate,
+  workflowInspectorGate,
+  workflowRoundLimitParkedPhase,
+  workflowRunLifecycleViolation,
+  type WorkflowRunPhase,
+} from "@shared/workflow-lifecycle.ts";
 import type {
   Persona,
   PersonaProvenance,
@@ -287,9 +292,43 @@ export function decodeWorkflowRunCursor(raw: string): RunCursor | null {
   }
 }
 
+/**
+ * The gate a run holds, read through the one lifecycle decoder rather than by re-parsing the
+ * column here. The manager asked the same question with its own copy of this function, and
+ * the copies could not both learn that a round-limit block now carries the gate along with
+ * the budget.
+ */
 function inspectorGateState(run: WorkflowRun): WorkflowInspectorGateState | null {
-  const parsed = WorkflowInspectorGateStateSchema.safeParse(run.gateState);
-  return parsed.success ? parsed.data : null;
+  return workflowInspectorGate(runLifecycleRecord(run));
+}
+
+function runLifecycleRecord(run: WorkflowRun): {
+  status: WorkflowRun["status"];
+  phase: string;
+  gateState: WorkflowJson | null;
+} {
+  return { status: run.status, phase: run.currentPhase, gateState: run.gateState };
+}
+
+/**
+ * Refuse a lifecycle triple no reader could recover from, before SQLite is touched.
+ *
+ * Throws rather than normalises, and throws rather than returning a refusal the caller can
+ * ignore: every writer is in this repository, the suite exercises each of them, and a
+ * combination that reaches here is a bug at the call site rather than a state some operator
+ * produced. Silently rewriting it would persist a run its author did not mean, in a phase
+ * nobody would think to look for.
+ */
+function assertRunLifecycle(
+  id: string,
+  status: WorkflowRun["status"],
+  phase: string,
+  gateState: WorkflowJson | null,
+): void {
+  const violation = workflowRunLifecycleViolation({ status, phase, gateState });
+  if (violation) {
+    throw new Error(`Workflow run ${id} cannot be persisted as ${status}/${phase}: ${violation}`);
+  }
 }
 
 function compactGate(run: WorkflowRun, gate: WorkflowInspectorGateState | null): WorkflowGateSummary {
@@ -1702,7 +1741,7 @@ const WorkflowDeliveryRowSchema = z.object({
  * tell the run detail page a review had been delivered when what was delivered was a refusal,
  * and would lose the one phase a human scanning stalled runs needs to see.
  */
-const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, string | null> = {
+const DELIVERY_RUN_PHASE: Record<WorkflowDeliveryKind, WorkflowRunPhase | null> = {
   persona_feedback: "persona_feedback",
   inspector_feedback: "inspector_findings",
   pr_handoff: "pr_handoff",
@@ -5629,13 +5668,79 @@ export class WorkflowStore {
     return this.mustSubmission(id);
   }
 
+  /**
+   * Move a run to a phase THIS BUILD DECLARES.
+   *
+   * `currentPhase` is the registry's literal union rather than `string`, and that is the type
+   * half of the fix: the registry decides which phases are executable, so a writer that
+   * invents one would produce a run nothing can act on. Taking the union means that mistake
+   * is a compile error at the call site instead of a state discovered in production. The
+   * persisted COLUMN stays free text - see `setRunStateCarryingPhase` for the two kinds of
+   * writer that legitimately need it.
+   */
+  /**
+   * What a delivery leaves in `gate_state_json` when it lands on a run.
+   *
+   * A delivery does not author a lifecycle state; it confirms a packet and leaves the run in
+   * whatever state that packet created. Two kinds record themselves. The rest used to write
+   * the row's existing payload back verbatim, and that was the hole: when the delivery also
+   * MOVES the phase, the old phase's note travels into a phase with no business holding it -
+   * an `evidence_readiness` run left carrying a delivery blob, a `session_action` run left
+   * carrying a block's `code` and `detail`.
+   *
+   * So the note is carried only while the phase stands still. When the phase moves, the only
+   * thing that rides across is the GitHub Inspector gate, which is sticky by nature: it
+   * belongs to the run rather than to any one phase, and dropping it is the destructive bug
+   * this model was built to fix.
+   */
+  private deliveryCarriedDetail(
+    run: WorkflowRun,
+    nextPhase: string,
+    own: WorkflowJson | null,
+  ): WorkflowJson | null {
+    if (own !== null) return own;
+    if (nextPhase === run.currentPhase) return run.gateState;
+    return (workflowInspectorGate(runLifecycleRecord(run)) as unknown as WorkflowJson | null);
+  }
+
   setRunState(
+    id: string,
+    status: WorkflowRun["status"],
+    currentPhase: WorkflowRunPhase,
+    gateState: WorkflowJson | null = null,
+    now = Date.now(),
+  ): WorkflowRun {
+    return this.setRunStateCarryingPhase(id, status, currentPhase, gateState, now);
+  }
+
+  /**
+   * The compatibility write: a phase this build may not declare.
+   *
+   * Exactly two kinds of caller, and both are about a phase this build did not choose. A
+   * FREE-FORM reason code, where `cancelRun` writes whatever an operator or a caller named -
+   * `cancelled:<requestId>` is the live example. And a CARRY-FORWARD, where a delivery lands
+   * on a run whose phase is not this delivery's business to change, so whatever the row
+   * already said is written back unchanged, including a phase from a newer daemon.
+   *
+   * Named rather than reached by widening `setRunState`, so the ordinary writer keeps its
+   * typed door and these two say out loud that they are not naming a lifecycle state. The
+   * lifecycle validation below applies identically either way: the compatibility path relaxes
+   * what may be SPELLED, never what may be persisted as a coherent state.
+   */
+  setRunStateCarryingPhase(
     id: string,
     status: WorkflowRun["status"],
     currentPhase: string,
     gateState: WorkflowJson | null = null,
     now = Date.now(),
   ): WorkflowRun {
+    // The FULL contract, status and detail, exactly as the naming writer. This door once
+    // skipped the detail half, on the argument that a carried payload was not its to justify.
+    // That argument was wrong in the direction that matters: it made "every registered phase"
+    // untrue, and the payloads it was excusing were precisely the ones landing in a phase with
+    // no business holding them. `deliveryCarriedDetail` fixed that at the source - a note
+    // travels only while its phase stands still - so there is nothing left to excuse.
+    assertRunLifecycle(id, status, currentPhase, gateState);
     const terminal = ["completed", "cancelled", "failed"].includes(status);
     this.db.prepare(
       `UPDATE workflow_runs
@@ -5656,9 +5761,16 @@ export class WorkflowStore {
    * hand and none of them wrote down. Routing them through here is what makes
    * `workflowRoundLimitParkedPhase` answerable at all.
    *
-   * The Inspector gate's own round-limit block is deliberately NOT one of these callers:
-   * it carries its gate state through the block instead of the budget, and it is revived by
-   * the grant's existing `waiting_for_new_head` arm rather than by the parked phase.
+   * THE GATE RIDES THROUGH THE BLOCK, and that is the second fact this helper owns. The
+   * budget and the GitHub Inspector gate are independent things sharing one column, and this
+   * writer used to overwrite the column with the budget alone - so a run parked in
+   * `pr_handoff` that spent its last round lost the pull request it was gated on, the moment
+   * it stopped. Nothing could give it back: the gate context is not derivable from anything
+   * else the run stores, `evaluateInspectorGate` skipped the run for want of a gate, and the
+   * grant that raises the budget had nothing to restore it to. Carrying it under the reserved
+   * key means a spent run still knows which review it is waiting on, and it is why the
+   * GitHub Inspector gate's own round-limit block can now come through here too rather than
+   * writing the gate by hand and losing the budget the other way round.
    *
    * Re-blocking preserves the FIRST recorded phase. A run that blocked, was granted rounds,
    * resumed and blocked again would otherwise record `round_limit` as the phase it was
@@ -5666,14 +5778,14 @@ export class WorkflowStore {
    * leave.
    */
   blockForRoundLimit(run: WorkflowRun, now = Date.now()): WorkflowRun {
-    const parkedPhase = workflowRoundLimitParkedPhase(run.gateState)
+    const parkedPhase = workflowRoundLimitParkedPhase(runLifecycleRecord(run))
       ?? ((WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(run.currentPhase)
         ? null
         : run.currentPhase);
-    return this.setRunState(run.id, "blocked", "round_limit", {
+    return this.setRunState(run.id, "blocked", "round_limit", withInspectorGate({
       maxRepairRounds: run.maxRepairRounds,
       ...(parkedPhase ? { parkedPhase } : {}),
-    }, now);
+    }, inspectorGateState(run)), now);
   }
 
   /**
@@ -5761,7 +5873,11 @@ export class WorkflowStore {
      * again. Carried in the same transaction as the budget because a run restored without
      * its new budget re-blocks on the very next head.
      */
-    restore: { status: WorkflowRun["status"]; phase: string; gateState: WorkflowJson | null } | null,
+    restore: {
+      status: WorkflowRun["status"];
+      phase: WorkflowRunPhase;
+      gateState: WorkflowJson | null;
+    } | null,
     /**
      * The round the granted rounds start at, which is also where Command run budgets start
      * counting again.
@@ -5784,6 +5900,7 @@ export class WorkflowStore {
       ).run(maxRepairRounds, checkBudgetEpochRound, now, id);
       if (Number(result.changes) !== 1) return null;
       if (restore) {
+        assertRunLifecycle(id, restore.status, restore.phase, restore.gateState);
         this.db.prepare(
           `UPDATE workflow_runs
               SET status = ?, current_phase = ?, gate_state_json = ?, updated_at = ?
@@ -5864,7 +5981,7 @@ export class WorkflowStore {
     submissionId: string;
     headSha: string | null;
     status: WorkflowRun["status"];
-    phase: string;
+    phase: WorkflowRunPhase;
     state: WorkflowInspectorGateState;
     now: number;
   }): { run: WorkflowRun; submission: WorkflowSubmission } | null {
@@ -5876,6 +5993,12 @@ export class WorkflowStore {
           WHERE id = ? AND run_id = ? AND status = 'running'`,
       ).run(input.headSha, input.now, input.now, input.submissionId, input.runId);
       if (Number(submissionChanged.changes) !== 1) return null;
+      assertRunLifecycle(
+        input.runId,
+        input.status,
+        input.phase,
+        input.state as unknown as WorkflowJson,
+      );
       const runChanged = this.db.prepare(
         `UPDATE workflow_runs
             SET status = ?, current_phase = ?, inspector_pr_key = ?,
@@ -5913,9 +6036,15 @@ export class WorkflowStore {
     expectedState: WorkflowInspectorGateState;
     state: WorkflowInspectorGateState;
     status: WorkflowRun["status"];
-    phase: string;
+    phase: WorkflowRunPhase;
     now: number;
   }): WorkflowRun | null {
+    assertRunLifecycle(
+      input.runId,
+      input.status,
+      input.phase,
+      input.state as unknown as WorkflowJson,
+    );
     const expectedJson = JSON.stringify(input.expectedState);
     const stateJson = JSON.stringify(input.state);
     const completed = input.status === "completed";
@@ -6031,6 +6160,12 @@ export class WorkflowStore {
         status: "completed",
         now: input.now,
       });
+      assertRunLifecycle(
+        run.id,
+        "waiting_for_inspector",
+        "inspector_review",
+        input.state as unknown as WorkflowJson,
+      );
       const changed = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'waiting_for_inspector', current_phase = 'inspector_review',
@@ -7181,13 +7316,20 @@ export class WorkflowStore {
           );
         }
       }
-      this.setRunState(
+      // `parked_repair_reminder` maps to null, meaning LEAVE THE PHASE ALONE - which is also
+      // the only case in which the run's existing note is still this phase's note.
+      const deliveredPhase = DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase;
+      this.setRunStateCarryingPhase(
         delivery.runId,
         nextStatus,
-        DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase,
-        delivery.kind === "persona_feedback" || delivery.kind === "session_action"
-          ? { deliveryId: delivery.id, transcriptAnchor }
-          : run.gateState,
+        deliveredPhase,
+        this.deliveryCarriedDetail(
+          run,
+          deliveredPhase,
+          delivery.kind === "persona_feedback" || delivery.kind === "session_action"
+            ? { deliveryId: delivery.id, transcriptAnchor }
+            : null,
+        ),
         now,
       );
       this.appendEvent(delivery.runId, "delivery_delivered", {
@@ -7219,12 +7361,20 @@ export class WorkflowStore {
               SET state = 'uncertain', error = 'daemon_restart_after_send_claim', updated_at = ?
             WHERE id = ? AND state = 'sending'`,
         ).run(now, delivery.id);
+        const blocked = this.getRun(delivery.runId);
         this.db.prepare(
           `UPDATE workflow_runs
               SET status = 'blocked', current_phase = 'delivery_uncertain',
                   gate_state_json = ?, updated_at = ?
             WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-        ).run(JSON.stringify({ deliveryId: delivery.id }), now, delivery.runId);
+        ).run(
+          JSON.stringify(withInspectorGate(
+            { deliveryId: delivery.id },
+            blocked ? inspectorGateState(blocked) : null,
+          )),
+          now,
+          delivery.runId,
+        );
         this.appendEvent(delivery.runId, "delivery_uncertain", {
           deliveryId: delivery.id,
           reason: "daemon_restart_after_send_claim",
@@ -7250,12 +7400,20 @@ export class WorkflowStore {
               SET state = 'uncertain', error = ?, updated_at = ?
             WHERE id = ? AND state = 'sending'`,
         ).run(reason, now, delivery.id);
+        const blocked = this.getRun(delivery.runId);
         this.db.prepare(
           `UPDATE workflow_runs
               SET status = 'blocked', current_phase = 'delivery_uncertain',
                   gate_state_json = ?, updated_at = ?
             WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-        ).run(JSON.stringify({ deliveryId: delivery.id, reason }), now, delivery.runId);
+        ).run(
+          JSON.stringify(withInspectorGate(
+            { deliveryId: delivery.id, reason },
+            blocked ? inspectorGateState(blocked) : null,
+          )),
+          now,
+          delivery.runId,
+        );
         this.appendEvent(delivery.runId, "delivery_uncertain", {
           deliveryId: delivery.id,
           reason,
@@ -7370,13 +7528,18 @@ export class WorkflowStore {
             ?? (delivery.kind === "inspector_feedback" && inspectorOnly
               ? "waiting_for_new_head"
               : "waiting_for_session");
-          this.setRunState(
+          const resolvedPhase = DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase;
+          this.setRunStateCarryingPhase(
             delivery.runId,
             nextStatus,
-            DELIVERY_RUN_PHASE[delivery.kind] ?? run.currentPhase,
-            delivery.kind === "persona_feedback"
-              ? { deliveryId: delivery.id, resolvedByOperator: true }
-              : run.gateState,
+            resolvedPhase,
+            this.deliveryCarriedDetail(
+              run,
+              resolvedPhase,
+              delivery.kind === "persona_feedback"
+                ? { deliveryId: delivery.id, resolvedByOperator: true }
+                : null,
+            ),
             now,
           );
           rearmed = this.rearmCompletionForDelivery(delivery, now);
@@ -8525,13 +8688,20 @@ export class WorkflowStore {
                 error_code = ?
           WHERE run_id = ? AND state = 'running'`,
       ).run(now, now, reason, id);
-      this.setRunState(id, "cancelled", reason, { reason }, now);
+      // The reason IS the phase here, and it is whatever the caller named - `cancelled:<id>`
+      // from the dashboard's cancel action. Free-form by contract, so it takes the
+      // compatibility door rather than widening the typed one.
+      this.setRunStateCarryingPhase(id, "cancelled", reason, { reason }, now);
       this.appendEvent(id, "run_cancelled", { reason }, now);
       return this.mustRun(id);
     });
   }
 
-  orphanBinding(id: string, reason: string, now = Date.now()): WorkflowBinding | null {
+  orphanBinding(
+    id: string,
+    reason: WorkflowRunPhase,
+    now = Date.now(),
+  ): WorkflowBinding | null {
     return transaction(this.db, () => {
       const binding = this.getBinding(id);
       if (!binding || binding.state === "archived") return binding;
@@ -8566,7 +8736,11 @@ export class WorkflowStore {
     });
   }
 
-  pauseBinding(id: string, reason: string, now = Date.now()): WorkflowBinding | null {
+  pauseBinding(
+    id: string,
+    reason: WorkflowRunPhase,
+    now = Date.now(),
+  ): WorkflowBinding | null {
     return transaction(this.db, () => {
       const binding = this.getBinding(id);
       if (!binding || binding.state === "archived") return binding;

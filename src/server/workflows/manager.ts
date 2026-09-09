@@ -83,7 +83,6 @@ import {
   manualWorkflowTriggerKey,
   normalizeWorkflowName,
   verdictAuthor,
-  workflowRoundLimitParkedPhase,
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
@@ -92,10 +91,17 @@ import {
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
 import {
+  WORKFLOW_INSPECTOR_ENTRY_PHASE,
+  withInspectorGate,
+  workflowInspectorGate,
+  workflowRoundLimitParkedPhase,
+  workflowRunPhaseRecognized,
+  type WorkflowRunPhase,
+} from "@shared/workflow-lifecycle.ts";
+import {
   PersonaVerdictSchema,
   WorkflowCaptureExpectationSchema,
   WorkflowContextSnapshotSchema,
-  WorkflowInspectorGateStateSchema,
 } from "@shared/protocol.ts";
 import type { InspectionUpdated, InspectorComment } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
@@ -2001,7 +2007,13 @@ export class WorkflowManager {
           run.id,
           run.status,
           WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
-          { round: latest.round, evidenceFingerprint: latest.evidenceFingerprint },
+          // The refusal is a note on the run, not a new state for it, so it must not take the
+          // gate with it: a `pr_handoff` run refused here would otherwise lose the pull
+          // request it is gated on for the sake of recording why one click did nothing.
+          withInspectorGate(
+            { round: latest.round, evidenceFingerprint: latest.evidenceFingerprint },
+            this.gateState(run),
+          ),
           now,
         );
         this.store.appendEvent(run.id, "resubmit_refused_unchanged_repository", {
@@ -2582,7 +2594,13 @@ export class WorkflowManager {
         : waitReason === "missing_pr" || waitReason === "unadopted_pr"
           ? "waiting_for_pr"
           : "waiting_for_inspector",
-      phase: `inspector_${waitReason}`,
+      // A closed lookup rather than `inspector_${waitReason}`. The interpolation read fine
+      // until the reason was itself `inspector_disabled`, which minted the phase
+      // `inspector_inspector_disabled` - a string no reader knows. Both routes back into a
+      // blocked gate test for `inspector_disabled` exactly, so a run that entered the gate
+      // while GitHub Inspector was switched off was stranded for good: turning it back on
+      // never re-evaluated the run, and Recheck refused it.
+      phase: WORKFLOW_INSPECTOR_ENTRY_PHASE[waitReason],
       state,
       now,
     });
@@ -2751,7 +2769,7 @@ export class WorkflowManager {
     const restore = gate && latest.mode === "inspector_only"
       ? {
           status: "waiting_for_new_head" as const,
-          phase: "inspector_findings",
+          phase: "inspector_findings" as const,
           gateState: gate as unknown as WorkflowJson,
         }
       : this.parkedRestoreForGrant(run);
@@ -2801,10 +2819,19 @@ export class WorkflowManager {
    */
   private parkedRestoreForGrant(run: WorkflowRun): {
     status: WorkflowRun["status"];
-    phase: string;
+    phase: WorkflowRunPhase;
     gateState: WorkflowJson | null;
   } | null {
-    const parkedPhase = workflowRoundLimitParkedPhase(run.gateState);
+    const recorded = workflowRoundLimitParkedPhase({
+      status: run.status,
+      phase: run.currentPhase,
+      gateState: run.gateState,
+    });
+    // A phase this build does not declare is no restore target: putting a run back into a
+    // state nothing can act on would revive it into the same standstill. Those runs keep the
+    // documented behaviour for an unrecorded parked phase - the grant raises the budget and
+    // the operator resumes by hand.
+    const parkedPhase = recorded && workflowRunPhaseRecognized(recorded) ? recorded : null;
     if (!parkedPhase) return null;
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
@@ -2815,7 +2842,14 @@ export class WorkflowManager {
     })) {
       return null;
     }
-    return { status: "waiting_for_session", phase: parkedPhase, gateState: null };
+    // The gate, not `null`. The parked phase this restores into may be `pr_handoff`, whose
+    // whole branch is driven by the gate context - restoring the phase without it would put
+    // the run back in a state the GitHub Inspector poller then skips.
+    return {
+      status: "waiting_for_session",
+      phase: parkedPhase,
+      gateState: (this.gateState(run) as unknown as WorkflowJson | null),
+    };
   }
 
   async preparePr(
@@ -3000,7 +3034,11 @@ export class WorkflowManager {
       };
     }
     if (latest.round > run.maxRepairRounds) {
-      this.store.setRunState(run.id, "blocked", "round_limit", gate as unknown as WorkflowJson, now);
+      // Through the one round-limit writer, which now records the budget AND carries the gate.
+      // Writing the gate straight into the phase detail was the other half of the collision:
+      // it kept the review and lost the budget, exactly as `blockForRoundLimit` kept the
+      // budget and lost the review.
+      this.store.blockForRoundLimit(run, now);
       this.publishRun(run.id);
       return { ok: false, reason: "round_limit", message: "The workflow has exhausted its repair rounds" };
     }
@@ -3737,9 +3775,20 @@ export class WorkflowManager {
     );
   }
 
+  /**
+   * The GitHub Inspector gate this run holds, read through the one lifecycle decoder.
+   *
+   * This used to re-parse `gate_state_json` here, which is how the manager and the store came
+   * to answer the same question from two copies of the same three lines. The decoder is also
+   * what lets a run that spent its repair budget keep its gate: the block nests it beside the
+   * budget, and a bare `safeParse` of the whole column would report no gate at all.
+   */
   private gateState(run: WorkflowRun): WorkflowInspectorGateState | null {
-    const parsed = WorkflowInspectorGateStateSchema.safeParse(run.gateState);
-    return parsed.success ? parsed.data : null;
+    return workflowInspectorGate({
+      status: run.status,
+      phase: run.currentPhase,
+      gateState: run.gateState,
+    });
   }
 
   private resetRecoveredGateObservations(): void {
@@ -3748,6 +3797,11 @@ export class WorkflowManager {
       if (runIsTerminal(run)) continue;
       const state = this.gateState(run);
       if (!state) continue;
+      // A run whose phase this build does not declare is a legacy record, and the decoder
+      // already reports it as non-executable. Recovery must honour that rather than launder
+      // it: carrying the phase forward through a recognised fallback would REWRITE the very
+      // record the compatibility boundary promises to leave inspectable for diagnosis.
+      if (!workflowRunPhaseRecognized(run.currentPhase)) continue;
       const waitingForNewHead = run.status === "waiting_for_new_head";
       const waitingForPr = run.status === "waiting_for_pr";
       const waitingForSession = run.status === "waiting_for_session";
@@ -3768,7 +3822,9 @@ export class WorkflowManager {
             : blocked || !cfg.enabled
               ? "blocked"
               : "waiting_for_inspector";
-      const phase = waitingForNewHead
+      // Carried forward unchanged. The guard above already established that this build
+      // declares it, so there is nothing to narrow and no fallback to reach for.
+      const phase: WorkflowRunPhase = waitingForNewHead
         ? "inspector_findings"
         : waitingForPr || waitingForSession || blocked
           ? run.currentPhase
@@ -3852,7 +3908,7 @@ export class WorkflowManager {
     expectedState: WorkflowInspectorGateState,
     state: WorkflowInspectorGateState,
     status: WorkflowRun["status"],
-    phase: string,
+    phase: WorkflowRunPhase,
     eventKind: string | null,
     eventPayload: WorkflowJson,
     now: number,
@@ -3886,6 +3942,13 @@ export class WorkflowManager {
       || (run.status === "waiting_for_session" && !waitingForPrHandoff)
     ) return;
     if (run.status === "blocked" && run.currentPhase !== "inspector_disabled") return;
+    // A legacy record decodes as non-executable, and the gate is an execution path, so it
+    // stops here rather than at each transition inside. Guarding once at the entry is the
+    // point: this method advances the run through a dozen branches, and a per-branch fallback
+    // is what let an unrecognised phase be laundered into a recognised one and REWRITTEN -
+    // destroying the only evidence of what the older daemon left behind. The run stays
+    // exactly as persisted, which is what makes it diagnosable.
+    if (!workflowRunPhaseRecognized(run.currentPhase)) return;
     const binding = this.store.getBinding(run.bindingId);
     const version = this.store.getWorkflowVersionById(run.workflowVersionId);
     if (!binding || version?.completionPolicy.kind !== "inspector") return;
@@ -4009,12 +4072,18 @@ export class WorkflowManager {
         observedHeadSha: observation.observedHeadSha,
         reviewPosture: observation.ledger.reviewPosture,
       };
+      // Carried forward unchanged: a fresh observation records what the gate saw and leaves
+      // the run where it is. Re-asked here rather than relying on the entry guard because
+      // `run` is reassigned by earlier transitions - and asked as a REFUSAL, never a
+      // fallback, so an unrecognised phase is left exactly as persisted.
+      const carried = run.currentPhase;
+      if (!workflowRunPhaseRecognized(carried)) return;
       const updated = this.transitionInspectorGate(
         run,
         state,
         observed,
         run.status,
-        run.currentPhase,
+        carried,
         null,
         null,
         now,

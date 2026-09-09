@@ -2161,35 +2161,12 @@ export function workflowRunHasNoRepairsLeft(run: {
   return run.round > run.maxRepairRounds;
 }
 
-/**
- * The phase a run was parked in before its budget ran out, recorded on the way into
- * `round_limit` so a later grant can put it back.
- *
- * A run that spends its budget loses the only record of what it was waiting for: the
- * round-limit block overwrites `current_phase` with `round_limit` and `gate_state_json`
- * with the budget, and neither is recoverable afterwards. That was survivable while a
- * grant only ever handed the run to a human's next click. It is not survivable now that a
- * grant may hand it back to the resumption observer, which needs the run to read as the
- * parked round it actually is - `pr_handoff` in particular takes a different branch there
- * than an ordinary repair round does.
- *
- * So the phase rides along in the same payload as the budget, written by the one store
- * helper every round-limit writer goes through. It is deliberately NOT re-recorded on a
- * second block: a run blocked, granted, resumed and blocked again must keep pointing at
- * the round it was parked in, not at `round_limit` itself.
- *
- * Absence is meaningful and is the reason this returns `null` rather than a default. A run
- * blocked by a build that predates this field cannot say what it was doing, and guessing
- * would restore a run into a phase whose branch never ran. Those runs keep the behaviour
- * they were blocked under: the grant raises the budget and the operator resumes by hand.
+/*
+ * `workflowRoundLimitParkedPhase` used to live here, reading `gate_state_json` on its own.
+ * It now lives in `workflow-lifecycle.ts`, beside the decoder that tells a round-limit budget
+ * apart from every other payload the same column carries - the split was how a bare gate
+ * state stored under `round_limit` came to be invisible to it.
  */
-export function workflowRoundLimitParkedPhase(gateState: WorkflowJson | null): string | null {
-  if (!gateState || typeof gateState !== "object" || Array.isArray(gateState)) return null;
-  const parked = (gateState as { [key: string]: WorkflowJson }).parkedPhase;
-  if (typeof parked !== "string" || parked.length === 0) return null;
-  if ((WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(parked)) return null;
-  return parked;
-}
 
 /**
  * The phase a run carries while its last resubmission was refused for naming work that

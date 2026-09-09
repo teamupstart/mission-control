@@ -1872,10 +1872,16 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     -- puts it back, so a resolve has to wait out a settle window and re-check.
     --
     -- A row OUTLIVES the task that caused it, and holds no reference to one: payload is
-    -- a snapshot, so a task deleted between the observation and the attempt still delivers
-    -- what was true when it was observed. Same stance as task_source_seen above, for a
+    -- a snapshot, so an ANNOTATION still delivers what was true when it was observed even
+    -- if the task was deleted in between. Same stance as task_source_seen above, for a
     -- different reason - there it is "a task you deleted stays deleted", here it is "a
     -- fact you observed stays true". task_id is provenance and is never joined on.
+    --
+    -- A RESOLVE is deliberately not covered by that, and the asymmetry is the point. It
+    -- changes an item's state rather than adding to it, so the worker re-checks the live
+    -- task before spending one and cancels the row when the task is gone or is no longer
+    -- done. "A pull request opened for this" stays true whatever became of the task; "this
+    -- finished" does not. See recheck() in task-sources/writeback.ts.
     CREATE TABLE IF NOT EXISTS task_source_writeback (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       source_id    TEXT NOT NULL,      -- TaskSourceInstance.id

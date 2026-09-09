@@ -28,7 +28,7 @@ Setup is what this machine can do; Trust is which repositories Mission Control m
 ## One table, four grants
 <!-- stage: grants -->
 
-Every grant that lets Mission Control act outside this app is here: a row per repository, a column per grant. Clicking a cell writes to that subsystem's own allowlist - Foreman, Workflows, GitHub Inspector, Shipping - so there is one place to read who may act where, and no second list to keep in step.
+Every grant that lets Mission Control act outside this app is here: a row per repository, a column per grant. Each column is one subsystem's own allowlist, and clicking a cell writes there, so the Foreman, Workflows, GitHub Inspector and Shipping panels keep working against the same lists. One place to read who may act where, and no second list to keep in step.
 
 ## Add a repository, then grant it
 <!-- stage: trust-add -->

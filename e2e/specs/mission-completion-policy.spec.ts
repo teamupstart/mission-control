@@ -150,6 +150,14 @@ test("a new mission rests on automatic completion, and can still be turned off",
   await dashboard.getByRole("button", { name: "Recurring missions" }).click();
   await dashboard.getByRole("button", { name: "Create mission" }).click();
 
+  // The group header names all three guardrails it now holds. Pinned because the header and
+  // `docs/recurring-missions.md` describe the same grouping to the same reader, and the doc
+  // was updated to "the overlap, missed-run and completion guardrails" while the visible
+  // header still claimed two - which is the drift a reviewer caught on this change.
+  await expect(
+    dashboard.getByText("Overlap, missed-run and completion guardrails"),
+  ).toBeVisible();
+
   const completion = dashboard.getByRole("combobox", { name: COMPLETION });
   await expect(completion).toBeVisible();
   await expect(completion).toHaveValue("auto-on-conclusion");

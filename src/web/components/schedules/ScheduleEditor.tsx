@@ -655,7 +655,7 @@ export function ScheduleEditor({
         </FormSection>
 
         <FormSection
-          title="Overlap and missed-run guardrails"
+          title="Overlap, missed-run and completion guardrails"
           blurb="These decide how many tasks a resume or an overlap produces, and what lets the next one through."
         >
           <Field label="When prior generated work is still active">

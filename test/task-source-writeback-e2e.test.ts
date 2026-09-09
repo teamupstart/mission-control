@@ -112,12 +112,12 @@ function daemon() {
   const enqueuer = makeWritebackEnqueuer(registry, { settleMs: SETTLE });
   registry.onTaskPrLinked((e) => enqueuer.prLinked(e));
   tasks.registerWritebackEnqueuer(enqueuer);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as unknown as ReviewManager,
+    reviews: {} as unknown as ReviewManager,
     tasks,
-    {} as unknown as QueueManager,
-  );
+    queues: {} as unknown as QueueManager,
+  });
   return { registry, tasks, app, enqueuer };
 }
 

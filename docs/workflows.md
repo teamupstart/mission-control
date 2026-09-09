@@ -837,7 +837,11 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 submission and therefore the same reserved bytes.
 
 An image whose digest is already frozen and retained references that existing body instead of
-copying it again, so registering the same screenshot in five rounds stores it once. Bodies are
+copying it again, so registering the same screenshot in five rounds stores it once. That is a
+rule about bodies, not records: a submission may hold two records with byte-identical content
+under two client ids, sharing one body, and a carry keeps both. Collapsing them into one record
+would leave the other's client id unresolvable and silently drop any coverage link that cited
+it, for evidence whose bytes are present under its sibling. Bodies are
 therefore shared between submissions and between runs: one is queued for deletion only when no
 retained row anywhere still reads it, and a queued body a later capture reuses is taken off the
 queue rather than deleted.

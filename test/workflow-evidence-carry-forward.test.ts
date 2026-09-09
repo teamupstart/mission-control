@@ -892,6 +892,89 @@ test("a byte-capped carry stops at the first refusal instead of packing smaller 
   }
 });
 
+test("two source records with identical bytes both carry, so neither claim loses its link", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-twins-")));
+  try {
+    // The exact shape captureSubmissionImages supports and the observed run produced: one
+    // screenshot registered twice under two client ids. Both are frozen as distinct records
+    // sharing one body, and a claim may cite either one specifically.
+    const twin = Buffer.concat([PNG, Buffer.from("twins", "utf8")]);
+    writeFileSync(join(checkout, "first.png"), twin);
+    writeFileSync(join(checkout, "second.png"), twin);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [
+        imageWrite({
+          id: "twin-a", clientItemId: "shot-a", root: checkout, locator: "first.png",
+          caption: "The panel, registered once", bytes: twin,
+        }),
+        imageWrite({
+          id: "twin-b", clientItemId: "shot-b", root: checkout, locator: "second.png",
+          caption: "The panel, registered again under another id", bytes: twin,
+        }),
+      ],
+      2,
+      null,
+      [{
+        id: "twin-claim",
+        clientCriterionId: "claim-cites-second",
+        criterion: "The panel renders",
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [{ clientItemId: "shot-b", role: "rendered_output" }],
+      }],
+    );
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "twins-root", now: 3 },
+      { id: "twins-parent", triggerSource: "manual", triggerKey: "twins-root", context: {}, evidence: {}, now: 3 },
+    );
+    assert.equal((await captureSubmissionImages(store, parent.submission.id, 3)).length, 2);
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {}, evidence: {}, fingerprint: "tw-1", repositoryFingerprint: "tree", status: "running",
+    }, 3);
+
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    const body = "the repair run\n";
+    writeFileSync(join(checkout, "repair.log"), body);
+    store.stageWorkflowEvidence(noteKey, [logWrite({
+      id: "twin-repair", clientItemId: "repair", root: checkout, locator: "repair.log",
+      caption: "The repair", body,
+    })], 5);
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "twins-child", runId, waitingSubmissionId: parent.submission.id,
+      triggerKey: "twins-refinement", manualRetry: true, now: 5,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    await captureSubmissionImages(store, child.submission.id, 6);
+    await captureSubmissionTextArtifacts(store, child.submission.id, 6);
+    await inheritSubmissionEvidence(store, child.submission, 6);
+
+    assert.deepEqual(
+      store.submissionFrozenEvidenceIdentities(child.submission.id)
+        .map((item) => item.clientItemId).sort(),
+      ["repair", "shot-a", "shot-b"],
+      "both identical-byte records carry, so the id the claim cites still resolves",
+    );
+    const claim = store.listSubmissionCoverage(child.submission.id)
+      .find((candidate) => candidate.clientCriterionId === "claim-cites-second");
+    assert.deepEqual(
+      claim?.links.map((link) => link.clientItemId),
+      ["shot-b"],
+      "and the parent's claim keeps the link it was frozen with",
+    );
+    // One digest is still one body: deduplication is about bytes on disk, not rows.
+    const paths = new Set(store.submissionImageStorageRecords(child.submission.id)
+      .map((record) => record.storageRelativePath));
+    assert.equal(paths.size, 1, "the two records share the single retained body");
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
 test("a parent claim survives a link whose evidence the limit refused", async () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-")));
   try {

@@ -5673,9 +5673,10 @@ export class WorkflowStore {
    * Runs AFTER the submission has frozen whatever it staged itself, and adds only what is
    * missing, so a carry can never displace a fresh capture:
    *
-   * - Evidence already frozen here under the same `sha256` is skipped. That is the whole
-   *   deduplication rule at the submission level, and it is what lets an agent re-register
-   *   the same screenshot without ending up with it twice.
+   * - An item already frozen here under the same STAGING id is skipped, because that is the
+   *   same item rather than merely the same bytes. Identical bytes are deduplicated as one
+   *   body on disk, never as one row: see the note at the carry loops for why collapsing rows
+   *   would orphan a coverage link.
    * - Every frozen parent coverage claim is retained whole, with its own id, proof class and
    *   links, marked with where it came from. See the long note at that loop.
    * - Carried items get reservation rows, because a Persona manifest, the readiness preflight
@@ -5702,10 +5703,22 @@ export class WorkflowStore {
       const carry = new Set(input.stagingIds);
       const ownImages = this.listSubmissionImages(input.submissionId);
       const ownArtifacts = this.listSubmissionTextArtifacts(input.submissionId);
-      const heldDigests = new Set([
-        ...ownImages.map((image) => `image:${image.sha256}`),
-        ...ownArtifacts.map((artifact) => `text:${artifact.sha256}`),
-      ]);
+      /*
+       * Deliberately NO digest test on the carried set.
+       *
+       * Deduplication in this phase is about BODIES, not rows: one file per digest, which
+       * `captureSubmissionImages` achieves by pointing a new row at a retained body and which
+       * a carried row inherits by copying `storage_relative_path`. A source submission is
+       * explicitly allowed to hold two frozen rows with byte-identical content under two
+       * client ids, and `captureSubmissionImages` freezes exactly that.
+       *
+       * Skipping the second of those on digest would leave its client id with no reservation
+       * here, so `submissionFrozenEvidenceIdentities` would not resolve it, and every parent
+       * claim link citing that id would be filtered out a few lines below - an invented gap,
+       * for evidence whose bytes are demonstrably present under the sibling id. The only
+       * "already have it" test that is safe is the staging id in `held`, which is the same
+       * ITEM rather than merely the same bytes.
+       */
       /*
        * What is left of this submission's evidence budget after its own captures.
        *
@@ -5809,10 +5822,7 @@ export class WorkflowStore {
       let carried = 0;
       const carriedStagingIds = new Set<string>();
       for (const row of imageRows) {
-        const digest = `image:${row.sha256}`;
-        if (!carry.has(row.staging_id) || held.has(row.staging_id) || heldDigests.has(digest)) {
-          continue;
-        }
+        if (!carry.has(row.staging_id) || held.has(row.staging_id)) continue;
         if (budget.images <= 0 || row.bytes > budget.imageBytes) {
           // A byte miss closes the door exactly as an exhausted count does. Skipping only the
           // item that did not fit would let a SMALLER, older one through behind it, and since
@@ -5825,7 +5835,6 @@ export class WorkflowStore {
         }
         budget.images -= 1;
         budget.imageBytes -= row.bytes;
-        heldDigests.add(digest);
         cancelCleanup.run(row.storage_relative_path);
         insertImage.run(
           frozenEvidenceId("img", input.submissionId, row.staging_id),
@@ -5850,10 +5859,7 @@ export class WorkflowStore {
         carried += 1;
       }
       for (const row of artifactRows) {
-        const digest = `text:${row.sha256}`;
-        if (!carry.has(row.staging_id) || held.has(row.staging_id) || heldDigests.has(digest)) {
-          continue;
-        }
+        if (!carry.has(row.staging_id) || held.has(row.staging_id)) continue;
         if (budget.artifacts <= 0 || row.bytes > budget.artifactBytes) {
           // Same rule as the images above: the first refusal ends the carry for this kind.
           budget.artifacts = 0;
@@ -5862,7 +5868,6 @@ export class WorkflowStore {
         }
         budget.artifacts -= 1;
         budget.artifactBytes -= row.bytes;
-        heldDigests.add(digest);
         insertArtifact.run(
           frozenEvidenceId("txt", input.submissionId, row.staging_id),
           input.submissionId,

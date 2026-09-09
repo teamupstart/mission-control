@@ -231,7 +231,7 @@ test("daemon restart clears observation freshness and waits for Inspector again"
   store.setRunState(
     "update-run",
     "blocked",
-    "inspector_same_head_refused",
+    "inspector_head_mismatch",
     refused as never,
     30,
   );
@@ -239,7 +239,7 @@ test("daemon restart clears observation freshness and waits for Inspector again"
   restarted.start();
   const stillBlocked = store.getRun("update-run")!;
   assert.equal(stillBlocked.status, "blocked");
-  assert.equal(stillBlocked.currentPhase, "inspector_same_head_refused");
+  assert.equal(stillBlocked.currentPhase, "inspector_head_mismatch");
   assert.equal(
     (stillBlocked.gateState as unknown as WorkflowInspectorGateState).lastObservedAt,
     null,
@@ -247,7 +247,7 @@ test("daemon restart clears observation freshness and waits for Inspector again"
   await (restarted as unknown as {
     evaluateInspectorGate(id: string, observation: null): Promise<void>;
   }).evaluateInspectorGate("update-run", null);
-  assert.equal(store.getRun("update-run")?.currentPhase, "inspector_same_head_refused");
+  assert.equal(store.getRun("update-run")?.currentPhase, "inspector_head_mismatch");
   await restarted.stop();
 });
 

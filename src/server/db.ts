@@ -3407,6 +3407,24 @@ function migrate(d: DatabaseSync): void {
       ON workflow_submissions(evidence_group_key, run_id);
   `);
 
+  // Un-strand runs parked in the phase a string interpolation invented.
+  //
+  // The GitHub Inspector gate built its entry phase as `inspector_${waitReason}`, and one of
+  // those reasons is itself `inspector_disabled` - so a run that reached the gate while
+  // GitHub Inspector was switched off was written as `inspector_inspector_disabled`. Both
+  // routes back into a blocked gate test for `inspector_disabled` exactly, so those runs are
+  // permanently stopped: re-enabling GitHub Inspector never re-evaluates them and Recheck
+  // refuses them. The writer is fixed; this is the rows it already wrote, and it must run here
+  // because nothing else will ever look at them again.
+  //
+  // Narrow on purpose - one exact phase, one exact replacement, and the status is left alone,
+  // because `blocked` is what a gate parked behind a disabled GitHub Inspector genuinely is.
+  d.exec(`
+    UPDATE workflow_runs
+       SET current_phase = 'inspector_disabled'
+     WHERE current_phase = 'inspector_inspector_disabled';
+  `);
+
   // The action a waiting attempt is executing, frozen from the run's immutable version.
   addColumn(d, "workflow_node_attempts", "session_action_snapshot_json", "TEXT");
   // The exact active directive a Persona attempt claimed. Nullable means no feedback was

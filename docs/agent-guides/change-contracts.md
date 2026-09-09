@@ -387,6 +387,106 @@ Persona or Check is reachable, submission-local fresh coverage remains mandatory
 `sessionActionContinuationReachesOnlyEnd`; do not infer this boundary from a built-in version,
 action name, position, or current run status.
 
+## One workflow run has one lifecycle state
+
+A run states its lifecycle in three columns that vary independently: `status`, the free-form
+`current_phase`, and the untagged `gate_state_json`. `src/shared/workflow-lifecycle.ts` is the
+only place that decides what a triple of them MEANS, and every reader goes through it. Before
+it, the store decided which statuses block a write, the engine decided which phase means a
+check may resume, and the manager decided which payloads are a live GitHub Inspector gate -
+three interpretations of one row, with nothing failing typecheck when a lifecycle change
+reached only two of them.
+
+- **`decodeWorkflowRunLifecycle` is total and deterministic.** Every triple maps to exactly one
+  reading, so two subsystems cannot disagree about whether a run is awaiting input, resumable,
+  or terminal. Add a lifecycle state by adding a variant here, not by adding a string
+  comparison at a call site.
+- **The phase detail and the gate are separate things sharing one column.** The detail is
+  phase-scoped - a budget, a cleanup block, a reason. The GitHub Inspector gate is sticky and
+  outlives any single phase. A writer with both in hand calls `withInspectorGate`, which parks
+  the gate under the reserved `gate` key; a record with no detail of its own stays the BARE
+  gate, because the gate transitions compare-and-set on the exact JSON of the column.
+- **`executable` has three conditions, and the phase is one of them.** A record is executable
+  only when the run has not finished, its detail is a declared shape, AND its phase is in
+  `WORKFLOW_RUN_PHASES`. The third is the one that is easy to omit: the executable paths are
+  keyed on the phase rather than on the payload, so an unknown phase with a null detail is not
+  "nothing to misread" - it is a lifecycle state whose meaning this build does not know, and
+  acting on it is the same mistake as trusting an unreadable payload.
+- **The authoritative write shape and the persistence shape are different types.**
+  `setRunState` takes `WorkflowRunPhase`, the literal union derived from `WORKFLOW_RUN_PHASES`,
+  so a writer cannot mint a phase that was never declared - that is a compile error rather than
+  a run that persists fine and is silently inert. `WORKFLOW_INSPECTOR_ENTRY_PHASE` and
+  `DELIVERY_RUN_PHASE` are keyed on the same union, so the registry and its writers stay one
+  source of truth without anyone remembering to synchronize them.
+- **`setRunStateCarryingPhase` is the only door for a phase this build does not declare**, and
+  it has exactly two kinds of caller: a FREE-FORM reason code (`cancelRun` writes
+  `cancelled:<requestId>`), and a CARRY-FORWARD, where a delivery lands on a run whose phase is
+  not its business to change and writes the row's existing phase back. It relaxes what may be
+  spelled, never what may be persisted as a coherent state - the same validation runs.
+- **Unknown phases stay storable and inspectable.** A row from a newer daemon may name
+  anything, so `workflowRunLifecycleViolation` does not refuse it. `phaseRecognized` names the
+  situation instead, and the status, phase, gate and raw detail all survive the decode, which
+  is what a legacy row needs to be diagnosed rather than merely rejected. Adding a phase to
+  `WORKFLOW_RUN_PHASES` is how it becomes actionable, and that is meant to be a deliberate edit.
+- **An unrecognised payload is `opaque` and never executable.** Undeclared shapes stay readable
+  under `detail`, and `workflowCheckCleanupBlock` and `workflowRoundLimitBudget` refuse to hand
+  one to a path that would act on it. `workflowInspectorGate` is deliberately outside this
+  boundary: the gate parsed against its own schema or it is null, so a finished or
+  unknown-phase run must still be able to name the pull request it was reviewing.
+- **Every declared phase declares the statuses it may be persisted under**, in
+  `WORKFLOW_RUN_PHASE_STATUSES` beside the registry, and the validator rejects anything
+  outside that set. This is what makes "exactly one valid state per record" enforceable rather
+  than aspirational: before it, the validator constrained only a handful of special phases, so
+  `completed` + `delivery_refused` - a finished run parked on a delivery refusal - was
+  recognised, decoded cleanly, and persisted because no rule happened to mention it. The
+  contract test reads this map rather than keeping its own copy.
+- **Every declared phase also declares the keys its detail may carry**, in
+  `WORKFLOW_RUN_PHASE_DETAIL_KEYS`. Without it a registered phase accepted ANY object, because
+  the decoder classified whatever it did not recognise as `opaque` and no rule looked further -
+  so a delivery refusal could be stored carrying a node id. It is an allowed-key WHITELIST
+  rather than a required-key list, because writers for one phase legitimately differ in which
+  optional fields they fill; bounding the key set refuses the contradictions without refusing
+  an honest writer that says less than it could. An empty list means the phase records no
+  detail of its own, and the sticky gate is excluded before the rule applies because it is
+  never phase detail. `DELIVERY_CARRIED_KEYS` is spread into every phase a delivery can land
+  on: a delivery confirms a packet and leaves the run in whatever state that packet created,
+  carrying its own record across the phase change.
+- **No writer is exempt from the detail contract.** Both doors run the full check. An earlier
+  version excused `setRunStateCarryingPhase` on the grounds that a payload it merely carried
+  was not its to justify - which made "every registered phase" untrue, and excused exactly the
+  payloads that had landed somewhere they did not belong. The fix is at the source, in
+  `deliveryCarriedDetail`: a delivery does not author a lifecycle state, so the run's note
+  travels only while its phase STANDS STILL. When the delivery moves the phase, the note
+  belongs to the phase being left and only the sticky gate rides across. What the
+  carry-forward door still relaxes is the PHASE SPELLING and nothing else, so a free-form
+  cancel reason and a phase from a newer daemon stay storable.
+- **An execution path must refuse an unrecognised phase, never default it.** There is no
+  `workflowRunPhaseOr(phase, fallback)` helper, and the absence is deliberate: one existed, and
+  the GitHub Inspector recovery and fresh-observation paths used it to carry a phase forward -
+  substituting a recognised phase for an unknown one and then REWRITING the row. A record the
+  decoder had just called non-executable was executed on anyway, and the only evidence of what
+  the older daemon left behind was destroyed. Those paths now stop on
+  `workflowRunPhaseRecognized`, at the entry to `evaluateInspectorGate` rather than per branch.
+- **`workflowRunLifecycleViolation` refuses, before persistence, what no reader could recover
+  from.** A `waiting_for_pr`/`waiting_for_inspector`/`waiting_for_new_head` run with no gate is
+  stranded with no observer. A `round_limit` block recording neither budget nor gate cannot be
+  granted out of. A `check_cleanup_unresolved` phase without a node names nothing to resume.
+  `setRunState`, `setRunStateCarryingPhase` and every raw writer call it and throw.
+- **Every rule that constrains WHICH phase a status may pair with applies only to phases this
+  build declares.** For an unrecognised phase there is nothing to compare against, and the
+  decoder has already marked the record non-executable, so refusing the write would only make
+  a legacy row unstorable. A rule refusing any unlisted `inspector_`-prefixed phase used to
+  break this: every registered `inspector_` phase is in the gate list by construction, so it
+  could only ever fire on an unrecognised one - leaving a foreign `inspector_` phase uniquely
+  un-carryable while `a_phase_from_a_newer_daemon` sailed through. It was removed, not scoped,
+  because scoping it to recognised phases makes it dead code.
+- **Phases the gate parks in are a closed registry**, and the type system is what enforces it.
+  Deriving one by interpolation is what produced `inspector_inspector_disabled`, a phase no
+  reader knew, which stranded every run that reached the gate while GitHub Inspector was
+  switched off. Entry phases come from `WORKFLOW_INSPECTOR_ENTRY_PHASE`, keyed on the registry
+  and typed `WorkflowRunPhase`, so the doubled name is a compile error - earlier and more
+  complete than the runtime string check that replaced it.
+
 ## One workflow run is one repository
 
 Concurrency lives at the binding and run layer. Nothing below a run knows a session can review

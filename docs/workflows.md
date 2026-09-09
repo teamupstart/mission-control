@@ -1525,6 +1525,57 @@ all - so all three surfaces read one derivation, which answers "which pull reque
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
 
+### One run, one lifecycle state
+
+A run says where it is in three stored columns - its status, its phase, and a free-form detail
+blob - and those three vary independently. `src/shared/workflow-lifecycle.ts` is the single
+place that reads them as one state, so the daemon's store, its engine, its GitHub Inspector
+gate and the dashboard cannot disagree about whether a run is waiting, resumable, or finished.
+
+Two of those columns carry things that are genuinely separate. The **detail** belongs to the
+current phase: the budget a spent run recorded, the node a withheld check retry names, the
+reason a cancelled run was given. The **GitHub Inspector gate** is sticky - the pull request a
+run is gated on, when it entered, and what the last review found - and it outlives whichever
+phase the run happens to be in. They used to share the column with no rule about which one
+won, so a writer holding both wrote one and destroyed the other. The most visible case: a run
+parked in `pr_handoff` that spent its last repair round lost the pull request it was gated on,
+permanently, because the block wrote the budget over it. That is fixed - the gate now rides
+through the block, the refusal, and the uncertain delivery alongside whatever the phase wanted
+to record - and a **Grant 2 more rounds** on such a run puts it back where it was.
+
+A run in a state this build does not recognise stays fully readable and is never acted on.
+That covers both halves of "unrecognised", because either one alone is not enough: a detail
+whose shape is undeclared, and a PHASE this build has never heard of - one written by a newer
+daemon, or a reason code nothing here maps. An unknown phase is not made safe by having no
+detail attached, because the machinery that drives a run forward keys on the phase rather than
+on the payload. So such a run reports its status, its phase, the pull request it was gated on
+and whatever it stored, and no resume path will touch it. The phase column itself stays free
+text, so a reason code nothing has a label for still prints as readable words.
+
+Nothing advances a run in a state this build does not recognise. The GitHub Inspector gate
+stops at its entry rather than at each of the branches inside, because a per-branch fallback
+is exactly how such a run got advanced before: the fresh-observation path substituted a known
+phase for the unknown one and wrote it back, overwriting the only record of what the older
+daemon had been doing.
+
+Combinations no reader could recover from are refused before they are stored rather than
+found later. Every phase declares which statuses it may be stored under, so a finished run
+cannot be parked on a delivery refusal and a blocked run cannot claim to be mid-review; and
+every phase declares what its detail may record, so a phase cannot be stored carrying facts it
+has no business knowing - a delivery refusal naming a check node, or a capture failure naming
+a packet. A run cannot be parked in a status only the GitHub Inspector poller un-parks
+without the gate that poller reads; a spent-budget block must record either the budget or the
+gate, or no grant could revive it. Those rules bind the phases this build declares; a phase it
+has never heard of is stored as written, whatever it is called, because a legacy run that
+cannot be stored is a legacy run that cannot be diagnosed.
+
+The phases the gate parks in are a closed list, and that closes a real stall: the gate used to
+build its entry phase by pasting the wait reason onto `inspector_`, which for one reason
+produced `inspector_inspector_disabled` - a phase neither the gate's own re-evaluation nor
+**Recheck** recognises. A run that reached the gate while GitHub Inspector was switched off
+stopped there for good, and turning GitHub Inspector back on did not revive it. Upgrading moves
+those runs to `inspector_disabled`, where both routes find them again.
+
 ### Live repair delivery and Foreman completion
 
 Live workflow delivery is **on by default, and authorised nowhere**. Those are two halves of

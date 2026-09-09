@@ -19,7 +19,7 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 
 const EVIDENCE = artifactsDir("no-mistakes-review-stages");
 
-test("the shipped No-Mistakes Review groups code review before evidence, docs, and slop", async ({
+test("the shipped No-Mistakes Review gates on intent and test coverage before deeper review", async ({
   dashboard,
   daemon,
 }) => {
@@ -31,6 +31,21 @@ test("the shipped No-Mistakes Review groups code review before evidence, docs, a
   await expect(pipeline).toBeVisible();
   const stages = pipeline.locator("section.wf-pipeline-stage");
   await expect(stages).toHaveCount(5);
+
+  const stage2 = stages.nth(1);
+  await expect(stage2.locator(".wf-pipeline-stage-name")).toHaveText("Stage 2");
+  await expect(stage2.locator(".wf-pipeline-reviewer-name")).toHaveText([
+    "Intent Conformance Judge",
+    "Test Coverage Judge",
+  ]);
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    mkdirSync(EVIDENCE, { recursive: true });
+    await dashboard.screenshot({
+      path: `${EVIDENCE}stage-2-intent-and-test-coverage.png`,
+      fullPage: true,
+    });
+  }
 
   const stage3 = stages.nth(2);
   await expect(stage3.locator(".wf-pipeline-stage-name")).toHaveText("Stage 3");
@@ -52,12 +67,17 @@ test("the shipped No-Mistakes Review groups code review before evidence, docs, a
   await expect(pullRequest.locator(".wf-pipeline-stage-name")).toHaveText("Pull Request");
   await expect(pipeline.locator(".wf-pipeline-inspector")).toHaveCount(0);
 
-  await dashboard.getByRole("button", { name: /Version 14/ }).click();
+  await dashboard.getByRole("button", { name: /Version 15/ }).click();
   const currentVersion = dashboard.locator(".workflow-version-detail");
   await expect(currentVersion).toBeVisible();
   const firstReviewer = currentVersion.locator("details.workflow-version-persona").first();
   await firstReviewer.locator("summary").click();
   await expect(firstReviewer.getByText("codex · gpt-5.6-terra")).toBeVisible();
+  const coverageReviewer = currentVersion
+    .locator("details.workflow-version-persona")
+    .filter({ hasText: "Test Coverage Judge" });
+  await coverageReviewer.locator("summary").click();
+  await expect(coverageReviewer.getByText("codex · gpt-5.6-terra")).toBeVisible();
   const designReviewer = currentVersion
     .locator("details.workflow-version-persona")
     .filter({ hasText: "Code Design Reviewer" });
@@ -67,7 +87,7 @@ test("the shipped No-Mistakes Review groups code review before evidence, docs, a
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
     await dashboard.screenshot({
-      path: `${EVIDENCE}version-14-codex-models.png`,
+      path: `${EVIDENCE}version-15-codex-models.png`,
       fullPage: true,
     });
   }

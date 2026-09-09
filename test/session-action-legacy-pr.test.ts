@@ -1,6 +1,6 @@
 /**
- * What is at stake: fourteen built-in versions now open a pull request two different ways, and
- * thirteen of them may be pinned by bindings on operators' machines.
+ * What is at stake: fifteen built-in versions now open a pull request two different ways, and
+ * every one may be pinned by bindings on operators' machines.
  *
  * Versions 5 through 7 reach End and then have the completion policy TYPE a handoff, recorded
  * as a `pr_handoff` delivery. Versions 8 onward open the pull request as an authored stage
@@ -28,7 +28,7 @@ const { WORKFLOW_DELIVERY_KINDS } = await import("../src/shared/workflow.ts");
 const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.name === "No-Mistakes Review")!;
 
 before(() => {
-  assert.equal(noMistakes().versions.length, 14, "this file is written against fourteen versions");
+  assert.equal(noMistakes().versions.length, 15, "this file is written against fifteen versions");
 });
 
 test("both delivery kinds remain in the durable vocabulary, and neither replaced the other", () => {
@@ -54,6 +54,7 @@ test("legacy versions keep their post-End handoff policies while versions 9 onwa
     "prepare_pr",
     "prepare_pr",
     "wait",
+    null,
     null,
     null,
     null,

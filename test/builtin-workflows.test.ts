@@ -227,7 +227,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 14),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 15),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -267,7 +267,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and local completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 14);
+  assert.equal(builtin.versions.length, 15);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -393,7 +393,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 14, "one workflow, fourteen versions");
+  assert.equal(builtin.versions.length, 15, "one workflow, fifteen versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -688,7 +688,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 14);
+  assert.equal(builtin.versions.length, 15);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -861,7 +861,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 14);
+  assert.equal(builtin.versions.length, 15);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -952,7 +952,6 @@ test("version 12 reviews slop alongside evidence and documentation in stage 4", 
   assert.deepEqual(version.completionPolicy, { kind: "none" });
   assert.equal(version.resumptionPolicy, "auto");
   assert.deepEqual(version.bindingDefaults, builtin.versions[10]!.bindingDefaults);
-  assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
 });
 
 test("appending version 12 rewrote no earlier version", () => {
@@ -1030,4 +1029,130 @@ test("version 14 pins Code Design to Codex Sol and every other reviewer to Codex
       `${node.id} changed beyond its execution routing`,
     );
   }
+});
+
+// ---- Version 15: test coverage joins intent conformance in stage 2 ----
+
+const NO_MISTAKES_V15_NODES = [
+  ["nmr-session", "session", 60, 60],
+  ["nmr-check-typecheck", "check", 340, 60],
+  ["nmr-check-test", "check", 340, 230],
+  ["nmr-build-join", "all_pass", 620, 145],
+  ["nmr-intent-conformance", "persona", 900, 60],
+  ["nmr-test-coverage-judge", "persona", 900, 230],
+  ["nmr-intent-coverage-join", "all_pass", 1180, 145],
+  ["nmr-code-risk", "persona", 1460, 60],
+  ["nmr-code-quality-judge", "persona", 1460, 230],
+  ["nmr-code-design", "persona", 1460, 400],
+  ["nmr-depth-join", "all_pass", 1740, 230],
+  ["nmr-test-evidence", "persona", 2020, 60],
+  ["nmr-documentation", "persona", 2020, 230],
+  ["nmr-slop-filter", "persona", 2020, 400],
+  ["nmr-evidence-documentation-join", "all_pass", 2300, 230],
+  ["nmr-pull-request", "session_action", 2580, 60],
+  ["nmr-end", "end", 2860, 60],
+];
+
+test("version 15 reviews test coverage alongside intent conformance in stage 2", () => {
+  const builtin = noMistakesReview();
+  const prior = builtin.versions[13]!;
+  const version = builtin.versions[14]!;
+  assert.equal(version.id, builtinWorkflowVersionId("no-mistakes-review", 15));
+  assert.equal(version.version, 15);
+  assert.equal(version.sourceDraftRevision, 14);
+  assert.deepEqual(
+    version.graph.nodes.map((node) => [node.id, node.kind, node.position.x, node.position.y]),
+    NO_MISTAKES_V15_NODES,
+  );
+  assert.deepEqual(shapeOf(asDraft(version.graph)), [
+    ["check:typecheck", "check:test"],
+    ["builtin:intent-conformance-judge", "builtin:test-coverage-judge"],
+    [
+      "builtin:code-risk-reviewer",
+      "builtin:code-quality-judge",
+      "builtin:code-design-reviewer",
+    ],
+    [
+      "builtin:test-evidence-auditor",
+      "builtin:documentation-steward",
+      "builtin:slop-filter",
+    ],
+    ["action:builtin:pull-request"],
+  ]);
+
+  const coverage = version.graph.nodes.find((node) => node.id === "nmr-test-coverage-judge");
+  assert.ok(coverage && coverage.kind === "persona");
+  const shippedCoverage = BUILTIN_PERSONAS.find(
+    (item) => item.id === "builtin:test-coverage-judge",
+  )!;
+  assert.equal(coverage.persona.sourcePersonaId, shippedCoverage.id);
+  assert.equal(coverage.persona.guidanceMarkdown, shippedCoverage.guidanceMarkdown);
+  assert.equal(coverage.persona.runner, "codex");
+  assert.equal(coverage.persona.model, "gpt-5.6-terra");
+  assert.equal(personaSnapshotIsOutdated(coverage.persona, shippedCoverage), false);
+
+  const route = (source: string, port: string) => version.graph.edges
+    .filter((edge) => edge.source === source && edge.sourcePort === port)
+    .map((edge) => `${edge.target}:${edge.targetPort}`)
+    .sort();
+  assert.deepEqual(route("nmr-build-join", "pass"), [
+    "nmr-intent-conformance:activate",
+    "nmr-test-coverage-judge:activate",
+  ]);
+  for (const nodeId of ["nmr-intent-conformance", "nmr-test-coverage-judge"]) {
+    assert.deepEqual(route(nodeId, "pass"), ["nmr-intent-coverage-join:result"]);
+    assert.deepEqual(route(nodeId, "fail"), ["nmr-intent-coverage-join:result"]);
+  }
+  assert.deepEqual(route("nmr-intent-coverage-join", "fail"), [
+    "nmr-session:return_for_changes",
+  ]);
+  assert.deepEqual(route("nmr-intent-coverage-join", "pass"), [
+    "nmr-code-design:activate",
+    "nmr-code-quality-judge:activate",
+    "nmr-code-risk:activate",
+  ]);
+
+  const reviewerNodes = version.graph.nodes.filter((node) => node.kind === "persona");
+  assert.equal(reviewerNodes.length, 8);
+  for (const node of reviewerNodes) {
+    assert.equal(node.persona.runner, "codex");
+    assert.equal(
+      node.persona.model,
+      node.persona.sourcePersonaId === "builtin:code-design-reviewer"
+        ? "gpt-5.6-sol"
+        : "gpt-5.6-terra",
+    );
+  }
+
+  assert.equal(version.evidenceReadinessPolicy, prior.evidenceReadinessPolicy);
+  assert.deepEqual(version.completionPolicy, prior.completionPolicy);
+  assert.equal(version.resumptionPolicy, prior.resumptionPolicy);
+  assert.deepEqual(version.bindingDefaults, prior.bindingDefaults);
+  assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
+});
+
+test("appending version 15 rewrote no earlier version", () => {
+  const builtin = noMistakesReview();
+  for (const [index, version] of builtin.versions.slice(0, 14).entries()) {
+    assert.equal(
+      version.graph.nodes.some((node) => node.id === "nmr-test-coverage-judge"),
+      false,
+      `version ${index + 1} grew Test Coverage Judge`,
+    );
+    assert.equal(
+      version.graph.nodes.some((node) => node.id === "nmr-intent-coverage-join"),
+      false,
+      `version ${index + 1} grew the stage 2 all-pass join`,
+    );
+  }
+  assert.deepEqual(
+    builtin.versions[13]!.graph.nodes.map((node) => [
+      node.id,
+      node.kind,
+      node.position.x,
+      node.position.y,
+    ]),
+    NO_MISTAKES_V12_NODES,
+    "appending v15 must not rewrite v14",
+  );
 });

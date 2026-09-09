@@ -300,6 +300,8 @@ const NO_MISTAKES_REVIEW_NODES = {
   test: "nmr-check-test",
   build: "nmr-build-join",
   intent: "nmr-intent-conformance",
+  coverage: "nmr-test-coverage-judge",
+  intentCoverage: "nmr-intent-coverage-join",
   risk: "nmr-code-risk",
   evidence: "nmr-test-evidence",
   documentation: "nmr-documentation",
@@ -676,6 +678,57 @@ const NO_MISTAKES_REVIEW_V8: StagePipeline = {
 };
 
 /**
+ * Version 15: Test Coverage Judge joins Intent Conformance in stage 2.
+ *
+ * Written out in full so version 14 remains immutable. Both focused gates inspect the same
+ * submission in parallel and aggregate into one repair packet before the deeper code reviews run.
+ * The stage count, later review groups, verified Pull Request action, and completion posture do not
+ * change.
+ */
+const NO_MISTAKES_REVIEW_V9: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.intentCoverage,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.coverage, "test-coverage-judge"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.quality, "code-quality-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.design, "code-design-reviewer"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.evidenceDocumentation,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.slop, "slop-filter"),
+      ],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
+/**
  * The binding posture shipped before Foreman Complete became the application default.
  *
  * Built-in versions are immutable app data: deriving versions 1-5 from today's default would
@@ -712,8 +765,8 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review",
     description:
-      "Typecheck and test, then seven review roles: Intent Conformance; Code Risk, Quality and "
-      + "Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
+      "Typecheck and test, then eight review roles: Intent Conformance and Test Coverage; Code "
+      + "Risk, Quality and Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
       + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
       + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
       + "the pull request without requiring GitHub Inspector.",
@@ -931,6 +984,23 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         evidenceReadinessPolicy: "criterion_mapped_v1",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 13,
+      },
+      {
+        // Version 15: Test Coverage Judge joins Intent Conformance in stage 2. The new all-pass
+        // join keeps both focused gates ahead of the deeper reviews and returns either finding in
+        // one repair packet. All eight reviewers retain version 14's pinned Codex routing.
+        pipeline: NO_MISTAKES_REVIEW_V9,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 14,
       },
     ],
   }),

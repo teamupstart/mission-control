@@ -358,6 +358,153 @@ test("a tick claims at most one row per item, so the comment goes before the clo
   assert.equal(due[0]!.action, "annotate");
 });
 
+// The ordering this feature actually promises, and the case the per-item cap alone does NOT
+// cover. `claimDueWritebacks` compares a row only against other rows that are pending AND
+// due; a completion comment that was refused has its `next_at` pushed into the future by the
+// backoff, so it drops out of that comparison entirely. Once the settle window expires the
+// resolve is the only due row for the item, and without the state guard it is delivered
+// first - closing somebody's issue with no explanation on the thread, and leaving the
+// comment to arrive later or never.
+test("a resolve is not claimed while its comment sits in a backoff longer than the settle window", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  // The comment is refused, so it backs off. One attempt is already 60s; the settle window
+  // is 300s, so by attempt 5 the retry time is well past the resolve's due time.
+  const annotate = spy(refused);
+  const resolve = spy(delivered);
+  let clock = NOW;
+  const d = deps({ sources, annotate: annotate.fn, resolve: resolve.fn, now: () => clock });
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    await drainWritebacks(registry, d);
+    clock = rows()[0]!.next_at;
+  }
+
+  const [comment, close] = rows();
+  assert.equal(comment!.state, "pending", "the comment gave up early");
+  assert.ok(
+    comment!.next_at > NOW + SETTLE,
+    "the fixture did not reach a backoff past the settle window, so it proves nothing",
+  );
+  assert.equal(close!.state, "pending");
+  assert.deepEqual(resolve.calls, [], "an issue was closed before its outcome comment landed");
+
+  // The sharpest moment: past the resolve's settle window, but still inside the comment's
+  // backoff. The resolve is the ONLY due row for this item, which is exactly the state the
+  // per-item cap could not see, and the claim must still hand over nothing.
+  const between = comment!.next_at - 1;
+  assert.ok(between >= NOW + SETTLE, "the resolve is not yet due, so this proves nothing");
+  assert.deepEqual(
+    claimDueWritebacks(between, 20).map((r) => r.action),
+    [],
+    "the resolve was claimable while it was the only due row and its comment was unfinished",
+  );
+
+  // And when the comment does come due again, it is the one claimed - the close still waits.
+  assert.deepEqual(claimDueWritebacks(comment!.next_at, 20).map((r) => r.action), ["annotate"]);
+});
+
+// The other half: once the comment lands, the resolve is released.
+test("a resolve is released as soon as its comment is delivered", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  // Refused once, so the comment is pending with a future next_at.
+  const annotate = spy(refused);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  assert.equal(rows()[0]!.state, "pending");
+  // Past the settle window the comment is due again and is the row claimed; the resolve is
+  // not among them, which is the property.
+  assert.deepEqual(
+    claimDueWritebacks(NOW + SETTLE + 1, 20).map((r) => r.action),
+    ["annotate"],
+    "the resolve was claimable while its comment was still owed",
+  );
+
+  // The retry succeeds, and only then is the resolve released.
+  const ok = spy(delivered);
+  await drainWritebacks(
+    registry,
+    deps({ sources, annotate: ok.fn, now: () => rows()[0]!.next_at }),
+  );
+  assert.equal(rows()[0]!.state, "delivered");
+  assert.deepEqual(
+    claimDueWritebacks(NOW + SETTLE + 1, 20).map((r) => r.action),
+    ["resolve"],
+    "the resolve stayed blocked after its comment landed",
+  );
+});
+
+// A comment that exhausted its retries is not a comment that landed, so the close stays
+// held. The operator's Retry is what releases it, by letting the comment go out first -
+// which is why a blocked resolve waits rather than being cancelled out of existence.
+for (const state of ["failed", "unknown"] as const) {
+  test(`a resolve stays held while its comment is ${state}, and Retry releases it`, () => {
+    const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+    const task = mkSwept();
+    const { registry, sources } = setup(s, task);
+    makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+    settleWriteback(rows()[0]!.id, state, { attempts: 6, lastError: "nope" }, NOW);
+
+    const after = NOW + SETTLE + 1;
+    assert.deepEqual(
+      claimDueWritebacks(after, 20).map((r) => r.action),
+      [],
+      `an issue was closed while its comment was ${state}`,
+    );
+
+    // Retry puts the comment back, and the resolve is still behind it rather than ahead.
+    retryWritebacks("src-1", true, after);
+    assert.deepEqual(claimDueWritebacks(after, 20).map((r) => r.action), ["annotate"]);
+    settleWriteback(rows()[0]!.id, "delivered", {}, after);
+    assert.deepEqual(claimDueWritebacks(after, 20).map((r) => r.action), ["resolve"]);
+  });
+}
+
+// A cancelled comment is not owed at all, so it must not hold the close forever. This is
+// the one earlier state that does not block.
+test("a cancelled comment does not hold its resolve", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  settleWriteback(rows()[0]!.id, "cancelled", { lastError: "switched off" }, NOW);
+  assert.deepEqual(
+    claimDueWritebacks(NOW + SETTLE + 1, 20).map((r) => r.action),
+    ["resolve"],
+  );
+});
+
+// An annotate is deliberately NOT held behind an earlier annotate. A multi-repo task's
+// per-repository pull requests share an external_id, and the two comments have no order
+// between them - suppressing the second because the first failed would withhold a true
+// statement for no benefit.
+test("a comment is not held behind another comment that failed", () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: false, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/other",
+    prUrl: "https://github.com/acme/other/pull/3",
+    observedAt: NOW,
+  });
+  settleWriteback(rows()[0]!.id, "failed", { attempts: 6, lastError: "nope" }, NOW);
+  assert.deepEqual(claimDueWritebacks(NOW, 20).map((r) => r.action), ["annotate"]);
+});
+
 test("a row not yet due is not claimed", () => {
   const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
   const task = mkSwept();
@@ -526,6 +673,69 @@ test("a source removed between the observation and the tick cancels the delivery
   assert.deepEqual(annotate.calls, []);
   assert.equal(rows()[0]!.state, "cancelled");
   assert.match(rows()[0]!.last_error!, /no longer configured/);
+});
+
+// The row stores `signal` and `action` twice - as columns, because they are half of the
+// identity index, and inside the serialized notice, because that notice is what an
+// implementation reads. Nothing in SQLite keeps the copies in step, and the worker reads
+// them from different places: the VERB comes off the column, the comment's wording off the
+// payload. A row whose copies disagree would run one and announce the other.
+test("a delivery whose payload contradicts its own row is failed, and nothing is written", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  // The row's columns still say task-completed / annotate; the payload now says pr-opened.
+  const row = rows()[0]!;
+  openDb()
+    .prepare(`UPDATE task_source_writeback SET payload = ? WHERE id = ?`)
+    .run(
+      JSON.stringify({
+        signal: "pr-opened",
+        action: "annotate",
+        externalId: "acme/demo#7",
+        externalUrl: null,
+        taskTitle: "Fix the parser",
+        prUrl: "https://github.com/acme/demo/pull/9",
+        repoRoot: "/repo",
+        outcome: null,
+        observedAt: NOW,
+      }),
+      row.id,
+    );
+
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  assert.deepEqual(annotate.calls, [], "a contradictory row was published anyway");
+  assert.equal(rows()[0]!.state, "failed");
+  assert.match(rows()[0]!.last_error!, /disagree/);
+});
+
+// The same refusal for a payload whose ACTION contradicts the row, which is the half that
+// would have run the wrong verb.
+test("a payload naming a different action than its row is refused", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  openDb()
+    .prepare(
+      `UPDATE task_source_writeback
+          SET payload = json_set(payload, '$.action', 'resolve')
+        WHERE id = ?`,
+    )
+    .run(rows()[0]!.id);
+
+  const annotate = spy(delivered);
+  const resolve = spy(delivered);
+  await drainWritebacks(
+    registry,
+    deps({ sources, annotate: annotate.fn, resolve: resolve.fn }),
+  );
+  assert.deepEqual(annotate.calls, []);
+  assert.deepEqual(resolve.calls, [], "a close ran under a row that calls itself a comment");
+  assert.equal(rows()[0]!.state, "failed");
 });
 
 // A payload this build cannot read will never deliver. Settled rather than left pending, or

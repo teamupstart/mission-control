@@ -7642,16 +7642,36 @@ interface WritebackDbRow {
   next_at: number;
 }
 
+const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
 /**
- * Read a stored payload as a notice, or null.
+ * Read a stored payload as a notice that AGREES with the row it came from, or null.
  *
  * Strict about the fields a delivery is BUILT from and lenient about nothing, because
  * every one of them ends up in text somebody else reads: an item id, a title, a link. A
  * row that cannot supply them has nothing honest to say upstream.
+ *
+ * And strict about the two facts this row stores TWICE. `signal` and `action` are columns
+ * - they are half of the identity index, so they have to be - and they are also inside the
+ * serialized notice, because the notice is a self-contained snapshot an implementation
+ * reads without the row. Nothing in SQLite keeps the two copies in step, and the worker
+ * reads them from different places: it dispatches the verb from the COLUMN (`row.action`)
+ * while `writebackCommentBody` branches on the PAYLOAD (`notice.signal`). A row whose
+ * copies disagree - hand-repaired, restored from a partial backup, or written by a build
+ * that spelled one of them differently - would run one verb while announcing the other: a
+ * close performed under a row that calls itself a comment, or a pull-request comment
+ * posted in answer to a completion.
+ *
+ * Refused here rather than reconciled, because there is no honest way to pick a winner.
+ * The column is what the row is indexed and de-duplicated as; the payload is what would be
+ * published; a rule preferring either one publishes something nobody wrote. The caller
+ * settles such a row `failed` and says so, which is a row an operator can see and fix.
  */
-const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
-
-function readWritebackNotice(json: string): WritebackNotice | null {
+function readWritebackNotice(
+  json: string,
+  signal: WritebackSignal,
+  action: WritebackAction,
+): WritebackNotice | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -7660,9 +7680,11 @@ function readWritebackNotice(json: string): WritebackNotice | null {
   }
   if (!parsed || typeof parsed !== "object") return null;
   const n = parsed as Record<string, unknown>;
-  const signal = readPersistedEnum(WRITEBACK_SIGNALS, asText(n.signal));
-  const action = readPersistedEnum(WRITEBACK_ACTIONS, asText(n.action));
-  if (!signal || !action) return null;
+  // Read through the same persisted-enum guard the columns get, then compared against
+  // them: a copy this build cannot read and a copy that contradicts the row are the same
+  // refusal, because neither can be acted on without guessing.
+  if (readPersistedEnum(WRITEBACK_SIGNALS, asText(n.signal)) !== signal) return null;
+  if (readPersistedEnum(WRITEBACK_ACTIONS, asText(n.action)) !== action) return null;
   if (typeof n.externalId !== "string" || n.externalId.length === 0) return null;
   if (typeof n.taskTitle !== "string" || typeof n.repoRoot !== "string") return null;
   return {
@@ -7694,7 +7716,7 @@ function toWritebackRow(r: WritebackDbRow): WritebackRow {
     action: action ?? "annotate",
     dedupeKey: r.dedupe_key,
     taskId: r.task_id,
-    notice: signal && action ? readWritebackNotice(r.payload) : null,
+    notice: signal && action ? readWritebackNotice(r.payload, signal, action) : null,
     state: readPersistedEnum(WRITEBACK_STATES, r.state) ?? "pending",
     attempts: r.attempts,
     nextAt: r.next_at,
@@ -7737,12 +7759,37 @@ export function enqueueWriteback(row: WritebackEnqueueRow, now = Date.now()): bo
 }
 
 /**
- * The rows due right now, at most one per `(source_id, external_id)`.
+ * The rows due right now: at most one per `(source_id, external_id)`, and never a resolve
+ * that still has unfinished business ahead of it.
  *
- * That cap is what orders an annotate before the resolve for the same item without any
- * dependency machinery: both rows are enqueued together, the annotate has the lower `id`,
- * so it is the one claimed and the resolve waits for the next tick. It also stops one
- * item taking several of a tick's slots, and stops two writes racing at the same issue.
+ * Two separate rules, because they answer two different questions and one of them used to
+ * be doing both jobs badly.
+ *
+ * The per-item cap stops one item taking several of a tick's slots, and stops two writes
+ * racing at the same issue.
+ *
+ * The resolve guard is what actually orders a comment before a close, and it has to look
+ * at rows that are NOT due as well as rows that are. The cap alone cannot: it only
+ * considers rows that are pending AND due, so a completion comment that was refused and
+ * backed off has its `next_at` pushed into the future and drops out of the comparison
+ * entirely. The resolve, whose settle window has meanwhile expired, becomes the only due
+ * row for that item and is delivered first - closing somebody's issue with no explanation
+ * on the thread, and leaving the comment to arrive later or never. That is the one
+ * ordering this feature actually promises, so it is enforced against the earlier rows'
+ * STATE rather than against their due time.
+ *
+ * A resolve therefore waits until every earlier row for its item is `delivered` or
+ * `cancelled`. `pending` blocks because the comment may still land; `failed` and `unknown`
+ * block because it did not land, or may not have, and an issue closed without it is the
+ * harm. A blocked resolve simply is not claimed - it stays visible in the source's pending
+ * count, and the operator's Retry, which moves `failed` and `unknown` rows back to
+ * `pending`, is what unblocks it by letting the comment go out first. `cancelled` does not
+ * block: that row is no longer owed at all.
+ *
+ * An annotate is deliberately not held behind an earlier annotate. Two comments on one
+ * item (a multi-repo task's per-repository pull requests share an `external_id`) have no
+ * order between them, and blocking the second on the first's failure would suppress a true
+ * statement for no benefit.
  *
  * Ordered by `id` - insertion order - because that is the order the facts were observed.
  */
@@ -7758,6 +7805,16 @@ export function claimDueWritebacks(now: number, limit: number): WritebackRow[] {
                AND w2.external_id = w.external_id
                AND w2.state = 'pending'
                AND w2.next_at <= ?
+          )
+          AND NOT (
+            w.action = 'resolve'
+            AND EXISTS (
+              SELECT 1 FROM task_source_writeback AS w3
+               WHERE w3.source_id = w.source_id
+                 AND w3.external_id = w.external_id
+                 AND w3.id < w.id
+                 AND w3.state IN ('pending', 'failed', 'unknown')
+            )
           )
         ORDER BY w.id
         LIMIT ?`,

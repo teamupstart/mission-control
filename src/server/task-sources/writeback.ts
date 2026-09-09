@@ -279,9 +279,12 @@ export function makeWritebackEnqueuer(
         const opts = { prUrl: task.outcomeUrl, repoRoot: task.repoRoot, observedAt: now };
         owe(task, "task-completed", "annotate", { ...opts, dueAt: now });
         // The resolve is a SECOND row rather than a flag on the first, and that is what
-        // buys both the settle window and the ordering: it comes due later, and it carries
-        // the higher id, so `claimDueWritebacks` hands over the annotate first and the
-        // resolve on a later tick. No dependency machinery, and no half-delivered row.
+        // buys both the settle window and the ordering: it comes due later and carries the
+        // higher id, and `claimDueWritebacks` will not hand it over until every earlier row
+        // for this item is `delivered` or `cancelled` - including one that was refused and
+        // is sitting in a backoff whose next attempt is further out than the settle window.
+        // A close that overtook its own outcome comment would leave an issue shut with no
+        // explanation on the thread, which is the one ordering this feature promises.
         if (task.source) {
           const inst = d.sources().find((s) => s.id === task.source!.sourceId);
           if (inst?.writeback.resolve) {
@@ -360,11 +363,14 @@ export async function drainWritebacks(
   };
 
   for (const row of rows) {
-    // A payload this build cannot read will never deliver, so it is settled rather than
-    // left pending to be re-claimed on every tick for the rest of the daemon's life.
+    // A row whose payload this build cannot read, or whose payload contradicts the row's
+    // own `signal` / `action` columns, will never deliver anything honest - so it is
+    // settled rather than left pending to be re-claimed on every tick for the rest of the
+    // daemon's life. See `readWritebackNotice`.
     if (!row.notice) {
       finish(row.id, "failed", {
-        lastError: "this delivery's stored details could not be read",
+        lastError:
+          "this delivery's stored details could not be read, or disagree with the delivery itself",
       });
       continue;
     }

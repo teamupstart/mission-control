@@ -151,6 +151,13 @@ likewise leaves its current choices in place. These degraded states show a bound
 keep every picker and dispatch action enabled, and never expose the probe's process output. A Codex
 too old to know `model/list` reports the same fallback as any other failure rather than an error.
 
+One degraded state is not a failure at all and is named separately: both harnesses answer with the
+models the account they are **signed in to** offers, so a signed-out installation replies
+successfully with an empty list. The notice says the harness reported no available models and that
+it is probably not signed in, and then names the step - open a Pi session and run `/login` to
+connect an Anthropic or Claude account (or set that provider's API key), or run `codex login` in a
+terminal. Retry alone cannot resolve it, which is why the notice no longer offers only that.
+
 A saved model absent from the current response is appended once as **not currently reported**. It
 remains selected and submit-safe in Harnesses Settings, ordinary and guided dispatch, recurring
 missions, Ensemble member rows and summaries, Personas, Foreman, the GitHub Inspector, and the

@@ -308,7 +308,12 @@ export function ModelCatalogOptions({
 
 const PROBLEM_COPY: Record<HarnessModelCatalogProblem, (label: string) => string> = {
   unsupported: (label) => `This ${label} installation does not support model discovery.`,
-  unavailable: (label) => `${label} did not report any available provider models.`,
+  // A discovering harness answers with the models its signed-in accounts offer, so an
+  // empty list is a report about the ACCOUNT, not about the catalog. Saying only that
+  // nothing was reported left the one person who could fix it with nothing to act on;
+  // `modelProviderSignIn` carries the act itself.
+  unavailable: (label) =>
+    `${label} reported no available models, which usually means it is not signed in to a model provider.`,
   invalid_response: (label) =>
     `${label} returned a model list Mission Control could not read.`,
   rpc_failed: (label) => `${label} could not return its model list.`,
@@ -318,8 +323,20 @@ const PROBLEM_COPY: Record<HarnessModelCatalogProblem, (label: string) => string
     `${label} returned more catalog data than Mission Control can safely read.`,
 };
 
+/**
+ * Problems a missing provider sign-in explains, and the only ones that earn the remedy.
+ *
+ * Deliberately just this one. `unavailable` is the harness answering successfully with an
+ * empty list, which for an account-aware catalog IS the signed-out state - it is detection,
+ * not a guess. A timeout or a crashed probe says nothing about credentials, and telling
+ * someone to sign in when their Pi binary is missing sends them down the wrong path.
+ */
+const SIGN_IN_PROBLEMS: ReadonlySet<HarnessModelCatalogProblem> = new Set(["unavailable"]);
+
 export interface ModelCatalogNoticeContent {
   message: string;
+  /** The harness's sign-in sentence, when the reported problem is one sign-in explains. */
+  remedy: string | null;
   retry: boolean;
   tone: "checking" | "degraded";
 }
@@ -332,13 +349,24 @@ export function modelCatalogNoticeContent(
   const catalog = snapshot.catalogs[agent];
   // The harness's own declaration, not a guess from the rows it happened to return. A
   // harness with no discovery has nothing to report and nothing to retry, so it stays
-  // silent; see `discoversModels` for what asking the rows instead used to hide.
-  if (!HARNESS_CAPABILITIES[agent].discoversModels) return null;
+  // silent; see `ModelDiscoverySpec` for what asking the rows instead used to hide.
+  //
+  // Bound once rather than re-indexed, so this check NARROWS the union: past it,
+  // `modelProviderSignIn` is a `string`, and there is no null left to decide about.
+  const capabilities = HARNESS_CAPABILITIES[agent];
+  if (!capabilities.discoversModels) return null;
   const label = AGENT_IDENTITY[agent].label;
+  // Read from the harness's OWN reported problem, so a harness that answered normally
+  // never carries another one's remedy, and a harness that reports nothing carries none.
+  const remedy =
+    catalog.problem && SIGN_IN_PROBLEMS.has(catalog.problem)
+      ? capabilities.modelProviderSignIn
+      : null;
   if (snapshot.phase === "local") return null;
   if (snapshot.phase === "loading") {
     return {
       message: `Checking ${label} for available models. Built-in choices remain available.`,
+      remedy: null,
       retry: false,
       tone: "checking",
     };
@@ -350,6 +378,9 @@ export function modelCatalogNoticeContent(
       message: lastKnown
         ? `Showing the last known ${label} model list because the catalog service could not be reached.`
         : `Showing built-in ${label} models because the catalog service could not be reached.`,
+      // The browser never reached the daemon, so no harness reported anything about its
+      // account. A transport failure is not evidence about credentials.
+      remedy: null,
       retry: true,
       tone: "degraded",
     };
@@ -358,6 +389,7 @@ export function modelCatalogNoticeContent(
   if (catalog.source === "cached" && catalog.problem) {
     return {
       message: `Showing the last known ${label} model list because refresh failed. ${PROBLEM_COPY[catalog.problem](label)}`,
+      remedy,
       retry: true,
       tone: "degraded",
     };
@@ -365,6 +397,7 @@ export function modelCatalogNoticeContent(
   if (catalog.source === "fallback") {
     return {
       message: `Showing built-in ${label} models because the local catalog could not be read.${catalog.problem ? ` ${PROBLEM_COPY[catalog.problem](label)}` : ""}`,
+      remedy,
       retry: true,
       tone: "degraded",
     };
@@ -385,6 +418,7 @@ export function ModelCatalogNotice({ agent }: { agent: AgentType }): React.JSX.E
       aria-live="polite"
     >
       <span>{content.message}</span>
+      {content.remedy && <span className="model-catalog-remedy">{content.remedy}</span>}
       {content.retry && (
         <Tooltip label={`Ask ${label} for a fresh model list`}>
           <button

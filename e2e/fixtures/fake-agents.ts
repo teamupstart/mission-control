@@ -42,7 +42,13 @@ export interface FakeAgents {
   };
 }
 
-export type FakePiCatalogMode = "success" | "failure";
+/**
+ * `"signed-out"` is not a third flavour of failure: it is Pi answering successfully with
+ * an empty model list, which is exactly what a real installation with no provider
+ * credentials does. The daemon reads it as `unavailable`, which is the only outcome that
+ * identifies a missing sign-in rather than a broken probe.
+ */
+export type FakePiCatalogMode = "success" | "failure" | "signed-out";
 
 /** Where the Pi fake reads its per-invocation catalog behavior. */
 export function piCatalogControlPath(home: string): string {
@@ -54,8 +60,8 @@ export function writePiCatalogMode(home: string, mode: FakePiCatalogMode): void 
   writeFileSync(piCatalogControlPath(home), `${mode}\n`);
 }
 
-/** The Codex catalog probe reads the same two modes, from its own control file. */
-export type FakeCodexCatalogMode = FakePiCatalogMode;
+/** The two outcomes the Codex catalog probe drives, from its own control file. */
+export type FakeCodexCatalogMode = "success" | "failure";
 
 /** Where the Codex fake reads its per-request `model/list` behavior. */
 export function codexCatalogControlPath(home: string): string {

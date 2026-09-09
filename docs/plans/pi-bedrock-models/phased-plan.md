@@ -143,13 +143,16 @@ repeats the Phase 1 lifecycle paths because automation depends on them.
 
 ## Scheduled task map
 
-The phase tasks are created only after all plan paths are committed and pushed. Their ids, exact
-stored state, and dependency verification are recorded here after scheduling.
+Both phase tasks were created only after all six plan paths resolved at pushed commit
+`818a500f7715b9be2fa476ca7cc689aac5cbd08b`. Mission Control's `create_task` tool creates enabled
+tasks, so each task was immediately parked through the task update API and then read back. Both rows
+were `status: backlog`, `enabled: false`, and `sessionId: null` at verification time.
 
 | Phase | Task id | Stored state | Direct task dependencies | Planning-session edge |
 | --- | --- | --- | --- | --- |
-| 1. Managed Pi Bedrock runtime | Pending publication | Must be backlog, disabled, and unassigned | None | Required |
-| 2. Structured Pi interaction and automation | Pending publication | Must be backlog, disabled, and unassigned | Phase 1 | Required |
+| 1. Managed Pi Bedrock runtime | `8e625014-710a-4c0d-84b9-a84f0043f0ad` | Backlog, disabled, no live session | None | Present and unsatisfied through planning task `b52bdbe6-12a2-438d-97a1-1d95c5640b94` |
+| 2. Structured Pi interaction and automation | `2d6db8bc-3897-4e8d-a49c-a133314a822b` | Backlog, disabled, no live session | Phase 1 task `8e625014-710a-4c0d-84b9-a84f0043f0ad`, unsatisfied | Present and unsatisfied through planning task `b52bdbe6-12a2-438d-97a1-1d95c5640b94` |
 
-The tasks must remain disabled until this planning pull request merges and every referenced path
-resolves on the default branch. Enabling them later is an explicit operator action.
+The tasks remain disabled after scheduling. Their planning-session edges prevent premature dispatch
+while this planning task is open, and the Phase 2 edge prevents it from starting before Phase 1
+completes. Enabling either task later is an explicit operator action.

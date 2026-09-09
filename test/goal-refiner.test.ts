@@ -44,6 +44,10 @@ request=$(cat)
 case "$(cat ${modeFile} 2>/dev/null)" in
   broken) echo "not json at all" ;;
   crash)  echo "boom" >&2; exit 1 ;;
+  crash-once) printf %s good > ${modeFile}; echo "boom" >&2; exit 1 ;;
+  # A non-zero exit that lands AFTER the caller has had time to stop, so a test can put a
+  # run in flight across a shutdown. Same failure as \`crash\` at the provider boundary.
+  slow-crash) sleep 0.4; echo "boom" >&2; exit 1 ;;
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
   # Same fenced shape as the good reply below, so it reaches the schema the same way - a
   # malformed fixture here would "pass" the test on a parse error instead of the rejection.
@@ -63,6 +67,9 @@ case "$(cat ${modeFile} 2>/dev/null)" in
     esac
     ;;
   replace) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"replace\\",\\"objective\\":\\"Replace the session database with a remote service\\",\\"goal\\":\\"Replace the session database with a remote service\\",\\"focus\\":\\"Design the remote persistence layer\\",\\"reason\\":\\"The user explicitly changed the desired end state.\\"}\\n\`\`\`"}' ;;
+  # A genuine schema-valid model verdict of "unclear" - distinct from a parse or transport
+  # failure, which never reach the schema at all.
+  model-unclear) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"unclear\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The latest instruction could not be reconciled with the existing objective.\\"}\\n\`\`\`"}' ;;
   # The model fences its JSON even when told not to (observed on a real probe), so the fake
   # does too - that keeps the parse ladder inside what this test covers rather than mocked.
   *) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
@@ -71,7 +78,19 @@ esac
 );
 chmodSync(fake, 0o755);
 const setMode = (
-  m: "good" | "broken" | "crash" | "blank" | "amend" | "shrink" | "negate" | "rapid" | "replace",
+  m:
+    | "good"
+    | "broken"
+    | "crash"
+    | "crash-once"
+    | "slow-crash"
+    | "blank"
+    | "amend"
+    | "shrink"
+    | "negate"
+    | "rapid"
+    | "replace"
+    | "model-unclear",
 ): void =>
   writeFileSync(modeFile, m);
 setMode("good");
@@ -545,6 +564,150 @@ test("a Codex session goal is refined through the configured background provider
     assert.equal(r.getGoal(s.id)?.text, "Ship the Goal feature end to end");
   } finally {
     stop();
+  }
+});
+
+test("a transport failure retries on its own, without stamping unclear or needing a new prompt", async () => {
+  // "crash" is a non-zero exit - a transport failure, not a model verdict. It must be
+  // retried rather than latched, and it must never be recorded as relationship "unclear",
+  // since that value is a claim about the human's instruction, not about the process.
+  const ask = "a prompt whose classifier call keeps crashing";
+  // The fixture changes itself to "good" before its first failed process exits. That makes
+  // the provider recover without a test-side timer racing the refiner's retry window.
+  setMode("crash-once");
+  const { r, s, env } = withSession("r20", "%50");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: ask }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 1,
+      "the transport failure to resolve on its own retry",
+      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
+    );
+    assert.equal(runsAsking(ask), 2, "the recovered provider was not retried exactly once");
+    assert.equal(r.getGoal(s.id)?.relationship, "initial");
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a run killed by shutdown is neither counted against the retry budget nor persisted", async () => {
+  // Daemon shutdown runs `stopGoalRefiner()` and THEN kills live model runs, so a call in
+  // flight across those two lines returns a non-zero exit: a transport failure by every
+  // signal the provider boundary has, and really a cancellation. It must leave the row
+  // untouched so the next daemon re-polls the same revision with a full budget, rather than
+  // spending an attempt - or, on the third such restart, persisting "could not be reached"
+  // about a machine that was only turned off.
+  // Aimed at the LAST attempt on purpose. A cancellation absorbed on attempt one or two is
+  // invisible either way, because those return without writing anything; it is the third
+  // that persists a rationale, so that is the only attempt where mistaking a shutdown for a
+  // transport failure leaves a durable, wrong claim behind.
+  const ask = "a prompt whose classifier is killed by shutdown";
+  setMode("crash");
+  const { r, s, env } = withSession("r23", "%53");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: ask }));
+  const stop = startGoalRefiner(r);
+  try {
+    // Burn the first two attempts on immediate failures.
+    await until(() => runsAsking(ask) === 2, "two attempts to be spent", FLOOR_MS * 3 + RUN_TIMEOUT_MS);
+    // The third one hangs long enough to still be in flight when the refiner stops, which is
+    // the daemon's own shutdown order: `stopGoalRefiner()` first, the child killed after.
+    setMode("slow-crash");
+    await until(() => runsAsking(ask) === 3, "the final attempt to start", FLOOR_MS * 3 + RUN_TIMEOUT_MS);
+    stop();
+    // Outlast the in-flight run so its rejection lands post-stop. A fixed wait, not a poll:
+    // the assertion is that nothing is ever written, which cannot be polled for.
+    await new Promise((res) => setTimeout(res, 600));
+    const g = r.getGoal(s.id);
+    assert.equal(g?.source, "heuristic");
+    assert.equal(g?.relationship, null, "a shutdown must not stamp any relationship");
+    assert.equal(
+      g?.rationale,
+      null,
+      "a run killed by shutdown was persisted as though the classifier could not be reached",
+    );
+    assert.equal(g?.resolvedPromptRevision, 0, "the revision must stay unresolved for the next daemon");
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a transport failure that outlasts the retry budget latches without claiming ambiguity", async () => {
+  setMode("crash");
+  const { r, s, env } = withSession("r21", "%51");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a prompt whose classifier never comes back" }));
+  const stop = startGoalRefiner(r);
+  try {
+    // Three attempts, each spaced by the per-session debounce floor, all fail before this
+    // latches. Polled rather than slept: the budget is three floors plus three run
+    // durations plus up to a poll tick of granularity apiece, so any fixed sleep close
+    // enough to be quick is also close enough to fail on a loaded machine.
+    await until(
+      () => (r.getGoal(s.id)?.rationale ?? "").includes("could not be reached after 3 attempts"),
+      "three serialized transport attempts to exhaust the retry budget",
+      FLOOR_MS * 4 + RUN_TIMEOUT_MS,
+    );
+    const g = r.getGoal(s.id);
+    assert.equal(g?.source, "heuristic");
+    assert.equal(g?.relationship, null, "an exhausted transport failure must not become an ambiguity verdict");
+    assert.match(
+      g?.rationale ?? "",
+      /could not be reached after 3 attempts/,
+      "the rationale must name the transport failure, not claim the instruction was unclear",
+    );
+
+    // The latch holds once retries are exhausted: further ticks against the SAME queued
+    // prompt must not spend another model call even though the provider has recovered.
+    setMode("good");
+    await new Promise((res) => setTimeout(res, FLOOR_MS * 2));
+    assert.equal(
+      r.getGoal(s.id)?.source,
+      "heuristic",
+      "an exhausted transport failure retried again on its own",
+    );
+
+    // New human context earns the blocked head one more attempt, exactly like any other
+    // latched failure.
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a brand new ask" }));
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the retried head and the new prompt to resolve",
+      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
+    );
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a genuine model verdict of unclear still latches", async () => {
+  // Unlike a transport failure, this is a real classification the MODEL returned - the
+  // schema-valid `relationship: "unclear"` reply, never touching a parse or spawn failure
+  // at all. It is a durable judgment, not a retryable blip: it resolves the revision (so it
+  // is never retried) and still pauses automatic wrap-up, since `resolvedSessionIntent`
+  // treats "unclear" as unresolved regardless of the revision gap being closed.
+  const { r, s, env } = withSession("r22", "%52");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+
+    setMode("model-unclear");
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "something the model can't reconcile" }));
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the second revision to resolve",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+
+    const g = r.getGoal(s.id)!;
+    assert.equal(g.relationship, "unclear");
+    assert.equal(g.promptRevision, g.resolvedPromptRevision, "a genuine verdict was left unresolved");
+  } finally {
+    stop();
+    setMode("good");
   }
 });
 

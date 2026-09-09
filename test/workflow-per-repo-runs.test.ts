@@ -1038,3 +1038,63 @@ test("a single-repo session takes exactly the path it always took", async () => 
     assert.equal(again.ok === false && again.reason, "run_active");
   }
 });
+
+// ---- capture lock -----------------------------------------------------------------------
+
+// `activateSiblingRuns` starts one `captureAndActivate` per repository WITHOUT awaiting, and
+// sibling bindings share a note key by construction - `ensureRepoBinding` copies the anchor's.
+// So a task attached to three repositories drives three concurrent callers through
+// `withCaptureLock` on one key, and that lock is the only thing between them and the
+// note-keyed evidence staging tables. One holder plus one waiter serializes by luck, because
+// the waiter is the only one reading the map; three is the case that says out loud what the
+// lock has to guarantee.
+test("three concurrent captures serialize on one note key", async () => {
+  const f = seed();
+  const locks = (f.manager as unknown as { captureLocks: Map<string, unknown> }).captureLocks;
+  const lock = (f.manager as unknown as {
+    withCaptureLock<T>(noteKey: string, fn: () => Promise<T>): Promise<T>;
+  }).withCaptureLock.bind(f.manager);
+  let active = 0;
+  let maximum = 0;
+  const order: number[] = [];
+  const held = [1, 2, 3].map((id) => lock(f.agentSessionId, async () => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    order.push(id);
+    active -= 1;
+  }));
+  // The readiness sweep skips a conversation whose note key is locked, so every caller has to
+  // be visible in this map from the moment it queues - not from the moment it runs.
+  assert.equal(locks.has(f.agentSessionId), true);
+  await Promise.all(held);
+  assert.equal(maximum, 1, "the capture lock let two note-keyed captures overlap");
+  assert.deepEqual(order, [1, 2, 3], "queued captures ran out of order");
+  // And the key is given back, so the sweep can own the conversation again.
+  assert.equal(locks.has(f.agentSessionId), false);
+  await f.manager.stop();
+});
+
+// A FIFO lock makes acquisition ORDER meaningful, and `submit` is awaited by its caller. The
+// Foreman completion path already creates the lead's capture before firing the fan-out, for
+// the reason it states at length: a capture reads git and can include a compaction, so a lead
+// queued behind its siblings puts one of those per attached repository on the request path.
+// The manual paths fire the fan-out too, so they have to reserve the lead's place first.
+test("the lead takes the capture lock ahead of its siblings", async () => {
+  const entered: string[] = [];
+  const f = seed({
+    extraRoots: [SECOND_ROOT, "/third"],
+    holdCapture: async (binding) => { entered.push(binding.sessionRepoRoot ?? "?"); },
+  });
+  f.registry.recordWorktreeHeads(new Map([
+    [f.primaryCwd, MOVED],
+    [f.extraCwd(0), MOVED],
+    [f.extraCwd(1), MOVED],
+  ]));
+  const submitted = await f.manager.submit(f.anchor.id, { requestId: "lead-first" });
+  assert.equal(submitted.ok, true);
+  await f.manager.stop();
+  assert.deepEqual(reviewedRepos(f), [PRIMARY_ROOT, SECOND_ROOT, "/third"].sort());
+  assert.equal(entered[0], PRIMARY_ROOT, "a sibling entered the critical section before the lead");
+  assert.equal(entered.length, 3);
+});

@@ -62,9 +62,11 @@ keep their existing registry-based lookup behavior.
 
 ## Herdr
 
-Mission Control supports stable Herdr 0.8.2 or newer on protocol 20. Set `HERDR_BIN` to an
-executable path to override the normal `herdr` lookup on `PATH`. Setup, passive discovery, launch,
-and pane actions all use the same binary contract.
+Mission Control supports stable Herdr 0.8.2 or newer on protocol 20 or newer. A newer protocol
+generation is accepted: the response schemas, not the generation number, are what refuse a Herdr
+that has actually changed. Set `HERDR_BIN` to an executable path to override the normal `herdr`
+lookup on `PATH`. Setup, passive discovery, launch, and pane actions all use the same binary
+contract.
 
 The initial adapter is allowlisted to macOS and Linux. It uses a Unix socket and POSIX `env -u`
 namespace scrubbing. Windows named-pipe transport and Windows-compatible environment scrubbing are

@@ -110,3 +110,43 @@ test("Setup keeps a refused start on screen with the daemon's own sentence", asy
     console.log("CAPTURED e2e/.artifacts/herdr-server-setup/herdr-row-refused.png");
   }
 });
+
+/**
+ * The same machine, one Herdr release later.
+ *
+ * Herdr moves its protocol generation on its own cadence - 0.8.2 serves 20, 0.9.0 serves 22 -
+ * and Mission Control used to compare that number for equality. The Setup row then read
+ * "Herdr server is incompatible ... update Herdr" to an operator who had just updated, with
+ * the install guide as its only offer. A newer Herdr is now simply a working one.
+ */
+test.describe("a Herdr newer than the supported floor", () => {
+  test.use({ daemonEnv: { MC_E2E_HERDR: "1", MC_E2E_HERDR_MODE: "newer", MISSION_POLL_MS: "100" } });
+
+  test("Setup reports it ready by its own version rather than refusing the protocol", async ({
+    page,
+    daemon,
+  }) => {
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+    await openSetupFamily(page, "terminals");
+    const herdr = setupRow(page, ROW);
+
+    await herdr.getByRole("button", { name: "Start the Herdr server" }).click();
+
+    await expectRowStatus(page, ROW, "Ready");
+    await expect(herdr).toContainText("server 0.9.0");
+    // The sentence from the bug report, and the remedy that could not have repaired it.
+    await expect(herdr).not.toContainText("is incompatible");
+    await expect(herdr).not.toContainText("update Herdr");
+    await expect(herdr.getByRole("link", { name: "Open Herdr installation guide" })).toHaveCount(0);
+
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidence = artifactsDir("herdr-server-setup");
+      mkdirSync(evidence, { recursive: true });
+      await page.mouse.move(1, 1);
+      await herdr.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(evidence, "herdr-row-newer-protocol.png") });
+      // eslint-disable-next-line no-console
+      console.log("CAPTURED e2e/.artifacts/herdr-server-setup/herdr-row-newer-protocol.png");
+    }
+  });
+});

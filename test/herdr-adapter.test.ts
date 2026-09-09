@@ -11,7 +11,7 @@ import {
   herdrMultiplexer,
   herdrServerProbe,
 } from "../src/server/terminal/herdr.ts";
-import { HERDR_MIN_VERSION, HERDR_PROTOCOL } from "../src/server/terminal/herdr-client.ts";
+import { HERDR_MIN_VERSION, HERDR_MIN_PROTOCOL } from "../src/server/terminal/herdr-client.ts";
 import { MULTIPLEXERS } from "../src/server/terminal/registry.ts";
 import { terminalTargetViews } from "../src/server/terminal/targets.ts";
 import { ALL_KEYS, type Key } from "../src/server/terminal/types.ts";
@@ -31,7 +31,7 @@ function execStatus(socket: string, calls: Array<{ bin: string; args: string[]; 
       status: "running",
       running: true,
       version: HERDR_MIN_VERSION,
-      protocol: HERDR_PROTOCOL,
+      protocol: HERDR_MIN_PROTOCOL,
       capabilities: {},
       compatible: true,
       socket,
@@ -45,7 +45,7 @@ const SNAPSHOT = {
   type: "session_snapshot",
   snapshot: {
     version: HERDR_MIN_VERSION,
-    protocol: HERDR_PROTOCOL,
+    protocol: HERDR_MIN_PROTOCOL,
     workspaces: [
       { workspace_id: "ws-api", label: "API" },
       { workspace_id: "ws-web", label: "Web" },

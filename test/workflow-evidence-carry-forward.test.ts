@@ -622,6 +622,88 @@ test("a parent at the coverage limit meeting a child with claims of its own stay
   }
 });
 
+test("a three-level chain refuses the oldest ancestry, not the parent's own claims", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-chain-")));
+  try {
+    const { WORKFLOW_EVIDENCE_COVERAGE_LIMITS } = await import("../src/shared/workflow.ts");
+    const max = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims;
+    const ancestry = Math.floor(max * 0.6);
+    const declared = max - ancestry;
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const stageClaims = (label: string, count: number, at: number) => {
+      const claims = [];
+      for (let index = 0; index < count; index++) {
+        claims.push({
+          id: `chain-${label}-${index}`,
+          clientCriterionId: `chain-${label}-${index}`,
+          criterion: `Chain ${label} criterion ${index}`,
+          proofClass: "focused_execution" as const,
+          repositoryScope: "all" as const,
+          sourceRoot: checkout,
+          links: [],
+        });
+      }
+      store.stageWorkflowEvidence(noteKey, [], at, null, claims);
+    };
+
+    // Level 1: the grandparent declares the ancestry the chain will eventually have to give up.
+    stageClaims("grand", ancestry, 2);
+    const grand = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "chain-root", now: 3 },
+      { id: "chain-grand", triggerSource: "manual", triggerKey: "chain-root", context: {}, evidence: {}, now: 3 },
+    );
+    store.updateSubmissionCapture(grand.submission.id, {
+      context: {}, evidence: {}, fingerprint: "chain-1", repositoryFingerprint: "tree", status: "running",
+    }, 3);
+
+    // Level 2: the parent declares its own AND carries the grandparent's, reaching the cap.
+    store.setSubmissionState(grand.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    stageClaims("parent", declared, 5);
+    const parent = store.reserveEvidenceReadinessRefinement({
+      id: "chain-parent", runId, waitingSubmissionId: grand.submission.id,
+      triggerKey: "chain-refine-1", manualRetry: true, now: 5,
+    });
+    assert.equal(parent.ok, true);
+    if (!parent.ok) return;
+    await inheritSubmissionEvidence(store, parent.submission, 6);
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {}, evidence: {}, fingerprint: "chain-2", repositoryFingerprint: "tree", status: "running",
+    }, 6);
+    assert.equal(store.listSubmissionCoverage(parent.submission.id).length, max, "the parent is at the cap");
+
+    // Level 3: the child declares a few of its own, so the carry must refuse that many.
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 7);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 7);
+    stageClaims("child", 5, 8);
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "chain-child", runId, waitingSubmissionId: parent.submission.id,
+      triggerKey: "chain-refine-2", manualRetry: true, now: 8,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    await inheritSubmissionEvidence(store, child.submission, 9);
+
+    const ids = new Set(store.listSubmissionCoverage(child.submission.id)
+      .map((claim) => claim.clientCriterionId));
+    assert.equal(ids.size, max, "the child holds exactly what its schema admits");
+    for (let index = 0; index < declared; index++) {
+      assert.equal(
+        ids.has(`chain-parent-${index}`),
+        true,
+        "every claim the immediately preceding submission declared itself survives the carry",
+      );
+    }
+    assert.equal(
+      [...ids].filter((id) => id.startsWith("chain-grand-")).length,
+      ancestry - 5,
+      "and exactly the five oldest ancestry claims are what the cap refused",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
 test("a parent claim survives a link whose evidence the limit refused", async () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-")));
   try {

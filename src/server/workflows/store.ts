@@ -5904,7 +5904,25 @@ export class WorkflowStore {
             value,
           ),
         }))
-        .sort((a, b) => b.row.created_at - a.row.created_at
+        /*
+         * What the source DECLARED before what the source had itself carried, exactly as the
+         * evidence carry above orders its rows, and for the same reason: when the budget
+         * refuses part of a carry it must refuse the oldest ancestry, never a claim the
+         * immediately preceding submission made itself.
+         *
+         * Recency alone gets this backwards, and silently. A submission's own claims are frozen
+         * at reservation and keep their STAGING row's timestamps, while claims it carries are
+         * written later, when inheritance runs during its capture - so a source's carried-in
+         * ancestry always has a NEWER `created_at` than the claims that source declared. Sorting
+         * by recency first would therefore evict the source's own declarations and keep its
+         * grandparent's, which is the reverse of the stated rule. Only a three-level chain
+         * reaches it, which is why `a three-level chain refuses the oldest ancestry, not the
+         * parent's own claims` exists.
+         */
+        .sort((a, b) =>
+          Number(a.row.inherited_from_submission_id !== null)
+            - Number(b.row.inherited_from_submission_id !== null)
+          || b.row.created_at - a.row.created_at
           || a.claim.clientCriterionId.localeCompare(b.claim.clientCriterionId));
       for (const { claim, row } of orderedCoverage) {
         if (claimBudget <= 0) {

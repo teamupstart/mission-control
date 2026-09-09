@@ -1,6 +1,6 @@
 # Mission Control
 
-**The meta-harness and software factory that just feels good.**
+**Give yourself superpowers without the compromises.**
 
 Most software factories ask you to adopt their agent, terminal, workflow, and worldview.
 Mission Control sits one layer above them. It is a meta-harness: one control plane for Claude
@@ -9,11 +9,11 @@ delivery.
 
 ## Why Mission Control instead of another software factory?
 
-1. **It just feels good.** Every interaction has been obsessively tuned for a fast, calm,
+1. **It just feels good.** Every interaction has been meticulously tuned for an ergonomic, delightful,
    keyboard-friendly developer experience. Running a fleet should feel as natural as running one
    agent.
-2. **It works.** High-quality code is not left to chance. Fast checks, specialized reviewers,
-   evidence-backed repair loops, exact-head pull request review, and CI gates enforce the quality
+2. **It works.** High-quality code is not left to chance. Mission Control ships with fast checks, specialized reviewers,
+   evidence-backed repair loops, pull request review, and CI gates enforce the quality
    bar from first diff to merge.
 3. **It adapts to you.** Mission Control is designed to fit the harness, terminal, and multiplexer
    you prefer. It coordinates the system around your tools instead of replacing them. Remote
@@ -22,7 +22,7 @@ delivery.
    local factory is the beginning. Get ready for it to expand beyond your laptop. Prepare for
    superpowers.
 
-**Mission Control: The software factory that just feels good.**
+**Mission Control: Building with agents never felt this natural.**
 
 Mission Control's source code is licensed under the [Apache License 2.0](LICENSE).
 
@@ -31,10 +31,10 @@ Mission Control's source code is licensed under the [Apache License 2.0](LICENSE
 ## Run a whole team of coding agents like one product
 
 One agent is easy to watch. Five are not. Mission Control gives a fleet of coding agents a single
-control room: a board that shows who needs you, a backlog that feeds them work, an optional Foreman
-that handles routine interruptions, verification workflows that define done, a GitHub reviewer and
-merge gate for the last mile, and repository memory so the next agent does not repeat the last
-one's mistake. When an external SDLC engine drives the work, Mission Control watches that too.
+control room: a board that shows who needs you, a backlog that feeds them work, a customizable Foreman agent
+that handles the routine interruptions you don't want, a verification workflow that enforces a quality standard, 
+and repository memory so the next agent does not repeat the last one's mistake. When an external SDLC engine 
+drives the work, Mission Control watches that too.
 
 - [The board](#the-board)
 - [Every agent's desk](#every-agents-desk)

@@ -39,6 +39,19 @@ function record(request = null) {
   );
 }
 
+/**
+ * Answer, then exit only once the bytes are actually gone.
+ *
+ * `process.exit` does not wait for an asynchronous write to drain, and stdout IS
+ * asynchronous when it is a pipe - which is exactly how the daemon spawns this. Exiting
+ * straight after `write` can therefore hand the probe half a JSON line, which it reads as
+ * `invalid_response` rather than the outcome the frame described. That would misreport the
+ * signed-out case as a broken one, in the single test that exists to tell those apart.
+ */
+function respondAndExit(frame) {
+  process.stdout.write(`${JSON.stringify(frame)}\n`, () => process.exit(0));
+}
+
 function fail(message, code = 64) {
   record();
   process.stderr.write(`fake-pi: ${message}\n`);
@@ -81,21 +94,21 @@ input.on("line", (line) => {
   // with an empty HOME. That is the one outcome the daemon can read as "signed out", so
   // the fake has to be able to produce it exactly rather than as a scripted crash.
   if (mode === "signed-out") {
-    process.stdout.write(`${JSON.stringify({
+    respondAndExit({
       id: request.id,
       type: "response",
       command: "get_available_models",
       success: true,
       data: { models: [] },
-    })}\n`);
-    process.exit(0);
+    });
+    return;
   }
   if (mode !== "success") {
     process.stderr.write("fake-pi: scripted catalog failure\n");
     process.exit(17);
   }
 
-  process.stdout.write(`${JSON.stringify({
+  respondAndExit({
     id: request.id,
     type: "response",
     command: "get_available_models",
@@ -136,8 +149,7 @@ input.on("line", (line) => {
         },
       ],
     },
-  })}\n`);
-  process.exit(0);
+  });
 });
 
 input.on("close", () => {

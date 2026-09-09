@@ -35,6 +35,7 @@ import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
 import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
 import { locateExecutable } from "../executables/locator.ts";
+import { MIN_NODE_MAJOR, nodePrerequisiteMessage } from "../../../scripts/init-prerequisites.mjs";
 
 /**
  * A probe answers with a status, or with a status AND the repair that reading needs.
@@ -123,6 +124,31 @@ async function ghCliStatus(deps: SetupDeps): Promise<SetupStatus> {
     };
   }
   return status;
+}
+
+async function nodeRuntimeStatus(deps: SetupDeps): Promise<SetupStatus> {
+  const guidance = `Install or update Node.js ${MIN_NODE_MAJOR}+ using the command below (requires Homebrew), then press Re-check. If an older runtime is still selected, correct MISSION_NODE_BIN or your version manager/PATH and restart Mission Control with that environment.`;
+  const status = await present("node", deps, "node");
+  if (status.state !== "satisfied") {
+    return { state: "needs-setup", why: `Node.js could not be found. ${guidance}`, evidence: null };
+  }
+  const result = await deps.runCommand(status.evidence, ["-p", "process.versions.node"]);
+  const version = result.stdout.trim();
+  if (result.outcomeUnknown || result.overflowed || result.code !== 0 || !/^\d+\.\d+\.\d+$/.test(version)) {
+    return {
+      state: "unknown",
+      why: `Mission Control could not verify the selected Node.js version. ${guidance}`,
+      evidence: status.evidence,
+    };
+  }
+  if (nodePrerequisiteMessage(version)) {
+    return {
+      state: "needs-setup",
+      why: `Node.js ${version} is too old; Mission Control requires Node.js ${MIN_NODE_MAJOR} or newer. ${guidance}`,
+      evidence: status.evidence,
+    };
+  }
+  return { ...status, evidence: `${status.evidence} (Node.js ${version})` };
 }
 
 async function ghAuthStatus(deps: SetupDeps): Promise<SetupStatus> {
@@ -232,6 +258,7 @@ export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-skills": skillStatus,
   "ai-conductor": conductorStatus,
   iterm: (deps) => terminalStatus("iterm", deps),
+  "node-runtime": nodeRuntimeStatus,
 };
 
 function reasonOf(error: unknown): string {

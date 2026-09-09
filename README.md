@@ -262,6 +262,8 @@ There are two paths through this repository:
   the window closed, and receives updates. Updates check Node.js and npm before building and
   offer remediation with **Check again** when the runtime is incompatible. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
+  **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
+  command in a visible terminal, with **Re-check** to confirm the repair.
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh

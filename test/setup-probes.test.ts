@@ -43,8 +43,8 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     installedBackend: async (id) => `/tools/${id}`,
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
     ghBin: () => "/tools/gh",
-    resolveBinPath: async (bin) => bin.startsWith("/tools/") ? bin : null,
-    runCommand: async () => stubRun({ stdout: "Logged in to github.com account operator", stderr: "", code: 0 }),
+    resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
+    runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
     installedPlugins: async () => ({
       ok: true,
       plugins: [{ plugin: "one", marketplace: "official", version: "1", installPath: "/plugins/one" }],
@@ -92,6 +92,53 @@ test("one fresh PATH snapshot precedes the concurrent Setup probes", async () =>
     },
   }));
   assert.equal(refreshes, 1);
+});
+
+test("Node Setup checks the selected executable, shares the installer floor, and recovers", async () => {
+  for (const version of ["18.20.0", "22.0.0", "23.11.0", "24.0.0", "26.0.0"]) {
+    const status = await probe("node-runtime", {
+      executableDiagnostic: async (id) => {
+        assert.equal(id, "node");
+        return { path: "/selected/node", source: "operator override" };
+      },
+      runCommand: async (bin, args) => {
+        assert.equal(bin, "/selected/node");
+        assert.deepEqual(args, ["-p", "process.versions.node"]);
+        return stubRun({ stdout: version, stderr: "", code: 0 });
+      },
+    });
+    if (Number(version.split(".")[0]) < 24) {
+      assert.equal(status.state, "needs-setup");
+      if (status.state === "needs-setup") {
+        assert.ok(status.why.includes(version));
+        assert.match(status.why, /requires Node.js 24 or newer/);
+        assert.match(status.why, /Re-check/);
+        assert.match(status.why, /MISSION_NODE_BIN.*restart Mission Control/);
+      }
+    } else {
+      assert.deepEqual(status, { state: "satisfied", evidence: `/selected/node (Node.js ${version})`, source: "operator override" });
+    }
+  }
+});
+
+test("Node Setup reports missing and unverifiable runtimes without a false Ready", async () => {
+  const missing = await probe("node-runtime", {
+    resolveBinPath: async () => null,
+    runCommand: async () => { throw Error("must not run a missing executable"); },
+  });
+  assert.equal(missing.state, "needs-setup");
+  if (missing.state === "needs-setup") assert.match(missing.why, /could not be found.*requires Homebrew/);
+  for (const result of [
+    stubRun({ stdout: "not Node", stderr: "", code: 0 }),
+    stubRun({ stdout: "24.fake", stderr: "", code: 0 }),
+    stubRun({ stdout: "24.0.0", stderr: "failed", code: 1 }),
+    { ...stubRun({ stdout: "24.0.0", stderr: "timeout", code: null }), outcomeUnknown: true },
+    { ...stubRun({ stdout: "24.0.0", stderr: "overflow", code: 0 }), overflowed: true },
+  ]) {
+    const status = await probe("node-runtime", { runCommand: async () => result });
+    assert.equal(status.state, "unknown");
+    if (status.state === "unknown") assert.match(status.why, /could not verify.*Re-check/);
+  }
 });
 
 test("missing, needs-setup, and unknown stay distinct", async () => {

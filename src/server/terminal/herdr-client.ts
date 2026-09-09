@@ -509,20 +509,26 @@ export function createHerdrClient(
     }
     const status = parsed.data;
     if (!status.running) return { state: "stopped", socket: status.socket };
+    // One reading of "the server reported no version", used by the gate and by the sentence
+    // that explains it. They disagreed once: the gate rejected any falsy version while the
+    // message only tested for null, so an empty string was refused and then printed into the
+    // slot where a version number goes.
+    const version = status.version || null;
+    const protocol = status.protocol;
     if (
-      status.protocol === null ||
-      status.protocol < HERDR_MIN_PROTOCOL ||
-      !status.version ||
-      !versionAtLeast(status.version, HERDR_MIN_VERSION)
+      protocol === null ||
+      protocol < HERDR_MIN_PROTOCOL ||
+      version === null ||
+      !versionAtLeast(version, HERDR_MIN_VERSION)
     ) {
       // A reported version stands in apposition to "server" and reads as one phrase. A
       // missing one cannot: "Herdr server no version on no protocol is incompatible" is not
       // a sentence, and this refusal exists to be read. Say what was missing after the verb
       // instead, and leave the ordinary case exactly as it reads.
-      const reported = status.version !== null && status.protocol !== null
-        ? `${status.version} on protocol ${status.protocol} is incompatible`
-        : `is incompatible and reported ${status.version ? `version ${status.version}` : "no version"}`
-          + ` on ${status.protocol === null ? "no protocol" : `protocol ${status.protocol}`}`;
+      const reported = version !== null && protocol !== null
+        ? `${version} on protocol ${protocol} is incompatible`
+        : `is incompatible and reported ${version ? `version ${version}` : "no version"}`
+          + ` on ${protocol === null ? "no protocol" : `protocol ${protocol}`}`;
       return {
         state: "failed",
         error: `Herdr server ${reported}. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_MIN_PROTOCOL} or newer; update Herdr.`,
@@ -535,11 +541,11 @@ export function createHerdrClient(
     if (status.compatible !== true || status.restart_needed) {
       return {
         state: "failed",
-        error: `Herdr reports its running server is out of date with the installed ${status.version} CLI; restart the Herdr server.`,
+        error: `Herdr reports its running server is out of date with the installed ${version} CLI; restart the Herdr server.`,
         retryable: false,
       };
     }
-    return { state: "ready", socket: status.socket, version: status.version };
+    return { state: "ready", socket: status.socket, version };
   };
 
   const ensureReady = async (): Promise<HerdrResult<string>> => {

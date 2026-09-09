@@ -404,6 +404,7 @@ test("a Herdr below the floor is refused, and the refusal reports what it found"
     { version: HERDR_MIN_VERSION, protocol: HERDR_MIN_PROTOCOL - 1 },
     { version: "0.8.1", protocol: HERDR_MIN_PROTOCOL },
     { version: null, protocol: null },
+    { version: "", protocol: HERDR_MIN_PROTOCOL },
   ]) {
     const client = createHerdrClient(async () => run(status("/tmp/herdr.sock", over)), HERDR_BIN);
     const result = await client.probe();
@@ -440,6 +441,13 @@ test("the refusal is a sentence whether or not the server reported a version", a
     [
       JSON.stringify({ version: null, protocol: 22 }),
       "Herdr server is incompatible and reported no version on protocol 22."
+      + " Mission Control requires Herdr 0.8.2 or newer on protocol 20 or newer; update Herdr.",
+    ],
+    // An empty string is falsy but not null. The gate always refused it; the sentence used
+    // to print it into the apposition slot, leaving "Herdr server  on protocol 20".
+    [
+      JSON.stringify({ version: "", protocol: 20 }),
+      "Herdr server is incompatible and reported no version on protocol 20."
       + " Mission Control requires Herdr 0.8.2 or newer on protocol 20 or newer; update Herdr.",
     ],
   ]);

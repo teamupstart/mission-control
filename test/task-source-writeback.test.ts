@@ -467,6 +467,64 @@ for (const state of ["failed", "unknown"] as const) {
   });
 }
 
+// The interaction between the two rules, and the reason the resolve guard has to be applied
+// BEFORE the per-item cap rather than after it. A blocked resolve sitting at the minimum id
+// for its item used to strike out the whole item for that tick, so every LATER row - which
+// necessarily carries a higher id - was excluded by the cap and never claimed at all.
+//
+// Reachable, and with a real consequence: a completion comment gives up, its resolve comes
+// due and is blocked behind that failure, and a pull request is linked afterwards. The new
+// comment is owed, deliverable, and about a different fact entirely - it must not wait
+// behind a close that is itself waiting on a comment that already stopped trying.
+test("a comment linked after a stalled completion is claimed past the blocked resolve", async () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+
+  // The completion pair: the comment fails outright, so the resolve is blocked behind it.
+  enq.completed(task);
+  const [comment, close] = rows();
+  settleWriteback(comment!.id, "failed", { attempts: 6, lastError: "gh refused" }, NOW);
+
+  // A pull request is linked afterwards, on the same item, so its row has the higher id.
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
+  const linked = rows()[2]!;
+  assert.equal(linked.signal, "pr-opened");
+  assert.ok(linked.id > close!.id, "the fixture did not order the rows as the bug requires");
+
+  // Past the settle window, so the blocked resolve is due and would otherwise be the
+  // minimum row for this item.
+  const after = NOW + SETTLE + 1;
+  const due = claimDueWritebacks(after, 20);
+  assert.deepEqual(
+    due.map((r) => r.signal),
+    ["pr-opened"],
+    "a deliverable comment was starved behind a blocked resolve",
+  );
+
+  // And it really delivers, rather than merely being claimable.
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn, now: () => after }));
+  assert.equal(annotate.calls.length, 1);
+  assert.equal(annotate.calls[0]!.signal, "pr-opened");
+  assert.equal(rows()[2]!.state, "delivered");
+
+  // The close is still held: the comment it was meant to follow is still `failed`, and
+  // delivering an unrelated comment does not answer for it.
+  assert.equal(rows()[1]!.state, "pending");
+  assert.deepEqual(
+    claimDueWritebacks(after, 20).map((r) => r.action),
+    [],
+    "the close was released by an unrelated comment",
+  );
+});
+
 // A cancelled comment is not owed at all, so it must not hold the close forever. This is
 // the one earlier state that does not block.
 test("a cancelled comment does not hold its resolve", () => {

@@ -7809,35 +7809,48 @@ export function enqueueWriteback(row: WritebackEnqueueRow, now = Date.now()): bo
  * order between them, and blocking the second on the first's failure would suppress a true
  * statement for no benefit.
  *
+ * THE ORDER THE TWO RULES ARE APPLIED IN IS LOAD-BEARING, and getting it wrong is how an
+ * annotate ends up held behind a resolve after all. The per-item cap must be taken over
+ * the rows that are DELIVERABLE, not over every due pending row with the resolve guard
+ * applied afterwards. Filtering second means a blocked resolve can occupy the minimum slot
+ * for its item and be struck out, and every LATER row for that item - which necessarily
+ * carries a higher id - is then excluded by the cap and never claimed at all. That is
+ * reachable: a completion comment fails, its resolve comes due and is blocked, and a pull
+ * request is linked afterwards. The new comment is owed, deliverable, and about a
+ * different fact entirely, and it would wait behind a close that is itself waiting on a
+ * comment that already gave up. Hence the CTE: deliverability is decided first, and the
+ * cap picks the first row that survives it.
+ *
  * Ordered by `id` - insertion order - because that is the order the facts were observed.
  */
 export function claimDueWritebacks(now: number, limit: number): WritebackRow[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM task_source_writeback AS w
-        WHERE w.state = 'pending'
-          AND w.next_at <= ?
-          AND w.id = (
-            SELECT MIN(w2.id) FROM task_source_writeback AS w2
-             WHERE w2.source_id = w.source_id
-               AND w2.external_id = w.external_id
-               AND w2.state = 'pending'
-               AND w2.next_at <= ?
-          )
-          AND NOT (
-            w.action = 'resolve'
-            AND EXISTS (
-              SELECT 1 FROM task_source_writeback AS w3
-               WHERE w3.source_id = w.source_id
-                 AND w3.external_id = w.external_id
-                 AND w3.id < w.id
-                 AND w3.state IN ('pending', 'failed', 'unknown')
+      `WITH deliverable AS (
+         SELECT w.* FROM task_source_writeback AS w
+          WHERE w.state = 'pending'
+            AND w.next_at <= ?
+            AND NOT (
+              w.action = 'resolve'
+              AND EXISTS (
+                SELECT 1 FROM task_source_writeback AS w3
+                 WHERE w3.source_id = w.source_id
+                   AND w3.external_id = w.external_id
+                   AND w3.id < w.id
+                   AND w3.state IN ('pending', 'failed', 'unknown')
+              )
             )
-          )
-        ORDER BY w.id
+       )
+       SELECT * FROM deliverable AS d
+        WHERE d.id = (
+          SELECT MIN(d2.id) FROM deliverable AS d2
+           WHERE d2.source_id = d.source_id
+             AND d2.external_id = d.external_id
+        )
+        ORDER BY d.id
         LIMIT ?`,
     )
-    .all(now, now, limit) as unknown as WritebackDbRow[];
+    .all(now, limit) as unknown as WritebackDbRow[];
   return rows.map(toWritebackRow);
 }
 

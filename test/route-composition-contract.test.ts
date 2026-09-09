@@ -20,17 +20,12 @@ import type { TaskManager } from "../src/server/tasks.ts";
 import type { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 
 /**
- * The composition contract for `buildApp`.
+ * The composition contract for `buildApp`. See `resolveRouteDeps` in `src/server/routes.ts`
+ * for why the seam is named rather than positional.
  *
- * `buildApp` is the widest construction seam in the daemon: 27 dependencies feeding a route
- * table of 300-odd handlers whose domains are otherwise unrelated. It used to take those 27
- * by POSITION, which assigns by index with no identity check - so an argument skipped or
- * inserted in the middle bound a perfectly valid service to a DIFFERENT route domain and
- * constructed successfully, surfacing much later as an unrelated domain's 503.
- *
- * These tests hold the seam closed from both ends: the named object is the only call form
- * that exists, and every representation of the dependency contract is pinned to the
- * `RouteDeps` interface rather than restated beside it.
+ * These tests hold it closed from both ends: the named object is the only call form that
+ * exists, and every representation of the dependency contract is pinned to the `RouteDeps`
+ * interface rather than restated beside it.
  */
 
 /** The loopback Host every data endpoint requires. See `hostIsLoopback` in routes.ts. */
@@ -91,12 +86,8 @@ test("there is no positional call form left to miswire", () => {
 });
 
 test("an off-by-one positional list miswires nothing: it is rejected at construction", () => {
-  // `keepAwake` was positional slot 15, so one slot late is 16, which was `archives`. Under
-  // the positional API that list CONSTRUCTED an app, the keep-awake owner went to archives,
-  // and the mistake surfaced far away and much later as GET /api/keep-awake answering 503.
-  //
-  // Now the call is refused at the seam, and NO app is produced, so there is no route left to
-  // answer 503 for a wiring mistake made here.
+  // `keepAwake` was positional slot 15, so one slot late is 16, which was `archives`. The
+  // call is refused at the seam and NO app is produced, so no route is left to answer for it.
   const NOT_BUILT = Symbol("not built");
   const offByOne: unknown[] = [registry, reviews, tasks, queues];
   offByOne[16] = keepAwakeStub;
@@ -106,17 +97,14 @@ test("an off-by-one positional list miswires nothing: it is rejected at construc
   }, /buildApp: received 17 arguments/);
   assert.equal(built, NOT_BUILT);
 
-  // The count in that message is what ties this assertion to the slot: planting the stub one
-  // position earlier is a sixteen-argument call, and asserting on the count would fail if the
-  // stub moved or were dropped. It is refused identically, which is the point - position
-  // carries no meaning now, so there is no off-by-one left to be off by.
+  // Asserting the COUNT is what ties this to the slot: it fails if the stub moves or is
+  // dropped. One position earlier is a sixteen-argument call, refused identically.
   const onTime: unknown[] = [registry, reviews, tasks, queues];
   onTime[15] = keepAwakeStub;
   assert.throws(() => unchecked(...onTime), /buildApp: received 16 arguments/);
 
-  // And it is refused for BEING a positional call, not by accident of these stubs. A complete,
-  // valid dependency object followed by the same service is refused too, where before the
-  // extra argument was discarded in silence and the app composed without it.
+  // Refused for BEING positional, not by accident of these stubs: a complete, valid object
+  // followed by the same service is refused too.
   assert.throws(
     () => unchecked({ registry, reviews, tasks, queues }, keepAwakeStub),
     /buildApp: received 2 arguments/,
@@ -179,10 +167,8 @@ test("a misspelling hidden on a prototype is refused, not read past", () => {
 });
 
 test("a misspelling polluted onto Object.prototype is refused, not ignored", () => {
-  // The chain is bounded to Object.prototype by the plain-object rule, but not emptied. A
-  // name installed there is readable through fields[key] yet appears in no own-key listing,
-  // and Object.hasOwn will not copy it, so before this it was neither reported nor honoured:
-  // keepAwake stayed absent and /api/keep-awake answered 503.
+  // Readable through fields[key], but absent from every own-key listing and never copied by
+  // Object.hasOwn, so it would otherwise be neither reported nor honoured.
   const polluted = Object.prototype as unknown as Record<string, unknown>;
   polluted.keepAwke = keepAwakeStub;
   try {
@@ -202,9 +188,8 @@ test("a misspelling polluted onto Object.prototype is refused, not ignored", () 
 });
 
 test("a CORRECTLY named dependency on the prototype is refused rather than adopted", () => {
-  // Silently declining to honour it would be its own quiet miswiring: the environment says
-  // keepAwake is set, and the app would answer 503 anyway. A polluted prototype cannot be
-  // told apart from a supplied field, so it is refused either way.
+  // A polluted prototype cannot be told apart from a supplied field, so honouring it and
+  // silently declining it are both wrong. Refused either way.
   const polluted = Object.prototype as unknown as Record<string, unknown>;
   polluted.keepAwake = keepAwakeStub;
   try {
@@ -218,9 +203,8 @@ test("a CORRECTLY named dependency on the prototype is refused rather than adopt
 });
 
 test("a NON-enumerable misspelling on Object.prototype is refused too", () => {
-  // Enumerability is not the discriminator. An earlier guard used `for...in`, which yields
-  // only enumerable inherited names, so a defineProperty install stayed invisible and just
-  // as reachable. Every name on the chain is now compared against the pristine set instead.
+  // Enumerability is not the discriminator: `for...in` yields only enumerable inherited
+  // names, so the chain is compared against the pristine set instead.
   const polluted = Object.prototype as unknown as Record<string, unknown>;
   Object.defineProperty(polluted, "keepAwke", {
     value: keepAwakeStub,

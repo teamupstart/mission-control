@@ -924,14 +924,11 @@ function ensembleSubmitResponse(result: EnsembleSubmitResult): { status: 200 | 4
 }
 
 /**
- * Every service `buildApp` composes, keyed by name.
+ * Every service `buildApp` composes, keyed by name. See `resolveRouteDeps` for why names.
  *
- * This is the composition seam. Route domains reach their owner through a NAMED field, so
- * adding, removing, or reordering a service cannot silently change what some unrelated
- * domain receives - the failure mode the positional form below is built to survive but
- * cannot rule out. A field that is absent is answerable rather than silent: the routes that
- * need it reply 503 instead of constructing a second owner inside a request handler, which
- * would put two writers on one catalog, one library, or one OS child.
+ * An absent field is answerable rather than silent: the routes that need it reply 503 instead
+ * of constructing a second owner inside a request handler, which would put two writers on one
+ * catalog, one library, or one OS child.
  *
  * `registry`, `reviews`, `tasks`, and `queues` are required because no useful subset of the
  * route table exists without them. Everything else is optional so a focused test can supply
@@ -1181,11 +1178,12 @@ function suggestRouteDep(name: string): string {
 /**
  * Validate and normalize the one named object `buildApp` accepts.
  *
- * There is no positional form. There was one, taking 27 arguments, and it is gone rather than
- * deprecated: a positional list assigns by index with no identity check, so an argument
- * skipped or inserted in the middle binds a perfectly valid service to a DIFFERENT route
- * domain and constructs successfully. The wrong domain then answers 503 much later, nowhere
- * near the mistake. A name cannot do that, and a misspelled name is refused here by name.
+ * **This is the canonical explanation for the whole seam.** There is no positional form. There
+ * was one, taking 27 arguments, and it is gone rather than deprecated: a positional list
+ * assigns by index with no identity check, so an argument skipped or inserted in the middle
+ * binds a perfectly valid service to a DIFFERENT route domain and constructs successfully. The
+ * wrong domain then answers 503 much later, nowhere near the mistake. A name cannot do that,
+ * and a misspelled name is refused here, by name.
  *
  * Exported so the composition contract test can assert the validation directly, rather than
  * inferring it from which routes happen to answer.
@@ -1220,14 +1218,10 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
   const fields = deps as unknown as Record<string, unknown>;
   // Names reaching this object through its prototype rather than as own fields.
   //
-  // Requiring a plain object above bounds the chain to `Object.prototype`, but does not
-  // empty it. `Object.prototype.keepAwke = x` - prototype pollution - is readable through
-  // `fields[key]` yet appears in no OWN-key listing, and `Object.hasOwn` will not copy it,
-  // so without this the misspelling is neither reported nor honoured: `keepAwake` stays
-  // absent and `/api/keep-awake` answers 503 at request time, which is the deferred failure
-  // this whole seam exists to abolish.
-  //
-  // Every name on the chain is compared against the pristine set below, so enumerability is
+  // Requiring a plain object bounds the chain to `Object.prototype` but does not empty it. A
+  // name installed there is readable through `fields[key]` yet appears in no OWN-key listing,
+  // and `Object.hasOwn` will not copy it, so it would be neither reported nor honoured. Every
+  // name on the chain is compared against the pristine set instead, so enumerability is
   // irrelevant: an installed name is caught whether it was assigned or defined.
   //
   // A name that DOES match a dependency is refused for the same reason rather than adopted:
@@ -1302,18 +1296,9 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * rather than kept for compatibility.
  */
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
-  // A positional CALL, refused for being one.
-  //
-  // The parameter list already takes a single object, so JavaScript would discard everything
-  // after it in silence - and that silence is the last surviving piece of the original
-  // defect. An off-by-one list whose first element happened to be a valid dependency object
-  // constructed an app, sent arguments two onward nowhere, and left whichever domain they
-  // were meant for to answer 503 at request time, far from the mistake.
-  //
-  // Refusing here makes the rejection a property of the SHAPE of the call rather than an
-  // accident of whether argument one was well formed. The count is named because it is the
-  // one thing that locates the mistake: a caller who planted a service at slot 16 is told
-  // seventeen arguments arrived.
+  // JavaScript would discard these in silence, so a positional list whose first argument
+  // happened to be a valid object would compose an app that dropped the rest. The count is
+  // named because it is what locates the mistake for the caller.
   if (extra.length > 0) {
     throw new TypeError(
       `buildApp: received ${extra.length + 1} arguments. Route dependencies are supplied as ` +

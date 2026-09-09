@@ -598,11 +598,13 @@ the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary
 non-focusable area leaves, so it is not started at all when the invoker took focus back.
 
 The tour is explanatory and read-only. It does not click a remedy, execute a command, install a
-tool, click a grant cell, or write progress - which matters most across the Trust half, where a
-stop that clicked a cell would hand out a live GitHub grant on behalf of an operator who only
-pressed Next. Three of its seven spotlights are outside both panels, in the top bar and the
-Settings rail, which is the whole point: an operator who has never opened Setup or Trust has to
-be shown where each one is before its rows mean anything. Both halves live in the `setup`
+tool, or click a grant cell - which matters most across the Trust half, where a stop that
+clicked a cell would hand out a live GitHub grant on behalf of an operator who only pressed
+Next. It writes no progress of its own and cannot be resumed; the one-time first-run flag
+described above is consumed by App when the automatic tour starts, not by any stop. Three of
+its seven spotlights are outside both panels, in the top bar and the Settings rail, which is
+the whole point: an operator who has never opened Setup or Trust has to be shown where each
+one is before its rows mean anything. Both halves live in the `setup`
 target namespace, because a namespace is owned by the tour that spotlights a target rather
 than by the panel that renders it.
 

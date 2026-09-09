@@ -520,7 +520,11 @@ async function reconcileSourceWorkflowCriteria(
     result = await deps.reconcile(prompt);
   } else if (deps.execute) {
     // An injected extraction seam must never fall through to a real model call in a test or embedder.
-    result = { kind: "failed", reason: "Workflow criterion reconciliation was not supplied." };
+    result = {
+      kind: "failed",
+      reason: "Workflow criterion reconciliation was not supplied.",
+      cause: "transport",
+    };
   } else {
     result = await runJobStructured<typeof CriterionReconciliationSchema>(
       "workflow-context",

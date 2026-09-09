@@ -31,12 +31,13 @@ function fixture() {
   setAppConfig(APP_CONFIG_ENTRIES.workflows, {});
   const registry = new Registry();
   const commands = new WorkflowCommandManager(registry, new WorkflowStore(db));
-  const app = buildApp(
-    registry, null as never, null as never, null as never,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined,
-    commands,
-  );
+  const app = buildApp({
+    registry,
+    reviews: null as never,
+    tasks: null as never,
+    queues: null as never,
+    workflowCommands: commands,
+  });
   const request = (path: string, init?: RequestInit) =>
     app.request(path, {
       ...init,
@@ -414,7 +415,12 @@ test("a legacy save that cannot persist policy rolls its commands back too", () 
 });
 
 test("the catalog routes answer 503 rather than constructing a second owner", async () => {
-  const app = buildApp(new Registry(), null as never, null as never, null as never);
+  const app = buildApp({
+    registry: new Registry(),
+    reviews: null as never,
+    tasks: null as never,
+    queues: null as never,
+  });
   const request = (path: string) => app.request(path, { headers: { host: "127.0.0.1:7317" } });
   assert.equal((await request("/api/workflow-commands")).status, 503);
   assert.equal((await request("/api/workflow-commands/test")).status, 503);

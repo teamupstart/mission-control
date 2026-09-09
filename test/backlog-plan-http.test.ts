@@ -26,12 +26,12 @@ const { buildApp } = await import("../src/server/routes.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 // The plan routes read none of the managers - they go straight to app_config.
-const app = buildApp(
-  {} as unknown as Registry,
-  {} as unknown as ReviewManager,
-  {} as unknown as TaskManager,
-  {} as unknown as QueueManager,
-);
+const app = buildApp({
+  registry: {} as unknown as Registry,
+  reviews: {} as unknown as ReviewManager,
+  tasks: {} as unknown as TaskManager,
+  queues: {} as unknown as QueueManager,
+});
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 

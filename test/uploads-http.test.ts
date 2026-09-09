@@ -21,7 +21,12 @@ const { MAX_UPLOAD_BYTES, UPLOADS_DIR, UPLOAD_TTL_MS, resolveImageUpload } = awa
 // pty, so the file goes to disk and the prompt cites where.
 
 openDb();
-const app = buildApp(new Registry(), null as never, null as never, null as never);
+const app = buildApp({
+  registry: new Registry(),
+  reviews: null as never,
+  tasks: null as never,
+  queues: null as never,
+});
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
 

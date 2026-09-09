@@ -141,12 +141,13 @@ function fixture(
         return { ...launchResult, label: launchResult.label || `fake ${String(backend)}`, homeName: spec.name };
       })
     : undefined;
-  const app = buildApp(
-    registry, null as never, null as never, null as never,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    launcher as never,
-    undefined, undefined, undefined, undefined, undefined, undefined,
-  );
+  const app = buildApp({
+    registry,
+    reviews: null as never,
+    tasks: null as never,
+    queues: null as never,
+    launchSessionTerminal: launcher as never,
+  });
   const request = (path: string, init?: RequestInit) =>
     app.request(path, {
       ...init,

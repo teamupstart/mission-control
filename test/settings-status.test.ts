@@ -70,7 +70,12 @@ const isStatus = (e: ServerEvent): e is Extract<ServerEvent, { type: "settings_s
 function setup() {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as unknown as ReviewManager, tasks, {} as unknown as QueueManager);
+  const app = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks,
+    queues: {} as unknown as QueueManager,
+  });
   const events: ServerEvent[] = [];
   registry.subscribe((e) => events.push(e));
   return { registry, tasks, app, statuses: () => events.filter(isStatus) };

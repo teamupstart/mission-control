@@ -309,15 +309,14 @@ function harness(
       }),
     },
   });
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
     queues,
-    undefined,
     personas,
-    manager,
-  );
+    workflows: manager,
+  });
   return { registry, store, manager, app, injected, head, probe, transcript, duringProbe };
 }
 

@@ -35,33 +35,13 @@ function appWith(
   settingsBackups?: SettingsBackupService,
 ) {
   const tasks = new TaskManager(registry);
-  return buildApp(
+  return buildApp({
     registry,
-    new ReviewManager(registry),
+    reviews: new ReviewManager(registry),
     tasks,
-    new QueueManager(registry),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
+    queues: new QueueManager(registry),
     settingsBackups,
-  );
+  });
 }
 
 function serviceStub(overrides: Partial<SettingsBackupService> = {}): SettingsBackupService {

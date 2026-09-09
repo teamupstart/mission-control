@@ -58,12 +58,12 @@ const registry = {
   launchTurnFor: () => null,
 } as unknown as Registry;
 
-const app = buildApp(
+const app = buildApp({
   registry,
-  {} as unknown as ReviewManager,
-  {} as unknown as TaskManager,
-  {} as unknown as QueueManager,
-);
+  reviews: {} as unknown as ReviewManager,
+  tasks: {} as unknown as TaskManager,
+  queues: {} as unknown as QueueManager,
+});
 
 /**
  * Open the stream and read its FIRST frame, then hang up.
@@ -147,15 +147,15 @@ test("a gap too wide to call a reconnect re-seeds rather than replaying megabyte
     message: { role: "assistant", content: [{ type: "text", text: "x".repeat(3 * 1024 * 1024) }] },
   })}\n`);
   const fatSession: Session = { ...mkSession(), id: "s2", agent: "claude", transcriptPath: fat };
-  const fatApp = buildApp(
-    {
+  const fatApp = buildApp({
+    registry: {
       getSession: (id: string) => (id === "s2" ? fatSession : undefined),
       launchTurnFor: () => null,
     } as unknown as Registry,
-    {} as unknown as ReviewManager,
-    {} as unknown as TaskManager,
-    {} as unknown as QueueManager,
-  );
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+  });
   const res = await fatApp.request(`/api/sessions/s2/transcript/stream?from=${from}`, {
     headers: { host: "127.0.0.1:7317" },
   });

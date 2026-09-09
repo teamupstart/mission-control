@@ -74,7 +74,7 @@ function harness(): {
 } {
   const registry = new Registry();
   const reviews = new ReviewManager(registry);
-  const app = buildApp(registry, reviews, {} as TaskManager, {} as QueueManager);
+  const app = buildApp({ registry, reviews, tasks: {} as TaskManager, queues: {} as QueueManager });
   return { registry, reviews, app };
 }
 

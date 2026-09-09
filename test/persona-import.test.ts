@@ -61,7 +61,13 @@ function fixture() {
   db.exec(`DELETE FROM app_config WHERE key = 'llm'`);
   const registry = new Registry();
   const personas = new PersonaManager(registry, new WorkflowStore(db));
-  const app = buildApp(registry, null as never, null as never, null as never, undefined, personas);
+  const app = buildApp({
+    registry,
+    reviews: null as never,
+    tasks: null as never,
+    queues: null as never,
+    personas,
+  });
   const request = (path: string, init?: RequestInit) =>
     app.request(path, {
       ...init,

@@ -67,16 +67,13 @@ const manager = new ScheduleManager({
   log: () => {},
 });
 
-const app = buildApp(
+const app = buildApp({
   registry,
-  {} as ReviewManager,
+  reviews: {} as ReviewManager,
   tasks,
-  {} as QueueManager,
-  undefined,
-  undefined,
-  undefined,
-  manager,
-);
+  queues: {} as QueueManager,
+  schedules: manager,
+});
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
 const authed = { ...LOOPBACK, "content-type": "application/json" };

@@ -129,15 +129,13 @@ test("workflow config HTTP writes use the shared parser and replace the complete
   const { buildApp } = await import("../src/server/routes.ts");
   const registry = new Registry();
   const workflows = new WorkflowManager(registry);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     workflows,
-  );
+  });
   const invalid = await app.request("/api/workflows/config", {
     method: "PUT",
     headers: { host: "127.0.0.1:7317", "content-type": "application/json" },

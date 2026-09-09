@@ -71,7 +71,12 @@ function setup(ids: string[]): Harness {
       }),
     );
   });
-  const app = buildApp(registry, {} as unknown as ReviewManager, tasks, {} as unknown as QueueManager);
+  const app = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks,
+    queues: {} as unknown as QueueManager,
+  });
   return {
     registry,
     tasks,
@@ -227,12 +232,12 @@ test("a reorder is one row and one event, until a collision makes it every row",
     .prepare(`UPDATE tasks SET backlog_rank = ? WHERE id = ?`)
     .run(RANK_STEP + 1, "c");
   const reloaded = new Registry();
-  const app2 = buildApp(
-    reloaded,
-    {} as unknown as ReviewManager,
-    new TaskManager(reloaded),
-    {} as unknown as QueueManager,
-  );
+  const app2 = buildApp({
+    registry: reloaded,
+    reviews: {} as unknown as ReviewManager,
+    tasks: new TaskManager(reloaded),
+    queues: {} as unknown as QueueManager,
+  });
   const res = await app2.request(`/api/tasks/a/reorder`, {
     method: "POST",
     headers: HEADERS,

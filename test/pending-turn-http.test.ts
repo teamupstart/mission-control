@@ -61,22 +61,14 @@ function fixture() {
   } as unknown as SdkSupervisor;
   const pending = new PendingTurnManager(registry, supervisor, { idleSettleMs: 0 });
   pending.start();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as ReviewManager,
-    {} as TaskManager,
-    {} as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    supervisor,
-    undefined,
-    undefined,
-    undefined,
-    pending,
-  );
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    sdkSessions: supervisor,
+    pendingTurns: pending,
+  });
   return { registry, session, direct, acceptedGoals, pending, app };
 }
 

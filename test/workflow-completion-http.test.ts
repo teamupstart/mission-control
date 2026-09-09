@@ -331,15 +331,14 @@ test("completion HTTP claims server-owned identity once and atomically retires t
        1, 0, NULL, 'complete', NULL, NULL, NULL, 0, 1, 2, 1, 2
      )`,
   ).run();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
     queues,
-    undefined,
     personas,
     workflows,
-  );
+  });
   setForemanConfig({
     enabled: true,
     mode: "live",

@@ -112,21 +112,14 @@ const registry = {
 } as unknown as Registry;
 
 const launched: Array<{ backend: string; argv: readonly string[] }> = [];
-const app = buildApp(
+const app = buildApp({
   registry,
-  {} as unknown as ReviewManager,
-  {
+  reviews: {} as unknown as ReviewManager,
+  tasks: {
     settleAfterFailedHandoff: () => assert.fail("an uncertain launch may have succeeded"),
   } as unknown as TaskManager,
-  {} as unknown as QueueManager,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  async (backend, spec) => {
+  queues: {} as unknown as QueueManager,
+  launchSessionTerminal: async (backend, spec) => {
     launched.push({ backend, argv: spec.argv });
     if (spec.name === EXITED_UNCERTAIN.name) {
       return {
@@ -143,7 +136,7 @@ const app = buildApp(
     const durable = MULTIPLEXER_IDS.includes(backend as (typeof MULTIPLEXER_IDS)[number]);
     return { ok: true, label: backend, homeName: durable ? "resumed" : null, status: 200 };
   },
-);
+});
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 

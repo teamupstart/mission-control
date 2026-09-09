@@ -126,15 +126,14 @@ function harness(repo: string, id: string, opts: { task?: boolean } = {}) {
   }
   const personas = new PersonaManager(registry);
   const workflows = new WorkflowManager(registry, personas.store);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     personas,
     workflows,
-  );
+  });
   return { app, registry, session, workflows, versionId };
 }
 

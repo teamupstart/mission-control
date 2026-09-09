@@ -118,7 +118,7 @@ function fixture() {
     cwd: target.repoRoot,
     agentSessionId: "codex-pipeline-adoption-same-cwd",
   });
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const payload = {
     slug: target.slug,
   };
@@ -228,7 +228,7 @@ test("the authenticated adoption route accepts its preallocated managed host bef
       },
     }),
   });
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const dispatch = dispatcher.dispatch(task.id);
   await started;
@@ -323,7 +323,7 @@ test("pre-registration managed adoption refuses missing or forged launch capabil
         },
       }),
     });
-    const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+    const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
     const dispatch = dispatcher.dispatch(task.id);
     await started;
@@ -507,7 +507,7 @@ test("the Pipeline workspace route rejects unauthenticated, mismatched, and conf
   registry.registerManagedPipelineCaller("missing-task", host.id, repoRoot, "workspace-route-missing-task");
   registry.registerManagedPipelineCaller(task.id, other.id, repoRoot, "workspace-route-other-host");
   registry.registerManagedPipelineCaller(task.id, host.id, join(repoRoot, "wrong"), "workspace-route-wrong-cwd");
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const cases = [
     {

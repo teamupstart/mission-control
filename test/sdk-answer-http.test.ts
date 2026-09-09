@@ -23,6 +23,7 @@ process.env.HARNESS_HOME = home;
 const previousClaudeBin = process.env.MISSION_CLAUDE_BIN;
 process.env.MISSION_CLAUDE_BIN = process.execPath;
 
+import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
@@ -141,23 +142,18 @@ function fakeSupervisor(over: { answer?: () => Promise<void> } = {}) {
 function mkApp(
   registry: Registry_,
   supervisor: SdkSupervisor,
-  handoffDeps?: Parameters<typeof buildApp>[10],
-  launchSessionTerminal?: Parameters<typeof buildApp>[11],
+  handoffDeps?: RouteDeps["handoffDeps"],
+  launchSessionTerminal?: RouteDeps["launchSessionTerminal"],
 ) {
-  return buildApp(
+  return buildApp({
     registry,
-    {} as unknown as ReviewManager,
-    {} as unknown as TaskManager,
-    {} as unknown as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    supervisor,
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    sdkSessions: supervisor,
     handoffDeps,
     launchSessionTerminal,
-  );
+  });
 }
 
 /** A registered embedded session showing `request`. */

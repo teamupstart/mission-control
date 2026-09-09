@@ -4893,6 +4893,8 @@ export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCove
       (links) => new Set(links.map((link) => `${link.clientItemId}\0${link.role}`)).size === links.length,
       "Workflow coverage links must be unique by evidence item and proof role",
     ),
+  // Absent on every claim an author registers, and on every historical frozen row.
+  inheritedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
 });
 
 export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCoverageClaimSchema)
@@ -4971,6 +4973,19 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
   `Workflow readiness exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.readinessJsonBytes} UTF-8 bytes`,
 );
 
+/**
+ * Where evidence came from when this submission did not capture it.
+ *
+ * All three fields describe the ORIGINAL capture, not the hand-off, so a Persona reading a
+ * manifest can tell a screenshot taken against this tree from one taken three rounds and
+ * several commits ago. Absent means the submission captured it itself.
+ */
+export const WorkflowEvidenceInheritanceSchema = z.object({
+  submissionId: z.string().min(1).max(200),
+  round: z.number().int().positive(),
+  repositoryFingerprint: z.string().min(1).max(200).nullable(),
+});
+
 export const WorkflowEvidenceImageSchema = z.object({
   id: z.string().min(1).max(200),
   ordinal: z.number().int().nonnegative(),
@@ -4980,6 +4995,7 @@ export const WorkflowEvidenceImageSchema = z.object({
   mimeType: z.enum(RASTER_IMAGE_MIME_TYPES),
   bytes: z.number().int().positive().max(WORKFLOW_IMAGE_LIMITS.maxBytesPerImage),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  inheritedFrom: WorkflowEvidenceInheritanceSchema.nullable().optional().default(null),
   availability: z.enum(["retained", "pruned"]),
   prunedAt: z.number().int().nonnegative().nullable(),
   createdAt: z.number().int().nonnegative(),
@@ -5003,6 +5019,7 @@ export const WorkflowEvidenceTextArtifactSchema = z.object({
   bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   content: z.string(),
+  inheritedFrom: WorkflowEvidenceInheritanceSchema.nullable().optional().default(null),
   availability: z.enum(["retained", "pruned"]),
   prunedAt: z.number().int().nonnegative().nullable(),
   createdAt: z.number().int().nonnegative(),

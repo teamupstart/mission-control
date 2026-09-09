@@ -112,6 +112,15 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
    In this phase that is a refused or uncertain delivery on Deliveries, and a corrupt or unreadable
    captured context on Intent. Later phases add their own conditions under the same rule.
 
+   **It is an INITIAL selection, computed once per run.** There is no loading state to guard
+   against: `WorkflowRunView` renders only inside `{detail && (...)}` and takes a non-nullable
+   `WorkflowRunDetail`, so the tabs never mount without records, and selecting another run clears
+   `detail` and remounts them. What does need saying is the live case: `detail` is refreshed in place
+   from the run's SSE summary, so a delivery can turn refused while someone is reading the Intent
+   pane. Selection must not be re-derived on that update and yank them out of the pane they chose.
+   The badge appearing on the Deliveries tab is the whole of the response to a state that turns
+   blocking after the reader arrived.
+
    **This changes the library tour's assumption.** `src/web/tour/tours/library.ts` has a `run-moving`
    step whose `prepare` calls `context.navigation.showRun(...)` and whose `ready` requires the
    resolved element, so on a run with a refused delivery the worklist would not be mounted and the
@@ -160,6 +169,8 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
   registered for this run is ignored and the fallback applies; a blocking worklist wins over a
   blocking Deliveries; a blocking Deliveries wins when the worklist is clean; the worklist is the
   final fallback.
+- A `renderToStaticMarkup` or `node:test` case that a detail update turning a pane blocking after
+  mount does not move the selection: the badge appears, the selected pane does not change.
 - A new Playwright spec in `e2e/`: the worklist pane is selected on load, the Deliveries and Intent
   tabs are reachable by role and accessible name, a delivery row expands its payload, a human
   decision row expands its body, the tab counts match the run, and a refused delivery puts the amber
@@ -180,6 +191,8 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
 - Every delivery and intent field and action that rendered before still renders and still works.
 - A link carrying `pane` opens on that pane, and changing rounds preserves the selected pane.
 - A run whose blocking state is not in the worklist opens on the pane holding it, with no click.
+- A live update that turns a pane blocking adds its badge without moving the reader off the pane
+  they are on.
 - A route naming a pane that does not exist for the run lands on a valid pane rather than an empty
   container, and does not silently rewrite the address bar.
 - All verification above passes.

@@ -80,8 +80,9 @@ Phase 1 establishes these and later phases consume them without changing them:
   and renderable for this run**; a route naming an absent pane is ignored for selection. Otherwise
   the selection is the blocking worklist, else the first blocking pane in tab order, else the
   worklist. This is what makes the plan's "a blocking container opens itself" true for tabs, since
-  the amber badge alone does not. Later phases participate by setting `blocking` honestly rather than
-  adding a rule.
+  the amber badge alone does not. It is an *initial* selection, computed once per run: a state that
+  turns blocking while someone is reading raises the badge and does not move them. Later phases
+  participate by setting `blocking` honestly rather than adding a rule.
 - **The route field.** `MissionRoute` for `page: "runs"` gains an optional `pane` whose values are the pane ids. Phase 2 and Phase 3 add an id to that union and to nothing else.
 - **`runRecordSummary`** in `run-model.ts` returns the per-pane counts and summary sentences. Phase 2 and Phase 3 extend it with their own fields rather than computing counts in the view.
 - **Every action keeps its route.** Retry refused delivery, the uncertain-delivery resolutions, evidence readiness retry and override, re-stage, and the Inspector settings button all keep their existing handlers and confirm dialogs. No phase may drop one to simplify a pane.

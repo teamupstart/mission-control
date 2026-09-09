@@ -137,6 +137,7 @@ function rows(): Array<{
   id: number;
   action: string;
   signal: string;
+  external_id: string;
   state: string;
   next_at: number;
   attempts: number;
@@ -736,6 +737,59 @@ test("a payload naming a different action than its row is refused", async () => 
   assert.deepEqual(annotate.calls, []);
   assert.deepEqual(resolve.calls, [], "a close ran under a row that calls itself a comment");
   assert.equal(rows()[0]!.state, "failed");
+});
+
+// The third duplicated field, and the one whose disagreement cannot be taken back. The queue
+// groups, de-duplicates, orders and counts by the COLUMN (`external_id` is in the identity
+// index, in claimDueWritebacks' per-item cap and its resolve guard, and in countWritebacks),
+// while `issueTargetFor` builds the argv gh is actually pointed at from the PAYLOAD. A row
+// whose copies disagree would be tracked and reported as one issue while commenting on -
+// or closing - somebody else's.
+test("a payload naming a different external item than its row is refused", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  assert.equal(rows()[0]!.dedupe_key.startsWith("t1:"), true);
+
+  openDb()
+    .prepare(
+      `UPDATE task_source_writeback
+          SET payload = json_set(payload, '$.externalId', 'acme/other#99')
+        WHERE id = ?`,
+    )
+    .run(rows()[0]!.id);
+
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  assert.deepEqual(
+    annotate.calls,
+    [],
+    "a delivery tracked as acme/demo#7 was published against acme/other#99",
+  );
+  assert.equal(rows()[0]!.state, "failed");
+  assert.match(rows()[0]!.last_error!, /disagree/);
+  // The ledger still says what it always said, so the operator's queue is not lying about
+  // where this went.
+  assert.equal(
+    (openDb()
+      .prepare(`SELECT external_id FROM task_source_writeback WHERE id = ?`)
+      .get(rows()[0]!.id) as { external_id: string }).external_id,
+    "acme/demo#7",
+  );
+});
+
+// The delivered notice carries the ROW's item, not the payload's, so what is published and
+// what the queue is keyed on are the same string by construction.
+test("a delivered notice carries the item its row is keyed on", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  assert.equal(annotate.calls[0]!.externalId, rows()[0]!.external_id);
 });
 
 // A payload this build cannot read will never deliver. Settled rather than left pending, or

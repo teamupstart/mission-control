@@ -364,9 +364,11 @@ export async function drainWritebacks(
 
   for (const row of rows) {
     // A row whose payload this build cannot read, or whose payload contradicts the row's
-    // own `signal` / `action` columns, will never deliver anything honest - so it is
-    // settled rather than left pending to be re-claimed on every tick for the rest of the
-    // daemon's life. See `readWritebackNotice`.
+    // own `signal` / `action` / `external_id` columns, will never deliver anything honest -
+    // so it is settled rather than left pending to be re-claimed on every tick for the rest
+    // of the daemon's life. The third of those is the one that would publish to the wrong
+    // issue: the queue is keyed on the column and `gh` is pointed at the payload. See
+    // `readWritebackNotice`.
     if (!row.notice) {
       finish(row.id, "failed", {
         lastError:

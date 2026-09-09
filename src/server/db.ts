@@ -7651,16 +7651,25 @@ const asText = (v: unknown): string | null => (typeof v === "string" ? v : null)
  * every one of them ends up in text somebody else reads: an item id, a title, a link. A
  * row that cannot supply them has nothing honest to say upstream.
  *
- * And strict about the two facts this row stores TWICE. `signal` and `action` are columns
- * - they are half of the identity index, so they have to be - and they are also inside the
- * serialized notice, because the notice is a self-contained snapshot an implementation
- * reads without the row. Nothing in SQLite keeps the two copies in step, and the worker
- * reads them from different places: it dispatches the verb from the COLUMN (`row.action`)
- * while `writebackCommentBody` branches on the PAYLOAD (`notice.signal`). A row whose
- * copies disagree - hand-repaired, restored from a partial backup, or written by a build
- * that spelled one of them differently - would run one verb while announcing the other: a
- * close performed under a row that calls itself a comment, or a pull-request comment
- * posted in answer to a completion.
+ * And strict about the three facts this row stores TWICE. `signal`, `action` and
+ * `external_id` are columns - all three are part of the identity index, so they have to be
+ * - and all three are also inside the serialized notice, because the notice is a
+ * self-contained snapshot an implementation reads without the row. Nothing in SQLite keeps
+ * the copies in step, and the worker reads them from DIFFERENT PLACES than the
+ * implementation does:
+ *
+ *   - the verb is dispatched from the COLUMN (`row.action`), while `writebackCommentBody`
+ *     branches on the PAYLOAD (`notice.signal`);
+ *   - the queue is grouped, de-duplicated, ordered and counted by the COLUMN
+ *     (`row.externalId` - the identity index, `claimDueWritebacks`'s per-item cap and its
+ *     resolve guard, `countWritebacks`), while `issueTargetFor` builds the argv `gh` is
+ *     actually pointed at from the PAYLOAD (`notice.externalId`).
+ *
+ * So a row whose copies disagree - hand-repaired, restored from a partial backup, or
+ * written by a build that spelled one of them differently - would run one verb while
+ * announcing the other, or, worse, be tracked and displayed as one issue while PUBLISHING
+ * TO ANOTHER. The second is the one that cannot be taken back: a comment or a close lands
+ * on somebody else's issue, and every record here says it went where it did not.
  *
  * Refused here rather than reconciled, because there is no honest way to pick a winner.
  * The column is what the row is indexed and de-duplicated as; the payload is what would be
@@ -7671,6 +7680,7 @@ function readWritebackNotice(
   json: string,
   signal: WritebackSignal,
   action: WritebackAction,
+  externalId: string,
 ): WritebackNotice | null {
   let parsed: unknown;
   try {
@@ -7685,12 +7695,16 @@ function readWritebackNotice(
   // refusal, because neither can be acted on without guessing.
   if (readPersistedEnum(WRITEBACK_SIGNALS, asText(n.signal)) !== signal) return null;
   if (readPersistedEnum(WRITEBACK_ACTIONS, asText(n.action)) !== action) return null;
-  if (typeof n.externalId !== "string" || n.externalId.length === 0) return null;
+  // EQUALITY, not merely "nonempty". A nonempty check accepts a payload naming a different
+  // issue entirely, which is the one disagreement that publishes to the wrong place.
+  if (n.externalId !== externalId) return null;
   if (typeof n.taskTitle !== "string" || typeof n.repoRoot !== "string") return null;
   return {
     signal,
     action,
-    externalId: n.externalId,
+    // The row's own value, so what is published and what the queue is keyed on are the
+    // same string by construction rather than by two reads agreeing.
+    externalId,
     externalUrl: typeof n.externalUrl === "string" ? n.externalUrl : null,
     taskTitle: n.taskTitle,
     prUrl: typeof n.prUrl === "string" ? n.prUrl : null,
@@ -7705,7 +7719,8 @@ function toWritebackRow(r: WritebackDbRow): WritebackRow {
   // off disk, and a row written by a build that knew a signal this one does not must not
   // be coerced into a verb it never asked for. An unreadable half therefore lands as a
   // NULL notice, which the worker settles `failed` and says so, rather than as a
-  // plausible-looking delivery against the wrong item.
+  // plausible-looking delivery against the wrong item. The row's `external_id` goes down
+  // with them, because the payload's copy is what decides which issue `gh` is pointed at.
   const signal = readPersistedEnum(WRITEBACK_SIGNALS, r.signal);
   const action = readPersistedEnum(WRITEBACK_ACTIONS, r.action);
   return {
@@ -7716,7 +7731,10 @@ function toWritebackRow(r: WritebackDbRow): WritebackRow {
     action: action ?? "annotate",
     dedupeKey: r.dedupe_key,
     taskId: r.task_id,
-    notice: signal && action ? readWritebackNotice(r.payload, signal, action) : null,
+    notice:
+      signal && action
+        ? readWritebackNotice(r.payload, signal, action, r.external_id)
+        : null,
     state: readPersistedEnum(WRITEBACK_STATES, r.state) ?? "pending",
     attempts: r.attempts,
     nextAt: r.next_at,

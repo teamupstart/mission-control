@@ -522,7 +522,7 @@ interface CompletionInput {
 }
 
 /**
- * How long a mission run's recorded outcome may be.
+ * How long a mission run's recorded outcome may be, counted in CODE POINTS.
  *
  * The verifier's summary is prose from a model, and `Task.outcome` is rendered on a board
  * card, a rail row and the mission's own run history. Bounded here rather than trusted,
@@ -537,14 +537,25 @@ const MISSION_RUN_OUTCOME_MAX = 200;
  * this was an inference from Foreman's verdict rather than something a person typed - and
  * carries Foreman's own summary, because "why is this done when nothing shipped?" is the
  * first question that row provokes.
+ *
+ * The cut is made on CODE POINTS, not on `String.prototype.slice`'s UTF-16 code units. The
+ * summary is model-authored prose and routinely carries emoji, so a code-unit cut can land
+ * between the halves of a surrogate pair and persist a lone surrogate - which renders as a
+ * replacement glyph on the board card, the rail row and the run history, for ever, because
+ * this string is written once at completion and never revised.
+ *
+ * Code points rather than grapheme clusters, deliberately. A ZWJ sequence or a combining
+ * mark can still be split here, and that is a cosmetic loss; splitting a surrogate pair
+ * produces a string that is not valid text at all, which is the defect being fixed.
  */
 function missionRunOutcome(decision: PromptedCompletionDisposition): string {
   const why = decision.summary.trim();
   const line = why
     ? `Foreman concluded this recurring mission run: ${why}`
     : "Foreman concluded this recurring mission run";
-  return line.length > MISSION_RUN_OUTCOME_MAX
-    ? `${line.slice(0, MISSION_RUN_OUTCOME_MAX - 1)}\u2026`
+  const points = [...line];
+  return points.length > MISSION_RUN_OUTCOME_MAX
+    ? `${points.slice(0, MISSION_RUN_OUTCOME_MAX - 1).join("")}\u2026`
     : line;
 }
 

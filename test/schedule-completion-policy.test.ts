@@ -617,3 +617,53 @@ test("a task the merge already landed is not re-concluded by a later verdict", a
   assert.equal(after?.outcome, outcomeFromMerge, "the merge's own outcome must survive");
   assert.equal(after?.outcomeUrl, url);
 });
+
+// ---- the recorded sentence ----
+
+test("a long emoji summary is cut on characters, never through a surrogate pair", () => {
+  // The summary is model-authored prose and routinely carries emoji. A UTF-16 code-unit cut
+  // can land between the halves of a surrogate pair, and the lone surrogate that leaves is
+  // persisted once at completion and never revised - so it renders as a replacement glyph on
+  // the board card, the rail row and the run history for ever.
+  //
+  // The filler is sized so a code-unit cut falls INSIDE an astral character rather than
+  // between two, which is the only arrangement that reproduces the defect. The old code cut
+  // at index MAX - 1, so the pair has to START at MAX - 2 for its high half to be kept and
+  // its low half dropped. Verified against the previous implementation: it produced a
+  // trailing "\ud83d". An off-by-one here makes this test pass on the bug.
+  const f = runningMission({ completionPolicy: "auto-on-conclusion" });
+  const MAX = 200;
+  const prefix = "Foreman concluded this recurring mission run: ".length;
+  const summary = "x".repeat(MAX - 2 - prefix) + "\u{1F680}".repeat(20);
+
+  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+    outcome: "retired",
+    summary,
+    gaps: [],
+  });
+
+  const outcome = f.registry.getTask(f.taskId)?.outcome ?? "";
+  assert.ok(outcome.length > 0, "the run should have been concluded");
+  // No unpaired surrogate survived the cut. `\p{Surrogate}` matches only code points that
+  // remain unpaired after iteration, so this is the direct statement of the invariant.
+  assert.doesNotMatch(outcome, /\p{Surrogate}/u, `lone surrogate in: ${JSON.stringify(outcome)}`);
+  // And it really was truncated, so the assertion above is about the cut and not about a
+  // string that happened to fit.
+  assert.ok(outcome.endsWith("\u2026"), `expected an ellipsis, got: ${JSON.stringify(outcome)}`);
+  assert.equal([...outcome].length, MAX, "bounded at 200 code points");
+  // The character the cut landed on survives whole rather than as half of itself.
+  assert.ok(outcome.endsWith("\u{1F680}\u2026"), JSON.stringify(outcome.slice(-4)));
+});
+
+test("a short summary is recorded whole, ellipsis and all left off", () => {
+  const f = runningMission({ completionPolicy: "auto-on-conclusion" });
+  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+    outcome: "empty",
+    summary: "the session changed nothing \u{1F680}",
+    gaps: [],
+  });
+  assert.equal(
+    f.registry.getTask(f.taskId)?.outcome,
+    "Foreman concluded this recurring mission run: the session changed nothing \u{1F680}",
+  );
+});

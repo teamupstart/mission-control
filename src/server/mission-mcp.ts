@@ -63,6 +63,7 @@ export const MISSION_MCP_TOOLS = [
   "request_review",
   PLAN_SCHEDULING_TOOL,
   "request_input",
+  "report_product_feedback",
   "report_product_issue",
   "report_status",
   // A bare literal rather than a constant, like its neighbours above: `mission-mcp.test.ts`

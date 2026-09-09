@@ -26,15 +26,14 @@ import {
 import { titleLine } from "@shared/title.ts";
 import {
   PRODUCT_ISSUE_CLIENT_ENV,
-  PRODUCT_ISSUE_LIMITS,
-  PRODUCT_ISSUE_TYPES,
   productIssueClientFromEnvironment,
+  type ProductIssueRequest,
 } from "@shared/product-issues.ts";
-import { reportProductIssueWithConfirmation } from "./product-issues.ts";
+import { reportProductFeedback, reportProductIssueWithConfirmation } from "./product-issues.ts";
 import {
   PIPELINE_CALLER_CREDENTIAL_HEADER,
 } from "@shared/pipeline.ts";
-import { MAX_TASK_EXTRA_REPOS, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
+import { MAX_TASK_EXTRA_REPOS, ProductIssueDraftSchema, WorkflowCommandExitCodeSchema } from "@shared/protocol.ts";
 import { readPipelineCallerCredential } from "./pipeline-credential.ts";
 import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 
@@ -538,6 +537,41 @@ server.registerTool(
   },
 );
 
+// Both MCP entry points use the dashboard's report contract and daemon service.
+const productIssueTransport = {
+  requestId: randomUUID,
+  preview: async (request: ProductIssueRequest) => responseResult(await http(
+    "/mcp/product-issues/preview", "POST",
+    { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...request },
+  )),
+  submit: async (request: ProductIssueRequest) => responseResult(await http(
+    "/mcp/product-issues", "POST",
+    { env: ENV, sessionId: SESSION_ID, cwd: process.cwd(), ...request },
+  )),
+};
+
+server.registerTool(
+  "report_product_feedback",
+  {
+    title: "Report product feedback",
+    description:
+      "Report product feedback about Mission Control as a public GitHub issue only after the user " +
+      "explicitly asks you to report it. Publishes automatically without a second dashboard approval " +
+      "and returns the issue URL. Choose the report type from the user's request. " +
+      "Include only public-safe details, never secrets, private repository content, or personal data. " +
+      "Optional attachmentUploadIds must be daemon-issued screenshot ids, never filesystem paths.",
+    inputSchema: ProductIssueDraftSchema.shape,
+  },
+  async (draft) => {
+    try {
+      const result = await reportProductFeedback(draft, PRODUCT_ISSUE_CLIENT, productIssueTransport);
+      return textResult(result.text, result.isError);
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
 server.registerTool(
   "report_product_issue",
   {
@@ -547,63 +581,15 @@ server.registerTool(
       "asked you to report it. Mission Control shows the exact public content in the dashboard " +
       "and BLOCKS until the human selects Submit public issue or dismisses it. Optional screenshot " +
       "upload ids must come from Mission Control and require GitHub CLI 2.99.0 or newer.",
-    inputSchema: {
-      type: z.enum(PRODUCT_ISSUE_TYPES).describe("The user-selected product report type"),
-      title: z
-        .string()
-        .trim()
-        .min(1)
-        .max(PRODUCT_ISSUE_LIMITS.titleBytes)
-        .refine(
-          (value) => new TextEncoder().encode(value).byteLength <= PRODUCT_ISSUE_LIMITS.titleBytes,
-          `Title must be at most ${PRODUCT_ISSUE_LIMITS.titleBytes} UTF-8 bytes`,
-        )
-        .describe("Short public GitHub issue title"),
-      details: z
-        .string()
-        .trim()
-        .min(1)
-        .max(PRODUCT_ISSUE_LIMITS.detailsBytes)
-        .refine(
-          (value) =>
-            new TextEncoder().encode(value).byteLength <= PRODUCT_ISSUE_LIMITS.detailsBytes,
-          `Details must be at most ${PRODUCT_ISSUE_LIMITS.detailsBytes} UTF-8 bytes`,
-        )
-        .describe("Public report details, including reproduction or desired outcome"),
-      attachmentUploadIds: z
-        .array(z.string().min(1).max(PRODUCT_ISSUE_LIMITS.attachmentUploadIdChars))
-        .max(PRODUCT_ISSUE_LIMITS.attachmentCount)
-        .default([])
-        .describe("Optional daemon-issued screenshot upload ids; never pass filesystem paths"),
-    },
+    inputSchema: ProductIssueDraftSchema.shape,
   },
-  async ({ type, title, details, attachmentUploadIds }, extra) => {
+  async (draft, extra) => {
     try {
       const result = await reportProductIssueWithConfirmation(
-        { type, title, details, attachmentUploadIds },
+        draft,
         PRODUCT_ISSUE_CLIENT,
         {
-          requestId: randomUUID,
-          preview: async (request) => responseResult(await http(
-            "/mcp/product-issues/preview",
-            "POST",
-            {
-              env: ENV,
-              sessionId: SESSION_ID,
-              cwd: process.cwd(),
-              ...request,
-            },
-          )),
-          submit: async (request) => responseResult(await http(
-            "/mcp/product-issues",
-            "POST",
-            {
-              env: ENV,
-              sessionId: SESSION_ID,
-              cwd: process.cwd(),
-              ...request,
-            },
-          )),
+          ...productIssueTransport,
           createReview: ({ title: reviewTitle, body, decisions }) =>
             createReview("input", reviewTitle, body, decisions),
           waitForResolution: (id: string) => waitForResolution(id, extra),

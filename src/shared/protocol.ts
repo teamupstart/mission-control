@@ -589,9 +589,8 @@ export const ProductIssueDraftSchema = z.object(PRODUCT_ISSUE_DRAFT_FIELDS).stri
 export type ProductIssueDraftInput = z.infer<typeof ProductIssueDraftSchema>;
 
 /** One preview/submission opening, shared by the dashboard and authenticated MCP routes. */
-export const ProductIssueRequestSchema = z
-  .object({
-    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+export const ProductIssueRequestSchema = ProductIssueDraftSchema
+  .extend({
     requestId: z.string().uuid(),
     client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
   })
@@ -636,11 +635,8 @@ export type ProductIssueDashboardSubmitInput = z.infer<
 >;
 
 /** MCP identity is transport-owned and added beside the same bounded report request. */
-export const McpProductIssueRequestSchema = z
-  .object({
-    ...PRODUCT_ISSUE_DRAFT_FIELDS,
-    requestId: z.string().uuid(),
-    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+export const McpProductIssueRequestSchema = ProductIssueRequestSchema
+  .extend({
     env: EnvSchema,
     sessionId: z.string().nullable().optional().default(null),
     cwd: z.string().nullable().optional().default(null),

@@ -285,6 +285,10 @@ tradeoffs.
 
 ## Community participation
 
+Sessions can [report product feedback](docs/sessions.md) with the
+`report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
+issue automatically and returns its GitHub URL, without a second dashboard approval.
+
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository
 collaborators, including Upstart maintainers. If you want to propose a code or documentation

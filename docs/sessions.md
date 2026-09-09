@@ -1647,6 +1647,14 @@ The MCP tools are:
   With `options` the human gets clickable choices (radios, or checkboxes with
   `multiSelect`, plus an optional free-text "Other"); without them, a text box. Either shape
   can be dismissed without sending an answer
+- `report_product_feedback(type, title, details, attachmentUploadIds?)` - when the user asks
+  the session to report Mission Control feedback, publishes a public GitHub issue automatically
+  and returns its URL without a second dashboard approval. The tool prepares the daemon preview
+  and submits the same bounded draft, with the daemon choosing the destination and labels.
+  Both MCP tools inherit the dashboard report schema and use its `ProductIssueService` for
+  issue formatting, destination, labels, attachments, and publication. Only caller attribution
+  and approval differ. Include only public-safe content. Screenshot limits and retry guidance
+  match the tool below.
 - `report_product_issue(type, title, details, attachmentUploadIds?)` - only after the user
   explicitly asks for a Mission Control product report, prepare a public GitHub issue and
   **block** on a dashboard review containing the exact daemon-derived repository, labels, body,

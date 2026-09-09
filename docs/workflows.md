@@ -729,11 +729,32 @@ decisions and rationale, repository HEAD and diff, transcript evidence, reposito
 and prior Persona feedback. Confirmed workflow packets are matched to the transcript turn at
 their durable delivery byte anchor and excluded from both transcript evidence and human decisions,
 including after a daemon restart. A later human turn that repeats the same text remains evidence.
+A run FREEZES its intent when it is created. The raw goal, refined goal, and human decisions as
+they stood at that moment are copied onto the run, and every submission of that run is reviewed
+against the copy. The session Goal stays live and keeps being displayed as the conversation's
+current objective; it is simply no longer what a review is judged by. This matters because the
+Goal is writable by the prompt hook, which reports every prompt typed into the pane - including
+the repair packets a workflow types there itself - so a run that read it per submission could
+distil its own acceptance criteria out of its previous complaint. Transcript, diff, standards,
+coverage, and evidence remain live per-submission reads: only intent is frozen. A later human
+turn or review answer reaches Personas as transcript and prior-feedback context, labelled as what
+it is, and does not amend the frozen ask; an ask that genuinely changed is a new run. A run
+created before the snapshot existed carries none and keeps the live-read behaviour it was created
+under for its whole life.
+
 A deterministic intent fingerprint covers only the raw/refined goal and deduplicated genuine
-human decision content. A cheap provider-neutral compaction call receives only those fields and
-extracts stable constraints and canonical criteria. Repository state, transcript evidence,
-evidence metadata, prior Persona feedback, automated deliveries, and author coverage never enter
-criterion extraction. A separate source reconciliation call receives only those stable criteria
+human decision content, and on a snapshot-bearing run it is the frozen one on every submission. A
+cheap provider-neutral compaction call receives only those fields and extracts stable constraints
+and canonical criteria ONCE PER RUN. The first capture to need them claims the run's compaction
+before it spends anything, so a concurrent capture of the same run waits for that result rather
+than buying a second one; the stored criteria are then written once and every later submission
+reuses them verbatim, so the criteria a submission is repaired against cannot move while it is
+being repaired. A failed compaction stores nothing and the next submission retries it, while a
+capture that was waiting on the failed one degrades the same way rather than starting its own
+attempt. A run whose frozen intent or stored criteria cannot be read is blocked for the operator
+instead of falling back to the live Goal, and the run stays visible and diagnosable while blocked.
+Repository state, transcript evidence, evidence metadata, prior Persona feedback, automated
+deliveries, and author coverage never enter criterion extraction. A separate source reconciliation call receives only those stable criteria
 and bounded author claim ids and text. Its schema and failure boundary are independent, so invalid
 mapping output leaves stable extraction intact and fails closed to deterministic mappings. Each
 45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 45-second
@@ -835,14 +856,19 @@ result before the engine creates any Persona or Check attempt. A structural gap 
 `waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
 original immutable submission inspectable. Newly staged evidence resumes as a child segment in the
 same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
-When that child has the same intent fingerprint as its parent, it reuses the parent's constraints,
-acceptance criteria, canonical ids/text, materiality, and proof-class suggestions without creating
-a `context_compaction` call. It still freezes its own replacement evidence and coverage, remaps
-the current claim ids, and reruns readiness. A changed human decision causes one fresh compaction;
-subsequent same-intent refinements reuse that new source. Submission events record whether criteria
-were reused and which immutable source supplied them. The LLM ledger records stable extraction as
-`context_compaction`, source claim mapping as `context_reconciliation`, and no call for deterministic
-reuse.
+It reuses the run's constraints, acceptance criteria, canonical ids/text, materiality, and
+proof-class suggestions without creating a `context_compaction` call, exactly as every other
+submission of the run does. It still freezes its own replacement evidence and coverage, remaps
+the current claim ids, and reruns readiness. Author claim ids are per-submission, so the remap
+reads this submission's claims through the previous submission's claims and mappings; a rephrased
+claim for an unchanged criterion therefore still matches. A changed human decision does NOT buy a
+fresh compaction - the run's intent was frozen at creation - so the criteria stay identical across
+every round and segment. Submission events record whether criteria were reused and which
+immutable source supplied them. A run created before the intent snapshot existed keeps the older
+behaviour: it compacts per submission and a preflight child reuses its parent's criteria only
+when their intent fingerprints match. The LLM ledger records stable extraction as
+`context_compaction`, source claim mapping as `context_reconciliation`, and no call for
+deterministic reuse.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.

@@ -12,12 +12,24 @@ import type {
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceProofClass,
   WorkflowHumanDecision,
+  WorkflowRunCriteria,
+  WorkflowRunIntentSnapshot,
   WorkflowStandardsDocument,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
   workflowCrossCriterionClaimIds,
 } from "@shared/workflow.ts";
+import {
+  freezeWorkflowRunIntent,
+  workflowIntentFields,
+  workflowIntentFingerprint,
+} from "./intent-fingerprint.ts";
+// Capture still hashes a LIVE context - a legacy run has no snapshot to thaw - so this one
+// stays reachable here. The run-snapshot spelling deliberately does not: capture mints through
+// `freezeWorkflowRunIntent` now, and re-exporting the raw derivation beside it would be an
+// invitation to assemble a snapshot by hand again.
+export { workflowIntentFingerprint };
 import { computeSessionDiff } from "../diff.ts";
 import { injectionFingerprint } from "../injections.ts";
 import { clipUtf8Bytes } from "../util/utf8.ts";
@@ -196,28 +208,6 @@ function sha(value: string): string {
 
 function normalizedCriterionText(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
-}
-
-function intentFingerprintFields(raw: RawWorkflowContext): object {
-  const decisions: Array<{ decision: string; rationale: string | null }> = [];
-  const seen = new Set<string>();
-  for (const item of raw.humanDecisions) {
-    const decision = { decision: item.decision, rationale: item.rationale };
-    const key = JSON.stringify(decision);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    decisions.push(decision);
-  }
-  return {
-    rawGoal: raw.primaryGoal.rawPrompt,
-    refinedGoal: raw.primaryGoal.refined,
-    decisions,
-  };
-}
-
-/** Stable intent identity. Repository state, evidence, coverage, and Persona feedback are excluded. */
-export function workflowIntentFingerprint(raw: RawWorkflowContext): string {
-  return sha(JSON.stringify(intentFingerprintFields(raw)));
 }
 
 /**
@@ -483,7 +473,7 @@ function compactPrompt(raw: RawWorkflowContext): string {
     "Each canonical criterion has text, material, and suggestedProofClass.",
     "Proof class suggestions are advisory.",
     "Do not add decisions or infer intent that is not supported by the supplied sources.",
-    JSON.stringify(intentFingerprintFields(raw)),
+    JSON.stringify(workflowIntentFields(raw)),
   ].join("\n\n");
 }
 
@@ -594,11 +584,33 @@ export function fallbackWorkflowContext(
   };
 }
 
+/**
+ * Anything that can supply already-distilled criteria: a sibling submission's context
+ * snapshot, or the run's own once-per-run compaction.
+ *
+ * Mappings are absent from the run-level shape on purpose. They bridge ONE submission's
+ * author coverage claim ids onto these criteria, so they belong to that submission and are
+ * reconciled again on every capture; only the criteria themselves are stable enough to freeze.
+ */
+export type WorkflowCriteriaSource = Pick<
+  WorkflowContextSnapshot,
+  "constraints" | "acceptanceCriteria" | "canonicalCriteria" | "compaction"
+> & { criterionMappings?: WorkflowCriterionMapping[] };
+
 export function reuseWorkflowContextCriteria(
   raw: RawWorkflowContext,
-  source: WorkflowContextSnapshot,
+  source: WorkflowCriteriaSource,
   sourceSubmissionId: string,
   sourceCoverage: readonly WorkflowEvidenceCoverageClaim[],
+  /**
+   * The mappings the source coverage was understood through, defaulting to the source's own.
+   *
+   * Split from `source` because run-level criteria carry none: the bridge a reuse needs comes
+   * from the PREVIOUS submission of the run, while the criteria come from the run. Passing
+   * both explicitly is what lets one function serve the sibling-submission reuse and the
+   * run-level one without either pretending to own the other's half.
+   */
+  sourceMappings: readonly WorkflowCriterionMapping[] = source.criterionMappings ?? [],
 ): WorkflowContextSnapshot {
   return WorkflowContextSnapshotSchema.parse({
     ...contextFields(raw),
@@ -609,16 +621,43 @@ export function reuseWorkflowContextCriteria(
     criterionMappings: reconcileWorkflowCriterionMappings(
       source.canonicalCriteria ?? [],
       raw.coverage ?? [],
-      {
-        sourceCoverage,
-        sourceMappings: source.criterionMappings ?? [],
-      },
+      { sourceCoverage, sourceMappings },
     ),
     compaction: {
       ...source.compaction,
       reusedFromSubmissionId: source.compaction.reusedFromSubmissionId ?? sourceSubmissionId,
     },
   });
+}
+
+/**
+ * The stable half of one successful compaction, ready to freeze onto the run.
+ *
+ * Returns null for anything that is not a real model compaction. A fallback context is a
+ * RECORD OF A FAILURE, not a criteria set, and freezing one would give the run an empty
+ * canonical criteria list that every later submission then dutifully reused - the same
+ * outcome as the drift this replaces, arrived at from the other direction.
+ */
+export function workflowRunCriteriaFrom(
+  context: WorkflowContextSnapshot,
+  compactedFromSubmissionId: string,
+  now: number,
+): WorkflowRunCriteria | null {
+  const { compaction } = context;
+  if (compaction.status !== "model") return null;
+  if (!context.intentFingerprint) return null;
+  return {
+    intentFingerprint: context.intentFingerprint,
+    constraints: context.constraints,
+    acceptanceCriteria: context.acceptanceCriteria,
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    // `status` restated rather than spread. Spreading carries the snapshot's declared
+    // `model | fallback`, which no longer satisfies the durable type - the guard above proved
+    // this one is a model compaction, and the literal is how that proof reaches the type.
+    compaction: { ...compaction, status: "model", reusedFromSubmissionId: null },
+    compactedFromSubmissionId,
+    compactedAt: now,
+  };
 }
 
 export async function compactWorkflowContext(
@@ -906,6 +945,101 @@ export function workflowCheckoutPath(
   return binding.repoRoot ? binding.sessionCwd : session.cwd;
 }
 
+/** The transcript this capture reads, with delivered workflow turns attributed and dropped. */
+function contextTranscriptFor(
+  session: Session,
+  located: ReturnType<typeof sessionMessages>,
+  transcriptMessages: TranscriptMessage[],
+  deliveredWorkflowAnchors: readonly DeliveredWorkflowTranscriptAnchor[],
+): TranscriptMessage[] {
+  const attributed = attributeWorkflowContextTranscript(
+    session.id,
+    transcriptMessages,
+    located ? deliveredWorkflowTurnIdentities(located, deliveredWorkflowAnchors) : [],
+  );
+  return attributed.filter((message) => message.origin !== "workflow");
+}
+
+/**
+ * The live intent: the session Goal and every genuine human decision behind it.
+ *
+ * Called from exactly two places, and the sharing is the point. A run freezes this at
+ * creation and every later capture of that run thaws the frozen copy instead of calling it
+ * again, so the two readings can never be bounded, clipped or ordered differently.
+ */
+function readLiveWorkflowIntent(
+  registry: Registry,
+  binding: WorkflowBinding,
+  session: Session,
+  contextTranscript: TranscriptMessage[],
+): { primaryGoal: RawWorkflowContext["primaryGoal"]; humanDecisions: WorkflowHumanDecision[] } {
+  const goal = registry.getGoal(session.id);
+  return {
+    primaryGoal: {
+      rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
+      refined: goal?.text ? clip(goal.text, MAX_GOAL) : null,
+      sourceNoteKey: binding.noteKey,
+    },
+    humanDecisions: boundedDecisions([
+      ...loadResolvedWorkflowReviews(session.id).map(workflowReviewDecision),
+      ...registry.listEpisodes(session.id)
+        .filter((episode) => episode.resolvedBy === "you")
+        .map((episode): WorkflowHumanDecision => ({
+          decision: clip([
+            episode.question,
+            episode.sentOption?.label ?? episode.sentText ?? episode.disposition,
+          ].filter(Boolean).join("\nAnswer: "), MAX_DECISION_TEXT),
+          rationale: clip(episode.brief ?? episode.recommendation ?? "", MAX_DECISION_TEXT) || null,
+          source: { kind: "foreman_episode", id: String(episode.id) },
+        })),
+      ...humanTranscriptDecisions(contextTranscript),
+    ]),
+  };
+}
+
+/**
+ * Freeze what the human asked for, for one run about to exist.
+ *
+ * Deliberately reads no git and no repository state: intent is session-scoped, the freeze
+ * happens inside the same turn that inserts the run, and making it wait on a diff would put a
+ * subprocess between the decision to create a run and the row that records what it reviews
+ * against.
+ *
+ * Returns null when the binding has no live conversation to read. That is not a snapshot of
+ * "no intent" - it is the absence of an answer, and writing an empty snapshot would freeze a
+ * blank goal onto the run for good. The run is created without one and captures live, which
+ * is the same thing every run did before the freeze existed.
+ */
+export function readWorkflowIntentSnapshot(
+  registry: Registry,
+  binding: WorkflowBinding,
+  deliveredWorkflowAnchors: readonly DeliveredWorkflowTranscriptAnchor[] = [],
+  now: number = Date.now(),
+): WorkflowRunIntentSnapshot | null {
+  const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
+  if (!session || !compatibleSession(binding, session)) return null;
+  const located = sessionMessages(session);
+  const transcriptWindow = located?.read.window(located.path, 12, 68)
+    ?? { messages: [], truncated: false, headCount: 0 };
+  const intent = readLiveWorkflowIntent(
+    registry,
+    binding,
+    session,
+    contextTranscriptFor(session, located, transcriptWindow.messages, deliveredWorkflowAnchors),
+  );
+  // Minted through the one constructor, never assembled here. The store derives a snapshot's
+  // identity the same way when a run is created, and two spellings of "build a snapshot" would
+  // be two places to update if derivation ever changes - with the manager-visible snapshot free
+  // to disagree with the durable one in the meantime.
+  return freezeWorkflowRunIntent({
+    rawGoal: intent.primaryGoal.rawPrompt,
+    refinedGoal: intent.primaryGoal.refined,
+    sourceNoteKey: intent.primaryGoal.sourceNoteKey,
+    decisions: intent.humanDecisions,
+    frozenAt: now,
+  });
+}
+
 /**
  * Read one bounded raw snapshot and its capture boundary. The manager re-reads that boundary
  * and retries once before persisting the raw evidence and starting compaction.
@@ -915,16 +1049,24 @@ export async function readWorkflowContextRaw(
   binding: WorkflowBinding,
   priorPersonaFeedback: PersonaFeedbackSummary[] = [],
   deliveredWorkflowAnchors: readonly DeliveredWorkflowTranscriptAnchor[] = [],
+  /**
+   * The run's frozen intent, or null for a run created before the snapshot existed.
+   *
+   * Positional and last so the injected `readContextRaw` seam keeps its current arity. A
+   * supplied snapshot REPLACES the live Goal read entirely - it is not merged with it and not
+   * compared against it - because anything that consulted the live value could still be moved
+   * by a repair packet typed into the pane.
+   */
+  frozenIntent: WorkflowRunIntentSnapshot | null = null,
 ): Promise<WorkflowRawCaptureRead> {
   const session = binding.sessionId ? registry.getSession(binding.sessionId) : undefined;
   if (!session || !compatibleSession(binding, session)) {
     throw new Error("The workflow binding is not attached to its durable conversation");
   }
-  const goal = registry.getGoal(session.id);
   // The BINDING'S checkout, which for a secondary-repository run is its own worktree and for
-  // every other run is the session's cwd unchanged. The transcript, goal and decisions below
-  // stay session-scoped on purpose: sibling runs review different repositories of the same
-  // conversation, and the conversation is one.
+  // every other run is the session's cwd unchanged. The transcript below, and the intent -
+  // whether this run froze one or reads it live - stay session-scoped on purpose: sibling runs
+  // review different repositories of the same conversation, and the conversation is one.
   const checkout = workflowCheckoutPath(binding, session);
   const located = sessionMessages(session);
   const transcriptAnchor = located?.read.size(located.path) ?? null;
@@ -933,12 +1075,12 @@ export async function readWorkflowContextRaw(
     truncated: false,
     headCount: 0,
   };
-  const attributedTranscript = attributeWorkflowContextTranscript(
-    session.id,
+  const contextTranscript = contextTranscriptFor(
+    session,
+    located,
     transcriptWindow.messages,
-    located ? deliveredWorkflowTurnIdentities(located, deliveredWorkflowAnchors) : [],
+    deliveredWorkflowAnchors,
   );
-  const contextTranscript = attributedTranscript.filter((message) => message.origin !== "workflow");
   const {
     diff,
     allStatus,
@@ -949,30 +1091,25 @@ export async function readWorkflowContextRaw(
     contentTreeOid,
     repositoryFingerprint,
   } = await readRepositoryEvidence(checkout);
-  const decisions = boundedDecisions([
-    ...loadResolvedWorkflowReviews(session.id).map(workflowReviewDecision),
-    ...registry.listEpisodes(session.id)
-      .filter((episode) => episode.resolvedBy === "you")
-      .map((episode): WorkflowHumanDecision => ({
-        decision: clip([
-          episode.question,
-          episode.sentOption?.label ?? episode.sentText ?? episode.disposition,
-        ].filter(Boolean).join("\nAnswer: "), MAX_DECISION_TEXT),
-        rationale: clip(episode.brief ?? episode.recommendation ?? "", MAX_DECISION_TEXT) || null,
-        source: { kind: "foreman_episode", id: String(episode.id) },
-      })),
-    ...humanTranscriptDecisions(contextTranscript),
-  ]);
+  // The frozen ask wins outright where the run has one. The transcript, diff, standards and
+  // evidence beside it stay live per-submission reads - only intent is frozen, because only
+  // intent is the thing the review is judged AGAINST rather than a fact about the work.
+  const intent = frozenIntent
+    ? {
+        primaryGoal: {
+          rawPrompt: frozenIntent.rawGoal,
+          refined: frozenIntent.refinedGoal,
+          sourceNoteKey: frozenIntent.sourceNoteKey,
+        },
+        humanDecisions: frozenIntent.decisions,
+      }
+    : readLiveWorkflowIntent(registry, binding, session, contextTranscript);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
   const boundedTranscript = boundedWorkflowTranscript(contextTranscript);
   const transcript = boundedTranscript.transcript;
   const raw: RawWorkflowContext = {
-    primaryGoal: {
-      rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
-      refined: goal?.text ? clip(goal.text, MAX_GOAL) : null,
-      sourceNoteKey: binding.noteKey,
-    },
-    humanDecisions: decisions,
+    primaryGoal: intent.primaryGoal,
+    humanDecisions: intent.humanDecisions,
     priorPersonaFeedback: boundedFeedback(priorPersonaFeedback),
     session: {
       agent: session.agent,

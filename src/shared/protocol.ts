@@ -5393,6 +5393,51 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
   message: `Workflow context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
 });
 
+/**
+ * The intent frozen onto a run at creation.
+ *
+ * Bounded exactly as `WorkflowContextSnapshotInputSchema` bounds the same fields, because
+ * these ARE those fields: capture copies them straight into `primaryGoal` and
+ * `humanDecisions`, and a snapshot that could hold more than the context snapshot accepts
+ * would be a row that freezes fine and then fails every capture that reads it.
+ */
+export const WorkflowRunIntentSnapshotSchema = z.object({
+  rawGoal: z.string().max(16_000),
+  refinedGoal: z.string().max(16_000).nullable(),
+  sourceNoteKey: z.string().min(1).max(1_000),
+  decisions: z.array(WorkflowHumanDecisionSchema).max(200),
+  fingerprint: z.string().length(64),
+  frozenAt: z.number().int().nonnegative(),
+});
+
+/**
+ * One run's stable acceptance criteria. Per-submission mappings are deliberately absent.
+ *
+ * `status` is the LITERAL `model`, not the context snapshot's `model | fallback`. A fallback is
+ * a record that compaction failed, and the run must retry it on the next submission rather than
+ * freeze it: durable criteria written from one are empty criteria reused for the run's whole
+ * life, which is the drift this mechanism exists to end, reached from the other direction.
+ * Narrowing it here rather than only in the caller means the store REFUSES that payload at its
+ * boundary, so a future writer cannot reintroduce the state by calling `freezeRunCriteria`
+ * directly.
+ */
+export const WorkflowRunCriteriaSchema = z.object({
+  intentFingerprint: z.string().length(64),
+  constraints: z.array(z.string().max(4_000)).max(100),
+  acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
+  canonicalCriteria: z.array(WorkflowCanonicalCriterionSchema)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+  compaction: z.object({
+    status: z.literal("model"),
+    runner: z.enum(LLM_RUNNER_IDS).nullable(),
+    model: z.string().max(500).nullable(),
+    error: z.string().max(8_000).nullable(),
+    reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
+  }),
+  compactedFromSubmissionId: z.string().min(1).max(200),
+  compactedAt: z.number().int().nonnegative(),
+});
+
 export const WorkflowInspectorOnlyContextSchema = z.object({
   bypassReason: z.string().min(1).max(16_000),
   failedHeadSha: z.string().min(1).max(100),

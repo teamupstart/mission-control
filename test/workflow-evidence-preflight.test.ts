@@ -332,7 +332,7 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
   );
 });
 
-test("fallback compaction retries before becoming a stable criteria reuse source", async (t) => {
+test("a corrupted submission context cannot restart the run's compaction", async (t) => {
   let compactionCalls = 0;
   const h = await harness(t, "fallback-retry-preflight", undefined, {
     compactContext: async (raw) => {
@@ -400,10 +400,23 @@ test("fallback compaction retries before becoming a stable criteria reuse source
   );
   const sourceContext = WorkflowContextSnapshotSchema.parse(submitted.value.submission.context);
   assert.equal(sourceContext.compaction.status, "model");
+  assert.equal(compactionCalls, 1);
+  const frozen = h.store.getRun(runId)?.criteria ?? null;
+  assert.ok(frozen, "the first successful compaction froze the run's criteria");
+  assert.equal(frozen.compactedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(frozen.acceptanceCriteria, ["Rendered workflow state is inspectable"]);
+
+  // Reuse used to be sourced from the PARENT SUBMISSION's stored context, so anything that
+  // damaged that one row - a partial write, a retention sweep, a hand edit like this one -
+  // silently bought the run another compaction and another set of criteria. The criteria now
+  // belong to the run, and a submission row is a record of what was reviewed rather than the
+  // thing later submissions are reviewed by.
   openDb().prepare(
     "UPDATE workflow_submissions SET context_json = ? WHERE id = ?",
   ).run(JSON.stringify({
     ...sourceContext,
+    canonicalCriteria: [],
+    criterionMappings: [],
     compaction: {
       ...sourceContext.compaction,
       status: "fallback",
@@ -412,34 +425,31 @@ test("fallback compaction retries before becoming a stable criteria reuse source
   }), submitted.value.submission.id);
 
   await stageGap(1);
-  const retried = await h.manager.retryEvidenceReadiness(
-    runId,
-    submitted.value.submission.id,
-    "fallback-provider-recovered",
-    2,
-  );
-  assert.equal(retried.ok, true);
-  if (!retried.ok) return;
-  const recoveredContext = WorkflowContextSnapshotSchema.parse(retried.value.submission.context);
-  assert.equal(compactionCalls, 2);
-  assert.equal(recoveredContext.compaction.status, "model");
-  assert.equal(recoveredContext.compaction.reusedFromSubmissionId, null);
-
-  await stageGap(2);
   const reused = await h.manager.retryEvidenceReadiness(
     runId,
-    retried.value.submission.id,
-    "fallback-source-now-stable",
-    3,
+    submitted.value.submission.id,
+    "fallback-parent-context",
+    2,
   );
   assert.equal(reused.ok, true);
   if (!reused.ok) return;
-  assert.equal(compactionCalls, 2);
+  assert.equal(compactionCalls, 1, "a damaged parent row must not buy a second compaction");
   const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
-  assert.equal(reusedContext.compaction.reusedFromSubmissionId, retried.value.submission.id);
+  assert.equal(reusedContext.compaction.status, "model");
+  assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(
+    reusedContext.canonicalCriteria?.map((criterion) => criterion.id),
+    frozen.canonicalCriteria.map((criterion) => criterion.id),
+    "the reusing submission carries the run's frozen criteria verbatim",
+  );
+  assert.deepEqual(
+    h.store.getRun(runId)?.criteria,
+    frozen,
+    "reuse must not rewrite what it reused",
+  );
 });
 
-test("one changed human decision recompacts once and becomes the next reuse source", async (t) => {
+test("a mid-run change to the live decisions never moves the run's frozen criteria", async (t) => {
   let decisions: WorkflowHumanDecision[] = [];
   const h = await harness(t, "intent-change-preflight", undefined, {
     humanDecisions: () => decisions,
@@ -493,6 +503,10 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
   assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
 
+  // A mid-run decision is exactly the shape of the failure this run-level freeze exists to
+  // remove: on the observed run, seven of eight "human decisions" by round eight were Mission
+  // Control's own repair packets, read back through the prompt hook. Whatever writes the live
+  // channel now, the run reviews against the ask it froze at creation.
   decisions = [{
     decision: "Also preserve keyboard navigation",
     rationale: "Accessibility is part of the requested outcome",
@@ -502,21 +516,30 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   const changed = await h.manager.retryEvidenceReadiness(runId, reused.value.submission.id, "intent-change", 3);
   assert.equal(changed.ok, true);
   if (!changed.ok) return;
-  assert.equal(compactionCount(runId), 2);
-  assert.equal(reconciliationCount(runId), 2);
+  assert.equal(compactionCount(runId), 1, "a later decision must not buy a second compaction");
+  assert.equal(reconciliationCount(runId), 1);
   const changedContext = WorkflowContextSnapshotSchema.parse(changed.value.submission.context);
-  assert.equal(changedContext.compaction.reusedFromSubmissionId, null);
-  assert.notEqual(changedContext.intentFingerprint, reusedContext.intentFingerprint);
+  assert.equal(changedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(
+    changedContext.canonicalCriteria,
+    reusedContext.canonicalCriteria,
+    "the criteria a submission is judged by never move inside a run",
+  );
 
   await stageGap(3);
   const changedReuse = await h.manager.retryEvidenceReadiness(runId, changed.value.submission.id, "intent-change-reuse", 4);
   assert.equal(changedReuse.ok, true);
   if (!changedReuse.ok) return;
-  assert.equal(compactionCount(runId), 2);
-  assert.equal(reconciliationCount(runId), 2);
+  assert.equal(compactionCount(runId), 1);
+  assert.equal(reconciliationCount(runId), 1);
   const changedReuseContext = WorkflowContextSnapshotSchema.parse(changedReuse.value.submission.context);
-  assert.equal(changedReuseContext.compaction.reusedFromSubmissionId, changed.value.submission.id);
-  assert.equal(changedReuseContext.intentFingerprint, changedContext.intentFingerprint);
+  assert.equal(changedReuseContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(
+    new Set(h.store.listSubmissions(runId)
+      .map((row) => WorkflowContextSnapshotSchema.parse(row.context).intentFingerprint)),
+    new Set([changedReuseContext.intentFingerprint]),
+    "every submission of the run carries one intent identity",
+  );
 });
 
 test("automatic readiness sweep does not join a live manual preflight capture", async (t) => {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowBinding, WorkflowCaptureExpectation } from "../src/shared/workflow.ts";
 import type { WorkflowRawCaptureRead } from "../src/server/workflows/context.ts";
@@ -462,6 +463,7 @@ test("a restart between every durable step resumes the same run rather than star
     {
       id: "restart-run",
       binding: rebound.value.binding,
+      intent: FIXTURE_RUN_INTENT,
       triggerSource: "ensemble",
       triggerKey: rebound.value.claim.sourceKey,
       now: 5,
@@ -581,6 +583,7 @@ test("the pinned artifact commits with the run, and an unpinned external run is 
     {
       id: "atomic-run",
       binding: bound.value.binding,
+      intent: FIXTURE_RUN_INTENT,
       triggerSource: "ensemble",
       triggerKey: bound.value.claim.sourceKey,
       now: 5,
@@ -637,6 +640,7 @@ test("an external submission with no pinned artifact is refused, not given a new
     {
       id: "stranded-run",
       binding: bound.value.binding,
+      intent: FIXTURE_RUN_INTENT,
       triggerSource: "ensemble",
       triggerKey: bound.value.claim.sourceKey,
       now: 6,

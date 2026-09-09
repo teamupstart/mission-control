@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // What is at stake: Inspector-only repair is a narrow, published bypass. It may advance
 // only to a genuinely new PR head, creates no Persona attempt, and leaves enough audit
@@ -107,7 +108,7 @@ const binding = store.insertBinding({
   now: 1,
 });
 store.createInitialSubmission(
-  { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:first", now: 2 },
+  { id: "run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:b:first", now: 2 },
   {
     id: "full-1",
     triggerSource: "manual",
@@ -333,6 +334,7 @@ test("a Foreman completion claim cannot create a full submission during the new-
 
   const claim = store.claimForemanCompletion({
     binding,
+    intent: FIXTURE_RUN_INTENT,
     completionKind: "drain",
     marker: "inspector-new-head-wait",
     expectedWorkCycle: null,

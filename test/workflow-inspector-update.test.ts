@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { InspectionUpdated, InspectorPr } from "../src/shared/types.ts";
 import type { WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 
@@ -159,7 +160,7 @@ test("daemon restart clears observation freshness and waits for Inspector again"
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "update-run", binding, triggerSource: "manual", triggerKey: "manual:update", now: 2 },
+    { id: "update-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:update", now: 2 },
     {
       id: "update-sub",
       triggerSource: "manual",

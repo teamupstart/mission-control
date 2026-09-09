@@ -79,6 +79,7 @@ export function buildPersonaPrompt(
     "Completed Check outcomes below come only from upstream Check nodes that receipted this same immutable submission. Their command, exit code, retained output tail, omitted-byte count, HEAD SHA, and attempt identity are evidence. Read the outcome and output together: a detailed passing run can demonstrate behavior, while a bare status cannot.",
     "Submitted text artifacts were digest-bound and frozen into this submission from either a securely staged repository path or a bounded completed-command report. Their UTF-8 content is exact retained evidence; direct command artifacts include the agent-reported command and exit code, while upstream Check evidence is server-observed. Captions are claims to verify against the content. Evidence-only logs do not need to be committed.",
     "Judge the evidence available at this Persona stage. Pull-request checks, remote CI, and Inspector findings may be later workflow stages, so their absence is not a failure unless the original human intent, operator directive, or published Persona guidance explicitly requires them now.",
+    "Criterion coverage declarations are validated by the evidence preflight before this review and are not rendered here, so their presence, absence, or shape is not a Persona concern and is never a reason to fail a submission.",
     "",
     "# Prior Persona feedback (non-human)",
     boundedSection(priorFeedback(context.priorPersonaFeedback)),

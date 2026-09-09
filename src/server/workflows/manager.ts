@@ -170,6 +170,7 @@ import {
   type SubmitExternalInput,
 } from "./external-binding.ts";
 import {
+  EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
   WorkflowStore,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
@@ -2138,6 +2139,9 @@ export class WorkflowManager {
       now,
     });
     if (!reserved.ok) {
+      // The cap blocked the run inside the reservation, so the operator's page has to hear
+      // about it: this refusal is the one that changes durable run state.
+      if (reserved.reason === "refinement_exhausted") this.publishRun(runId);
       return {
         ok: false,
         reason: reserved.reason === "no_change" ? "unchanged_evidence" : "conflict",
@@ -2147,7 +2151,10 @@ export class WorkflowManager {
             ? "That request id already names a different evidence refinement"
             : reserved.reason === "no_change"
               ? "Stage new evidence before retrying evidence preflight"
-              : "The submission is no longer waiting for evidence readiness",
+              : reserved.reason === "refinement_exhausted"
+                ? `This round has spent its ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} evidence`
+                  + " preflight refinements; continue despite gaps or start a new round"
+                : "The submission is no longer waiting for evidence readiness",
       };
     }
     const currentRun = this.store.getRun(runId) ?? run;
@@ -7063,7 +7070,12 @@ export class WorkflowManager {
       manualRetry,
       now,
     });
-    if (!reserved.ok) return;
+    if (!reserved.ok) {
+      // Every other refusal here leaves the run exactly as the sweep found it. The cap does
+      // not: it parked the run for the operator, and nothing else will publish that.
+      if (reserved.reason === "refinement_exhausted") this.publishRun(run.id);
+      return;
+    }
     if (reserved.idempotent && reserved.submission.status !== "capturing") return;
     this.publishRun(run.id);
     const current = this.store.getRun(run.id);

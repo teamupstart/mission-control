@@ -29,9 +29,11 @@ upload them to the pull request. Inspect screenshots before upload and redact se
 and personal data. When a screenshot cannot be safely redacted, do not upload it; report that
 evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image attachments;
 use `gh pr create --attach` or `gh pr edit --attach` for the pull request description, or
-`gh pr comment --attach` for a comment, whenever that version floor is met. `## For Agents` carries
-the design decisions and the implementation detail. Follow that contract exactly rather than
-inventing a shape here.
+`gh pr comment --attach` for a comment, whenever that version floor is met, and include useful alt
+text for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
+published description or comment renders the attachments before treating the evidence handoff as
+complete. `## For Agents` carries the design decisions and the implementation detail. Follow that
+contract exactly rather than inventing a shape here.
 
 Every claim in the evidence subsection is something that was run and reported, not something
 assumed. A list of changed files is not a description. Neither is a restatement of the diff.

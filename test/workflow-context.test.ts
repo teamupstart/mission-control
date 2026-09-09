@@ -624,7 +624,7 @@ test("compaction preserves raw intent and visibly degrades on infrastructure fai
   const fallback = await compactWorkflowContext(raw, {
     runner: "claude",
     model: "fake",
-    execute: async () => ({ kind: "failed", reason: "timed out" }),
+    execute: async () => ({ kind: "failed", reason: "timed out", cause: "transport" }),
   });
   assert.equal(fallback.compaction.status, "fallback");
   assert.equal(fallback.compaction.error, "timed out");

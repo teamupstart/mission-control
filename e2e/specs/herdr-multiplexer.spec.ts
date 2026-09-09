@@ -214,3 +214,43 @@ test.describe("incompatible stable Herdr", () => {
     await shoot(dashboard, "herdr-incompatible-refusal");
   });
 });
+
+/**
+ * Protocol 22, the generation stable Herdr 0.9.0 actually serves. The launch path reaches the
+ * server through `probe`, and discovery reaches it again through `session.snapshot`, which
+ * carries its own generation number and had its own equality check. Both are floors now, so
+ * a newer Herdr opens a workspace and is adopted like any other.
+ */
+test.describe("stable Herdr on a newer protocol generation", () => {
+  test.use({
+    daemonEnv: { MC_E2E_HERDR: "1", MC_E2E_HERDR_MODE: "newer", MISSION_POLL_MS: "100" },
+  });
+
+  test("opens a workspace and adopts the discovered pane", async ({ dashboard, daemon }) => {
+    await dispatch(dashboard, daemon);
+    const card = await openDispatchedSession(dashboard);
+    await card.locator(".conv-launch").getByRole("button", { name: "Terminal", exact: true }).click();
+    const menu = card.getByRole("menu", { name: "Open a shell in the worktree with" });
+    await menu.getByRole("menuitem").filter({ hasText: "Herdr" }).click();
+
+    await expect(card.locator(".launch-flash")).toHaveText("Opened in Herdr");
+    await expect(card.locator(".launch-flash.is-error")).toHaveCount(0);
+    await expect
+      .poll(() => herdrRequests(daemon).some((request) => request.method === "workspace.create"), {
+        message: "a protocol 22 server should still be sent a workspace creation",
+        timeout: 15_000,
+      })
+      .toBe(true);
+
+    await expect
+      .poll(async () => (await sessions(daemon)).some((session) =>
+        session.runtime === "terminal" &&
+        session.terminals.some((handle) =>
+          handle.backend === "herdr" && handle.kind === "multiplexer")), {
+        message: "the protocol 22 session snapshot should be read, not refused",
+        timeout: 30_000,
+      })
+      .toBe(true);
+    await shoot(dashboard, "herdr-newer-protocol-session");
+  });
+});

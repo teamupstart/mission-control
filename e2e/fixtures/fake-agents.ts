@@ -241,12 +241,21 @@ const home = process.env.MISSION_HOME;
 const socketPath = join(home, "fake-herdr.sock");
 const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
 const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
+// "newer" is a Herdr past the supported floor on both axes, which is what a real 0.9.0 is.
+// Mission Control pins a minimum, not an equality, so this must be as ordinary as the floor.
+const newer = process.env.MC_E2E_HERDR_MODE === "newer";
+const VERSION = newer ? "0.9.0" : "0.8.2";
+const PROTOCOL = newer ? 22 : 20;
+// 0.9.0 renamed the \`pane.split\` response type. It is the one response whose type moved
+// without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
+// it quietly stops standing in for the server it names.
+const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
 if (argv[0] === "status" && argv[1] === "server") {
   if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
     status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
   } else {
     const running = existsSync(socketPath);
-    status({ status: running ? "running" : "not_running", running, version: running ? "0.8.2" : null, protocol: running ? 20 : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
+    status({ status: running ? "running" : "not_running", running, version: running ? VERSION : null, protocol: running ? PROTOCOL : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
   }
   process.exit(0);
 }
@@ -317,7 +326,7 @@ const server = createServer((socket) => {
         ok(socket, request.id, {
           type: "session_snapshot",
           snapshot: {
-            version: "0.8.2", protocol: 20,
+            version: VERSION, protocol: PROTOCOL,
             workspaces: values.map((x) => ({ workspace_id: x.workspaceId, label: x.label })),
             tabs: values.map((x) => ({ tab_id: x.tabId, workspace_id: x.workspaceId, number: 1, label: "main" })),
             panes: values.flatMap((x) => x.panes.map((pane) => ({ pane_id: pane.pane_id, workspace_id: x.workspaceId, tab_id: x.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd }))),
@@ -347,7 +356,7 @@ const server = createServer((socket) => {
         const workspace = [...workspaces.values()].find((x) => x.panes.some((pane) => pane.pane_id === p.target_pane_id));
         const pane = { pane_id: workspace.workspaceId + ":side", cwd: p.cwd, shell_pid: null };
         workspace.panes.push(pane);
-        ok(socket, request.id, { type: "pane_created", pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
+        ok(socket, request.id, { type: SPLIT_TYPE, pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
       } else if (request.method === "pane.read") {
         ok(socket, request.id, { type: "pane_read", read: { pane_id: p.pane_id, text: "fake Herdr pane output" } });
       } else if (request.method === "workspace.rename") {

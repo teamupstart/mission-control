@@ -8,7 +8,21 @@ import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
 import type { BinSpec, TerminalResult } from "./types.ts";
 
-export const HERDR_PROTOCOL = 20;
+/**
+ * The oldest stable Herdr this client speaks, as a floor and never as an equality.
+ *
+ * Herdr bumps its protocol generation on its own release cadence - 0.8.2 served 20, 0.9.0
+ * serves 22 - while every method and consumed field this client uses stayed put. Pinning the
+ * generation exactly made each of those releases a hard outage for an operator who had done
+ * nothing but update Herdr, and the refusal then told them to update it again.
+ *
+ * A floor is safe here because the generation is not what actually guards the wire. Every
+ * response this client consumes is validated by a narrow Zod schema that ignores additive
+ * fields and rejects a missing or retyped one, so a future generation that removes something
+ * fails at that field with its own operation-specific message rather than sending a request
+ * blind. Raise the floor only when Herdr drops a method or field named in this file.
+ */
+export const HERDR_MIN_PROTOCOL = 20;
 export const HERDR_MIN_VERSION = "0.8.2";
 
 const READ_TIMEOUT_MS = 1_000;
@@ -106,8 +120,15 @@ const WorkspaceInfoSchema = z.object({
   workspace: WorkspaceSchema,
 });
 
+// `pane.split` answers `pane_created` on 0.8.2 and `pane_info` on 0.9.0, carrying the same
+// pane payload under both names. Only the pane is ever read out of it, so both are accepted.
+//
+// This is the one Herdr response whose type changed without a field changing, and it is the
+// one place where getting it wrong is silent: `sessions.spawnDetached` deliberately ignores a
+// failed split so a side pane cannot fail a launch, so a rejected response here does not
+// surface anywhere - the workspace simply opens with the side pane missing.
 const PaneCreatedSchema = z.object({
-  type: z.literal("pane_created"),
+  type: z.enum(["pane_created", "pane_info"]),
   pane: HerdrPaneSchema,
 });
 
@@ -495,20 +516,43 @@ export function createHerdrClient(
     }
     const status = parsed.data;
     if (!status.running) return { state: "stopped", socket: status.socket };
+    // One reading of "the server reported no version", used by the gate and by the sentence
+    // that explains it. They disagreed once: the gate rejected any falsy version while the
+    // message only tested for null, so an empty string was refused and then printed into the
+    // slot where a version number goes.
+    const version = status.version || null;
+    const protocol = status.protocol;
     if (
-      status.compatible !== true ||
-      status.restart_needed ||
-      status.protocol !== HERDR_PROTOCOL ||
-      !status.version ||
-      !versionAtLeast(status.version, HERDR_MIN_VERSION)
+      protocol === null ||
+      protocol < HERDR_MIN_PROTOCOL ||
+      version === null ||
+      !versionAtLeast(version, HERDR_MIN_VERSION)
     ) {
+      // A reported version stands in apposition to "server" and reads as one phrase. A
+      // missing one cannot: "Herdr server no version on no protocol is incompatible" is not
+      // a sentence, and this refusal exists to be read. Say what was missing after the verb
+      // instead, and leave the ordinary case exactly as it reads.
+      const reported = version !== null && protocol !== null
+        ? `${version} on protocol ${protocol} is incompatible`
+        : `is incompatible and reported ${version ? `version ${version}` : "no version"}`
+          + ` on ${protocol === null ? "no protocol" : `protocol ${protocol}`}`;
       return {
         state: "failed",
-        error: `Herdr server is incompatible. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_PROTOCOL}; update Herdr or restart its server.`,
+        error: `Herdr server ${reported}. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_MIN_PROTOCOL} or newer; update Herdr.`,
         retryable: false,
       };
     }
-    return { state: "ready", socket: status.socket, version: status.version };
+    // Herdr's own verdict, which is about the running server against the installed CLI and
+    // not about us. It is a separate sentence because it has a separate repair: the operator
+    // has the supported Herdr already, and updating it again changes nothing.
+    if (status.compatible !== true || status.restart_needed) {
+      return {
+        state: "failed",
+        error: `Herdr reports its running server is out of date with the installed ${version} CLI; restart the Herdr server.`,
+        retryable: false,
+      };
+    }
+    return { state: "ready", socket: status.socket, version };
   };
 
   const ensureReady = async (): Promise<HerdrResult<string>> => {
@@ -632,7 +676,7 @@ export function createHerdrClient(
         operation: "session snapshot",
       });
       if (!snapshotResult.ok) return snapshotResult;
-      if (snapshotResult.value.snapshot.protocol !== HERDR_PROTOCOL) {
+      if (snapshotResult.value.snapshot.protocol < HERDR_MIN_PROTOCOL) {
         return failure(`Herdr session snapshot used unsupported protocol ${snapshotResult.value.snapshot.protocol}`);
       }
       const panes = snapshotResult.value.snapshot.panes;

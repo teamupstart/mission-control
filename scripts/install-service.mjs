@@ -31,7 +31,30 @@ const uninstall = process.argv.includes("--uninstall");
 
 // launchd starts with a minimal PATH; include node's dir + common tool dirs so
 // the daemon can shell out to ps / tmux / git / wezterm.
-const pathEnv = [dirname(node), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].join(":");
+//
+// `~/.local/bin` is where the Claude Code CLI installs itself, and the daemon resolves
+// "claude" as a bare command name (`resolveBinSpec` falls back to `spec.command`, then
+// `resolveBinPath` walks PATH). Drop this dir and every model call throws `agent binary
+// "claude" not found on PATH` - no Goal refinement, no Foreman review, no Agent SDK session,
+// because a terminal-launched `npm start` inherits the operator's interactive PATH and never
+// exposes the gap.
+//
+// `/usr/sbin` and `/sbin` carry `lsof`, which lives only there on macOS (`which -a lsof` -
+// `/usr/sbin/lsof`, nothing under `/usr/bin` or `/usr/local/bin`). `src/server/discovery/
+// proc-cwd.ts` and `src/server/discovery/codex-rollouts.ts` spawn it as a bare command name.
+// Drop these dirs and every process-cwd lookup fails with `spawn lsof ENOENT`, which breaks
+// session discovery's cwd attribution and the native worktree release, so a task reschedule
+// or worktree reclaim cannot free a tree.
+const pathEnv = [
+  dirname(node),
+  join(homedir(), ".local", "bin"),
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+].join(":");
 
 function tryLaunchctl(...args) {
   try {

@@ -34,6 +34,16 @@ function plistProgramArguments(plist: string): string[] {
   return [...block.matchAll(/<string>([^<]*)<\/string>/g)].map((match) => match[1]!);
 }
 
+function plistEnvironmentPath(plist: string): string {
+  const block = plist.match(
+    /<key>EnvironmentVariables<\/key>\s*<dict>([\s\S]*?)<\/dict>/,
+  )?.[1];
+  assert.ok(block, "the generated plist must contain EnvironmentVariables");
+  const path = block.match(/<key>PATH<\/key>\s*<string>([^<]*)<\/string>/)?.[1];
+  assert.ok(path, "EnvironmentVariables must contain a PATH string");
+  return path;
+}
+
 test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
   const root = mkdtempSync(join(tmpdir(), "mission-install-service-native-"));
   const home = join(root, "home");
@@ -81,6 +91,13 @@ test("a fresh LaunchAgent enters through the native-build daemon entry", () => {
     );
     assert.ok(existsSync(serviceEntry), "the LaunchAgent service entry must be checked in");
 
+    const pathEnv = plistEnvironmentPath(plist);
+    assert.ok(
+      pathEnv.includes(join(home, ".local", "bin")),
+      "PATH must include ~/.local/bin, where the Claude Code CLI installs itself",
+    );
+    assert.ok(pathEnv.includes("/usr/sbin"), "PATH must include /usr/sbin, where lsof lives");
+    assert.ok(pathEnv.includes("/sbin"), "PATH must include /sbin");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1113,7 +1113,15 @@ export interface TuiSpec {
  * one is a new field every harness must answer rather than an interface change every
  * migrated call site has to absorb.
  */
-export interface Harness extends HarnessCapabilities {
+export type Harness = HarnessCapabilities & HarnessDaemonSlots;
+
+/**
+ * The daemon-only half of `Harness`, intersected rather than `extends`-ed because
+ * `HarnessCapabilities` now carries a union (`ModelDiscoverySpec`) and an interface cannot
+ * extend one. Nothing else changes: a call site holding a `Harness` still sees every
+ * capability and every daemon slot on one flat object.
+ */
+interface HarnessDaemonSlots {
   /** Matches this harness's key in `HARNESSES`. */
   id: AgentType;
   /** How this harness records a session on disk, or null when it records nothing. */

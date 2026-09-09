@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
+import {
+  HARNESS_CAPABILITIES,
+  type ModelDiscoverySpec,
+} from "../src/shared/harness-capabilities.ts";
 import { MODEL_CATALOG } from "../src/shared/model.ts";
 import { AGENT_TYPES, type AgentType } from "../src/shared/types.ts";
 import {
@@ -104,6 +107,54 @@ test("the browser's discovery flag and the server's probe are one fact in two fi
       HARNESSES[agent].models.discover !== null,
       `${agent} disagrees about whether it discovers models`,
     );
+  }
+});
+
+test("discovery and its sign-in sentence cannot disagree, because neither half compiles alone", () => {
+  // The invariant that used to live in the assertion below, moved into the type. A
+  // discovering harness answers with the models its signed-in accounts offer, so it can
+  // report `unavailable` for no reason other than being signed out; without a sign-in
+  // sentence the notice describes that state and offers only a retry, which is the one
+  // action that cannot fix it. A harness on shipped rows has no catalog to be signed out
+  // of and must not advertise an account for one.
+  //
+  // `ModelDiscoverySpec` discriminates on `discoversModels`, so BOTH nonsense
+  // combinations are unrepresentable. These two directives are the test: if either
+  // combination ever starts compiling, `tsc` fails the build on the unused
+  // `@ts-expect-error` rather than waiting for anyone to run this file.
+  // @ts-expect-error - discovery with no way to sign in would render a remedy-less notice
+  const discoversWithoutSignIn: ModelDiscoverySpec = {
+    discoversModels: true,
+    modelProviderSignIn: null,
+  };
+  // @ts-expect-error - shipped rows cannot be signed out of, so a sentence here is a lie
+  const signInWithoutDiscovery: ModelDiscoverySpec = {
+    discoversModels: false,
+    modelProviderSignIn: "run something login",
+  };
+  void discoversWithoutSignIn;
+  void signInWithoutDiscovery;
+
+  // The legal pair still type-checks, so the union refuses the invalid states rather than
+  // simply being impossible to satisfy.
+  const legal: readonly ModelDiscoverySpec[] = [
+    { discoversModels: true, modelProviderSignIn: "open a Pi session and run /login" },
+    { discoversModels: false, modelProviderSignIn: null },
+  ];
+  assert.equal(legal.length, 2);
+
+  // And the shipped table populates both halves, which is what the browser reads.
+  for (const agent of AGENT_TYPES) {
+    const capabilities = HARNESS_CAPABILITIES[agent];
+    if (capabilities.discoversModels) {
+      // Narrowed to `string` by the discriminant - no null check is possible here.
+      assert.ok(
+        capabilities.modelProviderSignIn.length > 0,
+        `${agent} discovers models but offers an empty sign-in sentence`,
+      );
+    } else {
+      assert.equal(capabilities.modelProviderSignIn, null);
+    }
   }
 });
 

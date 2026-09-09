@@ -19939,6 +19939,13 @@ select.foreman-model-input {
 .model-catalog-notice.is-degraded {
   color: color-mix(in oklab, var(--attention) 82%, var(--fg));
 }
+/* The one actionable half of a degraded notice: what the person reading it can do about
+   it. Its own line, because a sign-in instruction wrapped into the middle of the
+   explanation reads as more explanation. */
+.model-catalog-remedy {
+  flex-basis: 100%;
+  font-weight: 650;
+}
 .model-catalog-retry {
   flex: none;
   border: 0;

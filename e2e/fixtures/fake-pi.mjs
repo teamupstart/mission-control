@@ -76,6 +76,20 @@ input.on("line", (line) => {
   } catch {
     // Missing control is a loud provider-boundary failure, never an implicit success.
   }
+  // A Pi with no provider credentials is not a failed probe: it answers, successfully,
+  // with an empty list and exits 0. Measured against pi 0.84.2 by running the real binary
+  // with an empty HOME. That is the one outcome the daemon can read as "signed out", so
+  // the fake has to be able to produce it exactly rather than as a scripted crash.
+  if (mode === "signed-out") {
+    process.stdout.write(`${JSON.stringify({
+      id: request.id,
+      type: "response",
+      command: "get_available_models",
+      success: true,
+      data: { models: [] },
+    })}\n`);
+    process.exit(0);
+  }
   if (mode !== "success") {
     process.stderr.write("fake-pi: scripted catalog failure\n");
     process.exit(17);

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import type { ModelChoiceSpec } from "../src/shared/model-choice.ts";
 import {
   DEFAULT_HARNESSES_SESSION_RUNTIMES,
@@ -247,6 +248,9 @@ test("bounded degraded notices expose retry without leaking discovery output", (
   assert.deepEqual(content, {
     message:
       "Showing the last known Pi model list because refresh failed. Pi model discovery timed out.",
+    // A timeout says nothing about credentials. Sending someone to sign in over a probe
+    // that never answered is the wrong instruction, so the remedy stays off this one.
+    remedy: null,
     retry: true,
     tone: "degraded",
   });
@@ -264,6 +268,62 @@ test("bounded degraded notices expose retry without leaking discovery output", (
   assert.match(html, /Showing the last known Pi model list/);
   assert.match(html, /Retry Pi models/);
   assert.doesNotMatch(html, /stderr|stack|argv/i);
+});
+
+test("an empty live catalog is reported as a signed-out harness, with the sign-in step", () => {
+  // Measured against pi 0.84.2: an installation with no provider credentials answers
+  // `get_available_models` with `{"models":[]}` and exits 0, which the probe reports as
+  // `unavailable`. The notice used to say only that no models were reported, which is
+  // where this task started - the retry button offered the one action that cannot help.
+  const signedOut = catalogs([], "fallback", "unavailable");
+  const content = modelCatalogNoticeContent(snapshot(signedOut), "pi");
+  assert.equal(content?.retry, true);
+  assert.match(content?.message ?? "", /Pi reported no available models/);
+  assert.match(content?.message ?? "", /not signed in to a model provider/);
+  assert.match(content?.remedy ?? "", /\/login/);
+  assert.match(content?.remedy ?? "", /Anthropic or Claude account/);
+  assert.equal(content?.remedy, HARNESS_CAPABILITIES.pi.modelProviderSignIn);
+
+  // The remedy is the harness's own sentence, not one shared string wearing a label.
+  const codexSignedOut: HarnessModelCatalogs = {
+    ...shippedModelCatalogs(),
+    codex: {
+      choices: [...shippedModelCatalogs().codex.choices],
+      source: "fallback",
+      refreshedAt: null,
+      problem: "unavailable",
+    },
+  };
+  const codex = modelCatalogNoticeContent(snapshot(codexSignedOut), "codex");
+  assert.match(codex?.remedy ?? "", /codex login/);
+  assert.doesNotMatch(codex?.remedy ?? "", /\/login/);
+
+  const html = renderToStaticMarkup(
+    createElement(
+      ModelCatalogProvider,
+      {
+        store: storeAt(snapshot(signedOut)),
+        children: createElement(ModelCatalogNotice, { agent: "pi" }),
+      },
+    ),
+  );
+  assert.match(html, /not signed in to a model provider/);
+  assert.match(html, /Anthropic or Claude account/);
+  assert.match(html, /Retry Pi models/);
+});
+
+test("a stale catalog kept by a signed-out refresh still offers the sign-in step", () => {
+  // The cached branch composes its own lead sentence, so it is a second call site that
+  // can silently drop the remedy while the fallback branch keeps it.
+  const stale = catalogs(LIVE_CHOICES, "cached", "unavailable");
+  const content = modelCatalogNoticeContent(snapshot(stale), "pi");
+  assert.match(content?.message ?? "", /^Showing the last known Pi model list/);
+  assert.equal(content?.remedy, HARNESS_CAPABILITIES.pi.modelProviderSignIn);
+
+  // A browser that never reached the daemon learned nothing about anyone's credentials.
+  const unreachable = modelCatalogNoticeContent(snapshot(catalogs(), "failed"), "pi");
+  assert.equal(unreachable?.retry, true);
+  assert.equal(unreachable?.remedy, null);
 });
 
 test("settings and headless model fields consume the same live Pi snapshot", () => {

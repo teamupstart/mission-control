@@ -128,6 +128,48 @@ test("Pi pickers share its provider catalog and retain selection through discove
   }
 });
 
+test("a signed-out Pi is named as signed out and told how to sign in", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The reported defect: a Pi with no provider credentials answers `get_available_models`
+  // successfully with an empty list, the notice said only that no models were reported,
+  // and the single offered action was a retry that cannot succeed until someone signs in.
+  writePiCatalogMode(daemon.home, "signed-out");
+  await daemon.crash();
+  await daemon.restart();
+  await dashboard.reload();
+  await openHarnesses(dashboard, daemon.baseURL);
+
+  const notice = dashboard
+    .getByRole("status")
+    .filter({ hasText: /Pi reported no available models/ })
+    .first();
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("not signed in to a model provider");
+  await expect(notice).toContainText("/login");
+  await expect(notice).toContainText("Anthropic or Claude account");
+  await shoot(dashboard, "signed-out-sign-in-guidance");
+
+  // The picker stays usable while signed out: the guidance is advice, never a block.
+  const settingsModel = dashboard.getByRole("combobox", { name: PI_DEFAULT });
+  await expect(settingsModel).toBeEnabled();
+
+  const recordDir = join(daemon.recordDir, "pi");
+  const probesBefore = recordsIn<PiProbeRecord>(recordDir).length;
+  const retry = dashboard.getByRole("button", { name: "Retry Pi models" });
+  await expect(retry).toBeEnabled();
+  await retry.click();
+  await expect
+    .poll(() => recordsIn<PiProbeRecord>(recordDir).length, {
+      message: "the forced refresh should reach Pi once more",
+    })
+    .toBe(probesBefore + 1);
+  // Still signed out, so the same guidance stands rather than degrading to a bare failure.
+  await expect(notice).toContainText("Anthropic or Claude account");
+  await expect(retry).toBeEnabled();
+});
+
 test.describe("login-shell Pi installation", () => {
   test.use({
     setupReminder: true,

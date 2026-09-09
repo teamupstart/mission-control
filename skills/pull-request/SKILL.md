@@ -80,9 +80,12 @@ its own `###` subsection, in this order.
    and publish them in the pull request description or a pull request comment so the human
    reviewer can inspect the result without reconstructing it locally. Local paths and session
    evidence alone are not a durable reviewer handoff. Evidence files are never committed to the
-   repository: produce them in a gitignored location and upload them to the pull request.
-   GitHub CLI 2.100.0 and later support image attachments, so when that version or a later one
-   is installed, use the native `--attach` flag instead of browser automation. Use
+   repository: produce them in a gitignored location and upload them to the pull request. Before
+   uploading, inspect every screenshot and redact secrets, credentials, and personal data. If a
+   screenshot cannot be safely redacted while preserving its value as proof, do not upload it;
+   report the evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image
+   attachments, so when that version or a later one is installed, use the native `--attach` flag
+   instead of browser automation. Use
    `gh pr create --attach` or `gh pr edit --attach` to place screenshots in the pull request
    description, or `gh pr comment --attach` to place them in a comment; include useful alt text
    for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the

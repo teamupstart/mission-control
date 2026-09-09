@@ -221,7 +221,27 @@ hook, and the Goal drop out of the review's trust path.</figcaption>
   <li>An <code>evidence_preflight</code> refinement child inherits its parent submission's frozen
   evidence and coverage wholesale. A preflight refinement is a mapping repair, not a re-measurement;
   on the observed run the round-1 screenshot vanished at 2.0/2.1 and a Persona rejected the
-  submission for its absence.</li>
+  submission for its absence.
+    <ul>
+      <li><strong>Amended 2026-09-09, by operator decision during Phase 3 implementation.</strong>
+      "Wholesale" is bounded by the aggregate evidence limits, and cannot be otherwise. Coverage is
+      wholesale within the frozen-coverage limit: every parent claim is retained, and only a link
+      whose evidence is absent is dropped. That limit binds only when a parent already at
+      <code>maxClaims</code> meets a child that declared claims of its own, because
+      <code>listSubmissionCoverage</code> reads the table through a schema capped at
+      <code>maxClaims</code> and exceeding it would make the submission's coverage unreadable
+      rather than larger. Reaching it is recorded as <code>evidence_carry_truncated</code>. Evidence cannot be, because <code>WORKFLOW_IMAGE_LIMITS.maxCount</code> is
+      <code>LLM_IMAGE_LIMITS.maxCount</code>, the number of images a single model call accepts,
+      enforced by <code>validateDescriptorSet</code>; a submission carrying a ninth image cannot be
+      sent to the Persona that has to read it. The same counts cap the frozen arrays in
+      <code>WorkflowContextSnapshotSchema</code>, so an unbounded carry fails the capture as
+      <code>stale_capture</code> and loses every item rather than the few at the margin, and giving
+      the parent absolute priority instead starves the child's repair evidence so the refinement can
+      never succeed. Both were measured. At the cap the carry gives up the oldest ancestry first and
+      never an item the previous submission captured itself, and records
+      <code>evidence_carry_truncated</code> naming what it refused.</li>
+    </ul>
+  </li>
   <li>Registering evidence whose <code>sha256</code> already exists frozen for the same note reuses
   the frozen blob instead of copying it, and re-staging a byte-identical item becomes attachable to
   the next submission rather than a silent no-op. This removes the minted-id-per-round pattern and

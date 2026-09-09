@@ -141,6 +141,25 @@ Nothing currently depends on this phase. Future work (rendering full coverage to
 operator intent-amendment event) may rely on: the inherited-mark columns, the digest-reuse
 invariant (one frozen blob per digest per note), and the preserved unchanged-evidence guard.
 
+## Amendments
+
+- **2026-09-09, operator decision during implementation.** "Wholesale" evidence inheritance is
+  bounded by the aggregate evidence limits. Coverage inheritance is literal within the
+  frozen-coverage limit: every parent claim is retained and only a link whose cited evidence is
+  absent is dropped. That limit binds only when a parent already at `maxClaims` meets a child
+  that declared claims of its own, because `listSubmissionCoverage` reads the table through a
+  schema capped at `maxClaims`; exceeding it makes the submission's coverage unreadable rather
+  than larger, and reaching it is recorded as `evidence_carry_truncated`. Evidence inheritance cannot
+  be, because `WORKFLOW_IMAGE_LIMITS.maxCount` is `LLM_IMAGE_LIMITS.maxCount`, the number of images
+  one model call accepts, enforced by `validateDescriptorSet`. The same counts cap the frozen
+  arrays in `WorkflowContextSnapshotSchema`. Removing the budget was measured to fail the capture
+  as `stale_capture` and lose every item; giving the parent absolute priority was measured to
+  starve the child's repair evidence so the refinement can never succeed. The implemented rule is
+  the best available split: the carry gives up the oldest ancestry first and never an item the
+  previous submission captured itself, and records `evidence_carry_truncated` naming what it
+  refused. Reached after five No-Mistakes repair rounds on this clause; see the source plan's
+  matching amendment.
+
 ## Cross-phase audit record
 
 - 2026-09-08 (Phase 1 implementation): Phase 1 landed and this phase's dependency is satisfied.

@@ -269,7 +269,19 @@ function SubmissionImageEvidence({
                     Caption, scope, MIME, size, and SHA-256 remain auditable.
                   </p>
                 )}
-                {image.availability === "retained" && canRestage && onRestage && (
+                {image.inheritedFrom && (
+                  <p className="wf-run-pruned">
+                    Carried forward from round {image.inheritedFrom.round}. These exact bytes were
+                    captured for an earlier submission of this run, and the submission that
+                    captured them is where they can be staged again.
+                  </p>
+                )}
+                {/*
+                  * A carried record offers no restage button of its own. It is the same digest
+                  * the capturing submission already offers, so a second button would stage the
+                  * same bytes twice over and imply this submission captured them itself.
+                  */}
+                {!image.inheritedFrom && image.availability === "retained" && canRestage && onRestage && (
                   <Tooltip label="Stage these exact retained bytes, caption, and scope for the next fresh review">
                     <button
                       type="button"

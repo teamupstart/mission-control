@@ -376,6 +376,13 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   // section links existing design sources instead of duplicating them, omits a test inventory,
   // and preserves deliberate failure-mode context.
   assert.match(text, /screenshots/i);
+  assert.match(text, /concrete, durable proof/i);
+  assert.match(text, /pull request description or a pull request comment/i);
+  assert.match(text, /never committed to the\s+repository/i);
+  assert.match(text, /GitHub CLI 2\.100\.0 and later support image attachments/i);
+  assert.match(text, /`gh pr create --attach` or `gh pr edit --attach`/i);
+  assert.match(text, /`gh pr comment --attach`/i);
+  assert.match(text, /Verify the\s+published description or comment renders the attachments/i);
   assert.match(text, /Concision is a requirement/i);
   assert.match(text, /use bullets wherever possible/i);
   assert.match(text, /Remove filler/i);

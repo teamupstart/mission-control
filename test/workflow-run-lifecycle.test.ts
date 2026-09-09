@@ -857,6 +857,40 @@ test("a delivery that moves the phase carries the gate, and leaves the old note 
     deliveryCarriedDetail(run: typeof before, phase: string, own: WorkflowJson | null): WorkflowJson | null;
   }).deliveryCarriedDetail(before, "delivery_uncertain", null);
   assert.deepEqual(held, before.gateState);
+
+  // AND the branch where the delivery has a detail of its own. Returning that bare would drop
+  // the gate for exactly the reason the round-limit block used to: a payload with something of
+  // its own to say overwriting the one thing that was never the phase's to hold.
+  const own = (store as unknown as {
+    deliveryCarriedDetail(
+      run: typeof before,
+      phase: string,
+      own: { [key: string]: WorkflowJson } | null,
+    ): WorkflowJson | null;
+  }).deliveryCarriedDetail(before, "persona_feedback", {
+    deliveryId: "d",
+    transcriptAnchor: 42,
+  });
+  assert.deepEqual(
+    workflowInspectorGate({
+      status: "waiting_for_session",
+      phase: "persona_feedback",
+      gateState: own,
+    }),
+    gate,
+    "a delivery recording its own detail must not drop the gate",
+  );
+  assert.equal((own as { [key: string]: WorkflowJson }).deliveryId, "d", "and keeps its own detail");
+  // The result is still a legal persona_feedback record: the reserved gate key is never
+  // counted as phase detail.
+  assert.equal(
+    workflowRunLifecycleViolation({
+      status: "waiting_for_session",
+      phase: "persona_feedback",
+      gateState: own,
+    }),
+    null,
+  );
 });
 
 test("a valid gate cannot smuggle foreign keys past the detail contract", () => {

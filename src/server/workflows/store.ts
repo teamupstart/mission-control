@@ -5696,11 +5696,20 @@ export class WorkflowStore {
   private deliveryCarriedDetail(
     run: WorkflowRun,
     nextPhase: string,
-    own: WorkflowJson | null,
+    own: { [key: string]: WorkflowJson } | null,
   ): WorkflowJson | null {
-    if (own !== null) return own;
+    // THE GATE RIDES ON EVERY BRANCH. Two delivery kinds record a detail of their own, and
+    // returning it bare would drop the gate for exactly the reason the round-limit block used
+    // to - a payload that had something of its own to say overwrote the one thing that was
+    // never the phase's to hold. Uniform here because the invariant is uniform, and free:
+    // `withInspectorGate` returns the detail untouched when there is no gate, which is every
+    // ordinary delivery.
+    const gate = workflowInspectorGate(runLifecycleRecord(run));
+    if (own !== null) return withInspectorGate(own, gate);
+    // Standing still, the run's existing payload is still this phase's own.
     if (nextPhase === run.currentPhase) return run.gateState;
-    return (workflowInspectorGate(runLifecycleRecord(run)) as unknown as WorkflowJson | null);
+    // Moving, the note belongs to the phase being left; only the gate crosses.
+    return (gate as unknown as WorkflowJson | null);
   }
 
   setRunState(

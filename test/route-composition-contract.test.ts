@@ -86,37 +86,45 @@ test("there is no positional call form left to miswire", () => {
   assert.equal(buildApp.length, 1);
   assert.throws(
     () => unchecked(registry, reviews, tasks, queues),
-    /buildApp: missing required route dependencies "registry", "reviews", "tasks", "queues"/,
+    /buildApp: received 4 arguments/,
   );
 });
 
-test("position carries no dependency, so an off-by-one placement cannot miswire", async () => {
-  // The scenario the issue named, asserted against the NAMED field that received the value
-  // rather than against an array index. An earlier version of this test spread a positional
-  // array into `buildApp` and planted the stub at slot 16, but a one-parameter signature
-  // discards every argument past the first, so both branches were really `buildApp(registry)`
-  // and threw for missing required fields. It would have passed with the stub at any index,
-  // or with no stub at all, which is no evidence about the slot.
-  const required = { registry, reviews, tasks, queues };
+test("an off-by-one positional list miswires nothing: it is rejected at construction", () => {
+  // `keepAwake` was positional slot 15, so one slot late is 16, which was `archives`. Under
+  // the positional API that list CONSTRUCTED an app, the keep-awake owner went to archives,
+  // and the mistake surfaced far away and much later as GET /api/keep-awake answering 503.
+  //
+  // Now the call is refused at the seam, and NO app is produced, so there is no route left to
+  // answer 503 for a wiring mistake made here.
+  const NOT_BUILT = Symbol("not built");
+  const offByOne: unknown[] = [registry, reviews, tasks, queues];
+  offByOne[16] = keepAwakeStub;
+  let built: unknown = NOT_BUILT;
+  assert.throws(() => {
+    built = unchecked(...offByOne);
+  }, /buildApp: received 17 arguments/);
+  assert.equal(built, NOT_BUILT);
 
-  // On time: the owner reaches its own domain.
-  const wired = buildApp({ ...required, keepAwake: keepAwakeStub });
-  assert.equal((await wired.request("/api/keep-awake", { headers: LOOPBACK })).status, 200);
+  // The count in that message is what ties this assertion to the slot: planting the stub one
+  // position earlier is a sixteen-argument call, and asserting on the count would fail if the
+  // stub moved or were dropped. It is refused identically, which is the point - position
+  // carries no meaning now, so there is no off-by-one left to be off by.
+  const onTime: unknown[] = [registry, reviews, tasks, queues];
+  onTime[15] = keepAwakeStub;
+  assert.throws(() => unchecked(...onTime), /buildApp: received 16 arguments/);
 
-  // One field late. `keepAwake` was positional slot 15 and `archives` was 16, so this is the
-  // named analogue of the old off-by-one. Handing the keep-awake owner to `archives` does not
-  // make keep-awake work, and keep-awake reports itself unavailable rather than answering
-  // from an owner that is not its own.
-  const shifted = buildApp({ ...required, archives: keepAwakeStub as never });
-  assert.equal((await shifted.request("/api/keep-awake", { headers: LOOPBACK })).status, 503);
+  // And it is refused for BEING a positional call, not by accident of these stubs. A complete,
+  // valid dependency object followed by the same service is refused too, where before the
+  // extra argument was discarded in silence and the app composed without it.
+  assert.throws(
+    () => unchecked({ registry, reviews, tasks, queues }, keepAwakeStub),
+    /buildApp: received 2 arguments/,
+  );
 
-  // And the old positional shape cannot carry a dependency at ANY slot: extra arguments are
-  // discarded by the signature. Asserted rather than assumed, because relying on that discard
-  // silently is exactly what made the previous version of this test vacuous.
-  const spread = unchecked({ ...required }, keepAwakeStub, keepAwakeStub) as ReturnType<
-    typeof buildApp
-  >;
-  assert.equal((await spread.request("/api/keep-awake", { headers: LOOPBACK })).status, 503);
+  // The same four services as ONE named object still compose, so the refusals above are
+  // caused by the call shape rather than by anything wrong with the dependencies.
+  assert.ok(buildApp({ registry, reviews, tasks, queues }));
 });
 
 test("a named dependency object resolves to exactly the fields it supplied", () => {

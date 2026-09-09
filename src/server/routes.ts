@@ -1301,7 +1301,27 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
  * rather than kept for compatibility.
  */
-export function buildApp(deps: RouteDeps): Hono {
+export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
+  // A positional CALL, refused for being one.
+  //
+  // The parameter list already takes a single object, so JavaScript would discard everything
+  // after it in silence - and that silence is the last surviving piece of the original
+  // defect. An off-by-one list whose first element happened to be a valid dependency object
+  // constructed an app, sent arguments two onward nowhere, and left whichever domain they
+  // were meant for to answer 503 at request time, far from the mistake.
+  //
+  // Refusing here makes the rejection a property of the SHAPE of the call rather than an
+  // accident of whether argument one was well formed. The count is named because it is the
+  // one thing that locates the mistake: a caller who planted a service at slot 16 is told
+  // seventeen arguments arrived.
+  if (extra.length > 0) {
+    throw new TypeError(
+      `buildApp: received ${extra.length + 1} arguments. Route dependencies are supplied as ` +
+        `ONE named RouteDeps object; every argument after the first would be discarded, ` +
+        `so a positional list is refused here rather than composing an app that silently ` +
+        `dropped most of what it was given.`,
+    );
+  }
   const {
     registry,
     reviews,

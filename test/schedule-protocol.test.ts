@@ -94,6 +94,30 @@ test("the template normalizes labels and refuses an effort the harness cannot do
   if (!bad.success) assert.ok(bad.error.issues.some((i) => i.path.includes("effort")));
 });
 
+test("an omitted after-work Workflow is NONE, not the dispatch default", () => {
+  const silent = CreateScheduleSchema.safeParse(definition());
+  assert.equal(silent.success, true);
+  if (silent.success) assert.equal(silent.data.template.workflowId, null);
+
+  // Carried verbatim, and not checked against the Workflow catalog - see the schema.
+  const armed = CreateScheduleSchema.safeParse(
+    definition({ template: template({ workflowId: "wf-no-mistakes" }) }),
+  );
+  assert.equal(armed.success, true);
+  if (armed.success) assert.equal(armed.data.template.workflowId, "wf-no-mistakes");
+
+  const none = CreateScheduleSchema.safeParse(definition({ template: template({ workflowId: null }) }));
+  assert.equal(none.success, true);
+  if (none.success) assert.equal(none.data.template.workflowId, null);
+
+  // The empty string is not a Workflow id. It is what an unguarded `<select>` would send
+  // for None, and storing it would make "armed" true for a mission that armed nothing.
+  assert.equal(
+    CreateScheduleSchema.safeParse(definition({ template: template({ workflowId: "" }) })).success,
+    false,
+  );
+});
+
 test("preview accepts the save definition plus its own bounded knobs", () => {
   // Same definition the save route takes.
   assert.equal(SchedulePreviewSchema.safeParse(definition()).success, true);

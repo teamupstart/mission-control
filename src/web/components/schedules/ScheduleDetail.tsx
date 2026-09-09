@@ -1,9 +1,11 @@
 import { useState } from "react";
 import type { MissionSchedule } from "@shared/schedules.ts";
 import { scheduleIsRunnable } from "@shared/schedules.ts";
+import type { WorkflowSummary } from "@shared/workflow.ts";
 import { archiveSchedule, runScheduleNow, setScheduleEnabled } from "../../lib/api.ts";
 import {
   SCHEDULE_HEALTH_REASON_LABELS,
+  afterWorkLabel,
   cadenceSentence,
   completionPolicyLabel,
   executionModeLabel,
@@ -38,6 +40,7 @@ import { ScheduleSpine } from "./ScheduleSpine.tsx";
  */
 export function ScheduleDetail({
   schedule,
+  workflowSummaries,
   initialOccurrenceId,
   initialScheduledFor,
   onEdit,
@@ -46,6 +49,14 @@ export function ScheduleDetail({
   resolveTaskLink,
 }: {
   schedule: MissionSchedule;
+  /**
+   * The live catalog, so the stored after-work handoff is named rather than shown as an id.
+   *
+   * Required for the reason `ScheduleEditor`'s is: without it a stored selection reads as
+   * "Unavailable Workflow", which is a real state this surface must be able to report - so
+   * an absent catalog would be indistinguishable from an archived Workflow.
+   */
+  workflowSummaries: WorkflowSummary[];
   initialOccurrenceId?: string | null;
   initialScheduledFor?: number | null;
   onEdit: () => void;
@@ -237,6 +248,11 @@ export function ScheduleDetail({
                   {template.priority ? ` · ${template.priority}` : ""}
                   {template.model ? ` · ${template.model}` : " · model follows harness default"}
                 </dd>
+                {/* Shown even when it is None. "No Workflow runs after this mission" is the
+                    answer an operator comes here for as often as the opposite one, and a row
+                    that appears only when something is armed makes its absence unreadable. */}
+                <dt>After work</dt>
+                <dd>{afterWorkLabel(template.workflowId, workflowSummaries)}</dd>
               </>
             )}
           </dl>

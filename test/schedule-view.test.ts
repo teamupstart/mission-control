@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  afterWorkLabel,
   availableTimezones,
   cadenceLabel,
   delayIsLate,
@@ -140,6 +141,24 @@ test("shortRepo keeps the last path segment for the catalog's tight columns", ()
   assert.equal(shortRepo(null), "-");
 });
 
+test("the after-work label names a Workflow, spells out None, and keeps an id it cannot resolve", () => {
+  const catalog = [
+    { id: "wf-review", name: "No-Mistakes Review", currentVersionId: "wfv-1", publishedVersion: 2 },
+    { id: "wf-draft", name: "Unpublished", currentVersionId: null, publishedVersion: null },
+  ];
+  assert.equal(afterWorkLabel("wf-review", catalog), "No-Mistakes Review · v2");
+  // None is a sentence, not a blank: a mission that hands its work to nobody is a
+  // deliberate configuration, and the detail is where an operator checks it.
+  assert.equal(afterWorkLabel(null, catalog), "None - each run finishes without a Workflow");
+  // An id the catalog cannot resolve keeps the id visible - it was archived, or belongs to a
+  // library this build has not caught up with, and either way "which one?" is the next
+  // question. Answering "None" here would say the mission hands off to nobody, which is a
+  // different configuration entirely.
+  assert.equal(afterWorkLabel("wf-gone", catalog), "Unavailable Workflow (wf-gone)");
+  // A Workflow with no published version still has a name worth printing.
+  assert.equal(afterWorkLabel("wf-draft", catalog), "Unpublished");
+});
+
 test("the definition fingerprint changes when the saved definition changes", () => {
   const base = {
     name: "n",
@@ -158,6 +177,7 @@ test("the definition fingerprint changes when the saved definition changes", () 
       labels: [],
       model: null,
       effort: null,
+      workflowId: null,
     },
   };
   const a = scheduleDefinitionFingerprint(base);
@@ -200,6 +220,16 @@ test("the definition fingerprint changes when the saved definition changes", () 
   assert.notEqual(
     a,
     scheduleDefinitionFingerprint({ ...base, completionPolicy: "auto-on-conclusion" }),
+  );
+  // And so is the after-work handoff. No cadence preview reads it, which is exactly why it
+  // is easy to leave out: an operator who arms a Workflow after previewing would otherwise
+  // still be told the preview they are enabling describes what they are about to save.
+  assert.notEqual(
+    a,
+    scheduleDefinitionFingerprint({
+      ...base,
+      template: { ...base.template, workflowId: "wf-review" },
+    }),
   );
 });
 

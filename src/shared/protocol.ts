@@ -6816,6 +6816,13 @@ const ScheduleTemplateSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
     model: ModelIdSchema.nullable().default(null),
     effort: EffortLevelSchema.nullable().default(null),
+    /**
+     * Defaults to NONE, unlike `DispatchSchema` where an omitted `workflowId` means the
+     * dispatch default - see `ScheduleTemplate.workflowId` for why a template never
+     * inherits. Not checked against the Workflow catalog: one can be archived between two
+     * runs of a mission that names it, and refusing the save would block unrelated edits.
+     */
+    workflowId: z.string().min(1).nullable().default(null),
   })
   // The same split the kind rows keep, because it is the same fact about the two fields: a
   // model id is agent-namespaced, so an inheriting template cannot name one; an effort is

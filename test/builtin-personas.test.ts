@@ -162,6 +162,14 @@ test("each built-in derives its identity from its document and declares itself b
   assert.match(coverage.guidanceMarkdown, /At least 80% of the changed executable lines/);
   assert.match(
     coverage.guidanceMarkdown,
+    /If the inventory contains zero changed executable lines/,
+  );
+  assert.match(
+    coverage.guidanceMarkdown,
+    /Pass this review and state that\s+the denominator is zero/,
+  );
+  assert.match(
+    coverage.guidanceMarkdown,
     /whether the test really tests what its name and description say it tests/,
   );
   for (const requiredCase of ["### Happy path", "### Boundaries and branches", "### Exceptions and failures"]) {

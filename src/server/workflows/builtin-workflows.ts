@@ -685,7 +685,7 @@ const NO_MISTAKES_REVIEW_V8: StagePipeline = {
  * The stage count, later review groups, verified Pull Request action, and completion posture do not
  * change.
  */
-const NO_MISTAKES_REVIEW_V9: StagePipeline = {
+const NO_MISTAKES_REVIEW_V15: StagePipeline = {
   sessionId: NO_MISTAKES_REVIEW_NODES.session,
   endId: NO_MISTAKES_REVIEW_NODES.end,
   endOutcome: "Complete",
@@ -989,7 +989,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // Version 15: Test Coverage Judge joins Intent Conformance in stage 2. The new all-pass
         // join keeps both focused gates ahead of the deeper reviews and returns either finding in
         // one repair packet. All eight reviewers retain version 14's pinned Codex routing.
-        pipeline: NO_MISTAKES_REVIEW_V9,
+        pipeline: NO_MISTAKES_REVIEW_V15,
         personaExecution: {
           default: { runner: "codex", model: "gpt-5.6-terra" },
           overrides: {

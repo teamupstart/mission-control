@@ -34,6 +34,10 @@ Prefer a changed-line coverage report tied to the submitted code and a completed
 repository-wide percentage does not establish this floor when unchanged code can hide uncovered
 changed lines.
 
+If the inventory contains zero changed executable lines after the exclusions above, treat the 80%
+floor and the behavioral coverage requirements as not applicable. Pass this review and state that
+the denominator is zero; do not require tests or coverage for non-executable changes.
+
 When no changed-line report is supplied, use the diff and tests only if they let you trace the
 executed changed lines directly. Be conservative and never invent a percentage. If the evidence
 cannot establish at least 80%, fail and request the smallest focused coverage run or missing tests
@@ -83,7 +87,8 @@ distinguish correct arguments, order, count, and failure behavior from a plausib
 
 ## Pass when
 
-- The evidence establishes at least 80% coverage of changed executable lines.
+- The inventory contains no changed executable lines, or the evidence establishes at least 80%
+  coverage of them.
 - Every material behavior has a meaningful happy-path test.
 - Every changed boundary and materially distinct exception outcome is exercised.
 - The tests' setup and assertions match what their names claim, and each would fail for a plausible
@@ -94,9 +99,9 @@ those categories is not relevant, say why.
 
 ## Fail when
 
-Fail when the 80% floor is missed or cannot be established, a material happy path, boundary, or
-exception case is absent, or a claimed test does not actually exercise and verify the behavior it
-describes.
+When executable code changed, fail when the 80% floor is missed or cannot be established, a material
+happy path, boundary, or exception case is absent, or a claimed test does not actually exercise and
+verify the behavior it describes.
 
 ## Requested-change discipline
 

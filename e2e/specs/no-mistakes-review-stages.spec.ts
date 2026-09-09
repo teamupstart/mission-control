@@ -78,6 +78,9 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
     .filter({ hasText: "Test Coverage Judge" });
   await coverageReviewer.locator("summary").click();
   await expect(coverageReviewer.getByText("codex · gpt-5.6-terra")).toBeVisible();
+  await expect(
+    coverageReviewer.getByText(/If the inventory contains zero changed executable lines/),
+  ).toBeVisible();
   const designReviewer = currentVersion
     .locator("details.workflow-version-persona")
     .filter({ hasText: "Code Design Reviewer" });

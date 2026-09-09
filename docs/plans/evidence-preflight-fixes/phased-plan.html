@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evidence preflight reliability fixes: phased implementation plan</title>
+<style>
+  :root {
+    --ink: #1c2433; --muted: #5b6577; --line2: #d9dee8; --bg: #ffffff;
+    --panel: #f5f7fb; --accent: #24508c; --good: #1a7a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e3e8f2; --muted: #9aa4b8; --line2: #333c4e; --bg: #12161f;
+            --panel: #1b2230; --accent: #7aa7e0; --good: #58c08a; }
+  }
+  html { background: var(--bg); }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: var(--ink); max-width: 60rem; margin: 2rem auto 5rem; padding: 0 1.5rem; }
+  h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .8rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--line2); padding-bottom: .3rem; }
+  code { font: .86em ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel);
+         padding: .05em .3em; border-radius: 3px; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.4rem; }
+  li { margin: .3rem 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0 1.2rem; font-size: .9rem; }
+  th, td { border: 1px solid var(--line2); padding: .35rem .55rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  figure { margin: 1.2rem 0; }
+  figcaption { color: var(--muted); font-size: .82rem; margin-top: .3rem; }
+</style>
+</head>
+<body>
+
+<h1>Evidence preflight reliability fixes: phased implementation plan</h1>
+<p>Source plan: <a href="plan.md"><code>plan.md</code></a> (rendered:
+<a href="plan.html"><code>plan.html</code></a>).</p>
+
+<h2>Incorporated decisions</h2>
+<p>The operator directed that the validated recommendation set from the evidence-preflight scout
+investigation and its validation pass be planned and scheduled as implementation work. The resolved
+decisions are recorded in the source plan's Decisions section; the load-bearing ones for
+phasing:</p>
+<ul>
+  <li>The run-intent snapshot is the architecture fix and subsumes the origin-guard, run-keyed
+  reuse, transcript-filter hardening, and goal-replacement assertion proposals.</li>
+  <li>Snapshot freezing happens at run creation (<code>createInitialSubmission</code>), the earliest
+  durable moment, as established by repository investigation.</li>
+  <li>Coverage visibility ships as the Persona-prompt disclaimer, not the rendered coverage
+  block.</li>
+  <li>Evidence carry-forward drops the diff-path-intersection auto-expiry tier.</li>
+  <li>Parking <code>criterion_mapped_v1</code> and the <code>captureAcceptedPrompt</code> origin
+  guard are explicitly not scheduled.</li>
+</ul>
+
+<h2>Investigated findings</h2>
+<p>All anchors verified at commit <code>4e0b70e7</code> (identical <code>src/</code> to the scout's
+<code>aa2412c7</code>):</p>
+<ul>
+  <li>Runs insert inside <code>createInitialSubmission</code>
+  (<code>src/server/workflows/store.ts:5316</code>); a second insert path exists near
+  <code>store.ts:5480</code>. Both must freeze the snapshot.</li>
+  <li>Live intent enters capture at <code>readWorkflowContextRaw</code>
+  (<code>src/server/workflows/context.ts:918</code>, goal read at <code>:923</code>/<code>:971</code>,
+  decisions at <code>:952</code>); <code>intentFingerprintFields</code> (<code>context.ts:201</code>)
+  is both compaction prompt and fingerprint.</li>
+  <li>Criteria reuse is gated to <code>evidence_preflight</code> segments
+  (<code>src/server/workflows/manager.ts:6029</code>), so criteria recompact on every Persona round
+  today.</li>
+  <li>The Persona prompt renders raw goal and decisions as "# Original human intent"
+  (<code>src/server/workflows/prompt.ts:61</code>, <code>:65</code>) and contains zero coverage
+  references.</li>
+  <li>Evidence staging no-op/throw at <code>store.ts:4621</code>/<code>:4623</code>; one-way
+  reservation at <code>store.ts:8930-8971</code>; the unchanged-evidence guard compares repository
+  fingerprints (<code>manager.ts:6194</code>).</li>
+  <li>Preflight refinement segments are unbounded
+  (<code>test/workflow-evidence-preflight.test.ts:280</code> drives fifteen).</li>
+</ul>
+
+<h2>Sizing and phase count</h2>
+<div class="scroll">
+<table>
+<tr><th>Phase</th><th>Estimate (non-test lines)</th><th>Basis</th></tr>
+<tr><td>1 Run intent snapshot</td><td>220-320</td><td>migration + two insert paths + capture rework + run-level criteria store and reuse</td></tr>
+<tr><td>2 Review surface and guardrails</td><td>100-180</td><td>one prompt sentence + disagreement event and surfacing + refinement cap</td></tr>
+<tr><td>3 Evidence carry-forward</td><td>250-350</td><td>inheritance + digest dedupe + re-staging semantics + marks + cleanup safety</td></tr>
+</table>
+</div>
+<p>Total roughly 570-850 non-test lines, above the 200-line one-shot threshold. Three phases rather
+than one because: Phase 1 is a semantic architecture change whose review must not be diluted by
+storage mechanics; Phase 3 is storage-heavy work that builds on Phase 1's stable-criteria contract
+and rewrites the same <code>manager.ts</code> capture region, so serializing them removes a
+guaranteed conflict; Phase 2 is independent of both, touches a different surface, and merging it
+into either neighbor would couple an unrelated review to a riskier change. Tests, migrations, and
+docs stay inside the phase that introduces each behavior.</p>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+<tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr>
+<tr><td>1</td><td>Run intent snapshot and run-frozen criteria</td>
+    <td><a href="phase-1-run-intent-snapshot.md"><code>phase-1-run-intent-snapshot.md</code></a></td>
+    <td>planning PR merge</td></tr>
+<tr><td>2</td><td>Review-surface honesty and loop bounds</td>
+    <td><a href="phase-2-review-surface-guardrails.md"><code>phase-2-review-surface-guardrails.md</code></a></td>
+    <td>planning PR merge</td></tr>
+<tr><td>3</td><td>Evidence carry-forward and digest deduplication</td>
+    <td><a href="phase-3-evidence-carry-forward.md"><code>phase-3-evidence-carry-forward.md</code></a></td>
+    <td>Phase 1</td></tr>
+</table>
+</div>
+
+<h2>Dependency graph and concurrency</h2>
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 700 170" width="700" height="170" role="img" aria-label="Phase dependency graph">
+  <style>
+    .box { fill: var(--panel); stroke: var(--muted); stroke-width: 1; rx: 6; }
+    .lbl { font: 12px -apple-system, "Segoe UI", sans-serif; fill: var(--ink); }
+    .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#m2); }
+  </style>
+  <defs>
+    <marker id="m2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+  <rect x="10" y="60" width="140" height="44" class="box"/>
+  <text x="20" y="78" class="lbl">Planning PR</text>
+  <text x="20" y="94" class="lbl">merged</text>
+  <rect x="230" y="14" width="180" height="44" class="box"/>
+  <text x="240" y="32" class="lbl">Phase 1: intent snapshot</text>
+  <text x="240" y="48" class="lbl">+ run-frozen criteria</text>
+  <rect x="230" y="106" width="180" height="44" class="box"/>
+  <text x="240" y="124" class="lbl">Phase 2: review surface</text>
+  <text x="240" y="140" class="lbl">+ guardrails</text>
+  <rect x="490" y="14" width="190" height="44" class="box"/>
+  <text x="500" y="32" class="lbl">Phase 3: evidence</text>
+  <text x="500" y="48" class="lbl">carry-forward + dedupe</text>
+  <path class="arrow" d="M150,72 C190,60 195,48 228,40"/>
+  <path class="arrow" d="M150,92 C190,104 195,116 228,124"/>
+  <path class="arrow" d="M410,36 H488"/>
+</svg>
+</div>
+<figcaption>Phases 1 and 2 run concurrently and merge in either order; Phase 3 starts only after
+Phase 1 merges. Every phase is a single-repository merge unit.</figcaption>
+</figure>
+
+<h2>Merge order</h2>
+<p>Any order satisfying the graph: {1, 2} in either order, then 3. No intermediate state is broken:
+Phase 2's disclaimer and guardrails are correct with or without the snapshot; Phase 3 changes
+nothing until it lands.</p>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li>Phase 1 owns intent freezing, fingerprint semantics, and once-per-run compaction. Phases 2
+  and 3 must not read the live Goal for review purposes or re-derive criteria.</li>
+  <li>Phase 2 owns the Persona evidence-availability wording and the disagreement/cap event
+  vocabulary.</li>
+  <li>Phase 3 owns staging, reservation, freeze, and inheritance semantics, and must preserve the
+  repository-fingerprint unchanged-evidence guard and Phase 1's criteria stability.</li>
+</ul>
+
+<h2>Final verification</h2>
+<p>After all three phases merge: a full-suite <code>npm test</code>, <code>npm run typecheck</code>,
+<code>npm run lint</code>, <code>npm run build</code>, <code>npm run smoke</code>;
+<code>npm run test:e2e</code> if Phase 2 added UI. A manual end-to-end check against a live
+No-Mistakes Review v14 binding: pollute the session Goal with a packet mid-run and confirm frozen
+intent, stable criteria, inherited evidence with marks, the disagreement signal on a forced
+ready-then-fail, and the refinement cap blocking the third consecutive segment.</p>
+
+<h2>Scheduled tasks</h2>
+<p>One Mission Control task per phase, created in topological order with
+<code>dependsOnCurrentSession</code> set, so no phase dispatches before this plan's PR merges and
+Phase 3 additionally waits on Phase 1's task. Task ids are recorded in the planning session's
+report and PR description.</p>
+
+</body>
+</html>

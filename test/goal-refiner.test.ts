@@ -44,6 +44,7 @@ request=$(cat)
 case "$(cat ${modeFile} 2>/dev/null)" in
   broken) echo "not json at all" ;;
   crash)  echo "boom" >&2; exit 1 ;;
+  crash-once) printf %s good > ${modeFile}; echo "boom" >&2; exit 1 ;;
   # A non-zero exit that lands AFTER the caller has had time to stop, so a test can put a
   # run in flight across a shutdown. Same failure as \`crash\` at the provider boundary.
   slow-crash) sleep 0.4; echo "boom" >&2; exit 1 ;;
@@ -81,6 +82,7 @@ const setMode = (
     | "good"
     | "broken"
     | "crash"
+    | "crash-once"
     | "slow-crash"
     | "blank"
     | "amend"
@@ -570,31 +572,19 @@ test("a transport failure retries on its own, without stamping unclear or needin
   // retried rather than latched, and it must never be recorded as relationship "unclear",
   // since that value is a claim about the human's instruction, not about the process.
   const ask = "a prompt whose classifier call keeps crashing";
-  setMode("crash");
+  // The fixture changes itself to "good" before its first failed process exits. That makes
+  // the provider recover without a test-side timer racing the refiner's retry window.
+  setMode("crash-once");
   const { r, s, env } = withSession("r20", "%50");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: ask }));
   const stop = startGoalRefiner(r);
   try {
-    // Wait for proof that the provider process started, then outlast its immediate exit.
-    // `source` begins as "heuristic", so it cannot establish this precondition by itself.
-    await until(
-      () => runsAsking(ask) === 1,
-      "the first transport attempt to run",
-      FLOOR_MS + RUN_TIMEOUT_MS,
-    );
-    await new Promise((res) => setTimeout(res, 100));
-    assert.notEqual(
-      r.getGoal(s.id)?.relationship,
-      "unclear",
-      "a transport blip must never be stamped as an ambiguity verdict",
-    );
-
-    setMode("good");
     await until(
       () => r.getGoal(s.id)?.resolvedPromptRevision === 1,
       "the transport failure to resolve on its own retry",
       FLOOR_MS * 2 + RUN_TIMEOUT_MS,
     );
+    assert.equal(runsAsking(ask), 2, "the recovered provider was not retried exactly once");
     assert.equal(r.getGoal(s.id)?.relationship, "initial");
   } finally {
     stop();

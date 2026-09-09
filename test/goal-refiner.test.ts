@@ -44,6 +44,9 @@ request=$(cat)
 case "$(cat ${modeFile} 2>/dev/null)" in
   broken) echo "not json at all" ;;
   crash)  echo "boom" >&2; exit 1 ;;
+  # A non-zero exit that lands AFTER the caller has had time to stop, so a test can put a
+  # run in flight across a shutdown. Same failure as \`crash\` at the provider boundary.
+  slow-crash) sleep 0.4; echo "boom" >&2; exit 1 ;;
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
   # Same fenced shape as the good reply below, so it reaches the schema the same way - a
   # malformed fixture here would "pass" the test on a parse error instead of the rejection.
@@ -78,6 +81,7 @@ const setMode = (
     | "good"
     | "broken"
     | "crash"
+    | "slow-crash"
     | "blank"
     | "amend"
     | "shrink"
@@ -593,6 +597,48 @@ test("a transport failure retries on its own, without stamping unclear or needin
   }
 });
 
+test("a run killed by shutdown is neither counted against the retry budget nor persisted", async () => {
+  // Daemon shutdown runs `stopGoalRefiner()` and THEN kills live model runs, so a call in
+  // flight across those two lines returns a non-zero exit: a transport failure by every
+  // signal the provider boundary has, and really a cancellation. It must leave the row
+  // untouched so the next daemon re-polls the same revision with a full budget, rather than
+  // spending an attempt - or, on the third such restart, persisting "could not be reached"
+  // about a machine that was only turned off.
+  // Aimed at the LAST attempt on purpose. A cancellation absorbed on attempt one or two is
+  // invisible either way, because those return without writing anything; it is the third
+  // that persists a rationale, so that is the only attempt where mistaking a shutdown for a
+  // transport failure leaves a durable, wrong claim behind.
+  const ask = "a prompt whose classifier is killed by shutdown";
+  setMode("crash");
+  const { r, s, env } = withSession("r23", "%53");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: ask }));
+  const stop = startGoalRefiner(r);
+  try {
+    // Burn the first two attempts on immediate failures.
+    await until(() => runsAsking(ask) === 2, "two attempts to be spent", FLOOR_MS * 3 + RUN_TIMEOUT_MS);
+    // The third one hangs long enough to still be in flight when the refiner stops, which is
+    // the daemon's own shutdown order: `stopGoalRefiner()` first, the child killed after.
+    setMode("slow-crash");
+    await until(() => runsAsking(ask) === 3, "the final attempt to start", FLOOR_MS * 3 + RUN_TIMEOUT_MS);
+    stop();
+    // Outlast the in-flight run so its rejection lands post-stop. A fixed wait, not a poll:
+    // the assertion is that nothing is ever written, which cannot be polled for.
+    await new Promise((res) => setTimeout(res, 600));
+    const g = r.getGoal(s.id);
+    assert.equal(g?.source, "heuristic");
+    assert.equal(g?.relationship, null, "a shutdown must not stamp any relationship");
+    assert.equal(
+      g?.rationale,
+      null,
+      "a run killed by shutdown was persisted as though the classifier could not be reached",
+    );
+    assert.equal(g?.resolvedPromptRevision, 0, "the revision must stay unresolved for the next daemon");
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
 test("a transport failure that outlasts the retry budget latches without claiming ambiguity", async () => {
   setMode("crash");
   const { r, s, env } = withSession("r21", "%51");
@@ -600,8 +646,14 @@ test("a transport failure that outlasts the retry budget latches without claimin
   const stop = startGoalRefiner(r);
   try {
     // Three attempts, each spaced by the per-session debounce floor, all fail before this
-    // latches - wait well past that budget.
-    await new Promise((res) => setTimeout(res, FLOOR_MS * 4));
+    // latches. Polled rather than slept: the budget is three floors plus three run
+    // durations plus up to a poll tick of granularity apiece, so any fixed sleep close
+    // enough to be quick is also close enough to fail on a loaded machine.
+    await until(
+      () => (r.getGoal(s.id)?.rationale ?? "").includes("could not be reached after 3 attempts"),
+      "three serialized transport attempts to exhaust the retry budget",
+      FLOOR_MS * 4 + RUN_TIMEOUT_MS,
+    );
     const g = r.getGoal(s.id);
     assert.equal(g?.source, "heuristic");
     assert.equal(g?.relationship, null, "an exhausted transport failure must not become an ambiguity verdict");

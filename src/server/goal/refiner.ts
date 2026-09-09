@@ -135,9 +135,15 @@ export function startGoalRefiner(registry: Registry): () => void {
         // whether or not any work follows it.
         if (!debounce.claim(s.id)) continue;
         refining.add(s.id);
-        void refine(registry, s, pending, limit, failedFor, transportAttempts).finally(() =>
-          refining.delete(s.id),
-        );
+        void refine(
+          registry,
+          s,
+          pending,
+          limit,
+          failedFor,
+          transportAttempts,
+          () => stopped,
+        ).finally(() => refining.delete(s.id));
       }
       const liveIds = new Set(live.map((x) => x.id));
       for (const id of failedFor.keys()) if (!liveIds.has(id)) failedFor.delete(id);
@@ -244,6 +250,7 @@ async function refine(
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
   failedFor: Map<string, string>,
   transportAttempts: Map<string, { key: string; attempts: number }>,
+  isStopped: () => boolean,
 ): Promise<void> {
   const { goal, prompt } = pending;
   try {
@@ -273,7 +280,16 @@ async function refine(
         }),
         (raw) => parseModelJson(raw, GoalSchema),
         "Goal",
-        { timeoutMs: GOAL_TIMEOUT_MS },
+        {
+          timeoutMs: GOAL_TIMEOUT_MS,
+          // The observer exists precisely so a caller with a durable lifecycle can refuse the
+          // JSON-syntax retry after its owner has stopped. Without one, `cause: "cancelled"`
+          // is unreachable from this call site and the branch below is dead code: shutdown
+          // arrives as a killed child, which is indistinguishable from a real transport
+          // failure at the provider boundary. `finish` has nothing to record here - the
+          // `llm_calls` ledger belongs to callers that write rows.
+          observer: { start: () => !isStopped(), finish: () => {} },
+        },
       );
       if (r.kind === "failed") {
         if (r.cause === "cancelled") {
@@ -290,6 +306,16 @@ async function refine(
           // treats it as a durable answer. Retry a bounded number of times instead, riding
           // the per-session debounce floor below for spacing rather than owning a second
           // timer.
+          //
+          // Except when the refiner itself has already been stopped. Daemon shutdown runs
+          // `stopGoalRefiner()` and THEN `killLiveLlmRuns()` (see `server/index.ts`), so a
+          // call that was in flight across those two lines comes back as a killed child -
+          // a transport failure by every signal the provider boundary can offer, and
+          // actually a cancellation. No observer can catch that one: it is not between
+          // attempts, it is inside one. Counting it would spend a retry the next daemon has
+          // to repeat, and on the third such kill it would persist "the classifier could not
+          // be reached" about a machine that was merely turned off.
+          if (isStopped()) return;
           const key = failureKey(pending);
           const prior = transportAttempts.get(s.id);
           const attempts = (prior?.key === key ? prior.attempts : 0) + 1;

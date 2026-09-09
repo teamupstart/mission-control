@@ -932,6 +932,45 @@ test("run criteria freeze once, and a second writer adopts the first", () => {
     "the refused write left the run repairable rather than permanently unreadable",
   );
   assert.equal(store.getRun("foreign-criteria-run")?.intentState, "frozen");
+
+  // Schema-valid and too large to read back is the same trap by another route: both columns
+  // are write-once, so a payload the read path refuses would block its run for good with
+  // nothing able to repair it. 200 decisions at 16,000 characters each is 6.4M against a 2M
+  // ceiling, so the schema alone genuinely permits it.
+  const oversized = {
+    rawGoal: HUMAN_ASK,
+    refinedGoal: null,
+    sourceNoteKey: "note",
+    decisions: Array.from({ length: 200 }, (_unused, index) => ({
+      decision: "d".repeat(16_000),
+      rationale: `${index}`.padEnd(16_000, "r"),
+      source: { kind: "transcript" as const, id: `oversized-${index}` },
+    })),
+    frozenAt: now,
+  };
+  assert.throws(
+    () => store.createInitialSubmission(
+      {
+        id: "oversized-run",
+        binding,
+        intent: oversized,
+        triggerSource: "manual",
+        triggerKey: "oversized-trigger",
+        now,
+      },
+      {
+        id: "oversized-submission",
+        triggerSource: "manual",
+        triggerKey: "oversized-trigger",
+        context: {},
+        evidence: {},
+        now,
+      },
+    ),
+    /the read path can load back/,
+    "a snapshot the read path could not load back must be refused at the write",
+  );
+  assert.equal(store.getRun("oversized-run"), null, "the refused run was never created");
 });
 
 /**

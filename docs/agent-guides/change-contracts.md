@@ -575,6 +575,14 @@ than by the code under review.
   re-export the raw run-snapshot derivation next to it; that is an invitation to hand-assemble
   a snapshot again, which is how the manager-visible copy would come to disagree with the
   durable one.
+- **Both write-once run columns refuse a payload the read path could not load back.**
+  `parseJson` rejects anything over `contextJsonBytes`, and neither column is ever rewritten, so
+  a row that is valid by SCHEMA and too large by BYTES writes successfully, reads back as
+  `unreadable`, and blocks its run for good. The schemas permit it: 200 decisions at 16,000
+  characters each for text and rationale is 6.4M against a 2M ceiling. `durableRunJson` measures
+  and throws before the insert. Bounding at capture is not enough, for the reason every other
+  invariant here moved to this boundary - it leaves the rule with the caller while the column
+  lives with the consequence.
 - **`freezeRunCriteria` refuses a foreign write rather than leaving the read to catch it.**
   Only a run whose intent is readable and `frozen` may receive criteria, and only criteria whose
   `intentFingerprint` matches that run's. The read-side comparison below is a backstop, not the

@@ -584,14 +584,46 @@ function readRunIntent(
  * insert instead makes an over-long goal or decision list a loud, immediate error at the one
  * moment a human is watching a run start.
  */
-function frozenIntentJson(intent: WorkflowRunIntentInput): string {
+/**
+ * Serialize for a WRITE-ONCE column, refusing anything the read path could not load back.
+ *
+ * `parseJson` rejects a payload over `contextJsonBytes`, and both of these columns are set
+ * once and never rewritten - so a row that is valid by schema and too large by bytes is
+ * written successfully, read back as `unreadable`, and blocks its run for good with no path
+ * that can repair it. The schemas genuinely permit it: 200 decisions at 16,000 characters each
+ * for text and rationale is 6.4M against a 2M ceiling.
+ *
+ * Bounding at capture is not enough, for the reason every other invariant here moved to this
+ * boundary: it leaves the rule with the caller, and the column is what has to live with the
+ * consequence. Throwing costs a caller a loud failure at the one moment a human is watching a
+ * run start, instead of a silent one that surfaces rounds later as a run nobody can unstick.
+ */
+function durableRunJson(id: string, column: string, value: unknown): string {
+  const payload = JSON.stringify(value);
+  const bytes = utf8.encode(payload).byteLength;
+  if (bytes > WORKFLOW_EXECUTION_LIMITS.contextJsonBytes) {
+    throw new WorkflowRowError(
+      "workflow_runs",
+      id,
+      `${column} would be ${bytes} UTF-8 bytes, over the `
+        + `${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} the read path can load back`,
+    );
+  }
+  return payload;
+}
+
+function frozenIntentJson(id: string, intent: WorkflowRunIntentInput): string {
   // DERIVED here, never accepted from the caller. The fingerprint identifies the intent
   // fields beside it, so a supplied one is a second copy of a fact the snapshot already
   // holds - and a second copy can disagree. It has to be able to disagree for the disagreement
   // to matter: the criteria-provenance check compares a run's stored criteria against this
   // value, so an unverified fingerprint quietly weakens the check meant to catch criteria
   // distilled from another ask.
-  return JSON.stringify(WorkflowRunIntentSnapshotSchema.parse(freezeWorkflowRunIntent(intent)));
+  return durableRunJson(
+    id,
+    "intent_json",
+    WorkflowRunIntentSnapshotSchema.parse(freezeWorkflowRunIntent(intent)),
+  );
 }
 
 /**
@@ -5551,7 +5583,7 @@ export class WorkflowStore {
         run.triggerKey,
         run.now,
         run.now,
-        frozenIntentJson(run.intent),
+        frozenIntentJson(run.id, run.intent),
       );
       this.insertSubmissionInTransaction({
         ...submission,
@@ -5706,7 +5738,7 @@ export class WorkflowStore {
           triggerKey,
           input.now,
           input.now,
-          frozenIntentJson(input.intent),
+          frozenIntentJson(input.runId, input.intent),
         );
         this.insertSubmissionInTransaction({
           id: input.submissionId,
@@ -5894,7 +5926,11 @@ export class WorkflowStore {
    * fail to parse would silently return every later submission to per-submission compaction.
    */
   freezeRunCriteria(id: string, criteria: WorkflowRunCriteria): WorkflowRunCriteria | null {
-    const payload = JSON.stringify(WorkflowRunCriteriaSchema.parse(criteria));
+    const payload = durableRunJson(
+      id,
+      "run_criteria_json",
+      WorkflowRunCriteriaSchema.parse(criteria),
+    );
     return transaction(this.db, () => {
       /*
        * Refuse a foreign write, rather than leaving the read to discover it.

@@ -383,6 +383,21 @@ would have been knowingly leaving the reported defect in place. All four load `W
 on the preceding line, which imports the store, so the empty import was a genuine no-op rather
 than load ordering; the four files pass unchanged at 28 tests.
 
+## Pull request review (CodeRabbit)
+
+One finding, upheld, and the same trap as rounds 4 and 6 by another route. `frozenIntentJson`
+validated the snapshot's SHAPE but never its serialized SIZE, while `readRunIntent` refuses
+anything over `contextJsonBytes`. The schema genuinely permits exceeding it - 200 decisions at
+16,000 characters each for text and rationale is 6.4M against a 2M ceiling - so a schema-valid
+snapshot could be written, read back as `unreadable`, and block its run for good, with
+`intent_json` written once at creation and no path able to repair it.
+
+`durableRunJson` now measures the serialized bytes and throws before the insert, applied to
+BOTH write-once columns: `run_criteria_json` carries the identical hazard and the identical
+compare-and-set shape. Capture's own bounding helpers keep real payloads far under the ceiling,
+so this is the boundary owning its invariant rather than a reachable bug - which is the same
+correction the reviewers made three times in this phase.
+
 ## Cross-phase audit record
 
 - 2026-09-08: Initial version. Phase 2 confirmed independent (prompt wording and guardrails touch

@@ -158,6 +158,23 @@ test("the route refuses inert remedies before launch", async () => {
   const skillResponse = await post(skill, { id: "codex-cli", backend: "cmux" });
   assert.equal(skillResponse.status, 409);
   assert.match(await skillResponse.text(), /must run inside a session/);
+
+  // A service starts inside the daemon. `POST /api/setup/service` owns it, and this route
+  // must not open a window that would have nothing to show.
+  const service = appFor({
+    calls,
+    install: {
+      catalog: catalogWith("herdr", {
+        kind: "service",
+        service: "herdr-server",
+        label: "Start the Herdr server",
+        note: "Start it now.",
+      }),
+    },
+  });
+  const serviceResponse = await post(service, { id: "herdr", backend: "cmux" });
+  assert.equal(serviceResponse.status, 409);
+  assert.match(await serviceResponse.text(), /starts a background service and opens no terminal/);
   assert.deepEqual(calls, []);
 });
 

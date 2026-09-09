@@ -125,6 +125,7 @@ import {
   PipelineForemanEpisodeSchema,
   PipelineInstallerLaunchSchema,
   SetupInstallerLaunchSchema,
+  SetupServiceStartSchema,
   PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
@@ -348,6 +349,7 @@ import {
   executeSetupInstall,
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
+import { startSetupService } from "./setup/service.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -6514,6 +6516,21 @@ export function buildApp(
         setupInstallDeps?.prepareProviderInstaller ?? pipelineInstallerLaunch,
       launchTerminal: terminalLauncher,
     });
+    return c.json(result.body, result.status as ContentfulStatusCode);
+  });
+
+  /**
+   * Start one local background service a Setup row offered to start.
+   *
+   * Separate from `/api/setup/install` because it is a different act. That route opens a
+   * command in a terminal and can only report that the window opened; this one runs the
+   * daemon's own start and reports whether the service is answering, so the browser can
+   * re-check immediately rather than telling the operator to watch a window.
+   */
+  app.post("/api/setup/service", async (c) => {
+    const parsed = await parseBody(c, SetupServiceStartSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await startSetupService(parsed.data.service);
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 

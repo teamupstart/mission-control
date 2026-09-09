@@ -430,13 +430,21 @@ class SocketBatch {
   }
 }
 
-type Probe =
+/**
+ * What `herdr status server --json` says about the default server right now.
+ *
+ * Exported because it is not only the client's own gate. The Setup row for Herdr reports
+ * this state to the operator - "installed, server stopped" is a different repair from "not
+ * installed" - and it must read the same three answers the transport does rather than
+ * inventing a fourth.
+ */
+export type HerdrProbe =
   | { state: "ready"; socket: string; version: string }
   | { state: "stopped"; socket: string }
   | { state: "failed"; error: string; retryable: boolean };
 
 export interface HerdrClient {
-  probe(): Promise<Probe>;
+  probe(): Promise<HerdrProbe>;
   ensureReady(): Promise<HerdrResult<string>>;
   snapshotWithProcesses(): Promise<HerdrResult<{
     snapshot: HerdrSnapshot;
@@ -462,7 +470,7 @@ export function createHerdrClient(
   const bin = () => resolveBin(binSpec);
   const env = () => binEnv(binSpec);
 
-  const probe = async (timeoutMs = deps.readTimeoutMs): Promise<Probe> => {
+  const probe = async (timeoutMs = deps.readTimeoutMs): Promise<HerdrProbe> => {
     const result = await exec(bin(), ["status", "server", "--json"], {
       timeoutMs,
       env: env(),
@@ -506,11 +514,11 @@ export function createHerdrClient(
   const ensureReady = async (): Promise<HerdrResult<string>> => {
     const deadline = deps.now() + deps.actionTimeoutMs;
     const remaining = (): number => deadline - deps.now();
-    const probeBeforeDeadline = async (): Promise<Probe | null> => {
+    const probeBeforeDeadline = async (): Promise<HerdrProbe | null> => {
       const budget = remaining();
       return budget > 0 ? probe(Math.min(deps.readTimeoutMs, budget)) : null;
     };
-    const pollBeforeDeadline = async (): Promise<Probe | null> => {
+    const pollBeforeDeadline = async (): Promise<HerdrProbe | null> => {
       const budget = remaining();
       if (budget <= 0) return null;
       await deps.sleep(Math.min(deps.readyPollMs, budget));

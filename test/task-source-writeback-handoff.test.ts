@@ -15,7 +15,6 @@ import type {
   TaskSourceWritebackStatus,
   WritebackContext,
   WritebackNotice,
-  WritebackResult,
 } from "../src/shared/task-source.ts";
 
 // The CROSS-PHASE CONTRACT, pinned so the two phases that build on this one cannot be
@@ -284,27 +283,50 @@ test("the registry announces linked pull requests, and the task manager takes an
 
 // ---- the verb signatures Phase 2 implements against ----
 //
-// Compile-time more than run-time: this is the shape `jira.ts` will be written to, and a
-// silent change to it is a Phase 2 that does not build.
-test("a kind's write-back verbs take a config, a notice and a context", async () => {
-  const seen: Array<[WritebackNotice, WritebackContext]> = [];
-  const impl = async (
-    _config: unknown,
-    n: WritebackNotice,
-    ctx: WritebackContext,
-  ): Promise<WritebackResult> => {
-    seen.push([n, ctx]);
-    return { error: null, outcomeUnknown: false, detail: "did it" };
-  };
+// The shape `jira.ts` will be written to, taken from the PRODUCTION registry rather than
+// from a stub. That distinction is the whole value of the test: a locally declared function
+// called with values the test constructed, asserting the result the stub itself returned,
+// is true of the stub and says nothing about the interface - it would go on passing through
+// any change to the real one, while claiming to protect Phase 2 from exactly that.
+//
+// So this goes through `annotateWith` / `resolveWith` -> `TASK_SOURCES` -> `erase`'s
+// boundary parse, which is the production path and the only path a call site may use.
+test("a write-back verb answers with exactly the three WritebackResult fields", async () => {
+  // The context a write-back is lent is the SWEEP's, which is what keeps the two from
+  // drifting apart - see `WritebackContext`. Frozen here because Phase 2's Jira verbs read
+  // `repoRoot` off it to resolve a checkout.
   const ctx: WritebackContext = {
     sourceId: "s1",
     repoRoot: "/repo",
     signal: new AbortController().signal,
   };
-  const result = await impl({}, notice(), ctx);
-  assert.deepEqual(result, { error: null, outcomeUnknown: false, detail: "did it" });
-  assert.equal(seen.length, 1);
-  // The context a write-back is lent is the sweep's, which is what keeps the two from
-  // drifting - see `WritebackContext`.
-  assert.deepEqual(Object.keys(seen[0]![1]).sort(), ["repoRoot", "signal", "sourceId"]);
+  assert.deepEqual(Object.keys(ctx).sort(), ["repoRoot", "signal", "sourceId"]);
+
+  // A config this kind's own schema refuses, so the registry's boundary parse answers
+  // before anything is spawned. The result is still built by production code on the real
+  // path, which is what makes this an assertion about the contract rather than about a
+  // fixture - and it is what keeps this test from reaching a real `gh`.
+  const inst = {
+    ...TaskSourceInstanceSchema.parse({ id: "s1", kind: "github-issues", repoRoot: "/repo" }),
+    config: { assignedToMe: true, unassignedOnly: true },
+  };
+
+  const annotated = await registry.annotateWith(inst, notice(), ctx);
+  assert.deepEqual(
+    Object.keys(annotated).sort(),
+    ["detail", "error", "outcomeUnknown"],
+    "the WritebackResult shape Phase 2 must produce has moved",
+  );
+  // REQUIRED, not optional, for the reason `RunResult.outcomeUnknown` is: an absent boolean
+  // has a default reading, and the default reading here is the one this feature cannot
+  // afford. See `WritebackResult`.
+  assert.equal(typeof annotated.outcomeUnknown, "boolean");
+  assert.equal(annotated.outcomeUnknown, false, "nothing was spawned, so nothing is unknown");
+  assert.equal(annotated.detail, null);
+  assert.ok(annotated.error, "a refusal must name itself");
+
+  // The resolving verb answers in the same shape, which is why one result type covers both.
+  const resolved = await registry.resolveWith(inst, { ...notice(), action: "resolve" }, ctx);
+  assert.deepEqual(Object.keys(resolved).sort(), ["detail", "error", "outcomeUnknown"]);
+  assert.equal(resolved.outcomeUnknown, false);
 });

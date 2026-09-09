@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow run detail: consolidating delivery, evidence and intent</title>
+<style>
+:root{--bg:#ffffff;--fg:#1b1f24;--muted:#5b6572;--line:#e3e7ec;--panel:#f6f8fa;--accent:#0a63c9;--ok:#1a7f4b;--warn:#b4690e;--danger:#b42318}
+@media (prefers-color-scheme: dark){:root{--bg:#0a0c0f;--fg:#e7ebf1;--muted:#939eae;--line:#232a33;--panel:#14181e;--accent:#4a9eff;--ok:#35c08a;--warn:#f6a733;--danger:#f85149}}
+*{box-sizing:border-box}
+html{color-scheme:light dark}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.65 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:44px 22px 120px}
+h1{font-size:30px;line-height:1.25;margin:0 0 8px;letter-spacing:-0.01em}
+h2{font-size:21px;margin:44px 0 12px;padding-top:20px;border-top:1px solid var(--line);letter-spacing:-0.01em}
+h3{font-size:16px;margin:26px 0 8px}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 16px;padding-left:22px}
+li{margin:0 0 6px}
+code{font:0.88em/1.4 ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+strong{font-weight:640}
+em{color:var(--muted)}
+.tablewrap{overflow-x:auto;margin:0 0 18px;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--panel);font-weight:640;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.shot{margin:6px 0 22px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#0a0c0f}
+.shot img{display:block;width:100%;height:auto}
+.diagram{margin:0 0 20px;border:1px solid var(--line);border-radius:10px;padding:16px 16px 10px;background:var(--panel)}
+.diagram svg{display:block;width:100%;height:auto;color:var(--fg)}
+.diagram figcaption{padding:9px 0 0;font-size:12.5px;color:var(--muted)}
+.shot figcaption{padding:9px 13px;font-size:12.5px;color:var(--muted);background:var(--panel);border-top:1px solid var(--line)}
+.scalebox{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 18px;background:var(--panel)}
+.scalerow{display:grid;grid-template-columns:230px 1fr;gap:12px;align-items:center;margin:0 0 8px;font-size:13px;color:var(--muted)}
+.scalerow:last-child{margin-bottom:0}
+.bar{height:8px;border-radius:5px;background:var(--danger);display:block}
+.bar.ok{background:var(--ok)}
+@media (max-width:620px){.scalerow{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1 id="workflow-run-detail-consolidation-phased-implementation">Workflow run detail consolidation: phased implementation</h1>
+<p>Source plan: <a href="plan.md"><code>plan.md</code></a> (rendered: <a href="plan.html"><code>plan.html</code></a>) Mockups: <a href="mockups.html"><code>mockups.html</code></a></p>
+<h2 id="incorporated-human-decisions">Incorporated human decisions</h2>
+<p>These were submitted against the source plan and are requirements here, not open questions.</p>
+<div class="tablewrap"><table><thead><tr><th>Decision</th><th>Chosen</th><th>Owned by</th></tr></thead><tbody><tr><td>Approach</td><td>Tabs under Review worklist, with counts and an amber badge on every tab label, and the ledger treatment of Deliveries and Evidence</td><td>Phase 1 (shell, Deliveries), Phase 2 (Evidence)</td></tr><tr><td>Human decision bodies</td><td>One summary row each, expanding on click</td><td>Phase 1</td></tr><tr><td>Image thumbnails</td><td>A strip above the claims, plus a small copy on each citing claim row</td><td>Phase 2</td></tr><tr><td>Scope</td><td>The three screenshot sections plus the GitHub Inspector final gate and the Foreman completion claim; model calls and Timeline unchanged</td><td>Phase 1 and 2 (three sections), Phase 3 (gate and claims)</td></tr></tbody></table></div>
+<h2 id="what-the-repository-says">What the repository says</h2>
+<p>Investigated before drawing the boundaries. Where the source plan and the code disagree, the code wins and the difference is recorded here.</p>
+<ul><li><strong>One file owns almost all of it.</strong> <code>src/web/workflows/WorkflowRuns.tsx</code> is 3,915 lines and contains every section in scope: <code>SubmissionImageEvidence</code> (lines 218-303), <code>SubmissionEvidenceReadiness</code> (306-440), the Review worklist section (2453-2504), the Inspector gate (2505-2620), the Foreman completion claim (2622-2638), the deliveries (2641-2730) and the captured context (2731-2853). Roughly 620 existing lines are restructured. This is the dominant fact for phase boundaries: phases cannot be made concurrent by topic because they share one file.</li><li><strong>The tab component exists.</strong> <code>.workflow-tabs</code> is already styled (<code>src/web/styles.css:14249</code>) and used by <code>src/web/pipelines/RunsKindTabs.tsx</code> with a real <code>role="tablist"</code>. It takes a badge (<code>.workflow-tab-badge</code>). No new component family is needed, only a container.</li><li><strong>The route has no pane field.</strong> <code>src/web/workflows/useWorkflowRoute.ts</code> parses <code>#/runs/:runId</code> with exactly three query parameters (<code>status</code>, <code>workflowId</code>, <code>session</code>), and <code>missionRouteHash</code> serialises a <code>MissionRoute</code> back out of its own typed fields. A parameter with no field cannot survive the round trip, so "the selected pane lives in the route" means adding a field, a parse arm and a serialise arm, not passing a query through.</li><li><strong>The worklist carries a tour target.</strong> <code>useTourTargetRef&lt;HTMLElement&gt;("library:run-worklist")</code> is attached to the Review worklist section (line 2453) and <code>src/web/tour/tours/library.ts:311</code> steps onto it. The worklist must stay the default pane and keep that ref on a node that is in the DOM when the tour runs.</li><li><strong>The worklist is already bounded and is not in scope.</strong> <code>.wf-run-worklist</code> is a 300px rail plus detail, both capped at <code>min(52vh, 480px)</code>. It measured 220px. It moves into a tab pane and is otherwise untouched.</li><li><strong>Payload <code>&lt;pre&gt;</code>s are already capped.</strong> <code>.wf-run-card pre</code>, <code>.wf-run-context pre</code> and <code>.wf-run-packet pre</code> cap at 340px with <code>overflow: auto</code>. The measured cost of Repair delivery is four cards of exactly 560px, so the win comes from replacing card chrome with rows, not from truncating payloads.</li><li><strong>Human decisions are the uncapped block.</strong> They render as <code>&lt;ul class="wf-run-decisions"&gt;&lt;li&gt;&lt;p&gt;</code> with no cap, measured at 2,996px for nine entries. This is the only place the plan's decision changes reading behaviour rather than layout.</li><li><strong>Inspector findings are not in the worklist.</strong> <code>runChangeWorklist</code> (<code>src/web/workflows/run-model.ts:2104</code>) is built only from Persona attempt verdicts (<code>if (!attempt.persona) continue</code>). A finding has never appeared there, so the Completion pane is the only surface that shows them and folding them into the worklist would change what that list means.</li><li><strong>A cross-reference will go stale.</strong> <code>src/web/workflows/run-actions.ts:818</code> reads "Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below." Once the gate is a tab that sentence is wrong. <code>test/workflow-runs-render.test.ts:878</code> asserts it.</li><li><strong>The preview has a model to copy.</strong> <code>AttachmentStrip</code> and <code>AttachmentPreview</code> in <code>src/web/components/ImageDrop.tsx</code> own the dispatch modal's image preview: <code>Overlay</code> with <code>OVERLAY_IDS.attachmentPreview</code>, <code>.modal attach-preview</code>, <code>.modal-head</code>, <code>.modal-body attach-preview-body</code>, <code>.attach-preview-image</code> capped at <code>min(70vh, 720px)</code>, plus <code>captureFocusBookmark</code>/<code>restoreFocusBookmark</code>. Two differences are forced by the data and are not choices: a frozen image is fetched from <code>/api/workflow-runs/:runId/images/:imageId</code> rather than painted from a local blob, and it has metadata and a re-stage action that the dispatch case does not.</li><li><strong>Existing coverage that must move with the sections.</strong> <code>test/workflow-runs-render.test.ts</code> (2,865 lines) asserts the gate heading, the context headings and the disabled-Inspector sentence. Four e2e specs assert the affected surfaces: <code>workflow-session-action-run.spec.ts:301</code> on the "Deliveries to the session" heading, <code>workflow-round-limit-grant.spec.ts:460</code> on the "Last workflow observation" and "Current Inspector" regions, plus <code>workflow-image-evidence.spec.ts</code> and <code>workflow-evidence-readiness.spec.ts</code>.</li></ul>
+<h2 id="sizing">Sizing</h2>
+<p><strong>Estimate: 1,100 to 1,500 non-test implementation lines</strong>, gross added or materially changed, excluding tests.</p>
+<p>Assumptions behind the range: roughly 620 existing lines in <code>WorkflowRuns.tsx</code> are restructured rather than deleted, so most of that count reappears as pane components; about 250 lines of new CSS across the tab panes, the ledger tables, the image strip and the preview footer; about 150 lines of new selectors in <code>run-model.ts</code> for the counts and summary sentences the tab labels and closed rows need; about 100 lines for the preview overlay component; about 40 lines of route work. Test lines are excluded but are not small: four existing e2e specs need updating and three new ones are required.</p>
+<p><strong>Three phases.</strong> The 200-line one-shot threshold is exceeded by roughly seven times, so the question is only where to cut. Each phase below is a vertical slice that ships working behaviour and leaves the page operable.</p>
+<p>Why not fewer:</p>
+<ul><li><strong>Phase 1 and 2 combined</strong> would be about 1,000 lines in one pull request against a 3,915-line file, and would mix the mechanical work (a tab shell, two sections becoming ledgers) with the one genuinely new surface (an image strip and a modal that does not exist yet). The image work has its own accessibility, focus and lazy-load questions; burying it behind 600 lines of restructuring makes both halves harder to review.</li><li><strong>Phase 2 and 3 combined</strong> would be about 750 lines and would put two unrelated review conversations in one pull request: whether an image preview handles focus correctly, and whether an Inspector gate still reports the same facts through a different shape.</li><li><strong>Phase 1 alone as a one-shot for everything</strong> is the same argument at full size.</li></ul>
+<p>Why not more: no phase here is split by application layer. Each carries its own schema-free selectors, its own markup, its own CSS and its own tests. There is no preparation phase, no test-only phase and no cleanup phase; the copy fix in <code>run-actions.ts</code> travels with the phase that makes it wrong.</p>
+<h2 id="phases">Phases</h2>
+<div class="tablewrap"><table><thead><tr><th>Phase</th><th>Name</th><th>Delivers</th><th>Depends on</th></tr></thead><tbody><tr><td>1</td><td><a href="phase-1-run-record-tabs.md">Run record tabs: shell, Deliveries, Intent</a></td><td>The tab bar, the worklist as the default pane, Repair delivery as a ledger, Captured intent with collapsible decisions, and the pane in the route</td><td>none</td></tr><tr><td>2</td><td><a href="phase-2-evidence-pane-and-image-preview.md">Evidence pane with image thumbnails and preview</a></td><td>Image evidence and Evidence readiness merged into one pane, a thumbnail strip, thumbnails on citing claim rows, and the preview modal</td><td>Phase 1</td></tr><tr><td>3</td><td><a href="phase-3-completion-pane.md">Completion pane</a></td><td>The GitHub Inspector final gate and the Foreman completion claim folded into a fifth tab</td><td>Phase 2</td></tr></tbody></table></div>
+<h2 id="dependency-graph">Dependency graph</h2>
+<figure class="diagram"><svg viewBox="0 0 760 90" role="img" aria-label="Phase 1 leads to Phase 2, which leads to Phase 3" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+  <g font-family="system-ui, sans-serif" font-size="12">
+    <rect x="4" y="22" width="212" height="46" rx="9" fill="none" stroke="currentColor" stroke-opacity=".45"/>
+    <text x="110" y="41" text-anchor="middle" font-weight="600">Phase 1</text>
+    <text x="110" y="57" text-anchor="middle" opacity=".72">Run record tabs</text>
+    <line x1="220" y1="45" x2="262" y2="45" stroke="currentColor" stroke-opacity=".55" marker-end="url(#arrow)"/>
+    <rect x="268" y="22" width="212" height="46" rx="9" fill="none" stroke="currentColor" stroke-opacity=".45"/>
+    <text x="374" y="41" text-anchor="middle" font-weight="600">Phase 2</text>
+    <text x="374" y="57" text-anchor="middle" opacity=".72">Evidence pane and image preview</text>
+    <line x1="484" y1="45" x2="526" y2="45" stroke="currentColor" stroke-opacity=".55" marker-end="url(#arrow)"/>
+    <rect x="532" y="22" width="212" height="46" rx="9" fill="none" stroke="currentColor" stroke-opacity=".45"/>
+    <text x="638" y="41" text-anchor="middle" font-weight="600">Phase 3</text>
+    <text x="638" y="57" text-anchor="middle" opacity=".72">Completion pane</text>
+  </g>
+</svg><figcaption>Strictly serial. Phases 2 and 3 are logically independent but share one file, so they merge in order.</figcaption></figure>
+<h2 id="concurrency">Concurrency</h2>
+<p><strong>None. The three phases are strictly serial.</strong></p>
+<p>This is a file-ownership constraint, not a logical one. Phases 2 and 3 are logically independent: the Evidence pane and the Completion pane share no data, no selector and no route field, and either could be built against Phase 1 alone. They are serialised because both make large edits to the same regions of <code>src/web/workflows/WorkflowRuns.tsx</code> and both add rules to <code>src/web/styles.css</code>, so running them concurrently would produce two branches whose merge is a manual reconstruction of one file. Phase 3 therefore takes Phase 2 as a direct prerequisite.</p>
+<p>Merge order is 1, then 2, then 3.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<p>Phase 1 establishes these and later phases consume them without changing them:</p>
+<ul><li><strong><code>RunRecordTabs</code></strong>, the tab container in <code>WorkflowRuns.tsx</code>, owns the tab list, the selected pane, the counts and the amber badge. Phase 2 and Phase 3 add a pane to its registry; neither reimplements the bar.</li><li><strong>The pane registry shape.</strong> A pane is <code>{ id, label, count, blocking, render }</code>. <code>blocking</code> drives the amber badge. A pane whose <code>render</code> returns null is not offered as a tab, which is how Completion stays absent on a run with no gate and no claim.</li><li><strong>The route field.</strong> <code>MissionRoute</code> for <code>page: "runs"</code> gains an optional <code>pane</code> whose values are the pane ids. Phase 2 and Phase 3 add an id to that union and to nothing else.</li><li><strong><code>runRecordSummary</code></strong> in <code>run-model.ts</code> returns the per-pane counts and summary sentences. Phase 2 and Phase 3 extend it with their own fields rather than computing counts in the view.</li><li><strong>Every action keeps its route.</strong> Retry refused delivery, the uncertain-delivery resolutions, evidence readiness retry and override, re-stage, and the Inspector settings button all keep their existing handlers and confirm dialogs. No phase may drop one to simplify a pane.</li><li><strong>No <code>data-testid</code>, ever.</strong> Panes are reached by <code>role="tab"</code> and accessible name. The tab bar is a real <code>role="tablist"</code> with arrow-key movement, implemented once in Phase 1.</li></ul>
+<h2 id="final-verification">Final verification</h2>
+<p>After Phase 3 merges, the run detail page below the round scrubber is: the round scrubber, the notice band, the session actions section, the <code>RunRecordTabs</code> container, the workflow-owned model calls section and the Timeline. The last two are deliberately unchanged.</p>
+<p>Per phase: <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code>. Every phase changes UI surfaces, so every phase ships a Playwright spec and updates the existing specs its change invalidates. <code>renderToStaticMarkup</code> cases pin the summary sentences and counts, which are the new failure mode this work introduces: a closed row that states a wrong number is worse than a long page.</p>
+</main>
+</body>
+</html>

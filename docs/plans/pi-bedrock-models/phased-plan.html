@@ -110,10 +110,10 @@
   <section>
     <h2>Scheduled task map</h2>
     <table><thead><tr><th>Phase</th><th>Task</th><th>Stored state</th><th>Dependencies</th></tr></thead><tbody>
-      <tr><td>1</td><td><code>8e625014-710a-4c0d-84b9-a84f0043f0ad</code></td><td>Backlog, disabled, no live session</td><td>Planning task <code>b52bdbe6-12a2-438d-97a1-1d95c5640b94</code>, unsatisfied</td></tr>
-      <tr><td>2</td><td><code>2d6db8bc-3897-4e8d-a49c-a133314a822b</code></td><td>Backlog, disabled, no live session</td><td>Planning task and Phase 1 task <code>8e625014-710a-4c0d-84b9-a84f0043f0ad</code>, both unsatisfied</td></tr>
+      <tr><td>1</td><td><code>8e625014-710a-4c0d-84b9-a84f0043f0ad</code></td><td>Backlog, disabled, no live session</td><td>Planning task <code>b52bdbe6-12a2-438d-97a1-1d95c5640b94</code>; initially unsatisfied, later satisfied when planning concluded</td></tr>
+      <tr><td>2</td><td><code>2d6db8bc-3897-4e8d-a49c-a133314a822b</code></td><td>Backlog, disabled, no live session</td><td>Planning task satisfied after planning concluded; Phase 1 task <code>8e625014-710a-4c0d-84b9-a84f0043f0ad</code> remains unsatisfied</td></tr>
     </tbody></table>
-    <p class="muted">All six plan paths resolved at pushed commit <code>818a500f7715b9be2fa476ca7cc689aac5cbd08b</code> before task creation. Each row was immediately parked and read back with <code>status=backlog</code>, <code>enabled=false</code>, and <code>sessionId=null</code>. Enabling either task later is an explicit operator action.</p>
+    <p class="muted">All six plan paths resolved at pushed commit <code>818a500f7715b9be2fa476ca7cc689aac5cbd08b</code> before task creation. Each row was immediately parked and read back with <code>status=backlog</code>, <code>enabled=false</code>, and <code>sessionId=null</code>. Both rows remain disabled after the planning dependency was satisfied. Enabling either task later is an explicit operator action.</p>
     <p>See the <a href="plan.html">source plan</a> or <a href="phased-plan.md">full phased-plan Markdown</a>.</p>
   </section>
   <footer>Static, self-contained phased plan. No external requests or client-side scripts.</footer>

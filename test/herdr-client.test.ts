@@ -416,6 +416,44 @@ test("a Herdr below the floor is refused, and the refusal reports what it found"
 });
 
 /**
+ * The refusal exists to be read, so it has to be a sentence in every branch. A version
+ * number stands in apposition to "server"; the words standing in for a missing one cannot,
+ * and "Herdr server no version on no protocol is incompatible" is not English.
+ */
+test("the refusal is a sentence whether or not the server reported a version", async () => {
+  const sentences = new Map<string, string>([
+    [
+      JSON.stringify({ version: "0.7.0", protocol: 19 }),
+      "Herdr server 0.7.0 on protocol 19 is incompatible."
+      + " Mission Control requires Herdr 0.8.2 or newer on protocol 20 or newer; update Herdr.",
+    ],
+    [
+      JSON.stringify({ version: null, protocol: null }),
+      "Herdr server is incompatible and reported no version on no protocol."
+      + " Mission Control requires Herdr 0.8.2 or newer on protocol 20 or newer; update Herdr.",
+    ],
+    [
+      JSON.stringify({ version: "0.7.0", protocol: null }),
+      "Herdr server is incompatible and reported version 0.7.0 on no protocol."
+      + " Mission Control requires Herdr 0.8.2 or newer on protocol 20 or newer; update Herdr.",
+    ],
+    [
+      JSON.stringify({ version: null, protocol: 22 }),
+      "Herdr server is incompatible and reported no version on protocol 22."
+      + " Mission Control requires Herdr 0.8.2 or newer on protocol 20 or newer; update Herdr.",
+    ],
+  ]);
+  for (const [over, sentence] of sentences) {
+    const client = createHerdrClient(
+      async () => run(status("/tmp/herdr.sock", JSON.parse(over) as Record<string, unknown>)),
+      HERDR_BIN,
+    );
+    const result = await client.probe();
+    assert.equal(result.state === "failed" ? result.error : "", sentence, over);
+  }
+});
+
+/**
  * A supported Herdr whose running server is stale is a restart, not an update, and saying
  * "update Herdr" to an operator already on the newest release repairs nothing.
  */

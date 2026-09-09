@@ -515,10 +515,17 @@ export function createHerdrClient(
       !status.version ||
       !versionAtLeast(status.version, HERDR_MIN_VERSION)
     ) {
-      const reported = `${status.version ?? "an unreported version"} on protocol ${status.protocol ?? "none"}`;
+      // A reported version stands in apposition to "server" and reads as one phrase. A
+      // missing one cannot: "Herdr server no version on no protocol is incompatible" is not
+      // a sentence, and this refusal exists to be read. Say what was missing after the verb
+      // instead, and leave the ordinary case exactly as it reads.
+      const reported = status.version !== null && status.protocol !== null
+        ? `${status.version} on protocol ${status.protocol} is incompatible`
+        : `is incompatible and reported ${status.version ? `version ${status.version}` : "no version"}`
+          + ` on ${status.protocol === null ? "no protocol" : `protocol ${status.protocol}`}`;
       return {
         state: "failed",
-        error: `Herdr server ${reported} is incompatible. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_MIN_PROTOCOL} or newer; update Herdr.`,
+        error: `Herdr server ${reported}. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_MIN_PROTOCOL} or newer; update Herdr.`,
         retryable: false,
       };
     }

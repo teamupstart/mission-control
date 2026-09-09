@@ -4976,9 +4976,9 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
 /**
  * Where evidence came from when this submission did not capture it.
  *
- * `round` and `repositoryFingerprint` describe the ORIGINAL capture, not the hand-off, so a
- * Persona reading a manifest can tell a screenshot taken against this tree from one taken
- * three rounds and several commits ago. Absent means the submission captured it itself.
+ * All three fields describe the ORIGINAL capture, not the hand-off, so a Persona reading a
+ * manifest can tell a screenshot taken against this tree from one taken three rounds and
+ * several commits ago. Absent means the submission captured it itself.
  */
 export const WorkflowEvidenceInheritanceSchema = z.object({
   submissionId: z.string().min(1).max(200),

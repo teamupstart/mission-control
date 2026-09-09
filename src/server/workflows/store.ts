@@ -5683,9 +5683,12 @@ export class WorkflowStore {
    *   them a carried screenshot would be frozen and invisible, which is the failure this
    *   phase exists to end rather than to relocate.
    *
-   * The mark follows the ORIGINAL capture. Carrying an already-carried row keeps that row's
-   * origin rather than restamping it with the hand-off, so a screenshot that has ridden three
-   * rounds still reports the round and tree it was actually taken against.
+   * The mark follows the ORIGINAL capture, in all three of its columns together. Carrying an
+   * already-carried row keeps that row's origin rather than restamping it with the hand-off, so
+   * a screenshot that has ridden three rounds still names the submission that captured it and
+   * the round and tree it was taken against. Restamping any one of the three would produce a
+   * record that contradicts itself: an origin submission from one round beside a round number
+   * and fingerprint from another.
    */
   inheritSubmissionEvidence(input: {
     submissionId: string;
@@ -5824,7 +5827,7 @@ export class WorkflowStore {
           row.bytes,
           row.sha256,
           row.storage_relative_path,
-          input.sourceSubmissionId,
+          row.inherited_from_submission_id ?? input.sourceSubmissionId,
           row.origin_round ?? source.round,
           row.origin_repository_fingerprint ?? source.repositoryFingerprint ?? null,
           input.now,
@@ -5858,7 +5861,7 @@ export class WorkflowStore {
           row.bytes,
           row.sha256,
           row.content,
-          input.sourceSubmissionId,
+          row.inherited_from_submission_id ?? input.sourceSubmissionId,
           row.origin_round ?? source.round,
           row.origin_repository_fingerprint ?? source.repositoryFingerprint ?? null,
           input.now,

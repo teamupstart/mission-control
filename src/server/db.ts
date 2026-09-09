@@ -3485,9 +3485,9 @@ function migrate(d: DatabaseSync): void {
   // captured and against WHICH tree, not merely that they were not captured here. NULL on
   // every historical row, which is exactly what those rows are: self-captured.
   //
-  // `origin_round` and `origin_repository_fingerprint` follow the ORIGINAL capture through
-  // any number of carries, so a three-round-old screenshot still reports round 1 rather than
-  // the round that last passed it along.
+  // All three follow the ORIGINAL capture through any number of carries, so a three-round-old
+  // screenshot still names the submission and round that took it rather than the one that last
+  // passed it along. They move together or the record contradicts itself.
   for (const table of ["workflow_submission_images", "workflow_submission_text_artifacts"]) {
     addColumn(d, table, "inherited_from_submission_id", "TEXT");
     addColumn(d, table, "origin_round", "INTEGER");

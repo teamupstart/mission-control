@@ -579,8 +579,8 @@ export function evaluateWorkflowEvidenceReadiness(input: {
 /**
  * Where evidence came from when this submission did not capture it.
  *
- * The round and fingerprint describe the ORIGINAL capture rather than the hand-off, so a
- * carry across several rounds still reports the tree the bytes actually prove.
+ * All three fields describe the ORIGINAL capture rather than the hand-off, so a carry across
+ * several rounds still names the submission that captured the bytes and the tree they prove.
  */
 export interface WorkflowEvidenceInheritance {
   submissionId: string;

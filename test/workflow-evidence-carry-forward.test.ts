@@ -520,6 +520,18 @@ test("when the cap binds, a carry gives up old ancestry before the parent's own 
     await captureSubmissionTextArtifacts(store, third.submission.id, 7);
     await inheritSubmissionEvidence(store, third.submission, 7);
 
+    // Provenance follows the ORIGINAL capture in all three fields together. A record naming the
+    // hand-off submission beside the origin round would contradict itself.
+    for (const carried of store.listSubmissionTextArtifacts(third.submission.id)) {
+      if (!carried.inheritedFrom) continue;
+      if (carried.displayName.startsWith("ancestry-")) {
+        assert.equal(
+          carried.inheritedFrom.submissionId,
+          first.submission.id,
+          "two hops on, a carried item still names the submission that captured it",
+        );
+      }
+    }
     const held = store.listSubmissionTextArtifacts(third.submission.id);
     assert.equal(held.length, max, "the cap still holds");
     const names = held.map((item) => item.displayName);

@@ -291,6 +291,12 @@ test("dashboard evidence reaches both native providers and remains auditable per
     timeout: 40_000,
   });
   const ledger = dashboard.locator("section.wf-image-evidence");
+  // The replacement round carries the first round's evidence forward, so this submission holds
+  // two records: the one it captured and the one it inherited. The carried record says so, and
+  // offers no restage button of its own - the same digest is already offered by the submission
+  // that captured it, and a second button would imply this submission captured it too.
+  await expect(ledger.getByText("Carried forward from round 1")).toBeVisible();
+  await expect(ledger.getByRole("button", { name: "Use in next review" })).toHaveCount(1);
   await ledger.getByRole("button", { name: "Use in next review" }).click();
   await expect(ledger.getByRole("button", { name: "Ready for next review" })).toBeVisible();
 

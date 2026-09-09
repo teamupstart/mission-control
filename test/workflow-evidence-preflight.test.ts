@@ -317,10 +317,11 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
     [lastClaim],
     "exactly one claim on this segment was declared here",
   );
-  assert.equal(
-    finalClaims.filter((claim) => claim.inheritedFromSubmissionId).length,
-    finalClaims.length - 1,
-    "and every frozen ancestor claim is retained beside it, marked as carried",
+  assert.deepEqual(
+    finalClaims.filter((claim) => claim.inheritedFromSubmissionId)
+      .map((claim) => claim.clientCriterionId).sort(),
+    Array.from({ length: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT }, (_unused, index) => `claim-${index}`),
+    "and every frozen ancestor claim is retained beside it by id, marked as carried",
   );
   // Retained ancestry is provenance, not a competing assertion: the claim the author declared
   // on this segment is still the one that answers for the criterion.

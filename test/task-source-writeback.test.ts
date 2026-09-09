@@ -54,9 +54,8 @@ const {
 } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 type TaskPrLinkedEvent = import("../src/server/registry.ts").TaskPrLinked;
-const { backoffFor, drainWritebacks, makeWritebackEnqueuer } = await import(
-  "../src/server/task-sources/writeback.ts"
-);
+const { backoffFor, drainWritebacks, makeWritebackEnqueuer, startWritebackWorker } =
+  await import("../src/server/task-sources/writeback.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
@@ -130,6 +129,17 @@ const unknown: WritebackResult = {
 /** The seams every test replaces: a fixed clock, a fixed config, a fake implementation. */
 function deps(over: Partial<WritebackDeps> = {}): WritebackDeps {
   return { now: () => NOW, settleMs: SETTLE, log: () => {}, ...over };
+}
+
+/**
+ * The same seams with the clock past the settle window.
+ *
+ * A completion's comment and its close both wait that window out, so a drain at `NOW` finds
+ * neither. Tests about what a completion DELIVERS use this; tests about what it ENQUEUES do
+ * not, because enqueue happens at the completion instant.
+ */
+function past(over: Partial<WritebackDeps> = {}): WritebackDeps {
+  return deps({ now: () => NOW + SETTLE, ...over });
 }
 
 /** Every ledger row, oldest first. */
@@ -312,7 +322,10 @@ test("a completion with auto-resolve on owes the comment first and the close lat
   assert.equal(all[0]!.action, "annotate");
   assert.equal(all[1]!.action, "resolve");
   assert.ok(all[0]!.id < all[1]!.id);
-  assert.equal(all[0]!.next_at, NOW);
+  // BOTH wait the window out now. The comment asserts "finished", which a reversed
+  // inference falsifies, so it is held for the same reason the close is - and the id
+  // ordering still puts the comment first once they come due together.
+  assert.equal(all[0]!.next_at, NOW + SETTLE, "the completion comment did not wait");
   assert.equal(all[1]!.next_at, NOW + SETTLE, "the resolve did not wait out the settle window");
 });
 
@@ -417,14 +430,20 @@ test("a resolve is released as soon as its comment is delivered", async () => {
 
   // Refused once, so the comment is pending with a future next_at.
   const annotate = spy(refused);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
   assert.equal(rows()[0]!.state, "pending");
-  // Past the settle window the comment is due again and is the row claimed; the resolve is
-  // not among them, which is the property.
+  // The refusal pushed the comment's next attempt a backoff beyond the settle window, so at
+  // this instant the comment is not yet due and the resolve is - which is exactly the state
+  // the guard exists for. Nothing is claimable.
   assert.deepEqual(
     claimDueWritebacks(NOW + SETTLE + 1, 20).map((r) => r.action),
-    ["annotate"],
+    [],
     "the resolve was claimable while its comment was still owed",
+  );
+  // And when the comment does come due, it is the row claimed, not the close.
+  assert.deepEqual(
+    claimDueWritebacks(rows()[0]!.next_at, 20).map((r) => r.action),
+    ["annotate"],
   );
 
   // The retry succeeds, and only then is the resolve released.
@@ -583,7 +602,7 @@ test("a delivered row records what was said and is never claimed again", async (
   makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
 
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
 
   assert.equal(annotate.calls.length, 1);
   assert.equal(annotate.calls[0]!.externalId, "acme/demo#7");
@@ -600,8 +619,9 @@ test("a refusal backs off, doubling to a ceiling, and is given up on at six atte
   makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
 
   const annotate = spy(refused);
-  // The clock has to move, or a backed-off row would never come due again.
-  let clock = NOW;
+  // The clock has to move, or a backed-off row would never come due again - and it starts
+  // past the settle window, because the completion comment now waits that out first.
+  let clock = NOW + SETTLE;
   const d = deps({ sources, annotate: annotate.fn, now: () => clock });
 
   for (let attempt = 1; attempt <= 5; attempt += 1) {
@@ -637,7 +657,7 @@ test("an unknown outcome is recorded as unknown and never retried automatically"
   makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
 
   const annotate = spy(unknown);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
   assert.equal(rows()[0]!.state, "unknown");
   assert.match(rows()[0]!.last_error!, /may have landed/);
 
@@ -692,11 +712,20 @@ test("a resolve whose task was deleted is cancelled - its completion cannot be c
 // The other side of that asymmetry, and it is deliberate. "A pull request opened for this"
 // was true when it was observed and stays true; the comment is worth posting whatever
 // became of the task afterwards - which is also what makes the payload a snapshot.
-test("an annotate whose task was deleted still delivers, from the snapshot", async () => {
-  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+test("a pr-opened comment whose task was deleted still delivers, from the snapshot", async () => {
+  // The payload is a snapshot, so this survives the task - and it is the PR-LINKED comment
+  // that does, deliberately: it says a pull request opened, which stays true whatever became
+  // of the task. A COMPLETION comment whose task has gone is cancelled instead, because
+  // "finished" is a claim the missing task can no longer support.
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: false, resolve: false } });
   const task = mkSwept();
   const { registry, sources } = setup(s, task);
-  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  makeWritebackEnqueuer(registry, deps({ sources })).prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
 
   openDb().exec("DELETE FROM tasks");
   const annotate = spy(delivered);
@@ -715,7 +744,7 @@ test("a trigger switched off between the observation and the tick cancels the de
 
   const off = mkSource();
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources: () => [off], annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources: () => [off], annotate: annotate.fn }));
   assert.deepEqual(annotate.calls, []);
   assert.equal(rows()[0]!.state, "cancelled");
   assert.match(rows()[0]!.last_error!, /switched off/);
@@ -728,7 +757,7 @@ test("a source removed between the observation and the tick cancels the delivery
   makeWritebackEnqueuer(registry, deps({ sources: () => [s] })).completed(task);
 
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources: () => [], annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources: () => [], annotate: annotate.fn }));
   assert.deepEqual(annotate.calls, []);
   assert.equal(rows()[0]!.state, "cancelled");
   assert.match(rows()[0]!.last_error!, /no longer configured/);
@@ -765,7 +794,7 @@ test("a delivery whose payload contradicts its own row is failed, and nothing is
     );
 
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
   assert.deepEqual(annotate.calls, [], "a contradictory row was published anyway");
   assert.equal(rows()[0]!.state, "failed");
   assert.match(rows()[0]!.last_error!, /disagree/);
@@ -790,7 +819,7 @@ test("a payload naming a different action than its row is refused", async () => 
   const resolve = spy(delivered);
   await drainWritebacks(
     registry,
-    deps({ sources, annotate: annotate.fn, resolve: resolve.fn }),
+    past({ sources, annotate: annotate.fn, resolve: resolve.fn }),
   );
   assert.deepEqual(annotate.calls, []);
   assert.deepEqual(resolve.calls, [], "a close ran under a row that calls itself a comment");
@@ -819,7 +848,7 @@ test("a payload naming a different external item than its row is refused", async
     .run(rows()[0]!.id);
 
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
   assert.deepEqual(
     annotate.calls,
     [],
@@ -846,7 +875,7 @@ test("a delivered notice carries the item its row is keyed on", async () => {
   makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
 
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
   assert.equal(annotate.calls[0]!.externalId, rows()[0]!.external_id);
 });
 
@@ -860,10 +889,183 @@ test("a delivery whose stored details cannot be read is failed rather than retri
   openDb().exec(`UPDATE task_source_writeback SET payload = 'not json'`);
 
   const annotate = spy(delivered);
-  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
   assert.deepEqual(annotate.calls, []);
   assert.equal(rows()[0]!.state, "failed");
   assert.deepEqual(claimDueWritebacks(NOW + 86_400_000, 20), []);
+});
+
+// ---- the completion comment states a fact that can stop being true ----
+//
+// The resolve waits out the settle window and re-checks the live task, because
+// `settleIfEpisodeFinished` concludes a task from an idle agent and `reopenIfWorkResumed`
+// reverses that minutes later. The COMMENT that says "Mission Control finished the task for
+// this issue" makes the same claim, and until this was fixed it went out on the very next
+// tick - so a reversed inference left a public completion announcement on somebody's tracker
+// while the task was still running, with nothing to walk it back. The resolve being
+// correctly cancelled does not help: the sentence is already there.
+
+test("the completion comment waits out the settle window, like the close it precedes", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  const [comment, close] = rows();
+  assert.equal(comment!.action, "annotate");
+  assert.equal(
+    comment!.next_at,
+    NOW + SETTLE,
+    "the completion comment was due before the window that exists to catch a reversal",
+  );
+  assert.equal(close!.next_at, NOW + SETTLE);
+  // Nothing is claimable until the window has passed.
+  assert.deepEqual(claimDueWritebacks(NOW + SETTLE - 1, 20), []);
+  assert.deepEqual(
+    claimDueWritebacks(NOW + SETTLE, 20).map((r) => r.action),
+    ["annotate"],
+    "the comment still goes first once both are due",
+  );
+});
+
+for (const [why, patch] of [
+  ["reopened", { status: "running" as const }],
+  ["rescheduled", { status: "backlog" as const }],
+]) {
+  test(`a completion comment whose task was ${why} is cancelled, not posted`, async () => {
+    const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+    const task = mkSwept();
+    const { registry, sources } = setup(s, task);
+    makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+    registry.upsertTask({ ...task, ...(patch as Partial<Task>) });
+    const annotate = spy(delivered);
+    await drainWritebacks(
+      registry,
+      deps({ sources, annotate: annotate.fn, now: () => NOW + SETTLE }),
+    );
+
+    assert.deepEqual(
+      annotate.calls,
+      [],
+      "a public 'finished' was posted for a task that had gone back to work",
+    );
+    assert.equal(rows()[0]!.state, "cancelled");
+    assert.match(rows()[0]!.last_error!, /not finished|is /);
+  });
+}
+
+// The exemption, and the reason it is safe. A pull request opening is not a claim that can
+// go stale, so its comment is neither delayed nor re-checked.
+test("a pr-opened comment is neither delayed nor re-checked against the task", async () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: false, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
+  assert.equal(rows()[0]!.next_at, NOW, "the pull request comment was delayed for no reason");
+
+  // Even with the task back at work, the comment still delivers: it says a pull request
+  // opened, which remains true.
+  registry.upsertTask({ ...task, status: "running" });
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, past({ sources, annotate: annotate.fn }));
+  assert.equal(annotate.calls.length, 1);
+  assert.equal(annotate.calls[0]!.signal, "pr-opened");
+});
+
+// ---- the environment overrides ----
+//
+// `Math.max(floor, NaN)` is NaN, not the floor, so `Number(envVar(x) ?? default)` does not
+// fall back on a TYPO - only on an absent value. Both directions of that bug are real: a NaN
+// tick becomes setTimeout(NaN), which Node fires at 1ms and which turns the worker into a
+// tight loop against somebody's GitHub; a NaN settle window makes next_at NaN, which
+// node:sqlite binds as NULL against a NOT NULL column, so the resolve insert throws and the
+// row is silently never enqueued.
+
+test("a mistyped tick override falls back to the default instead of becoming NaN", async () => {
+  const prior = process.env.MISSION_TASK_SOURCE_WRITEBACK_TICK_MS;
+  process.env.MISSION_TASK_SOURCE_WRITEBACK_TICK_MS = "twenty seconds";
+  try {
+    const mod = await import(
+      `../src/server/task-sources/writeback.ts?nan-tick=${Date.now()}`
+    );
+    // The worker starts and schedules a real timer rather than a 1ms one. Stopping it
+    // immediately is enough: a NaN tick would have thrown or spun before this returned.
+    const stop = mod.startWritebackWorker(new Registry(), deps({ sources: () => [] }));
+    await stop();
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_TASK_SOURCE_WRITEBACK_TICK_MS;
+    else process.env.MISSION_TASK_SOURCE_WRITEBACK_TICK_MS = prior;
+  }
+});
+
+test("a mistyped settle override still enqueues a resolve with a usable due time", async () => {
+  const prior = process.env.MISSION_TASK_SOURCE_WRITEBACK_SETTLE_MS;
+  process.env.MISSION_TASK_SOURCE_WRITEBACK_SETTLE_MS = "five minutes";
+  try {
+    const mod = await import(
+      `../src/server/task-sources/writeback.ts?nan-settle=${Date.now()}`
+    );
+    const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+    const task = mkSwept();
+    const { registry, sources } = setup(s, task);
+    // No settleMs override, so the module's own constant is used - which is the thing under
+    // test. A NaN there would make next_at NULL and the insert throw, leaving one row.
+    mod.makeWritebackEnqueuer(registry, { sources, now: () => NOW, log: () => {} })
+      .completed(task);
+
+    const all = rows();
+    assert.equal(all.length, 2, "the resolve row was lost to a NaN due time");
+    for (const r of all) {
+      assert.ok(Number.isFinite(r.next_at), `next_at is not a finite number: ${r.next_at}`);
+    }
+  } finally {
+    if (prior === undefined) delete process.env.MISSION_TASK_SOURCE_WRITEBACK_SETTLE_MS;
+    else process.env.MISSION_TASK_SOURCE_WRITEBACK_SETTLE_MS = prior;
+  }
+});
+
+// ---- shutdown ----
+//
+// Clearing the timer only stops the NEXT tick. The one already running may be awaiting a gh
+// subprocess on a row it has not settled, and exiting there would leave that row `pending`
+// for the next boot to deliver a second time - a duplicate comment, and with auto-resolve on
+// a second close.
+test("stopping the worker waits for the tick that is already running", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  let released: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => {
+    released = resolve;
+  });
+  let finished = false;
+  const annotate = async (): Promise<WritebackResult> => {
+    await gate;
+    finished = true;
+    return delivered;
+  };
+
+  const stop = startWritebackWorker(
+    registry,
+    deps({ sources, annotate, now: () => NOW + SETTLE }),
+  );
+  // Let the tick start and reach the gated delivery.
+  await new Promise((r) => setTimeout(r, 10));
+  const stopping = stop();
+  assert.equal(finished, false, "the fixture did not reach the in-flight state it needs");
+
+  released!();
+  await stopping;
+  assert.equal(finished, true, "the stopper returned before the in-flight delivery finished");
+  assert.equal(rows()[0]!.state, "delivered", "the row was not settled before shutdown returned");
 });
 
 // ---- 6. the operator's controls over the queue ----

@@ -225,11 +225,22 @@ test("a swept task completing comments on its issue, then closes it after the se
     ],
   );
 
-  // The first tick, inside the settle window: the comment goes, the close waits.
+  // A tick INSIDE the settle window delivers neither. Both rows make a claim about the
+  // task having finished, and that claim is exactly what `reopenIfWorkResumed` can reverse -
+  // so the comment waits the window out alongside the close it precedes.
   await drainWritebacks(registry);
+  assert.deepEqual(
+    ledger().map((r) => r.state),
+    ["pending", "pending"],
+    "something was published before the window that exists to catch a reversal",
+  );
+  assert.deepEqual(calls(), [], "gh was spawned inside the settle window");
+
+  // Past the window the comment goes first, and the close still waits its turn behind it.
+  await drainWritebacks(registry, { now: () => Date.now() + SETTLE + 1_000 });
   assert.equal(ledger()[0]!.state, "delivered");
   assert.equal(ledger()[0]!.last_detail, "commented");
-  assert.equal(ledger()[1]!.state, "pending", "the close fired inside its settle window");
+  assert.equal(ledger()[1]!.state, "pending", "the close overtook its own comment");
 
   const comment = calls()[0]!;
   assert.equal(comment[0], repo, "gh ran outside the source's checkout");
@@ -243,8 +254,8 @@ test("a swept task completing comments on its issue, then closes it after the se
   assert.match(comment.join("\n"), /Mission Control finished the task/);
   assert.match(comment.join("\n"), /shipped in #9/);
 
-  // The second tick, past it. The clock is the only thing moved forward: everything else
-  // is the same queue, the same source and the same implementation.
+  // The next tick past the window takes the close. The clock is the only thing moved
+  // forward: the same queue, the same source, the same implementation.
   await drainWritebacks(registry, { now: () => Date.now() + SETTLE + 1_000 });
   assert.equal(ledger()[1]!.state, "delivered");
   assert.equal(ledger()[1]!.last_detail, "closed as completed");
@@ -355,7 +366,9 @@ test("a restart mid-queue loses nothing - the pending rows are still pending", a
   // A new process, sharing only the database - which is the whole point of a ledger over a
   // listener: the observation survived the process that made it.
   const second = daemon();
-  await drainWritebacks(second.registry);
+  // Past the settle window, because the completion comment waits it out - the point here is
+  // that the OBSERVATION survived the process, not that it fires immediately.
+  await drainWritebacks(second.registry, { now: () => Date.now() + SETTLE + 1_000 });
   assert.equal(ledger()[0]!.state, "delivered");
   assert.equal(calls().length, 1);
 });

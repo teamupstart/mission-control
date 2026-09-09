@@ -742,7 +742,9 @@ async function shutdown(): Promise<void> {
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();
-  stopWriteback();
+  // Awaited, unlike its siblings: an in-flight tick may be mid-`gh` on a row it has
+  // not settled yet, and exiting there would deliver that row again on the next boot.
+  await stopWriteback();
   stopPipelines();
   stopSchedules();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to

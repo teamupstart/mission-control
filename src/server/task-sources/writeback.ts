@@ -46,11 +46,25 @@ import { annotateWith, canAnnotateTo, canResolveTo, resolveWith } from "./index.
 // and nothing else, every method is wrapped so it cannot throw into its caller, and every
 // subprocess and every HTTPS call happens on the worker's own tick.
 
+/**
+ * Read a millisecond override, falling back when it is absent OR unparsable.
+ *
+ * The second half is the part `Number(envVar(x) ?? default)` gets wrong, and it fails in
+ * two different directions here. `Math.max(floor, NaN)` is NaN, not the floor, so a typo'd
+ * tick becomes `setTimeout(tick, NaN)` - which Node treats as 1ms, turning the worker into
+ * a tight loop against somebody's GitHub. And a NaN settle window makes a resolve row's
+ * `next_at` NaN, which `node:sqlite` binds as NULL against a `NOT NULL` column, so the
+ * insert throws, `completed()` catches it, and the resolve is silently never enqueued at
+ * all. An operator's typo should cost them the default, not either of those.
+ */
+function msOverride(name: string, fallback: number, floor: number): number {
+  const raw = envVar(name);
+  const parsed = raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw);
+  return Math.max(floor, Number.isFinite(parsed) ? parsed : fallback);
+}
+
 /** How often the worker wakes to drain what is due. Floored, like the sweeper's tick. */
-const TICK_MS = Math.max(
-  5_000,
-  Number(envVar("TASK_SOURCE_WRITEBACK_TICK_MS") ?? 20_000),
-);
+const TICK_MS = msOverride("TASK_SOURCE_WRITEBACK_TICK_MS", 20_000, 5_000);
 
 /**
  * How long a resolve waits before it may be spent.
@@ -62,10 +76,7 @@ const TICK_MS = Math.max(
  * to undo by hand. The window is the pause; the worker's live re-check is what actually
  * decides.
  */
-const SETTLE_MS = Math.max(
-  0,
-  Number(envVar("TASK_SOURCE_WRITEBACK_SETTLE_MS") ?? 5 * 60_000),
-);
+const SETTLE_MS = msOverride("TASK_SOURCE_WRITEBACK_SETTLE_MS", 5 * 60_000, 0);
 
 /** Refusals before a row is given up on. Six attempts spans roughly half an hour of backoff. */
 const MAX_ATTEMPTS = 6;
@@ -277,7 +288,19 @@ export function makeWritebackEnqueuer(
       try {
         const now = task.completedAt ?? d.now();
         const opts = { prUrl: task.outcomeUrl, repoRoot: task.repoRoot, observedAt: now };
-        owe(task, "task-completed", "annotate", { ...opts, dueAt: now });
+        // HELD FOR THE SETTLE WINDOW, exactly as the resolve is, and for the same reason.
+        // A completion inferred from an idle agent by `settleIfEpisodeFinished` can be
+        // reversed minutes later by `reopenIfWorkResumed`. This comment states a FACT -
+        // "Mission Control finished the task for this issue" - and that fact can become
+        // false. Posting it on the next 20s tick would put a public announcement of a
+        // completion on somebody's tracker while the task is still running, with nothing to
+        // walk it back; the resolve being correctly cancelled does not help, because the
+        // sentence is already there. So it waits out the same window and is re-checked by
+        // `recheck` before it goes.
+        //
+        // The pr-opened comment is deliberately NOT held: "a pull request opened for this"
+        // was true when it was observed and stays true, so there is nothing to wait for.
+        owe(task, "task-completed", "annotate", { ...opts, dueAt: now + d.settleMs });
         // The resolve is a SECOND row rather than a flag on the first, and that is what
         // buys both the settle window and the ordering: it comes due later and carries the
         // higher id, and `claimDueWritebacks` will not hand it over until every earlier row
@@ -330,6 +353,16 @@ function recheck(row: WritebackRow, registry: Registry, sources: TaskSourceInsta
   if (row.action === "resolve") {
     if (!inst.writeback.resolve) return { go: false, why: "auto-resolve was switched off" };
     if (!canResolveTo(inst)) return { go: false, why: `${inst.kind} cannot resolve its items` };
+  }
+  // Anything that ASSERTS THE TASK FINISHED is re-validated against the live task, whether
+  // it closes the item or only says so. Both the resolve and the completion comment make a
+  // claim that a reopened, rescheduled or deleted task falsifies, and a public "finished"
+  // on somebody's tracker is no easier to walk back than a closed issue.
+  //
+  // The one signal exempted is `pr-opened`, and only because its claim cannot go stale:
+  // a pull request opened for this task was true when it was observed and stays true
+  // whatever became of the task afterwards.
+  if (row.action === "resolve" || row.signal === "task-completed") {
     const task = row.taskId ? registry.getTask(row.taskId) : null;
     if (!task) return { go: false, why: "the task is gone, so its completion cannot be confirmed" };
     if (task.status !== "done") {
@@ -451,9 +484,23 @@ export async function drainWritebacks(
  * `settingsStatus()`'s business and is not extended here - triggering the recompute is
  * correct before and after it learns about this queue.
  */
-export function startWritebackWorker(registry: Registry, deps: WritebackDeps = {}): () => void {
+export function startWritebackWorker(
+  registry: Registry,
+  deps: WritebackDeps = {},
+): () => Promise<void> {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The tick currently running, so the stopper can wait for it.
+   *
+   * Clearing the timer only stops the NEXT tick. The one already running may be awaiting a
+   * `gh` subprocess, and the row it is delivering has not been settled yet - so a shutdown
+   * that returned immediately would let `process.exit(0)` land between the write reaching
+   * GitHub and `settleWriteback` recording that it did. The row would still be `pending` on
+   * the next boot and would be delivered a second time, which is a duplicate comment on
+   * somebody's issue and, with auto-resolve on, a second close.
+   */
+  let inFlight: Promise<void> = Promise.resolve();
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -463,13 +510,21 @@ export function startWritebackWorker(registry: Registry, deps: WritebackDeps = {
       console.error("[writeback] tick failed:", err);
     }
     if (stopped) return;
-    timer = unref(setTimeout(tick, TICK_MS));
+    timer = unref(setTimeout(run, TICK_MS));
   };
 
-  void tick();
+  const run = (): void => {
+    inFlight = tick();
+    void inFlight;
+  };
 
-  return () => {
+  run();
+
+  return async () => {
     stopped = true;
     if (timer) clearTimeout(timer);
+    // Never rejects: `tick` catches its own failures. Awaited so the settle write that
+    // follows a delivery has run before the caller closes the database and exits.
+    await inFlight;
   };
 }

@@ -98,7 +98,7 @@ test("a dismissal transport failure stays actionable without leaking into a late
   await expect(banner.getByRole("alert")).toHaveCount(0);
 });
 
-test("the setup reminder is durable, detects a regression, and the tour hands over Setup", async ({
+test("the setup reminder is durable, detects a regression, and the tour hands over Trust", async ({
   page,
   daemon,
 }) => {
@@ -143,11 +143,12 @@ test("the setup reminder is durable, detects a regression, and the tour hands ov
   const beforeTour = appConfigSnapshot(daemon);
   await page.getByRole("button", { name: "Start Set up this machine tour" }).click();
 
-  // Four stops, and the first two are outside the panel: an operator who has never opened
-  // Setup is shown how to reach it before a single status word is explained.
+  // Seven stops, and three of them are outside both panels: an operator who has never opened
+  // Setup is shown how to reach it before a single status word is explained, and the same is
+  // done again for Trust.
   let step = tourStep(page, "Settings live behind the gear");
   await expect(step).toBeVisible();
-  await expect(step).toContainText("Step 1 of 4");
+  await expect(step).toContainText("Step 1 of 7");
   // Starting it LEAVES Settings for the fleet, because the gear only reads "Settings" from
   // somewhere else - on this page the same control is "Return to Fleet".
   await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/fleet");
@@ -180,27 +181,56 @@ test("the setup reminder is durable, detects a regression, and the tour hands ov
   await expect(step).toBeVisible();
   await expectSpotlight(page.getByRole("button", { name: "Re-check" }));
 
+  // The hand-over from what this machine CAN do to what it MAY do on the operator's behalf.
+  // Still on Setup, pointing at a rail row two groups further down that has not been selected
+  // yet - the same shape as the stop that pointed at Setup, and for the same reason.
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Trust decides where it may act");
+  await expect(step).toBeVisible();
+  await expect(step).toContainText("Step 5 of 7");
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
+  const trustTab = page.locator("#settings-tab-trust");
+  await expectSpotlight(trustTab);
+  await expect(trustTab).toHaveAttribute("aria-selected", "false");
+  await shoot(page, "setup-tour-trust-rail");
+
+  await step.getByRole("button", { name: "Open Trust" }).click();
+  step = tourStep(page, "One table, four grants");
+  await expect(step).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/trust");
+  await expect(trustTab).toHaveAttribute("aria-selected", "true");
+  // The whole matrix rather than a cell or a column: which grants a machine needs depends on
+  // which repositories it works in, and a fresh profile has no row to point at yet.
+  await expectSpotlight(page.locator(".trust-matrix"));
+  await shoot(page, "setup-tour-trust-matrix");
+
+  await step.getByRole("button", { name: "Next" }).click();
+  step = tourStep(page, "Add a repository, then grant it");
+  await expect(step).toBeVisible();
+  await expect(step).toContainText("Step 7 of 7");
+  await expectSpotlight(page.locator(".trust-add"));
+
   await step.getByRole("button", { name: "Finish tour" }).click();
   await expect(step).toBeHidden();
   // The tour HANDS THE PANEL OVER rather than replaying the route it started from. Showing
-  // an operator Setup and then taking it away again would undo the whole point of it, and
+  // an operator Trust and then taking it away again would undo the whole point of it, and
   // the control that started the tour is still here to take focus back.
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
-  await expect(page.getByRole("heading", { name: "Setup", exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/trust");
+  await expect(page.getByRole("heading", { name: "Trust", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start Set up this machine tour" }))
     .toBeFocused();
-  await shoot(page, "setup-tour-left-on-setup");
+  await shoot(page, "setup-tour-left-on-trust");
 
   // The invoker survived, so the exit route's landing control has nothing to land, and the
   // pass that would look for one must never have started. The vacuum it waits for is also
   // what an ordinary click on a non-focusable area leaves behind, so a pass still running
-  // here would answer that click by pulling focus onto Re-check.
+  // here would answer that click by pulling focus onto the Trust rail row.
   //
   // Read the baseline BEFORE the blur - the assertion above is it - then blur the way that
   // click does, and watch every frame. Frames rather than milliseconds deliberately: the
   // landing pass counts its own window in animation frames, so a slower machine cannot
   // outrun this sampler the way a wall-clock wait can. Two hundred exceeds its budget.
-  await page.getByRole("heading", { name: "Setup", exact: true }).click();
+  await page.getByRole("heading", { name: "Trust", exact: true }).click();
   const hijacked = await page.evaluate(async (frames) => {
     for (let frame = 0; frame < frames; frame += 1) {
       await new Promise((settle) => requestAnimationFrame(() => settle(null)));
@@ -221,10 +251,13 @@ test("the setup reminder is durable, detects a regression, and the tour hands ov
   await expect(step).toBeVisible();
   await step.getByRole("button", { name: "Exit tour" }).click();
   await expect(step).toBeHidden();
-  // Exiting early lands on Setup too: the exit route belongs to the tour, not to its last
+  // Exiting early lands on Trust too: the exit route belongs to the tour, not to its last
   // stop, so an operator who leaves at stop one still gets the page they were promised.
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/trust");
 
+  // Read-only end to end, and the Trust half is where that matters most: walking the matrix
+  // and its add row must not stage a repository or hand out a grant. The four allowlists and
+  // the staged list all live in this table, so an unchanged snapshot is the whole claim.
   expect(appConfigSnapshot(daemon), "the tour must not write machine or UI configuration")
     .toBe(beforeTour);
 });

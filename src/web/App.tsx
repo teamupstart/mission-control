@@ -1247,7 +1247,7 @@ export function App(): React.JSX.Element {
    *
    * "Where they started" is the snapshot for a tour that only demonstrates, and the entry's
    * declared `exit` route for one whose point is to hand a page over - Set up this machine
-   * ends on Setup. Only the route differs; every other snapshotted field is replayed either
+   * ends on Trust. Only the route differs; every other snapshotted field is replayed either
    * way, so a tour still owes back the layout, selection, filter, and drawer it moved.
    */
   const finishTour = useCallback(async (): Promise<void> => {
@@ -1286,7 +1286,7 @@ export function App(): React.JSX.Element {
      * Its own pass rather than a branch of the bookmark loop below, because it answers a
      * different question. The bookmark names a control that was on screen a moment ago; this
      * one is on a page that has not mounted yet - Exit at stop one of Set up this machine
-     * leaves the fleet for Setup, and the panel has to commit first.
+     * leaves the fleet for Trust, and the panel has to commit first.
      *
      * It keeps watching rather than acting once, because two things move focus out from under
      * it and both are late: the page it is waiting for commits, and the coachmark's own
@@ -1626,15 +1626,18 @@ export function App(): React.JSX.Element {
     },
   }), [layout, navigate, requestWorkflowsTab]);
   /**
-   * The Setup tour's three moves, all of them ordinary route transitions.
+   * The Setup tour's four moves, all of them ordinary route transitions.
    *
    * `showSettings` lands on the same category the gear itself opens, so the stop that points
-   * at Setup in the rail is pointing at a row that is not selected yet.
+   * at Setup in the rail is pointing at a row that is not selected yet. `showSetup` does the
+   * same job twice over for the same reason: the stop that points at Trust in the rail is
+   * still on Setup, so that row is unselected when it is spotlighted too.
    */
   const setupNavigation = useMemo<SetupTourNavigation>(() => ({
     showFleet: () => navigate({ page: "fleet" }),
     showSettings: () => navigate({ page: "settings", category: DEFAULT_SETTINGS_CATEGORY }),
     showSetup: () => navigate({ page: "settings", category: "setup" }),
+    showTrust: () => navigate({ page: "settings", category: "trust" }),
   }), [navigate]);
   const showLauncherFocusError = useCallback((message: string) => {
     if (launcherFocusErrorTimer.current) clearTimeout(launcherFocusErrorTimer.current);

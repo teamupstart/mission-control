@@ -90,31 +90,33 @@ test("there is no positional call form left to miswire", () => {
   );
 });
 
-test("an off-by-one positional list is rejected at construction, not at request time", () => {
-  // The exact scenario the issue named, and the one the previous design could only survive
-  // rather than prevent. `keepAwake` was positional slot 15; one slot late is `archives`.
-  // Under the positional API that list CONSTRUCTED an app successfully, and the mistake
-  // surfaced much later and somewhere else, as GET /api/keep-awake answering 503.
-  const offByOne: unknown[] = [registry, reviews, tasks, queues];
-  offByOne[16] = keepAwakeStub;
-  assert.throws(() => unchecked(...offByOne), /^TypeError: buildApp: /);
+test("position carries no dependency, so an off-by-one placement cannot miswire", async () => {
+  // The scenario the issue named, asserted against the NAMED field that received the value
+  // rather than against an array index. An earlier version of this test spread a positional
+  // array into `buildApp` and planted the stub at slot 16, but a one-parameter signature
+  // discards every argument past the first, so both branches were really `buildApp(registry)`
+  // and threw for missing required fields. It would have passed with the stub at any index,
+  // or with no stub at all, which is no evidence about the slot.
+  const required = { registry, reviews, tasks, queues };
 
-  // The correctly-placed variant is refused identically. That is the point: position now
-  // carries no meaning at all, so there is no off-by-one to be off by.
-  const onTime: unknown[] = [registry, reviews, tasks, queues];
-  onTime[15] = keepAwakeStub;
-  assert.throws(() => unchecked(...onTime), /^TypeError: buildApp: /);
+  // On time: the owner reaches its own domain.
+  const wired = buildApp({ ...required, keepAwake: keepAwakeStub });
+  assert.equal((await wired.request("/api/keep-awake", { headers: LOOPBACK })).status, 200);
 
-  // No app escapes either call, so no route can answer 503 for a wiring mistake made here.
-  for (const list of [offByOne, onTime]) {
-    let built: unknown = "not built";
-    try {
-      built = unchecked(...list);
-    } catch {
-      /* expected */
-    }
-    assert.equal(built, "not built");
-  }
+  // One field late. `keepAwake` was positional slot 15 and `archives` was 16, so this is the
+  // named analogue of the old off-by-one. Handing the keep-awake owner to `archives` does not
+  // make keep-awake work, and keep-awake reports itself unavailable rather than answering
+  // from an owner that is not its own.
+  const shifted = buildApp({ ...required, archives: keepAwakeStub as never });
+  assert.equal((await shifted.request("/api/keep-awake", { headers: LOOPBACK })).status, 503);
+
+  // And the old positional shape cannot carry a dependency at ANY slot: extra arguments are
+  // discarded by the signature. Asserted rather than assumed, because relying on that discard
+  // silently is exactly what made the previous version of this test vacuous.
+  const spread = unchecked({ ...required }, keepAwakeStub, keepAwakeStub) as ReturnType<
+    typeof buildApp
+  >;
+  assert.equal((await spread.request("/api/keep-awake", { headers: LOOPBACK })).status, 503);
 });
 
 test("a named dependency object resolves to exactly the fields it supplied", () => {

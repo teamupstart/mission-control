@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, relative } from "node:path";
+import { delimiter, dirname, join, relative, sep } from "node:path";
 import test from "node:test";
 
 import { executableSpec } from "../src/server/executables/catalog.ts";
@@ -19,11 +28,50 @@ function executable(path: string): string {
   return path;
 }
 
-function fixture(): { root: string; env: NodeJS.ProcessEnv; clean(): void } {
+/** The predicate the locator uses in production, restated so the fixture can bound it. */
+function executableFile(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+interface Fixture {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  /** Pass as `executable` to every locator built here - see the comment below. */
+  executable(path: string): boolean;
+  clean(): void;
+}
+
+/**
+ * An isolated root, and a lookup that cannot see outside it.
+ *
+ * The confinement is the load-bearing half. The ladder's last rung is the platform's OS
+ * defaults - `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and friends - and it is
+ * unconditional by design, because the daemon has to find a tool that a login shell forgot
+ * to export. That makes "is this tool absent?" a question about the DEVELOPER'S machine,
+ * and half the cases in this file open on exactly that assertion: they seed nothing, expect
+ * `null`, and then prove that a later probe or refresh is what made the tool appear.
+ *
+ * On a laptop with Pi installed at `/opt/homebrew/bin/pi` those cases resolved a REAL binary
+ * on the first call and failed, while CI - which has none of these agents installed - stayed
+ * green. The bug was never in the locator; it was a fixture that described a machine instead
+ * of describing a scenario.
+ *
+ * So the injected predicate answers for this root only. It still runs the real access/stat
+ * check inside it, which is what keeps `PATH lookup skips executable directories and selects
+ * an executable file` proving that a lookup selects a FILE rather than merely a name.
+ */
+function fixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), "mission-executable-locator-"));
   return {
     root,
     env: { HOME: root, PATH: "", SHELL: join(root, "shell") },
+    executable: (path) =>
+      (path === root || path.startsWith(`${root}${sep}`)) && executableFile(path),
     clean: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -36,6 +84,7 @@ test("async initialization still reads the login shell after a synchronous start
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => {
         probes += 1;
         return { path: loginBin, problem: null };
@@ -67,6 +116,7 @@ test("the deterministic path ladder records custom, inherited, login, manager, a
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: login, problem: null }),
     });
     assert.equal((await locator.resolve(executableSpec("git")))?.source, "operator-directory");
@@ -87,6 +137,7 @@ test("an ad hoc command carries no fabricated built-in identity", async () => {
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: null, problem: null }),
     });
     const resolved = await locator.resolveCommand("repository-check");
@@ -108,6 +159,7 @@ test("PATH lookup skips executable directories and selects an executable file", 
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: null, problem: null }),
     });
     assert.equal((await locator.resolve(executableSpec("pi")))?.path, pi);
@@ -124,6 +176,7 @@ test("every child environment uses the canonical snapshot even from a fresh base
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: login, problem: null }),
     });
     const snapshot = await locator.initialize();
@@ -153,6 +206,7 @@ test("prefixed and legacy absolute overrides win and keep one launch environment
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: null, problem: "login shell failed" }),
     });
     const codex = await locator.resolve(executableSpec("codex"));
@@ -176,6 +230,7 @@ test("a relative per-tool override is rejected instead of depending on daemon cw
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: null, problem: null }),
     });
     assert.equal(await locator.resolve(executableSpec("pi")), null);
@@ -190,6 +245,7 @@ test("custom per-user terminal app locations are supported without a filesystem 
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       platform: "darwin",
       probeLoginShell: async () => ({ path: null, problem: null }),
     });
@@ -209,6 +265,7 @@ test("dead login shells degrade to manager and OS defaults", async () => {
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => ({ path: null, problem: "login shell timed out" }),
     });
     const resolved = await locator.resolve(executableSpec("pi"));
@@ -277,6 +334,7 @@ test("a first miss refreshes immediately when the login shell exposes a new inst
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => {
         probes += 1;
         return probes === 1
@@ -300,6 +358,7 @@ test("negative caching is shared, expires, and explicit refresh sees an install"
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       now: () => now,
       probeLoginShell: async () => {
         probes += 1;
@@ -335,6 +394,7 @@ test("a forced refresh queues behind an in-flight ordinary refresh", async () =>
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       now: () => now,
       probeLoginShell: async () => {
         probes += 1;
@@ -367,6 +427,7 @@ test("concurrent forced refreshes coalesce into one bounded shell probe", async 
   try {
     const locator = new ExecutableLocator({
       env: f.env,
+      executable: f.executable,
       probeLoginShell: async () => {
         probes += 1;
         return await pending;

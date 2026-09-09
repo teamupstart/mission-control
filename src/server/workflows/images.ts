@@ -667,6 +667,10 @@ export async function captureSubmissionImages(
   // once every source has been read. Without it a submission that proves the same bytes under
   // two captions writes the file twice and only later captures get to share it.
   const writtenHere = new Map<string, string>();
+  // Digests whose body this call did NOT write, keyed to the bytes and to the path this
+  // submission would own. Only these can be taken away underneath the capture, and only these
+  // are re-checked below.
+  const borrowed = new Map<string, { data: Buffer; ownPath: string }>();
   try {
     for (const item of reserved) {
       const inspected = await inspectReservedSource(item);
@@ -683,11 +687,8 @@ export async function captureSubmissionImages(
        */
       const shared = writtenHere.get(inspected.sha256)
         ?? shareableStoragePath(store, inspected.sha256);
-      const storageRelativePath = shared ?? join(
-        "retained",
-        submissionId,
-        `${id}.${extensionFor(inspected.mimeType)}`,
-      );
+      const ownPath = join("retained", submissionId, `${id}.${extensionFor(inspected.mimeType)}`);
+      const storageRelativePath = shared ?? ownPath;
       if (!shared) {
         const destination = resolveEvidenceStoragePath(storageRelativePath);
         const existed = existsSync(destination);
@@ -695,6 +696,7 @@ export async function captureSubmissionImages(
         if (!existed) created.push(destination);
       }
       writtenHere.set(inspected.sha256, storageRelativePath);
+      if (shared) borrowed.set(inspected.sha256, { data: inspected.data, ownPath });
       writes.push({
         id,
         stagingId: item.id,
@@ -708,6 +710,41 @@ export async function captureSubmissionImages(
         storageRelativePath,
         createdAt: now,
       });
+    }
+    /*
+     * A borrowed body can be deleted between choosing it and recording the row that reads it.
+     *
+     * `shareableStoragePath` checks the body it selects, but the loop above then awaits the
+     * next source. Retention sweeps on a timer, and one sweep prunes a run and then calls
+     * `reconcileWorkflowEvidenceFiles`, which deletes the queued bodies - so a body this
+     * capture chose can be gone before the row that would have protected it exists. The
+     * enqueue guard cannot see a row that has not been inserted yet.
+     *
+     * This pass runs with no `await` between it and `finalizeSubmissionImages`, which is
+     * synchronous, so nothing can interleave: on one thread, that is the whole race closed.
+     * A body that vanished or no longer matches is REWRITTEN to a path this submission owns
+     * rather than refused, because the bytes are still in hand and refusing would fail a
+     * capture over a file another run happened to reclaim.
+     */
+    for (const [sha256, body] of borrowed) {
+      const current = writtenHere.get(sha256);
+      if (!current) continue;
+      const path = resolveEvidenceStoragePath(current);
+      let intact = false;
+      try {
+        intact = existsSync(path) && inspectOpenFile(path).sha256 === sha256;
+      } catch {
+        intact = false;
+      }
+      if (intact) continue;
+      const destination = resolveEvidenceStoragePath(body.ownPath);
+      const existed = existsSync(destination);
+      writeImmutableCopy(destination, body.data, sha256);
+      if (!existed) created.push(destination);
+      writtenHere.set(sha256, body.ownPath);
+      for (const write of writes) {
+        if (write.sha256 === sha256) write.storageRelativePath = body.ownPath;
+      }
     }
     return store.finalizeSubmissionImages(submissionId, writes);
   } catch (error) {

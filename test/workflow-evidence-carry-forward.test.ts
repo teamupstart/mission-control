@@ -622,6 +622,95 @@ test("a parent at the coverage limit meeting a child with claims of its own stay
   }
 });
 
+test("re-registering a criterion under the same id does not spend the carry budget", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-redeclare-")));
+  try {
+    const shared = 40;
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const stageClaims = (
+      entries: ReadonlyArray<{ id: string; text: string }>,
+      at: number,
+    ) => {
+      store.stageWorkflowEvidence(noteKey, [], at, null, entries.map((entry) => ({
+        id: `redeclare-${entry.id}`,
+        clientCriterionId: entry.id,
+        criterion: entry.text,
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [],
+      })));
+    };
+    // "dup-" sorts ahead of "solo-", so if re-registered ids were charged to the budget they
+    // would be charged FIRST and the distinct ancestry behind them would be what got refused.
+    const parentClaims = [];
+    for (let index = 0; index < shared; index++) {
+      parentClaims.push({ id: `dup-${index}`, text: `Shared criterion ${index}` });
+    }
+    for (let index = 0; index < shared; index++) {
+      parentClaims.push({ id: `solo-${index}`, text: `Parent-only criterion ${index}` });
+    }
+    stageClaims(parentClaims, 2);
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "redeclare-root", now: 3 },
+      { id: "redeclare-parent", triggerSource: "manual", triggerKey: "redeclare-root", context: {}, evidence: {}, now: 3 },
+    );
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {}, evidence: {}, fingerprint: "rd-1", repositoryFingerprint: "tree", status: "running",
+    }, 3);
+    assert.equal(store.listSubmissionCoverage(parent.submission.id).length, shared * 2);
+
+    // The child re-registers every shared id byte-identically, which re-staging returns to the
+    // tray so this segment reserves them as its own, plus one genuinely new claim. The new one
+    // is what moves the generation; an identical re-registration deliberately does not.
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    stageClaims([
+      ...Array.from({ length: shared }, (_unused, index) => ({
+        id: `dup-${index}`,
+        text: `Shared criterion ${index}`,
+      })),
+      { id: "fresh-0", text: "A criterion this segment raised for the first time" },
+    ], 5);
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "redeclare-child",
+      runId,
+      waitingSubmissionId: parent.submission.id,
+      triggerKey: "redeclare-refinement",
+      manualRetry: true,
+      now: 5,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    assert.equal(
+      store.listSubmissionCoverage(child.submission.id).length,
+      shared + 1,
+      "the re-registered ids reached this segment alongside its new claim",
+    );
+    await inheritSubmissionEvidence(store, child.submission, 6);
+
+    const held = store.listSubmissionCoverage(child.submission.id);
+    assert.equal(
+      held.filter((claim) => claim.clientCriterionId.startsWith("solo-")).length,
+      shared,
+      "distinct ancestry is not displaced by ids the segment merely re-registered",
+    );
+    assert.equal(held.length, shared * 2 + 1);
+    assert.equal(
+      held.find((claim) => claim.clientCriterionId === "dup-0")?.inheritedFromSubmissionId ?? null,
+      null,
+      "a re-registered id belongs to this segment, not to the carry",
+    );
+    assert.deepEqual(
+      store.listEvents(runId).filter((event) => event.kind === "evidence_carry_truncated"),
+      [],
+      "nothing was refused, so nothing is reported as refused",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
 test("a three-level chain refuses the oldest ancestry, not the parent's own claims", async () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-chain-")));
   try {

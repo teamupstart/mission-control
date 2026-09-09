@@ -50,6 +50,7 @@ const {
   captureSubmissionTextArtifacts,
   readSubmissionImageBody,
   reconcileWorkflowEvidenceFiles,
+  resolveEvidenceStoragePath,
   resolveSubmissionImageInputs,
   stageAgentWorkflowEvidence,
   WorkflowImageEvidenceError,
@@ -96,6 +97,30 @@ async function withParentDirectorySwap<T>(input: {
       unlinkSync(input.parentPath);
       renameSync(parkedPath, input.parentPath);
     }
+  }
+}
+
+/** Run `action`, deleting `bodyPath` the moment `triggerPath` is opened. */
+async function withBodyDeletedDuringOpen<T>(input: {
+  triggerPath: string;
+  bodyPath: string;
+  action: () => Promise<T>;
+}): Promise<T> {
+  const originalOpenSync = mutableFs.openSync;
+  let fired = false;
+  mutableFs.openSync = ((...args: unknown[]) => {
+    if (!fired && args[0] === input.triggerPath) {
+      fired = true;
+      rmSync(input.bodyPath, { force: true });
+    }
+    return Reflect.apply(originalOpenSync, mutableFs, args);
+  }) as typeof import("node:fs").openSync;
+  syncBuiltinESMExports();
+  try {
+    return await input.action();
+  } finally {
+    mutableFs.openSync = originalOpenSync;
+    syncBuiltinESMExports();
   }
 }
 
@@ -968,5 +993,96 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
   } finally {
     rmSync(primary, { recursive: true, force: true });
     rmSync(secondary, { recursive: true, force: true });
+  }
+});
+
+test("a borrowed body reclaimed mid-capture is rewritten, not frozen as a dangling reference", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-image-borrow-")));
+  try {
+    const shared = Buffer.concat([PNG, Buffer.from("borrowed", "utf8")]);
+    const other = Buffer.concat([PNG, Buffer.from("other", "utf8")]);
+    writeFileSync(join(checkout, "shared.png"), shared);
+    writeFileSync(join(checkout, "other.png"), other);
+    const { createHash } = await import("node:crypto");
+    const digest = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+    const store = new WorkflowStore();
+    const binding = store.insertBinding({
+      id: "borrow-binding",
+      workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "borrow-note",
+      sessionId: "borrow-session",
+      sessionAgent: "codex",
+      sessionName: "borrow",
+      sessionCwd: checkout,
+      sessionRepoRoot: checkout,
+      triggerMode: "manual",
+      deliveryMode: "preview",
+      maxRepairRounds: 5,
+      now: 1,
+    });
+    const image = (id: string, clientItemId: string, locator: string, data: Buffer) => ({
+      id,
+      clientItemId,
+      sourceKind: "agent" as const,
+      sourceRoot: checkout,
+      sourceLocator: locator,
+      displayName: locator,
+      caption: `Evidence from ${locator}`,
+      repositoryScope: "all",
+      mimeType: "image/png" as const,
+      bytes: data.byteLength,
+      sha256: digest(data),
+    });
+
+    // The first submission writes the body a later capture will borrow.
+    store.stageWorkflowEvidence("borrow-note", [
+      image("borrow-a", "shared-first", "shared.png", shared),
+    ], 2);
+    const first = store.createInitialSubmission(
+      { id: "borrow-run-1", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "borrow-1", now: 3 },
+      { id: "borrow-sub-1", triggerSource: "manual", triggerKey: "borrow-1", context: {}, evidence: {}, now: 3 },
+    );
+    await captureSubmissionImages(store, first.submission.id, 3);
+    const lentPath = store.submissionImageStorageRecords(first.submission.id)[0]!.storageRelativePath;
+
+    // The second submission borrows it, then loses it while reading its OTHER source. Retention
+    // sweeps on a timer and deletes queued bodies, and the row that would have protected this
+    // one does not exist until the capture finalizes.
+    store.stageWorkflowEvidence("borrow-note", [
+      image("borrow-b", "shared-again", "shared.png", shared),
+      image("borrow-c", "other", "other.png", other),
+    ], 4);
+    const second = store.createInitialSubmission(
+      { id: "borrow-run-2", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "borrow-2", now: 5 },
+      { id: "borrow-sub-2", triggerSource: "manual", triggerKey: "borrow-2", context: {}, evidence: {}, now: 5 },
+    );
+    const captured = await withBodyDeletedDuringOpen({
+      triggerPath: join(checkout, "other.png"),
+      bodyPath: resolveEvidenceStoragePath(lentPath),
+      action: () => captureSubmissionImages(store, second.submission.id, 5),
+    });
+    assert.equal(captured.length, 2);
+
+    const records = store.submissionImageStorageRecords(second.submission.id);
+    const borrowed = records.find((record) => record.sha256 === digest(shared))!;
+    assert.notEqual(
+      borrowed.storageRelativePath,
+      lentPath,
+      "the reclaimed body is not frozen as a dangling reference",
+    );
+    assert.equal(
+      existsSync(resolveEvidenceStoragePath(borrowed.storageRelativePath)),
+      true,
+      "it is rewritten to a path this submission owns",
+    );
+    // The whole point: every reader of this submission still resolves.
+    const inputs = resolveSubmissionImageInputs(store, second.submission.id);
+    assert.equal(inputs.length, 2);
+    assert.equal(
+      readSubmissionImageBody(store, second.run.id, borrowed.id).data.byteLength,
+      shared.byteLength,
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
   }
 });

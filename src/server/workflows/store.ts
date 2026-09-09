@@ -5924,7 +5924,23 @@ export class WorkflowStore {
             - Number(b.row.inherited_from_submission_id !== null)
           || b.row.created_at - a.row.created_at
           || a.claim.clientCriterionId.localeCompare(b.claim.clientCriterionId));
+      /*
+       * A criterion this submission re-declared under the SAME id is not a carry at all.
+       *
+       * `freezeCoverage` is `INSERT OR IGNORE` on `(submission_id, client_criterion_id)`, so a
+       * carried row whose id this submission already froze is silently ignored: the author's
+       * current wording wins, which is the documented behaviour. Charging the budget for it
+       * anyway spends capacity on a row that was never written, and enough same-id
+       * re-declarations then truncate DISTINCT ancestry that would have fit - the opposite of
+       * the rule this budget exists to express.
+       *
+       * Filtered before the budget rather than detected after the insert, so `truncated.claims`
+       * counts only claims genuinely refused for want of room. A row that was never a candidate
+       * is not a claim the limit turned away.
+       */
+      const declaredHere = new Set(ownCoverage.map((claim) => claim.clientCriterionId));
       for (const { claim, row } of orderedCoverage) {
+        if (declaredHere.has(claim.clientCriterionId)) continue;
         if (claimBudget <= 0) {
           truncated.claims += 1;
           continue;

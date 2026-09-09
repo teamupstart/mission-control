@@ -15,14 +15,18 @@ import {
 } from "./task.ts";
 
 // A task source is this app's connection to an EXTERNAL work tracker. Inbound, it reads
-// that tracker on a schedule and RETURNS candidate tasks. Outbound, a kind may also
-// declare `push`, which files one of OUR tasks as an item in that tracker.
+// that tracker on a schedule and RETURNS candidate tasks. Outbound, a kind may declare
+// three verbs, and they are three because they answer three different questions:
+// `push` files one of OUR tasks as a new item upstream, `annotate` writes a note onto an
+// item a sweep already brought in, and `resolve` marks that item finished.
 //
-// What no implementation may do, in either direction, is write to OUR database. A sweep
+// What no implementation may do, in any direction, is write to OUR database. A sweep
 // returns candidates and `src/server/task-sources/ingest.ts` decides what becomes of
 // them; a push writes upstream and returns the ref it minted, and one chokepoint beside
-// `ingest.ts` records that ref here. Those chokepoints are the only DB writers on these
-// paths, which is what keeps every implementation a pure function over a subprocess.
+// `ingest.ts` records that ref here; a write-back reports what it managed to say, and
+// `writeback.ts` - the third chokepoint - is the only thing that touches the delivery
+// ledger. Those chokepoints are the only DB writers on these paths, which is what keeps
+// every implementation a pure function over a subprocess.
 //
 // The split is the point of the design. `CLAUDE.md`'s "the daemon is the only writer of
 // the DB" holds BY CONSTRUCTION rather than by every implementer remembering it, dedupe
@@ -30,12 +34,18 @@ import {
 // a source stays a pure function to test - `sweep(config) -> candidates` needs no
 // database, no registry and no HTTP, and `push(config, draft) -> ref` needs none either.
 //
-// The asymmetry between the two directions is deliberate, and it is about what a mistake
+// The asymmetry between the directions is deliberate, and it is about what a mistake
 // costs. A sweep is periodic and unattended, and the worst a broken one can do is file
 // junk into a list a human then reads and deletes - so it runs on a timer. A push
 // PUBLISHES, to a place other people are watching, and it cannot be taken back by
 // deleting a row here - so it fires only on an explicit per-task operator action, never
 // from the sweep loop, and never as a consequence of anything a sweep saw.
+//
+// The write-back verbs are automatic, which looks like the sweep's risk class and is not:
+// they publish, exactly as a push does. What stands in for the operator's click is
+// CONSENT STORED PER SOURCE - three switches, every one of them off by default - plus a
+// ledger key that makes a repeated observation cost nothing. A source nobody has switched
+// on writes nothing, which is every source in every existing installation.
 //
 // Sources never type into a pane. The skills reload loop needs `settledIdle` plus a pane
 // read plus `withPaneLock` before it dares (see "The daemon is no longer strictly
@@ -160,6 +170,121 @@ export interface PushResult {
  */
 export type PushContext = SweepContext;
 
+// ---- the outward direction: a note written back onto the item a task came from ----
+//
+// Where `push` files something NEW, these two write onto an item that already exists and
+// that somebody is watching. See `WritebackNotice` for why the payload is a snapshot, and
+// `src/server/task-sources/writeback.ts` for the ledger that makes delivery durable.
+
+/**
+ * Why a write-back is owed.
+ *
+ * **APPEND-ONLY**, for the reason `TASK_SOURCE_KINDS` is: these strings are persisted in
+ * the `task_source_writeback` ledger, and they are half of the unique key a delivery is
+ * de-duplicated on. Renaming one orphans every undelivered row written under the old
+ * spelling - the worker stops recognising it and the comment silently never appears.
+ */
+export const WRITEBACK_SIGNALS = ["pr-opened", "task-completed"] as const;
+export type WritebackSignal = (typeof WRITEBACK_SIGNALS)[number];
+
+/** What is owed. **APPEND-ONLY**, persisted in the same ledger for the same reason. */
+export const WRITEBACK_ACTIONS = ["annotate", "resolve"] as const;
+export type WritebackAction = (typeof WRITEBACK_ACTIONS)[number];
+
+/**
+ * The facts one write-back may state upstream. A SNAPSHOT, never the live `Task`.
+ *
+ * A draft rather than the task itself, for the reason `PushDraft` is one: an
+ * implementation must not be able to read a status, a worktree or an id off the thing it
+ * is publishing, because none of that means anything upstream and all of it would leak
+ * our internals into somebody else's tracker.
+ *
+ * And for a second reason that is specific to this direction. A delivery is enqueued when
+ * a fact is OBSERVED and attempted later, by a worker, possibly after a restart. The task
+ * may be gone by then - deleted, cleaned up, rescheduled - and "the pull request opened"
+ * stays true regardless. Holding a snapshot is what lets the ledger deliver it anyway,
+ * and it is why no row on that table joins back to `tasks`.
+ */
+export interface WritebackNotice {
+  signal: WritebackSignal;
+  action: WritebackAction;
+  /** The item upstream, e.g. "acme/demo#123" or "MC-431". */
+  externalId: string;
+  /** Deep link back to the item, when the source recorded one. */
+  externalUrl: string | null;
+  taskTitle: string;
+  /** The pull request this is about, or null for a completion that opened none. */
+  prUrl: string | null;
+  /** Which repository the pull request is in - a multi-repo task owes one notice per repo. */
+  repoRoot: string;
+  /** The completion's own words, for `task-completed`. Null otherwise. */
+  outcome: string | null;
+  /** When the fact was OBSERVED, not when delivery is attempted. */
+  observedAt: number;
+}
+
+/**
+ * The outcome of one write-back. Mirrors `PushResult`, for the same reason.
+ */
+export interface WritebackResult {
+  /** Human-readable failure, or null. */
+  error: string | null;
+  /**
+   * The write MAY have landed and we cannot tell.
+   *
+   * The same load-bearing flag `PushResult` carries, and it matters MORE here. A
+   * duplicated push files a second issue, which is noise a human deletes. A duplicated
+   * `resolve` re-closes or re-transitions an item a human may have deliberately moved
+   * back - it undoes a person rather than adding to a list. So an unknown outcome is
+   * never retried automatically, and an operator retrying one is asserting they have gone
+   * and looked.
+   */
+  outcomeUnknown: boolean;
+  /** One line for the panel, e.g. "commented" or "closed as completed". Null on failure. */
+  detail: string | null;
+}
+
+/**
+ * What the daemon lends a write-back - the same lends as a sweep, deliberately.
+ *
+ * An alias for the reason `PushContext` is one: the shape is identical (which source,
+ * which repo, which signal) and a second declaration would only let the two drift.
+ * `signal` is shape parity here too - nothing aborts a write that has already left.
+ */
+export type WritebackContext = SweepContext;
+
+/**
+ * Per-source consent to write back, stored beside `defaults` on the instance.
+ *
+ * All three default OFF, for the reason `TaskSourceInstance.enabled` does: adding a
+ * source is configuration, and writing onto somebody else's tracker is consent. The
+ * default is also what makes this feature invisible to every installation that existed
+ * before it - a stored source gains these three `false`s on read and behaves exactly as
+ * it did.
+ */
+export const TaskSourceWritebackSchema = z
+  .object({
+    /** Comment the pull request onto the item when one is first linked to the task. */
+    onPrOpened: z.boolean().default(false),
+    /** Comment the outcome onto the item when the task completes. */
+    onCompleted: z.boolean().default(false),
+    /**
+     * Also resolve the item on completion - close the issue, move the ticket.
+     *
+     * Requires `onCompleted`. Refused at the schema rather than stored, because a stored
+     * switch that can never fire is worse than a rejected one: the panel would show
+     * auto-resolve ON while nothing ever resolved, and the operator would have no way to
+     * tell that from an upstream that keeps refusing.
+     */
+    resolve: z.boolean().default(false),
+  })
+  .refine((w) => !(w.resolve && !w.onCompleted), {
+    message:
+      "auto-resolve needs the completion trigger - a resolve with nothing to trigger it never fires",
+    path: ["resolve"],
+  });
+export type TaskSourceWriteback = z.infer<typeof TaskSourceWritebackSchema>;
+
 /**
  * What can be answered about a kind WITHOUT a `node:` import, so the settings panel can
  * render a source whose implementation it cannot import: its name, its blurb, and the
@@ -195,6 +320,29 @@ export interface TaskSourceKindInfo<C = unknown> {
    * and implements nothing is a button that fails when pressed.
    */
   canPush: boolean;
+  /**
+   * This kind can write a note back onto an item it swept - a comment, a remote link.
+   *
+   * Required, and on the pure half, for the reasons `canPush` is both: the
+   * `Record<TaskSourceKind, …>` makes a new kind declare it rather than discovering the
+   * answer by calling, and the settings panel decides whether to offer the switch without
+   * importing an implementation the browser cannot load.
+   *
+   * A capability the BUILD does not have is a different thing from a switch an operator
+   * has not turned on, which is why the panel disables rather than hides it - and why
+   * `test/task-source-contract.test.ts` pins this against the presence of `annotate` in
+   * both directions.
+   */
+  canAnnotate: boolean;
+  /**
+   * This kind can mark an item resolved - close the issue, transition the ticket.
+   *
+   * Separate from `canAnnotate` rather than one "can write back" flag, because a kind can
+   * honestly have one and not the other: commenting is one call everywhere, while
+   * "finished" is whatever a project's own workflow calls it. Pinned against `resolve`
+   * the same way.
+   */
+  canResolve: boolean;
   /**
    * Validates and defaults this kind's config blob. The panel renders from it too.
    *
@@ -244,6 +392,39 @@ export interface TaskSourceImpl<C> extends TaskSourceKindInfo<C> {
    * the implementation's own subprocess timeout and the caller's in-flight guard.
    */
   push?(config: C, draft: PushDraft, ctx: PushContext): Promise<PushResult>;
+  /**
+   * Write a note onto the item this task was swept from, and report what was said.
+   *
+   * Optional, and present EXACTLY when the kind's `canAnnotate` says so - the contract
+   * test pins both directions. Reach it through `annotateWith`
+   * (`src/server/task-sources/index.ts`), never by testing `inst.kind`.
+   *
+   * NEVER called from the sweep loop, and never inline on a hot path. The only caller is
+   * the write-back worker, draining a ledger row a trigger enqueued - so an implementation
+   * may take its subprocess or its round trip without anything waiting on it.
+   *
+   * `ctx.signal` is shape parity with `SweepContext` and nothing more, exactly as it is on
+   * `push`: nothing cancels a comment that has already been sent.
+   */
+  annotate?(
+    config: C,
+    notice: WritebackNotice,
+    ctx: WritebackContext,
+  ): Promise<WritebackResult>;
+  /**
+   * Mark the item finished, and report what moved.
+   *
+   * Optional, present exactly when `canResolve` says so, reached through `resolveWith`,
+   * and called only by the worker - all as for `annotate` above. The difference is what a
+   * mistake costs: this is the one verb in the feature that changes an item's STATE, so a
+   * refusal must name what to fix rather than guess, and an unknown outcome must never be
+   * retried automatically. See `WritebackResult.outcomeUnknown`.
+   */
+  resolve?(
+    config: C,
+    notice: WritebackNotice,
+    ctx: WritebackContext,
+  ): Promise<WritebackResult>;
 }
 
 // ---- github-issues: the first kind's config ----
@@ -278,6 +459,17 @@ export const GithubIssuesConfigSchema = z
     /** Copy the issue's GitHub labels onto the task. */
     copyLabels: z.boolean().default(true),
     limit: z.number().int().min(1).max(200).default(50),
+    /**
+     * How `resolve` closes an issue, when the source's write-back consent says to.
+     *
+     * OUR spelling, not `gh`'s. `gh issue close --reason` takes `completed` or
+     * `not planned` WITH A SPACE, and the argv builder maps this value rather than
+     * passing it through. Storing `gh`'s spelling instead would put a space inside a
+     * persisted enum for no gain, and passing ours through unmapped is a close that `gh`
+     * rejects on every attempt until the ledger row exhausts its retries - a switch that
+     * looks configured and never works.
+     */
+    closeReason: z.enum(["completed", "not-planned"]).default("completed"),
   })
   // Together these select NOTHING, and a filter that silently matches nothing is the
   // worst possible failure for a background sweep: it is indistinguishable from a repo
@@ -334,6 +526,31 @@ export const JiraConfigSchema = z.object({
    * `priorityFor` in `src/server/task-sources/jira.ts`.
    */
   priorityFromJira: z.boolean().default(true),
+  /**
+   * The status a resolved issue should land in, e.g. `Done`. Empty is a valid STORED
+   * config and an unusable resolve, exactly as `jql` is and for the same reason: this
+   * schema has to parse `{}`, because that is the blob a freshly added source carries.
+   * So the emptiness is caught where it can be explained instead.
+   *
+   * Jira has no single "close": a project's own workflow decides both what finished is
+   * called and which transitions are reachable from where the issue is standing right
+   * now. Matching a name the operator wrote against the transitions Jira offers is the
+   * only way to be right about that, and refusing with the available names is the only
+   * useful thing to do when it does not fit.
+   *
+   * Read by the verbs Phase 2 implements. Stored here from Phase 1 so
+   * `src/shared/task-source.ts` has exactly one owner across the feature; until then
+   * `jira` declares `canAnnotate: false, canResolve: false` and nothing reads it.
+   */
+  resolveTransition: z.string().max(120).default(""),
+  /**
+   * How `annotate` links the pull request onto the issue.
+   *
+   * Both by default, because they answer different questions: the remote link is where a
+   * person looks for "what work touched this", and the comment is what reaches the
+   * activity feed and a notification. Phase 2 implements them.
+   */
+  linkVia: z.enum(["comment", "remote-link", "both"]).default("both"),
 });
 export type JiraConfig = z.infer<typeof JiraConfigSchema>;
 
@@ -354,6 +571,10 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // `gh issue create` is the outward half, so a backlog task can become an issue other
     // people sweeping this repo can see.
     canPush: true,
+    // `gh issue comment` and `gh issue close`, through the same CLI and the same auth as
+    // everything else here - so the write-back direction adds no token and no new secret.
+    canAnnotate: true,
+    canResolve: true,
     configSchema: GithubIssuesConfigSchema,
   },
   jira: {
@@ -367,6 +588,14 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // is a configuration surface of its own. Declared false so the action is hidden
     // instead of failing when pressed.
     canPush: false,
+    // Both FALSE, and honestly so rather than optimistically: this build genuinely cannot
+    // write to a Jira issue yet. Jira's two rungs, its transition matcher and the
+    // `jiraBin()` seam that keeps a test off a real issue are Phase 2 of the write-back
+    // plan, and they flip these in the same commit that implements the verbs. Declaring
+    // `true` here would be a switch the panel offers and the worker fails - which is
+    // exactly what `test/task-source-contract.test.ts` refuses to compile past.
+    canAnnotate: false,
+    canResolve: false,
     configSchema: JiraConfigSchema,
   },
 };
@@ -438,6 +667,14 @@ const TaskSourceInstanceBase = z.object({
     .transform(clampSweepInterval),
   defaults: TaskSourceDefaultsSchema.default({}),
   maxPerSweep: z.number().int().min(1).max(MAX_PER_SWEEP_CEILING).default(DEFAULT_MAX_PER_SWEEP),
+  /**
+   * Whether this source may write back onto the items it swept, and how far.
+   *
+   * A default over the `app_config` blob, so a source written by an older build gains
+   * three `false`s on read and needs no migration - the same way every other field here
+   * arrived.
+   */
+  writeback: TaskSourceWritebackSchema.default({}),
   /** Kind-specific, validated below by that kind's own `configSchema`. */
   config: z.unknown().default({}),
 });
@@ -505,10 +742,45 @@ export interface TaskSourceStatus {
   sweeping: boolean;
 }
 
+/**
+ * One source's write-back queue, as the panel reads it.
+ *
+ * Derived from the `task_source_writeback` ledger on every read, unlike `TaskSourceStatus`
+ * above, which is process-local. The difference is what each describes: a sweep's outcome
+ * is re-established by simply sweeping again, while an owed write-back is a fact that must
+ * survive a restart, so its counts come from the table that survived with it.
+ */
+export interface TaskSourceWritebackStatus {
+  sourceId: string;
+  /** Owed and not yet attempted, or waiting out a backoff or a settle window. */
+  pending: number;
+  /** Refused until the attempts ran out. Nothing was written; a retry is safe. */
+  failed: number;
+  /**
+   * May have landed upstream, and we cannot tell.
+   *
+   * Never retried automatically. A person looks at the item first, which is why the
+   * panel's retry control separates these from `failed` rather than sweeping both up.
+   */
+  unknown: number;
+  delivered: number;
+  /** The most recent failure's words, or null. */
+  lastError: string | null;
+  lastDeliveredAt: number | null;
+}
+
 /** The whole Task sources panel in one read: what is configured, and how it is doing. */
 export interface TaskSourcesView {
   sources: TaskSourceInstance[];
   status: TaskSourceStatus[];
+  /**
+   * Each source's write-back queue.
+   *
+   * Declared with the rest of the contract and served as an EMPTY array until the panel
+   * that reads it exists (Phase 3 of the write-back plan). Empty is a valid answer -
+   * "this source owes nothing" - so no consumer has to special-case the interval.
+   */
+  writeback: TaskSourceWritebackStatus[];
   /** The kinds this build offers, so the panel's "add" control is not a hand-kept list. */
   kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
 }

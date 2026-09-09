@@ -97,6 +97,62 @@ test("Persona Check citations must name a frozen upstream attempt", () => {
   assert.equal(parsePersonaVerdict(cited("attempt-check-2")), null);
 });
 
+test("the evidence-availability contract scopes coverage declarations out of Persona judgment", () => {
+  const context: WorkflowContextSnapshot = {
+    primaryGoal: { rawPrompt: "Ship the fix", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [],
+    constraints: [],
+    acceptanceCriteria: ["The fix is proven"],
+    priorPersonaFeedback: [],
+    session: { agent: "claude", name: "work", cwd: "/repo", branch: "feature" },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "diff",
+      diff: "diff",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: null,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+    },
+    compaction: { status: "fallback", runner: null, model: null, error: null },
+  };
+  const prompt = buildPersonaPrompt({
+    sourcePersonaId: "p1",
+    sourceRevision: 1,
+    name: "Code Quality",
+    description: "",
+    guidanceMarkdown: "Review the change.",
+    runner: null,
+    model: null,
+  }, context);
+  // The sentence is IN the contract section, not merely somewhere in the prompt: a Persona
+  // reads this section to decide what an absence means, and that is where the answer belongs.
+  const contract = prompt.slice(
+    prompt.indexOf("# Evidence availability contract"),
+    prompt.indexOf("# Prior Persona feedback"),
+  );
+  assert.ok(contract.length > 0);
+  const disclaimer = contract
+    .split("\n")
+    .find((line) => line.startsWith("Criterion coverage declarations"));
+  assert.ok(disclaimer, "the contract must carry the coverage disclaimer");
+  assert.match(disclaimer, /validated by the evidence preflight before this review/);
+  assert.match(disclaimer, /is never a reason to fail a submission/);
+  // ONE sentence, which is the form the request asked for rather than a stylistic preference:
+  // this line sits in a contract a Persona reads before judging, and a paragraph invites the
+  // reader to weigh clauses against each other where a single rule cannot be read two ways.
+  assert.equal(disclaimer.split(". ").length, 1);
+  assert.equal(disclaimer.match(/\.$/) !== null, true);
+  // The coverage rows themselves are still not rendered; the sentence says so, and a later
+  // change that starts rendering them has to revisit the source plan's decision first.
+  assert.equal(prompt.includes("proofClass"), false);
+});
+
 test("Persona prompts put immutable human intent before exact Persona Markdown and fence evidence", () => {
   const context: WorkflowContextSnapshot = {
     primaryGoal: { rawPrompt: "RAW HUMAN GOAL", refined: "refined", sourceNoteKey: "note" },

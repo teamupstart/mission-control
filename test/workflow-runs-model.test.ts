@@ -1027,6 +1027,57 @@ test("timeline events are phrased in names and carry their round forward", () =>
   assert.equal(prepared.detail, "");
 });
 
+test("the two guardrail events read as operator prose in the timeline without a widget", () => {
+  const names = { node: (id: string) => id === "quality" ? "Code Quality Judge" : null, round: () => 1 };
+  // A Persona failing a submission the preflight passed. The reviewer is named, the durable
+  // ids stay in the export, and the reader is told which gate said what.
+  const disagreement = eventLine({
+    id: 7,
+    runId: "run",
+    timestamp: 7,
+    kind: "readiness_review_disagreement",
+    payload: {
+      submissionId: "s1",
+      nodeId: "quality",
+      persona: "Code Quality Judge",
+      round: 1,
+      segment: 0,
+      policy: "criterion_mapped_v1",
+      evaluatorVersion: "criterion_mapped_v1",
+      readiness: "ready",
+      summary: "No acceptance criterion coverage was declared",
+    },
+  }, names, 1);
+  assert.equal(disagreement.title, "Readiness review disagreement");
+  assert.match(disagreement.detail, /Code Quality Judge/);
+  assert.match(disagreement.detail, /readiness ready/);
+  assert.match(disagreement.detail, /No acceptance criterion coverage was declared/);
+  assert.doesNotMatch(disagreement.detail, /s1/);
+
+  // The round that spent its refinements. The count and the limit are the two numbers an
+  // operator needs to know the block is a bound rather than a failure.
+  const exhausted = eventLine({
+    id: 8,
+    runId: "run",
+    timestamp: 8,
+    kind: "preflight_refinement_exhausted",
+    payload: {
+      submissionId: "s1",
+      round: 1,
+      segment: 2,
+      refinements: 2,
+      limit: 2,
+      manualRetry: true,
+    },
+  }, names, 1);
+  assert.equal(exhausted.title, "Preflight refinement exhausted");
+  assert.match(exhausted.detail, /refinements 2/);
+  assert.match(exhausted.detail, /limit 2/);
+  // A true boolean prints its key, which for a camelCase key is the key itself. That is the
+  // existing rendering rule for every boolean payload field, not something this event opts into.
+  assert.match(exhausted.detail, /manualRetry/);
+});
+
 // ---- Check outcomes ----
 //
 // Vocabulary lives in this module so a new durable enum value fails typecheck until somebody

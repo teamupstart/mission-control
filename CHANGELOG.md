@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.12.0](https://github.com/teamupstart/mission-control/compare/v1.11.0...v1.12.0) (2026-09-09)
+
+
+### Features
+
+* **workflows:** add Test Coverage Judge to No-Mistakes Review ([#958](https://github.com/teamupstart/mission-control/issues/958)) ([98bc3ac](https://github.com/teamupstart/mission-control/commit/98bc3ac15e0c5c4d8e8deed57790fb4146fdacea))
+
+
+### Bug Fixes
+
+* **workflows:** review against the intent a run froze, not the live Goal ([#960](https://github.com/teamupstart/mission-control/issues/960)) ([1665b76](https://github.com/teamupstart/mission-control/commit/1665b769ff768ca82a810683b68cf10ddac856f6))
+
 ## [1.11.0](https://github.com/teamupstart/mission-control/compare/v1.10.0...v1.11.0) (2026-09-09)
 
 

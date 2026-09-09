@@ -388,7 +388,7 @@ test("stable extraction excludes coverage and survives source reconciliation fai
     },
     reconcile: async (prompt: string) => {
       prompts.push({ phase: "reconcile", prompt });
-      return { kind: "failed" as const, reason: "invalid mapping response" };
+      return { kind: "failed" as const, reason: "invalid mapping response", cause: "parse" as const };
     },
     runner: "codex",
     model: "test",

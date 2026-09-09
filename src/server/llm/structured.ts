@@ -19,13 +19,25 @@ import type { ZodTypeAny, TypeOf } from "zod";
 /**
  * The result of one structured run: either a model-produced, schema-valid value
  * (success - INCLUDING a judgment you don't like, e.g. action:"skip") or a
- * transient failure (a spawn/timeout/exit error, or a parse miss after the retry).
+ * transient failure, tagged with WHY under `cause`:
+ *
+ *   - "transport": the run itself failed - a spawn error, a timeout, a non-zero exit.
+ *     Evidence about the machine, not about the instruction it was asked to judge.
+ *   - "cancelled": the owning durable operation stopped (daemon shutdown, a withdrawn
+ *     request) before or during an attempt. There is nothing to blame and nothing to
+ *     record; the next poll or the next daemon tries again with a clean slate.
+ *   - "parse": the model answered, but nothing it returned - after the retry - passed
+ *     the schema. The one cause that is actually evidence about the model's reply.
  *
  * Callers must treat these differently, which is the whole reason the contract
  * separates them: a genuine judgment is durable, but a failure must never be
- * stamped as one, or a single infra blip would abandon the work for good.
+ * stamped as one, or a single infra blip would abandon the work for good. `cause`
+ * is what lets a caller tell "the machine hiccuped, try again" from "the model
+ * actually could not answer" without parsing `reason`'s free text.
  */
-export type StructuredResult<T> = { kind: "ok"; value: T } | { kind: "failed"; reason: string };
+export type StructuredResult<T> =
+  | { kind: "ok"; value: T }
+  | { kind: "failed"; reason: string; cause: "transport" | "parse" | "cancelled" };
 
 export interface StructuredAttemptObserver {
   /**
@@ -104,19 +116,27 @@ export async function runStructured<S extends ZodTypeAny>(
     let raw: string;
     try {
       if (observer?.start(attempt, p) === false) {
-        return { kind: "failed", reason: `${label} stopped before its next attempt.` };
+        return {
+          kind: "failed",
+          reason: `${label} stopped before its next attempt.`,
+          cause: "cancelled",
+        };
       }
       raw = await run(p);
     } catch (err) {
       const error = String(err);
       observer?.finish(attempt, { parsed: false, raw: null, error });
-      return { kind: "failed", reason: `${label} failed: ${String(err)}` };
+      return { kind: "failed", reason: `${label} failed: ${String(err)}`, cause: "transport" };
     }
     const value = extract(raw);
     observer?.finish(attempt, { parsed: value !== null, raw, error: null });
     if (value) return { kind: "ok", value };
   }
-  return { kind: "failed", reason: `${label} could not parse a valid reply from the model.` };
+  return {
+    kind: "failed",
+    reason: `${label} could not parse a valid reply from the model.`,
+    cause: "parse",
+  };
 }
 
 /**

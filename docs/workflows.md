@@ -934,6 +934,14 @@ The operator may instead continue through the run detail after entering a reason
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.
 
+One round may spend at most two consecutive `evidence_preflight` refinements. A third, whether the
+session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
+the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
+submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
+alone. The waiting submission stays waiting, so the run detail keeps showing the evidence-readiness
+decision panel and the operator can still continue despite gaps from the block; the retry control is
+withdrawn with the loop it would restart. Resubmitting the run opens an ordinary new round instead.
+
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another
 criterion-evidence cycle. Continuations with a reachable Persona or Check remain submission-local
@@ -979,6 +987,17 @@ upstream Check evidence is the separate server-observed form. An artifact citati
 outside the submission manifest are rejected. These Persona inputs exist before any optional
 pull-request or Inspector stage. A Persona must judge the submission evidence it received, not
 require PR checks, remote CI, or Inspector evidence that can only exist later in the workflow.
+
+Criterion coverage declarations are not among those inputs and are not rendered into the prompt.
+The evidence-availability contract says so and scopes them out of Persona judgment: the preflight
+validates coverage before the review runs, so a Persona must never fail a submission for missing,
+incomplete, or undeclared coverage. When a Persona fails a submission whose readiness evaluation
+answered `ready`, the run records a `readiness_review_disagreement` event naming the submission, the
+reviewer, the evaluator version, and the readiness policy in force, so the run's own timeline shows
+the two readings disagreeing while the round is still open. An advisory `ready` gated nothing and so
+means less than an enforced one, but it is the same contradiction and is recorded the same way; the
+policy in the payload is what tells them apart. The event is a signal, never a verdict rewrite: a
+Persona is entitled to fail structurally complete evidence on its merits.
 
 Every completed built-in Test Evidence Auditor attempt also appends a bounded
 `test_evidence_audit` workflow event. It records first-submission status, pass or fail, rejection

@@ -170,6 +170,7 @@ import {
   type SubmitExternalInput,
 } from "./external-binding.ts";
 import {
+  EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
   WorkflowStore,
   type WorkflowDeleteWrite,
   type WorkflowPublishWrite,
@@ -1657,18 +1658,27 @@ export class WorkflowManager {
     if (!prepared.ok) return prepared;
     const { lead, siblings } = prepared.value;
     const value = { run: lead.run, submission: lead.submission };
-    // BEFORE the lead's idempotency is consulted, and never gated on it. `idempotent` here is
-    // the LEAD's own answer and says nothing about the siblings, which are only ever runs this
-    // call freshly created - `prepareSubmit` skips an idempotent non-lead entirely. Returning
-    // early on the lead therefore stranded a genuinely new sibling run in `capturing` for
-    // ever: durable, published, gating its repository's pull request, and never captured.
+    // The lead's capture promise is created BEFORE the fan-out, exactly as the Foreman
+    // completion path creates its own, so the lead takes the conversation's capture lock
+    // first and the siblings queue behind it. That lock is FIFO, and this call is awaited: a
+    // lead that joined the queue last would put one sequential evidence capture - a git read,
+    // and possibly a compaction - per ATTACHED REPOSITORY on the request path.
+    const leadCapture = prepared.idempotent
+      ? null
+      : this.captureAndActivate(lead.binding, lead.run, lead.submission);
+    // The fan-out happens BEFORE the lead's idempotency is answered, and is never gated on
+    // it. `idempotent` here is the LEAD's own answer and says nothing about the siblings,
+    // which are only ever runs this call freshly created - `prepareSubmit` skips an
+    // idempotent non-lead entirely. Returning early on the lead therefore stranded a
+    // genuinely new sibling run in `capturing` for ever: durable, published, gating its
+    // repository's pull request, and never captured.
     this.activateSiblingRuns(siblings);
-    if (prepared.idempotent) return { ok: true, value, idempotent: true };
+    if (!leadCapture) return { ok: true, value, idempotent: true };
     // The lead is awaited, exactly as the one run always was, so a caller still gets an
     // activated run back. Siblings capture in the background: they are serialized behind the
-    // lead by the conversation's capture lock anyway, and holding an operator's request open
-    // for one git read per attached repository buys nothing.
-    return this.captureAndActivate(lead.binding, lead.run, lead.submission);
+    // lead by the conversation's capture lock, and holding an operator's request open for one
+    // git read per attached repository buys nothing.
+    return leadCapture;
   }
 
   /**
@@ -1687,13 +1697,16 @@ export class WorkflowManager {
     if (!prepared.ok) return prepared;
     const { lead, siblings } = prepared.value;
     const value = { run: lead.run, submission: lead.submission };
-    // Before the lead's idempotency is consulted, for the reason `submit` gives above: these
-    // are freshly created runs whatever the lead's own answer was.
+    // Created before the fan-out for the ordering reason `submit` gives: the capture lock is
+    // FIFO, and the lead is the run this call hands back for the operator to watch.
+    const leadCapture = prepared.idempotent
+      ? null
+      : this.captureAndActivate(lead.binding, lead.run, lead.submission);
+    // And the fan-out still runs before the lead's idempotency is answered, for the reason
+    // `submit` gives above: these are freshly created runs whatever the lead's own answer was.
     this.activateSiblingRuns(siblings);
-    if (prepared.idempotent) return { ok: true, value, idempotent: true };
-    this.trackBackgroundTask(
-      this.captureAndActivate(lead.binding, lead.run, lead.submission).then(() => undefined),
-    );
+    if (!leadCapture) return { ok: true, value, idempotent: true };
+    this.trackBackgroundTask(leadCapture.then(() => undefined));
     return { ok: true, value };
   }
 
@@ -2139,6 +2152,9 @@ export class WorkflowManager {
       now,
     });
     if (!reserved.ok) {
+      // The cap blocked the run inside the reservation, so the operator's page has to hear
+      // about it: this refusal is the one that changes durable run state.
+      if (reserved.reason === "refinement_exhausted") this.publishRun(runId);
       return {
         ok: false,
         reason: reserved.reason === "no_change" ? "unchanged_evidence" : "conflict",
@@ -2148,7 +2164,10 @@ export class WorkflowManager {
             ? "That request id already names a different evidence refinement"
             : reserved.reason === "no_change"
               ? "Stage new evidence before retrying evidence preflight"
-              : "The submission is no longer waiting for evidence readiness",
+              : reserved.reason === "refinement_exhausted"
+                ? `This round has spent its ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} evidence`
+                  + " preflight refinements; continue despite gaps or start a new round"
+                : "The submission is no longer waiting for evidence readiness",
       };
     }
     const currentRun = this.store.getRun(runId) ?? run;
@@ -7082,7 +7101,12 @@ export class WorkflowManager {
       manualRetry,
       now,
     });
-    if (!reserved.ok) return;
+    if (!reserved.ok) {
+      // Every other refusal here leaves the run exactly as the sweep found it. The cap does
+      // not: it parked the run for the operator, and nothing else will publish that.
+      if (reserved.reason === "refinement_exhausted") this.publishRun(run.id);
+      return;
+    }
     if (reserved.idempotent && reserved.submission.status !== "capturing") return;
     this.publishRun(run.id);
     const current = this.store.getRun(run.id);
@@ -7566,17 +7590,33 @@ export class WorkflowManager {
     return out;
   }
 
+  /**
+   * Serialize a conversation's captures, exactly as `withGateLock` serializes a run's gates.
+   *
+   * The published entry is the CHAIN TAIL, not this caller's own hold, and it is published
+   * synchronously - before the first await. That ordering is the whole guarantee. Publishing
+   * after awaiting the predecessor leaves the map holding the predecessor while every waiter
+   * reads it, so they all queue behind the same one promise and resume together; two callers
+   * hide that, three do not. Queueing behind the tail instead makes each caller wait for the
+   * whole chain, and makes the map's answer to "is a capture live for this note key?" - which
+   * is what the readiness sweep asks - true from the moment a caller queues.
+   *
+   * Keyed by note key because the evidence staging tables are: `workflow_evidence_staging`
+   * and `workflow_evidence_coverage_staging` are shared by every repository run of one
+   * conversation, and `ensureRepoBinding` copies the anchor's note key onto each sibling.
+   */
   private async withCaptureLock<T>(noteKey: string, fn: () => Promise<T>): Promise<T> {
-    const before = this.captureLocks.get(noteKey);
-    if (before) await before;
+    const before = this.captureLocks.get(noteKey) ?? Promise.resolve();
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
-    this.captureLocks.set(noteKey, held);
+    const tail = before.then(() => held, () => held);
+    this.captureLocks.set(noteKey, tail);
+    await before.catch(() => {});
     try {
       return await fn();
     } finally {
-      if (this.captureLocks.get(noteKey) === held) this.captureLocks.delete(noteKey);
       release();
+      if (this.captureLocks.get(noteKey) === tail) this.captureLocks.delete(noteKey);
     }
   }
 

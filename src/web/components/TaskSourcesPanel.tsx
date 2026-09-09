@@ -1027,6 +1027,11 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
         enabled: false,
       },
       maxPerSweep: DEFAULT_MAX_PER_SWEEP,
+      // Every write-back switch off, for the reason `enabled` above is off: writing onto
+      // somebody else's tracker is consent, and the editor is where it is given. The
+      // switches themselves arrive with the operator surface; this only makes the minted
+      // instance match what the schema would have defaulted it to anyway.
+      writeback: { onPrOpened: false, onCompleted: false, resolve: false },
       config: {},
     };
     const saved = await save([...sourcesRef.current, added]);

@@ -650,3 +650,214 @@ test("valid preflight outcomes remain visible when Auditor telemetry is unreadab
   await expect(card).toContainText("0% (0 of 1 enforcing evaluations)");
   await expect(card).not.toContainText("No Test Evidence Auditor attempt has been recorded yet");
 });
+
+test("a round's spent preflight refinements block the run and hand the decision to the operator", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const versionId = await createWorkflow(daemon);
+  const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(
+    daemon,
+    "/api/sessions",
+  )).find((candidate) => candidate.id === sessionId);
+  expect(session).toBeTruthy();
+  const noteKey = session!.agentSessionId ?? session!.id;
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO workflow_evidence_owners (
+         note_key, generation, all_generation, updated_at
+       ) VALUES (?, 0, 0, ?)`,
+    ).run(noteKey, Date.now());
+  });
+
+  // Every packet is missing the rendered output its own visual claim promises, so the
+  // preflight keeps answering `gaps` and the round keeps buying refinements with them.
+  stageLaterPacket(daemon, noteKey, session!.cwd, 1, "cap-root", false);
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: versionId,
+    sessionId,
+  });
+  const created = await api<{ run: { id: string }; submission: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: `cap-root-${Date.now()}` },
+  );
+  const runId = created.run.id;
+  const runStatus = async () => (
+    await api<{ run: { status: string; currentPhase: string } }>(daemon, `/api/workflow-runs/${runId}`)
+  ).run;
+  await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
+    .toBe("waiting_for_evidence_readiness");
+
+  // The two refinements the cap leaves room for, taken through the daemon's own route.
+  let parentId = created.submission.id;
+  for (const ordinal of [1, 2]) {
+    stageLaterPacket(daemon, noteKey, session!.cwd, ordinal + 1, `cap-refine-${ordinal}`, false);
+    const refined = await api<{ submission: { id: string } }>(
+      daemon,
+      `/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
+      { requestId: `cap-refine-${ordinal}-${Date.now()}` },
+    );
+    parentId = refined.submission.id;
+    await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
+      .toBe("waiting_for_evidence_readiness");
+  }
+
+  // The healthy waiting round first, so the two controls the block changes are known to have
+  // been there: this is the state every earlier segment of this round rendered in.
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
+  await expect(readiness.getByRole("region", { name: "Evidence readiness override" }))
+    .not.toContainText("This round has spent its evidence preflight refinements");
+
+  /*
+   * The attempt that exceeds the cap, requested rather than clicked.
+   *
+   * WHICH actor spends it is genuinely a race and the daemon is right either way: the readiness
+   * sweep reserves newly staged evidence on its own tick, so it can reach the cap between the
+   * staging below and anything this spec does. Both routes are refused with 409 and both block
+   * the run identically, so this asserts the refusal and then the state both produce. Driving it
+   * through the route keeps the browser assertions below about the block's CONSEQUENCE, which is
+   * what a person sees and what no other test layer can observe. The cap's own refusal message
+   * is asserted where its ordering is deterministic, in `test/workflow-evidence-preflight.test.ts`.
+   */
+  stageLaterPacket(daemon, noteKey, session!.cwd, 4, "cap-over-limit", false);
+  const refusal = await fetch(
+    `${daemon.baseURL}/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId: `cap-over-limit-${Date.now()}` }),
+    },
+  );
+  expect(refusal.status).toBe(409);
+  await expect.poll(async () => (await runStatus()).currentPhase, { timeout: 60_000 })
+    .toBe("preflight_refinement_exhausted");
+  expect((await runStatus()).status).toBe("blocked");
+  // No fourth submission exists: the refusal is a refusal, not a segment that reviewed nothing.
+  expect((await api<{ submissions: unknown[] }>(daemon, `/api/workflow-runs/${runId}`)).submissions)
+    .toHaveLength(3);
+
+  // The block withdraws the loop, not the decision: the refinement button is gone, the reason
+  // is on the page, and the operator's own way through is still there.
+  const overrideBox = readiness.getByRole("region", { name: "Evidence readiness override" });
+  await expect(overrideBox).toBeVisible();
+  await expect(overrideBox).toContainText(
+    "This round has spent its evidence preflight refinements without closing these gaps",
+  );
+  await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toHaveCount(0);
+  await readiness.scrollIntoViewIfNeeded();
+  await capture(dashboard, "08-preflight-refinements-exhausted", readiness);
+
+  await overrideBox.getByLabel("Reason").fill(
+    "The mapping is right; the preflight and this packet disagree about the proof class.",
+  );
+  await overrideBox.getByLabel("Test Evidence Auditor may still reject this packet.").check();
+  await overrideBox.getByRole("button", { name: "Continue despite gaps" }).click();
+  await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 }).toBe("completed");
+  await expect(readiness).toContainText(
+    "Operator continued despite gaps: The mapping is right; the preflight and this packet"
+    + " disagree about the proof class.",
+  );
+});
+
+test("a Persona failing a packet the preflight passed shows the disagreement on the run timeline", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  // No model tokens: the reviewer's published guidance carries `E2E_FAIL_VERDICT`, which
+  // `e2e/fixtures/fake-claude.mjs` answers with a fixed, schema-valid fail verdict.
+  const persona = await api<{ id: string }>(daemon, "/api/personas", {
+    name: "Disagreement reviewer",
+    guidanceMarkdown: "# Disagreement reviewer\n\nE2E_FAIL_VERDICT",
+  });
+  const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
+    name: "E2E readiness disagreement",
+    draft: {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "reviewer", kind: "persona", personaId: persona.id, position: { x: 220, y: 0 } },
+        { id: "end", kind: "end", outcome: "Approved", position: { x: 440, y: 0 } },
+      ],
+      edges: [
+        { id: "submit", source: "session", sourcePort: "submitted", target: "reviewer", targetPort: "activate" },
+        { id: "pass", source: "reviewer", sourcePort: "pass", target: "end", targetPort: "terminal" },
+        { id: "fail", source: "reviewer", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      ],
+    },
+  });
+  const enforced = await fetch(`${daemon.baseURL}/api/workflows/${workflow.workflow.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedDraftRevision: 1, evidenceReadinessPolicy: "criterion_mapped_v1" }),
+  });
+  if (!enforced.ok) throw new Error(`workflow update answered ${enforced.status}`);
+  const published = await api<{ version: { id: string } }>(
+    daemon,
+    `/api/workflows/${workflow.workflow.id}/publish`,
+    { expectedDraftRevision: 2 },
+  );
+
+  const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(
+    daemon,
+    "/api/sessions",
+  )).find((candidate) => candidate.id === sessionId);
+  expect(session).toBeTruthy();
+  const noteKey = session!.agentSessionId ?? session!.id;
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO workflow_evidence_owners (
+         note_key, generation, all_generation, updated_at
+       ) VALUES (?, 0, 0, ?)`,
+    ).run(noteKey, Date.now());
+  });
+  // COMPLETE: the visual claim carries both an execution and a rendered-output link, so the
+  // preflight answers `ready` and the reviewer runs against a structurally complete packet.
+  stageLaterPacket(daemon, noteKey, session!.cwd, 1, "agreed", true);
+
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", {
+    workflowVersionId: published.version.id,
+    sessionId,
+    deliveryMode: "preview",
+  });
+  const created = await api<{ run: { id: string }; submission: { id: string } }>(
+    daemon,
+    `/api/workflow-bindings/${binding.id}/submit`,
+    { requestId: `disagreement-${Date.now()}` },
+  );
+  const runId = created.run.id;
+  await expect.poll(async () => (
+    await api<{ submissions: Array<{ readiness: { status: string } | null }> }>(
+      daemon,
+      `/api/workflow-runs/${runId}`,
+    )
+  ).submissions[0]?.readiness?.status, { timeout: 60_000 }).toBe("ready");
+  await expect.poll(async () => (
+    await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)
+  ).run.status, { timeout: 60_000 }).toBe("waiting_for_session");
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const timeline = dashboard.locator("section.wf-run-timeline");
+  await expect(timeline.getByRole("heading", { name: "Timeline" })).toBeVisible();
+  const disagreement = timeline.getByRole("listitem")
+    .filter({ hasText: "Readiness review disagreement" });
+  await expect(disagreement).toHaveCount(1);
+  // The two gates and what each one said, in the reader's own words rather than an event id.
+  await expect(disagreement).toContainText("Disagreement reviewer");
+  await expect(disagreement).toContainText("readiness ready");
+  // The durable spelling never reaches the screen as itself: the timeline prints the readable
+  // form, which is the same rule every other event payload value is rendered under.
+  await expect(disagreement).toContainText("policy criterion mapped v1");
+  await expect(disagreement).toContainText("summary Deterministic e2e objection");
+  // It sits in the round it happened in, beside the verdict that caused it.
+  await expect(timeline.getByRole("heading", { name: "Round 1" })).toBeVisible();
+  await expect(timeline.getByRole("listitem").filter({ hasText: "Persona verdict" }))
+    .toContainText("verdict fail");
+  await disagreement.scrollIntoViewIfNeeded();
+  await capture(dashboard, "09-readiness-review-disagreement", timeline);
+});

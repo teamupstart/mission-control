@@ -44,6 +44,18 @@ import {
 export const WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved";
 
 /**
+ * The phase a run blocks in when one round has spent its consecutive evidence-preflight
+ * refinements without closing the readiness gaps.
+ *
+ * Named rather than spelled at its call sites because three of them have to agree: the store
+ * writes it, the readiness override reads it to decide that a blocked run may still be
+ * continued despite gaps, and the dashboard reads it to keep the operator's decision panel on
+ * screen at the one moment the operator is being asked to make that decision. A run parked
+ * here is waiting for a person, not for the session.
+ */
+export const WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE = "preflight_refinement_exhausted";
+
+/**
  * Every phase the GitHub Inspector gate machinery may park a run in, as a closed registry.
  *
  * Closed because the phase is not decoration: `evaluateInspectorGate` and `recheckInspector`
@@ -166,6 +178,7 @@ export const WORKFLOW_RUN_PHASES = [
   "persona_review",
   "pr_handoff",
   "pr_handoff_prepare_error",
+  "preflight_refinement_exhausted",
   "reattached_resubmit_required",
   "round_limit",
   "session_action",
@@ -261,6 +274,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   persona_review: ["running"],
   pr_handoff: ["waiting_for_session"],
   pr_handoff_prepare_error: ["blocked"],
+  preflight_refinement_exhausted: ["blocked"],
   reattached_resubmit_required: ["waiting_for_session"],
   round_limit: ["blocked"],
   session_action: ["waiting_for_action"],
@@ -370,6 +384,10 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   persona_review: [],
   pr_handoff: [...DELIVERY_CARRIED_KEYS],
   pr_handoff_prepare_error: ["submissionId", "error"],
+  // The run stays parked on the submission that is still waiting for readiness, so the
+  // delivery keys ride along for the same reason `evidence_readiness` carries them: a
+  // packet confirmed while the round is parked here lands on this phase.
+  preflight_refinement_exhausted: ["submissionId", "round", "refinements", ...DELIVERY_CARRIED_KEYS],
   reattached_resubmit_required: ["priorNoteKey", "noteKey"],
   round_limit: ["maxRepairRounds", "parkedPhase"],
   session_action: ["nodeId", "attemptId", "action", ...DELIVERY_CARRIED_KEYS],

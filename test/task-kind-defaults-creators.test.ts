@@ -82,6 +82,7 @@ function definition(over: Record<string, unknown> = {}): CreateScheduleInput {
     labels: [],
     model: null,
     effort: null,
+    workflowId: null,
     ...((over.template as Record<string, unknown>) ?? {}),
   };
   return {

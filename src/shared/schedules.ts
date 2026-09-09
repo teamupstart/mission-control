@@ -288,6 +288,14 @@ export interface ScheduleTemplate {
   labels: string[];
   model: string | null;
   effort: ThinkingLevel | null;
+  /**
+   * The after-work Workflow every run arms, or `null` for no handoff at all.
+   *
+   * Never inherited. An ordinary dispatch may omit `workflowId` and get the dispatch
+   * default from `resolveTaskWorkflowId`; a mission fires unattended, so `null` must reach
+   * `tasks.create` explicitly, and an absent key on a stored template reads as `null`.
+   */
+  workflowId: string | null;
 }
 
 /** The editable half of a schedule: cadence, guardrails, and what to file. */

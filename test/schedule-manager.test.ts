@@ -118,6 +118,7 @@ function definition(over: Partial<CreateScheduleInput> = {}): CreateScheduleInpu
       labels: [],
       model: null,
       effort: null,
+      workflowId: null,
     },
     ...over,
   };
@@ -1287,4 +1288,51 @@ test("an edit cannot commit after the schedule is archived during validation", a
   const archived = store.getSchedule(created.id)!;
   assert.equal(archived.revision, 1);
   assert.notEqual(archived.archivedAt, null);
+});
+
+// ---- the after-work handoff ----
+
+test("a template's Workflow reaches the task, and none of them inherits the dispatch default", async (t) => {
+  // The dispatch default is set so that a null template answer has something to be wrong
+  // about: `tasks.create` reads an ABSENT `workflowId` as "resolve the default", so without
+  // one configured this test would pass against a manager that omitted the field.
+  const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+  // Restored on EVERY exit, not just the happy one. This is process-wide config in a shared
+  // database: an assertion that throws below would otherwise leave the default armed and
+  // turn an unrelated later test into a confusing failure.
+  const before = getWorkflowPolicy();
+  t.after(() => setWorkflowPolicy(before));
+  const policy = setWorkflowPolicy({
+    liveEnabled: false,
+    repoAllowlist: [],
+    defaultWorkflowId: "wf-dispatch-default",
+  });
+  assert.equal(policy.defaultWorkflowId, "wf-dispatch-default");
+
+  const none = harness("after-work-none");
+  const missionA = ok(await none.manager.create(definition({ name: "No handoff" }))).schedule;
+  none.clock.now = NINE + 5_000;
+  await none.manager.tick();
+  const filedA = tasksFor(missionA.id);
+  assert.equal(filedA.length, 1);
+  assert.equal(
+    filedA[0]!.workflowId,
+    null,
+    "a mission that named no Workflow must file a task with no Workflow",
+  );
+
+  const armed = harness("after-work-armed");
+  const missionB = ok(
+    await armed.manager.create(
+      definition({
+        name: "Reviewed nightly",
+        template: { ...definition().template, workflowId: "wf-review" },
+      }),
+    ),
+  ).schedule;
+  armed.clock.now = NINE + 5_000;
+  await armed.manager.tick();
+  const filedB = tasksFor(missionB.id);
+  assert.equal(filedB.length, 1);
+  assert.equal(filedB[0]!.workflowId, "wf-review", "the template's choice, verbatim");
 });

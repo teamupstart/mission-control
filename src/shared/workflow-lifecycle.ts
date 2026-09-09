@@ -681,6 +681,12 @@ export function withInspectorGate(
   gate: WorkflowInspectorGateState | null,
 ): WorkflowJson {
   if (!gate) return detail as WorkflowJson;
+  // A detail with nothing in it is not a detail, and wrapping the gate in an envelope for the
+  // sake of an empty object is exactly the shape the doc above warns against: the gate
+  // transitions compare-and-set on the column's exact JSON, so `{ gate: {...} }` where the
+  // bare gate belongs would silently stop those updates from matching. No caller passes an
+  // empty detail today; this keeps the promise for the first one that does.
+  if (Object.keys(detail).length === 0) return gate as unknown as WorkflowJson;
   return { ...detail, [WORKFLOW_GATE_DETAIL_KEY]: gate as unknown as WorkflowJson } as WorkflowJson;
 }
 

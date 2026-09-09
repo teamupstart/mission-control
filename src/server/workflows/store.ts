@@ -5412,6 +5412,7 @@ export class WorkflowStore {
         return { run: this.mustRun(existing.runId), submission: existing, idempotent: true };
       }
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
+      assertRunLifecycle(input.runId, "capturing", "capturing", null);
       const updated = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
@@ -5563,6 +5564,7 @@ export class WorkflowStore {
             evidence: {},
             now: input.now,
           });
+          assertRunLifecycle(run.id, "capturing", "capturing", null);
           this.db.prepare(
             `UPDATE workflow_runs
                 SET status = 'capturing', current_phase = 'capturing',
@@ -5669,16 +5671,6 @@ export class WorkflowStore {
   }
 
   /**
-   * Move a run to a phase THIS BUILD DECLARES.
-   *
-   * `currentPhase` is the registry's literal union rather than `string`, and that is the type
-   * half of the fix: the registry decides which phases are executable, so a writer that
-   * invents one would produce a run nothing can act on. Taking the union means that mistake
-   * is a compile error at the call site instead of a state discovered in production. The
-   * persisted COLUMN stays free text - see `setRunStateCarryingPhase` for the two kinds of
-   * writer that legitimately need it.
-   */
-  /**
    * What a delivery leaves in `gate_state_json` when it lands on a run.
    *
    * A delivery does not author a lifecycle state; it confirms a packet and leaves the run in
@@ -5712,6 +5704,16 @@ export class WorkflowStore {
     return (gate as unknown as WorkflowJson | null);
   }
 
+  /**
+   * Move a run to a phase THIS BUILD DECLARES.
+   *
+   * `currentPhase` is the registry's literal union rather than `string`, and that is the type
+   * half of the fix: the registry decides which phases are executable, so a writer that
+   * invents one would produce a run nothing can act on. Taking the union means that mistake
+   * is a compile error at the call site instead of a state discovered in production. The
+   * persisted COLUMN stays free text - see `setRunStateCarryingPhase` for the two kinds of
+   * writer that legitimately need it.
+   */
   setRunState(
     id: string,
     status: WorkflowRun["status"],
@@ -6276,6 +6278,7 @@ export class WorkflowStore {
             )`,
       ).run(now, submissionId, runId, runId, ...expectedPhases);
       if (Number(submissionChanged.changes) !== 1) return null;
+      assertRunLifecycle(runId, "capturing", "capturing", null);
       const runChanged = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
@@ -7371,19 +7374,22 @@ export class WorkflowStore {
             WHERE id = ? AND state = 'sending'`,
         ).run(now, delivery.id);
         const blocked = this.getRun(delivery.runId);
+        const detail = withInspectorGate(
+          { deliveryId: delivery.id },
+          blocked ? inspectorGateState(blocked) : null,
+        );
+        // A raw UPDATE still answers to the contract. This statement writes the same two
+        // columns `setRunState` does and cannot route through it - the guarded WHERE is the
+        // point - so the check is called explicitly rather than skipped. Without it there is a
+        // third door, and "both doors enforce both contracts" stops being true the first time
+        // somebody adds a field here.
+        assertRunLifecycle(delivery.runId, "blocked", "delivery_uncertain", detail);
         this.db.prepare(
           `UPDATE workflow_runs
               SET status = 'blocked', current_phase = 'delivery_uncertain',
                   gate_state_json = ?, updated_at = ?
             WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-        ).run(
-          JSON.stringify(withInspectorGate(
-            { deliveryId: delivery.id },
-            blocked ? inspectorGateState(blocked) : null,
-          )),
-          now,
-          delivery.runId,
-        );
+        ).run(JSON.stringify(detail), now, delivery.runId);
         this.appendEvent(delivery.runId, "delivery_uncertain", {
           deliveryId: delivery.id,
           reason: "daemon_restart_after_send_claim",
@@ -7410,19 +7416,17 @@ export class WorkflowStore {
             WHERE id = ? AND state = 'sending'`,
         ).run(reason, now, delivery.id);
         const blocked = this.getRun(delivery.runId);
+        const detail = withInspectorGate(
+          { deliveryId: delivery.id, reason },
+          blocked ? inspectorGateState(blocked) : null,
+        );
+        assertRunLifecycle(delivery.runId, "blocked", "delivery_uncertain", detail);
         this.db.prepare(
           `UPDATE workflow_runs
               SET status = 'blocked', current_phase = 'delivery_uncertain',
                   gate_state_json = ?, updated_at = ?
             WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed')`,
-        ).run(
-          JSON.stringify(withInspectorGate(
-            { deliveryId: delivery.id, reason },
-            blocked ? inspectorGateState(blocked) : null,
-          )),
-          now,
-          delivery.runId,
-        );
+        ).run(JSON.stringify(detail), now, delivery.runId);
         this.appendEvent(delivery.runId, "delivery_uncertain", {
           deliveryId: delivery.id,
           reason,
@@ -7604,6 +7608,7 @@ export class WorkflowStore {
       const latest = this.latestSubmission(run.id);
       if (!latest || input.round !== latest.round + 1) return null;
       this.insertSubmissionInTransaction({ ...input, origin: { kind: "root" } });
+      assertRunLifecycle(run.id, "capturing", "capturing", null);
       const runChanged = this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'capturing', gate_state_json = NULL,
@@ -7719,6 +7724,7 @@ export class WorkflowStore {
         mode: parent.mode,
         now: input.now,
       });
+      assertRunLifecycle(run.id, "capturing", "evidence_readiness_capture", null);
       this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'capturing', current_phase = 'evidence_readiness_capture',
@@ -7794,6 +7800,7 @@ export class WorkflowStore {
             SET status = 'running', readiness_json = ?, updated_at = ?
           WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
       ).run(readiness ? JSON.stringify(readiness) : null, input.now, submission.id);
+      assertRunLifecycle(run.id, "running", "activating", null);
       this.db.prepare(
         `UPDATE workflow_runs
             SET status = 'running', current_phase = 'activating', gate_state_json = NULL,

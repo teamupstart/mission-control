@@ -482,6 +482,22 @@ test("the sticky gate rides beside a phase detail without becoming it", () => {
   const plain = withInspectorGate({ round: 3 }, null);
   assert.deepEqual(plain, { round: 3 });
   assert.equal((plain as { [key: string]: WorkflowJson })[WORKFLOW_GATE_DETAIL_KEY], undefined);
+
+  // And NOTHING to keep beside the gate stays the BARE gate rather than an envelope around
+  // it. This is the case the compare-and-set statements depend on: `{ gate: {...} }` where the
+  // bare gate belongs would stop every gate transition from matching, silently.
+  const only = withInspectorGate({}, gate);
+  assert.deepEqual(only, gate as unknown as WorkflowJson);
+  assert.equal((only as { [key: string]: WorkflowJson })[WORKFLOW_GATE_DETAIL_KEY], undefined);
+  assert.deepEqual(
+    decodeWorkflowRunLifecycle({
+      status: "waiting_for_session",
+      phase: "pr_handoff",
+      gateState: only,
+    }).detailKeys,
+    [],
+    "a gate with nothing beside it records no phase detail",
+  );
 });
 
 // ---------------------------------------------------------------------------

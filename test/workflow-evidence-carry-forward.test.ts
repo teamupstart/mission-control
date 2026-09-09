@@ -1,0 +1,1357 @@
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
+import type { WorkflowContextSnapshot, WorkflowEvidenceImage } from "../src/shared/workflow.ts";
+
+const home = mkdtempSync(join(tmpdir(), "mission-workflow-carry-forward-"));
+process.env.MISSION_HOME = join(home, "state");
+
+const { openDb } = await import("../src/server/db.ts");
+const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
+const {
+  captureSubmissionImages,
+  captureSubmissionTextArtifacts,
+  inheritSubmissionEvidence,
+  WORKFLOW_EVIDENCE_DIR,
+} = await import("../src/server/workflows/images.ts");
+const { workflowRepositoryFingerprint } = await import("../src/server/workflows/context.ts");
+const { evaluateWorkflowEvidenceReadiness } = await import("../src/shared/workflow.ts");
+const { buildPersonaPrompt } = await import("../src/server/workflows/prompt.ts");
+const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
+
+openDb();
+after(() => rmSync(home, { recursive: true, force: true }));
+
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
+const VERSION_ID = BUILTIN_WORKFLOWS[0]!.definition.currentVersionId!;
+
+function sha(data: Buffer | string): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+/** Every retained body currently on disk, so a second copy of one is countable. */
+function retainedBodies(): Array<{ path: string; bytes: number }> {
+  const root = join(WORKFLOW_EVIDENCE_DIR, "retained");
+  const found: Array<{ path: string; bytes: number }> = [];
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile()) found.push({ path, bytes: statSync(path).size });
+    }
+  };
+  if (existsSync(root)) walk(root);
+  return found;
+}
+
+let ordinal = 0;
+function fixture(checkout: string) {
+  ordinal += 1;
+  const store = new WorkflowStore();
+  const noteKey = `carry-note-${ordinal}`;
+  const binding = store.insertBinding({
+    id: `carry-binding-${ordinal}`,
+    workflowVersionId: VERSION_ID,
+    noteKey,
+    sessionId: `carry-session-${ordinal}`,
+    sessionAgent: "codex",
+    sessionName: "carry",
+    sessionCwd: checkout,
+    sessionRepoRoot: checkout,
+    triggerMode: "manual",
+    deliveryMode: "preview",
+    maxRepairRounds: 5,
+    now: 1,
+  });
+  return { store, noteKey, binding, runId: `carry-run-${ordinal}` };
+}
+
+function imageWrite(input: {
+  id: string;
+  clientItemId: string;
+  root: string;
+  locator: string;
+  caption: string;
+  bytes: Buffer;
+}) {
+  return {
+    id: input.id,
+    clientItemId: input.clientItemId,
+    sourceKind: "agent" as const,
+    sourceRoot: input.root,
+    sourceLocator: input.locator,
+    displayName: input.locator,
+    caption: input.caption,
+    repositoryScope: "all",
+    mimeType: "image/png" as const,
+    bytes: input.bytes.byteLength,
+    sha256: sha(input.bytes),
+  };
+}
+
+function logWrite(input: {
+  id: string;
+  clientItemId: string;
+  root: string;
+  locator: string;
+  caption: string;
+  body: string;
+}) {
+  return {
+    id: input.id,
+    clientItemId: input.clientItemId,
+    sourceKind: "agent" as const,
+    evidenceKind: "text" as const,
+    sourceRoot: input.root,
+    sourceLocator: input.locator,
+    displayName: input.locator,
+    caption: input.caption,
+    repositoryScope: "all",
+    mimeType: "text/plain" as const,
+    bytes: Buffer.byteLength(input.body, "utf8"),
+    sha256: sha(Buffer.from(input.body, "utf8")),
+  };
+}
+
+test("a preflight refinement carries its parent's evidence, including a source the agent has since deleted", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-preflight-")));
+  try {
+    writeFileSync(join(checkout, "screen.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [imageWrite({
+        id: "staged-screen",
+        clientItemId: "screen",
+        root: checkout,
+        locator: "screen.png",
+        caption: "The rendered panel the round proved",
+        bytes: PNG,
+      })],
+      2,
+      null,
+      [{
+        id: "staged-claim",
+        clientCriterionId: "claim-round-1",
+        criterion: "The panel renders",
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [{ clientItemId: "screen", role: "rendered_output" }],
+      }],
+    );
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "carry-root", now: 3 },
+      {
+        id: "carry-parent",
+        triggerSource: "manual",
+        triggerKey: "carry-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    assert.equal((await captureSubmissionImages(store, parent.submission.id, 3)).length, 1);
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {},
+      evidence: {},
+      fingerprint: "parent-identity",
+      repositoryFingerprint: "tree-at-round-1",
+      status: "running",
+    }, 3);
+    assert.deepEqual(
+      store.listSubmissionCoverage(parent.submission.id).map((claim) => claim.clientCriterionId),
+      ["claim-round-1"],
+    );
+
+    // The exact loss this phase exists to end: the gitignored capture is gone by the time the
+    // mapping repair runs, so nothing that re-reads the source could recover it.
+    rmSync(join(checkout, "screen.png"));
+
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [],
+      5,
+      null,
+      [{
+        id: "staged-claim-repair",
+        clientCriterionId: "claim-repair",
+        criterion: "The panel renders under its canonical name",
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [],
+      }],
+    );
+    const reserved = store.reserveEvidenceReadinessRefinement({
+      id: "carry-child",
+      runId,
+      waitingSubmissionId: parent.submission.id,
+      triggerKey: "carry-refinement",
+      manualRetry: true,
+      now: 5,
+    });
+    assert.equal(reserved.ok, true);
+    if (!reserved.ok) return;
+
+    await captureSubmissionImages(store, reserved.submission.id, 6);
+    await captureSubmissionTextArtifacts(store, reserved.submission.id, 6);
+    assert.deepEqual(
+      store.listSubmissionImages(reserved.submission.id),
+      [],
+      "a mapping repair stages no new evidence, so on its own it starts with none",
+    );
+
+    assert.equal(await inheritSubmissionEvidence(store, reserved.submission, 6), 1);
+    const carried = store.listSubmissionImages(reserved.submission.id);
+    assert.equal(carried.length, 1);
+    assert.equal(carried[0]?.sha256, sha(PNG));
+    assert.equal(
+      carried[0]?.inheritedFrom?.submissionId,
+      parent.submission.id,
+      "the carried row names where it came from",
+    );
+    assert.equal(carried[0]?.inheritedFrom?.round, 1);
+    assert.equal(carried[0]?.inheritedFrom?.repositoryFingerprint, "tree-at-round-1");
+    assert.deepEqual(
+      store.submissionFrozenEvidenceIdentities(reserved.submission.id).map((item) => item.clientItemId),
+      ["screen"],
+      "the carried item resolves through the reservations the preflight and manifests read",
+    );
+    assert.deepEqual(
+      store.listSubmissionCoverage(reserved.submission.id)
+        .map((claim) => claim.clientCriterionId).sort(),
+      ["claim-repair", "claim-round-1"],
+      "the repair's own claim stands beside the carried one it did not replace",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("registering only the pieces a preflight named accumulates instead of replacing", async () => {
+  // The evidence-gathering loop this phase exists to end: an author registers 3 of the 10 the
+  // review needs, the preflight names the 7 that are missing, the author registers exactly
+  // those 7 - and the submission used to hold 7, because reservation emptied the tray and the
+  // first 3 were attached to the previous submission. The preflight then named the first 3 as
+  // missing, and the two halves chased each other forever.
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-resubmit-")));
+  try {
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const stage = (label: string, count: number, at: number) => {
+      const writes = [];
+      const coverage = [];
+      for (let index = 0; index < count; index++) {
+        const body = `${label} evidence ${index}\n`;
+        writeFileSync(join(checkout, `${label}${index}.log`), body);
+        writes.push(logWrite({
+          id: `resubmit-${label}${index}`,
+          clientItemId: `resubmit-${label}${index}`,
+          root: checkout,
+          locator: `${label}${index}.log`,
+          caption: `${label} evidence ${index}`,
+          body,
+        }));
+        coverage.push({
+          id: `resubmit-claim-${label}${index}`,
+          clientCriterionId: `criterion-${label}${index}`,
+          criterion: `Criterion ${label} ${index}`,
+          proofClass: "focused_execution" as const,
+          repositoryScope: "all" as const,
+          sourceRoot: checkout,
+          links: [{ clientItemId: `resubmit-${label}${index}`, role: "execution" as const }],
+        });
+      }
+      store.stageWorkflowEvidence(noteKey, writes, at, null, coverage);
+    };
+
+    stage("first", 3, 2);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "resubmit-root", now: 3 },
+      { id: "resubmit-1", triggerSource: "manual", triggerKey: "resubmit-root", context: {}, evidence: {}, now: 3 },
+    );
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    store.updateSubmissionCapture(first.submission.id, {
+      context: {}, evidence: {}, fingerprint: "p1", repositoryFingerprint: "tree", status: "running",
+    }, 3);
+    assert.equal(store.listSubmissionTextArtifacts(first.submission.id).length, 3);
+
+    // The preflight names the gaps and the author registers ONLY those.
+    store.setSubmissionState(first.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    stage("second", 4, 5);
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "resubmit-2",
+      runId,
+      waitingSubmissionId: first.submission.id,
+      triggerKey: "resubmit-refinement",
+      manualRetry: true,
+      now: 5,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    await captureSubmissionTextArtifacts(store, child.submission.id, 6);
+    await inheritSubmissionEvidence(store, child.submission, 6);
+
+    assert.equal(
+      store.listSubmissionTextArtifacts(child.submission.id).length,
+      7,
+      "the segment holds the first three AND the four just registered, not only the four",
+    );
+    assert.equal(
+      store.listSubmissionCoverage(child.submission.id).length,
+      7,
+      "and every coverage claim, which is what a preflight gap actually asks for",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a refinement child re-declaring a criterion keeps every link its parent proved for it", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-relink-")));
+  try {
+    writeFileSync(join(checkout, "panel.png"), Buffer.concat([PNG, Buffer.from("relink", "utf8")]));
+    const shot = Buffer.concat([PNG, Buffer.from("relink", "utf8")]);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [imageWrite({
+        id: "relink-shot",
+        clientItemId: "panel",
+        root: checkout,
+        locator: "panel.png",
+        caption: "The panel the parent round proved",
+        bytes: shot,
+      })],
+      2,
+      null,
+      [{
+        id: "relink-claim-parent",
+        clientCriterionId: "claim-parent",
+        criterion: "The panel renders",
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [{ clientItemId: "panel", role: "rendered_output" }],
+      }],
+    );
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "relink-root", now: 3 },
+      {
+        id: "relink-parent",
+        triggerSource: "manual",
+        triggerKey: "relink-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    await captureSubmissionImages(store, parent.submission.id, 3);
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {},
+      evidence: {},
+      fingerprint: "relink-identity",
+      repositoryFingerprint: "tree-at-round-1",
+      status: "running",
+    }, 3);
+
+    // The repair the preflight actually asks for: the SAME criterion, re-declared under a new
+    // claim id, citing the execution the parent's claim was missing.
+    writeFileSync(join(checkout, "run.log"), "the focused run that passed\n");
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [logWrite({
+        id: "relink-log",
+        clientItemId: "run-log",
+        root: checkout,
+        locator: "run.log",
+        caption: "The focused run behind the panel",
+        body: "the focused run that passed\n",
+      })],
+      5,
+      null,
+      [{
+        id: "relink-claim-child",
+        clientCriterionId: "claim-child",
+        criterion: "The panel renders",
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [{ clientItemId: "run-log", role: "execution" }],
+      }],
+    );
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "relink-child",
+      runId,
+      waitingSubmissionId: parent.submission.id,
+      triggerKey: "relink-refinement",
+      manualRetry: true,
+      now: 5,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    await captureSubmissionImages(store, child.submission.id, 6);
+    await captureSubmissionTextArtifacts(store, child.submission.id, 6);
+    await inheritSubmissionEvidence(store, child.submission, 6);
+
+    const claims = store.listSubmissionCoverage(child.submission.id);
+    assert.deepEqual(
+      claims.map((claim) => claim.clientCriterionId).sort(),
+      ["claim-child", "claim-parent"],
+      "the parent's claim is retained whole beside the child's, not collapsed into it",
+    );
+    const parentClaim = claims.find((claim) => claim.clientCriterionId === "claim-parent")!;
+    const childClaim = claims.find((claim) => claim.clientCriterionId === "claim-child")!;
+    assert.equal(
+      parentClaim.inheritedFromSubmissionId,
+      parent.submission.id,
+      "and it says where it came from",
+    );
+    assert.equal(childClaim.inheritedFromSubmissionId ?? null, null);
+    assert.deepEqual(
+      parentClaim.links.map((link) => `${link.clientItemId}:${link.role}`),
+      ["panel:rendered_output"],
+      "each claim keeps its own proof class, scope and link set",
+    );
+    assert.deepEqual(
+      childClaim.links.map((link) => `${link.clientItemId}:${link.role}`),
+      ["run-log:execution"],
+    );
+    assert.equal(
+      store.listSubmissionImages(child.submission.id)[0]?.inheritedFrom?.round,
+      1,
+      "the evidence the carried claim cites came with it",
+    );
+
+    // Retaining the ancestry must not read as the author asserting two things at once.
+    const readiness = evaluateWorkflowEvidenceReadiness({
+      canonicalCriteria: [{
+        id: "c1",
+        text: "The panel renders",
+        material: true,
+        suggestedProofClass: null,
+      }],
+      criterionMappings: [{
+        criterionId: "c1",
+        matchedClientCriterionIds: ["claim-child", "claim-parent"],
+      }],
+      coverage: claims,
+      evidence: store.submissionFrozenEvidenceIdentities(child.submission.id),
+      unavailableReason: null,
+      enforceCoverage: true,
+    });
+    assert.equal(
+      readiness.criteria[0]?.matchedClientCriterionId,
+      "claim-child",
+      "the claim the author declared here answers for the criterion",
+    );
+    assert.equal(readiness.gapCodes.includes("ambiguous_mapping"), false);
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("when the cap binds, a carry gives up old ancestry before the parent's own captures", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-priority-")));
+  try {
+    const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+    const max = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount;
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const stage = (label: string, count: number, at: number) => {
+      const writes = [];
+      for (let index = 0; index < count; index++) {
+        const body = `${label} item ${index}\n`;
+        writeFileSync(join(checkout, `${label}-${index}.log`), body);
+        writes.push(logWrite({
+          id: `${label}-${index}`,
+          clientItemId: `${label}-${index}`,
+          root: checkout,
+          locator: `${label}-${index}.log`,
+          caption: `${label} item ${index}`,
+          body,
+        }));
+      }
+      store.stageWorkflowEvidence(noteKey, writes, at);
+    };
+
+    // Round 1 proves four things, so round 2 can carry them as ancestry.
+    stage("ancestry", 4, 2);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "prio-root", now: 3 },
+      { id: "prio-first", triggerSource: "manual", triggerKey: "prio-root", context: {}, evidence: {}, now: 3 },
+    );
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    store.updateSubmissionCapture(first.submission.id, {
+      context: {}, evidence: {}, fingerprint: "prio-1", repositoryFingerprint: "tree-1", status: "running",
+    }, 3);
+
+    // Round 2 captures four of its own and carries round 1's four: eight, exactly the cap.
+    stage("captured", 4, 4);
+    const second = store.createRepairSubmission({
+      id: "prio-second", runId, round: 2, triggerSource: "manual",
+      triggerKey: "prio-repair-1", context: {}, evidence: {}, now: 5,
+    });
+    await captureSubmissionTextArtifacts(store, second.submission.id, 5);
+    await inheritSubmissionEvidence(store, second.submission, 5);
+    store.updateSubmissionCapture(second.submission.id, {
+      context: {}, evidence: {}, fingerprint: "prio-2", repositoryFingerprint: "tree-2", status: "running",
+    }, 5);
+    assert.equal(store.listSubmissionTextArtifacts(second.submission.id).length, max);
+
+    // Round 3 stages two of its own, so the carry from round 2 must give up two items.
+    stage("latest", 2, 6);
+    const third = store.createRepairSubmission({
+      id: "prio-third", runId, round: 3, triggerSource: "manual",
+      triggerKey: "prio-repair-2", context: {}, evidence: {}, now: 7,
+    });
+    await captureSubmissionTextArtifacts(store, third.submission.id, 7);
+    await inheritSubmissionEvidence(store, third.submission, 7);
+
+    const held = store.listSubmissionTextArtifacts(third.submission.id);
+    assert.equal(held.length, max, "the cap still holds");
+    const names = held.map((item) => item.displayName);
+    for (let index = 0; index < 4; index++) {
+      assert.equal(
+        names.includes(`captured-${index}.log`),
+        true,
+        "every item the previous submission captured itself survives the carry",
+      );
+    }
+    assert.equal(
+      names.filter((name) => name.startsWith("ancestry-")).length,
+      2,
+      "and exactly the two oldest ancestry items are what the cap refused",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a parent at the coverage limit meeting a child with claims of its own stays readable", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-claimcap-")));
+  try {
+    const { WORKFLOW_EVIDENCE_COVERAGE_LIMITS } = await import("../src/shared/workflow.ts");
+    const max = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims;
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const claims = [];
+    for (let index = 0; index < max; index++) {
+      claims.push({
+        id: `cap-claim-${index}`,
+        clientCriterionId: `cap-criterion-${index}`,
+        criterion: `Capped criterion ${index}`,
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [],
+      });
+    }
+    store.stageWorkflowEvidence(noteKey, [], 2, null, claims);
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "cap-root", now: 3 },
+      { id: "cap-parent", triggerSource: "manual", triggerKey: "cap-root", context: {}, evidence: {}, now: 3 },
+    );
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {}, evidence: {}, fingerprint: "cap-1", repositoryFingerprint: "tree", status: "running",
+    }, 3);
+    assert.equal(store.listSubmissionCoverage(parent.submission.id).length, max, "the parent is at the cap");
+
+    // The child declares one of its own, so the carry cannot fit every parent claim.
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    const body = "the repair evidence\n";
+    writeFileSync(join(checkout, "cap.log"), body);
+    store.stageWorkflowEvidence(noteKey, [logWrite({
+      id: "cap-evidence",
+      clientItemId: "cap-evidence",
+      root: checkout,
+      locator: "cap.log",
+      caption: "The repair evidence",
+      body,
+    })], 5, null, [{
+      id: "cap-claim-own",
+      clientCriterionId: "cap-criterion-own",
+      criterion: "A criterion this segment declared itself",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "cap-evidence", role: "execution" as const }],
+    }]);
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "cap-child",
+      runId,
+      waitingSubmissionId: parent.submission.id,
+      triggerKey: "cap-refinement",
+      manualRetry: true,
+      now: 5,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    await captureSubmissionTextArtifacts(store, child.submission.id, 6);
+    await inheritSubmissionEvidence(store, child.submission, 6);
+
+    // The bound is what a submission can hold, not a preference. Exceeding it would make this
+    // read throw rather than return more coverage.
+    const held = store.listSubmissionCoverage(child.submission.id);
+    assert.equal(held.length, max, "the submission holds exactly what its schema admits");
+    assert.equal(
+      held.filter((claim) => !claim.inheritedFromSubmissionId).map((claim) => claim.clientCriterionId).length,
+      1,
+      "the claim this segment declared is kept",
+    );
+    assert.equal(held.filter((claim) => claim.inheritedFromSubmissionId).length, max - 1);
+    // And what did not fit is recorded rather than passed over in silence.
+    const truncation = store.listEvents(runId)
+      .filter((event) => event.kind === "evidence_carry_truncated");
+    assert.equal(truncation.length, 1);
+    assert.equal((truncation[0]!.payload as { claims: number }).claims, 1);
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a parent claim survives a link whose evidence the limit refused", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-")));
+  try {
+    const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+    const max = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount;
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const writes = [];
+    for (let index = 0; index < max; index++) {
+      const body = `partial round one item ${index}\n`;
+      writeFileSync(join(checkout, `p${index}.log`), body);
+      writes.push(logWrite({
+        id: `partial-${index}`,
+        clientItemId: `partial-${index}`,
+        root: checkout,
+        locator: `p${index}.log`,
+        caption: `Partial item ${index}`,
+        body,
+      }));
+    }
+    // One claim citing the newest item and the oldest, so the carry can keep only half of it.
+    store.stageWorkflowEvidence(noteKey, writes, 2, null, [{
+      id: "partial-claim",
+      clientCriterionId: "claim-spanning",
+      criterion: "The behavior is proven end to end",
+      proofClass: "focused_execution",
+      repositoryScope: "all",
+      sourceRoot: checkout,
+      links: [
+        { clientItemId: "partial-0", role: "execution" },
+        { clientItemId: `partial-${max - 1}`, role: "execution" },
+      ],
+    }]);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "partial-root", now: 3 },
+      {
+        id: "partial-first",
+        triggerSource: "manual",
+        triggerKey: "partial-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    store.updateSubmissionCapture(first.submission.id, {
+      context: {},
+      evidence: {},
+      fingerprint: "partial-identity",
+      repositoryFingerprint: "tree-at-round-1",
+      status: "running",
+    }, 3);
+
+    const body = "partial round two item\n";
+    writeFileSync(join(checkout, "p-new.log"), body);
+    store.stageWorkflowEvidence(noteKey, [logWrite({
+      id: "partial-new",
+      clientItemId: "partial-new",
+      root: checkout,
+      locator: "p-new.log",
+      caption: "Round two item",
+      body,
+    })], 4);
+    const second = store.createRepairSubmission({
+      id: "partial-second",
+      runId,
+      round: 2,
+      triggerSource: "manual",
+      triggerKey: "partial-repair",
+      context: {},
+      evidence: {},
+      now: 5,
+    });
+    await captureSubmissionTextArtifacts(store, second.submission.id, 5);
+    await inheritSubmissionEvidence(store, second.submission, 5);
+
+    const carriedIds = new Set(store.listSubmissionTextArtifacts(second.submission.id)
+      .map((item) => item.displayName));
+    assert.equal(
+      carriedIds.has(`p${max - 1}.log`),
+      false,
+      "the last of the parent's set is what the cap refused",
+    );
+    assert.equal(carriedIds.has("p0.log"), true);
+    const claim = store.listSubmissionCoverage(second.submission.id)
+      .find((candidate) => candidate.clientCriterionId === "claim-spanning");
+    assert.notEqual(claim, undefined, "the parent's claim is retained rather than omitted with it");
+    assert.deepEqual(
+      claim!.links.map((link) => link.clientItemId),
+      ["partial-0"],
+      "keeping the links whose evidence came, and no link pointing at nothing",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a new repair round retains the parent's claim beside the one the author wrote today", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-round-relink-")));
+  try {
+    writeFileSync(join(checkout, "old.log"), "round one evidence\n");
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [logWrite({
+        id: "round-old",
+        clientItemId: "old-log",
+        root: checkout,
+        locator: "old.log",
+        caption: "Round one evidence",
+        body: "round one evidence\n",
+      })],
+      2,
+      null,
+      [{
+        id: "round-claim-1",
+        clientCriterionId: "claim-round-1",
+        criterion: "The behavior is proven",
+        proofClass: "focused_execution",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [{ clientItemId: "old-log", role: "execution" }],
+      }],
+    );
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "round-root", now: 3 },
+      {
+        id: "round-first",
+        triggerSource: "manual",
+        triggerKey: "round-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    await captureSubmissionTextArtifacts(store, first.submission.id, 3);
+    store.updateSubmissionCapture(first.submission.id, {
+      context: {},
+      evidence: {},
+      fingerprint: "round-identity",
+      repositoryFingerprint: "tree-at-round-1",
+      status: "running",
+    }, 3);
+
+    writeFileSync(join(checkout, "new.log"), "round two evidence\n");
+    store.stageWorkflowEvidence(
+      noteKey,
+      [logWrite({
+        id: "round-new",
+        clientItemId: "new-log",
+        root: checkout,
+        locator: "new.log",
+        caption: "Round two evidence",
+        body: "round two evidence\n",
+      })],
+      4,
+      null,
+      [{
+        id: "round-claim-2",
+        clientCriterionId: "claim-round-2",
+        criterion: "The behavior is proven",
+        proofClass: "focused_execution",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [{ clientItemId: "new-log", role: "execution" }],
+      }],
+    );
+    const second = store.createRepairSubmission({
+      id: "round-second",
+      runId,
+      round: 2,
+      triggerSource: "manual",
+      triggerKey: "round-repair",
+      context: {},
+      evidence: {},
+      now: 5,
+    });
+    await captureSubmissionTextArtifacts(store, second.submission.id, 5);
+    await inheritSubmissionEvidence(store, second.submission, 5);
+
+    const claims = store.listSubmissionCoverage(second.submission.id);
+    assert.deepEqual(
+      claims.map((claim) => claim.clientCriterionId).sort(),
+      ["claim-round-1", "claim-round-2"],
+    );
+    const authored = claims.find((claim) => claim.clientCriterionId === "claim-round-2")!;
+    const carriedClaim = claims.find((claim) => claim.clientCriterionId === "claim-round-1")!;
+    assert.deepEqual(
+      authored.links.map((link) => link.clientItemId),
+      ["new-log"],
+      "this round's claim cites only what this round chose to cite",
+    );
+    assert.deepEqual(
+      carriedClaim.links.map((link) => link.clientItemId),
+      ["old-log"],
+      "and the carried claim still cites exactly what the parent froze",
+    );
+    assert.equal(carriedClaim.inheritedFromSubmissionId, first.submission.id);
+    assert.deepEqual(
+      store.listSubmissionTextArtifacts(second.submission.id).map((item) => item.displayName).sort(),
+      ["new.log", "old.log"],
+      "though the older evidence itself is still carried and marked, for the Persona to weigh",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("byte-identical evidence is frozen once and shared, and the shared body outlives its first run", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-dedupe-")));
+  try {
+    // Bytes unique to this test, so the body count it measures is its own: digest sharing is
+    // global by design, and reusing the shared fixture PNG would measure an earlier test.
+    const bytes = Buffer.concat([PNG, Buffer.from("dedupe-fixture", "utf8")]);
+    writeFileSync(join(checkout, "first.png"), bytes);
+    writeFileSync(join(checkout, "second.png"), bytes);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const before = retainedBodies().length;
+    store.stageWorkflowEvidence(noteKey, [
+      imageWrite({
+        id: "dedupe-a",
+        clientItemId: "first",
+        root: checkout,
+        locator: "first.png",
+        caption: "One name for these bytes",
+        bytes,
+      }),
+      imageWrite({
+        id: "dedupe-b",
+        clientItemId: "second",
+        root: checkout,
+        locator: "second.png",
+        caption: "Another name for the same bytes",
+        bytes,
+      }),
+    ], 2);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "dedupe-root", now: 3 },
+      {
+        id: "dedupe-submission",
+        triggerSource: "manual",
+        triggerKey: "dedupe-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    const images = await captureSubmissionImages(store, first.submission.id, 3);
+    assert.equal(images.length, 2, "both items are frozen as distinct evidence");
+    assert.notEqual(images[0]!.id, images[1]!.id);
+    assert.equal(
+      retainedBodies().length - before,
+      1,
+      "one digest is one body, however many captions name it",
+    );
+
+    // A second run of the same conversation proving the same bytes again writes nothing.
+    store.stageWorkflowEvidence(noteKey, [imageWrite({
+      id: "dedupe-c",
+      clientItemId: "third",
+      root: checkout,
+      locator: "first.png",
+      caption: "A third round proving the same bytes",
+      bytes,
+    })], 5);
+    const second = store.createInitialSubmission(
+      {
+        id: `${runId}-second`,
+        binding,
+        intent: FIXTURE_RUN_INTENT,
+        triggerSource: "manual",
+        triggerKey: "dedupe-second",
+        now: 5,
+      },
+      {
+        id: "dedupe-submission-second",
+        triggerSource: "manual",
+        triggerKey: "dedupe-second",
+        context: {},
+        evidence: {},
+        now: 5,
+      },
+    );
+    const reused = await captureSubmissionImages(store, second.submission.id, 5);
+    assert.equal(reused.length, 1);
+    assert.equal(
+      retainedBodies().length - before,
+      1,
+      "a later run reuses the frozen body instead of copying it",
+    );
+
+    // Deleting the first run must leave the body the second run still reads.
+    store.setSubmissionState(first.submission.id, "completed", 6);
+    store.setRunState(runId, "completed", "complete", {}, 6);
+    store.runRetention({
+      rawEvidenceBefore: 0,
+      completedRunsBefore: 7,
+      maxCompletedRuns: 0,
+      now: 8,
+    });
+    assert.equal(store.getRun(runId), null, "the first run is gone");
+    assert.equal(
+      store.workflowStatusCounts().pendingEvidenceImageCleanup,
+      0,
+      "a body another run still reads is never queued for deletion",
+    );
+    const body = store.submissionImageStorageRecords(second.submission.id)[0]!.storageRelativePath;
+    assert.equal(existsSync(join(WORKFLOW_EVIDENCE_DIR, ...body.split("/"))), true);
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("re-registering identical bytes attaches them to the next submission, while changed bytes still refuse", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-restage-")));
+  try {
+    writeFileSync(join(checkout, "shot.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const write = imageWrite({
+      id: "restage-item",
+      clientItemId: "shot",
+      root: checkout,
+      locator: "shot.png",
+      caption: "Proof this round and the next",
+      bytes: PNG,
+    });
+    store.stageWorkflowEvidence(noteKey, [write], 2);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "restage-root", now: 3 },
+      {
+        id: "restage-first",
+        triggerSource: "manual",
+        triggerKey: "restage-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    assert.equal(store.listReservedWorkflowEvidence(first.submission.id).length, 1);
+    assert.deepEqual(
+      store.listWorkflowEvidence(noteKey).images,
+      [],
+      "reservation empties the tray",
+    );
+    const generation = store.workflowEvidenceGeneration(noteKey, checkout);
+
+    store.stageWorkflowEvidence(noteKey, [write], 4);
+    assert.deepEqual(
+      store.listWorkflowEvidence(noteKey).images.map((image) => image.clientItemId),
+      ["shot"],
+      "re-registering identical bytes returns them to the tray",
+    );
+    assert.equal(
+      store.workflowEvidenceGeneration(noteKey, checkout),
+      generation,
+      "bytes that already existed are not new evidence about the work",
+    );
+    assert.equal(
+      store.listReservedWorkflowEvidence(first.submission.id).length,
+      1,
+      "and the submission that already reserved them keeps them",
+    );
+
+    const next = store.createRepairSubmission({
+      id: "restage-second",
+      runId,
+      round: 2,
+      triggerSource: "manual",
+      triggerKey: "restage-repair",
+      context: {},
+      evidence: {},
+      now: 5,
+    });
+    assert.deepEqual(
+      store.listReservedWorkflowEvidence(next.submission.id).map((item) => item.clientItemId),
+      ["shot"],
+      "the next submission reserves them without the author minting a new id",
+    );
+
+    // Genuinely different bytes under a reserved id are still refused: that is a claim about
+    // this submission's frozen evidence, and it is immutable.
+    assert.throws(
+      () => store.stageWorkflowEvidence(noteKey, [{ ...write, caption: "A different claim entirely" }], 6),
+      /already reserved/,
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a half-written carry mark is refused rather than read as fresh evidence", async () => {
+  const { parseWorkflowSubmissionImageRow, parseWorkflowSubmissionTextArtifactRow } =
+    await import("../src/server/workflows/store.ts");
+  const image = {
+    id: "img_x", submission_id: "s1", staging_id: "g1", ordinal: 0,
+    display_name: "shot.png", caption: "The panel renders", repository_scope: "all",
+    mime_type: "image/png", bytes: PNG.byteLength, sha256: sha(PNG),
+    storage_relative_path: "retained/s1/img_x.png", availability: "retained", pruned_at: null,
+    inherited_from_submission_id: null, origin_round: null,
+    origin_repository_fingerprint: null, created_at: 1,
+  };
+  assert.equal(parseWorkflowSubmissionImageRow(image).origin_round, null, "the ordinary row reads");
+  assert.equal(
+    parseWorkflowSubmissionImageRow({
+      ...image, inherited_from_submission_id: "s0", origin_round: 1,
+      origin_repository_fingerprint: null,
+    }).origin_round,
+    1,
+    "a carry with no source fingerprint is legal: a failed capture has none to carry",
+  );
+  // Each of these would otherwise be read as evidence this submission captured itself, which is
+  // the exact misrepresentation the mark exists to prevent.
+  assert.throws(
+    () => parseWorkflowSubmissionImageRow({ ...image, inherited_from_submission_id: "s0" }),
+    /origin submission and its origin round/,
+    "an origin submission with no origin round cannot be judged for staleness",
+  );
+  assert.throws(
+    () => parseWorkflowSubmissionImageRow({ ...image, origin_round: 1 }),
+    /origin submission and its origin round/,
+    "an origin round with no origin submission describes a carry that did not happen",
+  );
+  assert.throws(
+    () => parseWorkflowSubmissionImageRow({ ...image, origin_repository_fingerprint: "tree" }),
+    /cannot carry an origin repository fingerprint/,
+  );
+  assert.throws(
+    () => parseWorkflowSubmissionTextArtifactRow({
+      id: "txt_x", submission_id: "s1", staging_id: "g1", ordinal: 0,
+      display_name: "run.log", caption: "The focused run", repository_scope: "all",
+      mime_type: "text/plain", bytes: 4, sha256: sha(Buffer.from("abcd")),
+      content: "abcd", availability: "retained", pruned_at: null,
+      inherited_from_submission_id: "s0", origin_round: null,
+      origin_repository_fingerprint: null, created_at: 1,
+    }),
+    /origin submission and its origin round/,
+    "text artifacts carry the same invariant",
+  );
+});
+
+test("carried evidence does not defeat the unchanged-evidence refusal", () => {
+  const evidenceContext = (images: WorkflowEvidenceImage[]): WorkflowContextSnapshot =>
+    WorkflowContextSnapshotSchema.parse({
+      primaryGoal: { rawPrompt: "Prove the panel", refined: null, sourceNoteKey: "note" },
+      humanDecisions: [],
+      constraints: [],
+      acceptanceCriteria: [],
+      priorPersonaFeedback: [],
+      session: { agent: "codex", name: "work", cwd: "/repo", branch: "feature" },
+      evidence: {
+        headSha: "abc",
+        diffFingerprint: "diff",
+        diff: "patch",
+        diffTruncated: false,
+        workingTreeDirty: false,
+        workingTreeStatus: [],
+        workingTreeStatusTruncated: false,
+        transcript: [],
+        transcriptAnchor: 1,
+        transcriptTruncated: false,
+        standards: [],
+        standardsTruncated: false,
+        images,
+        stagedImageGeneration: 4,
+      },
+      compaction: { status: "fallback", runner: null, model: null, error: null },
+    });
+  const image = (id: string, sha256: string): WorkflowEvidenceImage => ({
+    id,
+    ordinal: 0,
+    displayName: "shot.png",
+    caption: "The panel renders",
+    repositoryScope: "all",
+    mimeType: "image/png",
+    bytes: PNG.byteLength,
+    sha256,
+    availability: "retained",
+    prunedAt: null,
+    createdAt: 1,
+  });
+  const digest = sha(PNG);
+  // A carried row is a NEW row with a new id for the same bytes. Reading ids here would make
+  // an untouched tree look changed and the refusal would stop firing.
+  assert.equal(
+    workflowRepositoryFingerprint(evidenceContext([image("img_round_one", digest)])),
+    workflowRepositoryFingerprint(evidenceContext([image("img_round_two", digest)])),
+  );
+  assert.notEqual(
+    workflowRepositoryFingerprint(evidenceContext([image("img_round_one", digest)])),
+    workflowRepositoryFingerprint(evidenceContext([
+      image("img_round_one", digest),
+      { ...image("img_new", sha("different bytes")), ordinal: 1 },
+    ])),
+    "genuinely new evidence still reads as a change",
+  );
+});
+
+test("the Persona manifest marks carried evidence with the round and tree it was captured against", () => {
+  const persona = {
+    id: "p",
+    name: "Reviewer",
+    guidanceMarkdown: "Review.",
+    runner: "claude" as const,
+    model: "fake",
+    description: "",
+    version: 1,
+  };
+  const base = {
+    ordinal: 0,
+    displayName: "shot.png",
+    caption: "The panel renders",
+    repositoryScope: "all" as const,
+    mimeType: "image/png" as const,
+    bytes: PNG.byteLength,
+    sha256: sha(PNG),
+    availability: "retained" as const,
+    prunedAt: null,
+    createdAt: 1,
+  };
+  const context = WorkflowContextSnapshotSchema.parse({
+    primaryGoal: { rawPrompt: "Prove the panel", refined: null, sourceNoteKey: "note" },
+    humanDecisions: [],
+    constraints: [],
+    acceptanceCriteria: [],
+    priorPersonaFeedback: [],
+    session: { agent: "codex", name: "work", cwd: "/repo", branch: "feature" },
+    evidence: {
+      headSha: "abc",
+      diffFingerprint: "diff",
+      diff: "patch",
+      diffTruncated: false,
+      workingTreeDirty: false,
+      workingTreeStatus: [],
+      workingTreeStatusTruncated: false,
+      transcript: [],
+      transcriptAnchor: 1,
+      transcriptTruncated: false,
+      standards: [],
+      standardsTruncated: false,
+      images: [
+        { ...base, id: "img_fresh" },
+        {
+          ...base,
+          id: "img_carried",
+          ordinal: 1,
+          inheritedFrom: {
+            submissionId: "sub-round-1",
+            round: 1,
+            repositoryFingerprint: "tree-at-round-1",
+          },
+        },
+      ],
+      stagedImageGeneration: 1,
+    },
+    compaction: { status: "fallback", runner: null, model: null, error: null },
+  });
+  const prompt = buildPersonaPrompt(persona as never, context);
+  const manifest = prompt.slice(prompt.indexOf("workflow-image-manifest"));
+  assert.match(manifest, /"id": "img_carried"/);
+  assert.match(manifest, /"capturedInRound": 1/);
+  assert.match(manifest, /"capturedAtRepositoryFingerprint": "tree-at-round-1"/);
+  assert.equal(
+    (manifest.match(/capturedInRound/g) ?? []).length,
+    1,
+    "evidence this submission captured itself carries no mark at all",
+  );
+  assert.match(
+    prompt,
+    /carried forward rather than re-collected/,
+    "and the contract explains what the mark means",
+  );
+});
+
+test("a later round drops carried evidence whose source now reads differently, and keeps one that is gone", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-stale-")));
+  try {
+    writeFileSync(join(checkout, "stable.log"), "stable: the run that passed\n");
+    writeFileSync(join(checkout, "edited.log"), "edited: the run that passed\n");
+    writeFileSync(join(checkout, "removed.log"), "removed: the run that passed\n");
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [
+      logWrite({
+        id: "stale-stable",
+        clientItemId: "stable",
+        root: checkout,
+        locator: "stable.log",
+        caption: "A log that still reads the same",
+        body: "stable: the run that passed\n",
+      }),
+      logWrite({
+        id: "stale-edited",
+        clientItemId: "edited",
+        root: checkout,
+        locator: "edited.log",
+        caption: "A log whose source has since changed",
+        body: "edited: the run that passed\n",
+      }),
+      logWrite({
+        id: "stale-removed",
+        clientItemId: "removed",
+        root: checkout,
+        locator: "removed.log",
+        caption: "A gitignored log the agent has since deleted",
+        body: "removed: the run that passed\n",
+      }),
+    ], 2);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "stale-root", now: 3 },
+      {
+        id: "stale-first",
+        triggerSource: "manual",
+        triggerKey: "stale-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    assert.equal((await captureSubmissionTextArtifacts(store, first.submission.id, 3)).length, 3);
+    store.updateSubmissionCapture(first.submission.id, {
+      context: {},
+      evidence: {},
+      fingerprint: "stale-identity",
+      repositoryFingerprint: "tree-at-round-1",
+      status: "running",
+    }, 3);
+
+    writeFileSync(join(checkout, "edited.log"), "edited: the run that FAILED\n");
+    rmSync(join(checkout, "removed.log"));
+
+    const second = store.createRepairSubmission({
+      id: "stale-second",
+      runId,
+      round: 2,
+      triggerSource: "manual",
+      triggerKey: "stale-repair",
+      context: {},
+      evidence: {},
+      now: 4,
+    });
+    await captureSubmissionTextArtifacts(store, second.submission.id, 4);
+    assert.equal(await inheritSubmissionEvidence(store, second.submission, 4), 2);
+    assert.deepEqual(
+      store.listSubmissionTextArtifacts(second.submission.id).map((item) => item.displayName).sort(),
+      ["removed.log", "stable.log"],
+      "a source that reads differently is dropped; one that no longer reads at all is kept",
+    );
+    for (const carried of store.listSubmissionTextArtifacts(second.submission.id)) {
+      assert.equal(carried.inheritedFrom?.round, 1);
+      assert.equal(carried.inheritedFrom?.repositoryFingerprint, "tree-at-round-1");
+    }
+    assert.deepEqual(
+      store.listSubmissionTextArtifacts(second.submission.id).map((item) => item.content).sort(),
+      ["removed: the run that passed\n", "stable: the run that passed\n"],
+      "carried bytes are the original bytes, not a re-read",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a carry never exceeds the aggregate evidence limits it competes for", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-budget-")));
+  try {
+    const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+    const max = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount;
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const stage = (round: number, count: number) => {
+      const writes = [];
+      for (let index = 0; index < count; index++) {
+        const body = `round ${round} item ${index}\n`;
+        writeFileSync(join(checkout, `r${round}-${index}.log`), body);
+        writes.push(logWrite({
+          id: `budget-${round}-${index}`,
+          clientItemId: `budget-${round}-${index}`,
+          root: checkout,
+          locator: `r${round}-${index}.log`,
+          caption: `Round ${round} item ${index}`,
+          body,
+        }));
+      }
+      store.stageWorkflowEvidence(noteKey, writes, 2 + round);
+    };
+    stage(1, max);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "budget-root", now: 3 },
+      {
+        id: "budget-first",
+        triggerSource: "manual",
+        triggerKey: "budget-root",
+        context: {},
+        evidence: {},
+        now: 3,
+      },
+    );
+    assert.equal((await captureSubmissionTextArtifacts(store, first.submission.id, 3)).length, max);
+
+    stage(2, 2);
+    const second = store.createRepairSubmission({
+      id: "budget-second",
+      runId,
+      round: 2,
+      triggerSource: "manual",
+      triggerKey: "budget-repair",
+      context: {},
+      evidence: {},
+      now: 5,
+    });
+    await captureSubmissionTextArtifacts(store, second.submission.id, 5);
+    await inheritSubmissionEvidence(store, second.submission, 5);
+    const held = store.listSubmissionTextArtifacts(second.submission.id);
+    assert.equal(held.length, max, "the limit holds whatever the previous round proved");
+    assert.deepEqual(
+      held.filter((item) => !item.inheritedFrom).map((item) => item.displayName),
+      ["r2-0.log", "r2-1.log"],
+      "this round's own evidence is never displaced by a carry",
+    );
+    assert.equal(
+      held.filter((item) => item.inheritedFrom).length,
+      max - 2,
+      "and the carry fills exactly the room that is left",
+    );
+    // What the cap refused is recorded, so evidence never simply goes quiet.
+    const truncation = store.listEvents(runId)
+      .filter((event) => event.kind === "evidence_carry_truncated");
+    assert.equal(truncation.length, 1);
+    assert.deepEqual(
+      { ...(truncation[0]!.payload as Record<string, unknown>), submissionId: undefined, sourceSubmissionId: undefined },
+      { images: 0, artifacts: 2, claims: 0, submissionId: undefined, sourceSubmissionId: undefined },
+      "naming exactly how much of the parent's set the limit refused",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});

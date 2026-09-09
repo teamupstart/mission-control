@@ -833,9 +833,70 @@ opened without following symlinks and re-hashed before context compaction or Per
 Images are re-sniffed and copied to submission-owned storage. Text is decoded strictly as
 UTF-8 and copied into a submission-owned immutable row with its byte count and digest. A
 changed, missing, oversized, or invalid source blocks the whole run in the historical
-`image_evidence_capture` recovery phase. Normal repair rounds take only newly staged evidence;
-explicit retry of a capture fault revives the same submission and therefore the same reserved
-bytes.
+`image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
+submission and therefore the same reserved bytes.
+
+An image whose digest is already frozen and retained references that existing body instead of
+copying it again, so registering the same screenshot in five rounds stores it once. Bodies are
+therefore shared between submissions and between runs: one is queued for deletion only when no
+retained row anywhere still reads it, and a queued body a later capture reuses is taken off the
+queue rather than deleted.
+
+Registering byte-identical evidence under an id a previous submission already reserved returns
+it to the mutable tray for the next submission instead of doing nothing. That is not new
+evidence about the work, so it does not move the staged generation and does not resume a
+waiting run. It also does not detach anything from the submission that reserved it: that
+submission's frozen bytes are immutable. Registering genuinely different content under a
+reserved id is still refused.
+
+A repair round's first submission and an `evidence_preflight` refinement child both start from
+what they staged themselves and then carry forward what the previous submission of the run
+froze and this one did not supply. A carried item never displaces fresh evidence and competes last for the same aggregate limits.
+When the limit binds, a carry gives up the oldest ancestry first and never an item the previous
+submission captured itself, so what is refused is always the material that has been re-carried
+longest and describes the oldest tree.
+
+Those limits are not a policy this path could relax. The immutable context snapshot caps its
+frozen image and artifact arrays at the same counts, so a carry that ignored them would fail the
+entire capture as a stale capture and lose every item rather than the few at the margin. The
+image count is stricter still: `WORKFLOW_IMAGE_LIMITS.maxCount` is `LLM_IMAGE_LIMITS.maxCount`,
+the number of images a single model call accepts, and `validateLlmImages` refuses a call that
+exceeds it. A submission carrying a ninth image could not be sent to the Persona that has to read
+it. When a limit does refuse part of a carry the run records `evidence_carry_truncated` naming
+how many images, artifacts, and claims it refused, so a shortened carry is inspectable rather
+than silent.
+
+Every carried claim is retained even when a limit refused some of the evidence it cited; only
+the link pointing at the absent item is dropped, because citing evidence that is not there
+invents a gap rather than finding one.
+
+Every frozen coverage claim of the previous submission is retained whole, with its own claim id,
+proof class, repository scope, and link set, marked with the submission it came from. The one
+bound is the frozen-coverage limit: a submission's coverage is read through a schema capped at
+`maxClaims`, so a carry that ignored it would make that coverage unreadable rather than larger.
+It binds only when a parent already at the cap meets a child that declared claims of its own, and
+reaching it is recorded as `evidence_carry_truncated` alongside the evidence counts. A claim
+re-declared under the same id is the same claim, and the author's current wording wins; a
+different id for the same criterion is a different claim and is retained beside it.
+
+Readiness distinguishes the two. Where a canonical criterion has a claim the author declared on
+this submission, that claim answers for it and the retained ancestry behind it is not read as a
+competing declaration. Two claims the author wrote here for one criterion is still
+`ambiguous_mapping` and still reports, because that is a real question about what they are
+asserting. Where a criterion has no claim of its own, the carried claims answer for it and are
+judged among themselves exactly as before, which is the case inheritance exists for: without it
+a mapping repair regresses a criterion its parent had already proven to `missing_coverage`.
+
+A refinement child repairs a coverage mapping inside one round, so its tree is its parent's
+tree and the carry is unverified. A new repair round's tree has moved, so each carried item is
+re-read where its source still resolves and dropped when that source now says something
+different; a source that has been deleted keeps its carried bytes, because a gitignored capture
+the agent has since removed is exactly what carrying forward exists to preserve. Carried
+evidence appears in the Persona manifests with the round it was captured in and the repository
+fingerprint it was captured against, which follow the original capture through any number of
+carries. Staleness is a Persona judgement, not a daemon one. Carrying does not weaken the
+unchanged-evidence refusal: that comparison reads evidence by digest, caption, and scope rather
+than by frozen row id.
 
 Coverage is reserved in the same transaction as its linked evidence and copied to an immutable
 submission table. After evidence bytes are safely captured, the source compaction semantically maps
@@ -858,8 +919,8 @@ original immutable submission inspectable. Newly staged evidence resumes as a ch
 same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
 It reuses the run's constraints, acceptance criteria, canonical ids/text, materiality, and
 proof-class suggestions without creating a `context_compaction` call, exactly as every other
-submission of the run does. It still freezes its own replacement evidence and coverage, remaps
-the current claim ids, and reruns readiness. Author claim ids are per-submission, so the remap
+submission of the run does. It freezes its own replacement evidence and coverage, carries
+forward its parent's, remaps the current claim ids, and reruns readiness. Author claim ids are per-submission, so the remap
 reads this submission's claims through the previous submission's claims and mappings; a rephrased
 claim for an unchanged criterion therefore still matches. A changed human decision does NOT buy a
 fresh compaction - the run's intent was frozen at creation - so the criteria stay identical across

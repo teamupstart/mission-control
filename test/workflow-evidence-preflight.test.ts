@@ -302,11 +302,47 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
   for (const criteria of stableCriteria.slice(1)) assert.deepEqual(criteria, stableCriteria[0]);
   assert.deepEqual(submissions[0]?.readiness?.gapCodes, ["missing_rendered_output"]);
   assert.equal(submissions.at(-1)?.readiness?.status, "ready");
+  // Every frozen ancestor claim is retained, and the one this segment's author declared is
+  // still the one that answers: retained ancestry is provenance, not a competing assertion.
+  const finalClaims = h.store.listSubmissionCoverage(submissions.at(-1)!.id);
+  assert.equal(finalClaims.some((claim) => claim.clientCriterionId === "claim-15"), true);
   assert.deepEqual(
-    h.store.listSubmissionCoverage(submissions.at(-1)!.id).map((claim) => claim.clientCriterionId),
+    finalClaims.filter((claim) => !claim.inheritedFromSubmissionId)
+      .map((claim) => claim.clientCriterionId),
     ["claim-15"],
+    "exactly one claim on this segment was declared here",
   );
-  assert.deepEqual(contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds, ["claim-15"]);
+  assert.equal(
+    finalClaims.filter((claim) => claim.inheritedFromSubmissionId).length,
+    finalClaims.length - 1,
+    "and the rest are carried ancestry, marked as such",
+  );
+  assert.equal(submissions.at(-1)?.readiness?.criteria[0]?.matchedClientCriterionId, "claim-15");
+  assert.equal(
+    submissions.at(-1)?.readiness?.gapCodes.includes("ambiguous_mapping"),
+    false,
+    "retained ancestry never reports as the author asserting two things at once",
+  );
+  assert.equal(
+    contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds.includes("claim-15"),
+    true,
+  );
+  // Evidence, unlike claims, accumulates: this author minted a fresh client id every round, so
+  // nothing deduplicates, and the final segment still holds what earlier ones proved - up to
+  // the aggregate limit, newest first, with its own two items never displaced.
+  const finalEvidence = h.store.listSubmissionTextArtifacts(submissions.at(-1)!.id);
+  assert.deepEqual(
+    finalEvidence.filter((item) => !item.inheritedFrom).map((item) => item.caption).sort(),
+    ["Replacement 15 execution", "Replacement 15 rendered output"],
+  );
+  assert.equal(
+    finalEvidence.filter((item) => item.inheritedFrom).length,
+    finalEvidence.length - 2,
+  );
+  for (const carried of finalEvidence.filter((item) => item.inheritedFrom)) {
+    assert.equal(carried.inheritedFrom?.round, 1, "every segment of this run is round 1");
+    assert.equal(typeof carried.inheritedFrom?.repositoryFingerprint, "string");
+  }
   const captureEvents = h.store.listEvents(runId)
     .filter((event) => event.kind === "submission_captured");
   assert.equal(captureEvents.length, 16);

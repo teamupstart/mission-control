@@ -205,6 +205,7 @@ import { workflowLog } from "./log.ts";
 import {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
+  inheritSubmissionEvidence,
   reconcileWorkflowEvidenceFiles,
   stageAgentWorkflowEvidence,
   stageUploadedWorkflowEvidenceSync,
@@ -6235,10 +6236,28 @@ export class WorkflowManager {
       // The reservation was frozen with the submission. Re-open those sources and copy their
       // bytes into daemon-owned immutable storage after the external artifact guard, but
       // before raw context is persisted or the compaction model can spend a token.
+      await captureSubmissionImages(this.store, submission.id);
+      await captureSubmissionTextArtifacts(this.store, submission.id);
+      /*
+       * Then carry forward what the previous submission proved and this one did not re-stage.
+       *
+       * Strictly AFTER the two captures above, because both return early once the submission
+       * holds any frozen row of their kind: carrying first would make a submission's own
+       * freshly staged evidence unreachable. Ordering it this way also gives the deduplication
+       * rule its meaning - what this submission captured itself is what it has, and the carry
+       * only fills the gaps around it.
+       *
+       * Reservation is one way, so before this a repair round began with an empty tray and a
+       * Persona could fail a submission for a screenshot that had been in front of the
+       * previous one. Nothing here re-derives criteria or intent: it moves evidence and the
+       * coverage claims that cite it, and those claims land on the run's frozen canonical
+       * criteria exactly as freshly declared ones do.
+       */
+      await inheritSubmissionEvidence(this.store, submission);
       const frozenCoverage = this.store.listSubmissionCoverage(submission.id);
       const reservedEvidence = this.store.listReservedWorkflowEvidence(submission.id);
-      const submissionImages = await captureSubmissionImages(this.store, submission.id);
-      const submissionArtifacts = await captureSubmissionTextArtifacts(this.store, submission.id);
+      const submissionImages = this.store.listSubmissionImages(submission.id);
+      const submissionArtifacts = this.store.listSubmissionTextArtifacts(submission.id);
       const reservedSubmission = this.store.getSubmission(submission.id) ?? submission;
       captured.raw.evidence = {
         ...captured.raw.evidence,

@@ -759,13 +759,17 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
     assert.deepEqual(
       store.listReservedWorkflowEvidence(lead.submission.id).map((item) => item.id),
       ["staged-all", "staged-swap"],
-      "a mixed idempotent retry must not return a reserved item to mutable staging",
+      "re-staging must not detach an item from the submission that already reserved it",
     );
     assert.deepEqual(
       store.listWorkflowEvidence("image-note").images.map((image) => image.id),
-      ["staged-secondary"],
+      ["staged-all", "staged-secondary"],
+      "byte-identical re-registration returns the item to the tray for the NEXT submission",
     );
-    assert.equal(store.workflowEvidenceGeneration("image-note", primary), 1);
+    assert.equal(
+      store.workflowEvidenceGeneration("image-note", primary), 1,
+      "re-registering existing bytes is not new evidence and must not move the generation",
+    );
     assert.equal(store.workflowEvidenceGeneration("image-note", secondary), 2);
     store.removeWorkflowEvidence("image-note", secondaryOnly.clientItemId, 6);
     assert.equal(store.workflowEvidenceGeneration("image-note", primary), 1);
@@ -871,8 +875,10 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
       caption: "Reuse this exact retained observation",
       repositoryScope: "repo-01",
     }, 7);
-    assert.equal(reattached.images[0]?.sourceKind, "retained");
-    assert.equal(reattached.images[0]?.episodeKey, "intent:3:4");
+    // By client id, not by position: the tray also holds the re-staged agent item now.
+    const reattachedItem = reattached.images.find((image) => image.clientItemId === "historical-screen");
+    assert.equal(reattachedItem?.sourceKind, "retained");
+    assert.equal(reattachedItem?.episodeKey, "intent:3:4");
     const unrelatedBinding = store.insertBinding({
       id: "image-binding-unrelated",
       workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
@@ -917,13 +923,18 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
     const pruned = WorkflowContextSnapshotSchema.parse(store.getSubmission(lead.submission.id)?.context);
     assert.equal(pruned.evidence.retention?.state, "pruned");
     assert.equal(pruned.evidence.retention?.state === "pruned" ? pruned.evidence.retention.imageCount : -1, 2);
-    assert.equal(store.workflowStatusCounts().pendingEvidenceImageCleanup, 2);
-    assert.equal(workflowEvidenceOrphanCount(store), 0, "pending cleanup is tracked, not orphaned");
+    // Every image in this fixture is the same PNG, so all four frozen rows across both runs
+    // share one body. Pruning the lead run must not queue it while the sibling run's retained
+    // rows still read it, which is why nothing is pending here.
+    assert.equal(store.workflowStatusCounts().pendingEvidenceImageCleanup, 0);
+    assert.equal(workflowEvidenceOrphanCount(store), 0, "a shared body is referenced, not orphaned");
     const retainedPath = inputs[0]!.path;
     reconcileWorkflowEvidenceFiles(store);
-    assert.equal(existsSync(retainedPath), false);
+    assert.equal(existsSync(retainedPath), true, "the sibling run still reads these bytes");
     assert.equal(store.workflowStatusCounts().pendingEvidenceImageCleanup, 0);
     assert.equal(workflowEvidenceOrphanCount(store), 0);
+    // The lead's own rows are pruned regardless: availability is per row, and a Persona of
+    // this run can no longer read bodies this run gave up.
     assert.equal(
       (await app.request(`/api/workflow-runs/${lead.run.id}/images/${leadImages[0]!.id}`, {
         headers: { host: "127.0.0.1:7317" },
@@ -934,6 +945,26 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
       () => readSubmissionImageBody(store, lead.run.id, leadImages[0]!.id),
       (error: unknown) => error instanceof WorkflowImageEvidenceError && error.status === 410,
     );
+    // The last reader gives it up and the body finally goes.
+    const siblingCaptured = WorkflowContextSnapshotSchema.parse(context(siblingImages));
+    store.updateSubmissionCapture(sibling.submission.id, {
+      context: workflowJson(siblingCaptured),
+      evidence: workflowJson(siblingCaptured.evidence),
+      fingerprint: "sibling-fingerprint",
+      status: "running",
+    }, 10);
+    store.setSubmissionState(sibling.submission.id, "completed", 10);
+    store.setRunState(sibling.run.id, "completed", "complete", {}, 10);
+    store.runRetention({
+      rawEvidenceBefore: 11,
+      completedRunsBefore: 0,
+      maxCompletedRuns: 100,
+      now: 12,
+    });
+    assert.equal(store.workflowStatusCounts().pendingEvidenceImageCleanup, 1);
+    reconcileWorkflowEvidenceFiles(store);
+    assert.equal(existsSync(retainedPath), false, "the last reference released deletes it once");
+    assert.equal(store.workflowStatusCounts().pendingEvidenceImageCleanup, 0);
   } finally {
     rmSync(primary, { recursive: true, force: true });
     rmSync(secondary, { recursive: true, force: true });

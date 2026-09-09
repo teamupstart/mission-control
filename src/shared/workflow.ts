@@ -275,6 +275,14 @@ export interface WorkflowEvidenceCoverageClaim {
   proofClass: WorkflowEvidenceProofClass;
   repositoryScope: WorkflowEvidenceRepositoryScope;
   links: WorkflowEvidenceCoverageLink[];
+  /**
+   * The submission this claim was carried from, or absent when the author declared it here.
+   *
+   * A carried claim is retained in full and is a real claim: where its criterion has no
+   * claim of its own, it is the one that answers for it. What it is not is a competing
+   * DECLARATION, which is what the ambiguity rule exists to catch.
+   */
+  inheritedFromSubmissionId?: string | null;
 }
 
 /** A staged claim uses the same generation and ownership lifecycle as staged evidence. */
@@ -491,11 +499,28 @@ export function evaluateWorkflowEvidenceReadiness(input: {
     coverage: input.coverage,
   });
   const criteria = canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
-    const matchedIds = [...new Set(input.criterionMappings
+    const mappedIds = [...new Set(input.criterionMappings
       .filter((mapping) => mapping.criterionId === canonical.id)
       .flatMap((mapping) => mapping.matchedClientCriterionIds))]
       .filter((id) => claims.has(id))
       .sort();
+    /*
+     * A claim the author declared HERE answers for the criterion; a carried one only stands in.
+     *
+     * Evidence carry-forward retains every frozen claim of the previous submission, so a
+     * criterion an author keeps re-proving accumulates its own ancestry. Reading that ancestry
+     * as competing declarations would report `ambiguous_mapping` on a submission whose current
+     * claim is perfectly clear, and a mapping repair that re-declares the criterion it was sent
+     * back to repair could never become ready again.
+     *
+     * Ambiguity is a question about what the AUTHOR is asserting now. Two claims they wrote for
+     * one criterion is exactly that and still reports; their own claim standing in front of the
+     * copies it descends from is not. Where no claim was declared here, the carried ones answer
+     * and are judged among themselves exactly as before - which is what makes inheritance worth
+     * anything, since that is the case where the criterion would otherwise have no claim at all.
+     */
+    const declaredIds = mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
+    const matchedIds = declaredIds.length > 0 ? declaredIds : mappedIds;
     const crossCriterionAmbiguity = matchedIds.some((id) => crossCriterionClaimIds.has(id));
     const claim = matchedIds.length === 1 && !crossCriterionAmbiguity
       ? claims.get(matchedIds[0]!)!
@@ -551,6 +576,18 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   };
 }
 
+/**
+ * Where evidence came from when this submission did not capture it.
+ *
+ * The round and fingerprint describe the ORIGINAL capture rather than the hand-off, so a
+ * carry across several rounds still reports the tree the bytes actually prove.
+ */
+export interface WorkflowEvidenceInheritance {
+  submissionId: string;
+  round: number;
+  repositoryFingerprint: string | null;
+}
+
 /** Browser-safe audit metadata. Storage and source paths never enter this record. */
 export interface WorkflowEvidenceImage {
   id: string;
@@ -561,6 +598,8 @@ export interface WorkflowEvidenceImage {
   mimeType: RasterImageMimeType;
   bytes: number;
   sha256: string;
+  /** Absent or null when this submission captured the bytes itself. */
+  inheritedFrom?: WorkflowEvidenceInheritance | null;
   availability: WorkflowEvidenceImageAvailability;
   prunedAt: number | null;
   createdAt: number;
@@ -577,6 +616,8 @@ export interface WorkflowEvidenceTextArtifact {
   sha256: string;
   /** Exact UTF-8 text frozen at submission capture; empty only after raw-evidence pruning. */
   content: string;
+  /** Absent or null when this submission captured the bytes itself. */
+  inheritedFrom?: WorkflowEvidenceInheritance | null;
   availability: WorkflowEvidenceImageAvailability;
   prunedAt: number | null;
   createdAt: number;

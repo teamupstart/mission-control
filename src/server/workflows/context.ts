@@ -857,14 +857,28 @@ function sourceFingerprintFields(
       path: doc.path,
       fingerprint: doc.fingerprint,
     })),
+    /*
+     * Evidence by CONTENT, never by frozen row id.
+     *
+     * A frozen id is `sha256(submissionId, stagingId)`, so it moves every time the same bytes
+     * are frozen again. That was harmless while evidence was consumed one way and every later
+     * submission started from an empty tray - the arrays were empty on both sides of the
+     * comparison, and the ids never had to agree. Carrying evidence forward puts the same
+     * screenshot in both arrays under two different ids, and reading ids here would report an
+     * untouched tree as changed, which is precisely the refusal the unchanged-evidence guard
+     * exists to make. Digest, caption and scope say everything about the evidence that a
+     * change detector should care about; the id says only which row is being looked at.
+     *
+     * Fingerprints already stored are never recomputed, so an upgrade cannot retroactively
+     * refuse anything. A run in flight across it can miss one refusal, which is the harmless
+     * direction: it reviews once more rather than blocking work that did change.
+     */
     images: (context.evidence.images ?? []).map((image) => ({
-      id: image.id,
       sha256: image.sha256,
       caption: image.caption,
       repositoryScope: image.repositoryScope,
     })),
     artifacts: (context.evidence.artifacts ?? []).map((artifact) => ({
-      id: artifact.id,
       sha256: artifact.sha256,
       caption: artifact.caption,
       repositoryScope: artifact.repositoryScope,

@@ -63,6 +63,9 @@ case "$(cat ${modeFile} 2>/dev/null)" in
     esac
     ;;
   replace) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"replace\\",\\"objective\\":\\"Replace the session database with a remote service\\",\\"goal\\":\\"Replace the session database with a remote service\\",\\"focus\\":\\"Design the remote persistence layer\\",\\"reason\\":\\"The user explicitly changed the desired end state.\\"}\\n\`\`\`"}' ;;
+  # A genuine schema-valid model verdict of "unclear" - distinct from a parse or transport
+  # failure, which never reach the schema at all.
+  model-unclear) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"unclear\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The latest instruction could not be reconciled with the existing objective.\\"}\\n\`\`\`"}' ;;
   # The model fences its JSON even when told not to (observed on a real probe), so the fake
   # does too - that keeps the parse ladder inside what this test covers rather than mocked.
   *) printf %s '{"result":"\`\`\`json\\n{\\"relationship\\":\\"steer\\",\\"objective\\":\\"Ship the Goal feature end to end\\",\\"goal\\":\\"Ship the Goal feature end to end\\",\\"focus\\":\\"Finish the current instruction\\",\\"reason\\":\\"The instruction refines the existing work.\\"}\\n\`\`\`"}' ;;
@@ -71,7 +74,17 @@ esac
 );
 chmodSync(fake, 0o755);
 const setMode = (
-  m: "good" | "broken" | "crash" | "blank" | "amend" | "shrink" | "negate" | "rapid" | "replace",
+  m:
+    | "good"
+    | "broken"
+    | "crash"
+    | "blank"
+    | "amend"
+    | "shrink"
+    | "negate"
+    | "rapid"
+    | "replace"
+    | "model-unclear",
 ): void =>
   writeFileSync(modeFile, m);
 setMode("good");
@@ -545,6 +558,109 @@ test("a Codex session goal is refined through the configured background provider
     assert.equal(r.getGoal(s.id)?.text, "Ship the Goal feature end to end");
   } finally {
     stop();
+  }
+});
+
+test("a transport failure retries on its own, without stamping unclear or needing a new prompt", async () => {
+  // "crash" is a non-zero exit - a transport failure, not a model verdict. It must be
+  // retried rather than latched, and it must never be recorded as relationship "unclear",
+  // since that value is a claim about the human's instruction, not about the process.
+  setMode("crash");
+  const { r, s, env } = withSession("r20", "%50");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a prompt whose classifier call keeps crashing" }));
+  const stop = startGoalRefiner(r);
+  try {
+    // Give the first attempt time to fail (it does, immediately - the fake exits at once)
+    // without crossing the debounce floor into a second one.
+    await new Promise((res) => setTimeout(res, 150));
+    assert.equal(r.getGoal(s.id)?.source, "heuristic", "precondition: the first attempt failed");
+    assert.notEqual(
+      r.getGoal(s.id)?.relationship,
+      "unclear",
+      "a transport blip must never be stamped as an ambiguity verdict",
+    );
+
+    setMode("good");
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 1,
+      "the transport failure to resolve on its own retry",
+      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
+    );
+    assert.equal(r.getGoal(s.id)?.relationship, "initial");
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a transport failure that outlasts the retry budget latches without claiming ambiguity", async () => {
+  setMode("crash");
+  const { r, s, env } = withSession("r21", "%51");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a prompt whose classifier never comes back" }));
+  const stop = startGoalRefiner(r);
+  try {
+    // Three attempts, each spaced by the per-session debounce floor, all fail before this
+    // latches - wait well past that budget.
+    await new Promise((res) => setTimeout(res, FLOOR_MS * 4));
+    const g = r.getGoal(s.id);
+    assert.equal(g?.source, "heuristic");
+    assert.equal(g?.relationship, null, "an exhausted transport failure must not become an ambiguity verdict");
+    assert.match(
+      g?.rationale ?? "",
+      /could not be reached after 3 attempts/,
+      "the rationale must name the transport failure, not claim the instruction was unclear",
+    );
+
+    // The latch holds once retries are exhausted: further ticks against the SAME queued
+    // prompt must not spend another model call even though the provider has recovered.
+    setMode("good");
+    await new Promise((res) => setTimeout(res, FLOOR_MS * 2));
+    assert.equal(
+      r.getGoal(s.id)?.source,
+      "heuristic",
+      "an exhausted transport failure retried again on its own",
+    );
+
+    // New human context earns the blocked head one more attempt, exactly like any other
+    // latched failure.
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a brand new ask" }));
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the retried head and the new prompt to resolve",
+      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
+    );
+  } finally {
+    stop();
+    setMode("good");
+  }
+});
+
+test("a genuine model verdict of unclear still latches", async () => {
+  // Unlike a transport failure, this is a real classification the MODEL returned - the
+  // schema-valid `relationship: "unclear"` reply, never touching a parse or spawn failure
+  // at all. It is a durable judgment, not a retryable blip: it resolves the revision (so it
+  // is never retried) and still pauses automatic wrap-up, since `resolvedSessionIntent`
+  // treats "unclear" as unresolved regardless of the revision gap being closed.
+  const { r, s, env } = withSession("r22", "%52");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "ship the Goal feature" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await until(() => r.getGoal(s.id)?.resolvedPromptRevision === 1, "the initial objective");
+
+    setMode("model-unclear");
+    r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "something the model can't reconcile" }));
+    await until(
+      () => r.getGoal(s.id)?.resolvedPromptRevision === 2,
+      "the second revision to resolve",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+
+    const g = r.getGoal(s.id)!;
+    assert.equal(g.relationship, "unclear");
+    assert.equal(g.promptRevision, g.resolvedPromptRevision, "a genuine verdict was left unresolved");
+  } finally {
+    stop();
+    setMode("good");
   }
 });
 

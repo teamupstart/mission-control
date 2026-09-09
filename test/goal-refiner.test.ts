@@ -569,15 +569,20 @@ test("a transport failure retries on its own, without stamping unclear or needin
   // "crash" is a non-zero exit - a transport failure, not a model verdict. It must be
   // retried rather than latched, and it must never be recorded as relationship "unclear",
   // since that value is a claim about the human's instruction, not about the process.
+  const ask = "a prompt whose classifier call keeps crashing";
   setMode("crash");
   const { r, s, env } = withSession("r20", "%50");
-  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a prompt whose classifier call keeps crashing" }));
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: ask }));
   const stop = startGoalRefiner(r);
   try {
-    // Give the first attempt time to fail (it does, immediately - the fake exits at once)
-    // without crossing the debounce floor into a second one.
-    await new Promise((res) => setTimeout(res, 150));
-    assert.equal(r.getGoal(s.id)?.source, "heuristic", "precondition: the first attempt failed");
+    // Wait for proof that the provider process started, then outlast its immediate exit.
+    // `source` begins as "heuristic", so it cannot establish this precondition by itself.
+    await until(
+      () => runsAsking(ask) === 1,
+      "the first transport attempt to run",
+      FLOOR_MS + RUN_TIMEOUT_MS,
+    );
+    await new Promise((res) => setTimeout(res, 100));
     assert.notEqual(
       r.getGoal(s.id)?.relationship,
       "unclear",

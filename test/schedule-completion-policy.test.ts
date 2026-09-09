@@ -124,6 +124,7 @@ const store = await import("../src/server/schedules/store.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
+const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 type ReviewManager = import("../src/server/reviews.ts").ReviewManager;
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -509,4 +510,110 @@ test("the prompted-consumption route is what carries the verdict to the task", a
   });
   assert.equal(res.status, 200);
   assert.equal(registry.getTask(taskId)?.status, "done");
+});
+
+// ---- interaction with the pull-request paths ----
+
+/** The open pull request `gh` reports for a live session's branch, on its current episode. */
+function openPr(
+  f: ReturnType<typeof runningMission>,
+  url: string,
+): void {
+  f.registry.bindTaskToWorkEpisode(f.taskId, f.sessionId);
+  const episode = f.registry.workEpisodeForSession(f.sessionId)!;
+  f.registry.reconcilePrs(
+    new Map([[f.sessionId, {
+      url,
+      number: 1,
+      state: "open" as const,
+      checks: "passing" as const,
+      branch: "feat/sweep",
+      agentSessionId: f.agentSessionId,
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+      mergedAt: null,
+      headSha: "head",
+      worktreeHeadSha: "head",
+    }]]),
+    new Set(),
+  );
+}
+
+/** One poll pass in which `url` reports merged, and nothing is asked about any branch. */
+async function pollMerged(
+  f: ReturnType<typeof runningMission>,
+  url: string,
+): Promise<void> {
+  await pollAndReconcilePrs(
+    f.registry,
+    async () => null,
+    async (candidate) =>
+      candidate === url ? { state: "merged" as const, mergedAt: T0 + 2 * HOUR } : null,
+  );
+}
+
+test("a concluded run carries the pull request it opened onto the finished task", async () => {
+  // The case the `empty` path never reaches and `retired` reaches often: a review-only
+  // artifact whose diff still opened a pull request. `completableByMerge` excludes `done`,
+  // so once this row is terminal the merge reconciler will never revisit it - this is the
+  // ONLY chance to record the url, and without it the card points at nothing for ever.
+  const f = runningMission({ completionPolicy: "auto-on-conclusion" });
+  const url = "https://github.com/example/repo/pull/7001";
+  openPr(f, url);
+
+  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+    outcome: "retired",
+    summary: "a review-only artifact",
+    gaps: [],
+  });
+
+  const task = f.registry.getTask(f.taskId);
+  assert.equal(task?.status, "done");
+  assert.equal(task?.outcomeUrl, url, "the concluded row must still name its pull request");
+});
+
+test("a mission's task still completes on a merged pull request, policy or not", async () => {
+  // The guardrail adds a route to `done`; it must not take one away. A mission left on
+  // `manual` is the strictest version of that question, because nothing else in this
+  // feature can conclude it - only the pre-existing merge path can, and it still does.
+  const f = runningMission({ completionPolicy: "manual" });
+  const url = "https://github.com/example/repo/pull/7002";
+  openPr(f, url);
+  assert.equal(f.registry.getTask(f.taskId)?.status, "running");
+
+  await pollMerged(f, url);
+
+  const task = f.registry.getTask(f.taskId);
+  assert.equal(task?.status, "done", "a merge still lands a mission's task");
+  assert.equal(task?.outcomeUrl, url);
+  // The merge path's own sentence, not the guardrail's - proof of WHICH route landed it.
+  assert.equal(task?.outcome, `merged ${url}`);
+  assert.doesNotMatch(task?.outcome ?? "", /Foreman concluded/);
+});
+
+test("a task the merge already landed is not re-concluded by a later verdict", async () => {
+  // Ordering that really happens: the poller sees the merge while Foreman is still mid-tick,
+  // so the verdict arrives against a row that is already terminal. The merge is a statement
+  // about the work and an inference must never overwrite one - and the gate is structural
+  // rather than a clause, because `executingTaskOn` only ever returns a running or
+  // dispatching row.
+  const f = runningMission({ completionPolicy: "auto-on-conclusion" });
+  const url = "https://github.com/example/repo/pull/7003";
+  openPr(f, url);
+  await pollMerged(f, url);
+
+  const landed = f.registry.getTask(f.taskId);
+  assert.equal(landed?.status, "done");
+  const outcomeFromMerge = landed?.outcome;
+
+  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+    outcome: "empty",
+    summary: "the session changed nothing",
+    gaps: [],
+  });
+
+  const after = f.registry.getTask(f.taskId);
+  assert.equal(after?.status, "done");
+  assert.equal(after?.outcome, outcomeFromMerge, "the merge's own outcome must survive");
+  assert.equal(after?.outcomeUrl, url);
 });

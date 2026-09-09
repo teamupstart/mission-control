@@ -1385,8 +1385,19 @@ export class TaskManager {
     if (!t || !t.scheduleOccurrenceId) return;
     if (providerOwnsTaskCompletion(t.kind)) return;
     if (completionPolicyForOccurrence(t.scheduleOccurrenceId) !== "auto-on-conclusion") return;
+    // A concluded run that DID open a pull request has to carry it, and this is the only
+    // chance to record one: `completableByMerge` excludes `done`, so once this row is
+    // terminal the merge reconciler will never revisit it, and a later merge has nowhere
+    // to write itself. Without this the ordinary `retired` case - a review-only artifact
+    // that still opened a PR for its diff - lands a `done` task pointing at nothing.
+    //
+    // Read from the same bindings every merge path reads, so the url on the card is the
+    // one those paths would have recorded. Absent for the `empty` case by construction,
+    // which is the case with no pull request to name.
+    const pr = primaryRepoPrForTask(t.id).prUrl;
     this.completeInBackground(t.id, {
       outcome: missionRunOutcome(decision),
+      ...(pr ? { outcomeUrl: pr } : {}),
       satisfyDependents: false,
       requireStopped: false,
       confirmIncompleteScout: false,

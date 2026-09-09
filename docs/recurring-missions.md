@@ -178,6 +178,10 @@ Three properties worth knowing:
 - **The policy that applies is the one the run was filed under.** It is read from the
   immutable revision the occurrence names, not from the schedule's current row, so editing
   or archiving a mission cannot retroactively conclude work already in flight.
+- **A run that did open a pull request still names it.** The concluded task records that url
+  as its outcome, because `completableByMerge` excludes `done`: once the guardrail lands the
+  row, the merge reconciler will never revisit it, so this is the only chance to write one.
+  The `empty` case has none by construction, which is the case it exists for.
 - **New missions default to automatic; everything already stored stays manual.** The wire
   default on `POST /api/schedules` is `manual`, so a caller written before this field existed
   keeps saving the behaviour it was written for, and no mission an operator already owns

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi-managed Amazon Bedrock models: phased implementation</title>
+<style>
+  :root { color-scheme:light dark; --bg:#0b1020; --panel:#121a2d; --ink:#edf2ff; --muted:#aebbd3; --line:#2a3855; --accent:#77d3ff; --green:#72e0a4; --amber:#ffc96b; }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { width:min(1120px,calc(100% - 32px)); margin:auto; padding:38px 0 72px; }
+  header,section { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:28px; margin-bottom:20px; }
+  header { background:linear-gradient(145deg,#152541,#10182a); } h1 { margin:0 0 12px; font-size:clamp(2rem,4vw,3.4rem); line-height:1.04; letter-spacing:-.035em; }
+  h2 { margin:0 0 14px; font-size:1.45rem; } h3 { margin:0 0 8px; } p { margin:8px 0 14px; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.12em; font-size:.76rem; font-weight:750; }
+  .lede { font-size:1.15rem; max-width:900px; border-left:4px solid var(--green); padding-left:16px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; } .chip { border:1px solid #395071; border-radius:999px; padding:5px 10px; background:#0e1729; color:#cfe9ff; font-size:.82rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
+  .card { background:#0d1527; border:1px solid var(--line); border-top:4px solid var(--accent); border-radius:13px; padding:18px; }
+  .card.two { border-top-color:var(--green); } .card p,.muted { color:var(--muted); }
+  table { width:100%; border-collapse:collapse; } th,td { border-bottom:1px solid var(--line); padding:11px 10px; text-align:left; vertical-align:top; } th { color:#c7d8f5; font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#bde7ff; font-size:.9em; } ul,ol { padding-left:22px; } li { margin:7px 0; }
+  a { color:var(--accent); } .callout { border:1px solid #41658c; background:#0d2036; border-radius:12px; padding:14px 16px; }
+  figure { margin:18px 0 6px; overflow:auto; } svg { display:block; width:100%; min-width:760px; height:auto; background:#091223; border:1px solid var(--line); border-radius:14px; }
+  .node { fill:#14233d; stroke:#4a668f; stroke-width:2; } .done { stroke:#72e0a4; } .future { stroke:#77d3ff; } .edge { fill:none; stroke:#77d3ff; stroke-width:3; marker-end:url(#arrow); }
+  .t { fill:#edf2ff; font:650 16px ui-sans-serif,system-ui,sans-serif; text-anchor:middle; } .s { fill:#aebbd3; font:12px ui-sans-serif,system-ui,sans-serif; text-anchor:middle; }
+  footer { color:var(--muted); font-size:.85rem; padding:4px 6px; }
+  @media print { body { background:white; color:#172033; } header,section,.card { background:white; border-color:#ccd4df; } .lede,.muted,.card p,footer { color:#445167; } code { color:#075985; } }
+</style>
+</head>
+<body><main>
+  <header>
+    <div class="kicker">Approved phased implementation</div>
+    <h1>Pi-managed Amazon Bedrock models</h1>
+    <p class="lede"><strong>Two sequential phases:</strong> first ship a directly usable Pi SDK runtime for configured Bedrock models, then add project trust, structured extension questions, and Work Queue automation on top of its proven lifecycle events.</p>
+    <div class="chips"><span class="chip">Scheduled to backlog</span><span class="chip">Both tasks verified disabled</span><span class="chip">1,100-1,650 production LOC</span><span class="chip">No hidden cleanup phase</span></div>
+  </header>
+
+  <section>
+    <h2>Why this split</h2>
+    <p>Phase 1 is independently useful: an operator can choose a Pi-discovered <code>amazon-bedrock/*</code> model and run a durable managed session with direct controls. Phase 2 adds blocking UI and unattended queue behavior, which depends on Phase 1's exact session, activity, and turn-completion invariants.</p>
+    <p>One phase would combine provider/auth/session integration, event normalization, dialog correlation, and queue concurrency into an oversized review. More than two phases would create transport stubs or test/documentation-only merges.</p>
+  </section>
+
+  <section>
+    <h2>Dependency graph</h2>
+    <figure><svg viewBox="0 0 1040 260" role="img" aria-label="The planning session is a direct prerequisite for Phase 1 and Phase 2. Phase 1 is also a direct prerequisite for Phase 2, so the implementation phases are sequential.">
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#77d3ff"/></marker></defs>
+      <rect class="node done" x="40" y="75" width="250" height="100" rx="14"/><text class="t" x="165" y="113">Planning session</text><text class="s" x="165" y="139">published source + phase briefs</text>
+      <rect class="node future" x="395" y="35" width="260" height="100" rx="14"/><text class="t" x="525" y="74">Phase 1</text><text class="s" x="525" y="99">managed Pi Bedrock runtime</text>
+      <rect class="node future" x="740" y="115" width="260" height="100" rx="14"/><text class="t" x="870" y="154">Phase 2</text><text class="s" x="870" y="179">interaction + automation</text>
+      <path class="edge" d="M290 106 L395 89"/><path class="edge" d="M655 104 L740 139"/><path class="edge" d="M290 151 C440 223 585 230 740 180"/>
+    </svg></figure>
+    <div class="callout"><strong>Concurrency:</strong> none between implementation phases. Phase 2 directly depends on Phase 1. Both tasks also depend on this planning session and remain disabled until the planning pull request merges.</div>
+  </section>
+
+  <section>
+    <h2>Phase briefs</h2>
+    <div class="grid">
+      <article class="card"><h3>Phase 1: Managed Pi Bedrock runtime</h3><p><strong>650-950 production LOC.</strong> Pin Pi's SDK; add the injected adapter; resolve Pi-owned models and credentials; normalize lifecycle, tools, usage, and errors; support new/resume/restore, send, interrupt, clear, stop, and terminal handoff; expose SDK capability; prove full model-id preservation.</p><p><a href="phase-1-managed-pi-bedrock-runtime.md">Detailed Phase 1 brief</a></p></article>
+      <article class="card two"><h3>Phase 2: Structured Pi interaction and automation</h3><p><strong>450-700 production LOC.</strong> Resolve Pi project trust; bind <code>ExtensionUIContext</code>; settle select/confirm/input/editor prompts exactly once; enable managed-only Work Queue after event proof; add evidence-based PR provenance; close documentation drift.</p><p><a href="phase-2-structured-pi-interaction-and-automation.md">Detailed Phase 2 brief</a></p></article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Requirement allocation</h2>
+    <table><thead><tr><th>Requirement group</th><th>Owner</th><th>Boundary</th></tr></thead><tbody>
+      <tr><td>Catalog and exact Bedrock model id</td><td>Phase 1</td><td>Reuse Pi discovery, prove terminal and SDK pass-through</td></tr>
+      <tr><td>Managed launch, resume, restore, controls, handoff</td><td>Phase 1</td><td>Join the shared SDK supervisor</td></tr>
+      <tr><td>Core events, usage, provider diagnostics</td><td>Phase 1</td><td>Stable adapter facts for direct use and later automation</td></tr>
+      <tr><td>Project trust and structured questions</td><td>Phase 2</td><td>Bind before local executable resources load</td></tr>
+      <tr><td>Question cancellation and timeout</td><td>Phase 2</td><td>One shared question, one idempotent settlement path</td></tr>
+      <tr><td>Work Queue and PR provenance</td><td>Phase 2</td><td>Managed runtime only, evidence-based completion</td></tr>
+      <tr><td>Documentation</td><td>Both</td><td>Each phase documents only behavior it ships</td></tr>
+    </tbody></table>
+  </section>
+
+  <section>
+    <h2>Cross-phase contracts</h2>
+    <ul>
+      <li>Bedrock remains a Pi provider and the complete model id stays opaque to Mission Control.</li>
+      <li>Pi's normal agent directory owns authentication. Mission Control never accepts or persists AWS credentials.</li>
+      <li>The pinned Pi package is lazy-loaded behind an injected dependency boundary.</li>
+      <li>The existing SDK supervisor owns lifecycle and final removal still uses <code>Registry.beginEviction</code>.</li>
+      <li>Missing Pi session state is an explicit restore failure, never a new look-alike conversation.</li>
+      <li>Mission MCP requirements remain a hard Pi launch refusal. Permission modes and multi-repository support remain null.</li>
+      <li>Tests use isolated fakes only. Real Pi and Bedrock access is optional manual evidence.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Verification by phase</h2>
+    <table><thead><tr><th>Phase</th><th>Focused proof</th><th>Full gates</th></tr></thead><tbody>
+      <tr><td>1</td><td>Provider/model identity, SDK loading, exact new/resume/restore, event ordering, usage, controls, error redaction, terminal regression, runtime-picker E2E, built bundle</td><td>Typecheck, lint, unit suite, build, smoke, E2E, package if SDK assets require it</td></tr>
+      <tr><td>2</td><td>Trust before extension load, UI values and cancellation, question correlation, queue start/finish, interruption/reset races, wrap-up, PR provenance, visible E2E</td><td>Repeat the full Phase 1 gates on the merged Phase 1 head</td></tr>
+    </tbody></table>
+  </section>
+
+  <section>
+    <h2>Final audit</h2>
+    <ul>
+      <li><strong>Complete:</strong> every approved source requirement belongs to exactly one phase.</li>
+      <li><strong>Mergeable:</strong> Phase 1 is directly useful before Phase 2 exists.</li>
+      <li><strong>Sequential:</strong> Phase 2 consumes and does not redefine Phase 1 lifecycle events.</li>
+      <li><strong>Compatible:</strong> terminal Pi remains; no AWS credential/model schema is introduced; Claude and Codex stay on shared contracts.</li>
+      <li><strong>Bounded:</strong> Bifrost, direct AWS calls, Pi MCP, permission modes, multi-repository support, and arbitrary Pi TUI presentation are excluded.</li>
+      <li><strong>No cleanup tail:</strong> each phase owns its tests and documentation.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Scheduled task map</h2>
+    <table><thead><tr><th>Phase</th><th>Task</th><th>Stored state</th><th>Dependencies</th></tr></thead><tbody>
+      <tr><td>1</td><td><code>8e625014-710a-4c0d-84b9-a84f0043f0ad</code></td><td>Backlog, disabled, no live session</td><td>Planning task <code>b52bdbe6-12a2-438d-97a1-1d95c5640b94</code>, unsatisfied</td></tr>
+      <tr><td>2</td><td><code>2d6db8bc-3897-4e8d-a49c-a133314a822b</code></td><td>Backlog, disabled, no live session</td><td>Planning task and Phase 1 task <code>8e625014-710a-4c0d-84b9-a84f0043f0ad</code>, both unsatisfied</td></tr>
+    </tbody></table>
+    <p class="muted">All six plan paths resolved at pushed commit <code>818a500f7715b9be2fa476ca7cc689aac5cbd08b</code> before task creation. Each row was immediately parked and read back with <code>status=backlog</code>, <code>enabled=false</code>, and <code>sessionId=null</code>. Enabling either task later is an explicit operator action.</p>
+    <p>See the <a href="plan.html">source plan</a> or <a href="phased-plan.md">full phased-plan Markdown</a>.</p>
+  </section>
+  <footer>Static, self-contained phased plan. No external requests or client-side scripts.</footer>
+</main></body></html>

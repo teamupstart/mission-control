@@ -402,10 +402,8 @@ test("contradictory lifecycle combinations are refused before persistence", () =
       record("waiting_for_session", "evidence_readiness", asJson({ submissionId: "s" })),
       "evidence_readiness is persisted as waiting_for_evidence_readiness",
     ],
-    [
-      record("blocked", "inspector_inspector_disabled", asJson(gate)),
-      "not a GitHub Inspector gate phase",
-    ],
+    // NOTE: an unrecognised `inspector_`-prefixed phase is deliberately NOT in this table. It
+    // is an unknown phase like any other, and a later test proves it is treated as one.
     // A spent-budget block that recorded neither the budget nor the gate cannot be granted out of.
     [record("blocked", "round_limit", asJson({ error: "out" })), "round_limit records maxRepairRounds, parkedPhase, not error"],
     [record("blocked", "round_limit"), "must record the budget"],
@@ -609,17 +607,8 @@ test("the store refuses a lifecycle triple no reader could recover from", () => 
   );
   // The interpolated phase that stranded every gate entered while GitHub Inspector was off.
   // Through the COMPATIBILITY door, because `setRunState` no longer accepts a phase this
-  // build does not declare - that is now a compile error, which is the stronger guarantee.
-  // The runtime refusal still has to hold for anything arriving the free-form way.
-  assert.throws(
-    () => store.setRunStateCarryingPhase(
-      "guarded",
-      "blocked",
-      "inspector_inspector_disabled",
-      asJson(gate),
-    ),
-    /not a GitHub Inspector gate phase/,
-  );
+  // build does not declare - that is now a compile error, which is the stronger guarantee, and
+  // the reason no runtime rule refuses an unrecognised `inspector_` phase any more.
   assert.equal(store.getRun("guarded")?.currentPhase, "persona_review", "a refusal wrote nothing");
 });
 
@@ -958,4 +947,44 @@ test("a valid gate cannot smuggle foreign keys past the detail contract", () => 
     [],
     "a bare gate must still read as no phase detail",
   );
+});
+
+test("an unknown inspector_ phase is an unknown phase like any other", () => {
+  clearWorkflowTables(db);
+  // A rule once refused any `inspector_`-prefixed phase outside the gate registry. Because
+  // every REGISTERED inspector phase is in that registry by construction, the rule could only
+  // ever fire on an UNRECOGNISED one - making a foreign `inspector_` phase uniquely
+  // un-carryable while `a_phase_from_a_newer_daemon` sailed through, in direct contradiction
+  // of the contract this model states. The two must be indistinguishable.
+  for (const phase of ["a_phase_from_a_newer_daemon", "inspector_from_a_newer_daemon"]) {
+    assert.equal(workflowRunPhaseRecognized(phase), false, phase);
+    assert.equal(
+      workflowRunLifecycleViolation({ status: "waiting_for_session", phase, gateState: null }),
+      null,
+      `${phase} was refused where its twin was not`,
+    );
+  }
+
+  // Through the real store, which is where it bit: an unrelated delivery carrying the run's
+  // existing phase forward must not throw merely because that phase starts with `inspector_`.
+  seedRun("foreign", "waiting_for_session", "persona_feedback", null);
+  const carried = store.setRunStateCarryingPhase(
+    "foreign",
+    "waiting_for_session",
+    "inspector_from_a_newer_daemon",
+    { deliveryId: "d" },
+  );
+  assert.equal(carried.currentPhase, "inspector_from_a_newer_daemon");
+
+  // And it is still non-executable, so nothing acts on it - the protection that actually
+  // matters, and the one the removed rule was not providing.
+  const lifecycle = decodeWorkflowRunLifecycle(recordOf(carried));
+  assert.equal(lifecycle.phaseRecognized, false);
+  assert.equal(lifecycle.executable, false);
+
+  // The doubled name the interpolation once minted is refused by the TYPE system now, which is
+  // earlier and more complete than the string rule was:
+  //   store.setRunState(id, "blocked", "inspector_inspector_disabled", ...)
+  //     -> TS2345: not assignable to parameter of type WorkflowRunPhase
+  assert.equal(workflowRunPhaseRecognized("inspector_inspector_disabled"), false);
 });

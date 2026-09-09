@@ -51,9 +51,12 @@ export const WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved
  * contain is a run the gate will never look at again. The registry existed implicitly, spread
  * across those two guards and the browser's label maps, and the gap it left was real - the
  * gate's entry path built its phase by interpolating the wait reason, so the `inspector_disabled`
- * reason produced `inspector_inspector_disabled` and stranded the run permanently. Naming the
- * set once and refusing an unlisted `inspector_` phase at the point of persistence is what
- * makes that class of typo impossible rather than silent.
+ * reason produced `inspector_inspector_disabled` and stranded the run permanently.
+ *
+ * Naming the set once is what closes that: `WORKFLOW_INSPECTOR_ENTRY_PHASE` is keyed on it and
+ * typed `WorkflowRunPhase`, so the doubled name is a compile error. The set is NOT used to
+ * refuse unlisted `inspector_` phases at persistence - see `workflowRunLifecycleViolation` for
+ * why that rule was removed rather than kept as belt and braces.
  */
 export const WORKFLOW_INSPECTOR_GATE_PHASES = [
   "inspector_adapter_error",
@@ -706,12 +709,19 @@ export function workflowRunLifecycleViolation(
   if (record.phase.length > WORKFLOW_RUN_PHASE_MAX) {
     return `a run phase must not exceed ${WORKFLOW_RUN_PHASE_MAX} characters`;
   }
-  if (
-    record.phase.startsWith("inspector_")
-    && !(WORKFLOW_INSPECTOR_GATE_PHASES as readonly string[]).includes(record.phase)
-  ) {
-    return `${record.phase} is not a GitHub Inspector gate phase the gate can re-enter`;
-  }
+  // There is deliberately NO rule refusing an `inspector_`-prefixed phase this build does not
+  // declare. One existed, to catch the doubled `inspector_inspector_disabled` an interpolation
+  // once minted, and it was wrong twice over. Every REGISTERED `inspector_` phase is a member
+  // of the gate list by construction, so the rule could only ever fire on an UNRECOGNISED
+  // phase - which made it the exact opposite of the contract this file states: a row from a
+  // newer daemon may name anything and must stay storable. A foreign `inspector_` phase being
+  // uniquely un-carryable meant an unrelated delivery landing on such a run threw, while the
+  // same delivery on a run named `a_phase_from_a_newer_daemon` succeeded.
+  //
+  // The typo it was built for is now impossible earlier and more completely: `WorkflowRunPhase`
+  // makes an undeclared phase a compile error at every authoritative writer and in every
+  // phase-producing map. A runtime string check cannot improve on that, and here it only cost
+  // the legacy guarantee.
   // The declared contract for a declared phase, checked before any of the special rules
   // below. Those rules cover the payloads something ACTS on; this covers the other forty-odd
   // phases, which previously had no rule at all - so a finished run could be persisted in a
@@ -762,7 +772,14 @@ export function workflowRunLifecycleViolation(
     if (!lifecycle.gate) {
       return `${record.status} is un-parked only by the GitHub Inspector gate and requires its state`;
     }
-    if (!(WORKFLOW_INSPECTOR_GATE_PHASES as readonly string[]).includes(record.phase)) {
+    // Only for a phase this build declares. For an unrecognised one there is nothing to
+    // compare against - this build cannot say whether a newer daemon's phase is a gate phase -
+    // and the decoder has already reported the record non-executable, so the gate will not act
+    // on it either way. Refusing the write would only make the legacy row unstorable.
+    if (
+      workflowRunPhaseRecognized(record.phase)
+      && !(WORKFLOW_INSPECTOR_GATE_PHASES as readonly string[]).includes(record.phase)
+    ) {
       return `${record.status} requires a GitHub Inspector gate phase, not ${record.phase}`;
     }
   }

@@ -1565,13 +1565,16 @@ every phase declares what its detail may record, so a phase cannot be stored car
 has no business knowing - a delivery refusal naming a check node, or a capture failure naming
 a packet. A run cannot be parked in a status only the GitHub Inspector poller un-parks
 without the gate that poller reads; a spent-budget block must record either the budget or the
-gate, or no grant could revive it; and the phases the gate parks in are a closed list. That
-last rule closes a real stall: the gate used to build its entry phase by pasting the wait
-reason onto `inspector_`, which for one reason produced `inspector_inspector_disabled` - a
-phase neither the gate's own re-evaluation nor **Recheck** recognises. A run that reached the
-gate while GitHub Inspector was switched off stopped there for good, and turning GitHub
-Inspector back on did not revive it. Upgrading moves those runs to `inspector_disabled`, where
-both routes find them again.
+gate, or no grant could revive it. Those rules bind the phases this build declares; a phase it
+has never heard of is stored as written, whatever it is called, because a legacy run that
+cannot be stored is a legacy run that cannot be diagnosed.
+
+The phases the gate parks in are a closed list, and that closes a real stall: the gate used to
+build its entry phase by pasting the wait reason onto `inspector_`, which for one reason
+produced `inspector_inspector_disabled` - a phase neither the gate's own re-evaluation nor
+**Recheck** recognises. A run that reached the gate while GitHub Inspector was switched off
+stopped there for good, and turning GitHub Inspector back on did not revive it. Upgrading moves
+those runs to `inspector_disabled`, where both routes find them again.
 
 ### Live repair delivery and Foreman completion
 

@@ -470,13 +470,22 @@ reached only two of them.
 - **`workflowRunLifecycleViolation` refuses, before persistence, what no reader could recover
   from.** A `waiting_for_pr`/`waiting_for_inspector`/`waiting_for_new_head` run with no gate is
   stranded with no observer. A `round_limit` block recording neither budget nor gate cannot be
-  granted out of. A `check_cleanup_unresolved` phase without a node names nothing to resume. An
-  `inspector_` phase outside `WORKFLOW_INSPECTOR_GATE_PHASES` is one the gate can never
-  re-enter. `setRunState` and the raw gate writers all call it and throw.
-- **Phases the gate parks in are a closed registry.** Deriving one by interpolation is what
-  produced `inspector_inspector_disabled`, a phase no reader knew, which stranded every run
-  that reached the gate while GitHub Inspector was switched off. Entry phases come from
-  `WORKFLOW_INSPECTOR_ENTRY_PHASE`.
+  granted out of. A `check_cleanup_unresolved` phase without a node names nothing to resume.
+  `setRunState`, `setRunStateCarryingPhase` and every raw writer call it and throw.
+- **Every rule that constrains WHICH phase a status may pair with applies only to phases this
+  build declares.** For an unrecognised phase there is nothing to compare against, and the
+  decoder has already marked the record non-executable, so refusing the write would only make
+  a legacy row unstorable. A rule refusing any unlisted `inspector_`-prefixed phase used to
+  break this: every registered `inspector_` phase is in the gate list by construction, so it
+  could only ever fire on an unrecognised one - leaving a foreign `inspector_` phase uniquely
+  un-carryable while `a_phase_from_a_newer_daemon` sailed through. It was removed, not scoped,
+  because scoping it to recognised phases makes it dead code.
+- **Phases the gate parks in are a closed registry**, and the type system is what enforces it.
+  Deriving one by interpolation is what produced `inspector_inspector_disabled`, a phase no
+  reader knew, which stranded every run that reached the gate while GitHub Inspector was
+  switched off. Entry phases come from `WORKFLOW_INSPECTOR_ENTRY_PHASE`, keyed on the registry
+  and typed `WorkflowRunPhase`, so the doubled name is a compile error - earlier and more
+  complete than the runtime string check that replaced it.
 
 ## One workflow run is one repository
 

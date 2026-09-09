@@ -1,5 +1,8 @@
 # Phase 2: Evidence pane with image thumbnails and preview
 
+> Line numbers in this document are locators as of the branch's merge base, not identities.
+> Find the symbol or heading; treat a drifted number as drift.
+
 Source plan: [`plan.md`](plan.md) · Index: [`phased-plan.md`](phased-plan.md)
 
 ## Outcome
@@ -36,8 +39,8 @@ merged to the default branch.
 
 ## Repository findings
 
-- `SubmissionImageEvidence` is `WorkflowRuns.tsx:218-303` and `SubmissionEvidenceReadiness` is
-  `:306-440`. Both are rendered from the run view at `:2745` and `:2752`.
+- `SubmissionImageEvidence` is `WorkflowRuns.tsx:218-317` and `SubmissionEvidenceReadiness` is
+  `:318-509`. Both are rendered from the run view just after the captured-context arms.
 - `LazyWorkflowEvidenceImage` (`:152-217`) already does the right thing: an `IntersectionObserver`
   with a 240px root margin sets `load`, then a fetch of
   `/api/workflow-runs/:runId/images/:imageId` produces a blob object URL that is revoked on unmount,
@@ -59,11 +62,11 @@ merged to the default branch.
   `{ clientItemId, role }`, and an image's client item id appears there with roles such as
   `rendered_output` and `state_snapshot`. On the mockup submission one image is cited by three
   claims. A card can say "cited by 3 claims as rendered output" instead of printing an id.
-- **The preview has a model to copy.** `AttachmentPreview` in `src/web/components/ImageDrop.tsx:415`
+- **The preview has a model to copy.** `AttachmentPreview` in `src/web/components/ImageDrop.tsx`
   is the dispatch modal's own preview: `Overlay` with `OVERLAY_IDS.attachmentPreview`,
   `className="modal attach-preview"`, `role="dialog"`, `ariaModal`, a `.modal-head` with an
   `autoFocus` close button, and `.modal-body attach-preview-body` whose own `--bg` backdrop keeps a
-  dark screenshot's edges visible. `AttachmentStrip:294` captures a focus bookmark on open and
+  dark screenshot's edges visible. `AttachmentStrip` captures a focus bookmark on open and
   restores it on close.
 - **The gesture deliberately differs.** `AttachmentStrip` opens on `onDoubleClick` and only opens on
   `onClick` when `e.detail === 0`, because a single click there would land the second click of a
@@ -71,10 +74,10 @@ merged to the default branch.
   has no competing single-click gesture. Open on a single click, and keep the `detail === 0` route so
   Enter and Space work. Record the difference in a comment where the handler lives; the two surfaces
   disagreeing on purpose is worth a sentence.
-- `OVERLAY_IDS` in `src/web/components/Overlay.tsx:41` is a closed record. A new preview needs its
+- `OVERLAY_IDS` in `src/web/components/Overlay.tsx` is a closed record. A new preview needs its
   own id so the Escape registry hands the key to the topmost layer.
-- Existing coverage to update: `e2e/specs/workflow-image-evidence.spec.ts` (377 lines) and
-  `e2e/specs/workflow-evidence-readiness.spec.ts` (863 lines), plus
+- Existing coverage to update: `e2e/specs/workflow-image-evidence.spec.ts` and
+  `e2e/specs/workflow-evidence-readiness.spec.ts`, plus
   `e2e/specs/workflow-test-evidence-readiness.spec.ts`.
 
 ## Implementation steps

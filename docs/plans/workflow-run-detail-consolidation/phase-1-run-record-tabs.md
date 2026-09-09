@@ -1,5 +1,8 @@
 # Phase 1: Run record tabs - shell, Deliveries, Intent
 
+> Line numbers in this document are locators as of the branch's merge base, not identities.
+> Find the symbol or heading; treat a drifted number as drift.
+
 Source plan: [`plan.md`](plan.md) · Index: [`phased-plan.md`](phased-plan.md)
 
 ## Outcome
@@ -41,28 +44,28 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
 
 ## Repository findings
 
-- `.workflow-tabs` already exists in `src/web/styles.css:14249` with `.workflow-tabs button.active`
-  and `.workflow-tab-badge`. `src/web/pipelines/RunsKindTabs.tsx:53` is the working reference for a
+- `.workflow-tabs` already exists in `src/web/styles.css` with `.workflow-tabs button.active`
+  and `.workflow-tab-badge`. `src/web/pipelines/RunsKindTabs.tsx` is the working reference for a
   `role="tablist"` usage. Reuse both; do not introduce a second tab family.
-- The Review worklist section at line 2453 carries
-  `useTourTargetRef<HTMLElement>("library:run-worklist")` (declared line 1837), and
-  `src/web/tour/tours/library.ts:311` steps onto it. The ref must stay on a node that is present in
+- The Review worklist section (around line 2465) carries
+  `useTourTargetRef<HTMLElement>("library:run-worklist")`, declared near line 1849, and
+  `src/web/tour/tours/library.ts` steps onto it. The ref must stay on a node that is present in
   the DOM whenever the worklist pane is the selected one. Since the worklist is the default pane
   this is satisfied by rendering the default pane eagerly; confirm the tour still passes rather than
   assuming it.
-- The deliveries section is `WorkflowRuns.tsx:2641-2730`. Its heading already switches between
+- The deliveries section is `WorkflowRuns.tsx:2652-2741`. Its heading already switches between
   "Repair delivery" and "Deliveries to the session" depending on whether any delivery is a session
   action; the pane label replaces both with "Deliveries", and the distinction moves to the row's
   Kind column, which already renders `deliveryKindLabel` from `run-model.ts:1344`.
-- `e2e/specs/workflow-session-action-run.spec.ts:301` asserts
+- `e2e/specs/workflow-session-action-run.spec.ts` asserts
   `getByRole("heading", { name: "Deliveries to the session" })`. That heading is gone; the spec must
   assert the pane and the row instead.
-- The captured context section is `WorkflowRuns.tsx:2731-2853`, including the three degraded arms
+- The captured context section is `WorkflowRuns.tsx:2742-2866`, including the three degraded arms
   (`not_captured`, `corrupt`, and the unreadable-context arm). Those arms are states of the Intent
   pane, not separate sections, and must keep their `role="alert"` copy.
-  `test/workflow-runs-render.test.ts:1539` and `:1546` assert two of them.
-- `useWorkflowRoute.ts` parses `#/runs/:runId` at line 363 and serialises at line 478. Query
-  parameters are read at line 264 and only survive if they have a typed field, so `pane` needs a
+  `test/workflow-runs-render.test.ts` asserts two of them (search for `Captured intent and evidence`).
+- `useWorkflowRoute.ts` parses `#/runs/:runId` and serialises it in `missionRouteHash`. Query
+  parameters are read once for both `runs` spellings and only survive if they have a typed field, so `pane` needs a
   field on the runs route, a parse arm and a serialise arm.
 
 ## Implementation steps
@@ -130,7 +133,7 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
   tabs are reachable by role and accessible name, a delivery row expands its payload, a human
   decision row expands its body, the tab counts match the run, and a refused delivery puts the amber
   badge on the Deliveries tab and its retry button still reaches its route.
-- Update `e2e/specs/workflow-session-action-run.spec.ts:301` to assert the Deliveries pane and a
+- Update `e2e/specs/workflow-session-action-run.spec.ts` to assert the Deliveries pane and a
   session-action row rather than the removed heading.
 - Run the library tour spec; the run worklist step must still find its target.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`, `npm run test:e2e`.

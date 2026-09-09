@@ -1,5 +1,8 @@
 # Phase 3: Completion pane
 
+> Line numbers in this document are locators as of the branch's merge base, not identities.
+> Find the symbol or heading; treat a drifted number as drift.
+
 Source plan: [`plan.md`](plan.md) · Index: [`phased-plan.md`](phased-plan.md)
 
 ## Outcome
@@ -34,29 +37,29 @@ Phase 2 has merged.
 
 ## Repository findings
 
-- The gate section is `WorkflowRuns.tsx:2505-2620`. It renders a status chip, `inspectorGateSentence`,
+- The gate section is `WorkflowRuns.tsx:2516-2632`. It renders a status chip, `inspectorGateSentence`,
   then one of two shapes: when `spentGateCondition` holds, two `wf-run-gate-ledger` regions labelled
   "Last workflow observation" and "Current Inspector" carrying sixteen facts between them plus the
   historical finding fingerprints list; otherwise a single nine-field fact list. Then the findings
   policy line, the "Open GitHub Inspector settings" button, and one `wf-run-finding` card per finding.
-- The Foreman completion claim section is `:2622-2638`. `completionClaims` is derived at `:1951` by
+- The Foreman completion claim section is `:2634-2650`. `completionClaims` is derived in the run view by
   filtering `detail.events` for `workflow_completion_claimed` and validating the payload shape. A real
   run in the local records carries five claims, four of them `already_claimed` restating the same
   completion, which is five near-identical paragraphs today.
 - **Findings are not in the Review worklist and must not be moved there.** `runChangeWorklist`
-  (`run-model.ts:2104`) iterates attempts and does `if (!attempt.persona) continue`, so it is built
+  in `run-model.ts` iterates attempts and does `if (!attempt.persona) continue`, so it is built
   from Persona verdicts only. An Inspector finding has never appeared in that list. Folding findings
   in would change what the worklist means and would break the segment counts that
   `e2e/specs/workflow-run-blocker-worklist.spec.ts` asserts.
-- **A cross-reference goes stale.** `src/web/workflows/run-actions.ts:818` reads "Turn it back on
+- **A cross-reference goes stale.** `src/web/workflows/run-actions.ts` reads (the `consequence` of the disabled-Inspector action) "Turn it back on
   from Open GitHub Inspector settings, in GitHub Inspector final gate below." Once the gate is a tab,
-  "below" is wrong. `test/workflow-runs-render.test.ts:878` asserts that exact sentence, so the copy
+  "below" is wrong. `test/workflow-runs-render.test.ts` asserts that exact sentence, so the copy
   and the assertion move together. Check for any other positional copy in the same file before
   assuming this is the only one.
-- Existing coverage: `e2e/specs/workflow-round-limit-grant.spec.ts:460-461` asserts the
+- Existing coverage: `e2e/specs/workflow-round-limit-grant.spec.ts` asserts the
   "Last workflow observation" and "Current Inspector" regions by accessible name. Those regions
   survive inside the disclosure, so keep their `aria-label`s and update only how the spec reaches
-  them. `test/workflow-runs-render.test.ts:1243` asserts the gate heading, and
+  them. `test/workflow-runs-render.test.ts` asserts the gate heading, and
   `test/workflow-inspector-bypass.test.ts` touches the same surface.
 
 ## Implementation steps
@@ -89,8 +92,8 @@ Phase 2 has merged.
    states, so five claims saying the same thing read as "4 already claimed, 1 started" without anyone
    reading five paragraphs.
 
-8. **Fix the stale copy.** Update `run-actions.ts:818` so it names the Completion tab rather than a
-   section below, and update the assertion in `test/workflow-runs-render.test.ts:878` with it.
+8. **Fix the stale copy.** Update that `consequence` string so it names the Completion tab rather than a
+   section below, and update its assertion in `test/workflow-runs-render.test.ts` with it.
 
 9. **CSS.** Reuse Phase 2's ledger table and row classes. Add only what the severity chip and the
    findings table need that does not already exist.
@@ -101,8 +104,7 @@ Phase 2 has merged.
   by state, and the empty cases for a run with a gate but no findings and a run with claims but no
   gate.
 - `renderToStaticMarkup` cases for the findings table row, the legacy-finding arm, the claim row and
-  the state-count sentence. Update the gate heading assertion at `:1243` and the copy assertion at
-  `:878`.
+  the state-count sentence. Update the gate heading assertion and the disabled-Inspector copy assertion.
 - A new Playwright spec: the Completion tab is absent on a run with no gate and no claim; it is
   present and carries the amber badge on a run with an open finding; a finding row expands its body;
   the ledger disclosure still exposes the "Last workflow observation" and "Current Inspector" regions

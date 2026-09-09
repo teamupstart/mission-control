@@ -149,6 +149,10 @@ export async function executeSetupInstall(
       return refused(body.id, info.label, "This setup remedy opens a link and has no command to run.");
     case "skill":
       return refused(body.id, info.label, "This setup remedy is a skill command and must run inside a session.");
+    case "service":
+      // A service starts in the daemon, not in a window. `POST /api/setup/service` owns it,
+      // and this route will not open a terminal that has nothing to show.
+      return refused(body.id, info.label, "This setup remedy starts a background service and opens no terminal.");
     case "provider-installer": {
       const repoRoots = await deps.listRepoRoots();
       const installers = await deps.listProviderInstallers(remedy.provider, repoRoots);

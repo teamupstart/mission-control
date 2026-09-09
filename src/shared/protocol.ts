@@ -32,7 +32,7 @@ import {
 } from "./standing-instructions.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
-import { SETUP_DEPENDENCY_IDS } from "./setup-catalog.ts";
+import { SETUP_DEPENDENCY_IDS, SETUP_SERVICE_IDS } from "./setup-catalog.ts";
 import {
   FILE_COMMENT_QUOTE_MAX,
   FILE_COMMENT_SURFACES,
@@ -2818,6 +2818,18 @@ export const SetupInstallerLaunchSchema = z
   })
   .strict();
 export type SetupInstallerLaunchBody = z.infer<typeof SetupInstallerLaunchSchema>;
+
+/**
+ * Start one local background service a Setup row offered to start.
+ *
+ * Strict, and narrower than its installer sibling: there is no terminal to choose, because
+ * nothing here opens a window. The service id is the whole request, and `server/setup/service.ts`
+ * owns the only way each one is started.
+ */
+export const SetupServiceStartSchema = z
+  .object({ service: z.enum(SETUP_SERVICE_IDS) })
+  .strict();
+export type SetupServiceStartBody = z.infer<typeof SetupServiceStartSchema>;
 
 /**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.

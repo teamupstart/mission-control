@@ -3,7 +3,12 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { homeRelative, type SetupChecksSnapshot, type SetupRowView } from "../src/shared/setup-catalog.ts";
+import {
+  HERDR_SERVER_REMEDY,
+  homeRelative,
+  type SetupChecksSnapshot,
+  type SetupRowView,
+} from "../src/shared/setup-catalog.ts";
 import { SetupPanel, familyForAnchor, nextSetupSelection } from "../src/web/components/SetupPanel.tsx";
 
 const HOME = "/home/operator";
@@ -198,6 +203,33 @@ test("the panel keeps the host-owned remedy states and copyable commands", () =>
   assert.match(html, /Remedies open in a visible terminal you can watch/);
   assert.match(html, />Re-check</);
   assert.doesNotMatch(html, /name="argv"/);
+});
+
+// The exact markup shape a browser cannot assert on: a service remedy must offer a start and
+// nothing else - no terminal picker, no argv, no copyable command - because nothing about it
+// opens a window the operator has to pick or watch.
+test("a service remedy renders one start control and no terminal choice", () => {
+  const html = render([
+    CLAUDE,
+    row({
+      rowId: { source: "dependency", id: "herdr" },
+      family: "terminals",
+      label: "Herdr",
+      requirement: "optional",
+      enables: "No durable Herdr workspaces.",
+      remedy: HERDR_SERVER_REMEDY,
+      status: {
+        state: "needs-setup",
+        why: "Herdr is installed but its default server is not running.",
+        evidence: `${HOME}/.local/bin/herdr`,
+      },
+    }),
+  ], "setup/dependency-herdr");
+  assert.match(html, /Start the Herdr server/);
+  assert.match(html, /its default server is not running/);
+  assert.doesNotMatch(html, /Visible terminal/);
+  assert.doesNotMatch(html, /Run in a terminal/);
+  assert.doesNotMatch(html, /setup-command/);
 });
 
 // The rail's selection precedence, which no markup assertion can reach: these are the

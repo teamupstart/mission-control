@@ -83,16 +83,59 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
 export type SetupRequirement = "required" | "recommended" | "optional";
 
 /**
+ * Local background services Mission Control can start on the operator's behalf.
+ *
+ * Not persisted, unlike `SETUP_DEPENDENCY_IDS`: nothing stores a service id, so this tuple is
+ * free to change. It is a closed vocabulary all the same, because the id travels on the wire
+ * as the whole of a start request - the daemon resolves how each one is started, and
+ * `server/setup/service.ts` fails typecheck until a new id has exactly one starter.
+ *
+ * A service is not a dependency. `herdr` the CLI is either installed or not, and that is
+ * what its row's install remedy answers; the server it talks to is a separate, restartable
+ * fact about this machine right now, and it is the one an operator with Herdr installed is
+ * far more likely to be missing.
+ */
+export const SETUP_SERVICE_IDS = ["herdr-server"] as const;
+
+export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
+
+export const SETUP_SERVICE_INFO: Record<SetupServiceId, { id: SetupServiceId; label: string }> = {
+  "herdr-server": { id: "herdr-server", label: "Herdr server" },
+};
+
+/**
  * How the panel helps with one unsatisfied row.
  *
- * Phase 1 only renders these. It never executes an argv. The complete union ships now so
- * the later visible-terminal phase can add an action without changing the wire contract.
+ * A remedy carries identity and prose, never an argv the browser could influence. A `command`
+ * is a fixed catalog entry the daemon re-verifies against its own install grammar before it
+ * opens anything; `provider-installer` and `service` name a thing and let the daemon resolve
+ * how it runs. That is what keeps this union safe to widen: the wire contract grows a case,
+ * not an execution surface.
  */
 export type SetupRemedy =
   | { kind: "link"; url: string; label: string }
   | { kind: "command"; argv: readonly string[]; note: string }
   | { kind: "provider-installer"; provider: PipelineProviderId }
-  | { kind: "skill"; command: string };
+  | { kind: "skill"; command: string }
+  // The one remedy that is not an installation. It carries no argv for the same reason
+  // `provider-installer` does not: the browser names the service, and the daemon owns how
+  // that service is started.
+  | { kind: "service"; service: SetupServiceId; label: string; note: string };
+
+/**
+ * Start Herdr's default server, offered in place of the install link while the CLI is
+ * installed and its server is down.
+ *
+ * Not on `SETUP_DEPENDENCY_INFO.herdr`, because a row's catalog remedy is its answer for
+ * "this is not here at all", and telling someone who already has Herdr to read the install
+ * guide is the wrong sentence. The probe hands this back for the one reading it repairs.
+ */
+export const HERDR_SERVER_REMEDY: SetupRemedy = {
+  kind: "service",
+  service: "herdr-server",
+  label: "Start the Herdr server",
+  note: "Start Herdr's default server now, the same way a dispatch to Herdr would.",
+};
 
 export interface SetupDependencyInfo {
   id: SetupDependencyId;

@@ -25,6 +25,15 @@ fixed command. The daemon owns the argv, working directory, title, and hold-open
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
+The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
+With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
+offers **Start the Herdr server** instead of the installation guide. That button opens no
+terminal: the daemon starts the server the same way a dispatch to Herdr would, waits for it to
+answer, and the panel re-reads the machine on its own, so a repaired row reports Ready without a
+manual **Re-check**. A Herdr older than the supported release is reported with its compatibility
+reason and is not offered a start, because starting it repairs nothing. While the server is down,
+discovery simply sees no Herdr workspaces and logs nothing.
+
 The optional iTerm2 row uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
 configured `ITERM_BIN` filesystem
 check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is

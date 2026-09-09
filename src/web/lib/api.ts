@@ -73,6 +73,7 @@ import type {
   PipelineAdoptSuccessor,
   PipelineRetry,
   SetupInstallerLaunchBody,
+  SetupServiceStartBody,
   TaskSourcesConfigPatch,
   ReorderTask,
   UpdateTask,
@@ -173,6 +174,14 @@ export interface ActionResult {
 export interface SetupInstallerLaunchResult extends ActionResult {
   id?: SetupInstallerLaunchBody["id"];
   outcome?: "opened" | "maybe-opening" | "refused";
+  label?: string;
+  detail?: string;
+}
+
+/** Whether the named service is answering now. Unlike an install, this one settles here. */
+export interface SetupServiceStartResult extends ActionResult {
+  service?: SetupServiceStartBody["service"];
+  outcome?: "started" | "refused" | "unknown";
   label?: string;
   detail?: string;
 }
@@ -324,6 +333,9 @@ export const fetchSetupChecks = () => fetchJson<SetupChecksSnapshot>("/api/setup
 /** Ask the daemon to resolve and open one catalog-owned remedy in a visible terminal. */
 export const openSetupInstaller = (body: SetupInstallerLaunchBody) =>
   post<SetupInstallerLaunchResult>("/api/setup/install", body);
+/** Ask the daemon to start one local background service a Setup row offered to start. */
+export const startSetupService = (body: SetupServiceStartBody) =>
+  post<SetupServiceStartResult>("/api/setup/service", body);
 /**
  * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
  * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.

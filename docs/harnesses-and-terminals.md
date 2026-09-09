@@ -90,6 +90,12 @@ Detaching a normal Herdr client leaves the server-owned panes and their processe
 later full client can reattach. Stopping the Herdr server is different: Mission Control does not
 claim arbitrary pane processes survive a full server stop.
 
+With the Herdr CLI installed and its default server stopped, passive discovery reports no Herdr
+panes and logs nothing, exactly as tmux and cmux do when they are installed and idle. The state is
+reported once, where it can be acted on: the Herdr row in **Settings > Setup** probes the server
+and offers **Start the Herdr server**, which runs the daemon's own startup rather than opening a
+terminal. See [First-run setup](setup.md).
+
 The emulator registry currently contains WezTerm, Ghostty, and iTerm2 in that order. iTerm2
 uses its built-in AppleScript dictionary behind the same capability contract. It enumerates
 windows, tabs, and split sessions, addresses every action by the session's stable unique ID,

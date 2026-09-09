@@ -4,6 +4,7 @@ import {
   asTerminal,
   createHerdrClient,
   type HerdrClientDeps,
+  type HerdrProbe,
 } from "./herdr-client.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
@@ -64,10 +65,19 @@ export function herdrMultiplexer(
     glyph: "▦",
     bin: HERDR_BIN,
 
+    // `[]` when the Herdr server is not running, cannot be reached, or answers with anything
+    // this adapter will not build a pane list from - the same contract tmux and cmux state in
+    // their own listers. Discovery sweeps every installed backend on a 1500ms tick, so a
+    // throw here is not a diagnostic: `enumerateTerminals` catches it and prints a stack
+    // trace forever on any machine where the herdr CLI is installed and its server is simply
+    // not up, which is the ordinary resting state of that machine. The state IS worth
+    // reporting, so it is reported where an operator can act on it and where it is said once:
+    // the Setup row for Herdr probes the server and offers to start it. See
+    // `herdrServerProbe` below.
     list: async (): Promise<MuxPane[]> => {
       if (unsupported()) return [];
       const listed = await client.snapshotWithProcesses();
-      if (!listed.ok) throw new Error(listed.error);
+      if (!listed.ok) return [];
       const { snapshot, processes } = listed.value;
       const workspaces = uniqueBy(snapshot.workspaces, (workspace) => workspace.workspace_id);
       const tabs = uniqueBy(snapshot.tabs, (tab) => tab.tab_id);
@@ -167,6 +177,25 @@ export function herdrMultiplexer(
       names: PLAIN_NAMES,
     },
   };
+}
+
+/**
+ * The Herdr server's own readiness, and starting it - the two operations Setup needs and
+ * the `Multiplexer` interface has no place for.
+ *
+ * Here rather than in `server/setup`, because both are Herdr's transport talking to Herdr:
+ * `probe` is the same `herdr status server --json` reading every write in this file already
+ * gates on, and `start` is `ensureReady`, which is exactly what a dispatch to Herdr does
+ * before it creates a workspace. A second spawn of `herdr server` composed in the setup
+ * layer would be a second answer to "how is this server started".
+ */
+export function herdrServerProbe(exec: TerminalExec = defaultExec): Promise<HerdrProbe> {
+  return createHerdrClient(exec, HERDR_BIN).probe();
+}
+
+/** Start Herdr's default server and wait for it to answer, or say why it did not. */
+export async function herdrServerStart(exec: TerminalExec = defaultExec): Promise<TerminalResult> {
+  return unsupported() ?? asTerminal(await createHerdrClient(exec, HERDR_BIN).ensureReady());
 }
 
 /** Exposed for exact environment-isolation tests without widening the adapter interface. */

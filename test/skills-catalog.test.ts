@@ -380,6 +380,7 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   assert.match(text, /pull request description/i);
   assert.match(text, /pull request comment/i);
   assert.match(text, /never committed/i);
+  assert.match(text, /gitignored/i);
   assert.match(text, /2\.100\.0/);
   for (const command of ["gh pr create", "gh pr edit", "gh pr comment"]) {
     assert.match(text, new RegExp(command));

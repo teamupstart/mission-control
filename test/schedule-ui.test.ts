@@ -314,8 +314,44 @@ test("a mission's stored Workflow survives the library archiving it", () => {
       onCancel: () => {},
     }),
   );
-  assert.match(html, /<option value="wf-gone" selected="">Unavailable Workflow<\/option>/);
+  assert.match(html, /<option value="wf-gone" selected="">Unavailable Workflow \(wf-gone\)<\/option>/);
   assert.match(html, /the library no longer publishes/);
+
+  // An ARCHIVED Workflow the catalog still lists keeps its real name here, so Edit and the
+  // detail row read the same. They diverged: the detail searched the full catalog while the
+  // picker searched only the published subset and fell back to the generic label.
+  const archived = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({ template: mkScheduleTemplate({ workflowId: "wf-old" }) }),
+      workflowSummaries: [...WORKFLOWS],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(archived, /<option value="wf-old" selected="">Retired sweep · v1<\/option>/);
+  assert.doesNotMatch(archived, /Unavailable Workflow/);
+});
+
+test("a Workflow whose current version cannot be resolved is not offered", () => {
+  // `publishedVersion` is null when `currentVersionId` names a version this build cannot
+  // resolve. There is nothing to bind, and offering it would print "· vnull".
+  const unresolvable = {
+    ...WORKFLOWS[0],
+    id: "wf-dangling",
+    name: "Dangling version",
+    publishedVersion: null,
+  };
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: null,
+      workflowSummaries: [...WORKFLOWS, unresolvable],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.doesNotMatch(html, /vnull/);
+  assert.doesNotMatch(html, /<option value="wf-dangling"/);
+  assert.match(html, /No-Mistakes Review/, "a resolvable Workflow is still offered");
 });
 
 test("a diffless kind disables the after-work control and shows None", () => {

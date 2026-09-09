@@ -1292,11 +1292,16 @@ test("an edit cannot commit after the schedule is archived during validation", a
 
 // ---- the after-work handoff ----
 
-test("a template's Workflow reaches the task, and none of them inherits the dispatch default", async () => {
+test("a template's Workflow reaches the task, and none of them inherits the dispatch default", async (t) => {
   // The dispatch default is set so that a null template answer has something to be wrong
   // about: `tasks.create` reads an ABSENT `workflowId` as "resolve the default", so without
   // one configured this test would pass against a manager that omitted the field.
-  const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+  const { getWorkflowPolicy, setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+  // Restored on EVERY exit, not just the happy one. This is process-wide config in a shared
+  // database: an assertion that throws below would otherwise leave the default armed and
+  // turn an unrelated later test into a confusing failure.
+  const before = getWorkflowPolicy();
+  t.after(() => setWorkflowPolicy(before));
   const policy = setWorkflowPolicy({
     liveEnabled: false,
     repoAllowlist: [],
@@ -1330,6 +1335,4 @@ test("a template's Workflow reaches the task, and none of them inherits the disp
   const filedB = tasksFor(missionB.id);
   assert.equal(filedB.length, 1);
   assert.equal(filedB[0]!.workflowId, "wf-review", "the template's choice, verbatim");
-
-  setWorkflowPolicy({ liveEnabled: false, repoAllowlist: [], defaultWorkflowId: null });
 });

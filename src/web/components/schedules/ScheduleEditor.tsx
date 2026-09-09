@@ -45,6 +45,7 @@ import {
   ModelCatalogOptions,
   useHarnessModelCatalogs,
 } from "../../model-catalog.tsx";
+import { afterWorkLabel } from "../../lib/schedules.ts";
 import { RepoCombobox } from "../RepoCombobox.tsx";
 import { LabelChips } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
@@ -246,20 +247,30 @@ export function ScheduleEditor({
   // the next time anything else on the form changed.
   const strandedEffort =
     draft.effort && !effortLevels.includes(draft.effort) ? draft.effort : null;
-  // Published, unarchived, and holding an immutable version to bind.
+  // Published, unarchived, and holding an immutable version to bind. `publishedVersion` is
+  // null when `currentVersionId` names a version this build cannot resolve, which has
+  // nothing to bind and would otherwise be offered as "· vnull".
   const publishedWorkflows = useMemo(
     () =>
       workflowSummaries.filter(
-        (workflow) => workflow.archivedAt === null && workflow.currentVersionId !== null,
+        (workflow) =>
+          workflow.archivedAt === null
+          && workflow.currentVersionId !== null
+          && workflow.publishedVersion !== null,
       ),
     [workflowSummaries],
   );
   // Kept and shown for the reason `strandedEffort` above is: otherwise the select draws
-  // None over it and saves the erasure.
-  const strandedWorkflowId =
-    draft.workflowId && !publishedWorkflows.some((workflow) => workflow.id === draft.workflowId)
-      ? draft.workflowId
-      : null;
+  // None over it and saves the erasure. Named from the FULL catalog so an archived Workflow
+  // reads the same here as it does on the detail row.
+  const strandedWorkflow = useMemo(() => {
+    if (!draft.workflowId) return null;
+    if (publishedWorkflows.some((workflow) => workflow.id === draft.workflowId)) return null;
+    return {
+      id: draft.workflowId,
+      label: afterWorkLabel(draft.workflowId, workflowSummaries),
+    };
+  }, [draft.workflowId, publishedWorkflows, workflowSummaries]);
   // A kind with no diff has nothing for a review Workflow to read, so the control stands down.
   const afterWorkWhy = hasReviewableDiff(draft.kind)
     ? null
@@ -567,8 +578,8 @@ export function ScheduleEditor({
                     {workflow.name} · v{workflow.publishedVersion}
                   </option>
                 ))}
-                {strandedWorkflowId && (
-                  <option value={strandedWorkflowId}>Unavailable Workflow</option>
+                {strandedWorkflow && (
+                  <option value={strandedWorkflow.id}>{strandedWorkflow.label}</option>
                 )}
               </select>
             </Tooltip>
@@ -577,7 +588,7 @@ export function ScheduleEditor({
               inside one joins the control's accessible name, and this select is reached by
               that name. */}
           {afterWorkWhy && <span className="field-hint">{afterWorkWhy}</span>}
-          {strandedWorkflowId && !afterWorkWhy && (
+          {strandedWorkflow && !afterWorkWhy && (
             <span className="field-hint">
               This mission names a Workflow the library no longer publishes. It is kept until
               you change it, and a run that fires meanwhile finishes with no handoff.

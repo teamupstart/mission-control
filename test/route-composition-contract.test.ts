@@ -168,6 +168,53 @@ test("a misspelling hidden on a prototype is refused, not read past", () => {
   );
 });
 
+test("a misspelling polluted onto Object.prototype is refused, not ignored", () => {
+  // The chain is bounded to Object.prototype by the plain-object rule, but not emptied.
+  // Every built-in member of Object.prototype is non-enumerable, so a clean literal has no
+  // inherited enumerable names, while assignment pollution creates one. Reflect.ownKeys
+  // cannot see it and Object.hasOwn will not copy it, so before this it was neither
+  // reported nor honoured: keepAwake stayed absent and /api/keep-awake answered 503.
+  const polluted = Object.prototype as unknown as Record<string, unknown>;
+  polluted.keepAwke = keepAwakeStub;
+  try {
+    assert.throws(
+      () => resolveUnchecked({ registry, reviews, tasks, queues }),
+      (error: unknown) => {
+        assert.ok(error instanceof TypeError);
+        assert.match(error.message, /route dependency name "keepAwke"/);
+        assert.match(error.message, /did you mean "keepAwake"\?/);
+        assert.match(error.message, /through its prototype rather than as own fields/);
+        return true;
+      },
+    );
+  } finally {
+    delete polluted.keepAwke;
+  }
+});
+
+test("a CORRECTLY named dependency on the prototype is refused rather than adopted", () => {
+  // Silently declining to honour it would be its own quiet miswiring: the environment says
+  // keepAwake is set, and the app would answer 503 anyway. A polluted prototype cannot be
+  // told apart from a supplied field, so it is refused either way.
+  const polluted = Object.prototype as unknown as Record<string, unknown>;
+  polluted.keepAwake = keepAwakeStub;
+  try {
+    assert.throws(
+      () => resolveUnchecked({ registry, reviews, tasks, queues }),
+      /route dependency name "keepAwake".*through its prototype/s,
+    );
+  } finally {
+    delete polluted.keepAwake;
+  }
+});
+
+test("an ordinary literal has no inherited enumerable names to refuse", () => {
+  // The guard must not fire on the built-ins every object inherits: toString, valueOf and
+  // the rest are all non-enumerable, so a normal call is unaffected.
+  const resolved = resolveRouteDeps({ registry, reviews, tasks, queues, keepAwake: keepAwakeStub });
+  assert.equal(resolved.keepAwake, keepAwakeStub);
+});
+
 test("a class instance is refused as a dependency object", () => {
   class Deps {
     registry = registry;

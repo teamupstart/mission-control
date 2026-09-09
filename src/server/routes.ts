@@ -1192,6 +1192,35 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
     );
   }
   const fields = deps as unknown as Record<string, unknown>;
+  // Names reaching this object through its prototype rather than as own fields.
+  //
+  // Requiring a plain object above bounds the chain to `Object.prototype`, but does not
+  // empty it. Every built-in member of `Object.prototype` is NON-enumerable, so a clean
+  // literal contributes nothing here, while `Object.prototype.keepAwke = x` - prototype
+  // pollution - contributes an enumerable one. `Reflect.ownKeys` cannot see it and
+  // `Object.hasOwn` will not copy it, so without this the misspelling is neither reported
+  // nor honoured: `keepAwake` stays absent and `/api/keep-awake` answers 503 at request
+  // time, which is the deferred failure this whole seam exists to abolish.
+  //
+  // A name that DOES match a dependency is refused for the same reason rather than adopted:
+  // a polluted prototype is indistinguishable from a supplied field, and silently declining
+  // to honour one would be its own quiet miswiring.
+  const inheritedKeys: string[] = [];
+  for (const key in fields) {
+    if (!Object.hasOwn(fields, key)) inheritedKeys.push(key);
+  }
+  if (inheritedKeys.length > 0) {
+    const shown = inheritedKeys.slice(0, 5);
+    const listed = shown.map((key) => `"${key}"${suggestRouteDep(key)}`).join(", ");
+    const rest =
+      inheritedKeys.length > shown.length ? ` and ${inheritedKeys.length - shown.length} more` : "";
+    throw new TypeError(
+      `buildApp: route dependency ${inheritedKeys.length === 1 ? "name" : "names"} ${listed}${rest} ` +
+        `reached this object through its prototype rather than as own fields. A polluted ` +
+        `prototype cannot be told apart from a supplied dependency, so it is refused here ` +
+        `rather than ignored and left to surface as an unavailable route.`,
+    );
+  }
   // `Reflect.ownKeys` rather than `Object.keys`: a non-enumerable own property is still a
   // name the caller supplied, and a misspelling hidden on one has to be reported rather than
   // skipped. Symbols can never be a dependency name, so they are reported as unknown too.

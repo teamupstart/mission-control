@@ -45,6 +45,7 @@ import {
 } from "../scouts/repos.ts";
 import { resolveImageUpload } from "../uploads.ts";
 import { validateLlmImages } from "../llm/images.ts";
+import { workflowLog } from "./log.ts";
 import { frozenEvidenceId } from "./store.ts";
 import type {
   WorkflowInheritableEvidence,
@@ -844,14 +845,30 @@ export async function captureSubmissionTextArtifacts(
  */
 async function carriedEvidenceStillMatches(item: WorkflowInheritableEvidence): Promise<boolean> {
   if (item.sourceKind !== "agent" || !item.sourceRoot || !item.sourceLocator) return true;
+  const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
+  // The documented case, and the only one that is not a surprise: the path no longer names a
+  // readable file in the checkout. That is the gitignored capture the agent has since deleted.
+  if (!resolved.ok) return true;
   try {
-    const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
-    if (!resolved.ok) return true;
     const inspected = item.kind === "image"
       ? inspectOpenFile(resolved.path, undefined, item.sourceRoot)
       : inspectOpenTextFile(resolved.path, undefined, item.sourceRoot);
     return inspected.sha256 === item.sha256;
-  } catch {
+  } catch (error) {
+    /*
+     * An unexpected read failure still carries, and says so.
+     *
+     * Carrying is the right fallback: a permission error or a transient read fault is not
+     * evidence that the source CHANGED, and dropping a Persona's proof over one would be a
+     * worse answer than carrying it with its mark. But it does mean this item's staleness went
+     * unverified, and a systematic failure - a broken checkout mount, a bug in the inspectors -
+     * would otherwise degrade verification across every carry with nothing to show for it.
+     * The log line is what makes that discoverable instead of silent.
+     */
+    workflowLog("warn", {
+      event: "evidence_carry_unverified",
+      error: error instanceof Error ? error.message : "unknown_read_failure",
+    });
     return true;
   }
 }

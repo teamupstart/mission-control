@@ -46,6 +46,32 @@ test("a new installation defaults Claude and Codex dispatches to the Agent SDK",
   await shoot(dashboard, "new-install-sdk-defaults");
 });
 
+/**
+ * The runtime the product wants chosen says so where the choice is made.
+ *
+ * The card note underneath already explains what the Agent SDK does, but a note is read
+ * after a selection, not while one is being made - an operator scanning a two-item select
+ * sees only the two names. Asserted on the option's own text so a rename cannot quietly
+ * drop the recommendation while the value keeps passing every other check.
+ */
+test("the runtime selector names the Agent SDK as the recommended choice", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/settings`);
+  await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+
+  for (const label of ["Claude Code", "Codex"]) {
+    const runtime = dashboard.getByRole("combobox", {
+      name: `Session runtime for dispatched ${label} sessions`,
+    });
+    await expect(runtime).toHaveValue("sdk");
+    await expect(runtime.locator('option[value="sdk"]')).toHaveText("Agent SDK (recommended)");
+    // The other option stays unadorned, so "recommended" reads as a distinction.
+    await expect(runtime.locator('option[value="terminal"]')).toHaveText("Terminal pane");
+  }
+});
+
 test("Settings waits for a saved runtime rather than guessing during its first read", async ({
   dashboard,
   daemon,

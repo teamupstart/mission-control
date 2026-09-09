@@ -107,12 +107,14 @@ async function confirm(
   };
 }
 
-test("dashboard and MCP routes derive different fixed source labels", async () => {
+test("dashboard and MCP share issue structure and publisher, with distinct source labels", async () => {
   const calls: string[][] = [];
+  const bodies: Array<string | undefined> = [];
   const service = new ProductIssueService({
     target: () => ({ ok: true, repo: "acme/public-issues" }),
-    runner: async (_bin, args) => {
+    runner: async (_bin, args, options) => {
       calls.push(args);
+      bodies.push(options?.input);
       return stubRun({
         stdout: "https://github.com/acme/public-issues/issues/3\n",
         stderr: "",
@@ -128,8 +130,9 @@ test("dashboard and MCP routes derive different fixed source labels", async () =
     body: JSON.stringify(dashboardDraft),
   });
   assert.equal(dashboard.status, 200);
+  const dashboardPreview = await dashboard.json() as { labels: string[]; body: string };
   assert.deepEqual(
-    ((await dashboard.json()) as { labels: string[] }).labels,
+    dashboardPreview.labels,
     ["documentation", "status:needs-triage", "source:dashboard"],
   );
 
@@ -144,8 +147,10 @@ test("dashboard and MCP routes derive different fixed source labels", async () =
     }),
   });
   assert.equal(agent.status, 200);
+  const agentPreview = await agent.json() as { labels: string[]; body: string };
+  assert.equal(agentPreview.body, dashboardPreview.body);
   assert.deepEqual(
-    ((await agent.json()) as { labels: string[] }).labels,
+    agentPreview.labels,
     ["documentation", "status:needs-triage", "source:agent"],
   );
   const agentSubmit = await app.request("/mcp/product-issues", {
@@ -162,6 +167,18 @@ test("dashboard and MCP routes derive different fixed source labels", async () =
     calls[0]!.filter((value, index, all) => all[index - 1] === "--label"),
     ["documentation", "status:needs-triage", "source:agent"],
   );
+  const grant = await confirm(app, dashboardDraft);
+  const dashboardSubmit = await app.request("/api/product-issues", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ ...dashboardDraft, confirmationToken: grant.token }),
+  });
+  assert.equal(dashboardSubmit.status, 201);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(bodies, [agentPreview.body, dashboardPreview.body]);
+  assert.deepEqual(calls[0]!.map((arg) => arg === "source:agent" ? "source:dashboard" : arg), calls[1],
+    "both routes publish through the same GitHub command structure");
+
 });
 
 test("MCP preview and mutation require the token and a live attributed session", async () => {

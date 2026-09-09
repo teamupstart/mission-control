@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-reset-"));
@@ -116,7 +117,7 @@ test("successful reset uses resetSession to clear session workflow rows and pres
     now: 1,
   });
   workflows.store.createInitialSubmission(
-    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
     { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   workflows.store.insertAttempt({
@@ -211,7 +212,7 @@ test("failed reset clears no workflow state", async () => {
     now: 3,
   });
   workflows.store.createInitialSubmission(
-    { id: "failed-run", binding, triggerSource: "manual", triggerKey: "manual:failed-b:req", now: 4 },
+    { id: "failed-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:failed-b:req", now: 4 },
     {
       id: "failed-sub",
       triggerSource: "manual",

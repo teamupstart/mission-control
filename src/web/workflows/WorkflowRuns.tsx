@@ -25,6 +25,7 @@ import {
   sessionActionSkillLabel,
   workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
+import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -307,6 +308,7 @@ function SubmissionEvidenceReadiness({
   readiness,
   enforced = false,
   waiting = false,
+  refinementsExhausted = false,
   overrideReason = null,
   onRetry,
   onOverride,
@@ -315,6 +317,8 @@ function SubmissionEvidenceReadiness({
   readiness: WorkflowEvidenceReadinessResult | null | undefined;
   enforced?: boolean;
   waiting?: boolean;
+  /** The run is parked on this submission because the round spent its refinement cap. */
+  refinementsExhausted?: boolean;
   overrideReason?: string | null;
   onRetry?: () => Promise<void>;
   onOverride?: (reason: string) => Promise<void>;
@@ -393,6 +397,13 @@ function SubmissionEvidenceReadiness({
       {waiting && onOverride && (
         <div className="wf-readiness-override" role="region" aria-label="Evidence readiness override">
           <h5>Continue despite gaps</h5>
+          {refinementsExhausted && (
+            <p className="wf-run-notice" role="status">
+              This round has spent its evidence preflight refinements without closing these gaps,
+              so the run is blocked for you rather than refining again. Continue despite gaps to
+              review this packet as it stands, or start a new round.
+            </p>
+          )}
           <label>
             Reason
             <textarea
@@ -1850,6 +1861,11 @@ export function WorkflowRunView({
   const viewedRound = rounds.find((round) => round.submissionId === viewed?.id) ?? null;
   const latest = rounds.at(-1) ?? null;
   const isLatest = viewed === null || viewed.id === latest?.submissionId;
+  // The refinement cap parks the run on a submission that is still waiting for readiness, so
+  // this is a fact about the RUN's state rather than the submission's - see the readiness
+  // section below, which owns the decision this block asks the operator to make.
+  const preflightExhausted = detail.run.status === "blocked"
+    && detail.run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE;
   /**
    * Two different questions, and they were one variable until the Inspector caught it.
    *
@@ -2733,12 +2749,18 @@ export function WorkflowRunView({
           readiness={viewed.readiness}
           enforced={workflowEvidenceReadinessPolicyEnforces(version?.evidenceReadinessPolicy)}
           waiting={isLatest
-            && detail.run.status === "waiting_for_evidence_readiness"
-            && viewed.status === "waiting_for_evidence_readiness"}
+            && viewed.status === "waiting_for_evidence_readiness"
+            && (detail.run.status === "waiting_for_evidence_readiness" || preflightExhausted)}
+          /*
+           * The block is what stopped the refinements, so the button that asks for another one
+           * is withdrawn with it. The override below stays, because the decision the block
+           * exists to ask for is exactly the one that button records.
+           */
+          refinementsExhausted={preflightExhausted}
           overrideReason={(detail.readinessOverrides ?? [])
             .filter((entry) => entry.submissionId === viewed.id)
             .at(-1)?.reason ?? null}
-          onRetry={() => onRetryEvidenceReadiness(viewed.id)}
+          onRetry={preflightExhausted ? undefined : () => onRetryEvidenceReadiness(viewed.id)}
           onOverride={(reason) => onOverrideEvidenceReadiness(viewed.id, reason)}
         />
       )}

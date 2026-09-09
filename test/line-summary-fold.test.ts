@@ -58,6 +58,7 @@ function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
     intervalMs: 15 * 60_000,
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
+    writeback: { onPrOpened: false, onCompleted: false, resolve: false },
     config: {},
     ...over,
   };
@@ -85,6 +86,7 @@ function mkSchedule(over: Partial<MissionSchedule> = {}): MissionSchedule {
     timezone: "UTC",
     overlapPolicy: "skip-active",
     missedPolicy: "skip",
+    completionPolicy: "manual",
     executionMode: "local-catchup",
     runnerId: null,
     revision: 1,

@@ -5,6 +5,7 @@ import { archiveSchedule, runScheduleNow, setScheduleEnabled } from "../../lib/a
 import {
   SCHEDULE_HEALTH_REASON_LABELS,
   cadenceSentence,
+  completionPolicyLabel,
   executionModeLabel,
   formatInstantLong,
   missedPolicyLabel,
@@ -222,6 +223,8 @@ export function ScheduleDetail({
             <dd>{overlapPolicyLabel(schedule.overlapPolicy)}</dd>
             <dt>Missed runs</dt>
             <dd>{missedPolicyLabel(schedule.missedPolicy)}</dd>
+            <dt>Completion</dt>
+            <dd>{completionPolicyLabel(schedule.completionPolicy)}</dd>
             {template && (
               <>
                 <dt>Repository</dt>

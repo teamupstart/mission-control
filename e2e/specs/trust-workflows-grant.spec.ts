@@ -238,12 +238,40 @@ test("armed Command execution flags the granted cell, and Turn Commands off clea
     .poll(async () => (await storedConfig(daemon.baseURL)).repoAllowlist)
     .toEqual([daemon.repo]);
 
-  // Granted but disarmed: no command can run, so the matrix stays quiet. Amber on an inert
+  // The grant ARMS it, with no second step. `checksEnabled` ships on, so the footnote flies
+  // the moment a repository exists for a Command to run in - which is the point of the
+  // default flip and the reason this footnote now carries the consent the confirm dialog
+  // used to. Matched on the paragraph's own opening text rather than on "branch-authored
+  // code", which is wrapped in a `<strong>` and would resolve the locator to that span - and
+  // a span that cannot contain the repo path would fail the naming assertion for the wrong
+  // reason.
+  const note = dashboard.getByText(/Workflow Commands are on/);
+  await expect(note).toBeVisible();
+  await expect(note).toContainText("branch-authored code");
+  await expect(note).toContainText("It is not a sandbox");
+  await expect(note).toContainText(basename(daemon.repo));
+  await expect(note).not.toContainText(daemon.repo);
+
+  await shoot(dashboard, "checks-armed-footnote");
+
+  // The offered fix works from here, without a trip to the other panel.
+  await dashboard.getByRole("button", { name: "Turn Commands off" }).click();
+  await expect
+    .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled, {
+      message: "Turn Commands off should disarm the switch on the Workflows config",
+    })
+    .toBe(false);
+  // Granted but disarmed: no command can run, so the matrix goes quiet. Amber on an inert
   // grant is exactly how a table teaches an operator to stop reading its warnings.
   await expect(dashboard.getByText(/Workflow Commands are on/)).toBeHidden();
 
-  // Arm checks from the Workflows panel, through its confirm dialog - the same path an
-  // operator takes, so the consent copy is on screen when the grant becomes live.
+  // Disarming the switch is not revoking the grant: the repo may still take Live deliveries,
+  // which is the distinction the single column has to keep legible.
+  expect((await storedConfig(daemon.baseURL)).repoAllowlist).toEqual([daemon.repo]);
+
+  // Re-arming still goes through the confirm dialog. The default put the switch on without
+  // anyone reading that sentence, so the one path that can still show it - an operator who
+  // turned Commands off and is turning them back on - must not have quietly lost it.
   //
   // `click()`, never `check()`: the box does NOT flip on the click, and that is the feature.
   // The switch is consent-gated, so it stays unchecked until the modal is accepted, and
@@ -255,8 +283,8 @@ test("armed Command execution flags the granted cell, and Turn Commands off clea
   // checkbox is `appearance: none` under a track span, so the label is what an operator hits
   // and the checkbox is what the assertions read.
   const checks = dashboard.getByRole("checkbox", { name: "Allow workflow Commands" });
-  const checksSwitch = dashboard.locator('.sc-card[data-anchor="workflows/checks"] label.sc-switch');
-  await checksSwitch.click();
+  await expect(checks).not.toBeChecked();
+  await dashboard.locator('.sc-card[data-anchor="workflows/checks"] label.sc-switch').click();
   await expect(checks).not.toBeChecked();
   // The consent sentence that names what is actually being authorized - not "runs a command"
   // but "runs THIS BRANCH's code". Matched on the modal's own wording, which is deliberately
@@ -267,34 +295,39 @@ test("armed Command execution flags the granted cell, and Turn Commands off clea
   await expect
     .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled)
     .toBe(true);
+});
 
+/**
+ * The shipped posture, before anybody has granted anything.
+ *
+ * The switch on its own authorises NOTHING, and that is the entire reason it can ship on:
+ * `checkBlockedReason` asks the allowlist too, and a fresh install's is empty. So the panel
+ * reads "Allowed" while Trust stays quiet, and the two are not in contradiction - one is a
+ * machine-wide posture and the other is a per-repository fact.
+ *
+ * Asserted in a browser against a real daemon because that is the only layer where the
+ * panel's readout and the daemon's stored config are the same claim. A render test showing
+ * "Allowed" proves nothing about what the daemon would let run.
+ */
+test("Commands ship allowed, and an ungranted machine can still run none", async ({
+  dashboard,
+  daemon,
+}) => {
+  await openSettings(dashboard, "workflows", /Review workflows run Personas/);
+
+  await expect(dashboard.getByRole("checkbox", { name: "Allow workflow Commands" })).toBeChecked();
+  await expect(dashboard.getByText("Allowed - a Command runs branch-authored code")).toBeVisible();
+  // The sentence that used to live in the confirm dialog nobody now sees.
+  await expect(dashboard.getByText(/It is not a sandbox/)).toBeVisible();
+
+  const stored = await storedConfig(daemon.baseURL);
+  expect(stored.checksEnabled).toBe(true);
+  expect(stored.repoAllowlist).toEqual([]);
+
+  // No grant, so nothing is armed anywhere and Trust says nothing. An amber warning here
+  // would be the inert-grant noise the matrix refuses everywhere else.
   await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
-
-  // Now the footnote flies, names the repository, and refuses to claim a sandbox. Matched on
-  // the paragraph's own opening text rather than on "branch-authored code", which is wrapped
-  // in a `<strong>` and would resolve the locator to that span - and a span that cannot
-  // contain the repo path would fail the naming assertion for the wrong reason.
-  const note = dashboard.getByText(/Workflow Commands are on/);
-  await expect(note).toBeVisible();
-  await expect(note).toContainText("branch-authored code");
-  await expect(note).toContainText("It is not a sandbox");
-  await expect(note).toContainText(basename(daemon.repo));
-  await expect(note).not.toContainText(daemon.repo);
-
-  await shoot(dashboard, "checks-armed-footnote");
-
-  // The offered fix works from here, without a trip back to the other panel.
-  await dashboard.getByRole("button", { name: "Turn Commands off" }).click();
-  await expect
-    .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled, {
-      message: "Turn Commands off should disarm the switch on the Workflows config",
-    })
-    .toBe(false);
   await expect(dashboard.getByText(/Workflow Commands are on/)).toBeHidden();
-
-  // Disarming the switch is not revoking the grant: the repo may still take Live deliveries,
-  // which is the distinction the single column has to keep legible.
-  expect((await storedConfig(daemon.baseURL)).repoAllowlist).toEqual([daemon.repo]);
 });
 
 test("the armed-Commands warning survives the config poll failing", async ({
@@ -320,14 +353,12 @@ test("the armed-Commands warning survives the config poll failing", async ({
     .poll(async () => (await storedConfig(daemon.baseURL)).repoAllowlist)
     .toEqual([daemon.repo]);
 
-  await openSettings(dashboard, "workflows", /Review workflows run Personas/);
-  await dashboard.locator('.sc-card[data-anchor="workflows/checks"] label.sc-switch').click();
-  await dashboard.getByRole("button", { name: "Allow Commands" }).click();
+  // Armed by the grant alone: `checksEnabled` ships on, so there is no switch to flip here
+  // any more. Confirmed against the daemon rather than assumed, because everything below is
+  // about a reading LAPSING and would pass vacuously if it had never been armed.
   await expect
     .poll(async () => (await storedConfig(daemon.baseURL)).checksEnabled)
     .toBe(true);
-
-  await openSettings(dashboard, "trust", /Every grant that lets Mission Control act outside/);
   await expect(dashboard.getByText(/Workflow Commands are on/)).toBeVisible();
   // The rail dot agrees before the daemon goes away, so the assertion after it is a change
   // rather than a state that was never there.

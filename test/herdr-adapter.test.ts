@@ -9,6 +9,7 @@ import {
   HERDR_UNSUPPORTED_REASON,
   herdrEnvironment,
   herdrMultiplexer,
+  herdrServerProbe,
 } from "../src/server/terminal/herdr.ts";
 import { HERDR_MIN_VERSION, HERDR_PROTOCOL } from "../src/server/terminal/herdr-client.ts";
 import { MULTIPLEXERS } from "../src/server/terminal/registry.ts";
@@ -141,7 +142,12 @@ test("a stale pane process lookup keeps the pane visible with an unknown pid", a
   }
 });
 
-test("a non-stale process lookup failure rejects the pane list", async () => {
+// The discovery sweep polls every installed backend every 1500ms and its only handler is a
+// `console.error` around the whole tick, so a lister that throws does not report a problem -
+// it prints a stack trace forever on a machine whose Herdr server is simply not up. Every
+// sibling lister degrades to `[]`, and the Setup row for Herdr is where the server's state is
+// reported once, to somebody who can act on it.
+test("a refused pane lookup degrades to an empty pane list rather than throwing", async () => {
   const fake = await fakeHerdrSocket((request, socket) => {
     if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
     else {
@@ -152,13 +158,70 @@ test("a non-stale process lookup failure rejects the pane list", async () => {
     }
   });
   try {
-    await assert.rejects(
-      () => herdrMultiplexer(execStatus(fake.path)).list(),
-      /Herdr pane process info for pane-api was refused: process inspection denied/,
-    );
+    assert.deepEqual(await herdrMultiplexer(execStatus(fake.path)).list(), []);
   } finally {
     await fake.close();
   }
+});
+
+test("a stopped Herdr server enumerates as no panes, with no socket attempt", async () => {
+  const calls: Array<{ bin: string; args: string[] }> = [];
+  const stopped: TerminalExec = async (bin, args) => {
+    calls.push({ bin, args });
+    return result(JSON.stringify({
+      status: "not_running",
+      running: false,
+      version: null,
+      protocol: null,
+      compatible: null,
+      socket: "/nonexistent/herdr.sock",
+      restart_needed: false,
+    }));
+  };
+  assert.deepEqual(await herdrMultiplexer(stopped).list(), []);
+  assert.deepEqual(calls.map((call) => call.args), [["status", "server", "--json"]]);
+});
+
+test("an unreadable Herdr status enumerates as no panes", async () => {
+  const broken: TerminalExec = async () => ({
+    stdout: "", stderr: "herdr: command failed", code: 1, outcomeUnknown: false, overflowed: false,
+  });
+  assert.deepEqual(await herdrMultiplexer(broken).list(), []);
+});
+
+test("the Herdr server probe reports the same three states the transport gates on", async () => {
+  const fake = await fakeHerdrSocket(standardReply);
+  try {
+    assert.deepEqual(await herdrServerProbe(execStatus(fake.path)), {
+      state: "ready",
+      socket: fake.path,
+      version: HERDR_MIN_VERSION,
+    });
+  } finally {
+    await fake.close();
+  }
+  const stopped = await herdrServerProbe(async () => result(JSON.stringify({
+    status: "not_running",
+    running: false,
+    version: null,
+    protocol: null,
+    compatible: null,
+    socket: "/nonexistent/herdr.sock",
+    restart_needed: false,
+  })));
+  assert.deepEqual(stopped, { state: "stopped", socket: "/nonexistent/herdr.sock" });
+
+  const failed = await herdrServerProbe(async () => result(JSON.stringify({
+    status: "running",
+    running: true,
+    version: "0.7.0",
+    protocol: 19,
+    compatible: false,
+    socket: "/nonexistent/herdr.sock",
+    restart_needed: true,
+  })));
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.state === "failed" ? failed.retryable : true, false);
 });
 
 test("pane control uses raw text, exhaustive key names, bracket-aware paste, visible capture, and agent focus", async () => {

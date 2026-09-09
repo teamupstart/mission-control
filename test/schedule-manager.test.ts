@@ -107,6 +107,7 @@ function definition(over: Partial<CreateScheduleInput> = {}): CreateScheduleInpu
     timezone: "UTC",
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
+    completionPolicy: "manual",
     template: {
       title: "Sweep the inbox",
       intent: "Read the inbox and file whatever needs filing.",

@@ -165,6 +165,7 @@ function schedule(over: Partial<MissionSchedule> = {}): MissionSchedule {
     timezone: "UTC",
     overlapPolicy: null,
     missedPolicy: null,
+    completionPolicy: null,
     executionMode: null,
     runnerId: null,
     revision: 1,

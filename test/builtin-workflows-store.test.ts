@@ -9,6 +9,7 @@ import type {
   WorkflowDraftGraph,
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // What is at stake: a built-in workflow is app data merged into reads, and the merge rules are
 // what make that safe. There are two projections and they are NOT interchangeable - the
@@ -301,7 +302,7 @@ test("a run bound to a built-in version resolves its workflow rather than readin
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "r1", binding, triggerSource: "manual", triggerKey: "k1", now: 2 },
+    { id: "r1", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "k1", now: 2 },
     {
       id: "sub1",
       triggerSource: "manual",
@@ -396,7 +397,7 @@ test("a binding pinned to version 1 still resolves after the catalog gains versi
     now: 1,
   });
   beforeUpgrade.createInitialSubmission(
-    { id: "r-pinned", binding, triggerSource: "manual", triggerKey: "k1", now: 2 },
+    { id: "r-pinned", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "k1", now: 2 },
     { id: "sub-pinned", triggerSource: "manual", triggerKey: "k1", context: {}, evidence: {}, now: 2 },
   );
 
@@ -429,7 +430,7 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
   // what actually sit in `workflow_bindings.workflow_version_id` on operators' machines and
   // are append-only for that reason.
   const store = new WorkflowStore(db, BUILTIN_PERSONAS);
-  for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]) {
+  for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]) {
     const id = `builtin-workflow:no-mistakes-review@${version}`;
     assert.equal(builtinWorkflowVersionId("no-mistakes-review", version), id);
     const resolved = store.getWorkflowVersionById(id);
@@ -504,4 +505,15 @@ test("the real shipped catalog resolves all of No-Mistakes Review's durable vers
         : "gpt-5.6-terra",
     );
   }
+  const v15 = store.getWorkflowVersionById("builtin-workflow:no-mistakes-review@15")!;
+  assert.equal(
+    v15.graph.nodes.some((node) =>
+      node.kind === "persona" && node.persona.sourcePersonaId === "builtin:test-coverage-judge"),
+    true,
+  );
+  assert.equal(
+    v15.graph.nodes.some((node) => node.id === "nmr-intent-coverage-join" && node.kind === "all_pass"),
+    true,
+  );
+  assert.equal(v15.graph.nodes.filter((node) => node.kind === "persona").length, 8);
 });

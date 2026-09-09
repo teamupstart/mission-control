@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evidence preflight reliability fixes</title>
+<style>
+  :root {
+    --ink: #1c2433; --muted: #5b6577; --line2: #d9dee8; --bg: #ffffff;
+    --panel: #f5f7fb; --accent: #24508c; --good: #1a7a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e3e8f2; --muted: #9aa4b8; --line2: #333c4e; --bg: #12161f;
+            --panel: #1b2230; --accent: #7aa7e0; --good: #58c08a; }
+  }
+  html { background: var(--bg); }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: var(--ink); max-width: 60rem; margin: 2rem auto 5rem; padding: 0 1.5rem; }
+  h1 { font-size: 1.55rem; line-height: 1.25; margin: 0 0 .8rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--line2); padding-bottom: .3rem; }
+  h3 { font-size: 1rem; margin: 1.3rem 0 .4rem; }
+  p, li { max-width: 58rem; }
+  code { font: .86em ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel);
+         padding: .05em .3em; border-radius: 3px; }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: .3rem 0; }
+  .lede { color: var(--muted); font-size: 1.02rem; }
+  .scroll { overflow-x: auto; }
+  figure { margin: 1.2rem 0; }
+  figcaption { color: var(--muted); font-size: .82rem; margin-top: .3rem; }
+  strong { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<h1>Evidence preflight reliability fixes</h1>
+<p class="lede">Stop the No-Mistakes Review evidence-preflight repair loop at its root: reviews
+must be judged against what the human asked for, not against text Mission Control typed into the
+session pane. Alongside that architecture change, make the Persona review surface honest about
+coverage, carry evidence forward across rounds instead of forcing re-collection, and add the
+guardrails that would have surfaced the loop in one round instead of eight.</p>
+
+<h2>Background</h2>
+<p>Two scout investigations (archives <code>d195dfe8-e744-45dc-9ea9-61c1660c7d2a</code> and its
+validation pass) established the failure chain on run <code>55cdbfef</code>, which spent 8 repair
+rounds against a budget of 7 and 6.29&nbsp;MB of Persona review input, with 6 of its 8 failing
+verdicts caused by evidence plumbing rather than the code under review:</p>
+<ol>
+  <li>Workflow repair packets are typed into the pane; the Claude <code>UserPromptSubmit</code> hook
+  reports them back and <code>captureHookGoalPrompt</code> overwrites the session Goal with them.
+  The only guard is the launch-echo check (<code>src/server/registry.ts:7350</code>), and the goal
+  pipeline never consults the injection-origin memory.</li>
+  <li><code>readWorkflowContextRaw</code> reads that live Goal on every submission
+  (<code>src/server/workflows/context.ts:971</code>), and <code>intentFingerprintFields</code> makes
+  <code>{rawGoal, refinedGoal, decisions}</code> both the entire compaction prompt and the entire
+  intent fingerprint (<code>context.ts:201</code>). From submission 3.1 onward the review judged the
+  change against criteria distilled from its own complaint text.</li>
+  <li>Because the fingerprint moved every submission, <code>reuseWorkflowContextCriteria</code>
+  never fired and criteria drifted 4, 3, 6, 5, 5, 5, 5, 7, 2 across the run. Reuse is additionally
+  gated to <code>evidence_preflight</code> refinement segments
+  (<code>src/server/workflows/manager.ts:6029</code>), so criteria were structurally recompacted on
+  every Persona round regardless.</li>
+  <li>Repair packets also leaked into <code>humanDecisions</code> (7 of 8 decisions by round 8), and
+  the Persona prompt renders the raw goal and decisions under "# Original human intent"
+  (<code>src/server/workflows/prompt.ts:61</code>, <code>prompt.ts:65</code>). The validation pass
+  established that this, not the rendered transcript, is how Personas learned the preflight's
+  coverage vocabulary: all 11 frozen transcripts contain zero packet text.</li>
+  <li>The Persona prompt renders no coverage data at all (zero references in
+  <code>prompt.ts</code>), so <code>nmr-code-quality-judge</code> rejected five submissions for
+  missing coverage that was frozen in <code>workflow_submission_evidence_coverage</code> (5 to 8
+  rows each time).</li>
+  <li>Evidence is consumed one way at capture (<code>staged</code> to <code>reserved</code>,
+  <code>src/server/workflows/store.ts:8962</code>); re-staging an identical item is a silent no-op
+  and re-staging under a reserved id throws (<code>store.ts:4621</code>), so agents mint fresh id
+  prefixes every round. 41.6% of all evidence registrations in the live database are byte-identical
+  duplicates; one 38,600-byte screenshot was registered nine times.</li>
+</ol>
+
+<h2>Decisions</h2>
+<p>These were resolved by the operator's instruction to schedule the validation report's recommended
+fix set, and by repository investigation during phasing:</p>
+<ul>
+  <li><strong>Adopt the run-intent snapshot as the architecture fix.</strong> It subsumes the
+  origin-guard, run-keyed criteria reuse, fail-closed transcript matching, and mid-run
+  goal-replacement assertion proposals from the original scout report: freezing intent once makes
+  the mutable channel's cleanliness irrelevant to review correctness.</li>
+  <li><strong>Snapshot at run creation, not at binding.</strong> The repository resolves "binding
+  time" to <code>createInitialSubmission</code> (<code>src/server/workflows/store.ts:5316</code>): a
+  run does not exist until its first submission triggers, and that is the earliest moment the store
+  can own a durable snapshot. On the observed run the goal was still clean at that point (pollution
+  began at submission 3.1).</li>
+  <li><strong>Mid-run human input does not amend intent.</strong> Review answers and later human
+  turns still reach Personas as transcript and prior-feedback context, labeled as what they are. An
+  explicit operator intent-amendment event is future work, out of scope here.</li>
+  <li><strong>Coverage visibility uses the disclaimer option.</strong> Tell Personas that coverage
+  declaration is validated before review and is not theirs to judge, next to the existing
+  later-stages sentence at <code>prompt.ts:81</code>. Rendering the full coverage block to Personas
+  is a possible follow-up, not part of this plan.</li>
+  <li><strong>Evidence carry-forward drops the diff-intersection tier.</strong> Artifacts do not
+  reliably declare which paths they demonstrate, so auto-expiry by changed-path intersection is
+  guesswork. Staleness is covered by inherit-and-mark (origin round plus repository fingerprint,
+  judged by Personas) and by the existing unchanged-evidence guard, which compares repository
+  fingerprints (<code>manager.ts:6194</code>) and is not defeated by inheritance.</li>
+  <li><strong>Transcript-filter hardening is demoted, not scheduled.</strong> The validation pass
+  showed the rendered transcript did not leak in the observed run; the leak was into decisions,
+  which the snapshot removes from review intent. Hardening remains available as future defense in
+  depth.</li>
+  <li><strong>Parking <code>criterion_mapped_v1</code> is not scheduled.</strong> Reverting the
+  built-in to <code>off</code> is an operator stopgap that these fixes make moot; workflow versions
+  are append-only, so parking would burn a version for a temporary state. The operator can still
+  choose it manually at any time.</li>
+  <li><strong>The origin-guard on <code>captureAcceptedPrompt</code> is not scheduled.</strong>
+  Under the snapshot it is dashboard hygiene, not review correctness; it can ride along with future
+  Goal-pipeline work.</li>
+</ul>
+
+<h2>Design</h2>
+
+<h3>1. Run intent snapshot</h3>
+<p>Freeze the review's intent once, when the run is created, and derive everything downstream from
+the frozen copy:</p>
+<ul>
+  <li><code>workflow_runs</code> gains a persisted intent snapshot: the raw goal, refined goal, and
+  human decisions as they stood at run creation, plus the fingerprint computed from them. Migration
+  follows the addColumn-next-to-upgrade-path convention in <code>src/server/db.ts</code>.</li>
+  <li><code>readWorkflowContextRaw</code> populates <code>primaryGoal</code> and
+  <code>humanDecisions</code> from the run snapshot instead of the live Goal and live decision
+  extraction. The transcript, diff, standards, and evidence remain live per-submission reads; only
+  intent is frozen.</li>
+  <li>Canonical criteria are compacted once per run, from the snapshot, and stored on the run.
+  Every submission reuses them; the per-submission reuse gate and its fingerprint comparison become
+  unnecessary. Coverage reconciliation keeps running per submission against the stable
+  criteria.</li>
+  <li>The Persona prompt's "# Original human intent" section therefore always renders the human's
+  request. No repair packet can reach it regardless of hook, attribution, or delivery
+  behavior.</li>
+</ul>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 880 300" width="880" height="300" role="img" aria-label="Before and after intent flow">
+  <style>
+    .box { fill: var(--panel); stroke: var(--muted); stroke-width: 1; rx: 6; }
+    .bad { stroke: #c05a5a; }
+    .good { stroke: var(--good); }
+    .lbl { font: 12px -apple-system, "Segoe UI", sans-serif; fill: var(--ink); }
+    .cap { font: 700 12px -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
+    .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#m); }
+    .dashed { stroke-dasharray: 4 4; }
+  </style>
+  <defs>
+    <marker id="m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/>
+    </marker>
+  </defs>
+  <text x="10" y="20" class="cap">BEFORE</text>
+  <rect x="10" y="34" width="150" height="40" class="box bad"/>
+  <text x="20" y="58" class="lbl">Repair packet in pane</text>
+  <rect x="200" y="34" width="150" height="40" class="box"/>
+  <text x="210" y="51" class="lbl">UserPromptSubmit</text>
+  <text x="210" y="66" class="lbl">hook</text>
+  <rect x="390" y="34" width="150" height="40" class="box bad"/>
+  <text x="400" y="51" class="lbl">Session Goal</text>
+  <text x="400" y="66" class="lbl">overwritten</text>
+  <rect x="580" y="34" width="140" height="40" class="box"/>
+  <text x="590" y="51" class="lbl">Compaction on</text>
+  <text x="590" y="66" class="lbl">every submission</text>
+  <rect x="760" y="34" width="110" height="40" class="box bad"/>
+  <text x="770" y="51" class="lbl">Personas judge</text>
+  <text x="770" y="66" class="lbl">the complaint</text>
+  <path class="arrow" d="M160,54 H198"/>
+  <path class="arrow" d="M350,54 H388"/>
+  <path class="arrow" d="M540,54 H578"/>
+  <path class="arrow" d="M720,54 H758"/>
+
+  <text x="10" y="150" class="cap">AFTER</text>
+  <rect x="10" y="164" width="150" height="40" class="box good"/>
+  <text x="20" y="181" class="lbl">Run created:</text>
+  <text x="20" y="196" class="lbl">intent frozen on run</text>
+  <rect x="200" y="164" width="150" height="40" class="box good"/>
+  <text x="210" y="181" class="lbl">One compaction</text>
+  <text x="210" y="196" class="lbl">per run</text>
+  <rect x="390" y="164" width="150" height="40" class="box good"/>
+  <text x="400" y="188" class="lbl">Stable criteria</text>
+  <rect x="580" y="164" width="140" height="40" class="box good"/>
+  <text x="590" y="181" class="lbl">Personas judge</text>
+  <text x="590" y="196" class="lbl">the request</text>
+  <path class="arrow" d="M160,184 H198"/>
+  <path class="arrow" d="M350,184 H388"/>
+  <path class="arrow" d="M540,184 H578"/>
+  <rect x="10" y="240" width="150" height="40" class="box"/>
+  <text x="20" y="257" class="lbl">Repair packet</text>
+  <text x="20" y="272" class="lbl">in pane</text>
+  <rect x="200" y="240" width="180" height="40" class="box"/>
+  <text x="210" y="257" class="lbl">Transcript context only,</text>
+  <text x="210" y="272" class="lbl">never review intent</text>
+  <path class="arrow dashed" d="M160,260 H198"/>
+</svg>
+</div>
+<figcaption>The load-bearing change: review intent is frozen when the run starts, so the pane, the
+hook, and the Goal drop out of the review's trust path.</figcaption>
+</figure>
+
+<h3>2. Review-surface honesty and loop bounds</h3>
+<ul>
+  <li>Add one sentence to the Persona evidence-availability contract in <code>prompt.ts</code>:
+  coverage declaration is validated by the preflight before review and its presence or absence is
+  not a Persona concern. This alone addresses five of the eight failing verdicts on the observed
+  run.</li>
+  <li>Emit a durable, operator-visible disagreement signal when a Persona fails a submission whose
+  readiness evaluation reported <code>ready</code>. The plan at
+  <code>docs/plans/criterion-mapped-evidence-preflight/plan.md</code> already names this metric; it
+  fired five consecutive times unobserved.</li>
+  <li>Cap consecutive <code>evidence_preflight</code> refinement segments per round (they are
+  effectively unbounded today; the regression test drives fifteen). After the cap, block the run for
+  the operator instead of looping.</li>
+</ul>
+
+<h3>3. Evidence carry-forward</h3>
+<ul>
+  <li>An <code>evidence_preflight</code> refinement child inherits its parent submission's frozen
+  evidence and coverage wholesale. A preflight refinement is a mapping repair, not a re-measurement;
+  on the observed run the round-1 screenshot vanished at 2.0/2.1 and a Persona rejected the
+  submission for its absence.</li>
+  <li>Registering evidence whose <code>sha256</code> already exists frozen for the same note reuses
+  the frozen blob instead of copying it, and re-staging a byte-identical item becomes attachable to
+  the next submission rather than a silent no-op. This removes the minted-id-per-round pattern and
+  the 41.6% duplication.</li>
+  <li>Across Persona repair rounds, evidence inherits with a mark: origin round and the repository
+  fingerprint it was captured at, visible in the Persona manifests, so a reviewer can judge whether
+  a two-round-old artifact still proves the current tree.</li>
+</ul>
+
+<h2>Verification</h2>
+<ul>
+  <li>Unit coverage in <code>test/</code> for: snapshot freezing and reuse across submissions,
+  packet-polluted goals never reaching frozen intent, criteria stability across rounds,
+  preflight-child evidence inheritance, digest-based reuse, the refinement cap, and the
+  disagreement event.</li>
+  <li>Any new operator-facing UI for the disagreement signal requires a Playwright spec in
+  <code>e2e/</code> per repository policy.</li>
+  <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code> for every
+  phase; <code>npm run build</code> and <code>npm run smoke</code> where runtime surfaces
+  change.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>Rendering full coverage data to Personas (follow-up option).</li>
+  <li>An explicit operator intent-amendment event for mid-run scope changes.</li>
+  <li>Transcript-attribution hardening (<code>attributeWorkflowContextTranscript</code> fallback
+  matching).</li>
+  <li>An injection-origin guard in <code>captureAcceptedPrompt</code>.</li>
+  <li>Reverting or appending built-in workflow versions to park
+  <code>criterion_mapped_v1</code>.</li>
+</ul>
+
+</body>
+</html>

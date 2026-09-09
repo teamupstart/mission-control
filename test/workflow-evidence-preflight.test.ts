@@ -23,6 +23,7 @@ const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.t
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT } = await import("../src/server/workflows/store.ts");
 
 const repositoryRoot = process.cwd();
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] });
@@ -79,6 +80,9 @@ async function harness(
     humanDecisions?: () => WorkflowHumanDecision[];
     recordCompactionLedger?: boolean;
     compactContext?: typeof compactWorkflowContext;
+    /** The Persona verdict this run's single reviewer returns. Defaults to a pass. */
+    runner?: LlmRunner;
+    evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
   } = {},
 ) {
   const registry = new Registry();
@@ -116,7 +120,7 @@ async function harness(
     },
     completionPolicy: { kind: "none" },
     resumptionPolicy: "auto",
-    evidenceReadinessPolicy: "criterion_mapped_v1",
+    evidenceReadinessPolicy: options.evidenceReadinessPolicy ?? "criterion_mapped_v1",
     bindingDefaults: { triggerMode: "manual", deliveryMode: "live", maxRepairRounds: 5 },
     createdAt: 1,
     updatedAt: 1,
@@ -208,7 +212,7 @@ async function harness(
         }),
     } : {}),
     engine: {
-      runnerFor: () => passingRunner,
+      runnerFor: () => options.runner ?? passingRunner,
       resolveExecution: () => ({
         runner: { id: "claude", source: "config", unknown: null },
         model: { id: "fake", source: "config" },
@@ -223,7 +227,7 @@ async function harness(
   return { registry, store, manager, binding: binding.value, injected };
 }
 
-test("fifteen replacement evidence packets reuse stable intent criteria and rerun readiness", async (t) => {
+test("replacement evidence packets reuse stable intent criteria up to the refinement cap", async (t) => {
   const h = await harness(t, "stable-evidence-preflight", undefined, {
     recordCompactionLedger: true,
   });
@@ -276,9 +280,11 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
     "initial packet did not wait for missing rendered output",
   );
 
+  // The cap is what bounds this loop now, so the run gets exactly the refinements it is
+  // allowed and the last one closes the gap. The refusal past the cap is its own test below.
   let parentId = submitted.value.submission.id;
-  for (let ordinal = 1; ordinal <= 15; ordinal++) {
-    const ready = ordinal === 15;
+  for (let ordinal = 1; ordinal <= EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT; ordinal++) {
+    const ready = ordinal === EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT;
     await stageReplacement(ordinal, ready);
     const retry = await h.manager.retryEvidenceReadiness(
       runId,
@@ -296,20 +302,21 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
   await waitFor(() => h.store.getRun(runId)?.status === "completed", "final packet did not activate");
 
   const submissions = h.store.listSubmissions(runId);
-  assert.equal(submissions.length, 16);
+  assert.equal(submissions.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
   const contexts = submissions.map((submission) => WorkflowContextSnapshotSchema.parse(submission.context));
   const stableCriteria = contexts.map((context) => context.canonicalCriteria);
   for (const criteria of stableCriteria.slice(1)) assert.deepEqual(criteria, stableCriteria[0]);
   assert.deepEqual(submissions[0]?.readiness?.gapCodes, ["missing_rendered_output"]);
   assert.equal(submissions.at(-1)?.readiness?.status, "ready");
+  const lastClaim = `claim-${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT}`;
   assert.deepEqual(
     h.store.listSubmissionCoverage(submissions.at(-1)!.id).map((claim) => claim.clientCriterionId),
-    ["claim-15"],
+    [lastClaim],
   );
-  assert.deepEqual(contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds, ["claim-15"]);
+  assert.deepEqual(contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds, [lastClaim]);
   const captureEvents = h.store.listEvents(runId)
     .filter((event) => event.kind === "submission_captured");
-  assert.equal(captureEvents.length, 16);
+  assert.equal(captureEvents.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
   assert.match(JSON.stringify(captureEvents[0]?.payload), /"criteriaReused":false/);
   for (const event of captureEvents.slice(1)) {
     assert.match(JSON.stringify(event.payload), /"criteriaReused":true/);
@@ -332,7 +339,7 @@ test("fifteen replacement evidence packets reuse stable intent criteria and reru
   );
 });
 
-test("fallback compaction retries before becoming a stable criteria reuse source", async (t) => {
+test("a corrupted submission context cannot restart the run's compaction", async (t) => {
   let compactionCalls = 0;
   const h = await harness(t, "fallback-retry-preflight", undefined, {
     compactContext: async (raw) => {
@@ -400,10 +407,23 @@ test("fallback compaction retries before becoming a stable criteria reuse source
   );
   const sourceContext = WorkflowContextSnapshotSchema.parse(submitted.value.submission.context);
   assert.equal(sourceContext.compaction.status, "model");
+  assert.equal(compactionCalls, 1);
+  const frozen = h.store.getRun(runId)?.criteria ?? null;
+  assert.ok(frozen, "the first successful compaction froze the run's criteria");
+  assert.equal(frozen.compactedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(frozen.acceptanceCriteria, ["Rendered workflow state is inspectable"]);
+
+  // Reuse used to be sourced from the PARENT SUBMISSION's stored context, so anything that
+  // damaged that one row - a partial write, a retention sweep, a hand edit like this one -
+  // silently bought the run another compaction and another set of criteria. The criteria now
+  // belong to the run, and a submission row is a record of what was reviewed rather than the
+  // thing later submissions are reviewed by.
   openDb().prepare(
     "UPDATE workflow_submissions SET context_json = ? WHERE id = ?",
   ).run(JSON.stringify({
     ...sourceContext,
+    canonicalCriteria: [],
+    criterionMappings: [],
     compaction: {
       ...sourceContext.compaction,
       status: "fallback",
@@ -412,34 +432,31 @@ test("fallback compaction retries before becoming a stable criteria reuse source
   }), submitted.value.submission.id);
 
   await stageGap(1);
-  const retried = await h.manager.retryEvidenceReadiness(
-    runId,
-    submitted.value.submission.id,
-    "fallback-provider-recovered",
-    2,
-  );
-  assert.equal(retried.ok, true);
-  if (!retried.ok) return;
-  const recoveredContext = WorkflowContextSnapshotSchema.parse(retried.value.submission.context);
-  assert.equal(compactionCalls, 2);
-  assert.equal(recoveredContext.compaction.status, "model");
-  assert.equal(recoveredContext.compaction.reusedFromSubmissionId, null);
-
-  await stageGap(2);
   const reused = await h.manager.retryEvidenceReadiness(
     runId,
-    retried.value.submission.id,
-    "fallback-source-now-stable",
-    3,
+    submitted.value.submission.id,
+    "fallback-parent-context",
+    2,
   );
   assert.equal(reused.ok, true);
   if (!reused.ok) return;
-  assert.equal(compactionCalls, 2);
+  assert.equal(compactionCalls, 1, "a damaged parent row must not buy a second compaction");
   const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
-  assert.equal(reusedContext.compaction.reusedFromSubmissionId, retried.value.submission.id);
+  assert.equal(reusedContext.compaction.status, "model");
+  assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(
+    reusedContext.canonicalCriteria?.map((criterion) => criterion.id),
+    frozen.canonicalCriteria.map((criterion) => criterion.id),
+    "the reusing submission carries the run's frozen criteria verbatim",
+  );
+  assert.deepEqual(
+    h.store.getRun(runId)?.criteria,
+    frozen,
+    "reuse must not rewrite what it reused",
+  );
 });
 
-test("one changed human decision recompacts once and becomes the next reuse source", async (t) => {
+test("a mid-run change to the live decisions never moves the run's frozen criteria", async (t) => {
   let decisions: WorkflowHumanDecision[] = [];
   const h = await harness(t, "intent-change-preflight", undefined, {
     humanDecisions: () => decisions,
@@ -493,6 +510,10 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
   assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
 
+  // A mid-run decision is exactly the shape of the failure this run-level freeze exists to
+  // remove: on the observed run, seven of eight "human decisions" by round eight were Mission
+  // Control's own repair packets, read back through the prompt hook. Whatever writes the live
+  // channel now, the run reviews against the ask it froze at creation.
   decisions = [{
     decision: "Also preserve keyboard navigation",
     rationale: "Accessibility is part of the requested outcome",
@@ -502,21 +523,25 @@ test("one changed human decision recompacts once and becomes the next reuse sour
   const changed = await h.manager.retryEvidenceReadiness(runId, reused.value.submission.id, "intent-change", 3);
   assert.equal(changed.ok, true);
   if (!changed.ok) return;
-  assert.equal(compactionCount(runId), 2);
-  assert.equal(reconciliationCount(runId), 2);
+  assert.equal(compactionCount(runId), 1, "a later decision must not buy a second compaction");
+  assert.equal(reconciliationCount(runId), 1);
   const changedContext = WorkflowContextSnapshotSchema.parse(changed.value.submission.context);
-  assert.equal(changedContext.compaction.reusedFromSubmissionId, null);
-  assert.notEqual(changedContext.intentFingerprint, reusedContext.intentFingerprint);
+  assert.equal(changedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
+  assert.deepEqual(
+    changedContext.canonicalCriteria,
+    reusedContext.canonicalCriteria,
+    "the criteria a submission is judged by never move inside a run",
+  );
 
-  await stageGap(3);
-  const changedReuse = await h.manager.retryEvidenceReadiness(runId, changed.value.submission.id, "intent-change-reuse", 4);
-  assert.equal(changedReuse.ok, true);
-  if (!changedReuse.ok) return;
-  assert.equal(compactionCount(runId), 2);
-  assert.equal(reconciliationCount(runId), 2);
-  const changedReuseContext = WorkflowContextSnapshotSchema.parse(changedReuse.value.submission.context);
-  assert.equal(changedReuseContext.compaction.reusedFromSubmissionId, changed.value.submission.id);
-  assert.equal(changedReuseContext.intentFingerprint, changedContext.intentFingerprint);
+  // The round has now spent its consecutive preflight refinements, so a third one is refused
+  // rather than reviewed. That bound is asserted on its own below; what matters here is that
+  // the two submissions the round did produce carry one intent identity between them.
+  assert.deepEqual(
+    new Set(h.store.listSubmissions(runId)
+      .map((row) => WorkflowContextSnapshotSchema.parse(row.context).intentFingerprint)),
+    new Set([changedContext.intentFingerprint]),
+    "every submission of the run carries one intent identity",
+  );
 });
 
 test("automatic readiness sweep does not join a live manual preflight capture", async (t) => {
@@ -843,5 +868,233 @@ test("workflow event ids replay exact writes and reject conflicting reuse", () =
   assert.throws(
     () => store.appendEvent("event-run", "readiness", { status: "different" }, 3, "event-1"),
     /replay conflict/,
+  );
+});
+
+test("the round's third consecutive preflight refinement blocks the run for the operator", async (t) => {
+  const h = await harness(t, "capped-evidence-preflight");
+  const criterion = "Rendered workflow state is inspectable";
+  const stagePacket = async (ordinal: number, ready: boolean) => {
+    const executionId = `capped-execution-${ordinal}`;
+    const renderedId = `capped-rendered-${ordinal}`;
+    await h.manager.stageAgentEvidence("capped-evidence-preflight", {
+      images: [],
+      commandOutputs: [
+        {
+          kind: "command",
+          clientItemId: executionId,
+          command: `verify packet ${ordinal}`,
+          exitCode: 0,
+          output: `packet ${ordinal} passed\n`,
+          caption: `Packet ${ordinal} execution`,
+          repositoryScope: "all",
+        },
+        ...(ready ? [{
+          kind: "command" as const,
+          clientItemId: renderedId,
+          command: `capture packet ${ordinal}`,
+          exitCode: 0,
+          output: `packet ${ordinal} rendered\n`,
+          caption: `Packet ${ordinal} rendered output`,
+          repositoryScope: "all" as const,
+        }] : []),
+      ],
+      coverage: [{
+        clientCriterionId: `capped-claim-${ordinal}`,
+        criterion,
+        proofClass: "visual",
+        repositoryScope: "all",
+        links: [
+          { clientItemId: executionId, role: "execution" },
+          ...(ready ? [{ clientItemId: renderedId, role: "rendered_output" as const }] : []),
+        ],
+      }],
+    });
+  };
+
+  await stagePacket(0, false);
+  const submitted = await h.manager.submit(h.binding.id, { requestId: "capped-root" });
+  assert.equal(submitted.ok, true);
+  if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  await waitFor(
+    () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
+    "the first gapped packet did not wait for evidence readiness",
+  );
+
+  // Refinements one and two are the repair the cap leaves room for, and neither blocks.
+  let parentId = submitted.value.submission.id;
+  for (let ordinal = 1; ordinal <= EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT; ordinal++) {
+    await stagePacket(ordinal, false);
+    const retry = await h.manager.retryEvidenceReadiness(runId, parentId, `capped-${ordinal}`, ordinal);
+    assert.equal(retry.ok, true, `refinement ${ordinal} was refused`);
+    if (!retry.ok) return;
+    parentId = retry.value.submission.id;
+    await waitFor(
+      () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
+      `refinement ${ordinal} did not wait for evidence readiness`,
+    );
+    assert.equal(h.store.getRun(runId)?.currentPhase, "evidence_readiness");
+  }
+  assert.equal(h.store.listSubmissions(runId).length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+
+  await stagePacket(EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1, false);
+  const exhausted = await h.manager.retryEvidenceReadiness(
+    runId,
+    parentId,
+    "capped-over-limit",
+    EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1,
+  );
+  assert.equal(exhausted.ok, false);
+  if (exhausted.ok) return;
+  assert.equal(exhausted.reason, "conflict");
+  assert.match(exhausted.message, /continue despite gaps or start a new round/);
+  assert.equal(
+    h.store.listSubmissions(runId).length,
+    EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1,
+    "the refused refinement must not create a submission",
+  );
+  const blocked = h.store.getRun(runId);
+  assert.equal(blocked?.status, "blocked");
+  assert.equal(blocked?.currentPhase, "preflight_refinement_exhausted");
+  const event = h.store.listEvents(runId)
+    .find((entry) => entry.kind === "preflight_refinement_exhausted");
+  assert.ok(event, "the block must be readable on the run's own timeline");
+  assert.deepEqual(event.payload, {
+    submissionId: parentId,
+    round: 1,
+    segment: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
+    refinements: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
+    limit: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
+    manualRetry: true,
+  });
+  // The automatic sweep is the loop this bound exists to stop: it must not reopen the round.
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  assert.equal(h.store.listSubmissions(runId).length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(h.store.getRun(runId)?.status, "blocked");
+
+  // The block asks the operator a question, so the answer stays reachable from it.
+  const override = h.manager.overrideEvidenceReadiness(
+    runId,
+    parentId,
+    "capped-override",
+    "The mapping is right; the preflight and the packet disagree about the proof class.",
+    true,
+  );
+  assert.equal(override.ok, true);
+  await waitFor(
+    () => h.store.getRun(runId)?.status === "completed",
+    "the overridden submission did not activate out of the refinement block",
+  );
+  assert.equal(h.store.getSubmission(parentId)?.readiness?.status, "overridden");
+});
+
+test("a Persona failing a submission the preflight passed records an operator-visible disagreement", async (t) => {
+  const failingRunner: LlmRunner = {
+    ...passingRunner,
+    async run() {
+      return JSON.stringify({
+        verdict: "fail",
+        summary: "No acceptance criterion coverage was declared for this submission",
+        requestedChanges: [{
+          title: "Declare criterion coverage",
+          rationale: "The packet does not link evidence to the acceptance criteria",
+          evidence: [{ kind: "goal", quote: "Render the final workflow state" }],
+        }],
+        confidence: 1,
+      });
+    },
+  };
+  const readyPacket = async (h: Awaited<ReturnType<typeof harness>>, id: string) => {
+    await h.manager.stageAgentEvidence(id, {
+      images: [],
+      commandOutputs: [
+        {
+          kind: "command",
+          clientItemId: "disagreement-execution",
+          command: "verify disagreement",
+          exitCode: 0,
+          output: "passed\n",
+          caption: "Focused execution passed",
+          repositoryScope: "all",
+        },
+        {
+          kind: "command",
+          clientItemId: "disagreement-rendered",
+          command: "capture disagreement",
+          exitCode: 0,
+          output: "rendered\n",
+          caption: "Rendered state",
+          repositoryScope: "all",
+        },
+      ],
+      coverage: [{
+        clientCriterionId: "disagreement-claim",
+        criterion: "Rendered workflow state is inspectable",
+        proofClass: "visual",
+        repositoryScope: "all",
+        links: [
+          { clientItemId: "disagreement-execution", role: "execution" },
+          { clientItemId: "disagreement-rendered", role: "rendered_output" },
+        ],
+      }],
+    });
+  };
+
+  const enforced = await harness(t, "disagreement-preflight", undefined, { runner: failingRunner });
+  await readyPacket(enforced, "disagreement-preflight");
+  const submitted = await enforced.manager.submit(enforced.binding.id, { requestId: "disagree" });
+  assert.equal(submitted.ok, true);
+  if (!submitted.ok) return;
+  const runId = submitted.value.run.id;
+  assert.equal(enforced.store.getSubmission(submitted.value.submission.id)?.readiness?.status, "ready");
+  await waitFor(
+    () => enforced.store.listEvents(runId).some((event) => event.kind === "persona_verdict"),
+    "the Persona verdict was never recorded",
+  );
+  const disagreements = enforced.store.listEvents(runId)
+    .filter((event) => event.kind === "readiness_review_disagreement");
+  assert.equal(disagreements.length, 1, "a ready-then-failed round must say so exactly once");
+  assert.deepEqual(disagreements[0]?.payload, {
+    submissionId: submitted.value.submission.id,
+    nodeId: "persona",
+    persona: "Preflight disagreement-preflight",
+    round: 1,
+    segment: 0,
+    policy: "criterion_mapped_v1",
+    evaluatorVersion: "criterion_mapped_v1",
+    readiness: "ready",
+    summary: "No acceptance criterion coverage was declared for this submission",
+  });
+
+  // Advisory readiness gated nothing, but it still ANSWERED `ready` on this submission and a
+  // Persona still failed it, which is the same contradiction and just as reachable. The signal
+  // fires and its payload names the policy, so a reader can weigh the two differently.
+  const advisory = await harness(t, "advisory-preflight", undefined, {
+    runner: failingRunner,
+    evidenceReadinessPolicy: "off",
+  });
+  await readyPacket(advisory, "advisory-preflight");
+  const advisorySubmitted = await advisory.manager.submit(advisory.binding.id, {
+    requestId: "advisory-disagree",
+  });
+  assert.equal(advisorySubmitted.ok, true);
+  if (!advisorySubmitted.ok) return;
+  const advisoryRunId = advisorySubmitted.value.run.id;
+  assert.equal(
+    advisory.store.getSubmission(advisorySubmitted.value.submission.id)?.readiness?.status,
+    "ready",
+  );
+  await waitFor(
+    () => advisory.store.listEvents(advisoryRunId).some((event) => event.kind === "persona_verdict"),
+    "the advisory Persona verdict was never recorded",
+  );
+  const advisoryDisagreements = advisory.store.listEvents(advisoryRunId)
+    .filter((event) => event.kind === "readiness_review_disagreement");
+  assert.equal(advisoryDisagreements.length, 1);
+  assert.equal(
+    (advisoryDisagreements[0]?.payload as { policy: string }).policy,
+    "off",
+    "the advisory disagreement records the policy that did not enforce it",
   );
 });

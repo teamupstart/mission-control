@@ -450,6 +450,10 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   value being edited.
 - **Worktrees count too.** A grant names the **repo**, so a session in any worktree of a
   granted repo is covered, wherever that worktree lives on disk.
+- **The first-run tour ends here.** The last three stops of **Set up this machine** walk from
+  the Trust row in the rail to the matrix and its add row, and the tour leaves you on this
+  page. It clicks no cell: the walkthrough explains the grants, and every one of them is still
+  a deliberate click of your own. See [the guided tours](ui.md#set-up-this-machine).
 - **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,
   nothing there can ever qualify - the merge cell and the empty review cell both go amber, and
   a footnote offers the two fixes in place: **grant the review**, or **revoke the merge**.
@@ -460,8 +464,11 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   node may run branch-authored code there with the daemon's filesystem authority, and it is
   not a sandbox. **Turn Commands off** is offered in place. This one is not a contradiction like
   the merge trap - nothing is stuck - it is flagged because a cell reading "allowed" cannot
-  show that on its own and the confirm dialog was agreed to once, months ago. The rail's Trust
-  dot carries this one too.
+  show that on its own. That footnote matters more than it used to: **Allow workflow Commands**
+  now ships on, so on a machine nobody reconfigured, granting the Workflows cell is the whole
+  decision and the confirm dialog behind the switch is never shown. The empty allowlist is what
+  keeps that safe - a fresh install can run a Command nowhere - and this footnote, plus the
+  rail's Trust dot, is what stays visible once you grant one.
 - **The warning outlives the connection.** Both surfaces remember the last **confirmed**
   arming, so a failed config poll cannot retire them. This is a deliberate exception to the
   daemon-reading rule everywhere else in Settings, where a failed read becomes "unknown" and

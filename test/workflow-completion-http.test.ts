@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { SessionIntentGuard } from "../src/shared/types.ts";
 
@@ -464,6 +465,13 @@ test("completion HTTP claims server-owned identity once and atomically retires t
   assert.equal(promptedBody.claimed, true);
   assert.equal(promptedBody.state, "started");
   assert.equal(workflows.store.getRun(promptedBody.runId)?.bindingId, promptedBinding.id);
+  // The Foreman insert path freezes the ask too. It is the second of the two places a run row
+  // is created, and a freeze that covered only the manual one would leave every
+  // completion-triggered review still reading the live Goal.
+  assert.equal(
+    workflows.store.getRun(promptedBody.runId)?.intent?.rawGoal,
+    "Finish the prompted workflow",
+  );
   const promptedGuard = db.prepare(
     `SELECT prompted_goal, prompted_evidence, prompted_activity_at,
             prompted_consumed_generation
@@ -616,6 +624,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     {
       id: "repair-run",
       binding: repairBinding,
+      intent: FIXTURE_RUN_INTENT,
       triggerSource: "foreman",
       triggerKey: "foreman:repair:old",
       now: 20,

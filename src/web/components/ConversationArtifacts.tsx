@@ -36,6 +36,16 @@ export interface ConversationArtifactsProps {
   artifacts: readonly ConversationArtifact[];
   onOpenFile?: WorkspaceLinkHandler;
   onCommentInFiles?: (path: string) => void;
+  /**
+   * Open this artifact in the Files pane, and nothing more.
+   *
+   * The sibling of `onCommentInFiles` rather than a variant of it: both land on the same
+   * file in the same Preview, and the ONLY difference is whether comment mode is armed on
+   * arrival. Splitting them is the point - reading a report and annotating one are separate
+   * intentions, and the card used to offer just the second, so "let me see this properly"
+   * meant arming an editor affordance nobody asked for and then dismissing it.
+   */
+  onViewInFiles?: (path: string) => void;
 }
 
 export function ConversationArtifacts({
@@ -43,6 +53,7 @@ export function ConversationArtifacts({
   artifacts,
   onOpenFile,
   onCommentInFiles,
+  onViewInFiles,
 }: ConversationArtifactsProps): React.JSX.Element | null {
   if (artifacts.length === 0) return null;
   return (
@@ -54,6 +65,7 @@ export function ConversationArtifacts({
           path={artifact.path}
           onOpenFile={onOpenFile}
           onCommentInFiles={onCommentInFiles}
+          onViewInFiles={onViewInFiles}
         />
       ))}
     </div>
@@ -65,11 +77,13 @@ function ArtifactCard({
   path,
   onOpenFile,
   onCommentInFiles,
+  onViewInFiles,
 }: {
   sessionId: string;
   path: string;
   onOpenFile?: WorkspaceLinkHandler;
   onCommentInFiles?: (path: string) => void;
+  onViewInFiles?: (path: string) => void;
 }): React.JSX.Element {
   const [expanded, setExpanded] = useState(() => readArtifactExpanded(sessionId, path));
   const [near, setNear] = useState(false);
@@ -216,6 +230,14 @@ function ArtifactCard({
             Refresh
           </button>
         </Tooltip>
+        {/* Two ways out of this card, because they were one and that conflated two asks.
+            "Comment in Files" was the only way to reach the full-size rendering, so an
+            operator who just wanted to READ the report they were being shown in a 420px
+            frame had to enter comment mode to get there and then leave it again.
+
+            The labels are the bare verbs; the accessible names carry the path, so a turn
+            presenting three artifacts has three distinguishable pairs rather than six
+            controls all called "View". */}
         {onCommentInFiles && (
           <Tooltip label="Open this rendered file in Files and start a comment">
             <button
@@ -224,7 +246,19 @@ function ArtifactCard({
               aria-label={`Comment on ${path} in Files`}
               onClick={() => onCommentInFiles(path)}
             >
-              Comment in Files
+              Comment
+            </button>
+          </Tooltip>
+        )}
+        {onViewInFiles && (
+          <Tooltip label="Open this rendered file in the Files pane">
+            <button
+              type="button"
+              className="artifact-act"
+              aria-label={`View ${path} in Files`}
+              onClick={() => onViewInFiles(path)}
+            >
+              View
             </button>
           </Tooltip>
         )}

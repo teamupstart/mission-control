@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ScoutRepoTask } from "../src/server/scouts/repos.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
@@ -353,7 +354,7 @@ test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-
       now: 2,
     });
     const created = store.createInitialSubmission(
-      { id: "text-run", binding, triggerSource: "manual", triggerKey: "text-run", now: 3 },
+      { id: "text-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "text-run", now: 3 },
       {
         id: "text-submission",
         triggerSource: "manual",
@@ -438,7 +439,7 @@ test("completed command output is staged directly and frozen as immutable text e
       now: 2,
     });
     const created = store.createInitialSubmission(
-      { id: "command-run", binding, triggerSource: "manual", triggerKey: "command-run", now: 3 },
+      { id: "command-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "command-run", now: 3 },
       {
         id: "command-submission",
         triggerSource: "manual",
@@ -566,7 +567,7 @@ test("parent-directory swaps cannot escape the issued checkout during staging or
       now: 3,
     });
     const created = store.createInitialSubmission(
-      { id: "parent-race-run", binding, triggerSource: "manual", triggerKey: "parent-race", now: 4 },
+      { id: "parent-race-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "parent-race", now: 4 },
       {
         id: "parent-race-submission",
         triggerSource: "manual",
@@ -721,7 +722,7 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
 
     const group = "manual:image-note:request";
     const lead = store.createInitialSubmission(
-      { id: "image-run-lead", binding: leadBinding, triggerSource: "manual", triggerKey: "image-lead", now: 4 },
+      { id: "image-run-lead", binding: leadBinding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "image-lead", now: 4 },
       {
         id: "image-submission-lead",
         triggerSource: "manual",
@@ -733,7 +734,7 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
       },
     );
     const sibling = store.createInitialSubmission(
-      { id: "image-run-sibling", binding: siblingBinding, triggerSource: "manual", triggerKey: "image-sibling", now: 4 },
+      { id: "image-run-sibling", binding: siblingBinding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "image-sibling", now: 4 },
       {
         id: "image-submission-sibling",
         triggerSource: "manual",

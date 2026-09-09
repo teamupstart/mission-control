@@ -7,6 +7,7 @@ import { candidateRepos } from "../src/web/lib/trust.ts";
 import { ForemanPopover } from "../src/web/components/ForemanBar.tsx";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "../src/shared/foreman-models.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
+import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { ForemanStatus } from "../src/shared/types.ts";
 
@@ -138,6 +139,37 @@ test("exactly one tier option is checked, following config.triage", () => {
   );
   assert.equal((onGroup.match(/checked/g) ?? []).length, 1);
   assert.match(onGroup, /checked[^]*?On - cheap tier answers/);
+});
+
+function tierGroup(html: string): string {
+  return html.slice(
+    html.indexOf('data-anchor="foreman/cheap-tier"'),
+    html.indexOf('id="foreman-settings-panel-launches"'),
+  );
+}
+
+test("a fresh install draws On, and no shadow-promotion advice under it", () => {
+  // Rendered from the SCHEMA's own defaults rather than from this file's fixture, so the
+  // panel's readout and what the daemon actually enforces cannot drift apart silently: parse
+  // an empty object and the posture an operator reads is the posture their worker runs.
+  const fresh = tierGroup(renderPanel({ ...mkState(), config: ForemanConfigSchema.parse({}) }));
+
+  assert.equal((fresh.match(/checked/g) ?? []).length, 1);
+  assert.match(fresh, /checked[^]*?On - cheap tier answers/);
+  // The "promote it to On once over-eager has stayed at zero" note belongs to the posture
+  // that measures. Shipped under On it would be advice to make a change already made.
+  assert.doesNotMatch(fresh, /Promote it to <b>On<\/b>|Promote it to/);
+});
+
+test("a config that has not loaded yet shows the default posture, disabled", () => {
+  // The Harnesses runtime row refuses to guess while its read is in flight; this control
+  // cannot, because a radio group has to draw SOMETHING. So it draws what the daemon applies
+  // to an unanswered config and locks the group until the real value lands - never a posture
+  // the server is not running.
+  const group = tierGroup(renderPanel({ ...mkState(), config: null }));
+
+  assert.match(group, /checked[^]*?On - cheap tier answers/);
+  assert.equal((group.match(/disabled=""/g) ?? []).length, 3);
 });
 
 // The repo editor moved to the Trust matrix; the panel now summarizes the grant and

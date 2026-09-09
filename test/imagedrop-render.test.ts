@@ -88,6 +88,53 @@ test("each chip state is legible to CSS", () => {
   assert.match(strip([att()]), /is-ready/);
 });
 
+test("a ready chip carries a named preview control around its thumbnail and filename", () => {
+  // The gesture is a double-click, which no markup can show and no keyboard can perform.
+  // This is the half that survives both: a real button, named after the file, so the
+  // feature has a keyboard and screen-reader route at all - and so an e2e spec can select
+  // it without the `data-testid` the project forbids.
+  const html = strip([att()]);
+
+  assert.match(html, /<button[^>]*class="attach-open"[^>]*aria-label="Preview screenshot\.png"/);
+  // Both halves of the chip are inside it, so the gesture works anywhere but the ✕.
+  const open = html.match(/<button[^>]*class="attach-open"[\s\S]*?<\/button>/)?.[0] ?? "";
+  assert.match(open, /class="attach-thumb"/);
+  assert.match(open, /class="attach-name">screenshot\.png</);
+  // The remove button stays OUTSIDE it. Nested buttons are invalid, and a ✕ inside the
+  // preview control would open a preview of the file it just removed.
+  assert.doesNotMatch(open, /attach-remove/);
+});
+
+test("a refused chip offers no preview, because there is nothing to show", () => {
+  // The error branch never had a thumbnail - the file is usually one the browser cannot
+  // paint - so a preview control here would open a dialog onto a broken image.
+  const html = strip([att({ status: "error", error: "not a recognised image", upload: undefined })]);
+
+  assert.doesNotMatch(html, /attach-open/);
+  assert.doesNotMatch(html, /aria-label="Preview /);
+  // What it does keep: the reason, and the way to dismiss it.
+  assert.match(html, /not a recognised image/);
+  assert.match(html, /aria-label="Remove screenshot\.png"/);
+});
+
+test("the strip renders no dialog until one is asked for", () => {
+  // The preview is state, not markup that is merely hidden. A dialog present-but-hidden
+  // would sit in the accessibility tree of every compose box with an attachment on it.
+  const html = strip([att(), att({ id: "a2", name: "second.png" })]);
+
+  assert.doesNotMatch(html, /modal-backdrop/);
+  assert.doesNotMatch(html, /attach-preview/);
+  // And when one does open it is a SIBLING of the list, never a child: `<ul>` takes only
+  // `<li>`, `<script>` and `<template>`, so a dialog inside it is invalid structure that
+  // assistive technology walks as one more attachment. Pinned on the closing tag, because
+  // that is the character a careless edit moves.
+  assert.match(html, /<\/ul>$/);
+  // Two chips, two distinguishable preview controls: the accessible name is the only
+  // thing telling them apart, since both faces are a thumbnail and a truncated name.
+  assert.match(html, /aria-label="Preview screenshot\.png"/);
+  assert.match(html, /aria-label="Preview second\.png"/);
+});
+
 test("every chip can be taken back off, by name", () => {
   const html = strip([att()]);
   assert.match(html, /aria-label="Remove screenshot\.png"/);

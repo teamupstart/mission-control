@@ -75,12 +75,23 @@ its own `###` subsection, in this order.
 4. **Known gaps** - what the change does not cover. Unhandled cases, surfaces left untouched,
    limitations you accepted, and anything left unverified. Use bullets when there is more
    than one.
-5. **Evidence** - concrete proof the feature works. Name the checks you actually ran and what
-   they reported, and for a UI change attach screenshots of the working feature to the pull
-   request so a reviewer can see the result without reconstructing it locally. Evidence files
-   are never committed to the repository: produce them in a gitignored location and upload them
-   to the pull request. When a check or a screenshot is unavailable, say so and explain why
-   rather than implying it exists. Prefer one short bullet per check or artifact.
+5. **Evidence** - concrete, durable proof the feature works. Name the checks you actually ran
+   and what they reported. For every UI-based change, capture screenshots of the working feature
+   and publish them in the pull request description or a pull request comment so the human
+   reviewer can inspect the result without reconstructing it locally. Local paths and session
+   evidence alone are not a durable reviewer handoff. Evidence files are never committed to the
+   repository: produce them in a gitignored location and upload them to the pull request. Before
+   uploading, inspect every screenshot and redact secrets, credentials, and personal data. If a
+   screenshot cannot be safely redacted while preserving its value as proof, do not upload it;
+   report the evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image
+   attachments, so when that version or a later one is installed, use the native `--attach` flag
+   instead of browser automation. Use
+   `gh pr create --attach` or `gh pr edit --attach` to place screenshots in the pull request
+   description, or `gh pr comment --attach` to place them in a comment; include useful alt text
+   for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
+   published description or comment renders the attachments before treating the evidence handoff
+   as complete. When a check or screenshot is unavailable, say so and explain why rather than
+   implying it exists. Prefer one short bullet per check or artifact.
 6. **Follow-up work** - what you recommend next and why it is out of scope here. Make each
    item a concise, actionable bullet.
 

@@ -29,8 +29,8 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
-Review v14 pins its seven snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
-the other six on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
+Review v15 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
+the other seven on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
 
 ### Importing a Persona from a file
 
@@ -97,13 +97,14 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Seven ready-made review roles ship with the application. Nothing has to be
+Eight ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
 | Persona | What it judges |
 |---|---|
 | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| Test Coverage Judge | Whether tests genuinely exercise at least 80% of changed executable code, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
@@ -135,11 +136,12 @@ generated module. Each document's first level-one heading is the Persona's name 
 paragraph under it is the description. **Import .md** shares only the heading-to-name rule;
 an imported Persona's description stays empty.
 
-The seven are written to compose, and they ship already composed: **No-Mistakes Review** is the
-built-in workflow below. Among its Personas, Intent Conformance Judge runs first as a cheap
-gate. Code Risk Reviewer, Code Quality Judge and Code Design Reviewer run together behind one
-All-pass Join. Test Evidence Auditor, Documentation Steward and Slop Filter then run together
-behind another All-pass Join, immediately before the verified Pull Request action.
+The eight are written to compose, and they ship already composed: **No-Mistakes Review** is the
+built-in workflow below. Intent Conformance Judge and Test Coverage Judge run together as the
+first Persona gate behind one All-pass Join. Code Risk Reviewer, Code Quality Judge and Code
+Design Reviewer run together behind a second All-pass Join. Test Evidence Auditor, Documentation
+Steward and Slop Filter then run together behind a third All-pass Join, immediately before the
+verified Pull Request action.
 
 Code Design Reviewer is the one whose subject the other two refuse on purpose: Code Risk
 Reviewer is told not to infer a flaw from code shape or to demand an abstraction as the price
@@ -153,7 +155,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 13 are preserved for bindings that already pin them, and version 14 is current. There is
+through 14 are preserved for bindings that already pin them, and version 15 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -176,14 +178,21 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the seven built-in Personas wired the way they were written to compose. Intent
-Conformance Judge is stage 2, the cheap gate: there is no point spending deeper reviews on a
-change that has already drifted from what was asked. In versions 11 through 13, Code Risk Reviewer, Code
-Quality Judge and Code Design Reviewer are stage 3, running **in parallel on the same
-submission** and aggregating at an All-pass Join. In versions 12 and 13, Test Evidence Auditor,
-Documentation Steward and Slop Filter are stage 4, also running in parallel and aggregating at
-their own All-pass Join. Every fail returns to the session for repair, and the Pull Request action
-does not run until both stages pass.
+Behind it are the eight built-in Personas wired the way they were written to compose. In version
+15, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the same
+submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
+misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code
+Design Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are
+stage 4. Each group runs in parallel behind its own All-pass Join. Every fail returns to the session
+for repair, and the Pull Request action does not run until all three Persona stages pass.
+
+Test Coverage Judge requires at least 80% changed-line coverage of executable code, then checks the
+tests themselves for meaningful happy-path, boundary, and exception assertions. A percentage alone
+does not pass: the judge traces setup to the production path and the assertion to its observable
+consequence, specifically looking for tests whose names claim one behavior while their bodies prove
+another. Test Evidence Auditor remains separate and later because it judges whether the requested
+product behavior was demonstrated end to end, not whether the test suite adequately exercises the
+changed code.
 
 Code Design Reviewer joined that stage in version 11 rather than taking a stage of its own,
 which is what makes it cost one model call per round and no extra wall-clock stage: all three
@@ -217,9 +226,9 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 13 preserve that verified publication
-contract. Versions 10 through 13 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 and 13.
+would ask for one the run already has. Versions 9 through 15 preserve that verified publication
+contract. Versions 10 through 15 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 15.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -256,7 +265,7 @@ it already reserved, and the built-in it shadows stays hidden behind your copy w
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
 see the built-in.
 
-An upgrade that improves one of the seven Personas improves this workflow too, with no gesture
+An upgrade that improves one of the eight Personas improves this workflow too, with no gesture
 from you: it always carries the guidance and the graph the build was made from. Improving the
 shipped workflow itself appends a **new version** rather than editing the one you may be bound
 to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
@@ -270,16 +279,18 @@ stage and sets its missing-PR policy to `wait`; version 9 adds Code Quality Judg
 action and changes only the new version's completion policy to `none`; version 10 runs Code
 Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor with Documentation
 Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
-Slop Filter to stage 4; and version 13 keeps that graph while enabling criterion-mapped evidence
+Slop Filter to stage 4; version 13 keeps that graph while enabling criterion-mapped evidence
 preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
-with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`. Every earlier version remains in the
+with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; and version 15 adds
+Test Coverage Judge beside Intent Conformance Judge in stage 2, with the same pinned Codex Terra
+routing as the other non-design reviewers. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 14 because it is current. Adopting the newer version on an
+take version 15 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -718,11 +729,32 @@ decisions and rationale, repository HEAD and diff, transcript evidence, reposito
 and prior Persona feedback. Confirmed workflow packets are matched to the transcript turn at
 their durable delivery byte anchor and excluded from both transcript evidence and human decisions,
 including after a daemon restart. A later human turn that repeats the same text remains evidence.
+A run FREEZES its intent when it is created. The raw goal, refined goal, and human decisions as
+they stood at that moment are copied onto the run, and every submission of that run is reviewed
+against the copy. The session Goal stays live and keeps being displayed as the conversation's
+current objective; it is simply no longer what a review is judged by. This matters because the
+Goal is writable by the prompt hook, which reports every prompt typed into the pane - including
+the repair packets a workflow types there itself - so a run that read it per submission could
+distil its own acceptance criteria out of its previous complaint. Transcript, diff, standards,
+coverage, and evidence remain live per-submission reads: only intent is frozen. A later human
+turn or review answer reaches Personas as transcript and prior-feedback context, labelled as what
+it is, and does not amend the frozen ask; an ask that genuinely changed is a new run. A run
+created before the snapshot existed carries none and keeps the live-read behaviour it was created
+under for its whole life.
+
 A deterministic intent fingerprint covers only the raw/refined goal and deduplicated genuine
-human decision content. A cheap provider-neutral compaction call receives only those fields and
-extracts stable constraints and canonical criteria. Repository state, transcript evidence,
-evidence metadata, prior Persona feedback, automated deliveries, and author coverage never enter
-criterion extraction. A separate source reconciliation call receives only those stable criteria
+human decision content, and on a snapshot-bearing run it is the frozen one on every submission. A
+cheap provider-neutral compaction call receives only those fields and extracts stable constraints
+and canonical criteria ONCE PER RUN. The first capture to need them claims the run's compaction
+before it spends anything, so a concurrent capture of the same run waits for that result rather
+than buying a second one; the stored criteria are then written once and every later submission
+reuses them verbatim, so the criteria a submission is repaired against cannot move while it is
+being repaired. A failed compaction stores nothing and the next submission retries it, while a
+capture that was waiting on the failed one degrades the same way rather than starting its own
+attempt. A run whose frozen intent or stored criteria cannot be read is blocked for the operator
+instead of falling back to the live Goal, and the run stays visible and diagnosable while blocked.
+Repository state, transcript evidence, evidence metadata, prior Persona feedback, automated
+deliveries, and author coverage never enter criterion extraction. A separate source reconciliation call receives only those stable criteria
 and bounded author claim ids and text. Its schema and failure boundary are independent, so invalid
 mapping output leaves stable extraction intact and fails closed to deterministic mappings. Each
 45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 45-second
@@ -824,17 +856,30 @@ result before the engine creates any Persona or Check attempt. A structural gap 
 `waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
 original immutable submission inspectable. Newly staged evidence resumes as a child segment in the
 same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
-When that child has the same intent fingerprint as its parent, it reuses the parent's constraints,
-acceptance criteria, canonical ids/text, materiality, and proof-class suggestions without creating
-a `context_compaction` call. It still freezes its own replacement evidence and coverage, remaps
-the current claim ids, and reruns readiness. A changed human decision causes one fresh compaction;
-subsequent same-intent refinements reuse that new source. Submission events record whether criteria
-were reused and which immutable source supplied them. The LLM ledger records stable extraction as
-`context_compaction`, source claim mapping as `context_reconciliation`, and no call for deterministic
-reuse.
+It reuses the run's constraints, acceptance criteria, canonical ids/text, materiality, and
+proof-class suggestions without creating a `context_compaction` call, exactly as every other
+submission of the run does. It still freezes its own replacement evidence and coverage, remaps
+the current claim ids, and reruns readiness. Author claim ids are per-submission, so the remap
+reads this submission's claims through the previous submission's claims and mappings; a rephrased
+claim for an unchanged criterion therefore still matches. A changed human decision does NOT buy a
+fresh compaction - the run's intent was frozen at creation - so the criteria stay identical across
+every round and segment. Submission events record whether criteria were reused and which
+immutable source supplied them. A run created before the intent snapshot existed keeps the older
+behaviour: it compacts per submission and a preflight child reuses its parent's criteria only
+when their intent fingerprints match. The LLM ledger records stable extraction as
+`context_compaction`, source claim mapping as `context_reconciliation`, and no call for
+deterministic reuse.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.
+
+One round may spend at most two consecutive `evidence_preflight` refinements. A third, whether the
+session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
+the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
+submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
+alone. The waiting submission stays waiting, so the run detail keeps showing the evidence-readiness
+decision panel and the operator can still continue despite gaps from the block; the retry control is
+withdrawn with the loop it would restart. Resubmitting the run opens an ordinary new round instead.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another
@@ -881,6 +926,17 @@ upstream Check evidence is the separate server-observed form. An artifact citati
 outside the submission manifest are rejected. These Persona inputs exist before any optional
 pull-request or Inspector stage. A Persona must judge the submission evidence it received, not
 require PR checks, remote CI, or Inspector evidence that can only exist later in the workflow.
+
+Criterion coverage declarations are not among those inputs and are not rendered into the prompt.
+The evidence-availability contract says so and scopes them out of Persona judgment: the preflight
+validates coverage before the review runs, so a Persona must never fail a submission for missing,
+incomplete, or undeclared coverage. When a Persona fails a submission whose readiness evaluation
+answered `ready`, the run records a `readiness_review_disagreement` event naming the submission, the
+reviewer, the evaluator version, and the readiness policy in force, so the run's own timeline shows
+the two readings disagreeing while the round is still open. An advisory `ready` gated nothing and so
+means less than an enforced one, but it is the same contradiction and is recorded the same way; the
+policy in the payload is what tells them apart. The event is a signal, never a verdict rewrite: a
+Persona is entitled to fail structurally complete evidence on its merits.
 
 Every completed built-in Test Evidence Auditor attempt also appends a bounded
 `test_evidence_audit` workflow event. It records first-submission status, pass or fail, rejection
@@ -1524,6 +1580,57 @@ reaches, and a version whose completion policy is not `inspector` never pins a p
 all - so all three surfaces read one derivation, which answers "which pull request, if any"
 rather than assuming there is one. A run holding no gate is told plainly that cancelling
 clears the run and keeps its history, and nothing more.
+
+### One run, one lifecycle state
+
+A run says where it is in three stored columns - its status, its phase, and a free-form detail
+blob - and those three vary independently. `src/shared/workflow-lifecycle.ts` is the single
+place that reads them as one state, so the daemon's store, its engine, its GitHub Inspector
+gate and the dashboard cannot disagree about whether a run is waiting, resumable, or finished.
+
+Two of those columns carry things that are genuinely separate. The **detail** belongs to the
+current phase: the budget a spent run recorded, the node a withheld check retry names, the
+reason a cancelled run was given. The **GitHub Inspector gate** is sticky - the pull request a
+run is gated on, when it entered, and what the last review found - and it outlives whichever
+phase the run happens to be in. They used to share the column with no rule about which one
+won, so a writer holding both wrote one and destroyed the other. The most visible case: a run
+parked in `pr_handoff` that spent its last repair round lost the pull request it was gated on,
+permanently, because the block wrote the budget over it. That is fixed - the gate now rides
+through the block, the refusal, and the uncertain delivery alongside whatever the phase wanted
+to record - and a **Grant 2 more rounds** on such a run puts it back where it was.
+
+A run in a state this build does not recognise stays fully readable and is never acted on.
+That covers both halves of "unrecognised", because either one alone is not enough: a detail
+whose shape is undeclared, and a PHASE this build has never heard of - one written by a newer
+daemon, or a reason code nothing here maps. An unknown phase is not made safe by having no
+detail attached, because the machinery that drives a run forward keys on the phase rather than
+on the payload. So such a run reports its status, its phase, the pull request it was gated on
+and whatever it stored, and no resume path will touch it. The phase column itself stays free
+text, so a reason code nothing has a label for still prints as readable words.
+
+Nothing advances a run in a state this build does not recognise. The GitHub Inspector gate
+stops at its entry rather than at each of the branches inside, because a per-branch fallback
+is exactly how such a run got advanced before: the fresh-observation path substituted a known
+phase for the unknown one and wrote it back, overwriting the only record of what the older
+daemon had been doing.
+
+Combinations no reader could recover from are refused before they are stored rather than
+found later. Every phase declares which statuses it may be stored under, so a finished run
+cannot be parked on a delivery refusal and a blocked run cannot claim to be mid-review; and
+every phase declares what its detail may record, so a phase cannot be stored carrying facts it
+has no business knowing - a delivery refusal naming a check node, or a capture failure naming
+a packet. A run cannot be parked in a status only the GitHub Inspector poller un-parks
+without the gate that poller reads; a spent-budget block must record either the budget or the
+gate, or no grant could revive it. Those rules bind the phases this build declares; a phase it
+has never heard of is stored as written, whatever it is called, because a legacy run that
+cannot be stored is a legacy run that cannot be diagnosed.
+
+The phases the gate parks in are a closed list, and that closes a real stall: the gate used to
+build its entry phase by pasting the wait reason onto `inspector_`, which for one reason
+produced `inspector_inspector_disabled` - a phase neither the gate's own re-evaluation nor
+**Recheck** recognises. A run that reached the gate while GitHub Inspector was switched off
+stopped there for good, and turning GitHub Inspector back on did not revive it. Upgrading moves
+those runs to `inspector_disabled`, where both routes find them again.
 
 ### Live repair delivery and Foreman completion
 

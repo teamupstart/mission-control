@@ -948,7 +948,10 @@ Loading or discovery failure never disables a picker or dispatch. A saved value 
 current response, including one set by a newer build or a direct `PUT` to
 `/api/harnesses/config`, remains selected as **not currently reported** and still applies. The
 catalog explains that it is using a last-known or built-in list instead of treating absence as
-revocation.
+revocation. When a harness answers with an empty list - the shape a signed-out installation
+returns - the notice says so and names the
+[sign-in step](harnesses-and-terminals.md#dispatch-time-model-catalogs) rather than offering only
+a retry.
 
 ### Default effort
 

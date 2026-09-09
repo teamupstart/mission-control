@@ -20,7 +20,39 @@ const CONFIG_ENTRY = APP_CONFIG_ENTRIES.workflows;
  * write, so the only way to reach the fallback is a blob some other build wrote.
  */
 export function getWorkflowPolicy(): WorkflowPolicy {
-  return StoredWorkflowPolicySchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
+  return StoredWorkflowPolicySchema.parse(keepPreFieldCommandConsent(getAppConfig(CONFIG_ENTRY)));
+}
+
+/**
+ * Hold `checksEnabled` at off for a config written before the field existed.
+ *
+ * The default now ships ON, and that is a decision about a FRESH install: it arrives with an
+ * empty `repoAllowlist`, so it can run nothing until a human grants a repository through
+ * Trust - and Trust's Workflows cell says in full that the grant covers Commands running
+ * against branch code. The person who arms it is told what they are arming.
+ *
+ * An older stored blob is the case that reasoning does not cover. It can already carry
+ * grants, made against a build where this switch was off and where the grant therefore could
+ * not run anything on its own. Letting `.default()` fill the missing key would arm command
+ * execution in those repositories on upgrade, with no interaction at all - which is the one
+ * thing every gate around this feature exists to prevent. So the absence of the key is read
+ * as what it actually is: a build that predates the switch, whose operator was never asked.
+ *
+ * Precise rather than heuristic. Every write goes through `setWorkflowPolicy`, which persists
+ * the whole parsed policy, so any config saved since the field shipped OWNS the key - as
+ * `false` if they left it off, which is preserved here by the same rule. A missing key means
+ * pre-field, and nothing else. An operator who wants it on flips the switch, which is the
+ * interaction this is protecting.
+ *
+ * Read-time and never written back. A migration that rewrites the row would have to do it
+ * from a path called on every binding gate, delivery decision, check and retention sweep;
+ * normalizing the value on the way past is idempotent and cannot damage a blob this build
+ * only partly understands - the same restraint `dropLegacyCheckCommands` shows below.
+ */
+function keepPreFieldCommandConsent(blob: unknown): unknown {
+  if (!blob || typeof blob !== "object" || Array.isArray(blob)) return blob ?? {};
+  if (Object.prototype.hasOwnProperty.call(blob, "checksEnabled")) return blob;
+  return { ...(blob as Record<string, unknown>), checksEnabled: false };
 }
 
 export function resolveTaskWorkflowId(workflowId: string | null | undefined): string | null {
@@ -33,11 +65,44 @@ export function resolveTaskWorkflowId(workflowId: string | null | undefined): st
  * Any legacy `checkCommands` on the input is validated by the caller's schema and then
  * dropped here rather than persisted: the catalog is the only durable command authority, and
  * writing a second copy under this key is exactly the drift this split exists to prevent.
+ *
+ * `checksEnabled` is the one field a full replace must not take from the schema, and
+ * `keepStoredCommandConsent` explains why.
  */
 export function setWorkflowPolicy(input: WorkflowPolicyInput): WorkflowPolicy {
-  const next = WorkflowPolicySchema.parse(input);
+  const next = WorkflowPolicySchema.parse(keepStoredCommandConsent(input));
   setAppConfig(CONFIG_ENTRY, next);
   return next;
+}
+
+/**
+ * Carry the stored command consent onto a write that did not mention it.
+ *
+ * The other half of `keepPreFieldCommandConsent`, and the same single idea: an absent
+ * `checksEnabled` never GRANTS permission, it inherits whatever is already in force.
+ *
+ * `PUT /api/workflows/config` replaces the whole policy, and `WorkflowPolicySchema` fills an
+ * omitted field with the shipped default - which is now `true`. Those two facts together
+ * meant any write that left the field out armed Commands: a caller adjusting retention, an
+ * older client that predates the field, a script setting `defaultWorkflowId`. On a legacy
+ * install that already holds grants, an unrelated preference change would have switched on
+ * branch-authored execution in every one of them, and it would have quietly undone the read
+ * guard above on the first save.
+ *
+ * The default is not wrong, it is just answering a different question. `.default()` speaks
+ * for "no policy exists"; this speaks for "a policy exists and this request is silent about
+ * one field of it". Resolving through `getWorkflowPolicy` gets both right at once: a fresh
+ * install has nothing stored, so the read returns the shipped `true` and an omitting write
+ * still lands on it.
+ *
+ * Only this field. Every other key still replaces wholesale, because that is what keeps an
+ * allowlist removal from being lost in a merge - the reason this function replaces rather
+ * than patches in the first place.
+ */
+function keepStoredCommandConsent(input: WorkflowPolicyInput): WorkflowPolicyInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  if (Object.prototype.hasOwnProperty.call(input, "checksEnabled")) return input;
+  return { ...input, checksEnabled: getWorkflowPolicy().checksEnabled };
 }
 
 /** One legacy `checkCommands` row that survived validation, ready to become an override. */

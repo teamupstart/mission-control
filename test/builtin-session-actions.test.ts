@@ -121,6 +121,9 @@ test("Pull Request ships with the skill and the proof Phase 4 will enforce", () 
   assert.equal(action.requiredSkillId, PULL_REQUEST_SKILL);
   assert.deepEqual(action.completion, { kind: "pull_request" });
   assert.match(action.description, /pull request/i);
+  assert.match(action.promptMarkdown, /useful alt\s+text/i);
+  assert.match(action.promptMarkdown, /signed-in web interface/i);
+  assert.match(action.promptMarkdown, /render.*attachments/is);
 });
 
 test("a shipped action never becomes a row, on a database that has opened", () => {

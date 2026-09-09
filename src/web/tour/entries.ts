@@ -44,8 +44,9 @@ export interface TourEntry {
    *
    * Omitted by a tour that only demonstrates, and therefore owes back the page, asset, and
    * control it borrowed. Declared by one whose last stop is somewhere to start working: Set
-   * up this machine ends on Setup because installing what this machine is missing is the
-   * next thing to do, and replaying the snapshot would take that page away again.
+   * up this machine ends on Trust because granting the repositories you work in is the next
+   * thing to do once the tools are installed, and replaying the snapshot would take that
+   * page away again.
    *
    * Everything else in the snapshot - layout, selection, Board drill-in, filter, the open
    * Line drawer - is still restored either way. This replaces the route alone.
@@ -115,16 +116,18 @@ const SETUP_ENTRY: TourEntry = {
   id: "setup",
   title: SETUP_TITLE,
   settings: {
-    tooltip: "Find Setup from the gear, then install the dependencies you will use",
+    tooltip: "Find Setup from the gear, install what you will use, then grant repos in Trust",
     ariaLabel: `Start ${SETUP_TITLE} tour`,
     heading: SETUP_TITLE,
     // Short enough not to ellipsize in the rail row that draws it.
-    hint: "Find and use Setup",
+    hint: "Setup, then Trust",
   },
   palette: {
     rowId: "command:setup-tour",
     title: `Start ${SETUP_TITLE} tour`,
-    detail: "Four stops: the gear, Setup in the rail, what to install, and Re-check.",
+    detail:
+      "Seven stops: the gear, Setup in the rail, what to install, Re-check, then Trust and "
+      + "the repositories it grants.",
     keywords: [
       "tour",
       "onboarding",
@@ -134,13 +137,23 @@ const SETUP_ENTRY: TourEntry = {
       "install",
       "github",
       "terminal",
+      // The second half of the tour, so the words an operator would search for to reach the
+      // grant matrix start this tour as well as opening that category.
+      "trust",
+      "grant",
+      "allowlist",
+      "repository",
     ],
-    hint: "Start the guided machine Setup tour.",
+    hint: "Start the guided machine Setup and Trust tour.",
   },
   // The fleet, not the page this tour is about: its first stop points at the gear, which
   // reads "Settings" from everywhere except the Settings page itself.
   entryRoute: { page: "fleet" },
-  exit: { route: { page: "settings", category: "setup" }, focus: "setup:recheck" },
+  // Trust, not Setup: the last stop is the grant matrix, and the landing control is the rail
+  // row that says which category you were left on. The add-repo field is what an operator
+  // reaches for next, but it is a combobox whose own focus handler opens a dropdown, and a
+  // tour that ends by opening a menu nobody asked for is worse than one that ends quietly.
+  exit: { route: { page: "settings", category: "trust" }, focus: "setup:trust-tab" },
 };
 
 /** Every tour Mission Control offers, in the order its entry points list them. */
@@ -158,9 +171,9 @@ export const TOUR_ENTRIES: readonly TourEntry[] = (() => {
  * The one tour a fresh profile receives automatically, before it has asked for anything.
  *
  * Setup, because nothing else in the product works until this machine has the tools the work
- * needs, and an operator who has never seen the panel cannot be expected to find it. Named
- * here rather than written into the effect that starts it, so the automatic tour and the
- * manual ones are drawn from the same registry.
+ * needs and the repositories that work may touch, and an operator who has never seen either
+ * panel cannot be expected to find them. Named here rather than written into the effect that
+ * starts it, so the automatic tour and the manual ones are drawn from the same registry.
  */
 export const FIRST_RUN_TOUR: TourId = "setup";
 

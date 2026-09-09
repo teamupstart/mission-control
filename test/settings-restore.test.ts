@@ -27,6 +27,7 @@ import {
   type SettingsBackupEnvelopeBodyV1,
   type SettingsBackupEnvelopeV1,
 } from "../src/shared/settings-backups.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-settings-restore-"));
 process.env.HARNESS_HOME = join(home, "state");
@@ -488,7 +489,7 @@ test("restore advances catalogs, preserves immutable history and every excluded 
     now: 120,
   });
   workflowStore.createInitialSubmission(
-    { id: "run-current", binding, triggerSource: "manual", triggerKey: "manual:current", now: 121 },
+    { id: "run-current", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:current", now: 121 },
     { id: "submission-current", triggerSource: "manual", triggerKey: "manual:current", context: {}, evidence: {}, now: 121 },
   );
   const excludedBefore = dumpExcludedTables();

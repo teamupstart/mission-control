@@ -19,6 +19,7 @@ import {
   WORKFLOW_RUN_TERMINAL_STATUSES,
   workflowRunIsOpen,
 } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // What is at stake: a successful Persona End is not completion when the published
 // version owns an Inspector gate. Every conclusion must be about an adopted PR and a
@@ -40,8 +41,7 @@ const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const {
   WorkflowStore,
   clearWorkflowTables,
-  workflowJson,
-} = await import("../src/server/workflows/store.ts");
+  workflowJson } = await import("../src/server/workflows/store.ts");
 
 const db = openDb();
 let serial = 0;
@@ -243,6 +243,7 @@ async function seed(over: SeedOptions = {}) {
     {
       id: ids.run,
       binding,
+      intent: FIXTURE_RUN_INTENT,
       triggerSource: "manual",
       triggerKey: `manual:${ids.binding}:request`,
       now,

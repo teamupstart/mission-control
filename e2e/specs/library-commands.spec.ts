@@ -817,12 +817,21 @@ test("Settings keeps the authorization and the Trust summary, and no command tab
   await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
 
   // What stays: the machine-wide switch, its one safety sentence, and the grant summary.
+  // The switch ships ON - it authorises nothing on its own, because this machine has granted
+  // no repository - so the card opens on Allowed and this test disarms it below to reach the
+  // paused wording and the confirm dialog.
   const authorization = dashboard.locator('.sc-card[data-anchor="workflows/checks"]');
   await expect(dashboard.getByRole("heading", { name: "Workflow Commands" })).toBeVisible();
-  await expect(dashboard.getByLabel("Allow workflow Commands")).not.toBeChecked();
+  await expect(dashboard.getByLabel("Allow workflow Commands")).toBeChecked();
   await expect(dashboard.getByRole("main")).toContainText("It is not a sandbox.");
-  await expect(dashboard.getByRole("main")).toContainText("Paused - every Command passes with a note");
+  await expect(dashboard.getByRole("main")).toContainText("Allowed - a Command runs branch-authored code");
   await expect(dashboard.getByRole("button", { name: "Manage in Trust" })).toBeVisible();
+
+  // Off needs no confirmation - only arming does - so this is one click, and it is what puts
+  // the panel in the paused state the rest of this case reads.
+  await authorization.locator("label.sc-switch").click();
+  await expect(dashboard.getByLabel("Allow workflow Commands")).not.toBeChecked();
+  await expect(dashboard.getByRole("main")).toContainText("Paused - every Command passes with a note");
 
   // What goes: every control that authored a command. One catalog, one surface writing it.
   await expect(dashboard.getByRole("button", { name: "Add command" })).toHaveCount(0);
@@ -837,8 +846,10 @@ test("Settings keeps the authorization and the Trust summary, and no command tab
   await expect.poll(async () => dashboard.evaluate(() => location.hash))
     .toBe("#/library/commands/test");
 
-  // The one confirmation, still asked, still naming what is actually authorized.
+  // The confirmation, still asked of anyone re-arming after a deliberate off, and still
+  // naming what is actually authorized.
   await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
+  await expect(dashboard.getByLabel("Allow workflow Commands")).not.toBeChecked();
   // Clicked on the track an operator actually hits: the checkbox under it is
   // `appearance: none` and `pointer-events: none`, so the label is the control.
   await authorization.locator("label.sc-switch").click();

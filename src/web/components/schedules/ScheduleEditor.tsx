@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentType, TaskKind, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type {
   MissionSchedule,
+  ScheduleCompletionPolicy,
   ScheduleMissedPolicy,
   ScheduleOverlapPolicy,
   ScheduleValidationField,
@@ -76,6 +77,7 @@ interface EditorDraft {
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy;
   missedPolicy: ScheduleMissedPolicy;
+  completionPolicy: ScheduleCompletionPolicy;
 }
 
 function emptyDraft(): EditorDraft {
@@ -94,6 +96,13 @@ function emptyDraft(): EditorDraft {
     timezone: browserTimezone(),
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
+    // A NEW mission rests on auto-on-conclusion while the schema's default stays `manual`,
+    // and the two are answering different questions. The schema speaks for a caller that
+    // never mentioned the field - an older dashboard, a script - and must keep saving the
+    // behaviour it was written for. This speaks for an operator writing a recurring mission
+    // today, whose cadence is the whole point and which one un-concluded run would stop for
+    // good. Editing an existing mission still shows whatever that mission stored.
+    completionPolicy: "auto-on-conclusion",
   };
 }
 
@@ -115,6 +124,10 @@ function draftFromSchedule(schedule: MissionSchedule): EditorDraft {
     timezone: schedule.timezone,
     overlapPolicy: schedule.overlapPolicy ?? "skip-active",
     missedPolicy: schedule.missedPolicy ?? "coalesce-latest",
+    // An unreadable stored value falls back to `manual`, not to the new-mission default: a
+    // value this build cannot read is one somebody chose, and the repair an editor offers for
+    // it must not be a policy the operator never asked for.
+    completionPolicy: schedule.completionPolicy ?? "manual",
   };
 }
 
@@ -125,6 +138,7 @@ function draftToDefinition(draft: EditorDraft): ScheduleDefinitionPayload {
     timezone: draft.timezone,
     overlapPolicy: draft.overlapPolicy,
     missedPolicy: draft.missedPolicy,
+    completionPolicy: draft.completionPolicy,
     template: {
       title: draft.title.trim(),
       intent: draft.intent.trim(),
@@ -641,8 +655,8 @@ export function ScheduleEditor({
         </FormSection>
 
         <FormSection
-          title="Overlap and missed-run guardrails"
-          blurb="These decide how many tasks a resume or an overlap produces."
+          title="Overlap, missed-run and completion guardrails"
+          blurb="These decide how many tasks a resume or an overlap produces, and what lets the next one through."
         >
           <Field label="When prior generated work is still active">
             <Tooltip label="Whether to skip a run while this mission's previous task is still in flight">
@@ -669,6 +683,23 @@ export function ScheduleEditor({
                 <option value="coalesce-latest">Coalesce to one task on resume</option>
                 <option value="create-all">Create every missed task</option>
                 <option value="skip">Skip every missed task</option>
+              </select>
+            </Tooltip>
+          </Field>
+          <Field
+            label="When Foreman concludes a run's work is done"
+            hint="a run with nothing to ship never completes on its own"
+          >
+            <Tooltip label="Whether Foreman's own settled verdict may complete the task a run filed. A run that ships nothing opens no pull request, so nothing else ever completes its task - and under Skip above, that one task blocks this mission for good.">
+              <select
+                className="field-input"
+                value={draft.completionPolicy}
+                onChange={(event) =>
+                  update({ completionPolicy: event.target.value as ScheduleCompletionPolicy })
+                }
+              >
+                <option value="auto-on-conclusion">Complete the task automatically</option>
+                <option value="manual">Leave it open for a merge or for me</option>
               </select>
             </Tooltip>
           </Field>

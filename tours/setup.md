@@ -18,4 +18,19 @@ Setup reports every external tool Mission Control can use on this machine, group
 ## Re-check once they are installed
 <!-- stage: recheck -->
 
-Once a tool is installed or configured, Re-check takes one fresh reading and confirms it. This tour ends here and leaves you on Setup.
+Once a tool is installed or configured, Re-check takes one fresh reading and confirms it. Next moves on from what this machine can do to what it may do on your behalf.
+
+## Trust decides where it may act
+<!-- stage: trust -->
+
+Setup is what this machine can do; Trust is which repositories Mission Control may act in. It is the last row in the rail, under Leaves the machine, and the only category on this page that can publish or merge under your GitHub account. Next selects it.
+
+## One table, four grants
+<!-- stage: grants -->
+
+Every grant that lets Mission Control act outside this app is here: a row per repository, a column per grant. Each column is one subsystem's own allowlist, and clicking a cell writes there, so the Foreman, Workflows, GitHub Inspector and Shipping panels keep working against the same lists. One place to read who may act where, and no second list to keep in step.
+
+## Add a repository, then grant it
+<!-- stage: trust-add -->
+
+Add the checkouts you work in. Adding is configuration; enabling is consent, so a new row arrives with every cell empty and stays that way until you click one. This tour ends here and leaves you on Trust.

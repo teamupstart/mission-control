@@ -63,6 +63,9 @@ function render(view: TaskSourcesView | null): string {
 const viewOf = (sources: TaskSourceInstance[], status: TaskSourcesView["status"] = []) => ({
   sources,
   status,
+  // Served empty by the route until the operator surface reads it; the panel does not
+  // render it yet, so an empty array is the whole of what this fixture owes.
+  writeback: [],
   kinds: KINDS,
 });
 

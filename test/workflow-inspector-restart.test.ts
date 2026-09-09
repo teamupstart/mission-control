@@ -7,6 +7,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { InspectorComment, InspectorPr } from "../src/shared/types.ts";
 import type { WorkflowContextSnapshot, WorkflowInspectorGateState } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // What is at stake: the default findings policy must really rerun the immutable graph.
 // An approval of the failed head cannot leak across that repair into the second gate.
@@ -180,7 +181,7 @@ test("findings deliver, full resubmit reruns, and only the newly approved clean 
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:first", now: 2 },
+    { id: "run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:b:first", now: 2 },
     {
       id: "full-1",
       triggerSource: "manual",

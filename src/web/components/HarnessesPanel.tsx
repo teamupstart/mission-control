@@ -246,7 +246,10 @@ function HarnessCard({
                 aria-label={`Session runtime for dispatched ${label} sessions`}
               >
                 <option value="terminal">Terminal pane</option>
-                <option value="sdk">Agent SDK</option>
+                {/* The shipped default, and the runtime every in-app affordance is built
+                    for. Named as recommended in the option itself because the card note is
+                    only read AFTER a choice, so it cannot influence the one being made. */}
+                <option value="sdk">Agent SDK (recommended)</option>
               </select>
             </Tooltip>
           </>

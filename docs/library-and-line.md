@@ -87,7 +87,11 @@ toggle, and the editor shows the exact split under every rule before you save.
 
 Whether a Command may run at all is policy, and it stays in
 [Settings › Workflows](skills-and-settings.md#settings): **Allow workflow Commands** is the
-machine-wide switch, and the repository has to be granted the Workflows cell in Trust.
+machine-wide switch, and the repository has to be granted the Workflows cell in Trust. The
+switch ships **on**; the grant does not, so a fresh install can run a Command in no repository
+until you name one. That makes the Trust grant the decision that matters, and Trust says so -
+it flies a footnote naming every repository where branch-authored code may run, with **Turn
+Commands off** offered in place.
 
 Execution is not a Library shelf. Workflow Runs is a top-level page in the segmented control
 and [the Line](ui.md#the-line-the-pipeline-strip-above-the-fleet) links directly into it; Ensemble

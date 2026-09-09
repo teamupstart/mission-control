@@ -17,6 +17,7 @@ import {
 } from "../lib/trust.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { repoLeaf } from "../lib/format.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -53,12 +54,23 @@ const COLUMNS = [
     key: "workflows",
     label: "Workflows act",
     // ONE cell, both capabilities, because it is one stored list - said in full here since
-    // this tooltip is the only place the second one is visible from the matrix. Each still
-    // needs its own switch on the Workflows panel, which is why this reads "may".
+    // this tooltip is the only place the second one is visible from the matrix.
+    //
+    // It no longer says the two are "armed separately in Workflows settings". Both switches
+    // now ship ON, so on a machine nobody has reconfigured this cell is the LAST gate for
+    // both, and describing the grant as half a decision would understate it at exactly the
+    // moment it is being made.
+    //
+    // But it must not overstate it either, and "both are on unless you turned them off" did:
+    // a policy stored before `checksEnabled` existed is held OFF by `getWorkflowPolicy`, so
+    // an upgraded machine can grant this cell and still run no Command. Pointing at the
+    // Workflows panel rather than asserting a state is the honest form - that panel says
+    // which way each switch actually is, and this tooltip cannot know. The double dagger
+    // below the matrix answers it for real, naming the repositories where Commands are live.
     title:
       "Workflows may act in this repo: Live repairs typed into its sessions, and workflow "
-      + "Commands run against branch code with the daemon's filesystem authority. Each is "
-      + "still armed separately in Workflows settings.",
+      + "Commands run against branch code with the daemon's filesystem authority. New "
+      + "installations ship both on; Workflows settings shows where yours stand.",
   },
   {
     key: "inspector",
@@ -135,6 +147,11 @@ export function TrustPanel({
    */
   checks: ChecksArmedReading;
 }): React.JSX.Element {
+  // The two spotlights the Setup tour's Trust half points at: the whole matrix, and the row
+  // that adds a repository to it. The matrix rather than a cell or a column - which grants a
+  // machine needs depends on which repositories it works in, and a row may not exist yet.
+  const matrixTourRef = useTourTargetRef<HTMLDivElement>("setup:trust-matrix");
+  const addTourRef = useTourTargetRef<HTMLDivElement>("setup:trust-add");
   const ui = useUiConfig();
   const [repos, setRepos] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
@@ -381,7 +398,7 @@ export function TrustPanel({
         </p>
       )}
 
-      <div className="trust-matrix" data-anchor="trust/matrix">
+      <div className="trust-matrix" data-anchor="trust/matrix" ref={matrixTourRef}>
         <div className="trust-grid" role="table" aria-label="Repository trust grants">
           <div className="trust-h trust-h-repo">Repository</div>
           {COLUMNS.map((c) => (
@@ -468,7 +485,7 @@ export function TrustPanel({
         </p>
       )}
 
-      <div className="trust-add" data-anchor="trust/add">
+      <div className="trust-add" data-anchor="trust/add" ref={addTourRef}>
         <RepoCombobox
           repos={candidates}
           value={draft}

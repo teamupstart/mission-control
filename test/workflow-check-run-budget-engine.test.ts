@@ -27,6 +27,7 @@ import type {
   WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-check-run-budget-"));
 process.env.MISSION_HOME = home;
@@ -157,7 +158,7 @@ function seedSubmission(
     now: 1,
   });
   store.createInitialSubmission(
-    { id: `run-${id}`, binding, triggerSource: "manual", triggerKey: `manual:${id}:request`, now: 2 },
+    { id: `run-${id}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `manual:${id}:request`, now: 2 },
     {
       id: `submission-${id}`,
       triggerSource: "manual",

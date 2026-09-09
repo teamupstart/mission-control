@@ -479,6 +479,25 @@ test(
     ].join("\n"),
   );
 
+  // The script reads `origin` from its OWN checkout - `repoRoot` is its parent directory, not
+  // the caller's cwd - and stage 2 refuses any host that is not literally github.com. That made
+  // this case depend on how the person running the suite spells their remote: a `~/.ssh/config`
+  // alias for a second GitHub account (`git@github.com-work:teamupstart/mission-control.git`)
+  // is an ordinary setup, and it stopped the run at "2. Repository" long before the staged-pin
+  // guard this test exists for was ever consulted.
+  //
+  // `GIT_DIR` moves that one read onto a fixture repository whose origin IS canonical, so the
+  // subject is the swap path rather than the developer's git config. It is safe to scope this
+  // narrowly: the `--from-staged` branch returns before any other git command runs, and the
+  // host rule itself is covered directly by the `resolveInstallRepo` cases above.
+  const originRepo = join(root, "origin-fixture");
+  const git = (...args: string[]): void => {
+    const result = spawnSync("git", args, { encoding: "utf8" });
+    assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+  };
+  git("init", "-q", originRepo);
+  git("-C", originRepo, "remote", "add", "origin", canonicalRemoteUrl("ssh"));
+
   const run = (revision: string): { code: number | null; output: string } => {
     const result = spawnSync(
       process.execPath,
@@ -493,7 +512,14 @@ test(
         "--apps-dir",
         appsDir,
       ],
-      { encoding: "utf8", env: { ...process.env, MISSION_HOME: stateDirectory } },
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MISSION_HOME: stateDirectory,
+          GIT_DIR: join(originRepo, ".git"),
+        },
+      },
     );
     return { code: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
   };

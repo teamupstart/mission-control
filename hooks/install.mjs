@@ -2,8 +2,9 @@
 // Idempotently wire the Mission Control hook into Claude Code's settings.json.
 //
 // Adds one command hook per event that runs harness-hook.mjs. Re-running updates
-// the path in place (matched by the "harness-hook.mjs" marker) without touching
-// any of the user's other hooks. `--uninstall` removes only our entries.
+// the path in place (matched by `isMissionHookCommand`, which recognises the packaged
+// app's satellite as well as this script) without touching any of the user's other
+// hooks. `--uninstall` removes only our entries.
 //
 // The paths it bakes are absolute and must outlive the install: the node binary is
 // a stable PATH alias rather than the versioned dir `process.execPath` resolves to,
@@ -52,9 +53,7 @@ import { BASE_URL, ensureToken } from "../src/shared/harness-runtime.mjs";
 // added to one and not the other was a session state that worked from a checkout and
 // not from the .app. Imported from the spec directly rather than through
 // `harness/index.ts` to keep the daemon out of the Electron bundle; see that file.
-import { claudeHooks } from "../src/server/harness/claude/hooks.ts";
-
-const MARKER = "harness-hook.mjs";
+import { claudeHooks, isMissionHookCommand } from "../src/server/harness/claude/hooks.ts";
 /** Marker identifying our statusLine wrapper command in settings.json. */
 const STATUSLINE_MARKER = "harness-statusline.mjs";
 const EVENTS = claudeHooks.events;
@@ -148,7 +147,7 @@ function stripOurs(groups) {
   return groups
     .map((g) => {
       if (!g || !Array.isArray(g.hooks)) return g;
-      const hooks = g.hooks.filter((h) => !(h && typeof h.command === "string" && h.command.includes(MARKER)));
+      const hooks = g.hooks.filter((h) => !(h && typeof h.command === "string" && isMissionHookCommand(h.command)));
       return { ...g, hooks };
     })
     .filter((g) => g && Array.isArray(g.hooks) && g.hooks.length > 0);

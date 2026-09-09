@@ -63,6 +63,7 @@ export const OVERLAY_IDS = {
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
   restoreSettings: "restore-settings",
+  attachmentPreview: "attachment-preview",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

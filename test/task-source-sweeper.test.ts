@@ -43,6 +43,7 @@ function source(id: string, enabled: boolean): TaskSourceInstance {
     intervalMs: 900_000,
     defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: true },
     maxPerSweep: 25,
+    writeback: { onPrOpened: false, onCompleted: false, resolve: false },
     config: {},
   };
 }

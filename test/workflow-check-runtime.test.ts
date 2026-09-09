@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublishedWorkflowGraph, WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 import { emptyWorkflowCommandView } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // A fresh state dir BEFORE anything that resolves it is imported - static imports hoist above
 // assignments, so every module below arrives through a dynamic import (see db-isolation.test.ts).
@@ -879,7 +880,7 @@ function seedCheckRun(
     now: 1,
   });
   store.createInitialSubmission(
-    { id: `run-${id}`, binding, triggerSource: "manual", triggerKey: `manual:${id}`, now: 2 },
+    { id: `run-${id}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `manual:${id}`, now: 2 },
     { id: `submission-${id}`, triggerSource: "manual", triggerKey: `manual:${id}`, context: {}, evidence: {}, now: 2 },
   );
   store.updateSubmissionCapture(`submission-${id}`, {

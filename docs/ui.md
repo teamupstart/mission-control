@@ -399,8 +399,8 @@ cleanup refuses a task whose title, labels, and intent prefix are not the recipe
 
 Three tours are registered, and none stores progress or resumes. A fresh profile starts
 **Set up this machine** once automatically - nothing else in the product works until this
-machine has the tools the work needs - then records that the orientation has been shown so it
-does not reopen over later work. Which tour that is lives in one place, `FIRST_RUN_TOUR` beside
+machine has the tools the work needs and the repositories that work may act in - then records
+that the orientation has been shown so it does not reopen over later work. Which tour that is lives in one place, `FIRST_RUN_TOUR` beside
 the entries, rather than in the effect that starts it. Exiting a tour restores the page, the
 asset, and the control it started from, unless its entry declares an `exit` route because
 handing that page over is the point; see **Set up this machine** below. Each tour can always be
@@ -556,8 +556,9 @@ no tour active.
 
 **Set up this machine** is the tour a fresh profile receives automatically, and it can be
 started again from the Settings rail's **Help & tours** footer or **Start Set up this machine
-tour** in the palette. Its subject is finding and using Setup, not reading it, so it is four
-stops and deliberately does not walk the dependency families:
+tour** in the palette. Its subject is finding and using two panels rather than reading either,
+so it is seven stops and deliberately walks neither the dependency families nor the grant
+cells. The first four are what this machine CAN do:
 
 1. **Settings live behind the gear** opens on the FLEET and spotlights the ⚙ gear. The tour
    starts here rather than on the page it is about because the gear reads "Settings" from
@@ -569,22 +570,43 @@ stops and deliberately does not walk the dependency families:
 3. **Install what you will use** selects Setup and spotlights the family rail and its rows
    together, and asks the operator to install or configure the tools they expect to use and
    skip the rest.
-4. **Re-check once they are installed** spotlights **Re-check** and finishes.
+4. **Re-check once they are installed** spotlights **Re-check**.
 
-**It ends on Setup and stays there.** Every other tour replays the route it snapshotted;
+The last three are what Mission Control MAY do on the operator's behalf, and where:
+
+5. **Trust decides where it may act** is still on Setup and spotlights the **Trust** row in
+   the rail while it is still unselected, exactly as stop 2 does for Setup. Trust is the last
+   row in the rail, two groups below Setup under **Leaves the machine**, so an operator who
+   has only just been shown Setup has no reason to have looked that far down. Its Next reads
+   **Open Trust**.
+6. **One table, four grants** selects Trust and spotlights the whole matrix - a row per
+   repository, a column per grant - rather than a cell or a column, because which grants a
+   machine needs depends on which repositories it works in.
+7. **Add a repository, then grant it** spotlights the add row and finishes, on the same
+   "adding is configuration; enabling is consent" line the panel itself draws.
+
+**It ends on Trust and stays there.** Every other tour replays the route it snapshotted;
 this one declares an `exit` route on its entry and hands the panel over instead, because
-introducing Setup and then taking the page away would undo the point of it. Layout,
+introducing a panel and then taking the page away would undo the point of it. Layout,
 selection, Board drill-in, filter, and the open Line drawer are still restored, and the exit
-route applies however the tour ends - Exit at stop one lands on Setup too. Focus goes back to
-the control that started the tour when it survived the move, and to **Re-check** when it did
-not, which is the automatic first-run case. Those two never compete: the landing pass waits
-for a focus vacuum, and a vacuum is also what an ordinary click on a non-focusable area
-leaves, so it is not started at all when the invoker took focus back.
+route applies however the tour ends - Exit at stop one lands on Trust too. Focus goes back to
+the control that started the tour when it survived the move, and to the **Trust** rail row
+when it did not, which is the automatic first-run case. The rail row rather than the add
+field: a spotlight may be any element, but a landing control has to be focusable, and the add
+field is a combobox that opens a dropdown the moment it takes focus. Those two never compete:
+the landing pass waits for a focus vacuum, and a vacuum is also what an ordinary click on a
+non-focusable area leaves, so it is not started at all when the invoker took focus back.
 
 The tour is explanatory and read-only. It does not click a remedy, execute a command, install a
-tool, or write progress. Two of its four spotlights are outside the panel, in the top bar and
-the Settings rail, which is the whole point: an operator who has never opened Setup has to be
-shown where it is before its rows mean anything.
+tool, or click a grant cell - which matters most across the Trust half, where a stop that
+clicked a cell would hand out a live GitHub grant on behalf of an operator who only pressed
+Next. It writes no progress of its own and cannot be resumed; the one-time first-run flag
+described above is consumed by App when the automatic tour starts, not by any stop. Three of
+its seven spotlights are outside both panels, in the top bar and the Settings rail, which is
+the whole point: an operator who has never opened Setup or Trust has to be shown where each
+one is before its rows mean anything. Both halves live in the `setup`
+target namespace, because a namespace is owned by the tour that spotlights a target rather
+than by the panel that renders it.
 
 **A spotlight is framed by Driver's class or its `aria-controls` wiring, whichever survives.**
 Driver adds both to the active element and clears both on the same transition. React owns

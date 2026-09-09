@@ -145,10 +145,16 @@ function render(over: Partial<WorkflowSettingsState> = {}): string {
 // answered", and it is used by the cases that need an OFF switch to compare against; since the
 // shipped default became `true` those two meanings stopped coinciding, and a fixture that
 // silently followed the default would have flipped the assertions under them.
+// The daemon has answered, and both consent switches are OFF - which is now an operator who
+// turned them off rather than a shipped posture, since `DEFAULT_WORKFLOW_CONFIG` carries both
+// on. Spelled out here instead of inherited: half the cases below assert the paused wording,
+// and a fixture that got its off-ness from a default would have flipped their meaning silently
+// when the default moved.
 const ANSWERED = {
   config: {
     ...DEFAULT_WORKFLOW_CONFIG,
     liveEnabled: false,
+    checksEnabled: false,
     repoAllowlist: ["/src/mission-control"],
   },
   status: STATUS,
@@ -876,6 +882,22 @@ test("the safety sentence names branch-authored code, on and off, and never twic
   const off = render(ANSWERED);
   assert.match(off, /not a sandbox/i, "the sentence describes the control, not an alarm");
   assert.doesNotMatch(off, /class="settings-warn wf-settings-checks-warn"/);
+});
+
+test("a fresh install draws the Commands switch on, and says what that allows", () => {
+  // The shipped posture, rendered from `DEFAULT_WORKFLOW_CONFIG` rather than from a fixture,
+  // so the panel and the daemon cannot disagree about what an unconfigured machine is doing.
+  //
+  // The allowlist stays empty here on purpose: that is the whole reason this default is safe
+  // to ship, and a case that granted a repository would be testing a different claim.
+  const html = render({ config: DEFAULT_WORKFLOW_CONFIG, status: STATUS });
+
+  assert.match(html, /Allowed - a Command runs branch-authored code/);
+  assert.doesNotMatch(html, /Paused - every Command passes with a note/);
+  // Still stated, because the switch being on by default is exactly when nobody has read the
+  // confirm dialog that used to say it.
+  assert.match(html, /not a sandbox/i);
+  assert.match(html, /Only repositories granted the Workflows cell in Trust can run one/);
 });
 
 test("the posture line says which of the two states this machine is in", () => {

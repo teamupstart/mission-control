@@ -7,6 +7,7 @@ import type {
   WorkflowDraftGraph,
   WorkflowSummary,
 } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 /**
  * What is at stake: the browser must answer which workflows use one Library asset without
@@ -191,7 +192,7 @@ test("a run summary carries exact active Persona and Action ids from immutable a
     now: 3,
   });
   store.createInitialSubmission(
-    { id: "run-live", binding, triggerSource: "manual", triggerKey: "manual:live", now: 4 },
+    { id: "run-live", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:live", now: 4 },
     { id: "submission-live", triggerSource: "manual", triggerKey: "manual:live", context: {}, evidence: {}, now: 4 },
   );
   const persona = store.getPersona("persona-both");

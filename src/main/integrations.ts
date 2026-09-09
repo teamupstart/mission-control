@@ -34,7 +34,7 @@ import { locateCommandSync } from "../server/executables/locator.ts";
 // is bundled into the Electron main process, which must not pull the daemon (and
 // `node:sqlite` behind it) in for the sake of nine strings. `harness/claude/hooks.ts`
 // imports nothing but types and pure functions, and is kept that way for this reason.
-import { claudeHooks } from "../server/harness/claude/hooks.ts";
+import { claudeHooks, isMissionHookCommand } from "../server/harness/claude/hooks.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
@@ -51,7 +51,6 @@ import { findSystemNode } from "./system-node.ts";
  * imports it, and must not pull `node:sqlite` in transitively. Same rule as
  * `@shared/claude-settings.ts` and `harness/claude/hooks.ts` above.
  */
-const MARKER = "harness-hook";
 const EVENTS = claudeHooks.events;
 const MATCHER_EVENTS = new Set(claudeHooks.matcherEvents);
 
@@ -115,7 +114,17 @@ function ourGroup(command: string, event: string): unknown {
   return MATCHER_EVENTS.has(event) ? { matcher: "*", ...group } : group;
 }
 
-/** Strip any prior hook groups that reference our satellite. */
+/**
+ * Strip any prior hook groups that reference a satellite of ours.
+ *
+ * `isMissionHookCommand` rather than a marker of this file's own. The marker here was
+ * `"harness-hook"`, which is the name of the script the REPO installer writes and appears
+ * nowhere in `dist/satellites/hook.mjs` - the script this one writes. So this stripped
+ * nothing before appending: every press of "Install Claude integrations" added another
+ * group, each event fired once per press, and "Remove" removed none of them. The shared
+ * predicate knows both installers' scripts, so either one now replaces the other's work
+ * instead of stacking on top of it.
+ */
 function stripOurs(groups: unknown): unknown[] {
   if (!Array.isArray(groups)) return [];
   return groups
@@ -123,7 +132,7 @@ function stripOurs(groups: unknown): unknown[] {
       const grp = g as { hooks?: unknown };
       if (!grp || !Array.isArray(grp.hooks)) return g;
       const hooks = grp.hooks.filter(
-        (h) => !(h && typeof (h as { command?: unknown }).command === "string" && (h as { command: string }).command.includes(MARKER)),
+        (h) => !(h && typeof (h as { command?: unknown }).command === "string" && isMissionHookCommand((h as { command: string }).command)),
       );
       return { ...grp, hooks };
     })

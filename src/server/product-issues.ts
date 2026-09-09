@@ -546,9 +546,9 @@ export class ProductIssueService {
    * same Report click. That reply travels over the private utility-process port rather than
    * this loopback API, so another local HTTP caller cannot mint its own grant.
    *
-   * Dashboard only. The agent path's authorization is its submitted `input` review over a
-   * token-guarded transport, and a grant an agent could mint for itself would be a second way
-   * in beside the confirmation Phase 1 built.
+   * Dashboard only. Agent reporting uses its separate token-guarded transport after a user
+   * request; the compatibility MCP tool additionally asks for an input review. Neither
+   * agent tool mints a dashboard grant.
    */
   async confirm(
     source: ProductIssueSource,

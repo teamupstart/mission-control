@@ -387,6 +387,233 @@ Persona or Check is reachable, submission-local fresh coverage remains mandatory
 `sessionActionContinuationReachesOnlyEnd`; do not infer this boundary from a built-in version,
 action name, position, or current run status.
 
+## One workflow run has one lifecycle state
+
+A run states its lifecycle in three columns that vary independently: `status`, the free-form
+`current_phase`, and the untagged `gate_state_json`. `src/shared/workflow-lifecycle.ts` is the
+only place that decides what a triple of them MEANS, and every reader goes through it. Before
+it, the store decided which statuses block a write, the engine decided which phase means a
+check may resume, and the manager decided which payloads are a live GitHub Inspector gate -
+three interpretations of one row, with nothing failing typecheck when a lifecycle change
+reached only two of them.
+
+- **`decodeWorkflowRunLifecycle` is total and deterministic.** Every triple maps to exactly one
+  reading, so two subsystems cannot disagree about whether a run is awaiting input, resumable,
+  or terminal. Add a lifecycle state by adding a variant here, not by adding a string
+  comparison at a call site.
+- **The phase detail and the gate are separate things sharing one column.** The detail is
+  phase-scoped - a budget, a cleanup block, a reason. The GitHub Inspector gate is sticky and
+  outlives any single phase. A writer with both in hand calls `withInspectorGate`, which parks
+  the gate under the reserved `gate` key; a record with no detail of its own stays the BARE
+  gate, because the gate transitions compare-and-set on the exact JSON of the column.
+- **`executable` has three conditions, and the phase is one of them.** A record is executable
+  only when the run has not finished, its detail is a declared shape, AND its phase is in
+  `WORKFLOW_RUN_PHASES`. The third is the one that is easy to omit: the executable paths are
+  keyed on the phase rather than on the payload, so an unknown phase with a null detail is not
+  "nothing to misread" - it is a lifecycle state whose meaning this build does not know, and
+  acting on it is the same mistake as trusting an unreadable payload.
+- **The authoritative write shape and the persistence shape are different types.**
+  `setRunState` takes `WorkflowRunPhase`, the literal union derived from `WORKFLOW_RUN_PHASES`,
+  so a writer cannot mint a phase that was never declared - that is a compile error rather than
+  a run that persists fine and is silently inert. `WORKFLOW_INSPECTOR_ENTRY_PHASE` and
+  `DELIVERY_RUN_PHASE` are keyed on the same union, so the registry and its writers stay one
+  source of truth without anyone remembering to synchronize them.
+- **`setRunStateCarryingPhase` is the only door for a phase this build does not declare**, and
+  it has exactly two kinds of caller: a FREE-FORM reason code (`cancelRun` writes
+  `cancelled:<requestId>`), and a CARRY-FORWARD, where a delivery lands on a run whose phase is
+  not its business to change and writes the row's existing phase back. It relaxes what may be
+  spelled, never what may be persisted as a coherent state - the same validation runs.
+- **Unknown phases stay storable and inspectable.** A row from a newer daemon may name
+  anything, so `workflowRunLifecycleViolation` does not refuse it. `phaseRecognized` names the
+  situation instead, and the status, phase, gate and raw detail all survive the decode, which
+  is what a legacy row needs to be diagnosed rather than merely rejected. Adding a phase to
+  `WORKFLOW_RUN_PHASES` is how it becomes actionable, and that is meant to be a deliberate edit.
+- **An unrecognised payload is `opaque` and never executable.** Undeclared shapes stay readable
+  under `detail`, and `workflowCheckCleanupBlock` and `workflowRoundLimitBudget` refuse to hand
+  one to a path that would act on it. `workflowInspectorGate` is deliberately outside this
+  boundary: the gate parsed against its own schema or it is null, so a finished or
+  unknown-phase run must still be able to name the pull request it was reviewing.
+- **Every declared phase declares the statuses it may be persisted under**, in
+  `WORKFLOW_RUN_PHASE_STATUSES` beside the registry, and the validator rejects anything
+  outside that set. This is what makes "exactly one valid state per record" enforceable rather
+  than aspirational: before it, the validator constrained only a handful of special phases, so
+  `completed` + `delivery_refused` - a finished run parked on a delivery refusal - was
+  recognised, decoded cleanly, and persisted because no rule happened to mention it. The
+  contract test reads this map rather than keeping its own copy.
+- **Every declared phase also declares the keys its detail may carry**, in
+  `WORKFLOW_RUN_PHASE_DETAIL_KEYS`. Without it a registered phase accepted ANY object, because
+  the decoder classified whatever it did not recognise as `opaque` and no rule looked further -
+  so a delivery refusal could be stored carrying a node id. It is an allowed-key WHITELIST
+  rather than a required-key list, because writers for one phase legitimately differ in which
+  optional fields they fill; bounding the key set refuses the contradictions without refusing
+  an honest writer that says less than it could. An empty list means the phase records no
+  detail of its own, and the sticky gate is excluded before the rule applies because it is
+  never phase detail. `DELIVERY_CARRIED_KEYS` is spread into every phase a delivery can land
+  on: a delivery confirms a packet and leaves the run in whatever state that packet created,
+  carrying its own record across the phase change.
+- **No writer is exempt from the detail contract.** Both doors run the full check. An earlier
+  version excused `setRunStateCarryingPhase` on the grounds that a payload it merely carried
+  was not its to justify - which made "every registered phase" untrue, and excused exactly the
+  payloads that had landed somewhere they did not belong. The fix is at the source, in
+  `deliveryCarriedDetail`: a delivery does not author a lifecycle state, so the run's note
+  travels only while its phase STANDS STILL. When the delivery moves the phase, the note
+  belongs to the phase being left and only the sticky gate rides across. What the
+  carry-forward door still relaxes is the PHASE SPELLING and nothing else, so a free-form
+  cancel reason and a phase from a newer daemon stay storable.
+- **An execution path must refuse an unrecognised phase, never default it.** There is no
+  `workflowRunPhaseOr(phase, fallback)` helper, and the absence is deliberate: one existed, and
+  the GitHub Inspector recovery and fresh-observation paths used it to carry a phase forward -
+  substituting a recognised phase for an unknown one and then REWRITING the row. A record the
+  decoder had just called non-executable was executed on anyway, and the only evidence of what
+  the older daemon left behind was destroyed. Those paths now stop on
+  `workflowRunPhaseRecognized`, at the entry to `evaluateInspectorGate` rather than per branch.
+- **`workflowRunLifecycleViolation` refuses, before persistence, what no reader could recover
+  from.** A `waiting_for_pr`/`waiting_for_inspector`/`waiting_for_new_head` run with no gate is
+  stranded with no observer. A `round_limit` block recording neither budget nor gate cannot be
+  granted out of. A `check_cleanup_unresolved` phase without a node names nothing to resume.
+  `setRunState`, `setRunStateCarryingPhase` and every raw writer call it and throw.
+- **Every rule that constrains WHICH phase a status may pair with applies only to phases this
+  build declares.** For an unrecognised phase there is nothing to compare against, and the
+  decoder has already marked the record non-executable, so refusing the write would only make
+  a legacy row unstorable. A rule refusing any unlisted `inspector_`-prefixed phase used to
+  break this: every registered `inspector_` phase is in the gate list by construction, so it
+  could only ever fire on an unrecognised one - leaving a foreign `inspector_` phase uniquely
+  un-carryable while `a_phase_from_a_newer_daemon` sailed through. It was removed, not scoped,
+  because scoping it to recognised phases makes it dead code.
+- **Phases the gate parks in are a closed registry**, and the type system is what enforces it.
+  Deriving one by interpolation is what produced `inspector_inspector_disabled`, a phase no
+  reader knew, which stranded every run that reached the gate while GitHub Inspector was
+  switched off. Entry phases come from `WORKFLOW_INSPECTOR_ENTRY_PHASE`, keyed on the registry
+  and typed `WorkflowRunPhase`, so the doubled name is a compile error - earlier and more
+  complete than the runtime string check that replaced it.
+
+## A run reviews the intent it froze
+
+A workflow run copies the human's ask - raw goal, refined goal, and human decisions - onto
+`workflow_runs.intent_json` inside the transaction that creates the run, and every submission of
+that run is reviewed against the copy. The session Goal remains live and remains the
+conversation's displayed objective; it is simply not what a review is judged by.
+
+The hazard this closes is not hypothetical and not a hook bug. `captureHookGoalPrompt` reports
+every prompt typed into the pane, and a workflow's own repair packets are typed into the pane, so
+the Goal is a channel Mission Control writes to itself. Reading it per submission let one run
+distil its acceptance criteria out of its previous complaint from round three onward: criteria
+drifted 4, 3, 6, 5, 5, 5, 5, 7, 2, and six of eight failing verdicts were caused by that rather
+than by the code under review.
+
+- **Freeze at creation, in the insert.** Both `INSERT INTO workflow_runs` paths take the snapshot
+  as part of the row - `createInitialSubmission` and `claimForemanCompletion`. A run that existed
+  without one would, on retry, be filled in from whatever the Goal said by then, and "by then" is
+  precisely the window a packet lands in. The manager reads it through
+  `readWorkflowIntentSnapshot` BEFORE the transaction, once per creating turn: intent is
+  session-scoped, and every sibling repository binding of one conversation shares the note key.
+- **Only intent is frozen.** Transcript, diff, working tree, standards, coverage, and evidence
+  stay live per-submission reads, because they are facts about the WORK. Intent is the thing the
+  work is judged against, and it is the only field a review must not let move underneath it.
+- **Mid-run human input does not amend intent.** A review answer or a later human turn reaches
+  Personas as transcript and prior-feedback context, labelled as what it is. There is deliberately
+  no amendment event: an ask that genuinely changed is a new run. Do not add a path that merges
+  live decisions back into frozen intent.
+- **Criteria are compacted once per run, and once means BEFORE the call.** Once-per-run is a
+  claim about model calls, so it cannot be enforced by reconciling results afterwards.
+  `freezeRunCriteria` is a compare-and-set on a finished value: it guarantees one STORED
+  criteria set and cannot stop two captures that both read a null column from each paying for a
+  compaction first. The manager therefore registers a run-scoped claim in `runCriteriaClaims`
+  synchronously, before spending anything, and a concurrent capture of the same run awaits that
+  claim instead of starting a second compaction. Both halves are required: the claim bounds how
+  many results are produced, the compare-and-set decides which one is stored.
+- **Read the criteria column AFTER the capture, never from a run row resolved before it.**
+  Capture shells out to git and can take seconds; a decision made from the pre-capture row can
+  see a null column another capture has since filled and buy a second canonical compaction.
+- **A failed compaction freezes nothing and the next SUBMISSION retries.** An empty criteria set
+  reused for ever is worse than recompacting. A capture waiting on a claim that failed degrades
+  the same way the winner did rather than starting its own attempt: the retry belongs to the next
+  submission, not to a concurrent sibling of the one that just failed.
+- **Durable run criteria cannot represent a fallback.** `WorkflowRunCriteria.compaction.status`
+  is the literal `model`, and `WorkflowRunCriteriaSchema` refuses anything else, so the rule above
+  is enforced at the STORE boundary rather than only by the one caller that happens to check.
+  A submission's own receipt keeps the wider `model | fallback` because a submission genuinely can
+  record a failed compaction; a run cannot, because a run's criteria outlive the submission that
+  produced them. Do not widen this back to reuse the snapshot's shape.
+- **Criterion mappings are per-submission and stay that way.** They bridge one submission's
+  author claim ids onto the run's criteria, so they live on the submission's context snapshot and
+  are reconciled on every capture, against the previous submission's claims and mappings so a
+  rephrased claim for an unchanged criterion still matches.
+- **There is no fingerprint comparison on the run-level reuse path.** Frozen intent cannot move,
+  so a comparison could only ever be true - and where a seam or a legacy row made it false, being
+  false would silently restore per-submission compaction, which is the drift this replaced. The
+  fingerprint is recorded WITH the criteria as provenance instead, and stamped onto every
+  submission from the frozen snapshot rather than re-derived from the captured context.
+- **A pre-migration run keeps the live path for its whole life.** Null intent is not a gap to
+  backfill. The only honest snapshot of what such a run was asked for at creation is gone, and
+  reading the Goal now to fill it in would freeze whatever the run has since been told - the exact
+  substitution this contract exists to prevent. Those runs keep per-submission compaction and the
+  older parent-reuse gate, so an in-flight run survives a daemon upgrade.
+- **`intent` is REQUIRED on both run-creating store inputs, and takes a real snapshot.**
+  `WorkflowRunInsert` and `ForemanCompletionStoreInput` accept `WorkflowRunIntentSnapshot` and
+  nothing else. There is deliberately no optional field and no "no ask" marker: both would end
+  at the same SQL NULL as a genuine pre-migration row, so nothing afterwards could tell a
+  brand-new run permanently reading the mutable live Goal from historical data entitled to it.
+  Creation is the one moment a run's ask can honestly be captured, so a caller that cannot
+  supply one must not create the run - the manager refuses instead. **The legacy shape is
+  reachable only by DEMOTING a row**, nulling `intent_json`, which is exactly what a daemon
+  upgrade leaves behind; fixtures that need it do that rather than asking creation for it.
+- **The intent fingerprint is DERIVED, never supplied.** `WorkflowRunInsert.intent` and
+  `ForemanCompletionStoreInput.intent` take `WorkflowRunIntentInput` - the ask fields without an
+  identity - and `frozenIntentJson` derives the fingerprint from them through
+  `freezeWorkflowRunIntent`. A caller-supplied fingerprint is a second copy of a fact the
+  snapshot already holds, and a second copy can disagree; that matters because the criteria
+  check below compares a run's stored criteria against this value, so an unverified fingerprint
+  quietly weakens the check meant to catch criteria distilled from another ask.
+  `readRunIntent` recomputes it on the way out too and treats disagreement as `unreadable`:
+  deriving on write says nothing about a row an older build wrote or a partial write left
+  behind, and one hash of already-loaded fields makes the identity a checked fact rather than a
+  remembered one. `src/server/workflows/intent-fingerprint.ts` is the only place that computes
+  it, so capture and the store cannot drift apart. `freezeWorkflowRunIntent` is likewise the
+  only place a snapshot is CONSTRUCTED - capture mints through it rather than assembling one
+  beside the derivation - so a change to either has exactly one site to change. Do not
+  re-export the raw run-snapshot derivation next to it; that is an invitation to hand-assemble
+  a snapshot again, which is how the manager-visible copy would come to disagree with the
+  durable one.
+- **Both write-once run columns refuse a payload the read path could not load back.**
+  `parseJson` rejects anything over `contextJsonBytes`, and neither column is ever rewritten, so
+  a row that is valid by SCHEMA and too large by BYTES writes successfully, reads back as
+  `unreadable`, and blocks its run for good. The schemas permit it: 200 decisions at 16,000
+  characters each for text and rationale is 6.4M against a 2M ceiling. `durableRunJson` measures
+  and throws before the insert. Bounding at capture is not enough, for the reason every other
+  invariant here moved to this boundary - it leaves the rule with the caller while the column
+  lives with the consequence.
+- **`freezeRunCriteria` refuses a foreign write rather than leaving the read to catch it.**
+  Only a run whose intent is readable and `frozen` may receive criteria, and only criteria whose
+  `intentFingerprint` matches that run's. The read-side comparison below is a backstop, not the
+  guard: `run_criteria_json` is write-once, so criteria distilled from another ask would leave
+  the run permanently unreadable with no way to repair it through this path. The cheapest moment
+  to say no is before the UPDATE.
+- **A row with criteria and no ask is corruption, not a legacy row.** A genuine pre-migration run
+  has NEITHER column - nothing ever wrote criteria for it, because the legacy path compacts per
+  submission. So `intent_json IS NULL` with a criteria payload beside it did not come from an
+  upgrade, and `readRunIntent` reports `unreadable` rather than `never_frozen`. Dropping the
+  stray payload and proceeding would not be safer; it reaches the same live-read outcome quietly.
+- **`readRunIntent` checks that the two stored halves belong together.** `intent_json` and
+  `run_criteria_json` are parsed separately, so a criteria payload that parses perfectly can
+  still have been distilled from different intent - a partial write, a restore that mixed rows.
+  A fingerprint mismatch is `unreadable`, not a recompaction: criteria that do not belong to
+  this run's ask are evidence the row is wrong rather than a value to recompute. This is the
+  only fingerprint comparison in the design, and it compares two DURABLE columns; reuse still
+  makes none against the captured context, for the reason below.
+- **Read `intentState`, never `intent === null`.** A missing snapshot means three different
+  things and the live path is correct for exactly ONE of them. `never_frozen` is the legacy run.
+  `unreadable` is a damaged or newer-daemon payload, and capture BLOCKS the run under
+  `capture_error` with code `run_intent_unreadable` rather than falling back - a review handed
+  back to the mutable Goal by a corrupted row is the same failure by another route. The third
+  case is removed at the source: every production creator refuses to create a run when the ask
+  cannot be read, so no new run can be born onto the live path.
+- **`readRunIntent` is tolerant where the rest of the row is strict, and only here.** Every other
+  JSON column throws through `parseNullableJson`, which `getRun` catches by returning null - so
+  one bad byte in a snapshot would erase the run from every listing an operator has. Reporting
+  `unreadable` keeps the run's identity, status and phase readable so the failure is diagnosable
+  instead of invisible. That is not lenience about the intent: the run is still refused.
+
 ## One workflow run is one repository
 
 Concurrency lives at the binding and run layer. Nothing below a run knows a session can review

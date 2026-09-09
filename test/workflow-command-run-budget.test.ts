@@ -313,7 +313,7 @@ test("an unauthorized repository never claims a run either", async () => {
   // repository later must find the allowance untouched by the rounds that could not run.
   let claims = 0;
   const result = await runCheck({
-    ...at(configured(1), 0, { ...DEFAULT_WORKFLOW_POLICY, repoAllowlist: [REPO] }),
+    ...at(configured(1), 0, { ...DEFAULT_WORKFLOW_POLICY, checksEnabled: false, repoAllowlist: [REPO] }),
     reserveRun: () => {
       claims += 1;
       return { granted: true, spent: 0 };
@@ -328,7 +328,7 @@ test("an unauthorized repository is unavailable, even with budget to spare", asy
   // whatever the budget says, and telling an operator about a cap they have room under would
   // send them to fix the wrong thing.
   const offSwitch = await runCheck(
-    at(configured(5), 0, { ...DEFAULT_WORKFLOW_POLICY, repoAllowlist: [REPO] }),
+    at(configured(5), 0, { ...DEFAULT_WORKFLOW_POLICY, checksEnabled: false, repoAllowlist: [REPO] }),
     { execute: spy().execute },
   );
   assert.equal(offSwitch.kind === "outcome" && offSwitch.outcome.status, "unavailable");

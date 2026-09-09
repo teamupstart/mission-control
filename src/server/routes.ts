@@ -125,6 +125,7 @@ import {
   PipelineForemanEpisodeSchema,
   PipelineInstallerLaunchSchema,
   SetupInstallerLaunchSchema,
+  SetupServiceStartSchema,
   PipelineRepoRegistrationSchema,
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
@@ -348,6 +349,7 @@ import {
   executeSetupInstall,
   type SetupInstallRouteDeps,
 } from "./setup/install.ts";
+import { startSetupService } from "./setup/service.ts";
 import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -5696,6 +5698,15 @@ export function buildApp(deps: RouteDeps): Hono {
     if (!registry.consumePromptedGeneration(session.id, parsed.data, now)) {
       return c.json({ error: "prompted work-cycle generation is no longer current" }, 409);
     }
+    // AFTER the durable consumption, never instead of it, and never before: this reads a
+    // verdict the database has already recorded, and a task concluded from a consumption that
+    // then failed would be a `done` row explaining itself with a decision nobody kept.
+    //
+    // Only a recurring mission's task with `auto-on-conclusion` moves here; `TaskManager` owns
+    // every one of those gates, and for everything else this is a no-op.
+    if (parsed.data.decision) {
+      tasks.concludeScheduledMissionRun(session.id, parsed.data.decision);
+    }
     return c.json(queues.get(session.id));
   });
 
@@ -6292,6 +6303,10 @@ export function buildApp(deps: RouteDeps): Hono {
     return {
       sources: cfg.sources,
       status: taskSourceStatuses(cfg.sources),
+      // Declared with the rest of the write-back contract and served empty until the panel
+      // that reads it exists. Empty is a valid answer - "these sources owe nothing" - so no
+      // consumer has to special-case the interval between the two.
+      writeback: [],
       kinds: taskSourceKinds(),
     };
   };
@@ -6815,6 +6830,21 @@ export function buildApp(deps: RouteDeps): Hono {
     return c.json(result.body, result.status as ContentfulStatusCode);
   });
 
+  /**
+   * Start one local background service a Setup row offered to start.
+   *
+   * Separate from `/api/setup/install` because it is a different act. That route opens a
+   * command in a terminal and can only report that the window opened; this one runs the
+   * daemon's own start and reports whether the service is answering, so the browser can
+   * re-check immediately rather than telling the operator to watch a window.
+   */
+  app.post("/api/setup/service", async (c) => {
+    const parsed = await parseBody(c, SetupServiceStartSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = await startSetupService(parsed.data.service);
+    return c.json(result.body, result.status as ContentfulStatusCode);
+  });
+
   // --- dispatch: launch/queue agents (localhost only) ---
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
@@ -7316,6 +7346,7 @@ export function buildApp(deps: RouteDeps): Hono {
       timezone: d.timezone,
       overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      completionPolicy: d.completionPolicy,
       template: d.template,
       after: d.after,
       count: d.count,
@@ -7343,6 +7374,7 @@ export function buildApp(deps: RouteDeps): Hono {
       timezone: d.timezone,
       overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      completionPolicy: d.completionPolicy,
       template: d.template,
       enabled: d.enabled,
     });
@@ -7366,6 +7398,7 @@ export function buildApp(deps: RouteDeps): Hono {
       timezone: d.timezone,
       overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      completionPolicy: d.completionPolicy,
       template: d.template,
     });
     return result.ok ? c.json(result.schedule) : scheduleValidationFailure(c, result.error);

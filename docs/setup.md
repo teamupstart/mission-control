@@ -25,6 +25,15 @@ fixed command. The daemon owns the argv, working directory, title, and hold-open
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
+The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
+With the `herdr` binary present but its default server stopped, the row is **Needs setup** and
+offers **Start the Herdr server** instead of the installation guide. That button opens no
+terminal: the daemon starts the server the same way a dispatch to Herdr would, waits for it to
+answer, and the panel re-reads the machine on its own, so a repaired row reports Ready without a
+manual **Re-check**. A Herdr older than the supported release is reported with its compatibility
+reason and is not offered a start, because starting it repairs nothing. While the server is down,
+discovery simply sees no Herdr workspaces and logs nothing.
+
 The optional iTerm2 row uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
 configured `ITERM_BIN` filesystem
 check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is
@@ -47,12 +56,15 @@ if another tab observes repair or regression first, the stale dismissal is refus
 operator to re-check.
 
 The **Set up this machine** guided tour shows you how to reach this panel and what to do with
-it, in four stops: the ⚙ gear, **Setup** in the Settings rail, the dependency list where you
-install the tools you will use, and **Re-check** to confirm they took. It runs once
-automatically on a fresh profile, and can be started again from **Help & tours** at the bottom
-of the Settings rail or from **Start Set up this machine tour** in the command palette. It
-executes no remedy, and it leaves you here on Setup rather than returning you to the page you
-started from.
+it, then continues into **Trust**, in seven stops: the ⚙ gear, **Setup** in the Settings rail,
+the dependency list where you install the tools you will use, **Re-check** to confirm they
+took, then **Trust** in the rail, its repository-by-grant matrix, and the row that adds a
+repository to it. It runs once automatically on a fresh profile, and can be started again from
+**Help & tours** at the bottom of the Settings rail or from **Start Set up this machine tour**
+in the command palette. It executes no remedy and clicks no grant, and it leaves you on Trust
+rather than returning you to the page you started from. See
+[Trust](skills-and-settings.md#trust-who-may-act-in-which-repository) for what each column
+permits.
 
 Install Node.js 24 or newer and verify it:
 
@@ -107,6 +119,14 @@ shell.
 
 The Claude status hooks installed by `make init` take effect for sessions started
 after installation. Re-run `npm run install-hooks` after changing hook configuration.
+
+Install them from a durable clone. The installer writes absolute paths into
+`~/.claude/settings.json`, and those paths do not follow a checkout that is later renamed
+or removed: every Claude session on the machine then fails every hook event with
+`MODULE_NOT_FOUND`. Settings -> Setup carries a **Claude Code hooks** row that names a dead
+path when one appears, and
+[troubleshooting.md](troubleshooting.md#every-claude-turn-prints-a-hook-error-with-module_not_found)
+covers the repair.
 
 ## Verify the checkout
 

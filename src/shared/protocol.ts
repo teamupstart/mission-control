@@ -32,7 +32,7 @@ import {
 } from "./standing-instructions.ts";
 import { LLM_SPEND_ROLES } from "./llm-spend.ts";
 import { OPEN_TARGET_IDS } from "./open-targets.ts";
-import { SETUP_DEPENDENCY_IDS } from "./setup-catalog.ts";
+import { SETUP_DEPENDENCY_IDS, SETUP_SERVICE_IDS } from "./setup-catalog.ts";
 import {
   FILE_COMMENT_QUOTE_MAX,
   FILE_COMMENT_SURFACES,
@@ -161,6 +161,7 @@ import type {
   EnsembleWorkflowHandoff,
 } from "./ensemble.ts";
 import {
+  SCHEDULE_COMPLETION_POLICIES,
   SCHEDULE_CRON_FIELD_COUNT,
   SCHEDULE_HISTORY_MAX_LIMIT,
   SCHEDULE_MISSED_POLICIES,
@@ -588,9 +589,8 @@ export const ProductIssueDraftSchema = z.object(PRODUCT_ISSUE_DRAFT_FIELDS).stri
 export type ProductIssueDraftInput = z.infer<typeof ProductIssueDraftSchema>;
 
 /** One preview/submission opening, shared by the dashboard and authenticated MCP routes. */
-export const ProductIssueRequestSchema = z
-  .object({
-    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+export const ProductIssueRequestSchema = ProductIssueDraftSchema
+  .extend({
     requestId: z.string().uuid(),
     client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
   })
@@ -635,11 +635,8 @@ export type ProductIssueDashboardSubmitInput = z.infer<
 >;
 
 /** MCP identity is transport-owned and added beside the same bounded report request. */
-export const McpProductIssueRequestSchema = z
-  .object({
-    ...PRODUCT_ISSUE_DRAFT_FIELDS,
-    requestId: z.string().uuid(),
-    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+export const McpProductIssueRequestSchema = ProductIssueRequestSchema
+  .extend({
     env: EnvSchema,
     sessionId: z.string().nullable().optional().default(null),
     cwd: z.string().nullable().optional().default(null),
@@ -1600,10 +1597,25 @@ export const ForemanConfigSchema = z.object({
    * (the pre-triage behaviour); `on` = a pure-code Tier 0 + Haiku Tier 1 dispose the
    * easy cases and only route the hard ones up to the full review; `shadow` = run both
    * the cheap tier and the full review, act on the full review, and log every
-   * divergence so the cheap tier's accuracy is measured before it's trusted. Defaults
-   * to `shadow` so the first ship gathers evidence rather than short-circuiting blind.
+   * divergence so the cheap tier's accuracy is measured before it's trusted.
+   *
+   * Ships `on`. It ships as `shadow` no longer because `shadow` was only ever the
+   * EVIDENCE-GATHERING posture, and a default is a bad place to leave one: it is the
+   * most expensive of the three - two concurrent model calls per evaluation, one of
+   * which by construction cannot act - and it buys that only for an operator who then
+   * goes and reads the divergence column. Every install that never opened the panel
+   * paid twice per decision to measure something nobody looked at. The measurement is
+   * still one click away, still the honest way to answer "is the cheap tier safe here",
+   * and the panel still says so under the control.
+   *
+   * This is only read when nobody ever answered. An operator with a persisted posture -
+   * including a `shadow` written by any earlier save, since `setForemanConfig` persists
+   * the whole parsed blob - keeps it, exactly as the `enabled` flip above did. Nothing
+   * about the safety envelope moves with the default: an `on` answer still flows through
+   * the same mode + allowlist + auto-approve gate a Tier 2 answer does, and
+   * `triagePosture` still refuses to READ `on` from anything but the literal string.
    */
-  triage: z.enum(["off", "shadow", "on"]).default("shadow"),
+  triage: z.enum(["off", "shadow", "on"]).default("on"),
   /**
    * Model id for the Tier 1 triage call (a cheap router, not the full reviewer). Falls
    * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default.
@@ -2803,6 +2815,18 @@ export const SetupInstallerLaunchSchema = z
   })
   .strict();
 export type SetupInstallerLaunchBody = z.infer<typeof SetupInstallerLaunchSchema>;
+
+/**
+ * Start one local background service a Setup row offered to start.
+ *
+ * Strict, and narrower than its installer sibling: there is no terminal to choose, because
+ * nothing here opens a window. The service id is the whole request, and `server/setup/service.ts`
+ * owns the only way each one is started.
+ */
+export const SetupServiceStartSchema = z
+  .object({ service: z.enum(SETUP_SERVICE_IDS) })
+  .strict();
+export type SetupServiceStartBody = z.infer<typeof SetupServiceStartSchema>;
 
 /**
  * One control verb aimed at an external SDLC engine, and one request for a hosted terminal.
@@ -5365,6 +5389,51 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
   message: `Workflow context exceeds ${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} UTF-8 bytes`,
 });
 
+/**
+ * The intent frozen onto a run at creation.
+ *
+ * Bounded exactly as `WorkflowContextSnapshotInputSchema` bounds the same fields, because
+ * these ARE those fields: capture copies them straight into `primaryGoal` and
+ * `humanDecisions`, and a snapshot that could hold more than the context snapshot accepts
+ * would be a row that freezes fine and then fails every capture that reads it.
+ */
+export const WorkflowRunIntentSnapshotSchema = z.object({
+  rawGoal: z.string().max(16_000),
+  refinedGoal: z.string().max(16_000).nullable(),
+  sourceNoteKey: z.string().min(1).max(1_000),
+  decisions: z.array(WorkflowHumanDecisionSchema).max(200),
+  fingerprint: z.string().length(64),
+  frozenAt: z.number().int().nonnegative(),
+});
+
+/**
+ * One run's stable acceptance criteria. Per-submission mappings are deliberately absent.
+ *
+ * `status` is the LITERAL `model`, not the context snapshot's `model | fallback`. A fallback is
+ * a record that compaction failed, and the run must retry it on the next submission rather than
+ * freeze it: durable criteria written from one are empty criteria reused for the run's whole
+ * life, which is the drift this mechanism exists to end, reached from the other direction.
+ * Narrowing it here rather than only in the caller means the store REFUSES that payload at its
+ * boundary, so a future writer cannot reintroduce the state by calling `freezeRunCriteria`
+ * directly.
+ */
+export const WorkflowRunCriteriaSchema = z.object({
+  intentFingerprint: z.string().length(64),
+  constraints: z.array(z.string().max(4_000)).max(100),
+  acceptanceCriteria: z.array(z.string().max(4_000)).max(100),
+  canonicalCriteria: z.array(WorkflowCanonicalCriterionSchema)
+    .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+  compaction: z.object({
+    status: z.literal("model"),
+    runner: z.enum(LLM_RUNNER_IDS).nullable(),
+    model: z.string().max(500).nullable(),
+    error: z.string().max(8_000).nullable(),
+    reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
+  }),
+  compactedFromSubmissionId: z.string().min(1).max(200),
+  compactedAt: z.number().int().nonnegative(),
+});
+
 export const WorkflowInspectorOnlyContextSchema = z.object({
   bypassReason: z.string().min(1).max(16_000),
   failedHeadSha: z.string().min(1).max(100),
@@ -6780,6 +6849,17 @@ const ScheduleDefinitionSchema = z.object({
   timezone: z.string().trim().min(1),
   overlapPolicy: z.enum(SCHEDULE_OVERLAP_POLICIES),
   missedPolicy: z.enum(SCHEDULE_MISSED_POLICIES),
+  /**
+   * Optional with a `manual` default, unlike the two policies above it, and the asymmetry is
+   * deliberate rather than an oversight: those two have always been on the wire, and this one
+   * arrived later. A caller that predates it - an older dashboard, a script somebody wrote
+   * against `/api/schedules` last month - must keep saving the behaviour it was written for,
+   * and that behaviour is `manual`. Nothing here infers otherwise from the request's shape.
+   */
+  completionPolicy: z
+    .enum(SCHEDULE_COMPLETION_POLICIES)
+    .optional()
+    .default("manual"),
   executionMode: z.literal("local-catchup").optional().default("local-catchup"),
   runnerId: z.null().optional().default(null),
   template: ScheduleTemplateSchema,

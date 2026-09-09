@@ -19,13 +19,32 @@ import {
 } from "../src/server/util/exec.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
 
+/**
+ * A command name no machine can already have, which is what makes this test about the
+ * daemon rather than about the developer.
+ *
+ * It used to be `pi`. The lookup ladder's last rung is the platform's OS defaults -
+ * `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin` and friends - and that rung is
+ * unconditional by design, because the daemon must find a tool a login shell forgot to
+ * export. So every `resolveBinPath("pi") === null` below was really asserting "the person
+ * running this suite has not installed Pi": true on CI, false on a laptop that has, where
+ * this failed against a real binary at /opt/homebrew/bin/pi.
+ *
+ * Nothing the test is about is lost. Its subject is the probe/cooldown/refresh cycle, which
+ * `commandSpec` runs identically for a catalog id and an operator command - and every other
+ * name in this case was already an ad hoc one. The CATALOG spec's extra rungs (supported
+ * locations, per-tool overrides, dropEnv) are covered rung by rung in
+ * `test/executable-locator.test.ts`, which injects a root-confined lookup for this same reason.
+ */
+const FIXTURE_BIN = "mission-test-agent";
+
 test("a bare binary installed on the login-shell PATH becomes visible without a daemon restart", async () => {
   const root = mkdtempSync(join(tmpdir(), "mission-login-path-"));
   const stale = join(root, "stale-bin");
   const installed = join(root, "installed-bin");
   const shell = join(root, "login-shell");
   const shellLog = join(root, "login-shell.log");
-  const pi = join(installed, "pi");
+  const agent = join(installed, FIXTURE_BIN);
   mkdirSync(stale);
   mkdirSync(installed);
   writeFileSync(
@@ -38,8 +57,8 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
     ].join("\n"),
   );
   chmodSync(shell, 0o755);
-  writeFileSync(pi, "#!/bin/sh\nexit 0\n");
-  chmodSync(pi, 0o755);
+  writeFileSync(agent, "#!/bin/sh\nexit 0\n");
+  chmodSync(agent, 0o755);
 
   try {
     await withProcessEnv(
@@ -54,7 +73,7 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
       async () => {
         assert.deepEqual(
           await Promise.all([
-            resolveBinPath("pi"),
+            resolveBinPath(FIXTURE_BIN),
             resolveBinPath("missing-terminal-one"),
             resolveBinPath("missing-terminal-two"),
           ]),
@@ -63,12 +82,12 @@ test("a bare binary installed on the login-shell PATH becomes visible without a 
         assert.equal(readFileSync(shellLog, "utf8"), "xx", "one batch shares initialization and first-miss probes");
 
         assert.equal(await resolveBinPath("another-missing-terminal"), null);
-        assert.equal(await resolveBinPath("pi"), null);
+        assert.equal(await resolveBinPath(FIXTURE_BIN), null);
         assert.equal(readFileSync(shellLog, "utf8"), "xx", "repeated misses stay on cooldown");
 
         process.env.MC_TEST_LOGIN_PATH = `${installed}${delimiter}/usr/bin${delimiter}/bin`;
         await refreshProcessPathFromLoginShell({ force: true });
-        assert.equal(await resolveBinPath("pi"), pi);
+        assert.equal(await resolveBinPath(FIXTURE_BIN), agent);
         assert.equal((process.env.PATH ?? "").split(delimiter).includes(installed), true);
         assert.equal(readFileSync(shellLog, "utf8"), "xxx", "an explicit re-check forces one read");
       },

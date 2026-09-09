@@ -6,6 +6,7 @@ import {
 } from "@shared/environment-checks.ts";
 import {
   ENVIRONMENT_ROW_METADATA,
+  HERDR_SERVER_REMEDY,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
   SETUP_FAMILY_IDS,
@@ -26,15 +27,28 @@ import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
 import { binUnsupportedReason, resolveBin } from "../terminal/bin.ts";
+import { herdrServerProbe } from "../terminal/herdr.ts";
 import { terminalBackendBin } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
-import type { SetupDeps, SetupSkillsRead } from "./types.ts";
+import type { SetupDeps, SetupProbeResult, SetupSkillsRead } from "./types.ts";
 import { locateExecutable } from "../executables/locator.ts";
 
-type SetupProbe = (deps: SetupDeps) => Promise<SetupStatus>;
+/**
+ * A probe answers with a status, or with a status AND the repair that reading needs.
+ *
+ * A union rather than one wrapped shape, because exactly one probe has a second repair to
+ * name and thirteen have nothing to add. `setupProbeResult` normalizes before anything
+ * reads either form, so no caller branches on which one a probe chose.
+ */
+type SetupProbe = (deps: SetupDeps) => Promise<SetupStatus | SetupProbeResult>;
+
+/** One shape for both probe return forms. */
+export function setupProbeResult(value: SetupStatus | SetupProbeResult): SetupProbeResult {
+  return "state" in value ? { status: value } : value;
+}
 
 const DEPENDENCY_AGENT: Partial<Record<SetupDependencyId, AgentType>> = {
   "claude-cli": "claude",
@@ -175,13 +189,41 @@ async function conductorStatus(deps: SetupDeps): Promise<SetupStatus> {
   };
 }
 
+/**
+ * Herdr, which installation alone does not answer for.
+ *
+ * The CLI is a client. With it installed and its default server down, nothing Mission
+ * Control does through Herdr works - no workspace is listed, created, focused or typed into
+ * - and the adapter degrades to an empty pane list rather than logging that fact once a
+ * tick (see `terminal/herdr.ts`). This row is where it is said instead, and it offers the
+ * start rather than the install guide, because installing again repairs nothing.
+ */
+async function herdrStatus(deps: SetupDeps): Promise<SetupProbeResult> {
+  const installed = await terminalStatus("herdr", deps);
+  if (installed.state !== "satisfied") return { status: installed };
+  const server = await deps.herdrServer();
+  if (server.state === "ready") {
+    return { status: { ...installed, evidence: `${installed.evidence} (server ${server.version})` } };
+  }
+  const why = server.state === "stopped"
+    ? "Herdr is installed but its default server is not running. Mission Control cannot list, open, or type into Herdr workspaces until it starts."
+    : server.error;
+  // A `failed` probe that is not retryable is an incompatible or unreadable Herdr, and no
+  // amount of starting fixes that - the catalog's install guide is the honest remedy there.
+  const startable = server.state === "stopped" || server.retryable;
+  return {
+    status: { state: "needs-setup", why, evidence: installed.evidence },
+    ...(startable ? { remedy: HERDR_SERVER_REMEDY } : {}),
+  };
+}
+
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-cli": (deps) => agentStatus("claude-cli", deps),
   "codex-cli": (deps) => agentStatus("codex-cli", deps),
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
   tmux: (deps) => terminalStatus("tmux", deps),
   cmux: (deps) => terminalStatus("cmux", deps),
-  herdr: (deps) => terminalStatus("herdr", deps),
+  herdr: herdrStatus,
   wezterm: (deps) => terminalStatus("wezterm", deps),
   ghostty: (deps) => terminalStatus("ghostty", deps),
   "gh-cli": ghCliStatus,
@@ -196,11 +238,13 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function runProbe(id: SetupDependencyId, deps: SetupDeps): Promise<SetupStatus> {
+async function runProbe(id: SetupDependencyId, deps: SetupDeps): Promise<SetupProbeResult> {
   try {
-    return await SETUP_PROBES[id](deps);
+    return setupProbeResult(await SETUP_PROBES[id](deps));
   } catch (error) {
-    return { state: "unknown", why: `This check could not run: ${reasonOf(error)}.`, evidence: null };
+    return {
+      status: { state: "unknown", why: `This check could not run: ${reasonOf(error)}.`, evidence: null },
+    };
   }
 }
 
@@ -232,6 +276,7 @@ export function defaultSetupDeps(): SetupDeps {
       return resolveBinPath(resolveBin(spec));
     },
     backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id)),
+    herdrServer: () => herdrServerProbe(),
     ghBin,
     resolveBinPath,
     runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),
@@ -259,12 +304,12 @@ export function defaultSetupDeps(): SetupDeps {
 /** One fresh, concurrent snapshot of every setup fact the page renders. */
 export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Promise<SetupChecksView> {
   await deps.refreshPath?.();
-  const [statuses, targets, environment] = await Promise.all([
+  const [probed, targets, environment] = await Promise.all([
     Promise.all(SETUP_DEPENDENCY_IDS.map((id) => runProbe(id, deps))),
     Promise.resolve().then(() => deps.terminalTargets()),
     deps.environmentChecks(deps.environment),
   ]);
-  const statusById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, statuses[i]!]));
+  const probeById = new Map(SETUP_DEPENDENCY_IDS.map((id, i) => [id, probed[i]!]));
   const usable = targets.find((target) => target.unavailable === null);
   const derived: SetupRowView = {
     ...TERMINAL_PAIR_INFO,
@@ -278,14 +323,16 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
     for (const id of SETUP_DEPENDENCY_IDS) {
       const info = SETUP_DEPENDENCY_INFO[id];
       if (info.family === family) {
+        const probe = probeById.get(id)!;
         rows.push({
           rowId: { source: "dependency", id },
           label: info.label,
           family: info.family,
           requirement: info.requirement,
           enables: info.enables,
-          remedy: info.remedy,
-          status: statusById.get(id)!,
+          // The probe's own remedy when this reading has one; see `SetupProbeResult`.
+          remedy: probe.remedy ?? info.remedy,
+          status: probe.status,
         });
       }
     }

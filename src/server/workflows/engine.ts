@@ -27,6 +27,11 @@ import type {
 } from "@shared/workflow.ts";
 import type { WorkflowVerdictNode } from "@shared/workflow.ts";
 import {
+  WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE,
+  workflowCheckCleanupBlock,
+  type WorkflowRunPhase,
+} from "@shared/workflow-lifecycle.ts";
+import {
   WORKFLOW_COMMAND_DEFAULT_MAX_RUNS,
   WORKFLOW_EXECUTION_LIMITS,
   checkOutcomePasses,
@@ -43,6 +48,7 @@ import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
+import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
 import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
@@ -92,29 +98,13 @@ const RETRY_BASE_MS = 1_000;
  * worktree while something may still be writing into the first". The operator's next move
  * differs too - this one clears itself once reclamation proves the group gone, and the run
  * resumes rather than being debugged. See `resumeClearedCheckCleanup`.
- */
-export const CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved";
-
-/** What `blockedByUnresolvedLease` stores in `gate_state_json`, read back for the resume. */
-interface CheckCleanupBlock {
-  nodeId: string;
-  attempts: number;
-  error: string;
-}
-
-/**
- * Narrow a run's stored gate state to the block detail, or `null` when it is anything else.
  *
- * `gateState` is free-form JSON that several phases write, and a resume driven off a shape
- * that merely looked right would reschedule against a node id from some other phase's state.
+ * The string itself now lives in `@shared/workflow-lifecycle.ts`, because the phase is half of
+ * the resume condition rather than an engine-local label: `infrastructure_error` persists a
+ * payload of the same three keys, so only the phase tells a withheld retry apart from an
+ * exhausted one, and the decoder that hands the block back has to test both.
  */
-function checkCleanupBlock(state: WorkflowJson | null): CheckCleanupBlock | null {
-  if (!state || typeof state !== "object" || Array.isArray(state)) return null;
-  const { nodeId, attempts, error } = state;
-  if (typeof nodeId !== "string" || nodeId === "") return null;
-  if (typeof attempts !== "number" || !Number.isInteger(attempts) || attempts < 1) return null;
-  return { nodeId, attempts, error: typeof error === "string" ? error : "" };
-}
+export const CHECK_CLEANUP_UNRESOLVED_PHASE = WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE;
 
 export interface WorkflowEngineOptions {
   /**
@@ -1105,6 +1095,25 @@ export class WorkflowEngine {
       persona: node.persona.name,
       verdict: verdict.verdict,
     }, this.now());
+    // Read from the row rather than the captured argument: readiness is written by the capture
+    // that activated this submission, and the argument predates it on the recovery path.
+    const disagreement = readinessReviewDisagreementEvent({
+      submission: latestSubmission ?? submission,
+      nodeId: node.id,
+      attemptId: claimed.id,
+      persona: node.persona.name,
+      verdict,
+      version,
+    });
+    if (disagreement) {
+      this.store.appendEvent(
+        run.id,
+        "readiness_review_disagreement",
+        disagreement.payload,
+        this.now(),
+        disagreement.eventId,
+      );
+    }
     const evidenceAudit = testEvidenceAuditEvent({
       persona: node.persona,
       nodeId: node.id,
@@ -1451,7 +1460,11 @@ export class WorkflowEngine {
   }
 
   private resumeCheckCleanup(run: WorkflowRun): void {
-    const gate = checkCleanupBlock(run.gateState);
+    const gate = workflowCheckCleanupBlock({
+      status: run.status,
+      phase: run.currentPhase,
+      gateState: run.gateState,
+    });
     if (!gate) return;
     const submission = this.store.latestSubmission(run.id);
     if (!submission || submission.status !== "failed") return;
@@ -1501,7 +1514,11 @@ export class WorkflowEngine {
     this.wake();
   }
 
-  private blockSubmission(submission: WorkflowSubmission, phase: string, error: string): void {
+  private blockSubmission(
+    submission: WorkflowSubmission,
+    phase: WorkflowRunPhase,
+    error: string,
+  ): void {
     this.store.setSubmissionState(submission.id, "failed", this.now());
     this.store.setRunState(submission.runId, "failed", phase, { error }, this.now());
     this.store.appendEvent(submission.runId, "workflow_failed", { phase, error }, this.now());

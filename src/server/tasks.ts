@@ -15,6 +15,7 @@ import type {
 import type {
   PipelineAdoptSuccessor,
   PipelineRetry,
+  PromptedCompletionDisposition,
   ReorderTask,
   TaskDependencyInput,
   UpdateTask,
@@ -31,6 +32,7 @@ import {
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
+import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
   dispatchHasNoProvisionedResources,
@@ -39,6 +41,7 @@ import {
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
+import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
 import {
   Dispatcher,
   deriveTitle,
@@ -77,6 +80,7 @@ import {
   updatePipelineCommissionRecovery,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
+import { completionPolicyForOccurrence } from "./schedules/store.ts";
 import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
 import { appendRank, placeBacklogRank, prependRank } from "./backlog-rank.ts";
 import {
@@ -518,6 +522,44 @@ interface CompletionInput {
   inferredFrom: string | null;
 }
 
+/**
+ * How long a mission run's recorded outcome may be, counted in CODE POINTS.
+ *
+ * The verifier's summary is prose from a model, and `Task.outcome` is rendered on a board
+ * card, a rail row and the mission's own run history. Bounded here rather than trusted,
+ * for the reason every other bound in this file exists.
+ */
+const MISSION_RUN_OUTCOME_MAX = 200;
+
+/**
+ * The sentence a Foreman-concluded mission run leaves on its task.
+ *
+ * It names the concluder, because a reader looking at a `done` row weeks later needs to know
+ * this was an inference from Foreman's verdict rather than something a person typed - and
+ * carries Foreman's own summary, because "why is this done when nothing shipped?" is the
+ * first question that row provokes.
+ *
+ * The cut is made on CODE POINTS, not on `String.prototype.slice`'s UTF-16 code units. The
+ * summary is model-authored prose and routinely carries emoji, so a code-unit cut can land
+ * between the halves of a surrogate pair and persist a lone surrogate - which renders as a
+ * replacement glyph on the board card, the rail row and the run history, for ever, because
+ * this string is written once at completion and never revised.
+ *
+ * Code points rather than grapheme clusters, deliberately. A ZWJ sequence or a combining
+ * mark can still be split here, and that is a cosmetic loss; splitting a surrogate pair
+ * produces a string that is not valid text at all, which is the defect being fixed.
+ */
+function missionRunOutcome(decision: PromptedCompletionDisposition): string {
+  const why = decision.summary.trim();
+  const line = why
+    ? `Foreman concluded this recurring mission run: ${why}`
+    : "Foreman concluded this recurring mission run";
+  const points = [...line];
+  return points.length > MISSION_RUN_OUTCOME_MAX
+    ? `${points.slice(0, MISSION_RUN_OUTCOME_MAX - 1).join("")}\u2026`
+    : line;
+}
+
 /** The task facts a scout completion must not cross while its archive gate awaits. */
 interface ScoutCompletionSnapshot {
   status: Task["status"];
@@ -766,6 +808,12 @@ export class TaskManager {
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
+  /**
+   * Where a completion is announced to the task-source write-back ledger, when the daemon
+   * installed one. Absent in every focused test, which is exactly the shipped default
+   * behaviour: nothing is owed and nothing is written.
+   */
+  private writeback?: WritebackEnqueuer;
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -1197,6 +1245,19 @@ export class TaskManager {
     }
   }
 
+  /**
+   * Install the write-back enqueuer after both owners exist.
+   *
+   * A registration rather than a ninth positional constructor parameter, following
+   * `registerWorkflowEvidenceEligibility` below: the many route-unit tests that construct a
+   * bare `TaskManager` keep compiling unchanged, and a daemon that forgets to call this
+   * simply writes nothing back - which is the same behaviour as every write-back switch
+   * being off, and therefore not a state that can surprise anyone.
+   */
+  registerWritebackEnqueuer(enqueuer: WritebackEnqueuer): void {
+    this.writeback = enqueuer;
+  }
+
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
   registerWorkflowEvidenceEligibility(
     resolve: (task: Pick<Task, "kind" | "workflowId">) => boolean,
@@ -1309,6 +1370,69 @@ export class TaskManager {
         sessionId: s.id,
         episodeId: binding.episodeId,
       });
+    });
+  }
+
+  /**
+   * Conclude a recurring mission's generated task on Foreman's own settled verdict.
+   *
+   * The gap this closes. Every existing route to `done` for an autonomous task runs through a
+   * merged pull request - `settleIfEpisodeFinished`, `settleMergedTask`,
+   * `reconcileMergedTasks` all read `currentEpisodeLanded`. A recurring mission whose run has
+   * nothing to ship produces no pull request to merge: the sweep found nothing, the report was
+   * written, the audit came back clean. That task never leaves `running`, and under the
+   * default `skip-active` overlap policy it then blocks every later occurrence of the same
+   * mission for ever - the exact failure the cadence exists to prevent, recorded run after run
+   * as `skipped_overlap` naming a task that finished its work weeks ago.
+   *
+   * Four gates, and each one is refusing a different wrong answer:
+   *
+   *  - **The verdict must be a conclusion, not a step.** `foremanConcludedMission` owns that
+   *    list; a `held` verdict is Foreman saying the work is UNFINISHED, and an `asked` or
+   *    `direct_handoff` says shipping is still under way and the merge path still owns it.
+   *  - **The task must be a mission's.** `scheduleOccurrenceId` is what makes this policy
+   *    reachable at all: an ordinary dispatched task's completion stays the operator's, and
+   *    nothing here changes what happens to one.
+   *  - **The mission must have asked for it.** The policy is read from the immutable revision
+   *    that FILED this task, so an edit or an archive since then cannot retroactively conclude
+   *    work in flight, and an unreadable stored value leaves the task alone.
+   *  - **Provider-owned completion is never overridden**, exactly as the merge paths refuse it.
+   *
+   * Registered as an INFERENCE (`inferredFrom`), which is the honest label and also the useful
+   * one: Foreman concluding a generation is strong evidence and not proof, so an agent that
+   * starts working on this very task again reverses it through `reopenIfWorkResumed`. That is
+   * the same bargain `settleIfEpisodeFinished` makes about idleness.
+   *
+   * Backgrounded and non-throwing: this is called from a route that has already committed the
+   * durable consumption, and a scout whose archive is not submitted yet simply stays running
+   * rather than failing the request that reported the verdict.
+   */
+  concludeScheduledMissionRun(
+    sessionId: string,
+    decision: PromptedCompletionDisposition,
+  ): void {
+    if (!foremanConcludedMission(decision.outcome)) return;
+    const t = this.executingTaskOn(sessionId);
+    if (!t || !t.scheduleOccurrenceId) return;
+    if (providerOwnsTaskCompletion(t.kind)) return;
+    if (completionPolicyForOccurrence(t.scheduleOccurrenceId) !== "auto-on-conclusion") return;
+    // A concluded run that DID open a pull request has to carry it, and this is the only
+    // chance to record one: `completableByMerge` excludes `done`, so once this row is
+    // terminal the merge reconciler will never revisit it, and a later merge has nowhere
+    // to write itself. Without this the ordinary `retired` case - a review-only artifact
+    // that still opened a PR for its diff - lands a `done` task pointing at nothing.
+    //
+    // Read from the same bindings every merge path reads, so the url on the card is the
+    // one those paths would have recorded. Absent for the `empty` case by construction,
+    // which is the case with no pull request to name.
+    const pr = primaryRepoPrForTask(t.id).prUrl;
+    this.completeInBackground(t.id, {
+      outcome: missionRunOutcome(decision),
+      ...(pr ? { outcomeUrl: pr } : {}),
+      satisfyDependents: false,
+      requireStopped: false,
+      confirmIncompleteScout: false,
+      inferredFrom: sessionId,
     });
   }
 
@@ -4200,6 +4324,19 @@ export class TaskManager {
     // Setting it from a `.then` would put both of those between the write and the record.
     if (input.inferredFrom && this.registry.getTask(id) === updated) {
       this.autoCompleted.set(id, input.inferredFrom);
+    }
+    // The task's upstream item, if it came from one, is owed a note. A LOCAL INSERT and
+    // nothing else - the enqueuer spawns nothing and the worker does the delivering - so
+    // this stays as synchronous as the rest of this function.
+    //
+    // The try/catch is not defensive decoration. `finishCompletion` runs inside
+    // `session_upsert` and `session_remove` listeners, and a throw here would abort a
+    // completion that has already been persisted and broadcast, in order to fail at
+    // writing a comment nobody is waiting for.
+    try {
+      this.writeback?.completed(updated);
+    } catch (err) {
+      console.error("[writeback] enqueue on completion failed:", id, err);
     }
     if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
     return updated;

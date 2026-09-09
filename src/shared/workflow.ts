@@ -2161,35 +2161,12 @@ export function workflowRunHasNoRepairsLeft(run: {
   return run.round > run.maxRepairRounds;
 }
 
-/**
- * The phase a run was parked in before its budget ran out, recorded on the way into
- * `round_limit` so a later grant can put it back.
- *
- * A run that spends its budget loses the only record of what it was waiting for: the
- * round-limit block overwrites `current_phase` with `round_limit` and `gate_state_json`
- * with the budget, and neither is recoverable afterwards. That was survivable while a
- * grant only ever handed the run to a human's next click. It is not survivable now that a
- * grant may hand it back to the resumption observer, which needs the run to read as the
- * parked round it actually is - `pr_handoff` in particular takes a different branch there
- * than an ordinary repair round does.
- *
- * So the phase rides along in the same payload as the budget, written by the one store
- * helper every round-limit writer goes through. It is deliberately NOT re-recorded on a
- * second block: a run blocked, granted, resumed and blocked again must keep pointing at
- * the round it was parked in, not at `round_limit` itself.
- *
- * Absence is meaningful and is the reason this returns `null` rather than a default. A run
- * blocked by a build that predates this field cannot say what it was doing, and guessing
- * would restore a run into a phase whose branch never ran. Those runs keep the behaviour
- * they were blocked under: the grant raises the budget and the operator resumes by hand.
+/*
+ * `workflowRoundLimitParkedPhase` used to live here, reading `gate_state_json` on its own.
+ * It now lives in `workflow-lifecycle.ts`, beside the decoder that tells a round-limit budget
+ * apart from every other payload the same column carries - the split was how a bare gate
+ * state stored under `round_limit` came to be invisible to it.
  */
-export function workflowRoundLimitParkedPhase(gateState: WorkflowJson | null): string | null {
-  if (!gateState || typeof gateState !== "object" || Array.isArray(gateState)) return null;
-  const parked = (gateState as { [key: string]: WorkflowJson }).parkedPhase;
-  if (typeof parked !== "string" || parked.length === 0) return null;
-  if ((WORKFLOW_RUN_SPENT_PHASES as readonly string[]).includes(parked)) return null;
-  return parked;
-}
 
 /**
  * The phase a run carries while its last resubmission was refused for naming work that
@@ -2803,11 +2780,31 @@ export interface WorkflowPolicy {
   defaultWorkflowId: WorkflowId | null;
   retention: WorkflowRetentionConfig;
   /**
-   * Machine-wide consent for running a configured command from a workflow. Off by default -
-   * deliberately NOT following `liveEnabled`, which is now on. Delivery types text a human
-   * reads before anything happens; a check executes an argv on disk unattended, which is a
-   * different question and gets its own answer. `repoAllowlist` is still the other half, and
-   * `checkBlockedReason` is the one place both are asked.
+   * Machine-wide consent for running a configured command from a workflow.
+   *
+   * On by default, on `liveEnabled`'s reasoning and with the same half-gate: `repoAllowlist`
+   * is the other half and still ships empty, so a fresh install may run a command in NO
+   * repository until a human grants one. `checkBlockedReason` asks both in one place and
+   * names which of the two is missing.
+   *
+   * This used to ship off, on the argument that executing an argv is a different question
+   * from typing text a human reads. The question is still different; what changed is where
+   * it gets asked. Two gates that both default closed means the second one never gets read,
+   * and here that cost more than a parked run: an unauthorized Command PASSES with a note,
+   * so the gate an operator built their workflow around silently was not one, and the run
+   * reported green.
+   *
+   * The consent did not disappear - it moved to the grant, which is the only one of the two
+   * that names a repository. Trust's Workflows cell states in full that it permits Commands
+   * to run against branch code with the daemon's filesystem authority, and the moment a
+   * grant exists beside this switch, Trust flies the double dagger and the rail's amber dot
+   * over it, naming those repositories and offering `Turn Commands off` in place. That is
+   * strictly more durable than the one-time confirm dialog it replaces, which was agreed to
+   * once and then never shown again.
+   *
+   * A stored blob written before this field existed is held at `false` by
+   * `getWorkflowPolicy` rather than inheriting this default: that install may already carry
+   * grants, and nobody on it would have been asked anything.
    */
   checksEnabled: boolean;
 }
@@ -2854,7 +2851,8 @@ export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
     completedRunDays: 180,
     maxCompletedRuns: 1_000,
   },
-  checksEnabled: false,
+  // Authorised, and gated on `repoAllowlist` exactly as `liveEnabled` is - see the field.
+  checksEnabled: true,
 };
 
 /** The default policy under the legacy wire shape: no commands, because none are stored. */
@@ -3502,6 +3500,97 @@ export interface WorkflowBindingSummary {
   updatedAt: number;
 }
 
+/**
+ * Whether a run's frozen review basis is usable, and when it is not, WHY.
+ *
+ * `intent` alone cannot answer that: null would mean three materially different things, and a
+ * caller inferring "null therefore legacy" would quietly hand a damaged run back to the live,
+ * mutable Goal - reopening the very channel the freeze closes. The three cases are separated
+ * here so no caller has to guess.
+ *
+ * - `frozen`: a readable snapshot. The review is judged against it, and nothing else.
+ * - `never_frozen`: the column is genuinely empty, which only a run created before the
+ *   snapshot existed can be. This is the ONLY case the live-read path is correct for, and it
+ *   stays supported for as long as such runs exist.
+ * - `unreadable`: a snapshot or run-criteria payload this build cannot parse - a damaged row,
+ *   or one written by a newer daemon. Capture refuses rather than falling back: a run whose
+ *   frozen basis cannot be read has no honest basis to review against, and reading the Goal
+ *   instead would be indistinguishable from the failure this whole mechanism removes.
+ */
+export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
+
+/**
+ * The human's ask, frozen onto a run the moment the run exists.
+ *
+ * A review must judge a submission against what was asked for, and the session Goal is not
+ * that: it is a live, mutable field that Mission Control's own repair packets overwrite
+ * through the harness prompt hook. Reading it per submission let a run distil its acceptance
+ * criteria out of its own complaint text, so from the round a packet landed onwards the
+ * Personas were judging the change against the review's previous objection rather than
+ * against the request.
+ *
+ * Freezing removes that channel rather than policing it. Whatever later writes the Goal, and
+ * however they are attributed, the intent a run reviews against was copied before any of it
+ * happened. Mid-run human input is deliberately NOT an amendment: an answer or a later turn
+ * still reaches Personas as transcript and prior-feedback context, labelled as what it is. An
+ * ask that genuinely changed is a new run.
+ *
+ * Repository state, evidence, coverage and Persona feedback stay out, exactly as the intent
+ * fingerprint documents - those are live per-submission reads, and only intent is frozen.
+ */
+export interface WorkflowRunIntentSnapshot {
+  /** The unrefined human prompt as the Goal held it at run creation. */
+  rawGoal: string;
+  /** The refined objective, or null when the Goal carried only a raw prompt. */
+  refinedGoal: string | null;
+  /** The note the goal and decisions were read from, mirrored into `primaryGoal`. */
+  sourceNoteKey: string;
+  /** Resolved reviews, answered Foreman episodes, and human transcript turns, bounded. */
+  decisions: WorkflowHumanDecision[];
+  /**
+   * `workflowIntentFingerprint` over exactly these fields.
+   *
+   * Stamped onto every submission of the run as the identity it was judged against, rather
+   * than compared against a re-derived one: frozen intent cannot move, so a comparison could
+   * only ever be true, and being false would silently restore per-submission compaction.
+   */
+  fingerprint: string;
+  frozenAt: number;
+}
+
+/**
+ * One run's canonical acceptance criteria, compacted once from its frozen intent.
+ *
+ * Criteria used to be recompacted per submission, which made them drift round to round (4, 3,
+ * 6, 5, 5, 5, 5, 7, 2 across one observed run) even where the intent behind them had not
+ * moved. A submission cannot be repaired against a target that moves while it is being
+ * repaired, so the compaction runs once and every later submission of the run reuses the
+ * result verbatim.
+ *
+ * Only the STABLE half lives here. Criterion mappings are per-submission by definition - they
+ * bridge one submission's author coverage claims onto these criteria - so they stay on the
+ * submission's own context snapshot and are reconciled on every capture.
+ */
+export interface WorkflowRunCriteria {
+  /** The frozen intent these were distilled from, recorded as provenance rather than a gate. */
+  intentFingerprint: string;
+  constraints: string[];
+  acceptanceCriteria: string[];
+  canonicalCriteria: WorkflowCanonicalCriterion[];
+  /**
+   * The compaction receipt, carried forward so every reusing submission reports its origin.
+   *
+   * `status` is narrowed to the literal `model`. The snapshot's own receipt admits `fallback`
+   * because a submission genuinely can record a failed compaction, but a RUN cannot: a fallback
+   * freezes nothing and the next submission retries. Keeping the wider shape here would leave
+   * the forbidden state representable and let a future caller store empty criteria for good.
+   */
+  compaction: Omit<WorkflowContextSnapshot["compaction"], "status"> & { status: "model" };
+  /** The submission whose capture paid for the compaction. */
+  compactedFromSubmissionId: WorkflowSubmissionId;
+  compactedAt: number;
+}
+
 export interface WorkflowRun {
   id: WorkflowRunId;
   bindingId: WorkflowBindingId;
@@ -3532,6 +3621,34 @@ export interface WorkflowRun {
    * run, and no sibling Persona or other run may inherit it.
    */
   personaDirectives?: WorkflowPersonaDirective[];
+  /**
+   * The human's ask as it stood when this run was created, or null for a run created before
+   * the snapshot existed.
+   *
+   * Null is not a defect and must not be repaired by reading the Goal now: the whole point of
+   * the freeze is that "now" is too late to be trusted. A run without one keeps the live-read
+   * behaviour it was created under for its whole life, so an in-flight run survives a daemon
+   * upgrade instead of silently changing what it reviews against halfway through.
+   */
+  intent?: WorkflowRunIntentSnapshot | null;
+  /**
+   * Why `intent` and `criteria` are what they are - see `WorkflowRunIntentState`.
+   *
+   * Optional only so a payload written by an older daemon still parses; every row this build
+   * reads carries one. Read THIS rather than testing `intent` for null: the live-read path is
+   * correct for `never_frozen` and wrong for `unreadable`, and the two are indistinguishable
+   * from the snapshot alone.
+   */
+  intentState?: WorkflowRunIntentState;
+  /**
+   * The canonical criteria compacted once from `intent`, or null until that first compaction
+   * succeeds.
+   *
+   * A failed compaction stores nothing, exactly as a failed compaction retries today: the
+   * next submission tries again, and the run falls back to its per-submission behaviour in
+   * the meantime rather than freezing an empty criteria set.
+   */
+  criteria?: WorkflowRunCriteria | null;
   /**
    * The repair round this run's Command execution budgets start counting from, or null to
    * count every execution the run has made.

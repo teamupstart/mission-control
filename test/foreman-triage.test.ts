@@ -18,6 +18,7 @@ import type { Pending } from "../src/server/foreman/pending.ts";
 import type { ToolCall, TranscriptMessage } from "../src/shared/types.ts";
 import { planFromVerdict } from "../src/server/foreman/verdict.ts";
 import type { ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
+import { ForemanConfigSchema } from "../src/shared/protocol.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { Session, SessionState } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
@@ -924,11 +925,26 @@ test("triagePosture: `on` is reachable ONLY by an exact match", () => {
 });
 
 test("triagePosture: a missing `triage` key falls back to shadow, not to on", () => {
-  // The real reachability: the worker is started separately from the daemon (`npm run foreman`),
-  // so a new worker polling an older daemon build gets a config with no `triage` key at all.
-  // That must degrade to the documented default, never to the acting posture.
+  // Deliberately NOT the shipped default, which is `on` - and this test is the reason that
+  // split has to be stated rather than assumed. The two answer different questions: the schema
+  // says what a fresh install should RUN, this says what an unvalidatable value should decay
+  // to, and only the second has to be the conservative one.
+  //
+  // A key absent at THIS layer never came through `ForemanConfigSchema` - the parse in
+  // `ForemanClient.getConfig` fills it with `on` first, which `foreman-client.test.ts` pins.
+  // What reaches here without a value is a raw or corrupted read, and it must not inherit the
+  // acting posture just because the product chose to ship it.
   assert.equal(triagePosture(undefined), "shadow");
   assert.equal(triagePosture(({} as ForemanConfig).triage), "shadow");
+});
+
+test("the shipped default is `on`, and it does not drag the fail-safe fallback with it", () => {
+  // One assertion holding both halves, because the bug worth catching is somebody "tidying"
+  // them into agreement - in either direction. Flip the default back and a fresh install
+  // silently pays for a measurement nobody reads; widen the fallback to match the default and
+  // a corrupted config starts ACTING on Tier 1 verdicts.
+  assert.equal(ForemanConfigSchema.parse({}).triage, "on");
+  assert.equal(triagePosture("nonsense"), "shadow");
 });
 
 test("triagePosture: a non-string value falls back to shadow", () => {

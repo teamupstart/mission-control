@@ -114,6 +114,7 @@ function definition(over: Partial<ScheduleDefinition> = {}): ScheduleDefinition 
     timezone: "America/New_York",
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
+    completionPolicy: "manual",
     executionMode: "local-catchup",
     runnerId: null,
     template: {

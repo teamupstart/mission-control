@@ -7,6 +7,7 @@ import {
 } from "@shared/schedules.ts";
 import type {
   MissionSchedule,
+  ScheduleCompletionPolicy,
   ScheduleDecisionKind,
   RunnableScheduleRevision,
   ScheduleDefinition,
@@ -123,6 +124,7 @@ export interface ScheduleDefinitionInput {
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy;
   missedPolicy: ScheduleMissedPolicy;
+  completionPolicy: ScheduleCompletionPolicy;
   template: ScheduleTemplate;
 }
 
@@ -563,6 +565,7 @@ export class ScheduleManager implements ScheduleService {
         timezone: cadence.timezone,
         overlapPolicy: input.overlapPolicy,
         missedPolicy: input.missedPolicy,
+        completionPolicy: input.completionPolicy,
         executionMode: "local-catchup",
         runnerId: null,
         template: { ...input.template, title, intent, repoRoot: repo.repoRoot },

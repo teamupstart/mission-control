@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerEvent } from "../src/shared/types.ts";
 
-// What is at stake: the seven review roles ship WITH the application, which is a promise about
+// What is at stake: the eight review roles ship WITH the application, which is a promise about
 // two different things. First, that a build serves the exact Markdown it was made from - the
 // generated module is the only copy that survives bundling and packaging, so a drifted or
 // hand-edited one is a build quietly reviewing with guidance nobody wrote. Second, that they
@@ -148,6 +148,36 @@ test("each built-in derives its identity from its document and declares itself b
   assert.match(
     design.guidanceMarkdown,
     /That title is not a route around those rules\./,
+  );
+  const coverage = BUILTIN_PERSONAS.find(
+    (persona) => persona.id === builtinPersonaId("test-coverage-judge"),
+  );
+  assert.ok(coverage, "Test Coverage Judge is present in the built-in catalog");
+  assert.equal(coverage.name, "Test Coverage Judge");
+  assert.equal(
+    coverage.description,
+    "Judges whether the submitted tests genuinely exercise at least 80% of the changed executable "
+    + "code, including its happy paths, boundaries, and exception behavior.",
+  );
+  assert.match(coverage.guidanceMarkdown, /At least 80% of the changed executable lines/);
+  assert.match(
+    coverage.guidanceMarkdown,
+    /If the inventory contains zero changed executable lines/,
+  );
+  assert.match(
+    coverage.guidanceMarkdown,
+    /Pass this review and state that\s+the denominator is zero/,
+  );
+  assert.match(
+    coverage.guidanceMarkdown,
+    /whether the test really tests what its name and description say it tests/,
+  );
+  for (const requiredCase of ["### Happy path", "### Boundaries and branches", "### Exceptions and failures"]) {
+    assert.match(coverage.guidanceMarkdown, new RegExp(requiredCase));
+  }
+  assert.match(
+    coverage.guidanceMarkdown,
+    /A test whose name describes one branch while its setup reaches another\./,
   );
   const slop = BUILTIN_PERSONAS.find(
     (persona) => persona.id === builtinPersonaId("slop-filter"),

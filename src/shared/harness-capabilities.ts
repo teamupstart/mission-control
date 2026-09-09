@@ -398,8 +398,57 @@ export interface StandingInstructionsSpec {
   outOfBand: Partial<Record<SessionRuntime, StandingInstructionsMechanism>>;
 }
 
-/** One agent's capabilities, as far as they can be stated without touching a disk. */
-export interface HarnessCapabilities {
+/**
+ * Live model discovery, and the sign-in that makes it answer anything.
+ *
+ * A UNION rather than two independent fields, because only two of the four combinations
+ * are real and the other two are nonsense a registry entry could otherwise ship:
+ * a harness that discovers but cannot say how to sign in renders a signed-out notice with
+ * no remedy - the exact defect this pair was added to fix - and a harness on shipped rows
+ * carrying a sign-in sentence advertises an account for a catalog it never asks about.
+ * `discoversModels` discriminates, so the compiler refuses both, and a consumer that has
+ * checked the flag gets `modelProviderSignIn` as `string` with no null to re-handle.
+ *
+ * `discoversModels` - does this harness answer a live model catalog, rather than only its
+ * shipped rows? The pure half of `Harness.models.discover`
+ * (`src/server/harness/types.ts`), and here for the reason `runtimes` and `resumes` are:
+ * the BROWSER asks it. The catalog notice beside every picker - "checking", "showing
+ * built-in rows", and the retry button - is meaningful only for a harness that has
+ * something to check, and the browser cannot import a spec that spawns a subprocess to
+ * find out.
+ *
+ * ONE FACT IN TWO FILES with `HARNESSES[a].models.discover !== null`, the treatment
+ * `runtimes` / `resumes` get: `harness-model-catalog.test.ts` fails until they agree, so a
+ * probe cannot ship with no way to report its failure and the browser cannot offer to
+ * retry a discovery that does not exist. That flag replaced a proxy that asked whether any
+ * row reported a provider - true for Pi, false for everything else, so it read correctly
+ * while Pi was the only harness that discovered, and then silently hid Codex's degraded
+ * state, because Codex reports no provider per row and discovers anyway.
+ *
+ * `modelProviderSignIn` - how a human signs this harness in to those providers, as one
+ * sentence the catalog notice appends when the probe says there are none. A discovering
+ * harness answers with the models its SIGNED-IN accounts offer, so "no rows" and "no
+ * account" are one state seen from two sides. Measured against pi 0.84.2: an installation
+ * with no provider credentials answers `get_available_models` with `{"models":[]}` and
+ * exits 0, which the probe reports as `unavailable`. The notice used to render that as
+ * "Pi did not report any available provider models" - true, and no help at all to the one
+ * person who could fix it by signing in. Per harness rather than one shared sentence,
+ * because the act genuinely differs: Pi is signed in from inside a session with `/login`,
+ * Codex from a terminal with `codex login`. Plain text, not markup - the notice renders it
+ * as a sentence a person reads.
+ */
+export type ModelDiscoverySpec =
+  | { discoversModels: true; modelProviderSignIn: string }
+  | { discoversModels: false; modelProviderSignIn: null };
+
+/**
+ * The slots every harness answers the same way, whatever it decides about discovery.
+ *
+ * Not exported: `HarnessCapabilities` below is the type callers hold, and splitting the
+ * base out is a mechanism for intersecting `ModelDiscoverySpec` in rather than a second
+ * vocabulary to learn.
+ */
+interface HarnessCapabilitiesBase {
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
   id: AgentType;
   /**
@@ -435,26 +484,6 @@ export interface HarnessCapabilities {
    * justify a boolean nobody can set.
    */
   resumes: boolean;
-  /**
-   * Does this harness answer a live model catalog, rather than only its shipped rows?
-   *
-   * The pure half of `Harness.models.discover` (`src/server/harness/types.ts`), and here
-   * for the reason `runtimes` and `resumes` are: the BROWSER asks it. The catalog notice
-   * beside every picker - "checking", "showing built-in rows", and the retry button - is
-   * meaningful only for a harness that has something to check, and the browser cannot
-   * import a spec that spawns a subprocess to find out.
-   *
-   * ONE FACT IN TWO FILES with `HARNESSES[a].models.discover !== null`, the treatment
-   * `runtimes` / `resumes` get: `harness-model-catalog.test.ts` fails until they agree, so
-   * a probe cannot ship with no way to report its failure and the browser cannot offer to
-   * retry a discovery that does not exist.
-   *
-   * This replaced a proxy that asked whether any row reported a provider. That happened to
-   * be true for Pi and false for everything else, so it read correctly while Pi was the
-   * only harness that discovered - and then silently hid Codex's degraded state, because
-   * Codex reports no provider per row and discovers anyway.
-   */
-  discoversModels: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
   workQueue: WorkQueueSpec | null;
@@ -485,6 +514,15 @@ const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
  * that loads skills without needing a nudge (Codex) would have been left out of the very
  * loop that installs them. Install and nudge are two capabilities.
  */
+/**
+ * One agent's capabilities, as far as they can be stated without touching a disk.
+ *
+ * An intersection rather than one interface because `ModelDiscoverySpec` is a union, and
+ * an interface cannot extend one. Every call site still sees one flat object: `runtimes`,
+ * `discoversModels` and `modelProviderSignIn` read the same way they always did.
+ */
+export type HarnessCapabilities = HarnessCapabilitiesBase & ModelDiscoverySpec;
+
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
   reloadIdleSource: "hooks",
@@ -512,6 +550,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // rather than a model. Adopting it is a persisted-vocabulary decision, so it is
     // deliberately deferred: see `docs/plans/claude-codex-live-model-catalog/plan.md`.
     discoversModels: false,
+    modelProviderSignIn: null,
     permissionModes: {
       // `dontAsk` is deliberately absent: it is settable only at startup and Shift+Tab
       // never reaches it, so offering it would promise a walk that cannot arrive. It
@@ -598,6 +637,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     resumes: true,
     // `model/list` over `codex app-server`, behind `HARNESSES.codex.models.discover`.
     discoversModels: true,
+    modelProviderSignIn:
+      "Codex only lists models the account it is signed in to can use. If you are signed out, run codex login in a terminal and try again.",
     // Measured against codex-cli 0.145.0. Codex has no Shift+Tab footer cycle, but
     // `/permissions` opens a numbered picker and applies the selected profile to the
     // current conversation. The rollout's turn_context records the matching sandbox,
@@ -729,6 +770,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     resumes: true,
     // `get_available_models` over pi's RPC mode, behind `HARNESSES.pi.models.discover`.
     discoversModels: true,
+    modelProviderSignIn:
+      "Pi only lists models a signed-in provider offers. If you are signed out, open a Pi session and run /login to sign in to your Anthropic or Claude account, or set that provider's API key, and try again.",
     // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
     // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
     // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does

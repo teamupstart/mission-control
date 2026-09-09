@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   SETUP_FAMILY_IDS,
   SETUP_FAMILY_INFO,
@@ -7,6 +7,7 @@ import {
   type SetupDependencyId,
   type SetupFamilyId,
   type SetupRowView,
+  type SetupServiceId,
 } from "@shared/setup-catalog.ts";
 import type {
   PipelineInstallerCandidatesResult,
@@ -17,7 +18,9 @@ import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import {
   fetchPipelineInstallers,
   openSetupInstaller,
+  startSetupService,
   type SetupInstallerLaunchResult,
+  type SetupServiceStartResult,
 } from "../lib/api.ts";
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
@@ -106,15 +109,32 @@ function TerminalPicker({
   );
 }
 
+function RemedyNotice({
+  tone,
+  detail,
+  hint,
+}: {
+  tone: "attention" | "error";
+  detail: string;
+  hint?: string;
+}): React.JSX.Element {
+  return (
+    <div className={`setup-launch-notice is-${tone}`} role="status">
+      <strong>{detail}</strong>
+      {hint && <span>{hint}</span>}
+    </div>
+  );
+}
+
 function LaunchNotice({ result }: { result: SetupInstallerLaunchResult | null }): React.JSX.Element | null {
   if (!result) return null;
   const attention = result.outcome === "opened" || result.outcome === "maybe-opening";
-  const detail = result.detail || result.error || "The installer terminal was refused.";
   return (
-    <div className={`setup-launch-notice is-${attention ? "attention" : "error"}`} role="status">
-      <strong>{detail}</strong>
-      {attention && <span>When the installer finishes, press Re-check.</span>}
-    </div>
+    <RemedyNotice
+      tone={attention ? "attention" : "error"}
+      detail={result.detail || result.error || "The installer terminal was refused."}
+      hint={attention ? "When the installer finishes, press Re-check." : undefined}
+    />
   );
 }
 
@@ -179,6 +199,65 @@ function CommandRemedy({
         />
       </div>
       <LaunchNotice result={result} />
+    </div>
+  );
+}
+
+/**
+ * Start a background service the daemon owns, then re-read the machine.
+ *
+ * No terminal picker, and that absence is the point: nothing opens a window, so there is
+ * nothing for the operator to choose or to watch. The call settles with the service either
+ * answering or not, which is why this remedy re-checks itself instead of ending on "press
+ * Re-check" the way an install must.
+ */
+function ServiceRemedy({
+  service,
+  label,
+  note,
+  onRepaired,
+}: {
+  service: SetupServiceId;
+  label: string;
+  note: string;
+  onRepaired(): void;
+}): React.JSX.Element {
+  const [starting, setStarting] = useState(false);
+  const [result, setResult] = useState<SetupServiceStartResult | null>(null);
+
+  async function start(): Promise<void> {
+    setStarting(true);
+    setResult(null);
+    try {
+      const next = await startSetupService({ service });
+      setResult(next);
+      if (next.ok) onRepaired();
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  return (
+    <div className="setup-remedy-actions">
+      <div className="setup-run-controls">
+        <Tooltip label={note}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={starting}
+            onClick={() => void start()}
+          >
+            {starting ? "Starting..." : label}
+          </button>
+        </Tooltip>
+      </div>
+      {result && (
+        <RemedyNotice
+          tone={result.ok ? "attention" : "error"}
+          detail={result.detail || result.error || `${label} did not finish.`}
+          hint={result.ok ? undefined : "Start it yourself in a terminal, then press Re-check."}
+        />
+      )}
     </div>
   );
 }
@@ -293,8 +372,18 @@ function ProviderInstallerRemedy({
   );
 }
 
-function Remedy({ row }: { row: SetupRowView }): React.JSX.Element {
+function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }): React.JSX.Element {
   const remedy = row.remedy;
+  if (remedy.kind === "service") {
+    return (
+      <ServiceRemedy
+        service={remedy.service}
+        label={remedy.label}
+        note={remedy.note}
+        onRepaired={onRepaired}
+      />
+    );
+  }
   if (remedy.kind === "command") {
     return row.rowId.source === "dependency"
       ? <CommandRemedy id={row.rowId.id} label={row.label} argv={remedy.argv} note={remedy.note} />
@@ -345,7 +434,15 @@ function Evidence({ evidence, home }: { evidence: string; home: string }): React
   return shown === evidence ? line : <Tooltip label={evidence}>{line}</Tooltip>;
 }
 
-function SetupRow({ row, home }: { row: SetupRowView; home: string }): React.JSX.Element {
+function SetupRow({
+  row,
+  home,
+  onRepaired,
+}: {
+  row: SetupRowView;
+  home: string;
+  onRepaired(): void;
+}): React.JSX.Element {
   const status = row.status;
   const satisfied = status.state === "satisfied";
   return (
@@ -385,7 +482,7 @@ function SetupRow({ row, home }: { row: SetupRowView; home: string }): React.JSX
             {status.state !== "missing" && status.evidence && (
               <Evidence evidence={status.evidence} home={home} />
             )}
-            <Remedy row={row} />
+            <Remedy row={row} onRepaired={onRepaired} />
           </>
         )}
       </div>
@@ -594,6 +691,12 @@ export function SetupPanel({
   const rows = state.view?.rows ?? NO_ROWS;
   const home = state.view?.home ?? "";
 
+  // A remedy that settles in the daemon re-reads the machine itself, so the row it repaired
+  // reports the new truth rather than waiting for the operator to press Re-check on a
+  // question they have already answered.
+  const refresh = state.refresh;
+  const onRepaired = useCallback(() => { void refresh(); }, [refresh]);
+
   // Chosen, not derived on every read. `null` means "nobody has chosen", which is the only
   // state `defaultFamily` may answer for: re-deriving on each snapshot would move the rail
   // out from under the operator the moment a Re-check repaired the family they were reading.
@@ -695,7 +798,12 @@ export function SetupPanel({
             ? (
                 <div className="setup-rows">
                   {activeRows.map((row) => (
-                    <SetupRow key={setupRowAnchor(row.rowId)} row={row} home={home} />
+                    <SetupRow
+                      key={setupRowAnchor(row.rowId)}
+                      row={row}
+                      home={home}
+                      onRepaired={onRepaired}
+                    />
                   ))}
                 </div>
               )

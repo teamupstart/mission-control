@@ -76,9 +76,10 @@ Phase 1 establishes these and later phases consume them without changing them:
 
 - **`RunRecordTabs`**, the tab container in `WorkflowRuns.tsx`, owns the tab list, the selected pane, the counts and the amber badge. Phase 2 and Phase 3 add a pane to its registry; neither reimplements the bar.
 - **The pane registry shape.** A pane is `{ id, label, count, blocking, render }`. `blocking` drives the amber badge. A pane whose `render` returns null is not offered as a tab, which is how Completion stays absent on a run with no gate and no claim.
-- **The initial-selection order.** When the route names no pane the selection is the blocking
-  worklist, else the first blocking pane in tab order, else the worklist; an explicit route pane
-  always wins. This is what makes the plan's "a blocking container opens itself" true for tabs, since
+- **The initial-selection order.** An explicit route pane wins **only when that pane is registered
+  and renderable for this run**; a route naming an absent pane is ignored for selection. Otherwise
+  the selection is the blocking worklist, else the first blocking pane in tab order, else the
+  worklist. This is what makes the plan's "a blocking container opens itself" true for tabs, since
   the amber badge alone does not. Later phases participate by setting `blocking` honestly rather than
   adding a rule.
 - **The route field.** `MissionRoute` for `page: "runs"` gains an optional `pane` whose values are the pane ids. Phase 2 and Phase 3 add an id to that union and to nothing else.

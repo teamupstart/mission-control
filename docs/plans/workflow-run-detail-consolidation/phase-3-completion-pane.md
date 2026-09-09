@@ -72,7 +72,10 @@ Phase 2 has merged.
 
 3. **Make the pane conditional.** The pane's `render` returns null when the run has neither an
    Inspector gate nor a completion claim, which Phase 1's registry already turns into an absent tab.
-   Do not add a second mechanism for hiding a tab.
+   Do not add a second mechanism for hiding a tab. This phase is what makes a stale
+   `pane=completion` route reachable, so confirm Phase 1's rule still holds: such a route is ignored
+   for selection and falls through to the blocking-or-worklist fallback rather than selecting a tab
+   that is not in the bar.
 
 4. **Build the pane.** A stat strip (gate, open findings, resolved, pull request, Inspector round),
    then `inspectorGateSentence` as the summary line, then the findings table, then the completion
@@ -105,6 +108,8 @@ Phase 2 has merged.
   gate.
 - `renderToStaticMarkup` cases for the findings table row, the legacy-finding arm, the claim row and
   the state-count sentence. Update the gate heading assertion and the disabled-Inspector copy assertion.
+- A Playwright case for a link carrying `pane=completion` against a run with no gate and no claim:
+  it lands on a valid pane rather than an empty container.
 - A new Playwright spec: the Completion tab is absent on a run with no gate and no claim; it is
   present and carries the amber badge on a run with an open finding; a finding row expands its body;
   the ledger disclosure still exposes the "Last workflow observation" and "Current Inspector" regions
@@ -133,6 +138,9 @@ a sibling section, and should keep `blocking` meaning "this pane holds something
 
 ## Cross-phase audit record
 
+- Reconciled against Phase 1 after review. This phase introduces the only conditional pane, so it is
+  the phase that makes a stale route pane reachable; Phase 1's selection rule was tightened to ignore
+  an unavailable pane and this file now points at that rule rather than restating it.
 - Reconciled against Phase 1. The conditional tab is handled by Phase 1's null-render rule rather
   than by a flag added here; that rule was written into Phase 1 for this reason.
 - Reconciled against Phase 2. This phase reuses Phase 2's ledger table and row classes and adds no

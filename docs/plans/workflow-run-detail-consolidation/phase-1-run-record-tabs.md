@@ -95,8 +95,14 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
    constraint that a blocking state is surfaced *without a click*, so the initial selection resolves
    in this order, deterministically:
 
-   1. the pane the route names, if it names one and that pane is present. An explicit pane always
-      wins, including when another pane is blocking, so a link and the back button stay honest;
+   1. the pane the route names, **when that pane is registered and its `render` returns content for
+      this run**. An explicit pane wins over a blocking one, so a link and the back button stay
+      honest. It wins only under that condition: a pane is conditional (Phase 3's Completion is
+      absent on a run with no gate and no claim), so a stale or hand-typed
+      `pane=completion` would otherwise select a tab that is not in the bar and leave the container
+      showing nothing. An unavailable pane is ignored for selection and falls through to the rules
+      below. Do not rewrite the hash on load to erase it: rewriting history under a reader who has
+      just arrived costs them the back button, and the next tab they pick updates the route anyway;
    2. the worklist, when the worklist itself is blocking. It is the primary object, and a run with
       both an open change and a refused delivery should not bury the change;
    3. the first blocking pane in tab order;
@@ -150,7 +156,8 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
   counts, the delivery row, the collapsed decision row's summary line, and each of the three
   degraded intent arms. Update the assertions at `:1539` and `:1546` to the pane's markup.
 - A `node:test` case for the initial-selection order as a pure function over the pane registry and
-  the route: an explicit route pane wins over a blocking pane; a blocking worklist wins over a
+  the route: an explicit route pane wins over a blocking pane; a route naming a pane that is not
+  registered for this run is ignored and the fallback applies; a blocking worklist wins over a
   blocking Deliveries; a blocking Deliveries wins when the worklist is clean; the worklist is the
   final fallback.
 - A new Playwright spec in `e2e/`: the worklist pane is selected on load, the Deliveries and Intent
@@ -173,6 +180,8 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
 - Every delivery and intent field and action that rendered before still renders and still works.
 - A link carrying `pane` opens on that pane, and changing rounds preserves the selected pane.
 - A run whose blocking state is not in the worklist opens on the pane holding it, with no click.
+- A route naming a pane that does not exist for the run lands on a valid pane rather than an empty
+  container, and does not silently rewrite the address bar.
 - All verification above passes.
 
 ## Downstream handoff
@@ -181,8 +190,10 @@ Phase 2 and Phase 3 may rely on:
 
 - `RunRecordTabs` and the `{ id, label, count, blocking, render }` pane registry. Add a pane; do not
   reimplement the bar, the badge, the keyboard handling or the route wiring.
-- The initial-selection order. A later pane participates by setting `blocking` honestly; it must not
-  add a selection rule of its own.
+- The initial-selection order, including its rule that an explicit route pane wins only when that
+  pane is registered and renderable. A later pane participates by setting `blocking` honestly; it
+  must not add a selection rule of its own, and a conditional pane needs nothing beyond returning
+  null from `render`.
 - The pane id tuple in `useWorkflowRoute.ts`. Add an id to the union and nothing else.
 - `runRecordSummary`. Extend it with new fields; do not count in the view.
 - The ledger table and stat strip CSS classes this phase introduces.
@@ -194,6 +205,10 @@ that stops the run", not "this pane has warnings").
 ## Cross-phase audit record
 
 - Written first; nothing earlier to reconcile.
+- Reconciled against `phased-plan.md` after review. The index had stated "an explicit route pane
+  always wins" without this file's presence guard, so the one contract read two ways. The index now
+  carries the guard, and this step spells out what "present" means and that a stale value is ignored
+  rather than rewritten.
 - Reconciled against the source plan after review. The plan requires that a blocking container
   "opens itself"; this file had specified only the amber badge and a worklist default, which is
   weaker than the approved constraint. The selection order in step 5 and its tests restore it, and

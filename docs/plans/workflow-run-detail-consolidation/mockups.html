@@ -4756,6 +4756,147 @@ What is added for workflow evidence is the footer: caption, item id, scope, MIME
 fetches the full retained body through the same <code>/api/workflow-runs/:id/images/:imageId</code> route the
 ledger already uses, and <code>.attach-preview-image</code> scales it to <code>min(70vh, 720px)</code>.</p>
 
+<h3 class="mk-h3">The Completion pane</h3>
+<p class="mk-note">The scope decision folds the GitHub Inspector final gate and the Foreman completion claim into
+the same bar as a fifth tab, present only when the run has one of them. This frame uses two more real records:
+the Inspector ledger for <code>teamupstart/mission-control#969</code>, which carries
+10 findings across 8 rounds with 1 still open,
+and the 5 Foreman completion claims recorded on run <code>0064ccdb</code>.
+Findings become a table, the two fact ledgers become one disclosure, and the five completion claims - five
+near-identical cards today - become five rows.</p>
+<div class="mk-frame" id="frame-a-gate">
+<section class="wf-run-section">
+  <div class="workflow-tabs" role="tablist" aria-label="Run record">
+    <button role="tab" aria-selected="false">Review worklist <span class="mk-count">0</span></button>
+    <button role="tab" aria-selected="false">Deliveries <span class="mk-count">9</span></button>
+    <button role="tab" aria-selected="false">Evidence <span class="mk-count">6</span></button>
+    <button role="tab" aria-selected="false">Intent</button>
+    <button class="active" role="tab" aria-selected="true">Completion <span class="mk-count alert">1</span></button>
+  </div>
+  <div class="mk-strip"><div class="mk-stat"><div class="k">Gate</div><div class="v warn">blocked</div></div><div class="mk-stat"><div class="k">Open findings</div><div class="v warn">1</div></div><div class="mk-stat"><div class="k">Resolved</div><div class="v ok">9</div></div><div class="mk-stat"><div class="k">Pull request</div><div class="v ">#969 merged</div></div><div class="mk-stat"><div class="k">Inspector round</div><div class="v ">8</div></div></div>
+  <p class="mk-sentence">GitHub Inspector adopted <strong>#969</strong> from a hook and has
+  reviewed head <code>22351852</code> 8 times. One finding is still
+  <strong>drafted</strong>, so the gate has not passed.</p>
+
+  <h5 class="mk-subhead">Findings</h5>
+  <table class="mk-table">
+    <thead><tr><th>Severity</th><th>Finding</th><th>Where</th><th>Round</th><th>Status</th></tr></thead>
+    <tbody><tr>
+      <td><span class="workflow-chip workflow-failed">major</span></td>
+      <td>Coverage-claim carry truncation can evict the source's own claims before its ancestry</td>
+      <td><code>src/server/workflows/store.ts:87</code></td>
+      <td class="num">1</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-failed">major</span></td>
+      <td>Carry claim budget is charged even when the insert is a no-op</td>
+      <td><code>src/server/workflows/store.ts:87</code></td>
+      <td class="num">2</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-failed">major</span></td>
+      <td>Shared-digest capture can reference a body reconciliation deletes mid-capture</td>
+      <td><code>src/server/workflows/images.ts:26</code></td>
+      <td class="num">2</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-failed">major</span></td>
+      <td>Carried evidence's inheritedFrom.submissionId does not follow the original capture across multiple carries</td>
+      <td><code>src/server/workflows/store.ts:87</code></td>
+      <td class="num">3</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-waiting">minor</span></td>
+      <td>carriedEvidenceStillMatches swallows all errors as "unchanged"</td>
+      <td><code>src/server/workflows/images.ts:812</code></td>
+      <td class="num">4</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-waiting">minor</span></td>
+      <td>PR description's 'Known gaps'/'Follow-up work' contradict this diff</td>
+      <td><code>src/web/workflows/WorkflowRuns.tsx:272</code></td>
+      <td class="num">5</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-waiting">minor</span></td>
+      <td>imageStoragePathIsReferenced doesn't filter by availability despite its docstring</td>
+      <td><code>src/server/workflows/store.ts:6120</code></td>
+      <td class="num">5</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-waiting">minor</span></td>
+      <td>Byte-budget carry can skip newer ancestry while keeping older</td>
+      <td><code>src/server/workflows/store.ts:87</code></td>
+      <td class="num">6</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-failed">major</span></td>
+      <td>Digest-dedup during evidence carry can silently orphan a coverage link</td>
+      <td><code>src/server/workflows/store.ts:87</code></td>
+      <td class="num">7</td>
+      <td><span class="workflow-chip workflow-completed">resolved</span></td>
+    </tr><tr>
+      <td><span class="workflow-chip workflow-waiting">minor</span></td>
+      <td>Coverage-claim carry tie-break isn't actually 'oldest ancestry first' past two hops</td>
+      <td><code>src/server/workflows/store.ts:87</code></td>
+      <td class="num">9</td>
+      <td><span class="workflow-chip workflow-failed">drafted</span></td>
+    </tr></tbody>
+  </table>
+  <p class="wf-run-meta">Findings are not in the Review worklist - that list is built from Persona verdicts only -
+  so this is the one place they appear. Each row opens its body and its fingerprint.</p>
+
+  <h5 class="mk-subhead">Foreman completion claims</h5>
+  <div class="mk-claims"><div class="mk-row">
+    <div>
+      <div class="mk-row-t">Phase 3 is implemented with an independent all-city materialization and horizon-audit job, structured partial-failure re&hellip;</div>
+      <div class="mk-row-s"><i class="mk-dot warn"></i> prompted &middot; once-only guard <code>5eedc77c0d9b</code></div>
+    </div>
+    <span class="workflow-chip workflow-waiting">already claimed</span>
+  </div><div class="mk-row">
+    <div>
+      <div class="mk-row-t">Phase 3 is implemented with independent all-city materialization, structured partial-failure and zero-window handling, i&hellip;</div>
+      <div class="mk-row-s"><i class="mk-dot warn"></i> prompted &middot; once-only guard <code>5b265a91e0c9</code></div>
+    </div>
+    <span class="workflow-chip workflow-waiting">already claimed</span>
+  </div><div class="mk-row">
+    <div>
+      <div class="mk-row-t">Phase 3 is implemented with independent all-city fanout, 14-day horizon auditing, structured partial failures, legitimat&hellip;</div>
+      <div class="mk-row-s"><i class="mk-dot warn"></i> prompted &middot; once-only guard <code>52df9fa13bda</code></div>
+    </div>
+    <span class="workflow-chip workflow-waiting">already claimed</span>
+  </div><div class="mk-row">
+    <div>
+      <div class="mk-row-t">Phase 3 is implemented with an independent all-city materialization and horizon-audit job, structured partial-failure re&hellip;</div>
+      <div class="mk-row-s"><i class="mk-dot warn"></i> prompted &middot; once-only guard <code>b9deb0e5247e</code></div>
+    </div>
+    <span class="workflow-chip workflow-waiting">already claimed</span>
+  </div><div class="mk-row">
+    <div>
+      <div class="mk-row-t">Phase 3 is implemented with independent all-city fanout, 14-day horizon auditing, structured partial-failure reporting, &hellip;</div>
+      <div class="mk-row-s"><i class="mk-dot "></i> prompted &middot; once-only guard <code>de36f73f2135</code></div>
+    </div>
+    <span class="workflow-chip workflow-completed">started</span>
+  </div></div>
+  <p class="wf-run-meta">5 claims on this run: 4 already claimed, 1 started.
+  Today each of these is a separate card in its own section, five near-identical paragraphs deep below the deliveries.</p>
+
+  <details class="mk-acc"><summary><span><span class="mk-sum-t">Gate ledgers</span><span class="mk-sum-s">last workflow observation and current Inspector, 16 facts</span></span></summary>
+    <div class="mk-acc-body">
+      <dl class="wf-run-facts-list">
+        <div><dt>Pull request</dt><dd>#969</dd></div>
+        <div><dt>Adopted provenance</dt><dd>hook</dd></div>
+        <div><dt>Review posture</dt><dd>live</dd></div>
+        <div><dt>Reviewed head</dt><dd><code>22351852</code></dd></div>
+        <div><dt>Observed head</dt><dd><code>2e7ca446</code></dd></div>
+        <div><dt>Pull request state</dt><dd>MERGED</dd></div>
+        <div><dt>Observed</dt><dd>9/9/2026, 4:53:15 PM</dd></div>
+        <div><dt>Merge block</dt><dd>not-allowlisted</dd></div>
+      </dl>
+    </div></details>
+  <p class="wf-run-meta"><button class="btn btn-ghost">Open GitHub Inspector settings</button></p>
+</section></div>
+
 <div class="mk-tradeoffs">
   <div><h5>Why this</h5><ul><li>One place to look; the page below the worklist stops existing.</li><li>Counts and the amber badge keep an unvisited tab honest.</li><li>Reuses <code>.workflow-tabs</code>, already in the app.</li><li>Deliveries collapse from 4 &times; 560 px of card to 4 table rows.</li><li>Images stop being a separate section and become visible where the claims that cite them are.</li></ul></div>
   <div><h5>Costs</h5><ul><li>Three panes are invisible until clicked; the pane has to live in the route so a link and a round change preserve it.</li><li>The worklist already has its own rail and segment control, so a tab bar above it is a second layer of navigation in one section.</li><li>Screenshotting a whole run for a pull request needs an expand-all.</li><li>A thumbnail strip loads image bodies in a pane that is not always visible, so the existing lazy-load has to key off pane visibility rather than scroll position.</li></ul></div>

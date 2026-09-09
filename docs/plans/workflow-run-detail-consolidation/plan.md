@@ -63,8 +63,9 @@ HEAD 1665b769, tree dirty* - and none of them is on screen at the same time as t
 ## The design: tabs under Review worklist
 
 Review worklist keeps its section and becomes the first and default tab on a `.workflow-tabs` bar.
-Deliveries, Evidence and Intent become three sibling tabs, each rewritten from a stack of cards into
-a ledger.
+Deliveries, Evidence, Intent and Completion become sibling tabs, each rewritten from a stack of
+cards into a ledger. Completion is present only when the run has an Inspector gate or a Foreman
+completion claim; the other three are always present.
 
 - **Deliveries** becomes a four-stat strip (delivered 4, refused 0, uncertain 0, newest 1:32:49 PM)
   over one table row per packet carrying round, kind, state chip, delivered time, payload hash and
@@ -78,8 +79,12 @@ a ledger.
   to a canonical criterion that by definition has no author claim to sit under - on the four-image
   submission in the mockups, five of the six gaps are canonical criteria with no match at all.
 - **Intent** leads with the refined goal, then collapsed disclosures for the original goal (2,566
-  characters), the nine human decisions summarised as one row each with their source and size, the
-  acceptance criteria and the constraints, with the snapshot facts as a chip row.
+  characters), the human decisions, the acceptance criteria and the constraints, with the snapshot
+  facts as a chip row. Each human decision is one summary row carrying its source, its size and its
+  first line, and opens on click. That is the decision recorded below, and it is what bounds the
+  largest single block on the page.
+- **Completion** folds in the GitHub Inspector final gate and the Foreman completion claim. See
+  below.
 
 Tab labels carry counts, and an amber badge when a tab holds something blocking. On this run only
 the worklist earns the badge, which is exactly what the record says.
@@ -137,6 +142,32 @@ click, and the ask is that clicking a thumbnail opens it. So this strip opens on
 keeps the `detail === 0` keyboard route so Enter and Space work. The two surfaces differing here is
 a real inconsistency and worth stating rather than hiding; the alternative is making the common case
 worse to match a constraint the common case does not have.
+
+## The Completion pane
+
+The scope decision brings two more sections into the same bar. Both are per-run records about how
+the run finishes, and both have the same problem as the other three: a small amount of decisive
+information wrapped in a large amount of chrome.
+
+**GitHub Inspector final gate.** Today this is a status sentence, two fact ledgers of sixteen fields
+between them, a findings-policy line, a settings button, and one card per finding. On the run in the
+mockups that is ten findings across eight Inspector rounds. In the pane it becomes a stat strip
+(gate state, open findings, resolved findings, pull request, Inspector round), a one-sentence
+summary, and a findings table with one row per finding carrying severity, title, `path:line`, round
+and status. Each row opens its body and its fingerprint. The two fact ledgers become a single
+disclosure, and the settings button stays.
+
+Inspector findings are worth their own surface rather than being merged into the Review worklist:
+`runChangeWorklist` is built from Persona attempt verdicts only, so a finding has never appeared
+there and folding it in would change what that list means.
+
+**Foreman completion claim.** Today one card per claim, each with the claim's summary paragraph and
+its once-only marker. The run in the mockups recorded five, four of them `already_claimed` restating
+the same completion, which reads as five near-identical paragraphs. In the pane they become five
+rows: state chip, kind, marker, and the summary's first line, with a sentence counting the states.
+
+Neither section changes what it records. The gate's policy, the retry and settings routes, the
+marker and the claim states are all preserved.
 
 ## Alternatives considered
 
@@ -200,20 +231,16 @@ because raw text no longer has anywhere on it to be printed.
 full-screen surface to build, route and keep accessible. The dossier's summaries are derived values,
 and every derived value is a new thing that can be wrong or stale.
 
-## What was decided, and what is still open
+## What was decided
 
-**Tabs under Review worklist is the chosen approach**, with the two borrowings above: counts and an
-amber badge on every tab label so an unvisited pane still reports, and the ledger treatment of
-Deliveries and Evidence so the two sections whose cost is chrome rather than content stop paying it.
-Those two changes alone remove about 3,000 px without hiding anything.
+Four decisions were submitted against this plan.
 
-Frozen images are visible as thumbnails in the Evidence pane and open in a preview modal, as above.
-
-One thing the design does not settle. The largest single block on the page is the nine human
-decision bodies at 2,996 px, and tabs alone do not bound them - the Intent pane only helps if each
-decision collapses to a summary row that opens on demand. That is a real behaviour change for
-content a reader can currently take in by scrolling, and it is the open question this plan carries
-into review.
+| Decision | Chosen |
+| --- | --- |
+| Approach | **Tabs under Review worklist**, with counts and an amber badge on every tab label, and the ledger treatment of Deliveries and Evidence. |
+| Human decision bodies | **One summary row each, expanding on click.** This is what bounds the largest single block on the page: 2,996 px of flowing prose becomes nine rows. |
+| Image thumbnails | **A strip above the claims, plus a small copy on each citing claim row.** The picture sits beside the claim it proves. |
+| Scope | **The three sections in the screenshots, plus the GitHub Inspector final gate and the Foreman completion claim.** Workflow-owned model calls and the Timeline stay as they are. |
 
 ## Non-goals
 
@@ -221,12 +248,17 @@ into review.
   to any wire contract in `src/shared/`. This is a rendering change over data that already arrives.
 - No change to the Review worklist's internals. It is the section already behaving correctly.
 - No change to evidence readiness policy, delivery retry semantics, or override recording.
+- No change to the Inspector's own behaviour, its completion policy, its adoption or its retry
+  schedule. The gate is re-rendered, not re-decided.
+- Workflow-owned model calls and the Timeline stay as they are. They were considered and left out.
 
 ## Verification
 
 - A Playwright spec in `e2e/` covering: the default surface on load, reaching each consolidated
   surface, a blocking delivery or readiness state being visible without a click, the counts on the
   labels, and one action (retry or override) still reaching its route from its new home.
+- A Playwright spec for the Completion pane: the tab appears only when the run has a gate or a
+  claim, an open finding shows on the tab badge, and the settings route still opens.
 - A Playwright spec for the image path specifically: a thumbnail is present in the Evidence pane for
   a submission with frozen images, clicking it opens the preview, the preview carries the caption
   and digest, Escape closes only the preview, and focus returns to the thumbnail. Image bodies are

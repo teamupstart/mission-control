@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { WorkflowContextSnapshot } from "../src/shared/workflow.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-export-"));
@@ -98,6 +99,7 @@ test("version and run exports are versioned, complete, and preserve immutable sn
   store.createInitialSubmission({
     id: "run",
     binding,
+    intent: FIXTURE_RUN_INTENT,
     triggerSource: "manual",
     triggerKey: "run-trigger",
     now: 5,

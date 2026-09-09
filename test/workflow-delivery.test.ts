@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
@@ -31,7 +32,7 @@ function seededStore(suffix: string): InstanceType<typeof WorkflowStore> {
     now: 1,
   });
   store.createInitialSubmission(
-    { id: `run-${suffix}`, binding, triggerSource: "manual", triggerKey: `manual:${suffix}`, now: 2 },
+    { id: `run-${suffix}`, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: `manual:${suffix}`, now: 2 },
     {
       id: `submission-${suffix}`,
       triggerSource: "manual",

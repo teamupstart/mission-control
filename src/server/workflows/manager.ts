@@ -44,6 +44,8 @@ import type {
   WorkflowDiagnostic,
   WorkflowJson,
   WorkflowRun,
+  WorkflowRunCriteria,
+  WorkflowRunIntentSnapshot,
   WorkflowRunDetail,
   WorkflowBindingSummary,
   WorkflowRunSummary,
@@ -69,6 +71,7 @@ import type {
   WorkflowAgentEvidenceLocator,
   WorkflowAgentCommandEvidenceLocator,
   WorkflowAgentTextEvidenceLocator,
+  WorkflowCriterionMapping,
   WorkflowEvidenceCoverageClaim,
   WorkflowUploadEvidenceLocator,
   WorkflowRetainedEvidenceLocator,
@@ -133,6 +136,7 @@ import {
   compactWorkflowContext,
   probeMatchesEvidence,
   readWorkflowContextRaw,
+  readWorkflowIntentSnapshot,
   readWorkflowEvidenceProbe,
   type WorkflowEvidenceProbe,
   readWorkflowRepositoryHead,
@@ -142,6 +146,9 @@ import {
   workflowIntentFingerprint,
   workflowRepositoryFingerprint,
   reuseWorkflowContextCriteria,
+  fallbackWorkflowContext,
+  workflowRunCriteriaFrom,
+  type WorkflowCriteriaSource,
 } from "./context.ts";
 import {
   WorkflowEngine,
@@ -307,6 +314,12 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
 export interface WorkflowManagerOptions {
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
+  /**
+   * The intent freeze, injectable for the same reason `readContextRaw` is: it reads the
+   * session Goal and the on-disk transcript, and a test that wants to state what a run was
+   * asked for should not have to arrange both.
+   */
+  readIntentSnapshot?: typeof readWorkflowIntentSnapshot;
   boundaryChanged?: typeof captureBoundaryChanged;
   /**
    * The resumption observer's cheap "has anything moved?" read. The same seam as
@@ -515,6 +528,24 @@ export class WorkflowManager {
   private inspectionUnsubscribe: (() => void) | null = null;
   private readonly captureLocks = new Map<string, Promise<void>>();
   private readonly gateLocks = new Map<string, Promise<void>>();
+  /**
+   * The run whose ONE canonical compaction is in flight, and what it will produce.
+   *
+   * Once-per-run is a claim about model calls, so it has to be enforced BEFORE the call, not
+   * reconciled after it. `freezeRunCriteria` is a compare-and-set on a finished result: it
+   * guarantees one stored criteria set, and cannot stop two captures that both read a null
+   * column from each paying for a compaction first. This claim closes that window - the first
+   * capture registers before it spends anything, and a concurrent one awaits the answer
+   * instead of buying a second opinion.
+   *
+   * In memory rather than durable, and that is the right scope: one daemon owns the state, so
+   * every capture of a run runs in this process. A crash loses the claim and the next
+   * submission compacts - which is exactly the retry a failed compaction is owed.
+   *
+   * Keyed by run because the contract is per run. Sibling repository runs of one conversation
+   * review different work against different intent and must never wait on each other.
+   */
+  private readonly runCriteriaClaims = new Map<string, Promise<WorkflowRunCriteria | null>>();
   /**
    * Deliveries already reported as queued behind a sibling repository's review.
    *
@@ -1133,6 +1164,27 @@ export class WorkflowManager {
   }
 
   /**
+   * Freeze what the human asked for, for a run this turn is about to create.
+   *
+   * Called once per creating turn even where the turn creates several runs. Intent is
+   * SESSION-scoped, which is the same rule capture already states: sibling runs review
+   * different repositories of one conversation, and the conversation is one. Every sibling
+   * binding shares the note key by construction, so one read is one answer rather than an
+   * approximation of several.
+   */
+  private freezeRunIntent(
+    binding: WorkflowBinding,
+    now: number,
+  ): WorkflowRunIntentSnapshot | null {
+    return (this.options.readIntentSnapshot ?? readWorkflowIntentSnapshot)(
+      this.registry,
+      binding,
+      this.store.listDeliveredTranscriptAnchors(binding.sessionId ?? "", binding.noteKey),
+      now,
+    );
+  }
+
+  /**
    * Every repository this conversation's turn should review, in attach order, as the binding
    * that reviews each one. One workflow run per entry.
    *
@@ -1727,6 +1779,21 @@ export class WorkflowManager {
     const prepared: PreparedWorkflowRun[] = [];
     let alreadyRunning: WorkflowRun | null = null;
     let leadWasIdempotent = false;
+    // Read BEFORE the loop and before any insert. Every target of this fan-out reviews the
+    // same ask, and freezing it once is what makes that literally true rather than three
+    // reads that happened to agree.
+    const intent = this.freezeRunIntent(binding, now);
+    // No conversation to read, so no ask to freeze - and a run created here without one would
+    // not be a legacy run, it would be a NEW run silently entitled to the live-read path.
+    // Refusing is also the honest answer rather than a stricter one: capture reads the same
+    // session through the same compatibility check and would throw on it moments later.
+    if (!intent) {
+      return {
+        ok: false,
+        reason: "incompatible_session",
+        message: "The workflow binding is not attached to its durable conversation",
+      };
+    }
     for (const target of targets) {
       const active = this.store.activeRunForBinding(target.id);
       if (active) {
@@ -1735,7 +1802,7 @@ export class WorkflowManager {
       }
       const targetKey = manualWorkflowTriggerKey(target.id, input.requestId);
       const created = this.store.createInitialSubmission(
-        { id: randomUUID(), binding: target, triggerSource: "manual", triggerKey: targetKey, now },
+        { id: randomUUID(), binding: target, triggerSource: "manual", triggerKey: targetKey, now, intent },
         {
           id: randomUUID(),
           triggerSource: "manual",
@@ -3439,6 +3506,11 @@ export class WorkflowManager {
       activate: null,
       previousFingerprint: undefined,
     };
+    // Frozen before the claim transaction, because the transaction may create a run and a run
+    // may not exist without an ask. A binding whose conversation cannot be read has nothing
+    // to review, which is what `nothing` already says for every other reason that is true.
+    const intent = this.freezeRunIntent(binding, now);
+    if (!intent) return nothing;
     let stored;
     try {
       stored = this.store.claimForemanCompletion({
@@ -3457,6 +3529,7 @@ export class WorkflowManager {
         // the session, and the lead binding here can be an attached repository's when the
         // primary is the one that went untouched.
         guardCwd: session.cwd,
+        intent,
         now,
       });
     } catch (error) {
@@ -3746,6 +3819,16 @@ export class WorkflowManager {
     // means a future external kind that nobody appended to WORKFLOW_TRIGGER_SOURCES fails
     // to compile here instead of filing its runs under somebody else's name.
     const triggerSource: WorkflowTriggerSource = input.source.kind;
+    // Frozen before the insert, for the reason the manual path states: a new run without an
+    // ask is not a legacy run, and capture would refuse this binding moments later anyway.
+    const intent = this.freezeRunIntent(binding, now);
+    if (!intent) {
+      return {
+        ok: false,
+        reason: "incompatible_session",
+        message: "The workflow binding is not attached to its durable conversation",
+      };
+    }
     // The pinned artifact rides WITH the run and submission, in one transaction. Pinning it
     // afterwards left a window where a crash produced an external run holding no expected
     // commit, and the retry - finding nothing pinned - would have accepted whatever commit it
@@ -3758,6 +3841,7 @@ export class WorkflowManager {
         triggerKey: key,
         now,
         externalExpectation: expectation.data,
+        intent,
       },
       { id: randomUUID(), triggerSource, triggerKey: key, context: {}, evidence: {}, now },
     );
@@ -5964,6 +6048,60 @@ export class WorkflowManager {
   }
 
   /**
+   * Register this capture as the one paying for a run's canonical compaction.
+   *
+   * Synchronous, and that is load bearing: it must be impossible for a concurrent capture of
+   * the same run to look between the decision to compact and the claim being visible. The
+   * promise is handed back so the caller can release exactly the claim it registered rather
+   * than whatever the map holds by the time it finishes.
+   */
+  private openRunCriteriaClaim(runId: string): {
+    promise: Promise<WorkflowRunCriteria | null>;
+    settle: (criteria: WorkflowRunCriteria | null) => void;
+  } {
+    let settle!: (criteria: WorkflowRunCriteria | null) => void;
+    const promise = new Promise<WorkflowRunCriteria | null>((resolve) => { settle = resolve; });
+    this.runCriteriaClaims.set(runId, promise);
+    return { promise, settle };
+  }
+
+  /**
+   * The coverage claims and mappings a reuse should read this submission's claims against.
+   *
+   * Stable criteria fix the TARGET, not the vocabulary an author uses to aim at it. A round
+   * that rephrases "the modal clears its border" as "modal content is not printed on the
+   * border" is making the same claim, and the deterministic reconciler can only see that
+   * through the previous submission's claim text and the mappings that text was understood
+   * by. Without the bridge every rephrasing reads as an unmatched new claim, and a coverage
+   * gap opens on a submission that changed nothing but its wording.
+   *
+   * The PARENT for a refinement segment, which is the submission it is repairing the mapping
+   * of; otherwise the run's immediately preceding snapshot in evidence order. Insertion order
+   * is deliberately not consulted - a continuation is reserved before its evidence is
+   * captured - and neither is any submission after this one, so a resumed capture bridges
+   * from the same place a first-time one does.
+   */
+  private criterionBridge(
+    runId: string,
+    submission: WorkflowSubmission,
+  ): { coverage: WorkflowEvidenceCoverageClaim[]; mappings: WorkflowCriterionMapping[] } {
+    const previous = submission.parentSubmissionId
+      ? this.store.getSubmission(submission.parentSubmissionId)
+      : this.store.listSubmissions(runId)
+        .filter((row) =>
+          row.id !== submission.id
+          && (row.round < submission.round
+            || (row.round === submission.round && row.segment < submission.segment)))
+        .at(-1) ?? null;
+    if (!previous) return { coverage: [], mappings: [] };
+    const parsed = WorkflowContextSnapshotSchema.safeParse(previous.context);
+    return {
+      coverage: this.store.listSubmissionCoverage(previous.id),
+      mappings: parsed.success ? parsed.data.criterionMappings ?? [] : [],
+    };
+  }
+
+  /**
    * `beforeActivate` is the seam a continuation commits through.
    *
    * It runs after the captured evidence is durable and runnable, and before the engine
@@ -5998,6 +6136,40 @@ export class WorkflowManager {
           current: this.store.getRun(run.id),
         };
       }
+      // The row, not the caller's copy. A repair round is captured from a run object the
+      // caller resolved some time ago, and the frozen intent is read here rather than passed
+      // in so a resumed capture and a first one review against the same ask.
+      const runRow = this.store.getRun(run.id) ?? run;
+      /*
+       * A run whose frozen basis cannot be read is refused, not quietly reverted.
+       *
+       * `never_frozen` is the pre-migration run, and it takes the live path exactly as it
+       * always did. `unreadable` is a damaged or newer-daemon payload, and treating it as
+       * absent would hand the review back to the mutable Goal - the one substitution this
+       * whole mechanism exists to prevent, reached through a corrupted row instead of a hook.
+       * Blocking is visible and diagnosable; the run keeps its identity and an operator can
+       * see why it stopped.
+       */
+      if (runRow.intentState === "unreadable") {
+        const failedAt = Date.now();
+        this.store.setSubmissionState(submission.id, "failed", failedAt);
+        this.store.setRunState(run.id, "blocked", "capture_error", {
+          error: "This run's frozen review intent or canonical criteria could not be read, "
+            + "so there is no trustworthy basis to review against",
+          code: "run_intent_unreadable",
+        }, failedAt);
+        this.store.appendEvent(run.id, "run_intent_unreadable", {
+          submissionId: submission.id,
+        }, failedAt);
+        this.publishRun(run.id);
+        return {
+          ok: false,
+          reason: "conflict",
+          message: "The run's frozen review intent could not be read; start a new run",
+          current: this.store.getRun(run.id),
+        };
+      }
+      const frozenIntent = runRow.intent ?? null;
       const captured = await captureStableWorkflowContext(
         () => (this.options.readContextRaw ?? readWorkflowContextRaw)(
           this.registry,
@@ -6007,6 +6179,7 @@ export class WorkflowManager {
             binding.sessionId ?? "",
             binding.noteKey,
           ),
+          frozenIntent,
         ),
         (candidate) => (this.options.boundaryChanged ?? captureBoundaryChanged)(
           this.registry,
@@ -6094,15 +6267,92 @@ export class WorkflowManager {
       }, Date.now());
       let context: WorkflowContextSnapshot;
       let criteriaReused = false;
-      const intentFingerprint = workflowIntentFingerprint(captured.raw);
-      const reuseParent = submission.refinementReason === "evidence_preflight"
+      /*
+       * The identity of the intent this submission is JUDGED AGAINST, which on a
+       * snapshot-bearing run is the frozen one and nothing else.
+       *
+       * Deliberately not re-derived from `captured.raw` there. Capture already copies the
+       * frozen fields into the raw context, so on the real path the two agree - but "agree by
+       * construction" and "read from the thing that cannot move" are different guarantees,
+       * and only the second one survives an embedder or a test supplying its own context
+       * read. Stamping the frozen value is what makes "every submission of a run carries one
+       * intent identity" a fact about the run rather than about the reader.
+       */
+      const intentFingerprint = frozenIntent?.fingerprint
+        ?? workflowIntentFingerprint(captured.raw);
+      // The bridge from the submission this run last understood coverage through. Author
+      // claim ids are per-submission, so stable criteria alone do not tell a rephrased claim
+      // from a new one; the previous submission's claims and their mappings do.
+      const bridge = this.criterionBridge(run.id, submission);
+      /*
+       * Compacted once per run, from intent that cannot move.
+       *
+       * There is deliberately NO fingerprint comparison on this branch. Intent is frozen for
+       * the run's whole life, so a comparison could only ever be true - and where a seam or a
+       * legacy row made it false, being false would silently restore per-submission
+       * compaction, which is the drift this replaced. The comparison lives on the write
+       * instead: `intentFingerprint` is recorded WITH the criteria, so what they were
+       * distilled from stays inspectable without being re-litigated every round.
+       *
+       * The pre-snapshot branch below keeps the comparison it always had, because a run with
+       * no frozen intent genuinely is reading a Goal that moves.
+       */
+      // Read FRESH, not from `runRow`. That row was resolved before the capture above, which
+      // shells out to git and can take seconds; a concurrent capture of this same run can
+      // have compacted and frozen the criteria in between, and reusing the stale null would
+      // start a second compaction the claim below is meant to prevent.
+      const runCriteria = frozenIntent ? this.store.getRun(run.id)?.criteria ?? null : null;
+      const reuseParent = !frozenIntent
+        && submission.refinementReason === "evidence_preflight"
         && submission.parentSubmissionId
         ? this.store.getSubmission(submission.parentSubmissionId)
         : null;
       const reuseSource = reuseParent
         ? WorkflowContextSnapshotSchema.safeParse(reuseParent.context)
         : null;
-      if (
+      const reuseRunCriteria = (source: WorkflowCriteriaSource, sourceSubmissionId: string) =>
+        WorkflowContextSnapshotSchema.parse({
+          ...reuseWorkflowContextCriteria(
+            captured.raw,
+            source,
+            sourceSubmissionId,
+            bridge.coverage,
+            bridge.mappings,
+          ),
+          intentFingerprint,
+        });
+      /*
+       * The run's one compaction, if another capture of it is already paying for one.
+       *
+       * Read before the branch and awaited inside it, so the decision is made from a single
+       * synchronous observation. Waiting is strictly better than racing: the waiter reviews
+       * against the same criteria the winner produced, which is what "one canonical set per
+       * run" means, and it spends nothing to get there.
+       */
+      const inFlight = frozenIntent && !runCriteria ? this.runCriteriaClaims.get(run.id) : undefined;
+      if (runCriteria) {
+        context = reuseRunCriteria(runCriteria, runCriteria.compactedFromSubmissionId);
+        criteriaReused = true;
+      } else if (inFlight) {
+        const shared = await inFlight;
+        if (shared) {
+          context = reuseRunCriteria(shared, shared.compactedFromSubmissionId);
+          criteriaReused = true;
+        } else {
+          // The winner's compaction failed, so this run has no criteria this turn and this
+          // capture must not start a second attempt at one: the retry belongs to the next
+          // submission, exactly as it does for the capture that actually failed. Degrading
+          // the same way the winner did keeps the two consistent rather than reporting a
+          // provider outage as a per-submission difference.
+          context = WorkflowContextSnapshotSchema.parse({
+            ...fallbackWorkflowContext(
+              captured.raw,
+              "Workflow context compaction was unavailable for this run's capture",
+            ),
+            intentFingerprint,
+          });
+        }
+      } else if (
         reuseParent
         && reuseSource?.success
         && reuseSource.data.compaction.status === "model"
@@ -6116,77 +6366,131 @@ export class WorkflowManager {
         );
         criteriaReused = true;
       } else {
-        const compact = this.options.compactContext;
-        if (compact) {
-          context = await this.schedule(() => compact(captured.raw), "capture");
-        } else {
-          // What each workflow-context call REPORTS it resolved, filled in before its first
-          // attempt runs. Stable extraction and source reconciliation have separate ledger
-          // purposes because they have separate prompts, schemas, and failure boundaries.
-          const contextExecutions = new Map<WorkflowLlmPurpose, JobExecution>();
-          const contextCallIds = new Map<string, string>();
-          const observerFor = (purpose: WorkflowLlmPurpose): StructuredAttemptObserver => ({
-            start: (attempt, prompt) => {
-              if (!this.captureIsActive(run.id, submission.id)) return false;
-              // `onExecution` fires ahead of the first attempt, so this is populated by now. If
-              // it somehow is not, skip the row rather than labelling it with a guess - `finish`
-              // finds no id and does nothing, and a missing ledger row is far easier to read
-              // than one that confidently names the wrong provider.
-              const execution = contextExecutions.get(purpose);
-              if (!execution) return;
-              const id = randomUUID();
-              contextCallIds.set(`${purpose}:${attempt}`, id);
-              this.store.insertLlmCall({
-                id,
-                runId: run.id,
-                submissionId: submission.id,
-                nodeAttemptId: null,
-                purpose,
-                runner: execution.runner,
-                model: execution.model,
-                attempt,
-                state: "running",
-                startedAt: Date.now(),
-                finishedAt: null,
-                durationMs: null,
-                inputBytes: Buffer.byteLength(prompt),
-                outputBytes: 0,
-                costUsd: null,
-                errorCode: null,
-              });
-            },
-            finish: (attempt, result) => {
-              const id = contextCallIds.get(`${purpose}:${attempt}`);
-              if (!id) return;
-              this.store.finishLlmCall(
-                id,
-                result.parsed ? "succeeded" : "failed",
-                result.raw ? Buffer.byteLength(result.raw) : 0,
-                result.error ? `${purpose}_infrastructure` : result.parsed ? null : `${purpose}_parse`,
-                Date.now(),
-              );
-            },
+        /*
+         * Claim this run's one compaction BEFORE spending anything on it.
+         *
+         * Registered synchronously, so between here and the first `await` below there is no
+         * point at which another capture of this run can look and see nothing in flight. That
+         * ordering is the whole guarantee: the compare-and-set on `run_criteria_json` decides
+         * which RESULT is stored, and only this claim decides how many results get produced.
+         *
+         * A run with no frozen intent claims nothing - it compacts per submission by design,
+         * and that is the pre-migration contract this must not change.
+         */
+        const claim = frozenIntent ? this.openRunCriteriaClaim(run.id) : null;
+        try {
+          const compact = this.options.compactContext;
+          if (compact) {
+            context = await this.schedule(() => compact(captured.raw), "capture");
+          } else {
+            // What each workflow-context call REPORTS it resolved, filled in before its first
+            // attempt runs. Stable extraction and source reconciliation have separate ledger
+            // purposes because they have separate prompts, schemas, and failure boundaries.
+            const contextExecutions = new Map<WorkflowLlmPurpose, JobExecution>();
+            const contextCallIds = new Map<string, string>();
+            const observerFor = (purpose: WorkflowLlmPurpose): StructuredAttemptObserver => ({
+              start: (attempt, prompt) => {
+                if (!this.captureIsActive(run.id, submission.id)) return false;
+                // `onExecution` fires ahead of the first attempt, so this is populated by now. If
+                // it somehow is not, skip the row rather than labelling it with a guess - `finish`
+                // finds no id and does nothing, and a missing ledger row is far easier to read
+                // than one that confidently names the wrong provider.
+                const execution = contextExecutions.get(purpose);
+                if (!execution) return;
+                const id = randomUUID();
+                contextCallIds.set(`${purpose}:${attempt}`, id);
+                this.store.insertLlmCall({
+                  id,
+                  runId: run.id,
+                  submissionId: submission.id,
+                  nodeAttemptId: null,
+                  purpose,
+                  runner: execution.runner,
+                  model: execution.model,
+                  attempt,
+                  state: "running",
+                  startedAt: Date.now(),
+                  finishedAt: null,
+                  durationMs: null,
+                  inputBytes: Buffer.byteLength(prompt),
+                  outputBytes: 0,
+                  costUsd: null,
+                  errorCode: null,
+                });
+              },
+              finish: (attempt, result) => {
+                const id = contextCallIds.get(`${purpose}:${attempt}`);
+                if (!id) return;
+                this.store.finishLlmCall(
+                  id,
+                  result.parsed ? "succeeded" : "failed",
+                  result.raw ? Buffer.byteLength(result.raw) : 0,
+                  result.error ? `${purpose}_infrastructure` : result.parsed ? null : `${purpose}_parse`,
+                  Date.now(),
+                );
+              },
+            });
+            // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
+            // call itself reports, which is the same one this ledger row is written from.
+            context = await this.schedule(() => compactWorkflowContext(captured.raw, {
+              observer: observerFor("context_compaction"),
+              reconciliationObserver: observerFor("context_reconciliation"),
+              onExecution: (execution) => {
+                contextExecutions.set("context_compaction", execution);
+              },
+              onReconciliationExecution: (execution) => {
+                contextExecutions.set("context_reconciliation", execution);
+              },
+            }), "capture");
+          }
+          // Injected compactors remain a supported test/embedding seam. Stamp the daemon-owned
+          // intent identity and clear reuse provenance regardless of how the compactor was supplied.
+          context = WorkflowContextSnapshotSchema.parse({
+            ...context,
+            intentFingerprint,
+            compaction: { ...context.compaction, reusedFromSubmissionId: null },
           });
-          // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
-          // call itself reports, which is the same one this ledger row is written from.
-          context = await this.schedule(() => compactWorkflowContext(captured.raw, {
-            observer: observerFor("context_compaction"),
-            reconciliationObserver: observerFor("context_reconciliation"),
-            onExecution: (execution) => {
-              contextExecutions.set("context_compaction", execution);
-            },
-            onReconciliationExecution: (execution) => {
-              contextExecutions.set("context_reconciliation", execution);
-            },
-          }), "capture");
+          /*
+           * This run's one compaction, paid for and frozen here.
+           *
+           * `workflowRunCriteriaFrom` returns null for a FALLBACK context, so a failed
+           * compaction stores nothing and the next submission tries again - the retry behaviour
+           * a failed compaction has always had. Freezing a fallback would be worse than
+           * recompacting: every later submission would reuse an empty criteria set and report
+           * it as the run's canonical criteria.
+           *
+           * The row wins over the value just computed. `freezeRunCriteria` sets only where the
+           * column is still null and answers with what the run HOLDS, so a capture that raced
+           * or resumed adopts the criteria already in play rather than reviewing this
+           * submission against a second set nobody else can see.
+           */
+          const frozen = frozenIntent
+            ? workflowRunCriteriaFrom(context, submission.id, Date.now())
+            : null;
+          const effective = frozen ? this.store.freezeRunCriteria(run.id, frozen) : null;
+          if (effective && effective.compactedFromSubmissionId !== submission.id) {
+            context = reuseRunCriteria(effective, effective.compactedFromSubmissionId);
+            criteriaReused = true;
+          }
+          claim?.settle(effective);
+        } finally {
+          /*
+           * Answer every waiter, then stand down.
+           *
+           * `settle` is idempotent through the promise itself - a second resolve is a no-op -
+           * so the success path above and this backstop cannot disagree. The backstop matters
+           * because a compaction can THROW, and a waiter blocked on a promise nobody resolves
+           * would hang this run's capture for ever; null is the honest answer there, and it
+           * degrades the waiter exactly as a fallback does.
+           *
+           * Removal is conditional on identity so a capture that failed cannot delete the
+           * claim a later, healthy capture has already registered.
+           */
+          claim?.settle(null);
+          if (claim && this.runCriteriaClaims.get(run.id) === claim.promise) {
+            this.runCriteriaClaims.delete(run.id);
+          }
         }
-        // Injected compactors remain a supported test/embedding seam. Stamp the daemon-owned
-        // intent identity and clear reuse provenance regardless of how the compactor was supplied.
-        context = WorkflowContextSnapshotSchema.parse({
-          ...context,
-          intentFingerprint,
-          compaction: { ...context.compaction, reusedFromSubmissionId: null },
-        });
       }
       const currentRun = this.store.getRun(run.id);
       const currentSubmission = this.store.getSubmission(submission.id);

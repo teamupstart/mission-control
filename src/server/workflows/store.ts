@@ -27,6 +27,8 @@ import {
   WorkflowNodeAttemptStateSchema,
   WorkflowPersonaDirectiveSchema,
   WorkflowPersonaDirectiveSnapshotSchema,
+  WorkflowRunCriteriaSchema,
+  WorkflowRunIntentSnapshotSchema,
   WorkflowRunStatusSchema,
   WorkflowContextSnapshotSchema,
   WorkflowCheckEvidenceSchema,
@@ -126,7 +128,9 @@ import type {
   WorkflowPersonaDirective,
   WorkflowPersonaDirectiveSnapshot,
   WorkflowRun,
+  WorkflowRunCriteria,
   WorkflowRunDetail,
+  WorkflowRunIntentSnapshot,
   WorkflowRunPage,
   WorkflowRunSummary,
   WorkflowSubmissionEvidenceImages,
@@ -150,6 +154,11 @@ import type {
   WorkflowCommandView,
   WorkflowAssetReferenceSet,
 } from "@shared/workflow.ts";
+import {
+  freezeWorkflowRunIntent,
+  workflowRunIntentFingerprint,
+  type WorkflowRunIntentInput,
+} from "./intent-fingerprint.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
@@ -453,6 +462,168 @@ function parseNullableJson<T>(
   maxBytes?: number,
 ): T | null {
   return raw === null ? null : parseJson(table, id, column, raw, schema, maxBytes);
+}
+
+/**
+ * Read a run's frozen review basis, saying WHICH of the three states it is in.
+ *
+ * Tolerant on purpose, and only here. Every other JSON column on this row throws through
+ * `parseNullableJson`, which `getRun` catches by returning null - so a single damaged byte in
+ * a snapshot would make the whole RUN disappear from every listing, leaving an operator with
+ * a workflow that stopped and nothing at all to look at. That is a worse answer than the
+ * problem it guards.
+ *
+ * It is emphatically NOT lenience about the intent itself. An unreadable payload is reported
+ * as `unreadable`, which capture refuses; what survives is the run's identity, status and
+ * phase, so the failure is diagnosable instead of invisible. Only a genuinely absent column
+ * reads as `never_frozen`, and only that one takes the live-read path.
+ *
+ * Criteria are read here too because they are the other half of the same basis: criteria that
+ * cannot be parsed cannot be reused, and treating them as merely absent would recompact the
+ * run on every submission for ever - the write-once column can never be overwritten to settle
+ * it.
+ */
+function readRunIntent(
+  id: string,
+  intentJson: string | null,
+  criteriaJson: string | null,
+): Pick<WorkflowRun, "intent" | "intentState" | "criteria"> {
+  const read = <T>(column: string, raw: string, schema: z.ZodType<T>): T | undefined => {
+    try {
+      return parseJson(
+        "workflow_runs",
+        id,
+        column,
+        raw,
+        schema,
+        WORKFLOW_EXECUTION_LIMITS.contextJsonBytes,
+      );
+    } catch (error) {
+      diagnose(error);
+      return undefined;
+    }
+  };
+  if (intentJson === null) {
+    /*
+     * No ask AND no criteria is the pre-migration row. No ask WITH criteria is not.
+     *
+     * A genuine legacy run has neither column: nothing ever wrote criteria for it, because the
+     * legacy path compacts per submission and only a frozen run has a criteria set at all. So a
+     * row carrying criteria beside a null intent did not come from an upgrade - it came from a
+     * partial restore, or from two rows mixed together - and reading it as legacy would hand a
+     * corrupted run to the mutable live Goal, which is the failure this mechanism exists to
+     * remove. Dropping the stray payload and proceeding is not better: it is the same live-read
+     * outcome, reached quietly.
+     */
+    if (criteriaJson !== null) {
+      diagnose(new WorkflowRowError(
+        "workflow_runs",
+        id,
+        "run_criteria_json is present with no intent_json, which no upgrade produces",
+      ));
+      return { intent: null, intentState: "unreadable", criteria: null };
+    }
+    return { intent: null, intentState: "never_frozen", criteria: null };
+  }
+  const intent = read("intent_json", intentJson, WorkflowRunIntentSnapshotSchema);
+  if (!intent) return { intent: null, intentState: "unreadable", criteria: null };
+  /*
+   * Recomputed on the way out as well as derived on the way in.
+   *
+   * Deriving on write covers rows this build wrote. It says nothing about a row an older build
+   * wrote from a caller-supplied fingerprint, or one a partial write left half-updated, and
+   * those are exactly the rows whose stored identity would be a lie. Recomputing costs one
+   * hash of already-loaded fields and makes the fingerprint a CHECKED fact rather than a
+   * remembered one - which is what the criteria comparison below needs it to be.
+   */
+  if (workflowRunIntentFingerprint(intent) !== intent.fingerprint) {
+    diagnose(new WorkflowRowError(
+      "workflow_runs",
+      id,
+      "intent_json: the stored fingerprint does not identify the intent fields beside it",
+    ));
+    return { intent: null, intentState: "unreadable", criteria: null };
+  }
+  const criteria = criteriaJson === null
+    ? null
+    : read("run_criteria_json", criteriaJson, WorkflowRunCriteriaSchema);
+  if (criteria === undefined) {
+    return { intent, intentState: "unreadable", criteria: null };
+  }
+  /*
+   * The two columns are read separately, so their RELATIONSHIP has to be checked here.
+   *
+   * A criteria payload that parses perfectly can still have been distilled from different
+   * intent - a partial write, a restore that mixed rows, a hand edit. Reuse deliberately makes
+   * no fingerprint comparison of its own, because frozen intent cannot move and comparing the
+   * CAPTURED context against it would only add a way for an injected read to fall back to
+   * recompaction. That reasoning holds exactly as far as the two stored halves agreeing, which
+   * is this check and nowhere else.
+   *
+   * Mismatch is `unreadable` rather than a recompaction: criteria that do not belong to this
+   * run's ask are not a missing value to be recomputed, they are evidence the row is wrong, and
+   * a run whose frozen basis is wrong has no honest basis to review against.
+   */
+  if (criteria && criteria.intentFingerprint !== intent.fingerprint) {
+    diagnose(new WorkflowRowError(
+      "workflow_runs",
+      id,
+      "run_criteria_json: criteria were distilled from different intent than intent_json holds",
+    ));
+    return { intent, intentState: "unreadable", criteria: null };
+  }
+  return { intent, intentState: "frozen", criteria };
+}
+
+/**
+ * Validate the frozen intent on the way IN, not only on the way out.
+ *
+ * A snapshot that parses on read and not on write would be a run whose review intent silently
+ * reverts to the live Goal the first time it is captured - the failure this whole column
+ * exists to remove, arrived at through a bounding mistake rather than a hook. Failing the
+ * insert instead makes an over-long goal or decision list a loud, immediate error at the one
+ * moment a human is watching a run start.
+ */
+/**
+ * Serialize for a WRITE-ONCE column, refusing anything the read path could not load back.
+ *
+ * `parseJson` rejects a payload over `contextJsonBytes`, and both of these columns are set
+ * once and never rewritten - so a row that is valid by schema and too large by bytes is
+ * written successfully, read back as `unreadable`, and blocks its run for good with no path
+ * that can repair it. The schemas genuinely permit it: 200 decisions at 16,000 characters each
+ * for text and rationale is 6.4M against a 2M ceiling.
+ *
+ * Bounding at capture is not enough, for the reason every other invariant here moved to this
+ * boundary: it leaves the rule with the caller, and the column is what has to live with the
+ * consequence. Throwing costs a caller a loud failure at the one moment a human is watching a
+ * run start, instead of a silent one that surfaces rounds later as a run nobody can unstick.
+ */
+function durableRunJson(id: string, column: string, value: unknown): string {
+  const payload = JSON.stringify(value);
+  const bytes = utf8.encode(payload).byteLength;
+  if (bytes > WORKFLOW_EXECUTION_LIMITS.contextJsonBytes) {
+    throw new WorkflowRowError(
+      "workflow_runs",
+      id,
+      `${column} would be ${bytes} UTF-8 bytes, over the `
+        + `${WORKFLOW_EXECUTION_LIMITS.contextJsonBytes} the read path can load back`,
+    );
+  }
+  return payload;
+}
+
+function frozenIntentJson(id: string, intent: WorkflowRunIntentInput): string {
+  // DERIVED here, never accepted from the caller. The fingerprint identifies the intent
+  // fields beside it, so a supplied one is a second copy of a fact the snapshot already
+  // holds - and a second copy can disagree. It has to be able to disagree for the disagreement
+  // to matter: the criteria-provenance check compares a run's stored criteria against this
+  // value, so an unverified fingerprint quietly weakens the check meant to catch criteria
+  // distilled from another ask.
+  return durableRunJson(
+    id,
+    "intent_json",
+    WorkflowRunIntentSnapshotSchema.parse(freezeWorkflowRunIntent(intent)),
+  );
 }
 
 /**
@@ -990,6 +1161,8 @@ const WorkflowRunRowSchema = z.object({
   disabled_nodes_json: nullableText.optional().default(null),
   persona_directives_json: nullableText.optional().default(null),
   check_budget_epoch_round: nullableInteger.optional().default(null),
+  intent_json: nullableText.optional().default(null),
+  run_criteria_json: nullableText.optional().default(null),
 });
 
 /** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
@@ -1037,6 +1210,7 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
       PERSONA_DIRECTIVES_JSON_BYTES,
     ) ?? [],
     checkBudgetEpochRound: row.check_budget_epoch_round ?? null,
+    ...readRunIntent(row.id, row.intent_json ?? null, row.run_criteria_json ?? null),
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -2187,6 +2361,27 @@ export interface WorkflowRunInsert {
    * removes that state rather than coping with it.
    */
   externalExpectation?: WorkflowCaptureExpectation;
+  /**
+   * What the human asked for, read before this transaction and frozen inside it.
+   *
+   * On the insert rather than a follow-up write for the same reason `externalExpectation` is:
+   * a run that exists without one would, on the retry, be filled in from whatever the Goal
+   * says by then - and "by then" is exactly the window a repair packet lands in.
+   *
+   * REQUIRED, and a real snapshot: there is no spelling of "create this run without an ask".
+   *
+   * Creation is the one moment the ask can honestly be captured, so a run that cannot supply
+   * one must not be created - the manager refuses instead. An optional field, or a marker
+   * meaning "no ask", would both end at the same SQL NULL as a genuine pre-migration row, and
+   * nothing afterwards could tell a brand-new run permanently reading the mutable live Goal
+   * from historical data that is entitled to. The legacy shape is reachable only by DEMOTING a
+   * row - nulling the column, which is precisely what an upgrade leaves behind - and never by
+   * creating one.
+   *
+   * The identity is NOT part of this input. `frozenIntentJson` derives it from the fields, so
+   * a caller cannot mint a snapshot whose fingerprint disagrees with the ask it names.
+   */
+  intent: WorkflowRunIntentInput;
 }
 
 interface WorkflowSubmissionInsertBase {
@@ -2373,6 +2568,17 @@ export interface ForemanCompletionStoreInput {
    * repository's worktree would point the queue at a checkout the agent is not standing in.
    */
   guardCwd?: string | null;
+  /**
+   * The frozen intent for the run this claim may create, read before the transaction.
+   *
+   * Supplied on every claim because the caller cannot know which branch the transaction will
+   * take, and ignored on every branch that does not create a run: a repair round of an
+   * existing run reviews against the intent that run already froze, and a claim that lands on
+   * a run mid-capture is not a new ask at all. Real intent fields for the reason
+   * `WorkflowRunInsert.intent` requires them, with the identity derived rather than supplied,
+   * and the manager refuses the claim before offering it when the conversation cannot be read.
+   */
+  intent: WorkflowRunIntentInput;
   now: number;
 }
 
@@ -5366,8 +5572,8 @@ export class WorkflowStore {
         `INSERT INTO workflow_runs (
            id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
            trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
-           gate_state_json, started_at, updated_at, completed_at
-         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
+           gate_state_json, started_at, updated_at, completed_at, intent_json
+         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
       ).run(
         run.id,
         run.binding.id,
@@ -5377,6 +5583,7 @@ export class WorkflowStore {
         run.triggerKey,
         run.now,
         run.now,
+        frozenIntentJson(run.id, run.intent),
       );
       this.insertSubmissionInTransaction({
         ...submission,
@@ -5520,8 +5727,8 @@ export class WorkflowStore {
           `INSERT INTO workflow_runs (
              id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
              trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
-             gate_state_json, started_at, updated_at, completed_at
-           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
+             gate_state_json, started_at, updated_at, completed_at, intent_json
+           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
         ).run(
           input.runId,
           binding.id,
@@ -5531,6 +5738,7 @@ export class WorkflowStore {
           triggerKey,
           input.now,
           input.now,
+          frozenIntentJson(input.runId, input.intent),
         );
         this.insertSubmissionInTransaction({
           id: input.submissionId,
@@ -5702,6 +5910,61 @@ export class WorkflowStore {
     if (nextPhase === run.currentPhase) return run.gateState;
     // Moving, the note belongs to the phase being left; only the gate crosses.
     return (gate as unknown as WorkflowJson | null);
+  }
+
+  /**
+   * Freeze one run's canonical acceptance criteria, the first writer winning.
+   *
+   * Compare-and-set on `IS NULL` rather than a plain UPDATE, and the returned value is what
+   * the row HOLDS rather than what was offered. Two submissions of one run can be in capture
+   * at once - a sibling repository's, a resumed one, a session-action continuation - and a
+   * last-writer-wins update would let the second overwrite criteria the first has already
+   * reviewed against, which is drift with extra steps. The loser adopts the winner's set and
+   * reviews against the same target, which is the entire point of compacting once.
+   *
+   * Validated on write for the reason `frozenIntentJson` is: criteria that store fine and
+   * fail to parse would silently return every later submission to per-submission compaction.
+   */
+  freezeRunCriteria(id: string, criteria: WorkflowRunCriteria): WorkflowRunCriteria | null {
+    const payload = durableRunJson(
+      id,
+      "run_criteria_json",
+      WorkflowRunCriteriaSchema.parse(criteria),
+    );
+    return transaction(this.db, () => {
+      /*
+       * Refuse a foreign write, rather than leaving the read to discover it.
+       *
+       * The read-side comparison catches criteria distilled from another ask, but catching it
+       * there is a poor second best: the column is write-once, so a bad write cannot be
+       * repaired through this path afterwards, and the run stays unreadable for good. The
+       * cheapest moment to say no is before the UPDATE.
+       *
+       * Only a run with READABLE frozen intent may receive criteria at all. A legacy run has
+       * no ask to distil them from and would become the mixed row `readRunIntent` refuses; a
+       * run whose ask cannot be read has no basis to check them against.
+       */
+      const run = this.getRun(id);
+      if (!run || run.intentState !== "frozen" || !run.intent) {
+        throw new WorkflowRowError(
+          "workflow_runs",
+          id,
+          "run criteria may only be frozen onto a run whose intent is readable and frozen",
+        );
+      }
+      if (run.intent.fingerprint !== criteria.intentFingerprint) {
+        throw new WorkflowRowError(
+          "workflow_runs",
+          id,
+          "run_criteria_json: criteria were distilled from different intent than this run froze",
+        );
+      }
+      this.db.prepare(
+        `UPDATE workflow_runs SET run_criteria_json = ?
+          WHERE id = ? AND run_criteria_json IS NULL`,
+      ).run(payload, id);
+      return this.getRun(id)?.criteria ?? null;
+    });
   }
 
   /**

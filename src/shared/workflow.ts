@@ -3500,6 +3500,97 @@ export interface WorkflowBindingSummary {
   updatedAt: number;
 }
 
+/**
+ * Whether a run's frozen review basis is usable, and when it is not, WHY.
+ *
+ * `intent` alone cannot answer that: null would mean three materially different things, and a
+ * caller inferring "null therefore legacy" would quietly hand a damaged run back to the live,
+ * mutable Goal - reopening the very channel the freeze closes. The three cases are separated
+ * here so no caller has to guess.
+ *
+ * - `frozen`: a readable snapshot. The review is judged against it, and nothing else.
+ * - `never_frozen`: the column is genuinely empty, which only a run created before the
+ *   snapshot existed can be. This is the ONLY case the live-read path is correct for, and it
+ *   stays supported for as long as such runs exist.
+ * - `unreadable`: a snapshot or run-criteria payload this build cannot parse - a damaged row,
+ *   or one written by a newer daemon. Capture refuses rather than falling back: a run whose
+ *   frozen basis cannot be read has no honest basis to review against, and reading the Goal
+ *   instead would be indistinguishable from the failure this whole mechanism removes.
+ */
+export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
+
+/**
+ * The human's ask, frozen onto a run the moment the run exists.
+ *
+ * A review must judge a submission against what was asked for, and the session Goal is not
+ * that: it is a live, mutable field that Mission Control's own repair packets overwrite
+ * through the harness prompt hook. Reading it per submission let a run distil its acceptance
+ * criteria out of its own complaint text, so from the round a packet landed onwards the
+ * Personas were judging the change against the review's previous objection rather than
+ * against the request.
+ *
+ * Freezing removes that channel rather than policing it. Whatever later writes the Goal, and
+ * however they are attributed, the intent a run reviews against was copied before any of it
+ * happened. Mid-run human input is deliberately NOT an amendment: an answer or a later turn
+ * still reaches Personas as transcript and prior-feedback context, labelled as what it is. An
+ * ask that genuinely changed is a new run.
+ *
+ * Repository state, evidence, coverage and Persona feedback stay out, exactly as the intent
+ * fingerprint documents - those are live per-submission reads, and only intent is frozen.
+ */
+export interface WorkflowRunIntentSnapshot {
+  /** The unrefined human prompt as the Goal held it at run creation. */
+  rawGoal: string;
+  /** The refined objective, or null when the Goal carried only a raw prompt. */
+  refinedGoal: string | null;
+  /** The note the goal and decisions were read from, mirrored into `primaryGoal`. */
+  sourceNoteKey: string;
+  /** Resolved reviews, answered Foreman episodes, and human transcript turns, bounded. */
+  decisions: WorkflowHumanDecision[];
+  /**
+   * `workflowIntentFingerprint` over exactly these fields.
+   *
+   * Stamped onto every submission of the run as the identity it was judged against, rather
+   * than compared against a re-derived one: frozen intent cannot move, so a comparison could
+   * only ever be true, and being false would silently restore per-submission compaction.
+   */
+  fingerprint: string;
+  frozenAt: number;
+}
+
+/**
+ * One run's canonical acceptance criteria, compacted once from its frozen intent.
+ *
+ * Criteria used to be recompacted per submission, which made them drift round to round (4, 3,
+ * 6, 5, 5, 5, 5, 7, 2 across one observed run) even where the intent behind them had not
+ * moved. A submission cannot be repaired against a target that moves while it is being
+ * repaired, so the compaction runs once and every later submission of the run reuses the
+ * result verbatim.
+ *
+ * Only the STABLE half lives here. Criterion mappings are per-submission by definition - they
+ * bridge one submission's author coverage claims onto these criteria - so they stay on the
+ * submission's own context snapshot and are reconciled on every capture.
+ */
+export interface WorkflowRunCriteria {
+  /** The frozen intent these were distilled from, recorded as provenance rather than a gate. */
+  intentFingerprint: string;
+  constraints: string[];
+  acceptanceCriteria: string[];
+  canonicalCriteria: WorkflowCanonicalCriterion[];
+  /**
+   * The compaction receipt, carried forward so every reusing submission reports its origin.
+   *
+   * `status` is narrowed to the literal `model`. The snapshot's own receipt admits `fallback`
+   * because a submission genuinely can record a failed compaction, but a RUN cannot: a fallback
+   * freezes nothing and the next submission retries. Keeping the wider shape here would leave
+   * the forbidden state representable and let a future caller store empty criteria for good.
+   */
+  compaction: Omit<WorkflowContextSnapshot["compaction"], "status"> & { status: "model" };
+  /** The submission whose capture paid for the compaction. */
+  compactedFromSubmissionId: WorkflowSubmissionId;
+  compactedAt: number;
+}
+
 export interface WorkflowRun {
   id: WorkflowRunId;
   bindingId: WorkflowBindingId;
@@ -3530,6 +3621,34 @@ export interface WorkflowRun {
    * run, and no sibling Persona or other run may inherit it.
    */
   personaDirectives?: WorkflowPersonaDirective[];
+  /**
+   * The human's ask as it stood when this run was created, or null for a run created before
+   * the snapshot existed.
+   *
+   * Null is not a defect and must not be repaired by reading the Goal now: the whole point of
+   * the freeze is that "now" is too late to be trusted. A run without one keeps the live-read
+   * behaviour it was created under for its whole life, so an in-flight run survives a daemon
+   * upgrade instead of silently changing what it reviews against halfway through.
+   */
+  intent?: WorkflowRunIntentSnapshot | null;
+  /**
+   * Why `intent` and `criteria` are what they are - see `WorkflowRunIntentState`.
+   *
+   * Optional only so a payload written by an older daemon still parses; every row this build
+   * reads carries one. Read THIS rather than testing `intent` for null: the live-read path is
+   * correct for `never_frozen` and wrong for `unreadable`, and the two are indistinguishable
+   * from the snapshot alone.
+   */
+  intentState?: WorkflowRunIntentState;
+  /**
+   * The canonical criteria compacted once from `intent`, or null until that first compaction
+   * succeeds.
+   *
+   * A failed compaction stores nothing, exactly as a failed compaction retries today: the
+   * next submission tries again, and the run falls back to its per-submission behaviour in
+   * the meantime rather than freezing an empty criteria set.
+   */
+  criteria?: WorkflowRunCriteria | null;
   /**
    * The repair round this run's Command execution budgets start counting from, or null to
    * count every execution the run has made.

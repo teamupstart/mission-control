@@ -17,6 +17,11 @@ origin so reviewers can judge staleness honestly.
   criteria; Phase 1 makes those criteria stable for the run, so inherited claims stay meaningful.
   Phase 1 also reworks the same capture region of `manager.ts` this phase extends.
 - Anchors verified at commit `4e0b70e7`; re-verify against Phase 1's merged state before starting.
+  Line numbers below also predate `main` at `c6e64be9` (`store.ts` +38, `manager.ts` +67 before
+  Phase 1's own edits); every named symbol is intact. PR #952's run lifecycle model does not touch
+  this phase - it constrains the `status`/`current_phase`/`gate_state_json` triple, and nothing
+  here writes one - but if step 5 or 6 ends up parking a run under a new reason, that reason is now
+  a registered `WorkflowRunPhase`; see Phase 2's step 3.
 
 ## Scope and non-goals
 
@@ -48,8 +53,14 @@ Non-goals:
   `workflow_submission_evidence_coverage` (`store.ts:8991-9004`). Nothing ever returns a row to
   `staged`, which is why every submission starts from an empty tray.
 - Preflight refinement children carry `refinementReason: "evidence_preflight"` and a
-  `parentSubmissionId` (provenance at `store.ts:1028-1066`); the manager's capture path already
-  branches on exactly this pair (`manager.ts:6029-6031`), which is where inheritance hooks in.
+  `parentSubmissionId` (provenance at `store.ts:1028-1066`); the manager's capture path branches on
+  exactly this pair, which is where inheritance hooks in. **Phase 1 reshaped that branch.** It now
+  reads `runRow.intent` and `runRow.criteria`, reuses the run's frozen criteria for every
+  submission, and resolves the per-submission coverage bridge through `criterionBridge` - the
+  parent for a refinement segment, the preceding snapshot otherwise. The preflight-only
+  parent-reuse gate survives for pre-migration runs alone. Inheritance should hook into the
+  submission's EVIDENCE, not that criteria branch: the two are now separate concerns in the same
+  region.
 - Frozen image and artifact rows live in `workflow_submission_images` and
   `workflow_submission_text_artifacts`; capture routes through `src/server/workflows/images.ts`.
   Staged rows already carry `sha256`, `bytes`, `source_locator`, and a repository scope; submissions
@@ -88,6 +99,11 @@ Non-goals:
 6. **Readiness interaction.** The preflight (`criterion_mapped_v1`) evaluates the child's effective
    evidence set including inherited items, so a mapping repair no longer reports
    `missing_coverage` for evidence that existed one segment earlier.
+7. **Criteria stability is Phase 1's, not this phase's.** Inherited coverage maps onto the run's
+   frozen canonical criteria; do not recompact, re-derive, or re-key them, and do not make
+   inheritance depend on an intent fingerprint comparison - there is deliberately none on the
+   run-level reuse path. If inherited claims need a wider bridge than `criterionBridge` supplies,
+   widen the bridge rather than reopening compaction.
 
 ## Data and compatibility details
 
@@ -127,6 +143,12 @@ invariant (one frozen blob per digest per note), and the preserved unchanged-evi
 
 ## Cross-phase audit record
 
+- 2026-09-08 (Phase 1 implementation): Phase 1 landed and this phase's dependency is satisfied.
+  The concrete inheritance points are unchanged - staging upsert, reservation, and the frozen
+  image/artifact tables were untouched - but the capture region was reworked as described in
+  Repository findings, and `reuseWorkflowContextCriteria` now takes a structural
+  `WorkflowCriteriaSource` plus explicit source mappings. Step 7 was added to state the boundary
+  the source plan already implied. PR #952 confirmed irrelevant to this phase.
 - 2026-09-08: Initial version. Depends on Phase 1 for stable canonical criteria (inherited coverage
   claims map onto criteria that no longer drift) and to avoid concurrent rework of the
   `manager.ts:6026-6052` capture region. Phase 2's readiness disagreement signal reads

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-readiness-"));
 process.env.MISSION_HOME = home;
@@ -672,7 +673,7 @@ test("coverage stages idempotently and freezes with the submission", async () =>
     /outside its repository scope/,
   );
   const created = store.createInitialSubmission(
-    { id: "readiness-run", binding, triggerSource: "manual", triggerKey: "manual:one", now: 4 },
+    { id: "readiness-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:one", now: 4 },
     {
       id: "readiness-submission",
       triggerSource: "manual",

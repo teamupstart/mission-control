@@ -1370,7 +1370,9 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       evidence_pruned_at    INTEGER,
       disabled_nodes_json   TEXT,
       persona_directives_json TEXT,
-      check_budget_epoch_round INTEGER
+      check_budget_epoch_round INTEGER,
+      intent_json           TEXT,
+      run_criteria_json     TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -3351,6 +3353,19 @@ function migrate(d: DatabaseSync): void {
   // new submission will carry, which is what makes those two escape hatches able to buy a
   // real re-validation instead of handing an operator more rounds that all skip the gate.
   addColumn(d, "workflow_runs", "check_budget_epoch_round", "INTEGER");
+
+  // ---- Run intent snapshot --------------------------------------------------------------
+  //
+  // The human's ask, frozen when the run is created, and the acceptance criteria compacted
+  // once from it. Both nullable with no default and no backfill, and the absence is load
+  // bearing rather than a gap to fill in later: a run created before these columns existed
+  // was reviewed against the LIVE session Goal, and the only honest snapshot of what it was
+  // asked for at creation is gone. Reading the Goal now to fill it in would freeze whatever
+  // the run has since been told - which is precisely the substitution the snapshot exists to
+  // prevent - so a pre-migration run keeps the live-read path for its whole life and only new
+  // runs freeze.
+  addColumn(d, "workflow_runs", "intent_json", "TEXT");
+  addColumn(d, "workflow_runs", "run_criteria_json", "TEXT");
 
   // ---- SessionAction continuation segments -------------------------------------------
   //

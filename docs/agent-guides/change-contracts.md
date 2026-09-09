@@ -487,6 +487,133 @@ reached only two of them.
   and typed `WorkflowRunPhase`, so the doubled name is a compile error - earlier and more
   complete than the runtime string check that replaced it.
 
+## A run reviews the intent it froze
+
+A workflow run copies the human's ask - raw goal, refined goal, and human decisions - onto
+`workflow_runs.intent_json` inside the transaction that creates the run, and every submission of
+that run is reviewed against the copy. The session Goal remains live and remains the
+conversation's displayed objective; it is simply not what a review is judged by.
+
+The hazard this closes is not hypothetical and not a hook bug. `captureHookGoalPrompt` reports
+every prompt typed into the pane, and a workflow's own repair packets are typed into the pane, so
+the Goal is a channel Mission Control writes to itself. Reading it per submission let one run
+distil its acceptance criteria out of its previous complaint from round three onward: criteria
+drifted 4, 3, 6, 5, 5, 5, 5, 7, 2, and six of eight failing verdicts were caused by that rather
+than by the code under review.
+
+- **Freeze at creation, in the insert.** Both `INSERT INTO workflow_runs` paths take the snapshot
+  as part of the row - `createInitialSubmission` and `claimForemanCompletion`. A run that existed
+  without one would, on retry, be filled in from whatever the Goal said by then, and "by then" is
+  precisely the window a packet lands in. The manager reads it through
+  `readWorkflowIntentSnapshot` BEFORE the transaction, once per creating turn: intent is
+  session-scoped, and every sibling repository binding of one conversation shares the note key.
+- **Only intent is frozen.** Transcript, diff, working tree, standards, coverage, and evidence
+  stay live per-submission reads, because they are facts about the WORK. Intent is the thing the
+  work is judged against, and it is the only field a review must not let move underneath it.
+- **Mid-run human input does not amend intent.** A review answer or a later human turn reaches
+  Personas as transcript and prior-feedback context, labelled as what it is. There is deliberately
+  no amendment event: an ask that genuinely changed is a new run. Do not add a path that merges
+  live decisions back into frozen intent.
+- **Criteria are compacted once per run, and once means BEFORE the call.** Once-per-run is a
+  claim about model calls, so it cannot be enforced by reconciling results afterwards.
+  `freezeRunCriteria` is a compare-and-set on a finished value: it guarantees one STORED
+  criteria set and cannot stop two captures that both read a null column from each paying for a
+  compaction first. The manager therefore registers a run-scoped claim in `runCriteriaClaims`
+  synchronously, before spending anything, and a concurrent capture of the same run awaits that
+  claim instead of starting a second compaction. Both halves are required: the claim bounds how
+  many results are produced, the compare-and-set decides which one is stored.
+- **Read the criteria column AFTER the capture, never from a run row resolved before it.**
+  Capture shells out to git and can take seconds; a decision made from the pre-capture row can
+  see a null column another capture has since filled and buy a second canonical compaction.
+- **A failed compaction freezes nothing and the next SUBMISSION retries.** An empty criteria set
+  reused for ever is worse than recompacting. A capture waiting on a claim that failed degrades
+  the same way the winner did rather than starting its own attempt: the retry belongs to the next
+  submission, not to a concurrent sibling of the one that just failed.
+- **Durable run criteria cannot represent a fallback.** `WorkflowRunCriteria.compaction.status`
+  is the literal `model`, and `WorkflowRunCriteriaSchema` refuses anything else, so the rule above
+  is enforced at the STORE boundary rather than only by the one caller that happens to check.
+  A submission's own receipt keeps the wider `model | fallback` because a submission genuinely can
+  record a failed compaction; a run cannot, because a run's criteria outlive the submission that
+  produced them. Do not widen this back to reuse the snapshot's shape.
+- **Criterion mappings are per-submission and stay that way.** They bridge one submission's
+  author claim ids onto the run's criteria, so they live on the submission's context snapshot and
+  are reconciled on every capture, against the previous submission's claims and mappings so a
+  rephrased claim for an unchanged criterion still matches.
+- **There is no fingerprint comparison on the run-level reuse path.** Frozen intent cannot move,
+  so a comparison could only ever be true - and where a seam or a legacy row made it false, being
+  false would silently restore per-submission compaction, which is the drift this replaced. The
+  fingerprint is recorded WITH the criteria as provenance instead, and stamped onto every
+  submission from the frozen snapshot rather than re-derived from the captured context.
+- **A pre-migration run keeps the live path for its whole life.** Null intent is not a gap to
+  backfill. The only honest snapshot of what such a run was asked for at creation is gone, and
+  reading the Goal now to fill it in would freeze whatever the run has since been told - the exact
+  substitution this contract exists to prevent. Those runs keep per-submission compaction and the
+  older parent-reuse gate, so an in-flight run survives a daemon upgrade.
+- **`intent` is REQUIRED on both run-creating store inputs, and takes a real snapshot.**
+  `WorkflowRunInsert` and `ForemanCompletionStoreInput` accept `WorkflowRunIntentSnapshot` and
+  nothing else. There is deliberately no optional field and no "no ask" marker: both would end
+  at the same SQL NULL as a genuine pre-migration row, so nothing afterwards could tell a
+  brand-new run permanently reading the mutable live Goal from historical data entitled to it.
+  Creation is the one moment a run's ask can honestly be captured, so a caller that cannot
+  supply one must not create the run - the manager refuses instead. **The legacy shape is
+  reachable only by DEMOTING a row**, nulling `intent_json`, which is exactly what a daemon
+  upgrade leaves behind; fixtures that need it do that rather than asking creation for it.
+- **The intent fingerprint is DERIVED, never supplied.** `WorkflowRunInsert.intent` and
+  `ForemanCompletionStoreInput.intent` take `WorkflowRunIntentInput` - the ask fields without an
+  identity - and `frozenIntentJson` derives the fingerprint from them through
+  `freezeWorkflowRunIntent`. A caller-supplied fingerprint is a second copy of a fact the
+  snapshot already holds, and a second copy can disagree; that matters because the criteria
+  check below compares a run's stored criteria against this value, so an unverified fingerprint
+  quietly weakens the check meant to catch criteria distilled from another ask.
+  `readRunIntent` recomputes it on the way out too and treats disagreement as `unreadable`:
+  deriving on write says nothing about a row an older build wrote or a partial write left
+  behind, and one hash of already-loaded fields makes the identity a checked fact rather than a
+  remembered one. `src/server/workflows/intent-fingerprint.ts` is the only place that computes
+  it, so capture and the store cannot drift apart. `freezeWorkflowRunIntent` is likewise the
+  only place a snapshot is CONSTRUCTED - capture mints through it rather than assembling one
+  beside the derivation - so a change to either has exactly one site to change. Do not
+  re-export the raw run-snapshot derivation next to it; that is an invitation to hand-assemble
+  a snapshot again, which is how the manager-visible copy would come to disagree with the
+  durable one.
+- **Both write-once run columns refuse a payload the read path could not load back.**
+  `parseJson` rejects anything over `contextJsonBytes`, and neither column is ever rewritten, so
+  a row that is valid by SCHEMA and too large by BYTES writes successfully, reads back as
+  `unreadable`, and blocks its run for good. The schemas permit it: 200 decisions at 16,000
+  characters each for text and rationale is 6.4M against a 2M ceiling. `durableRunJson` measures
+  and throws before the insert. Bounding at capture is not enough, for the reason every other
+  invariant here moved to this boundary - it leaves the rule with the caller while the column
+  lives with the consequence.
+- **`freezeRunCriteria` refuses a foreign write rather than leaving the read to catch it.**
+  Only a run whose intent is readable and `frozen` may receive criteria, and only criteria whose
+  `intentFingerprint` matches that run's. The read-side comparison below is a backstop, not the
+  guard: `run_criteria_json` is write-once, so criteria distilled from another ask would leave
+  the run permanently unreadable with no way to repair it through this path. The cheapest moment
+  to say no is before the UPDATE.
+- **A row with criteria and no ask is corruption, not a legacy row.** A genuine pre-migration run
+  has NEITHER column - nothing ever wrote criteria for it, because the legacy path compacts per
+  submission. So `intent_json IS NULL` with a criteria payload beside it did not come from an
+  upgrade, and `readRunIntent` reports `unreadable` rather than `never_frozen`. Dropping the
+  stray payload and proceeding would not be safer; it reaches the same live-read outcome quietly.
+- **`readRunIntent` checks that the two stored halves belong together.** `intent_json` and
+  `run_criteria_json` are parsed separately, so a criteria payload that parses perfectly can
+  still have been distilled from different intent - a partial write, a restore that mixed rows.
+  A fingerprint mismatch is `unreadable`, not a recompaction: criteria that do not belong to
+  this run's ask are evidence the row is wrong rather than a value to recompute. This is the
+  only fingerprint comparison in the design, and it compares two DURABLE columns; reuse still
+  makes none against the captured context, for the reason below.
+- **Read `intentState`, never `intent === null`.** A missing snapshot means three different
+  things and the live path is correct for exactly ONE of them. `never_frozen` is the legacy run.
+  `unreadable` is a damaged or newer-daemon payload, and capture BLOCKS the run under
+  `capture_error` with code `run_intent_unreadable` rather than falling back - a review handed
+  back to the mutable Goal by a corrupted row is the same failure by another route. The third
+  case is removed at the source: every production creator refuses to create a run when the ask
+  cannot be read, so no new run can be born onto the live path.
+- **`readRunIntent` is tolerant where the rest of the row is strict, and only here.** Every other
+  JSON column throws through `parseNullableJson`, which `getRun` catches by returning null - so
+  one bad byte in a snapshot would erase the run from every listing an operator has. Reporting
+  `unreadable` keeps the run's identity, status and phase readable so the failure is diagnosable
+  instead of invisible. That is not lenience about the intent: the run is still refused.
+
 ## One workflow run is one repository
 
 Concurrency lives at the binding and run layer. Nothing below a run knows a session can review

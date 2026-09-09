@@ -10,6 +10,7 @@ import type {
   WorkflowContextSnapshot,
   WorkflowEdgeReceipt,
 } from "../src/shared/workflow.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-recovery-"));
 process.env.MISSION_HOME = home;
@@ -95,7 +96,7 @@ function seed(): InstanceType<typeof WorkflowStore> {
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
     { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   store.updateSubmissionCapture("sub", {
@@ -224,6 +225,7 @@ test("manager startup preserves prepared packets and makes every surviving send 
     {
       id: "delivery-recovery-run",
       binding,
+      intent: FIXTURE_RUN_INTENT,
       triggerSource: "manual",
       triggerKey: "manual:delivery-recovery",
       now: 21,

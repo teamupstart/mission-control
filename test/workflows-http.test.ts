@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflows-http-"));
 process.env.HARNESS_HOME = join(home, "state");
@@ -247,6 +248,7 @@ test("run detail distinguishes malformed durable rows from expired history", asy
   store.createInitialSubmission({
     id: "corrupt-run",
     binding,
+    intent: FIXTURE_RUN_INTENT,
     triggerSource: "manual",
     triggerKey: "corrupt-run-trigger",
     now: 2,
@@ -335,6 +337,7 @@ test("version exports use a browser-download filename and immutable schema envel
   store.createInitialSubmission({
     id: "browser-run",
     binding,
+    intent: FIXTURE_RUN_INTENT,
     triggerSource: "manual",
     triggerKey: "browser-run-trigger",
     now: 2,
@@ -636,6 +639,7 @@ test("per-run node disable validates ids, replays idempotently, and refuses fini
   store.createInitialSubmission({
     id: "toggle-run",
     binding,
+    intent: FIXTURE_RUN_INTENT,
     triggerSource: "manual",
     triggerKey: "toggle-run-trigger",
     now: 2,
@@ -727,6 +731,7 @@ test("run-scoped Persona feedback validates, persists, edits, and removes idempo
   store.createInitialSubmission({
     id: "directive-run",
     binding,
+    intent: FIXTURE_RUN_INTENT,
     triggerSource: "manual",
     triggerKey: "directive-run-trigger",
     now: 2,

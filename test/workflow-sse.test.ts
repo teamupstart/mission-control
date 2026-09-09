@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { ServerEvent } from "../src/shared/types.ts";
 import type { PersonaView, WorkflowSummary } from "../src/shared/workflow.ts";
 
@@ -169,7 +170,7 @@ test("compact workflow run summaries converge through snapshot, incremental SSE,
     now: 1,
   });
   store.createInitialSubmission(
-    { id: "run", binding, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
+    { id: "run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "manual:b:req", now: 2 },
     { id: "sub", triggerSource: "manual", triggerKey: "manual:b:req", context: {}, evidence: {}, now: 2 },
   );
   store.setRunState("run", "waiting_for_inspector", "inspector_review", {

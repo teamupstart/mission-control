@@ -90,6 +90,7 @@ function definition(over: Record<string, unknown> = {}): CreateScheduleInput {
     timezone: "UTC",
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
+    completionPolicy: "manual",
     ...over,
     template,
   } as CreateScheduleInput;

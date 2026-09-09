@@ -115,6 +115,7 @@ import type { OpenFileResult, OpenTargetId, OpenTargetView } from "@shared/open-
 import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
 import type {
   MissionSchedule,
+  ScheduleCompletionPolicy,
   ScheduleHistoryPage,
   ScheduleMissedPolicy,
   ScheduleOccurrence,
@@ -983,6 +984,7 @@ export interface ScheduleDefinitionPayload {
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy;
   missedPolicy: ScheduleMissedPolicy;
+  completionPolicy: ScheduleCompletionPolicy;
   template: ScheduleTemplate;
 }
 

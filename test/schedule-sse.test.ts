@@ -59,6 +59,7 @@ function definition(over: Record<string, unknown> = {}) {
     timezone: "UTC",
     overlapPolicy: "skip-active" as const,
     missedPolicy: "coalesce-latest" as const,
+    completionPolicy: "manual" as const,
     template: {
       title: "Sweep",
       intent: "sweep",

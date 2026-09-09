@@ -209,6 +209,12 @@ decision without episode metadata remains readable but feeds no verifier history
 It is written by the same statement that consumes the generation, and replaced by the next
 one; the Foreman episode ledger below remains the history of what Foreman *did*.
 
+Two of those outcomes - `empty` and `retired` - can also *conclude a task*, and only ever a
+[recurring mission's](recurring-missions.md#when-a-run-finishes-but-its-task-does-not) whose
+own completion policy asked for it. Both mean the run is over with nothing to ship, which is
+exactly the case no merge will ever settle. Nothing else changes: every other outcome, and
+every task that did not come from a mission, still completes the way it always has.
+
 **Pre-PR recovery applies only to invited, task-owned `ship` sessions.** Its popover
 switch, **Keep pre-PR ship tasks moving**, defaults on, but permission is still the intersection
 of Foreman enabled, **Live** mode, a trusted repository, a current running or dispatching managed

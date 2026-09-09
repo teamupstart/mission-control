@@ -53,6 +53,7 @@ export function mkSchedule(over: Partial<MissionSchedule> = {}): MissionSchedule
     timezone: "America/New_York",
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
+    completionPolicy: "manual",
     executionMode: "local-catchup",
     runnerId: null,
     revision: 1,

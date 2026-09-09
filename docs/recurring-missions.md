@@ -22,8 +22,8 @@ The overlay has three screens:
   it files a backlog task only when the schedule's policies and safety checks allow, and it
   never runs an agent).
 - **Create / edit** - a configuration form (not a compose surface) in five groups: the task
-  template, the cadence and time zone, laptop availability, overlap and missed-run
-  guardrails, and preview-and-enable. The template's **Agent** may be left on *Inherit*, which
+  template, the cadence and time zone, laptop availability, the overlap, missed-run and
+  completion guardrails, and preview-and-enable. The template's **Agent** may be left on *Inherit*, which
   takes the [task kind's agent](models.md#task-kinds) as each run fires rather than pinning a
   harness here - so repointing that kind moves a mission written months earlier. An inheriting
   mission cannot pin a Model (a model id belongs to one harness) and its Effort offers only the
@@ -107,7 +107,9 @@ Three decisions are worth knowing now, because everything later is built on them
 - **A due instant creates a backlog task and stops there.** No schedule path will dispatch,
   cut a worktree, or type into a pane. If [Foreman](work-queues.md#backlog-autopilot-foreman-schedules-the-fleet)
   later picks the task up, the existing allowlist, dependency, capacity and pane-safety
-  gates remain the only autonomous route to execution.
+  gates remain the only autonomous route to execution. The completion policy below does not
+  soften this: it lets Foreman close a task Foreman was already running, and no schedule path
+  gains a way to start one.
 - **The guarantee is durable catch-up, not wall-clock.** The cadence lives in SQLite rather
   than in a timer, so a restart or a closed laptop loses no due instant - but no work runs
   while the machine is asleep, and the task is created *late* when it wakes. The catalog
@@ -140,6 +142,47 @@ Then the **overlap policy** asks whether this mission's previous work is still i
 a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default) records
 `skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
 `failed` never blocks: a mission whose last run went wrong still runs tomorrow.
+
+### When a run finishes but its task does not
+
+`skip-active` asks whether the previous task is still in flight, and it takes the task's
+word for it. That is a problem for exactly the missions this feature is for, because every
+route a task has to `done` without a person reads a **merged pull request** - and a run with
+nothing to ship never opens one. Sweep the inbox and find it empty; audit the dependencies
+and find them fine; write the report and submit it. The work is over, the task is still
+`running`, and from then on every occurrence is recorded as `skipped_overlap` naming a task
+that stopped doing anything weeks ago. Nothing errors. The mission simply never runs again,
+and the catalog goes on calling it healthy.
+
+The **completion policy** closes that:
+
+| Policy | What ends a generated task |
+|---|---|
+| **Complete the task automatically** (`auto-on-conclusion`) | Foreman's own settled verdict may conclude it, as well as a merge or you |
+| **Leave it open** (`manual`) | a merged pull request, or you - the only behaviour before this existed |
+
+"Foreman concluded the run" means one of exactly two of its recorded wrap-up outcomes:
+`empty` (the session changed nothing, so there is nothing to commit, push or open a pull
+request for) and `retired` (consumed with no wrap-up action - a scout report, a review-only
+artifact, another non-shipping settled turn). A `held` verdict is Foreman saying the work is
+*unfinished*; `verification_failed` means no model judged it at all; `asked`,
+`workflow_claimed` and `direct_handoff` all mean shipping is still under way and the merge
+paths still own the completion. None of those conclude anything. The list lives in
+`foremanConcludedMission` (`src/shared/schedules.ts`), beside the policy it serves.
+
+Three properties worth knowing:
+
+- **The completion is an inference, and it is reversible.** It is recorded the same way
+  `settleIfEpisodeFinished` records one, so an agent that starts working on that very task
+  again reopens it. Foreman concluding a generation is strong evidence, not proof.
+- **The policy that applies is the one the run was filed under.** It is read from the
+  immutable revision the occurrence names, not from the schedule's current row, so editing
+  or archiving a mission cannot retroactively conclude work already in flight.
+- **New missions default to automatic; everything already stored stays manual.** The wire
+  default on `POST /api/schedules` is `manual`, so a caller written before this field existed
+  keeps saving the behaviour it was written for, and no mission an operator already owns
+  changes what it does. The editor's *new mission* default is the other one, because a
+  mission written today is one whose cadence is the whole point.
 
 Two more properties, both deliberate:
 

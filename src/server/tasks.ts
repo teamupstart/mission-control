@@ -15,6 +15,7 @@ import type {
 import type {
   PipelineAdoptSuccessor,
   PipelineRetry,
+  PromptedCompletionDisposition,
   ReorderTask,
   TaskDependencyInput,
   UpdateTask,
@@ -31,6 +32,7 @@ import {
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
 import { canMessage } from "@shared/pane.ts";
+import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
   dispatchHasNoProvisionedResources,
@@ -77,6 +79,7 @@ import {
   updatePipelineCommissionRecovery,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
+import { completionPolicyForOccurrence } from "./schedules/store.ts";
 import { taskHasWorktrees, taskMergeQuorum, taskRepoRefs, type QuorumVerdict } from "@shared/task-repos.ts";
 import { appendRank, placeBacklogRank, prependRank } from "./backlog-rank.ts";
 import {
@@ -516,6 +519,33 @@ interface CompletionInput {
    * so it lands in the same tick as the write it describes.
    */
   inferredFrom: string | null;
+}
+
+/**
+ * How long a mission run's recorded outcome may be.
+ *
+ * The verifier's summary is prose from a model, and `Task.outcome` is rendered on a board
+ * card, a rail row and the mission's own run history. Bounded here rather than trusted,
+ * for the reason every other bound in this file exists.
+ */
+const MISSION_RUN_OUTCOME_MAX = 200;
+
+/**
+ * The sentence a Foreman-concluded mission run leaves on its task.
+ *
+ * It names the concluder, because a reader looking at a `done` row weeks later needs to know
+ * this was an inference from Foreman's verdict rather than something a person typed - and
+ * carries Foreman's own summary, because "why is this done when nothing shipped?" is the
+ * first question that row provokes.
+ */
+function missionRunOutcome(decision: PromptedCompletionDisposition): string {
+  const why = decision.summary.trim();
+  const line = why
+    ? `Foreman concluded this recurring mission run: ${why}`
+    : "Foreman concluded this recurring mission run";
+  return line.length > MISSION_RUN_OUTCOME_MAX
+    ? `${line.slice(0, MISSION_RUN_OUTCOME_MAX - 1)}\u2026`
+    : line;
 }
 
 /** The task facts a scout completion must not cross while its archive gate awaits. */
@@ -1309,6 +1339,58 @@ export class TaskManager {
         sessionId: s.id,
         episodeId: binding.episodeId,
       });
+    });
+  }
+
+  /**
+   * Conclude a recurring mission's generated task on Foreman's own settled verdict.
+   *
+   * The gap this closes. Every existing route to `done` for an autonomous task runs through a
+   * merged pull request - `settleIfEpisodeFinished`, `settleMergedTask`,
+   * `reconcileMergedTasks` all read `currentEpisodeLanded`. A recurring mission whose run has
+   * nothing to ship produces no pull request to merge: the sweep found nothing, the report was
+   * written, the audit came back clean. That task never leaves `running`, and under the
+   * default `skip-active` overlap policy it then blocks every later occurrence of the same
+   * mission for ever - the exact failure the cadence exists to prevent, recorded run after run
+   * as `skipped_overlap` naming a task that finished its work weeks ago.
+   *
+   * Four gates, and each one is refusing a different wrong answer:
+   *
+   *  - **The verdict must be a conclusion, not a step.** `foremanConcludedMission` owns that
+   *    list; a `held` verdict is Foreman saying the work is UNFINISHED, and an `asked` or
+   *    `direct_handoff` says shipping is still under way and the merge path still owns it.
+   *  - **The task must be a mission's.** `scheduleOccurrenceId` is what makes this policy
+   *    reachable at all: an ordinary dispatched task's completion stays the operator's, and
+   *    nothing here changes what happens to one.
+   *  - **The mission must have asked for it.** The policy is read from the immutable revision
+   *    that FILED this task, so an edit or an archive since then cannot retroactively conclude
+   *    work in flight, and an unreadable stored value leaves the task alone.
+   *  - **Provider-owned completion is never overridden**, exactly as the merge paths refuse it.
+   *
+   * Registered as an INFERENCE (`inferredFrom`), which is the honest label and also the useful
+   * one: Foreman concluding a generation is strong evidence and not proof, so an agent that
+   * starts working on this very task again reverses it through `reopenIfWorkResumed`. That is
+   * the same bargain `settleIfEpisodeFinished` makes about idleness.
+   *
+   * Backgrounded and non-throwing: this is called from a route that has already committed the
+   * durable consumption, and a scout whose archive is not submitted yet simply stays running
+   * rather than failing the request that reported the verdict.
+   */
+  concludeScheduledMissionRun(
+    sessionId: string,
+    decision: PromptedCompletionDisposition,
+  ): void {
+    if (!foremanConcludedMission(decision.outcome)) return;
+    const t = this.executingTaskOn(sessionId);
+    if (!t || !t.scheduleOccurrenceId) return;
+    if (providerOwnsTaskCompletion(t.kind)) return;
+    if (completionPolicyForOccurrence(t.scheduleOccurrenceId) !== "auto-on-conclusion") return;
+    this.completeInBackground(t.id, {
+      outcome: missionRunOutcome(decision),
+      satisfyDependents: false,
+      requireStopped: false,
+      confirmIncompleteScout: false,
+      inferredFrom: sessionId,
     });
   }
 

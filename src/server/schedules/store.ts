@@ -3,6 +3,7 @@ import { openDb } from "../db.ts";
 import { AGENT_TYPES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
 import { TASK_PRIORITIES, normalizeLabels, taskKindAllowsBacklog } from "@shared/task.ts";
 import {
+  SCHEDULE_COMPLETION_POLICIES,
   SCHEDULE_DECISION_KINDS,
   SCHEDULE_EXECUTION_MODES,
   SCHEDULE_MISSED_POLICIES,
@@ -18,6 +19,7 @@ import {
 } from "@shared/schedules.ts";
 import type {
   MissionSchedule,
+  ScheduleCompletionPolicy,
   ScheduleDecisionKind,
   ScheduleDefinition,
   ScheduleHistoryCursor,
@@ -55,6 +57,7 @@ interface ScheduleRow {
   timezone: string;
   overlap_policy: string;
   missed_policy: string;
+  completion_policy: string;
   execution_mode: string;
   runner_id: string | null;
   revision: number;
@@ -76,6 +79,7 @@ interface RevisionRow {
   timezone: string;
   overlap_policy: string;
   missed_policy: string;
+  completion_policy: string;
   execution_mode: string;
   runner_id: string | null;
   created_at: number;
@@ -183,23 +187,30 @@ function readOptionalEnum<T extends string>(
 function readPolicies(row: {
   overlap_policy: string;
   missed_policy: string;
+  completion_policy: string;
   execution_mode: string;
   template_json: string;
 }): {
   overlapPolicy: MissionSchedule["overlapPolicy"];
   missedPolicy: MissionSchedule["missedPolicy"];
+  completionPolicy: MissionSchedule["completionPolicy"];
   executionMode: MissionSchedule["executionMode"];
   template: ScheduleTemplate | null;
   unreadable: ScheduleUnreadable | null;
 } {
   const overlapPolicy = readPersistedEnum(SCHEDULE_OVERLAP_POLICIES, row.overlap_policy);
   const missedPolicy = readPersistedEnum(SCHEDULE_MISSED_POLICIES, row.missed_policy);
+  const completionPolicy = readPersistedEnum(
+    SCHEDULE_COMPLETION_POLICIES,
+    row.completion_policy,
+  );
   const executionMode = readPersistedEnum(SCHEDULE_EXECUTION_MODES, row.execution_mode);
   const template = parseTemplate(row.template_json);
 
   const bad: Array<[string, string]> = [];
   if (overlapPolicy === null) bad.push(["overlap_policy", row.overlap_policy]);
   if (missedPolicy === null) bad.push(["missed_policy", row.missed_policy]);
+  if (completionPolicy === null) bad.push(["completion_policy", row.completion_policy]);
   if (executionMode === null) bad.push(["execution_mode", row.execution_mode]);
   if (template === null) bad.push(["template", "unreadable"]);
 
@@ -213,7 +224,14 @@ function readPolicies(row: {
             ". It will not run until it is edited here.",
           fields: bad.map(([field]) => field),
         };
-  return { overlapPolicy, missedPolicy, executionMode, template, unreadable };
+  return {
+    overlapPolicy,
+    missedPolicy,
+    completionPolicy,
+    executionMode,
+    template,
+    unreadable,
+  };
 }
 
 function rowToOccurrence(r: OccurrenceRow): ScheduleOccurrence {
@@ -259,6 +277,7 @@ function rowToRevision(r: RevisionRow): ScheduleRevision {
     timezone: r.timezone,
     overlapPolicy: policies.overlapPolicy,
     missedPolicy: policies.missedPolicy,
+    completionPolicy: policies.completionPolicy,
     executionMode: policies.executionMode,
     runnerId: r.runner_id,
     template: policies.template,
@@ -297,6 +316,7 @@ function rowToSchedule(r: ScheduleJoinRow, ctx: HealthContext, now: number): Mis
     timezone: r.timezone,
     overlapPolicy: policies.overlapPolicy,
     missedPolicy: policies.missedPolicy,
+    completionPolicy: policies.completionPolicy,
     executionMode: policies.executionMode,
     runnerId: r.runner_id,
     revision: r.revision,
@@ -528,6 +548,36 @@ export function findActiveTaskForSchedule(scheduleId: string): { id: string; tit
 }
 
 /**
+ * The completion policy the revision that FILED a task was written under.
+ *
+ * Read through the occurrence rather than off the schedule's current row, because those two
+ * answer different questions. The schedule says what the next run will do; this says what the
+ * operator asked for when this particular task was filed, which is the only honest thing to
+ * apply to work that is already in flight. It is also the only one that survives: a mission
+ * can be edited or archived while its task is still running, and an archived schedule keeps
+ * its revisions exactly so history stays readable.
+ *
+ * Null is the fail-closed answer, and it covers three cases that all mean the same thing here
+ * - no such occurrence, no such revision, and a stored value this build cannot read. Every
+ * one of them leaves the task alone for a human to conclude, which is what `manual` does too.
+ */
+export function completionPolicyForOccurrence(
+  occurrenceId: string,
+): ScheduleCompletionPolicy | null {
+  const row = openDb()
+    .prepare(
+      `SELECT r.completion_policy AS completion_policy
+         FROM mission_schedule_occurrences o
+         JOIN mission_schedule_revisions r
+           ON r.schedule_id = o.schedule_id AND r.revision = o.schedule_revision
+        WHERE o.id = ?`,
+    )
+    .get(occurrenceId) as { completion_policy: string } | undefined;
+  if (!row) return null;
+  return readPersistedEnum(SCHEDULE_COMPLETION_POLICIES, row.completion_policy);
+}
+
+/**
  * One page of run history, newest first, with the schedule it belongs to.
  *
  * Paged on `scheduled_for` rather than an offset because `(schedule_id, scheduled_for)`
@@ -602,8 +652,8 @@ function insertRevision(
   d.prepare(
     `INSERT INTO mission_schedule_revisions (
        schedule_id, revision, template_json, expression, timezone,
-       overlap_policy, missed_policy, execution_mode, runner_id, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       overlap_policy, missed_policy, completion_policy, execution_mode, runner_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     scheduleId,
     revision,
@@ -612,6 +662,7 @@ function insertRevision(
     def.timezone,
     def.overlapPolicy,
     def.missedPolicy,
+    def.completionPolicy,
     def.executionMode,
     def.runnerId,
     at,
@@ -634,9 +685,9 @@ export function createSchedule(input: CreateScheduleRow): MissionSchedule {
     d.prepare(
       `INSERT INTO mission_schedules (
          id, name, enabled, archived_at, expression, timezone,
-         overlap_policy, missed_policy, execution_mode, runner_id,
+         overlap_policy, missed_policy, completion_policy, execution_mode, runner_id,
          revision, next_run_at, created_at, updated_at
-       ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     ).run(
       input.id,
       def.name,
@@ -645,6 +696,7 @@ export function createSchedule(input: CreateScheduleRow): MissionSchedule {
       def.timezone,
       def.overlapPolicy,
       def.missedPolicy,
+      def.completionPolicy,
       def.executionMode,
       def.runnerId,
       input.nextRunAt,
@@ -683,7 +735,8 @@ export function updateSchedule(
     d.prepare(
       `UPDATE mission_schedules
           SET name = ?, expression = ?, timezone = ?, overlap_policy = ?, missed_policy = ?,
-              execution_mode = ?, runner_id = ?, revision = ?, next_run_at = ?, updated_at = ?
+              completion_policy = ?, execution_mode = ?, runner_id = ?, revision = ?,
+              next_run_at = ?, updated_at = ?
         WHERE id = ?`,
     ).run(
       definition.name,
@@ -691,6 +744,7 @@ export function updateSchedule(
       definition.timezone,
       definition.overlapPolicy,
       definition.missedPolicy,
+      definition.completionPolicy,
       definition.executionMode,
       definition.runnerId,
       revision,

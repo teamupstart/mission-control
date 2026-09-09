@@ -5716,6 +5716,12 @@ export class WorkflowStore {
        * the oldest ancestry first - the half most likely to be stale. Ordering inside each of
        * those two groups is staging order, not recency, and nothing here depends on it.
        *
+       * The first refusal of a kind ends the carry for that kind, whether the count or the
+       * byte cap produced it. Refusing only the item that did not fit would let a smaller,
+       * OLDER one through behind it, and the source's own captures come first in this order,
+       * so the item refused for its size is the more recent of the two. That is the ordering
+       * inverted, in exchange for a few more bytes carried.
+       *
        * `WorkflowContextSnapshotSchema` caps the frozen arrays at these same counts, so this
        * is not a policy choice that could simply be relaxed: a carry that ignored the limit
        * would fail the whole capture as `stale_capture` and lose every item rather than the
@@ -5808,6 +5814,12 @@ export class WorkflowStore {
           continue;
         }
         if (budget.images <= 0 || row.bytes > budget.imageBytes) {
+          // A byte miss closes the door exactly as an exhausted count does. Skipping only the
+          // item that did not fit would let a SMALLER, older one through behind it, and since
+          // the source's own captures are ordered first, the one refused for its size is the
+          // more recent of the two. Greedy packing would carry marginally more bytes at the
+          // cost of the ordering the whole rule exists to state.
+          budget.images = 0;
           truncated.images += 1;
           continue;
         }
@@ -5843,6 +5855,8 @@ export class WorkflowStore {
           continue;
         }
         if (budget.artifacts <= 0 || row.bytes > budget.artifactBytes) {
+          // Same rule as the images above: the first refusal ends the carry for this kind.
+          budget.artifacts = 0;
           truncated.artifacts += 1;
           continue;
         }

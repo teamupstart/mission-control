@@ -805,6 +805,93 @@ test("a three-level chain refuses the oldest ancestry, not the parent's own clai
   }
 });
 
+test("a byte-capped carry stops at the first refusal instead of packing smaller ancestry in", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-bytecap-")));
+  try {
+    const { WORKFLOW_TEXT_EVIDENCE_LIMITS } = await import("../src/shared/workflow.ts");
+    const kib = (n: number) => "x".repeat(n * 1024) + "\n";
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const stage = (label: string, sizes: readonly number[], at: number) => {
+      const writes = sizes.map((size, index) => {
+        const body = `${label}${index}` + kib(size);
+        writeFileSync(join(checkout, `${label}${index}.log`), body);
+        return logWrite({
+          id: `bytecap-${label}${index}`,
+          clientItemId: `bytecap-${label}${index}`,
+          root: checkout,
+          locator: `${label}${index}.log`,
+          caption: `${label} item ${index}`,
+          body,
+        });
+      });
+      store.stageWorkflowEvidence(noteKey, writes, at);
+    };
+
+    // Grandparent proves one small thing, so the parent has ancestry to carry.
+    stage("small", [5], 2);
+    const grand = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "bytecap-root", now: 3 },
+      { id: "bytecap-grand", triggerSource: "manual", triggerKey: "bytecap-root", context: {}, evidence: {}, now: 3 },
+    );
+    await captureSubmissionTextArtifacts(store, grand.submission.id, 3);
+    store.updateSubmissionCapture(grand.submission.id, {
+      context: {}, evidence: {}, fingerprint: "bc-1", repositoryFingerprint: "tree", status: "running",
+    }, 3);
+
+    // The parent captures one LARGE item of its own and carries the small ancestry behind it.
+    store.setSubmissionState(grand.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+    stage("large", [60], 5);
+    const parent = store.reserveEvidenceReadinessRefinement({
+      id: "bytecap-parent", runId, waitingSubmissionId: grand.submission.id,
+      triggerKey: "bytecap-refine-1", manualRetry: true, now: 5,
+    });
+    assert.equal(parent.ok, true);
+    if (!parent.ok) return;
+    await captureSubmissionTextArtifacts(store, parent.submission.id, 6);
+    await inheritSubmissionEvidence(store, parent.submission, 6);
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {}, evidence: {}, fingerprint: "bc-2", repositoryFingerprint: "tree", status: "running",
+    }, 6);
+    assert.deepEqual(
+      store.listSubmissionTextArtifacts(parent.submission.id).map((item) => item.displayName),
+      ["large0.log", "small0.log"],
+      "the parent holds its own large capture first, then the small ancestry",
+    );
+
+    // The child fills most of the byte budget itself, leaving room for the small ancestry but
+    // not the large capture ahead of it. Greedy packing would take the older item and drop the
+    // newer one; the rule is that the first refusal ends the carry.
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 7);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 7);
+    stage("own", [60, 60, 60], 8);
+    const child = store.reserveEvidenceReadinessRefinement({
+      id: "bytecap-child", runId, waitingSubmissionId: parent.submission.id,
+      triggerKey: "bytecap-refine-2", manualRetry: true, now: 8,
+    });
+    assert.equal(child.ok, true);
+    if (!child.ok) return;
+    await captureSubmissionTextArtifacts(store, child.submission.id, 9);
+    const ownBytes = store.listSubmissionTextArtifacts(child.submission.id)
+      .reduce((sum, item) => sum + item.bytes, 0);
+    const remaining = WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes - ownBytes;
+    assert.equal(remaining > 6 * 1024 && remaining < 60 * 1024, true, "the small item fits and the large one does not");
+    await inheritSubmissionEvidence(store, child.submission, 9);
+
+    assert.deepEqual(
+      store.listSubmissionTextArtifacts(child.submission.id)
+        .filter((item) => item.inheritedFrom).map((item) => item.displayName),
+      [],
+      "the refusal of the parent's own capture ends the carry rather than admitting older ancestry",
+    );
+    const truncation = store.listEvents(runId)
+      .filter((event) => event.kind === "evidence_carry_truncated").at(-1);
+    assert.equal((truncation?.payload as { artifacts: number }).artifacts, 2);
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
 test("a parent claim survives a link whose evidence the limit refused", async () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-partial-")));
   try {

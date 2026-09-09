@@ -854,7 +854,9 @@ what they staged themselves and then carry forward what the previous submission 
 froze and this one did not supply. A carried item never displaces fresh evidence and competes last for the same aggregate limits.
 When the limit binds, a carry gives up the oldest ancestry first and never an item the previous
 submission captured itself, so what is refused is always the material that has been re-carried
-longest and describes the oldest tree.
+longest and describes the oldest tree. The first refusal ends the carry for that kind, whether a
+count or a byte cap produced it: admitting a smaller item behind one that did not fit would carry
+a few more bytes by taking the older of the two, which is the ordering inverted.
 
 Those limits are not a policy this path could relax. The immutable context snapshot caps its
 frozen image and artifact arrays at the same counts, so a carry that ignored them would fail the

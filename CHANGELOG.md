@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.11.0](https://github.com/teamupstart/mission-control/compare/v1.10.0...v1.11.0) (2026-09-09)
+
+
+### Features
+
+* **attachments:** preview an attached screenshot on double-click ([3ddc8d9](https://github.com/teamupstart/mission-control/commit/3ddc8d9a5e57279cafbfa45c8313b11254e39bc4))
+* **conversation:** open a report in Files without arming comments ([625484c](https://github.com/teamupstart/mission-control/commit/625484ca53eab886d093226ae0152c463907a482))
+* **dashboard:** recommended defaults, report View, and screenshot previews ([96adabd](https://github.com/teamupstart/mission-control/commit/96adabd59683078aa9a638a0c3f93a104ec320ba))
+* **foreman:** ship the cheap tier on rather than in shadow ([f312a71](https://github.com/teamupstart/mission-control/commit/f312a71e896369009086b39e639b316403cc0e2f))
+* **schedules:** let Foreman conclude a recurring mission's run ([#954](https://github.com/teamupstart/mission-control/issues/954)) ([ed2cc86](https://github.com/teamupstart/mission-control/commit/ed2cc86881f154be435895290415f5feaadfca51))
+* **settings:** name the Agent SDK runtime as recommended ([a9e244c](https://github.com/teamupstart/mission-control/commit/a9e244c91ebb5b931a11fb36e93b01dfc55bb9ea))
+* **tours:** continue the machine guide into Trust after Setup ([ff41098](https://github.com/teamupstart/mission-control/commit/ff41098650864e81a3668c8d1c479c1db0f08fc7))
+* **tours:** continue the machine guide into Trust after Setup ([66418a0](https://github.com/teamupstart/mission-control/commit/66418a085dfde7d626dc91b99eff9e2e5b0ab4a2))
+* **workflows:** allow Commands by default, behind the Trust grant ([b9e4865](https://github.com/teamupstart/mission-control/commit/b9e486524e1a7e34b41098e66aa0ebef6bab7943))
+
+
+### Bug Fixes
+
+* **e2e:** flush the Pi fake's response before it exits ([86ec300](https://github.com/teamupstart/mission-control/commit/86ec300a170946405ff6e0a9059c0c2cc59a9954))
+* **models:** tell a signed-out harness how to sign in ([2fec302](https://github.com/teamupstart/mission-control/commit/2fec302ba39648d835bda2382f277a670d0b73bd))
+* **models:** tell a signed-out harness how to sign in ([7138320](https://github.com/teamupstart/mission-control/commit/713832026e204c2344420366e712c4e1cb87d484))
+* **setup:** derive both hook predicates from one list, name both repairs ([e5b7641](https://github.com/teamupstart/mission-control/commit/e5b76416b77d8d888ea430480278f38403c872ed))
+* **setup:** forgive only the parse errors our own read bound caused ([203137d](https://github.com/teamupstart/mission-control/commit/203137d7cd74f7a29b88b10fc5fa97a09ca6e7d2))
+* **setup:** refuse an unparseable settings file, settle the env fetch in the spec ([54a6678](https://github.com/teamupstart/mission-control/commit/54a6678e9d378f32452f7d8a5791b1388f77806d))
+* **setup:** report a Claude hook path that no longer resolves ([22bd290](https://github.com/teamupstart/mission-control/commit/22bd290a6ba3c138fdbf317673d651a69d236af4))
+* **setup:** report a Claude hook path that no longer resolves ([2e66ade](https://github.com/teamupstart/mission-control/commit/2e66ade9edc294f926cbcbe355e51f43cbb5f596))
+* **setup:** stop Herdr enumeration logging, offer to start its server ([#955](https://github.com/teamupstart/mission-control/issues/955)) ([7393773](https://github.com/teamupstart/mission-control/commit/7393773fe96e0ec8dbae0404fa40c339b9dbb356))
+* **tours:** name the Trust panels, not a column the matrix does not have ([73a05a2](https://github.com/teamupstart/mission-control/commit/73a05a2d49a80d4d204f39e3a23d5b6f010233d9))
+* **workflows:** keep stored Command consent through an unrelated write ([6c488b3](https://github.com/teamupstart/mission-control/commit/6c488b3ed1978eba85117724abfbcd8ee165b4d3))
+* **workflows:** model one run lifecycle state, and enforce it ([#952](https://github.com/teamupstart/mission-control/issues/952)) ([4659a4a](https://github.com/teamupstart/mission-control/commit/4659a4a2a3c9176d5f752bf8f12e1c2a07ba8a10))
+
 ## [1.10.0](https://github.com/teamupstart/mission-control/compare/v1.9.2...v1.10.0) (2026-09-08)
 
 

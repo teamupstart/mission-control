@@ -209,10 +209,8 @@ test("product issue registration requires public confirmation and bounded attach
   assert.match(registration, /public GitHub issue/);
   assert.match(registration, /Submit public issue/);
   assert.match(registration, /Optional screenshot/);
-  assert.match(registration, /PRODUCT_ISSUE_LIMITS\.attachmentCount/);
-  assert.match(registration, /never pass filesystem paths/);
-  assert.doesNotMatch(registration, /\.max\(0\)/);
-  assert.match(registration, /new TextEncoder\(\)\.encode\(value\)\.byteLength/);
+  assert.match(registration, /inputSchema: ProductIssueDraftSchema\.shape/);
+  assert.match(registration, /\.\.\.productIssueTransport/);
   assert.match(registration, /PRODUCT_ISSUE_CLIENT/);
   assert.doesNotMatch(
     registration,

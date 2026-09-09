@@ -169,11 +169,10 @@ test("a misspelling hidden on a prototype is refused, not read past", () => {
 });
 
 test("a misspelling polluted onto Object.prototype is refused, not ignored", () => {
-  // The chain is bounded to Object.prototype by the plain-object rule, but not emptied.
-  // Every built-in member of Object.prototype is non-enumerable, so a clean literal has no
-  // inherited enumerable names, while assignment pollution creates one. Reflect.ownKeys
-  // cannot see it and Object.hasOwn will not copy it, so before this it was neither
-  // reported nor honoured: keepAwake stayed absent and /api/keep-awake answered 503.
+  // The chain is bounded to Object.prototype by the plain-object rule, but not emptied. A
+  // name installed there is readable through fields[key] yet appears in no own-key listing,
+  // and Object.hasOwn will not copy it, so before this it was neither reported nor honoured:
+  // keepAwake stayed absent and /api/keep-awake answered 503.
   const polluted = Object.prototype as unknown as Record<string, unknown>;
   polluted.keepAwke = keepAwakeStub;
   try {
@@ -205,6 +204,51 @@ test("a CORRECTLY named dependency on the prototype is refused rather than adopt
     );
   } finally {
     delete polluted.keepAwake;
+  }
+});
+
+test("a NON-enumerable misspelling on Object.prototype is refused too", () => {
+  // Enumerability is not the discriminator. An earlier guard used `for...in`, which yields
+  // only enumerable inherited names, so a defineProperty install stayed invisible and just
+  // as reachable. Every name on the chain is now compared against the pristine set instead.
+  const polluted = Object.prototype as unknown as Record<string, unknown>;
+  Object.defineProperty(polluted, "keepAwke", {
+    value: keepAwakeStub,
+    enumerable: false,
+    configurable: true,
+  });
+  try {
+    assert.throws(
+      () => resolveUnchecked({ registry, reviews, tasks, queues }),
+      (error: unknown) => {
+        assert.ok(error instanceof TypeError);
+        assert.match(error.message, /route dependency name "keepAwke"/);
+        assert.match(error.message, /through its prototype rather than as own fields/);
+        return true;
+      },
+    );
+  } finally {
+    delete polluted.keepAwke;
+  }
+});
+
+test("a symbol installed on Object.prototype is refused", () => {
+  // A pristine Object.prototype carries no symbol keys at all, so any symbol found on the
+  // chain is an installed one and is reported by description.
+  const polluted = Object.prototype as unknown as Record<symbol, unknown>;
+  const key = Symbol.for("keepAwake");
+  Object.defineProperty(polluted, key, {
+    value: keepAwakeStub,
+    enumerable: false,
+    configurable: true,
+  });
+  try {
+    assert.throws(
+      () => resolveUnchecked({ registry, reviews, tasks, queues }),
+      /route dependency name "Symbol\(keepAwake\)"/,
+    );
+  } finally {
+    delete polluted[key];
   }
 });
 

@@ -1121,6 +1121,30 @@ export const REQUIRED_ROUTE_DEPS_ARE_COMPLETE: RequiredRouteDepsAreComplete = tr
 
 const ROUTE_DEP_NAME_SET = new Set<string>(ROUTE_DEP_NAMES);
 
+/**
+ * The own property names a pristine `Object.prototype` carries, fixed by the language spec.
+ *
+ * Hardcoded rather than snapshotted at module load. A snapshot would be taken from whatever
+ * `Object.prototype` already looked like, so anything that polluted it before this module was
+ * imported would be baked into the baseline and never reported - which is precisely the case
+ * worth catching. These twelve are the whole of it, and they are all non-enumerable, so an
+ * ordinary object literal contributes nothing outside this set.
+ */
+const PRISTINE_OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "__proto__",
+]);
+
 /** Levenshtein distance, bounded by the short names it runs over, for "did you mean". */
 function nameDistance(a: string, b: string): number {
   let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -1195,19 +1219,32 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
   // Names reaching this object through its prototype rather than as own fields.
   //
   // Requiring a plain object above bounds the chain to `Object.prototype`, but does not
-  // empty it. Every built-in member of `Object.prototype` is NON-enumerable, so a clean
-  // literal contributes nothing here, while `Object.prototype.keepAwke = x` - prototype
-  // pollution - contributes an enumerable one. `Reflect.ownKeys` cannot see it and
-  // `Object.hasOwn` will not copy it, so without this the misspelling is neither reported
-  // nor honoured: `keepAwake` stays absent and `/api/keep-awake` answers 503 at request
-  // time, which is the deferred failure this whole seam exists to abolish.
+  // empty it. `Object.prototype.keepAwke = x` - prototype pollution - is readable through
+  // `fields[key]` yet appears in no OWN-key listing, and `Object.hasOwn` will not copy it,
+  // so without this the misspelling is neither reported nor honoured: `keepAwake` stays
+  // absent and `/api/keep-awake` answers 503 at request time, which is the deferred failure
+  // this whole seam exists to abolish.
+  //
+  // Every name on the chain is compared against the pristine set below, so enumerability is
+  // irrelevant: an installed name is caught whether it was assigned or defined.
   //
   // A name that DOES match a dependency is refused for the same reason rather than adopted:
   // a polluted prototype is indistinguishable from a supplied field, and silently declining
   // to honour one would be its own quiet miswiring.
   const inheritedKeys: string[] = [];
-  for (const key in fields) {
-    if (!Object.hasOwn(fields, key)) inheritedKeys.push(key);
+  for (
+    let proto: object | null = Object.getPrototypeOf(deps) as object | null;
+    proto !== null;
+    proto = Object.getPrototypeOf(proto) as object | null
+  ) {
+    // `Reflect.ownKeys`, not `for...in`: `for...in` yields only ENUMERABLE inherited names,
+    // so a `keepAwke` installed with `Object.defineProperty(..., { enumerable: false })`
+    // stayed invisible and reachable exactly like the enumerable case.
+    for (const key of Reflect.ownKeys(proto)) {
+      if (typeof key === "string" && PRISTINE_OBJECT_PROTOTYPE_KEYS.has(key)) continue;
+      const name = typeof key === "string" ? key : String(key);
+      if (!inheritedKeys.includes(name)) inheritedKeys.push(name);
+    }
   }
   if (inheritedKeys.length > 0) {
     const shown = inheritedKeys.slice(0, 5);

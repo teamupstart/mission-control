@@ -134,12 +134,15 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
       <section className="app-banner app-banner-update" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>Mission Control {snapshot.newVersion} is available</strong>
-          <p>{releaseSummary(snapshot.releaseNotes)}</p>
+          <p>{snapshot.blocker ?? releaseSummary(snapshot.releaseNotes)}</p>
         </div>
         <div className="app-banner-actions">
           <Tooltip label={`Build Mission Control ${snapshot.newVersion} now, then restart when it is ready`}>
-            <button type="button" className="btn btn-primary" onClick={props.onApply}>Update Now</button>
+            <button type="button" className="btn btn-primary" onClick={props.onApply} disabled={!!snapshot.blocker}>Update Now</button>
           </Tooltip>
+          {snapshot.blocker && (
+            <button type="button" className="btn btn-primary" onClick={props.onCheck}>Check again</button>
+          )}
           <Tooltip label="Hide this update until the next check">
             <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>
           </Tooltip>

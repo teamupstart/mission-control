@@ -259,7 +259,8 @@ and control surface stay coherent.
 There are two paths through this repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
-  the window closed, and receives updates. See the
+  the window closed, and receives updates. Updates check Node.js and npm before building and
+  offer remediation with **Check again** when the runtime is incompatible. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 

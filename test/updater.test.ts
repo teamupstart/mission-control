@@ -96,7 +96,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     currentVersion: () => "1.2.3",
     readReceipt: () => receipt,
     latestRelease: async () => release(),
-    systemNode: () => "/opt/homebrew/bin/node",
+    runtime: async () => ({ ok: true, node: "/opt/homebrew/bin/node", env: { PATH: "/opt/homebrew/bin:/usr/bin:/bin" } }),
     helperSource: () => "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
     stateDirectory: () => "/tmp/mission-state",
     handoff: async (args) => {
@@ -185,7 +185,6 @@ test("ineligible installations disable before any release query", async () => {
     [{ arch: "x64" }, /Apple silicon/],
     [{ readReceipt: () => null }, /managed install/],
     [{ readReceipt: () => ({ ...receipt, repo: "someone/fork" }) }, /someone\/fork/],
-    [{ systemNode: () => null }, /system Node\.js/],
   ];
   for (const [over, reason] of cases) {
     let queries = 0;
@@ -196,6 +195,82 @@ test("ineligible installations disable before any release query", async () => {
     assert.equal(queries, 0);
     f.controller.stop();
   }
+});
+
+test("Node preflight prevents incompatible build attempts", async () => {
+  let attempted = 0;
+  for (const version of ["18.20.0", "22.0.0", "23.11.0"]) {
+    const f = fixture({
+      runtime: async () => ({ ok: false, message: `Requires Node.js 24 or newer (found ${version}). Check again.` }),
+      stage: async () => {
+        attempted++;
+        return { ok: false, reason: "failed", message: "incompatible Node" };
+      },
+    });
+    await f.controller.start();
+    await f.controller.check(false);
+    await f.controller.apply();
+    f.controller.stop();
+  }
+  console.log(`NODE_PREFLIGHT_MEASUREMENT ${JSON.stringify({ incompatibleScenarios: 3, incompatibleBuildAttempts: attempted })}`);
+  assert.equal(attempted, 0, "incompatible runtimes must never reach the build adapter");
+});
+
+test("Node remediation rechecks compatibility before offering and starting the build", async () => {
+  let compatible = false;
+  let probes = 0;
+  const f = fixture({ runtime: async () => {
+    probes++;
+    return compatible
+      ? { ok: true, node: "/selected/node", env: { PATH: "/selected:/usr/bin" } }
+      : { ok: false, message: "Install Node.js 24+, then choose Check again." };
+  } });
+  await f.controller.start();
+  const blocked = await f.controller.check(false);
+  assert.equal(blocked.phase, "available");
+  if (blocked.phase === "available") assert.match(blocked.blocker!, /Check again/);
+  await f.controller.checkForUpdates();
+  assert.ok(f.events.some((event) => event.includes("error-dialog:Install Node")));
+  assert.equal(await f.controller.apply(), false);
+  assert.equal(f.stageRequests.length, 0);
+  compatible = true;
+  await f.controller.check(true);
+  const before = probes;
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(probes, before + 1);
+  assert.deepEqual(f.stageRequests[0]?.runtime, { ok: true, node: "/selected/node", env: { PATH: "/selected:/usr/bin" } });
+  f.controller.stop();
+});
+
+test("a runtime changed after the offer blocks before build or quit", async () => {
+  const f = fixture();
+  await f.controller.start();
+  await f.controller.check(false);
+  f.port.runtime = async () => ({ ok: false, message: "Node.js 22 is incompatible. Check again." });
+  assert.equal(await f.controller.apply(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "available");
+  if (snapshot.phase === "available") assert.match(snapshot.blocker!, /Node.js 22/);
+  assert.equal(f.stageRequests.length, 0);
+  assert.equal(f.handoffs.length, 0);
+  assert.ok(!f.events.includes("quit"));
+  f.controller.stop();
+});
+
+test("cancelling during runtime preflight prevents a late build", async () => {
+  const f = fixture();
+  await f.controller.start();
+  await f.controller.check(false);
+  let finish!: (runtime: Awaited<ReturnType<UpdaterPort["runtime"]>>) => void;
+  f.port.runtime = () => new Promise((resolve) => { finish = resolve; });
+  const first = f.controller.apply();
+  assert.equal(f.controller.apply(), first);
+  f.controller.cancel();
+  finish({ ok: true, node: "/node", env: {} });
+  assert.equal(await first, false);
+  assert.equal(f.stageRequests.length, 0);
+  assert.equal(f.controller.getSnapshot().phase, "available");
+  f.controller.stop();
 });
 
 test("an existing managed install remains eligible during the repository migration", async () => {
@@ -570,6 +645,7 @@ test("a build already in flight cannot start a second one", async () => {
   const second = f.controller.apply();
   assert.equal(first, second);
   assert.equal(f.controller.getSnapshot().phase, "preparing");
+  await flush();
   finish({ ok: true, staged: { version: "1.2.4", bundlePath: STAGED_BUNDLE, revision: "staged-1" } });
   assert.equal(await first, true);
   assert.equal(f.controller.getSnapshot().phase, "ready");
@@ -585,6 +661,7 @@ test("an install already in flight cannot spawn a second helper", async () => {
   const first = f.controller.install();
   const second = f.controller.install();
   assert.equal(first, second);
+  await flush();
   finish();
   assert.equal(await first, true);
   // This fixture replaces `handoff` outright, so only the quit it triggers is recorded.
@@ -729,6 +806,7 @@ test("cancelling a build returns to the offer and installs nothing", async () =>
   const preparing = f.controller.apply();
   assert.equal(f.controller.getSnapshot().phase, "preparing");
 
+  await flush();
   f.controller.cancel();
   assert.equal(signal.aborted, true);
   assert.equal(await preparing, false);
@@ -755,6 +833,7 @@ test("quitting the app cancels a build rather than leaving it in the clone", asy
   await f.controller.start();
   await f.controller.check(true);
   const preparing = f.controller.apply();
+  await flush();
   f.controller.stop();
   assert.equal(signal.aborted, true);
   assert.equal(await preparing, false);
@@ -958,6 +1037,7 @@ test("a manual command reports the stage a build has reached", async () => {
   await f.controller.start();
   await f.controller.check(true);
   void f.controller.apply();
+  await flush();
 
   assert.equal((await f.controller.checkForUpdates()).phase, "preparing");
   assert.deepEqual(f.events, ["preparing-dialog:1.2.4:Installing dependencies"]);
@@ -1223,6 +1303,7 @@ test("cancelling says so, refuses a second build, and comes back only when the b
   await f.controller.check(true);
   const preparing = f.controller.apply();
 
+  await flush();
   f.controller.cancel();
   assert.equal(aborted, true);
   const cancelling = f.controller.getSnapshot();
@@ -1247,6 +1328,7 @@ test("cancelling says so, refuses a second build, and comes back only when the b
 
   // And now a new build may start.
   void f.controller.apply();
+  await flush();
   assert.equal(started, 2);
   f.controller.stop();
 });

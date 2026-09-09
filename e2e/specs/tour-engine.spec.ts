@@ -58,7 +58,7 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
   await page.goto(`${daemon.baseURL}/#/fleet`);
   const first = step(page, FIRST_RUN_STOP);
   await expect(first).toBeVisible();
-  await expect(first).toContainText("Step 1 of 4");
+  await expect(first).toContainText("Step 1 of 7");
   // The stop that teaches where Settings is spotlights the gear, and the gear only reads
   // "Settings" from somewhere else - so the automatic tour opens on the fleet.
   await expectSpotlight(page.locator(".gear-btn"));
@@ -71,20 +71,23 @@ test("a fresh profile enables and starts the guided tour by default", async ({ p
   ).config.guidedTour).toBe(false);
   await first.getByRole("button", { name: "Exit tour" }).click();
   await expect(first).toBeHidden({ timeout: 30_000 });
-  // Exiting this tour LEAVES the operator on Setup rather than replaying the route it
-  // started from. Introducing the panel and then taking it away would undo the whole point.
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/setup");
+  // Exiting this tour LEAVES the operator on the page it hands over - Trust, its last stop -
+  // rather than replaying the route it started from. Introducing a panel and then taking it
+  // away would undo the whole point, and the exit route belongs to the tour rather than to
+  // the stop it was abandoned at.
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe("#/settings/trust");
   // Focus ARRIVES here rather than being here already: the coachmark's teardown leaves the
-  // document root focused, and the landing pass puts the keyboard on Setup's one action once
-  // the panel has committed. `toBeFocused` waits for that, which is the guarantee.
-  await expect(page.getByRole("button", { name: "Re-check" })).toBeFocused();
+  // document root focused, and the landing pass puts the keyboard on the rail row naming the
+  // category it left the operator on, once the page has committed. `toBeFocused` waits for
+  // that, which is the guarantee.
+  await expect(page.locator("#settings-tab-trust")).toBeFocused();
 
   // Having landed, the pass is done rather than lying in wait. It survives the teardown by
   // watching, and the vacuum it watches for is also what an ordinary click on a non-focusable
   // area leaves behind, so a pass still running would answer that click by pulling focus
   // back. Click the Setup heading the way an operator would, then watch every frame - the
   // unit the pass counts its own window in - for longer than that window.
-  await page.getByRole("heading", { name: "Setup", exact: true }).click();
+  await page.getByRole("heading", { name: "Trust", exact: true }).click();
   const reclaimed = await page.evaluate(async (frames) => {
     for (let frame = 0; frame < frames; frame += 1) {
       await new Promise((settle) => requestAnimationFrame(() => settle(null)));

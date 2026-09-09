@@ -288,6 +288,10 @@ export function SettingsPage({
   // registry-driven loop below, so it is registered from that loop's ref callback rather
   // than by lifting Setup out of the list it belongs to.
   const setupTabTourRef = useTourTargetRef<HTMLButtonElement>("setup:settings-tab");
+  // The Trust rail row, for the second half of the same tour. Registered from the same loop
+  // and in the same namespace: a target belongs to the TOUR that spotlights it, and only Set
+  // up this machine walks from the gear to Setup to here.
+  const trustTabTourRef = useTourTargetRef<HTMLButtonElement>("setup:trust-tab");
   const skills = useSkills();
   // Owned here rather than by App, like `skills`: nothing outside this page reads the
   // harnesses config, so it polls only while the page is open.
@@ -716,6 +720,7 @@ export function SettingsPage({
                       if (el) tabRefs.current.set(c.id, el);
                       else tabRefs.current.delete(c.id);
                       if (c.id === "setup") setupTabTourRef(el);
+                      if (c.id === "trust") trustTabTourRef(el);
                     }}
                     onClick={() => onNavigate(c.id)}
                   >

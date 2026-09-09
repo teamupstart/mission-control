@@ -69,21 +69,29 @@ export const TOUR_TARGET_NAMESPACES = {
     "session-workflow-ladder": "run",
   },
   /**
-   * Setup's targets are the PATH to the panel, not a reading of it: the gear that opens
-   * Settings, the rail row that opens Setup, the dependency list to work through, and
-   * Re-check. Two of them therefore live outside the panel, in the top bar and the Settings
-   * rail, which is the whole point - an operator who has never opened Setup has to be shown
-   * where it is before its rows mean anything.
+   * Setup's targets are the PATH to two panels, not a reading of either: the gear that opens
+   * Settings, the rail row that opens Setup, the dependency list to work through, Re-check,
+   * then the rail row that opens Trust, its grant matrix, and the row that adds a repository
+   * to it. Three of them therefore live outside both panels, in the top bar and the Settings
+   * rail, which is the whole point - an operator who has never opened either one has to be
+   * shown where it is before its rows mean anything.
+   *
+   * Both halves are this tour's, and neither belongs to a `trust` namespace of its own: a
+   * namespace is owned by the TOUR that spotlights it, not by the panel that renders it, and
+   * only this tour walks these seven.
    *
    * There is no per-family target, and not only because a step could select one first: only
-   * the chosen family's rows are ever mounted, and this tour deliberately hands the panel
-   * over rather than walking the families one at a time.
+   * the chosen family's rows are ever mounted, and this tour deliberately hands each panel
+   * over rather than walking the families - or the grants - one at a time.
    */
   "setup": {
     "settings-gear": "page",
     "settings-tab": "page",
     "dependencies": "page",
     "recheck": "page",
+    "trust-tab": "page",
+    "trust-matrix": "page",
+    "trust-add": "page",
   },
 } as const satisfies Record<TourId, Readonly<Record<string, TourTargetScope>>>;
 

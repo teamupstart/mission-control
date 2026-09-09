@@ -450,6 +450,10 @@ radius first (Foreman, Workflows), then GitHub (GitHub Inspector, YOLO).
   value being edited.
 - **Worktrees count too.** A grant names the **repo**, so a session in any worktree of a
   granted repo is covered, wherever that worktree lives on disk.
+- **The first-run tour ends here.** The last three stops of **Set up this machine** walk from
+  the Trust row in the rail to the matrix and its add row, and the tour leaves you on this
+  page. It clicks no cell: the walkthrough explains the grants, and every one of them is still
+  a deliberate click of your own. See [the guided tours](ui.md#set-up-this-machine).
 - **The blind spot is visible.** If YOLO may merge in a repo the GitHub Inspector may not review,
   nothing there can ever qualify - the merge cell and the empty review cell both go amber, and
   a footnote offers the two fixes in place: **grant the review**, or **revoke the merge**.

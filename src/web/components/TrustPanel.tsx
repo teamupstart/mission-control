@@ -17,6 +17,7 @@ import {
 } from "../lib/trust.ts";
 import type { SettingsNavigate } from "../lib/settings-registry.ts";
 import { repoLeaf } from "../lib/format.ts";
+import { useTourTargetRef } from "../tour/target-context.tsx";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { RepositoryName } from "./RepositoryName.tsx";
 import { Tooltip } from "./Tooltip.tsx";
@@ -135,6 +136,11 @@ export function TrustPanel({
    */
   checks: ChecksArmedReading;
 }): React.JSX.Element {
+  // The two spotlights the Setup tour's Trust half points at: the whole matrix, and the row
+  // that adds a repository to it. The matrix rather than a cell or a column - which grants a
+  // machine needs depends on which repositories it works in, and a row may not exist yet.
+  const matrixTourRef = useTourTargetRef<HTMLDivElement>("setup:trust-matrix");
+  const addTourRef = useTourTargetRef<HTMLDivElement>("setup:trust-add");
   const ui = useUiConfig();
   const [repos, setRepos] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
@@ -381,7 +387,7 @@ export function TrustPanel({
         </p>
       )}
 
-      <div className="trust-matrix" data-anchor="trust/matrix">
+      <div className="trust-matrix" data-anchor="trust/matrix" ref={matrixTourRef}>
         <div className="trust-grid" role="table" aria-label="Repository trust grants">
           <div className="trust-h trust-h-repo">Repository</div>
           {COLUMNS.map((c) => (
@@ -468,7 +474,7 @@ export function TrustPanel({
         </p>
       )}
 
-      <div className="trust-add" data-anchor="trust/add">
+      <div className="trust-add" data-anchor="trust/add" ref={addTourRef}>
         <RepoCombobox
           repos={candidates}
           value={draft}

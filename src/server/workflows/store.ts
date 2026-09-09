@@ -6126,11 +6126,20 @@ export class WorkflowStore {
     return row?.storage_relative_path ?? null;
   }
 
-  /** True while any live frozen row still names this body. */
+  /**
+   * True while any LIVE frozen row still names this body.
+   *
+   * `retained` and nothing else, matching the deletion guards. A pruned row names a body that
+   * has already been given up, so counting it as a reference would keep a file no reader can
+   * legitimately open - and on the capture rollback path, where this decides whether a body
+   * just written can be removed, it would leave that file behind as an orphan. Bodies are
+   * shared by digest now, so a pruned row from another submission genuinely can name a path a
+   * live capture is working on.
+   */
   imageStoragePathIsReferenced(storageRelativePath: string): boolean {
     return Boolean(this.db.prepare(
       `SELECT 1 FROM workflow_submission_images
-        WHERE storage_relative_path = ? LIMIT 1`,
+        WHERE storage_relative_path = ? AND availability = 'retained' LIMIT 1`,
     ).get(storageRelativePath));
   }
 

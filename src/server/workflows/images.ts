@@ -845,25 +845,30 @@ export async function captureSubmissionTextArtifacts(
  */
 async function carriedEvidenceStillMatches(item: WorkflowInheritableEvidence): Promise<boolean> {
   if (item.sourceKind !== "agent" || !item.sourceRoot || !item.sourceLocator) return true;
-  const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
-  // The documented case, and the only one that is not a surprise: the path no longer names a
-  // readable file in the checkout. That is the gitignored capture the agent has since deleted.
-  if (!resolved.ok) return true;
   try {
+    const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
+    // The expected case, and the only one that is not a surprise: the path no longer names a
+    // readable file in the checkout. That is the gitignored capture the agent has since
+    // deleted, and it is reported as a result rather than thrown, so it returns quietly.
+    if (!resolved.ok) return true;
     const inspected = item.kind === "image"
       ? inspectOpenFile(resolved.path, undefined, item.sourceRoot)
       : inspectOpenTextFile(resolved.path, undefined, item.sourceRoot);
     return inspected.sha256 === item.sha256;
   } catch (error) {
     /*
-     * An unexpected read failure still carries, and says so.
+     * An unexpected failure still carries, and says so.
      *
-     * Carrying is the right fallback: a permission error or a transient read fault is not
-     * evidence that the source CHANGED, and dropping a Persona's proof over one would be a
-     * worse answer than carrying it with its mark. But it does mean this item's staleness went
-     * unverified, and a systematic failure - a broken checkout mount, a bug in the inspectors -
-     * would otherwise degrade verification across every carry with nothing to show for it.
-     * The log line is what makes that discoverable instead of silent.
+     * The expected outcome returned above rather than throwing, so anything reaching here is a
+     * surprise: a permission error, a transient read fault, a bug in the inspectors. Carrying
+     * is still the right fallback, because none of those is evidence that the source CHANGED
+     * and dropping a Persona's proof over one would be the worse answer. What they do mean is
+     * that this item's staleness went unverified, and a systematic failure would otherwise
+     * degrade verification across every carry with nothing to show for it.
+     *
+     * Deliberately spanning the resolve as well as the inspect. Letting a throw escape this
+     * function would abort the whole capture, turning a single unreadable carried item into a
+     * failed submission - a far worse outcome than carrying it with its mark and a log line.
      */
     workflowLog("warn", {
       event: "evidence_carry_unverified",

@@ -297,6 +297,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
   // that captured it, and a second button would imply this submission captured it too.
   await expect(ledger.getByText("Carried forward from round 1")).toBeVisible();
   await expect(ledger.getByRole("button", { name: "Use in next review" })).toHaveCount(1);
+  await shoot(dashboard, "02-carried-forward-ledger");
   await ledger.getByRole("button", { name: "Use in next review" }).click();
   await expect(ledger.getByRole("button", { name: "Ready for next review" })).toBeVisible();
 

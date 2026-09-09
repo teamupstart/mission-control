@@ -11,7 +11,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-workflow-carry-forward-"));
 process.env.MISSION_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
-const { WorkflowStore } = await import("../src/server/workflows/store.ts");
+const { WorkflowStore, workflowJson } = await import("../src/server/workflows/store.ts");
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const {
   captureSubmissionImages,
@@ -1188,6 +1188,75 @@ test("re-registering identical bytes attaches them to the next submission, while
     assert.throws(
       () => store.stageWorkflowEvidence(noteKey, [{ ...write, caption: "A different claim entirely" }], 6),
       /already reserved/,
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a pruned row is not a reference that keeps a body alive", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refcount-")));
+  try {
+    const bytes = Buffer.concat([PNG, Buffer.from("refcount", "utf8")]);
+    writeFileSync(join(checkout, "ref.png"), bytes);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [imageWrite({
+      id: "ref-a",
+      clientItemId: "ref",
+      root: checkout,
+      locator: "ref.png",
+      caption: "The body a later capture may share",
+      bytes,
+    })], 2);
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "ref-root", now: 3 },
+      { id: "ref-sub", triggerSource: "manual", triggerKey: "ref-root", context: {}, evidence: {}, now: 3 },
+    );
+    await captureSubmissionImages(store, first.submission.id, 3);
+    const path = store.submissionImageStorageRecords(first.submission.id)[0]!.storageRelativePath;
+    assert.equal(store.imageStoragePathIsReferenced(path), true, "a retained row is a reference");
+
+    // Pruning gives the body up. A row that named it no longer keeps it alive, which is what
+    // the capture rollback path asks this question to decide.
+    const captured = WorkflowContextSnapshotSchema.parse({
+      primaryGoal: { rawPrompt: "Prove it", refined: null, sourceNoteKey: "note" },
+      humanDecisions: [],
+      constraints: [],
+      acceptanceCriteria: [],
+      priorPersonaFeedback: [],
+      session: { agent: "codex", name: "work", cwd: checkout, branch: "feature" },
+      evidence: {
+        headSha: "abc",
+        diffFingerprint: "diff",
+        diff: "patch",
+        diffTruncated: false,
+        workingTreeDirty: false,
+        workingTreeStatus: [],
+        workingTreeStatusTruncated: false,
+        transcript: [],
+        transcriptAnchor: 1,
+        transcriptTruncated: false,
+        standards: [],
+        standardsTruncated: false,
+        images: store.listSubmissionImages(first.submission.id),
+        stagedImageGeneration: 1,
+      },
+      compaction: { status: "fallback", runner: null, model: null, error: null },
+    });
+    store.updateSubmissionCapture(first.submission.id, {
+      context: workflowJson(captured),
+      evidence: workflowJson(captured.evidence),
+      fingerprint: "ref-fingerprint",
+      status: "running",
+    }, 4);
+    store.setSubmissionState(first.submission.id, "completed", 5);
+    store.setRunState(runId, "completed", "complete", {}, 5);
+    store.runRetention({ rawEvidenceBefore: 6, completedRunsBefore: 0, maxCompletedRuns: 100, now: 7 });
+    assert.equal(store.listSubmissionImages(first.submission.id)[0]?.availability, "pruned");
+    assert.equal(
+      store.imageStoragePathIsReferenced(path),
+      false,
+      "a pruned row names a body already given up, so it cannot strand an orphan",
     );
   } finally {
     rmSync(checkout, { recursive: true, force: true });

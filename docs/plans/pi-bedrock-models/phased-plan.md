@@ -87,7 +87,8 @@ session. Phase 2 also depends directly on the Phase 1 task.
 | Pull-request provenance | Phase 2 | Required before managed Pi may participate in workflow automation |
 | Operator and architecture documentation | Both | Each phase documents only behavior it ships; Phase 2 closes the old RPC-plan discrepancy |
 
-No approved source-plan requirement is unassigned or assigned twice.
+Every approved source-plan requirement has one owning phase except documentation, which is
+explicitly split so each phase documents only the behavior it ships.
 
 ## Shared contracts across both phases
 

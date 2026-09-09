@@ -5,7 +5,7 @@ import { executableSpec } from "../src/server/executables/catalog.ts";
 import {
   createHerdrClient,
   HERDR_MIN_VERSION,
-  HERDR_PROTOCOL,
+  HERDR_MIN_PROTOCOL,
 } from "../src/server/terminal/herdr-client.ts";
 import { HERDR_BIN } from "../src/server/terminal/herdr.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
@@ -21,7 +21,7 @@ function status(socket: string, over: Record<string, unknown> = {}): string {
     status: "running",
     running: true,
     version: HERDR_MIN_VERSION,
-    protocol: HERDR_PROTOCOL,
+    protocol: HERDR_MIN_PROTOCOL,
     capabilities: {},
     compatible: true,
     socket,
@@ -42,7 +42,7 @@ const SNAPSHOT = {
   type: "session_snapshot",
   snapshot: {
     version: HERDR_MIN_VERSION,
-    protocol: HERDR_PROTOCOL,
+    protocol: HERDR_MIN_PROTOCOL,
     workspaces: [{ workspace_id: "w1", label: "api" }],
     tabs: [{ tab_id: "w1:t1", workspace_id: "w1", number: 1, label: "main" }],
     panes: [
@@ -377,6 +377,84 @@ test("only strict stable Herdr versions are compatible", async () => {
     const result = await client.probe();
     assert.equal(result.state, "failed", version);
     assert.match(result.state === "failed" ? result.error : "", /incompatible/, version);
+  }
+});
+
+/**
+ * The regression: `protocol !== HERDR_MIN_PROTOCOL` made every Herdr protocol bump a hard
+ * outage. Herdr 0.9.0 serves protocol 22 with every method and consumed field this client
+ * uses unchanged, and an operator who had just updated was told to update again.
+ */
+test("a Herdr newer than the floor is compatible, on its version and on its protocol", async () => {
+  for (const over of [
+    { version: "0.9.0", protocol: 22 },
+    { version: "1.4.0", protocol: 31 },
+    { version: HERDR_MIN_VERSION, protocol: HERDR_MIN_PROTOCOL },
+  ]) {
+    const client = createHerdrClient(async () => run(status("/tmp/herdr.sock", over)), HERDR_BIN);
+    const result = await client.probe();
+    assert.equal(result.state, "ready", JSON.stringify(over));
+    assert.equal(result.state === "ready" ? result.version : "", over.version);
+  }
+});
+
+test("a Herdr below the floor is refused, and the refusal reports what it found", async () => {
+  for (const over of [
+    { version: "0.7.0", protocol: 19 },
+    { version: HERDR_MIN_VERSION, protocol: HERDR_MIN_PROTOCOL - 1 },
+    { version: "0.8.1", protocol: HERDR_MIN_PROTOCOL },
+    { version: null, protocol: null },
+  ]) {
+    const client = createHerdrClient(async () => run(status("/tmp/herdr.sock", over)), HERDR_BIN);
+    const result = await client.probe();
+    assert.equal(result.state, "failed", JSON.stringify(over));
+    const error = result.state === "failed" ? result.error : "";
+    assert.match(error, /incompatible/, JSON.stringify(over));
+    assert.match(error, /update Herdr/, JSON.stringify(over));
+    if (over.version) assert.match(error, new RegExp(over.version.replace(/\./g, "\\.")));
+  }
+});
+
+/**
+ * A supported Herdr whose running server is stale is a restart, not an update, and saying
+ * "update Herdr" to an operator already on the newest release repairs nothing.
+ */
+test("a stale running server asks for a restart rather than an update", async () => {
+  for (const over of [{ compatible: false }, { restart_needed: true }]) {
+    const client = createHerdrClient(
+      async () => run(status("/tmp/herdr.sock", { version: "0.9.0", protocol: 22, ...over })),
+      HERDR_BIN,
+    );
+    const result = await client.probe();
+    assert.equal(result.state, "failed", JSON.stringify(over));
+    const error = result.state === "failed" ? result.error : "";
+    assert.match(error, /restart the Herdr server/, JSON.stringify(over));
+    assert.doesNotMatch(error, /update Herdr/, JSON.stringify(over));
+    assert.equal(result.state === "failed" ? result.retryable : true, false);
+  }
+});
+
+test("the session snapshot accepts a newer protocol generation and still refuses an older one", async () => {
+  for (const protocol of [HERDR_MIN_PROTOCOL, 22, HERDR_MIN_PROTOCOL - 1]) {
+    const supported = protocol >= HERDR_MIN_PROTOCOL;
+    const fake = await fakeHerdrSocket((request, socket) => {
+      if (request.method === "session.snapshot") {
+        reply(socket, request.id, { ...SNAPSHOT, snapshot: { ...SNAPSHOT.snapshot, protocol } });
+      } else {
+        reply(socket, request.id, {
+          type: "pane_process_info",
+          process_info: { pane_id: request.params.pane_id, shell_pid: 7, tty: null },
+        });
+      }
+    });
+    try {
+      const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).snapshotWithProcesses();
+      assert.equal(result.ok, supported, `protocol ${protocol}`);
+      if (!result.ok) assert.match(result.error, /unsupported protocol 19/);
+      else assert.equal(result.value.snapshot.panes.length, 2);
+    } finally {
+      await fake.close();
+    }
   }
 });
 

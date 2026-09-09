@@ -8,7 +8,21 @@ import { binEnv, resolveBin } from "./bin.ts";
 import type { TerminalExec } from "./exec.ts";
 import type { BinSpec, TerminalResult } from "./types.ts";
 
-export const HERDR_PROTOCOL = 20;
+/**
+ * The oldest stable Herdr this client speaks, as a floor and never as an equality.
+ *
+ * Herdr bumps its protocol generation on its own release cadence - 0.8.2 served 20, 0.9.0
+ * serves 22 - while every method and consumed field this client uses stayed put. Pinning the
+ * generation exactly made each of those releases a hard outage for an operator who had done
+ * nothing but update Herdr, and the refusal then told them to update it again.
+ *
+ * A floor is safe here because the generation is not what actually guards the wire. Every
+ * response this client consumes is validated by a narrow Zod schema that ignores additive
+ * fields and rejects a missing or retyped one, so a future generation that removes something
+ * fails at that field with its own operation-specific message rather than sending a request
+ * blind. Raise the floor only when Herdr drops a method or field named in this file.
+ */
+export const HERDR_MIN_PROTOCOL = 20;
 export const HERDR_MIN_VERSION = "0.8.2";
 
 const READ_TIMEOUT_MS = 1_000;
@@ -496,15 +510,25 @@ export function createHerdrClient(
     const status = parsed.data;
     if (!status.running) return { state: "stopped", socket: status.socket };
     if (
-      status.compatible !== true ||
-      status.restart_needed ||
-      status.protocol !== HERDR_PROTOCOL ||
+      status.protocol === null ||
+      status.protocol < HERDR_MIN_PROTOCOL ||
       !status.version ||
       !versionAtLeast(status.version, HERDR_MIN_VERSION)
     ) {
+      const reported = `${status.version ?? "an unreported version"} on protocol ${status.protocol ?? "none"}`;
       return {
         state: "failed",
-        error: `Herdr server is incompatible. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_PROTOCOL}; update Herdr or restart its server.`,
+        error: `Herdr server ${reported} is incompatible. Mission Control requires Herdr ${HERDR_MIN_VERSION} or newer on protocol ${HERDR_MIN_PROTOCOL} or newer; update Herdr.`,
+        retryable: false,
+      };
+    }
+    // Herdr's own verdict, which is about the running server against the installed CLI and
+    // not about us. It is a separate sentence because it has a separate repair: the operator
+    // has the supported Herdr already, and updating it again changes nothing.
+    if (status.compatible !== true || status.restart_needed) {
+      return {
+        state: "failed",
+        error: `Herdr reports its running server is out of date with the installed ${status.version} CLI; restart the Herdr server.`,
         retryable: false,
       };
     }
@@ -632,7 +656,7 @@ export function createHerdrClient(
         operation: "session snapshot",
       });
       if (!snapshotResult.ok) return snapshotResult;
-      if (snapshotResult.value.snapshot.protocol !== HERDR_PROTOCOL) {
+      if (snapshotResult.value.snapshot.protocol < HERDR_MIN_PROTOCOL) {
         return failure(`Herdr session snapshot used unsupported protocol ${snapshotResult.value.snapshot.protocol}`);
       }
       const panes = snapshotResult.value.snapshot.panes;

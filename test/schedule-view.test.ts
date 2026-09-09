@@ -147,6 +147,7 @@ test("the definition fingerprint changes when the saved definition changes", () 
     timezone: "UTC",
     overlapPolicy: "skip-active",
     missedPolicy: "coalesce-latest",
+    completionPolicy: "manual",
     template: {
       title: "t",
       intent: "i",
@@ -193,6 +194,12 @@ test("the definition fingerprint changes when the saved definition changes", () 
       ...base,
       template: { ...base.template, effort: "high" },
     }),
+  );
+  // The completion guardrail is part of the definition Save & enable is approving, so a
+  // preview taken before it changed must stop counting as fresh.
+  assert.notEqual(
+    a,
+    scheduleDefinitionFingerprint({ ...base, completionPolicy: "auto-on-conclusion" }),
   );
 });
 

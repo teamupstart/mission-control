@@ -5400,6 +5400,15 @@ export function buildApp(
     if (!registry.consumePromptedGeneration(session.id, parsed.data, now)) {
       return c.json({ error: "prompted work-cycle generation is no longer current" }, 409);
     }
+    // AFTER the durable consumption, never instead of it, and never before: this reads a
+    // verdict the database has already recorded, and a task concluded from a consumption that
+    // then failed would be a `done` row explaining itself with a decision nobody kept.
+    //
+    // Only a recurring mission's task with `auto-on-conclusion` moves here; `TaskManager` owns
+    // every one of those gates, and for everything else this is a no-op.
+    if (parsed.data.decision) {
+      tasks.concludeScheduledMissionRun(session.id, parsed.data.decision);
+    }
     return c.json(queues.get(session.id));
   });
 
@@ -7035,6 +7044,7 @@ export function buildApp(
       timezone: d.timezone,
       overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      completionPolicy: d.completionPolicy,
       template: d.template,
       after: d.after,
       count: d.count,
@@ -7062,6 +7072,7 @@ export function buildApp(
       timezone: d.timezone,
       overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      completionPolicy: d.completionPolicy,
       template: d.template,
       enabled: d.enabled,
     });
@@ -7085,6 +7096,7 @@ export function buildApp(
       timezone: d.timezone,
       overlapPolicy: d.overlapPolicy,
       missedPolicy: d.missedPolicy,
+      completionPolicy: d.completionPolicy,
       template: d.template,
     });
     return result.ok ? c.json(result.schedule) : scheduleValidationFailure(c, result.error);

@@ -1,4 +1,11 @@
-import type { AgentType, TaskKind, TaskPriority, TaskStatus, ThinkingLevel } from "./types.ts";
+import type {
+  AgentType,
+  PromptedCompletionOutcome,
+  TaskKind,
+  TaskPriority,
+  TaskStatus,
+  ThinkingLevel,
+} from "./types.ts";
 
 /**
  * Recurring Missions: the durable vocabulary, shared by the daemon and the browser.
@@ -9,7 +16,7 @@ import type { AgentType, TaskKind, TaskPriority, TaskStatus, ThinkingLevel } fro
  * `src/server/schedules/recurrence.ts`; what lives here is the shape of the answer and
  * the handful of decisions both sides must make identically.
  *
- * The six arrays below are PERSISTED - every value appears in an operator's
+ * The seven arrays below are PERSISTED - every value appears in an operator's
  * SQLite file - so they are append-only, for the reason `TASK_SOURCE_KINDS` is: renaming
  * one does not migrate the rows written under the old spelling, it orphans them.
  */
@@ -33,6 +40,54 @@ export type ScheduleOverlapPolicy = (typeof SCHEDULE_OVERLAP_POLICIES)[number];
 /** What to do with instants that came due while Mission Control was not running. */
 export const SCHEDULE_MISSED_POLICIES = ["coalesce-latest", "create-all", "skip"] as const;
 export type ScheduleMissedPolicy = (typeof SCHEDULE_MISSED_POLICIES)[number];
+
+/**
+ * What concludes a generated task once Foreman decides the run it filed is over.
+ *
+ * The third guardrail, and it exists because the first two are not enough on their own. A
+ * mission whose run has nothing to ship - the sweep found nothing, the report was written,
+ * the audit came back clean - produces a task no merged pull request will ever settle, so
+ * `TaskManager` never concludes it and it sits `running` for ever. Under the default
+ * `skip-active` overlap policy that one task then blocks EVERY later occurrence of the same
+ * mission, permanently, and the ledger records each of them as `skipped_overlap` naming a
+ * task that finished its work weeks ago.
+ *
+ *  - `manual` is what every mission written before this policy existed does, and the only
+ *    thing that has ever happened: the operator (or a merge) records the outcome.
+ *  - `auto-on-conclusion` lets Foreman's own settled verdict close the task - see
+ *    `foremanConcludedMission`. The completion is an INFERENCE and is registered as one, so
+ *    an agent that starts working on that task again reopens it (`reopenIfWorkResumed`).
+ *
+ * Persisted and append-only, like the two policies above it.
+ */
+export const SCHEDULE_COMPLETION_POLICIES = ["manual", "auto-on-conclusion"] as const;
+export type ScheduleCompletionPolicy = (typeof SCHEDULE_COMPLETION_POLICIES)[number];
+
+/**
+ * Whether one of Foreman's settled prompted-completion outcomes says the run's MISSION is
+ * over, as opposed to being one step on the way to shipping it.
+ *
+ * Here, in shared and beside the policy it serves, because it is the whole meaning of
+ * `auto-on-conclusion` - a second reading of this list somewhere in the daemon would be a
+ * silent policy fork the moment `PROMPTED_COMPLETION_OUTCOMES` grows.
+ *
+ * Two outcomes qualify, and both are terminal by construction:
+ *
+ *  - `empty`: the session changed nothing, so there is nothing to commit, push or open a
+ *    pull request for. This is the ordinary answer for a mission that swept and found
+ *    nothing, and it is the exact case that blocks the cadence for ever.
+ *  - `retired`: Foreman consumed the generation with no wrap-up action at all - a scout
+ *    report, a review-only artifact, another non-shipping settled turn. The deliverable
+ *    exists; nothing further is coming.
+ *
+ * Everything else is deliberately excluded. `held` is a verdict that the work is UNFINISHED.
+ * `verification_failed` means no model judged it at all. `workflow_claimed`, `asked`,
+ * `direct_handoff` and `direct_handoff_undelivered` all say shipping is still in progress or
+ * that a human was asked - and those tasks settle the way they always have, on the merge.
+ */
+export function foremanConcludedMission(outcome: PromptedCompletionOutcome): boolean {
+  return outcome === "empty" || outcome === "retired";
+}
 
 /** Whether the cron cursor produced this occurrence, or an operator pressed Run now. */
 export const SCHEDULE_TRIGGER_KINDS = ["scheduled", "manual"] as const;
@@ -242,6 +297,7 @@ export interface ScheduleDefinition {
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy;
   missedPolicy: ScheduleMissedPolicy;
+  completionPolicy: ScheduleCompletionPolicy;
   executionMode: ScheduleExecutionMode;
   runnerId: string | null;
   template: ScheduleTemplate;
@@ -285,6 +341,8 @@ export interface MissionSchedule {
   /** null when the stored value is not one this build knows - see `unreadable`. */
   missedPolicy: ScheduleMissedPolicy | null;
   /** null when the stored value is not one this build knows - see `unreadable`. */
+  completionPolicy: ScheduleCompletionPolicy | null;
+  /** null when the stored value is not one this build knows - see `unreadable`. */
   executionMode: ScheduleExecutionMode | null;
   /** Which always-on host owns this schedule. Always null in V1. */
   runnerId: string | null;
@@ -318,6 +376,7 @@ export interface MissionSchedule {
 export interface RunnableSchedule extends MissionSchedule {
   overlapPolicy: ScheduleOverlapPolicy;
   missedPolicy: ScheduleMissedPolicy;
+  completionPolicy: ScheduleCompletionPolicy;
   executionMode: ScheduleExecutionMode;
   template: ScheduleTemplate;
   unreadable: null;
@@ -328,6 +387,7 @@ export function scheduleIsRunnable(s: MissionSchedule): s is RunnableSchedule {
     s.unreadable === null &&
     s.overlapPolicy !== null &&
     s.missedPolicy !== null &&
+    s.completionPolicy !== null &&
     s.executionMode !== null &&
     s.template !== null
   );
@@ -349,6 +409,7 @@ export interface ScheduleRevision {
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy | null;
   missedPolicy: ScheduleMissedPolicy | null;
+  completionPolicy: ScheduleCompletionPolicy | null;
   executionMode: ScheduleExecutionMode | null;
   runnerId: string | null;
   template: ScheduleTemplate | null;
@@ -360,6 +421,7 @@ export interface ScheduleRevision {
 export interface RunnableScheduleRevision extends ScheduleRevision {
   overlapPolicy: ScheduleOverlapPolicy;
   missedPolicy: ScheduleMissedPolicy;
+  completionPolicy: ScheduleCompletionPolicy;
   executionMode: ScheduleExecutionMode;
   template: ScheduleTemplate;
   unreadable: null;
@@ -370,6 +432,7 @@ export function revisionIsRunnable(r: ScheduleRevision): r is RunnableScheduleRe
     r.unreadable === null &&
     r.overlapPolicy !== null &&
     r.missedPolicy !== null &&
+    r.completionPolicy !== null &&
     r.executionMode !== null &&
     r.template !== null
   );

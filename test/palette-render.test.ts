@@ -101,6 +101,7 @@ test("an amber row is marked in the markup, not only by colour", () => {
           timezone: "UTC",
           overlapPolicy: null,
           missedPolicy: null,
+          completionPolicy: null,
           executionMode: null,
           runnerId: null,
           revision: 1,

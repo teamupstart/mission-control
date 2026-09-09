@@ -302,6 +302,7 @@ test("the preview renders the daemon's own results, and shows a loading state un
         timezone: "UTC",
         overlapPolicy: "skip-active",
         missedPolicy: "coalesce-latest",
+        completionPolicy: "manual",
         template: {
           title: "t",
           intent: "i",

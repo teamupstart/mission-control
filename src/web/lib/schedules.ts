@@ -2,6 +2,7 @@ import {
   cronFieldCount,
   normalizeCronExpression,
   type MissionSchedule,
+  type ScheduleCompletionPolicy,
   type ScheduleExecutionMode,
   type ScheduleHealth,
   type ScheduleMissedPolicy,
@@ -121,6 +122,20 @@ export function triggerKindLabel(kind: ScheduleTriggerKind | null): string {
 export function overlapPolicyLabel(policy: ScheduleOverlapPolicy | null): string {
   if (policy === "skip-active") return "Skip if an earlier generated task is still active";
   if (policy === "allow") return "Create another backlog task regardless";
+  return "Unreadable policy";
+}
+
+/**
+ * What concludes the task a run files, in the operator's words rather than the stored token.
+ *
+ * The `manual` sentence deliberately says what still WILL settle the task rather than only
+ * what will not: read on a mission that has been quietly blocked for a fortnight, "nothing
+ * automatic" alone reads as a fault, and this is the setting that explains it.
+ */
+export function completionPolicyLabel(policy: ScheduleCompletionPolicy | null): string {
+  if (policy === "manual") return "A merged pull request, or you - Foreman never concludes it";
+  if (policy === "auto-on-conclusion")
+    return "Foreman may complete the task when it concludes the run's work is done";
   return "Unreadable policy";
 }
 
@@ -545,6 +560,7 @@ export function scheduleDefinitionFingerprint(def: {
   timezone: string;
   overlapPolicy: string;
   missedPolicy: string;
+  completionPolicy: string;
   template: {
     title: string;
     intent: string;
@@ -563,6 +579,7 @@ export function scheduleDefinitionFingerprint(def: {
     def.timezone,
     def.overlapPolicy,
     def.missedPolicy,
+    def.completionPolicy,
     def.template.repoRoot.trim(),
     def.template.title.trim(),
     def.template.intent.trim(),

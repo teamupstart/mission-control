@@ -2153,6 +2153,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       timezone       TEXT NOT NULL,     -- canonical IANA id, as Intl resolved it
       overlap_policy TEXT NOT NULL,
       missed_policy  TEXT NOT NULL,
+      -- Whether Foreman's own settled verdict may conclude the task a run files. Defaulted
+      -- rather than nullable, because an upgrading database ALTERs this column in and every
+      -- row it lands on was written under the only behaviour that existed: manual.
+      completion_policy TEXT NOT NULL DEFAULT 'manual',
       execution_mode TEXT NOT NULL,
       runner_id      TEXT,              -- always NULL in V1; the always-on host, later
       revision       INTEGER NOT NULL,  -- -> mission_schedule_revisions.revision
@@ -2179,6 +2183,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       timezone       TEXT NOT NULL,
       overlap_policy TEXT NOT NULL,
       missed_policy  TEXT NOT NULL,
+      completion_policy TEXT NOT NULL DEFAULT 'manual',
       execution_mode TEXT NOT NULL,
       runner_id      TEXT,
       created_at     INTEGER NOT NULL,
@@ -3519,6 +3524,22 @@ function migrate(d: DatabaseSync): void {
   // columns are fine here: unlike the occurrence ledger's UNIQUE index this one is never
   // conflicted against, so SQLite treating NULLs as distinct costs nothing.
   d.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_schedule ON tasks(schedule_id, status);`);
+  // The completion guardrail, added to the schedule and to every immutable revision for the
+  // same reason the other three policies live on both: the schedule row is what the next tick
+  // reads, and the revision row is what explains a decision already taken.
+  //
+  // NOT NULL DEFAULT 'manual' rather than nullable, and the default is the load-bearing half.
+  // `readPolicies` fails a schedule CLOSED on any policy value it cannot read, so a NULL here
+  // would take every mission an operator already owns off the clock on the first start after
+  // an upgrade - and 'manual' is not a placeholder, it is exactly what those missions have
+  // always done.
+  addColumn(d, "mission_schedules", "completion_policy", "TEXT NOT NULL DEFAULT 'manual'");
+  addColumn(
+    d,
+    "mission_schedule_revisions",
+    "completion_policy",
+    "TEXT NOT NULL DEFAULT 'manual'",
+  );
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");

@@ -72,13 +72,21 @@ const CLOCK_MS = 30_000;
 
 /** Build the preview definition from a saved schedule's active revision. */
 function definitionFor(schedule: MissionSchedule | null): ScheduleDefinitionPayload | null {
-  if (!schedule?.template || !schedule.overlapPolicy || !schedule.missedPolicy) return null;
+  if (
+    !schedule?.template ||
+    !schedule.overlapPolicy ||
+    !schedule.missedPolicy ||
+    !schedule.completionPolicy
+  ) {
+    return null;
+  }
   return {
     name: schedule.name,
     expression: schedule.expression,
     timezone: schedule.timezone,
     overlapPolicy: schedule.overlapPolicy,
     missedPolicy: schedule.missedPolicy,
+    completionPolicy: schedule.completionPolicy,
     template: schedule.template,
   };
 }

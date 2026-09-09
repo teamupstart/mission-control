@@ -161,6 +161,7 @@ import type {
   EnsembleWorkflowHandoff,
 } from "./ensemble.ts";
 import {
+  SCHEDULE_COMPLETION_POLICIES,
   SCHEDULE_CRON_FIELD_COUNT,
   SCHEDULE_HISTORY_MAX_LIMIT,
   SCHEDULE_MISSED_POLICIES,
@@ -6807,6 +6808,17 @@ const ScheduleDefinitionSchema = z.object({
   timezone: z.string().trim().min(1),
   overlapPolicy: z.enum(SCHEDULE_OVERLAP_POLICIES),
   missedPolicy: z.enum(SCHEDULE_MISSED_POLICIES),
+  /**
+   * Optional with a `manual` default, unlike the two policies above it, and the asymmetry is
+   * deliberate rather than an oversight: those two have always been on the wire, and this one
+   * arrived later. A caller that predates it - an older dashboard, a script somebody wrote
+   * against `/api/schedules` last month - must keep saving the behaviour it was written for,
+   * and that behaviour is `manual`. Nothing here infers otherwise from the request's shape.
+   */
+  completionPolicy: z
+    .enum(SCHEDULE_COMPLETION_POLICIES)
+    .optional()
+    .default("manual"),
   executionMode: z.literal("local-catchup").optional().default("local-catchup"),
   runnerId: z.null().optional().default(null),
   template: ScheduleTemplateSchema,

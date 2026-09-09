@@ -110,6 +110,7 @@ function mkSchedule(over: Partial<MissionSchedule> = {}): MissionSchedule {
     timezone: "UTC",
     overlapPolicy: "skip-active",
     missedPolicy: "skip",
+    completionPolicy: "manual",
     executionMode: "local-catchup",
     runnerId: null,
     revision: 1,

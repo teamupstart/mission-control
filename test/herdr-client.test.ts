@@ -504,6 +504,47 @@ test("the session snapshot accepts a newer protocol generation and still refuses
   }
 });
 
+test("a side split is read from both the 0.8.2 and the 0.9.0 response type", async () => {
+  // 0.8.2 answers `pane_created`; 0.9.0 answers `pane_info` with the identical pane payload.
+  // `sessions.spawnDetached` deliberately swallows a split failure so it cannot fail a launch,
+  // so the parsed pane is asserted here, where it is actually observable - otherwise a Herdr
+  // upgrade drops the side pane with nothing to read anywhere.
+  for (const type of ["pane_created", "pane_info"] as const) {
+    const fake = await fakeHerdrSocket((request, socket) => {
+      reply(socket, request.id, {
+        type,
+        pane: {
+          pane_id: "side-pane",
+          workspace_id: "w1",
+          tab_id: "w1:t1",
+          cwd: request.params.cwd,
+          foreground_cwd: null,
+        },
+      });
+    });
+    try {
+      const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN)
+        .splitPane({ paneId: "w1:p1", cwd: "/repo" });
+      assert.equal(result.ok, true, type);
+      if (result.ok) assert.equal(result.value.pane_id, "side-pane");
+    } finally {
+      await fake.close();
+    }
+  }
+
+  // A rename of the type is tolerated; a response that carries no pane is still refused.
+  const wrong = await fakeHerdrSocket((request, socket) => {
+    reply(socket, request.id, { type: "pane_info" });
+  });
+  try {
+    const result = await createHerdrClient(execStatus(wrong.path), HERDR_BIN)
+      .splitPane({ paneId: "w1:p1", cwd: "/repo" });
+    assert.equal(result.ok, false);
+  } finally {
+    await wrong.close();
+  }
+});
+
 test("pane_not_found is a per-pane process miss while other process refusals remain failures", async () => {
   for (const code of ["pane_not_found", "permission_denied"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {

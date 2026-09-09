@@ -246,6 +246,10 @@ const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
 const newer = process.env.MC_E2E_HERDR_MODE === "newer";
 const VERSION = newer ? "0.9.0" : "0.8.2";
 const PROTOCOL = newer ? 22 : 20;
+// 0.9.0 renamed the \`pane.split\` response type. It is the one response whose type moved
+// without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
+// it quietly stops standing in for the server it names.
+const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
 if (argv[0] === "status" && argv[1] === "server") {
   if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
     status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
@@ -352,7 +356,7 @@ const server = createServer((socket) => {
         const workspace = [...workspaces.values()].find((x) => x.panes.some((pane) => pane.pane_id === p.target_pane_id));
         const pane = { pane_id: workspace.workspaceId + ":side", cwd: p.cwd, shell_pid: null };
         workspace.panes.push(pane);
-        ok(socket, request.id, { type: "pane_created", pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
+        ok(socket, request.id, { type: SPLIT_TYPE, pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
       } else if (request.method === "pane.read") {
         ok(socket, request.id, { type: "pane_read", read: { pane_id: p.pane_id, text: "fake Herdr pane output" } });
       } else if (request.method === "workspace.rename") {

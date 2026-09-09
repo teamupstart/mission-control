@@ -120,8 +120,15 @@ const WorkspaceInfoSchema = z.object({
   workspace: WorkspaceSchema,
 });
 
+// `pane.split` answers `pane_created` on 0.8.2 and `pane_info` on 0.9.0, carrying the same
+// pane payload under both names. Only the pane is ever read out of it, so both are accepted.
+//
+// This is the one Herdr response whose type changed without a field changing, and it is the
+// one place where getting it wrong is silent: `sessions.spawnDetached` deliberately ignores a
+// failed split so a side pane cannot fail a launch, so a rejected response here does not
+// surface anywhere - the workspace simply opens with the side pane missing.
 const PaneCreatedSchema = z.object({
-  type: z.literal("pane_created"),
+  type: z.enum(["pane_created", "pane_info"]),
   pane: HerdrPaneSchema,
 });
 

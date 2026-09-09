@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -136,11 +136,19 @@ async function addEvidence(
   await dialog.getByLabel(`Repository scope for ${file.name}`).selectOption("repo-01");
 }
 
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(page: Page, name: string, target?: Locator): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
   await page.mouse.move(0, 0);
-  await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
+  // The dashboard scrolls inner panels rather than the document, so `fullPage` on this page is
+  // just the viewport. A named target is screenshotted directly, which is the only way to get
+  // a section that sits below the fold into the frame.
+  if (target) {
+    await target.scrollIntoViewIfNeeded();
+    await target.screenshot({ path: `${EVIDENCE}${name}.png` });
+  } else {
+    await page.screenshot({ path: `${EVIDENCE}${name}.png`, fullPage: true });
+  }
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-image-evidence/${name}.png`);
 }
@@ -297,7 +305,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
   // that captured it, and a second button would imply this submission captured it too.
   await expect(ledger.getByText("Carried forward from round 1")).toBeVisible();
   await expect(ledger.getByRole("button", { name: "Use in next review" })).toHaveCount(1);
-  await shoot(dashboard, "02-carried-forward-ledger");
+  await shoot(dashboard, "02-carried-forward-ledger", ledger);
   await ledger.getByRole("button", { name: "Use in next review" }).click();
   await expect(ledger.getByRole("button", { name: "Ready for next review" })).toBeVisible();
 

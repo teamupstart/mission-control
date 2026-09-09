@@ -101,6 +101,7 @@ import {
 } from "@shared/workflow.ts";
 import { SESSION_ACTION_COMPLETION_CAPABILITIES } from "@shared/workflow.ts";
 import {
+  WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
   withInspectorGate,
   workflowInspectorGate,
   workflowRoundLimitParkedPhase,
@@ -195,6 +196,21 @@ const DEFAULT_DETAIL_PAGE_SIZE = 200;
 const PERSONA_DIRECTIVES_JSON_BYTES =
   WORKFLOW_LIMITS.personaDirectiveBytes * WORKFLOW_LIMITS.graphNodes + 100_000;
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
+
+/**
+ * How many consecutive evidence-preflight refinements one round may spend.
+ *
+ * Stated as a limit the count must EXCEED, exactly like `UNCHANGED_EVIDENCE_NUDGE_LIMIT` in
+ * the manager: refinements one and two are reserved normally, and the run blocks on the third.
+ * Reading it as "stop after the second" would refuse the segment that closes the gaps in the
+ * common case, which is the repair this bound exists to leave room for.
+ *
+ * The bound is small on purpose. A preflight refinement re-measures a mapping the agent
+ * already had every chance to declare, so a third consecutive one is evidence that the packet
+ * and the preflight disagree about something a person has to settle - which is why exceeding
+ * it parks the run for the operator rather than costing another repair round.
+ */
+export const EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT = 2;
 
 type RunCursor = { updatedAt: number; id: string };
 
@@ -7919,6 +7935,25 @@ export class WorkflowStore {
     ).all(runId) as unknown[]).map(parseWorkflowReadinessOverrideRow);
   }
 
+  /**
+   * How many evidence-preflight refinements this submission's segment chain has spent in a row.
+   *
+   * Walked through `parentSubmissionId` rather than counted per round, because "consecutive" is
+   * the property the cap is about: a round may legitimately reach evidence readiness again after
+   * a session action segment interrupted it, and that later gap is a new disagreement rather
+   * than a continuation of the one this bound is closing. The walk stops at the first link that
+   * is not a preflight refinement, which is the submission the chain grew out of.
+   */
+  consecutiveEvidencePreflightRefinements(submissionId: string): number {
+    let current = this.getSubmission(submissionId);
+    let refinements = 0;
+    while (current?.refinementReason === "evidence_preflight" && current.parentSubmissionId) {
+      refinements += 1;
+      current = this.getSubmission(current.parentSubmissionId);
+    }
+    return refinements;
+  }
+
   reserveEvidenceReadinessRefinement(input: {
     id: string;
     runId: string;
@@ -7928,7 +7963,15 @@ export class WorkflowStore {
     now: number;
   }):
     | { ok: true; submission: WorkflowSubmission; idempotent: boolean }
-    | { ok: false; reason: "not_waiting" | "no_change" | "delivery_in_flight" | "request_conflict" } {
+    | {
+        ok: false;
+        reason:
+          | "not_waiting"
+          | "no_change"
+          | "delivery_in_flight"
+          | "request_conflict"
+          | "refinement_exhausted";
+      } {
     return transaction(this.db, () => {
       const existing = this.submissionByTrigger(input.triggerKey);
       if (existing) {
@@ -7958,6 +8001,37 @@ export class WorkflowStore {
       );
       if (generation <= (parent.stagedImageGeneration ?? 0)) {
         return { ok: false, reason: "no_change" };
+      }
+      /*
+       * The bound on the loop, checked before anything is reserved and after idempotency, so a
+       * restart re-driving a refinement that already exists still recovers it.
+       *
+       * Counting the PARENT's chain and comparing the child it would produce is what keeps the
+       * cap off by nothing: `refinements` is what has already been spent, so the reservation in
+       * hand is `refinements + 1`, and the run blocks only once that exceeds the limit.
+       *
+       * The parent submission is deliberately left `waiting_for_evidence_readiness`. The gaps
+       * are still real and still the operator's to settle, and leaving the submission where it
+       * is keeps `overrideEvidenceReadiness` - continue despite gaps - reachable from the block.
+       */
+      const refinements = this.consecutiveEvidencePreflightRefinements(parent.id);
+      if (refinements + 1 > EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT) {
+        this.setRunState(
+          run.id,
+          "blocked",
+          WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
+          { submissionId: parent.id, round: parent.round, refinements },
+          input.now,
+        );
+        this.appendEvent(run.id, WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE, {
+          submissionId: parent.id,
+          round: parent.round,
+          segment: parent.segment,
+          refinements,
+          limit: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
+          manualRetry: input.manualRetry,
+        }, input.now, `preflight-refinement-exhausted:${parent.id}`);
+        return { ok: false, reason: "refinement_exhausted" };
       }
       const inFlight = this.db.prepare(
         `SELECT 1 FROM workflow_deliveries
@@ -8045,8 +8119,20 @@ export class WorkflowStore {
         return { ok: false, reason: "policy_off" };
       }
       const latest = this.latestSubmission(run.id);
+      /*
+       * Two run states, one submission state.
+       *
+       * The override answers a question about the SUBMISSION - continue despite these gaps -
+       * and the submission is waiting either way. The second run state is the refinement cap's
+       * block: it stops the loop from spending more segments, and if it also withdrew the
+       * override it would take away the operator decision it exists to ask for, leaving a round
+       * that can only be abandoned. So the block is accepted here and nowhere else; every other
+       * blocked phase still refuses.
+       */
+      const preflightExhausted = run.status === "blocked"
+        && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE;
       if (
-        run.status !== "waiting_for_evidence_readiness"
+        (run.status !== "waiting_for_evidence_readiness" && !preflightExhausted)
         || submission.status !== "waiting_for_evidence_readiness"
         || latest?.id !== submission.id
       ) return { ok: false, reason: "conflict" };
@@ -8068,8 +8154,10 @@ export class WorkflowStore {
         `UPDATE workflow_runs
             SET status = 'running', current_phase = 'activating', gate_state_json = NULL,
                 updated_at = ?, completed_at = NULL
-          WHERE id = ? AND status = 'waiting_for_evidence_readiness'`,
-      ).run(input.now, run.id);
+          WHERE id = ?
+            AND (status = 'waiting_for_evidence_readiness'
+                 OR (status = 'blocked' AND current_phase = ?))`,
+      ).run(input.now, run.id, WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE);
       const row = this.db.prepare(
         `SELECT * FROM workflow_submission_readiness_overrides WHERE id = ?`,
       ).get(input.id);

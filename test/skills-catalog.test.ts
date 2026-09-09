@@ -376,6 +376,20 @@ test("the shipped pull-request skill is a real, triggered Mission Control skill"
   // section links existing design sources instead of duplicating them, omits a test inventory,
   // and preserves deliberate failure-mode context.
   assert.match(text, /screenshots/i);
+  assert.match(text, /durable/i);
+  assert.match(text, /pull request description/i);
+  assert.match(text, /pull request comment/i);
+  assert.match(text, /never committed/i);
+  assert.match(text, /gitignored/i);
+  assert.match(text, /2\.100\.0/);
+  for (const command of ["gh pr create", "gh pr edit", "gh pr comment"]) {
+    assert.match(text, new RegExp(command));
+  }
+  assert.match(text, /--attach/);
+  assert.match(text, /signed-in web interface/i);
+  assert.match(text, /render.*attachments/is);
+  assert.match(text, /secrets.*credentials.*personal data/is);
+  assert.match(text, /cannot be safely redacted.*unavailable/is);
   assert.match(text, /Concision is a requirement/i);
   assert.match(text, /use bullets wherever possible/i);
   assert.match(text, /Remove filler/i);

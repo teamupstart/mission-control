@@ -21,12 +21,19 @@ its own repository, and leave the others to theirs.
 Write for a reviewer who has not been in this session and will not read the transcript.
 
 The skill owns the shape, and it is two top-level sections. `## For Humans` carries the why,
-a concise description of the total feature, the tradeoffs, the known gaps, the evidence -
-including screenshots of a UI change attached to the pull request - and the recommended
-follow-up work, each under its own heading. Evidence files are never committed to the repository:
-produce them in a gitignored location and upload them to the pull request. `## For Agents` carries
-the design decisions and the implementation detail. Follow that contract exactly rather than
-inventing a shape here.
+a concise description of the total feature, the tradeoffs, the known gaps, the durable evidence,
+and the recommended follow-up work, each under its own heading. For every UI-based change, attach
+screenshots of the working feature to the pull request description or a comment for human review.
+Evidence files are never committed to the repository: produce them in a gitignored location and
+upload them to the pull request. Inspect screenshots before upload and redact secrets, credentials,
+and personal data. When a screenshot cannot be safely redacted, do not upload it; report that
+evidence as unavailable and explain why. GitHub CLI 2.100.0 and later support image attachments;
+use `gh pr create --attach` or `gh pr edit --attach` for the pull request description, or
+`gh pr comment --attach` for a comment, whenever that version floor is met, and include useful alt
+text for each image. With an older CLI, upload through GitHub's signed-in web interface. Verify the
+published description or comment renders the attachments before treating the evidence handoff as
+complete. `## For Agents` carries the design decisions and the implementation detail. Follow that
+contract exactly rather than inventing a shape here.
 
 Every claim in the evidence subsection is something that was run and reported, not something
 assumed. A list of changed files is not a description. Neither is a restatement of the diff.

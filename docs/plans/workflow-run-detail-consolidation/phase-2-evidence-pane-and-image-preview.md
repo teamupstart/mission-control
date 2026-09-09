@@ -87,8 +87,9 @@ merged to the default branch.
 
 2. **Extend `runRecordSummary`.** Add the evidence facts: readiness status, author claim count, gap
    count, warning count, image count, and whether the run is parked on a readiness block. The pane's
-   `blocking` flag is true when the readiness block has parked the run or a gap exists, not when a
-   warning exists.
+   `blocking` flag is true **only when a readiness block has parked the run**. A gap on a run that is
+   still moving is reported by the count and by the gap block, not by seizing the initial pane
+   selection: `blocking` means "this stops the run", and Phase 1's selection order acts on it.
 
 3. **Build the Evidence pane** as one component replacing both existing ones. Order: the stat strip,
    the "structural only" sentence, the gap block, the image strip, the claim rows, and the
@@ -134,6 +135,10 @@ merged to the default branch.
 
 ## Tests and verification
 
+- `node:test` for the pane's `blocking` value: true when the run is parked on a readiness block,
+  false when gaps exist on a run that is still moving.
+- A Playwright case that a run parked on a readiness block opens on the Evidence pane with the block
+  visible on first paint, through Phase 1's selection order rather than a rule of this pane's own.
 - `node:test` for the claim-to-reconciliation match by `matchedClientCriterionId`, including the case
   where no criterion matches and the case where wordings differ.
 - `node:test` for the cited-by derivation: grouping by role, the zero-citation case, and an image
@@ -169,6 +174,9 @@ overlay's id, the pane order, or the `blocking` semantics.
 
 ## Cross-phase audit record
 
+- Reconciled against the source plan after review. This phase had set `blocking` on any gap, which
+  would have made the Evidence pane seize the initial selection on a run that is not blocked at all.
+  Narrowed to a parked run, which is what the plan's constraint names.
 - Reconciled against Phase 1. Two contracts were pushed back into Phase 1 rather than being handled
   here: the pane registry's null-render rule, and `runRecordSummary` as the single place counts are
   computed. Extending the summary rather than counting in this pane is what keeps the tab label and

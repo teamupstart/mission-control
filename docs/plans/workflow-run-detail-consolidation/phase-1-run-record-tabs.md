@@ -89,14 +89,34 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
    `{ id, label, count, blocking, render }`. It renders a `.workflow-tabs` `role="tablist"` with one
    `role="tab"` per pane carrying `aria-selected`, arrow-key movement between tabs, and the count as
    a small pill; `blocking` renders the amber `.workflow-tab-badge`. A pane whose `render` returns
-   null is omitted from the bar entirely. Selection comes from the route with a local fallback, and
-   selecting a tab updates the route.
+   null is omitted from the bar entirely. Selecting a tab updates the route.
 
-5. **Move the worklist in.** The existing section becomes the first pane. Keep the `aria-label`,
+5. **Select a blocking pane when the route names none.** The badge alone does not satisfy the plan's
+   constraint that a blocking state is surfaced *without a click*, so the initial selection resolves
+   in this order, deterministically:
+
+   1. the pane the route names, if it names one and that pane is present. An explicit pane always
+      wins, including when another pane is blocking, so a link and the back button stay honest;
+   2. the worklist, when the worklist itself is blocking. It is the primary object, and a run with
+      both an open change and a refused delivery should not bury the change;
+   3. the first blocking pane in tab order;
+   4. the worklist.
+
+   `blocking` means "this pane holds something that stops the run", never "this pane has warnings".
+   In this phase that is a refused or uncertain delivery on Deliveries, and a corrupt or unreadable
+   captured context on Intent. Later phases add their own conditions under the same rule.
+
+   **This changes the library tour's assumption.** `src/web/tour/tours/library.ts` has a `run-moving`
+   step whose `prepare` calls `context.navigation.showRun(...)` and whose `ready` requires the
+   resolved element, so on a run with a refused delivery the worklist would not be mounted and the
+   step would fall back to its "the run is opening" copy. Make that `prepare` open the run on the
+   worklist pane explicitly rather than relying on the default.
+
+6. **Move the worklist in.** The existing section becomes the first pane. Keep the `aria-label`,
    keep `tourWorklistRef` on the pane's root, and keep the join and gate `<details>` packets that
    currently sit inside that section with it.
 
-6. **Write the Deliveries pane.** A stat strip (delivered, refused, uncertain, newest) over a table
+7. **Write the Deliveries pane.** A stat strip (delivered, refused, uncertain, newest) over a table
    with one row per delivery: round and segment, kind, state chip, delivered time, payload hash and
    character count, plus a disclosure that expands the payload in place. Rows are filtered to the
    viewed round with an explicit control to show every round. Preserve, unchanged: the pruned-payload
@@ -104,19 +124,19 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
    every `deliveryResolutionActions` button for an uncertain delivery with its confirm dialog. A
    refused or uncertain delivery sets `blocking` on the pane.
 
-7. **Write the Intent pane.** Lead with the refined goal. Render the snapshot facts as a chip row
+8. **Write the Intent pane.** Lead with the refined goal. Render the snapshot facts as a chip row
    (compaction status, HEAD, working tree, diff, transcript, standards) and keep the full evidence
    snapshot `<details>` with its fact list and its pruned-retention copy. Then four disclosures:
    original goal, human decisions, acceptance criteria, compacted constraints.
 
-8. **Collapse the human decisions.** This is the submitted decision and the largest single win. Each
+9. **Collapse the human decisions.** This is the submitted decision and the largest single win. Each
    decision becomes one row carrying its source kind and id, its character count, whether it has a
    rationale, and its first line clamped to a single line. Clicking a row expands that decision's
    body and its rationale in place. Nothing is truncated on expansion; the full text is still there.
    Keep the three degraded arms (`not_captured`, `corrupt`, unreadable) as states of this pane with
    their existing `role="alert"` copy.
 
-9. **CSS.** Add the pane, stat strip, ledger table and disclosure-row rules to `styles.css` near the
+10. **CSS.** Add the pane, stat strip, ledger table and disclosure-row rules to `styles.css` near the
    existing `.wf-run-*` block. Do not re-declare any horizontal inset inside a modal; nothing in this
    phase renders into one.
 
@@ -129,13 +149,20 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
 - `renderToStaticMarkup` cases in `test/workflow-runs-render.test.ts` for the tab labels and their
   counts, the delivery row, the collapsed decision row's summary line, and each of the three
   degraded intent arms. Update the assertions at `:1539` and `:1546` to the pane's markup.
+- A `node:test` case for the initial-selection order as a pure function over the pane registry and
+  the route: an explicit route pane wins over a blocking pane; a blocking worklist wins over a
+  blocking Deliveries; a blocking Deliveries wins when the worklist is clean; the worklist is the
+  final fallback.
 - A new Playwright spec in `e2e/`: the worklist pane is selected on load, the Deliveries and Intent
   tabs are reachable by role and accessible name, a delivery row expands its payload, a human
   decision row expands its body, the tab counts match the run, and a refused delivery puts the amber
-  badge on the Deliveries tab and its retry button still reaches its route.
+  badge on the Deliveries tab and its retry button still reaches its route. Assert that on a run
+  with a refused delivery the delivery's own content is **visible on first paint**, not merely that
+  its tab carries a badge, and that a link naming the worklist pane still opens on the worklist.
 - Update `e2e/specs/workflow-session-action-run.spec.ts` to assert the Deliveries pane and a
   session-action row rather than the removed heading.
-- Run the library tour spec; the run worklist step must still find its target.
+- Run the library tour spec, including against a run whose blocking pane is not the worklist; the
+  `run-moving` step must still find its target rather than falling back.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`, `npm run smoke`, `npm run test:e2e`.
 
 ## Merge and exit criteria
@@ -145,6 +172,7 @@ No phase dependencies. Requires a checkout of the default branch with the plan a
   render as their own sections below the container, unchanged.
 - Every delivery and intent field and action that rendered before still renders and still works.
 - A link carrying `pane` opens on that pane, and changing rounds preserves the selected pane.
+- A run whose blocking state is not in the worklist opens on the pane holding it, with no click.
 - All verification above passes.
 
 ## Downstream handoff
@@ -153,17 +181,24 @@ Phase 2 and Phase 3 may rely on:
 
 - `RunRecordTabs` and the `{ id, label, count, blocking, render }` pane registry. Add a pane; do not
   reimplement the bar, the badge, the keyboard handling or the route wiring.
+- The initial-selection order. A later pane participates by setting `blocking` honestly; it must not
+  add a selection rule of its own.
 - The pane id tuple in `useWorkflowRoute.ts`. Add an id to the union and nothing else.
 - `runRecordSummary`. Extend it with new fields; do not count in the view.
 - The ledger table and stat strip CSS classes this phase introduces.
 
-They must not change: the worklist's position as the first and default pane, the tour ref's node, or
-the semantics of `blocking` (it means "this pane holds something that stops the run", not "this pane
-has warnings").
+They must not change: the worklist's position as the first pane and the final fallback, the tour
+ref's node, the selection order, or the semantics of `blocking` (it means "this pane holds something
+that stops the run", not "this pane has warnings").
 
 ## Cross-phase audit record
 
 - Written first; nothing earlier to reconcile.
+- Reconciled against the source plan after review. The plan requires that a blocking container
+  "opens itself"; this file had specified only the amber badge and a worklist default, which is
+  weaker than the approved constraint. The selection order in step 5 and its tests restore it, and
+  the library tour's `prepare` was pulled into this phase because that rule is what breaks the tour's
+  assumption. Phase 2's `blocking` condition was narrowed in the same pass.
 - Reconciled against Phase 2 and Phase 3 after both were written. The pane registry gained the rule
   that a pane whose `render` returns null is omitted from the bar, which Phase 3 requires so that
   Completion is absent on a run with no gate and no claim; that rule is owned here rather than being

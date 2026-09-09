@@ -5994,6 +5994,10 @@ export function buildApp(
     return {
       sources: cfg.sources,
       status: taskSourceStatuses(cfg.sources),
+      // Declared with the rest of the write-back contract and served empty until the panel
+      // that reads it exists. Empty is a valid answer - "these sources owe nothing" - so no
+      // consumer has to special-case the interval between the two.
+      writeback: [],
       kinds: taskSourceKinds(),
     };
   };

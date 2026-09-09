@@ -39,6 +39,7 @@ import {
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import { completableByMerge, type Registry, type TaskPrMerged } from "./registry.ts";
+import type { WritebackEnqueuer } from "./task-sources/writeback.ts";
 import {
   Dispatcher,
   deriveTitle,
@@ -766,6 +767,12 @@ export class TaskManager {
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
   ) => boolean = () => false;
+  /**
+   * Where a completion is announced to the task-source write-back ledger, when the daemon
+   * installed one. Absent in every focused test, which is exactly the shipped default
+   * behaviour: nothing is owed and nothing is written.
+   */
+  private writeback?: WritebackEnqueuer;
   constructor(
     private registry: Registry,
     private closeMergedSessionDeps: CloseMergedSessionDeps = defaultCloseMergedSessionDeps,
@@ -1195,6 +1202,19 @@ export class TaskManager {
         inferredFrom: null,
       });
     }
+  }
+
+  /**
+   * Install the write-back enqueuer after both owners exist.
+   *
+   * A registration rather than a ninth positional constructor parameter, following
+   * `registerWorkflowEvidenceEligibility` below: the many route-unit tests that construct a
+   * bare `TaskManager` keep compiling unchanged, and a daemon that forgets to call this
+   * simply writes nothing back - which is the same behaviour as every write-back switch
+   * being off, and therefore not a state that can surprise anyone.
+   */
+  registerWritebackEnqueuer(enqueuer: WritebackEnqueuer): void {
+    this.writeback = enqueuer;
   }
 
   /** Install the daemon's immutable workflow-graph eligibility reader after both owners exist. */
@@ -4200,6 +4220,19 @@ export class TaskManager {
     // Setting it from a `.then` would put both of those between the write and the record.
     if (input.inferredFrom && this.registry.getTask(id) === updated) {
       this.autoCompleted.set(id, input.inferredFrom);
+    }
+    // The task's upstream item, if it came from one, is owed a note. A LOCAL INSERT and
+    // nothing else - the enqueuer spawns nothing and the worker does the delivering - so
+    // this stays as synchronous as the rest of this function.
+    //
+    // The try/catch is not defensive decoration. `finishCompletion` runs inside
+    // `session_upsert` and `session_remove` listeners, and a throw here would abort a
+    // completion that has already been persisted and broadcast, in order to fail at
+    // writing a comment nobody is waiting for.
+    try {
+      this.writeback?.completed(updated);
+    } catch (err) {
+      console.error("[writeback] enqueue on completion failed:", id, err);
     }
     if (input.satisfyDependents) this.satisfyDeclaredEdgesTo(id, now);
     return updated;

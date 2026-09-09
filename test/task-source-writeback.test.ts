@@ -1,0 +1,853 @@
+import { test, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type {
+  TaskSourceInstance,
+  WritebackNotice,
+  WritebackResult,
+} from "../src/shared/task-source.ts";
+import type { Task, TaskRepoEntry } from "../src/shared/types.ts";
+// `import type` only, as above - erased, so it cannot pull the server modules in ahead of
+// the HARNESS_HOME preamble.
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+// `import type` only - erased, so it cannot pull the server modules in ahead of the
+// HARNESS_HOME preamble below the way a value import would.
+import type { WritebackDeps } from "../src/server/task-sources/writeback.ts";
+import { mkTask } from "./helpers/session-fixture.ts";
+
+// What is at stake: this is the direction where a mistake is published onto an item other
+// people are watching, automatically and with nobody clicking anything. Five claims carry
+// the feature, and each has its own group below:
+//
+//   1. NOTHING is written without per-source consent, and a task with no `source` produces
+//      nothing at all - which is nearly every task in a normal installation.
+//   2. The ledger key makes a re-observation free, while a task that reopens and completes
+//      AGAIN gets a fresh delivery rather than being silently swallowed.
+//   3. A refusal and an unknown outcome are not the same answer. A refusal backs off and
+//      is eventually given up on; an unknown is never retried automatically, because a
+//      retried transition can undo a person.
+//   4. A resolve waits out a settle window and re-checks the live task, because
+//      `reopenIfWorkResumed` can put a completed task back and closing an issue whose work
+//      resumed is the one mistake here that a human has to undo by hand.
+//   5. The payload is a snapshot, so a task deleted between observation and delivery still
+//      reports what was true.
+//
+// Real db, because most of these are claims about ROWS: a fake that counted calls could
+// not tell a committed ledger row from an intended one. The state dir is redirected BEFORE
+// anything that resolves it is imported (`openDb` refuses the operator's real dir under the
+// test runner, so getting this wrong fails loudly instead of writing to live state).
+
+const home = mkdtempSync(join(tmpdir(), "mission-writeback-"));
+process.env.HARNESS_HOME = join(home, "state");
+
+const {
+  openDb,
+  closeDb,
+  claimDueWritebacks,
+  countWritebacks,
+  discardWritebacks,
+  enqueueWriteback,
+  retryWritebacks,
+  settleWriteback,
+} = await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
+type TaskPrLinkedEvent = import("../src/server/registry.ts").TaskPrLinked;
+const { backoffFor, drainWritebacks, makeWritebackEnqueuer } = await import(
+  "../src/server/task-sources/writeback.ts"
+);
+
+after(() => rmSync(home, { recursive: true, force: true }));
+beforeEach(() => {
+  openDb().exec("DELETE FROM tasks; DELETE FROM task_source_writeback;");
+});
+
+const NOW = 1_700_000_000_000;
+const SETTLE = 300_000;
+
+/** A github-issues source with the write-back switches this test needs, and nothing else. */
+function mkSource(over: Partial<TaskSourceInstance> = {}): TaskSourceInstance {
+  return {
+    id: "src-1",
+    kind: "github-issues",
+    label: "issues",
+    enabled: true,
+    repoRoot: "/repo",
+    intervalMs: 900_000,
+    defaults: { kind: "ship", agent: "claude", priority: null, labels: [], enabled: false },
+    maxPerSweep: 25,
+    writeback: { onPrOpened: false, onCompleted: false, resolve: false },
+    config: {},
+    ...over,
+  } as TaskSourceInstance;
+}
+
+/** A task swept from `acme/demo#7`, done, with a pull request. */
+function mkSwept(over: Partial<Task> = {}): Task {
+  return mkTask({
+    id: "t1",
+    title: "Fix the parser",
+    status: "done",
+    repoRoot: "/repo",
+    outcome: "opened a pull request",
+    outcomeUrl: "https://github.com/acme/demo/pull/9",
+    completedAt: NOW,
+    source: {
+      sourceId: "src-1",
+      externalId: "acme/demo#7",
+      url: "https://github.com/acme/demo/issues/7",
+    },
+    ...over,
+  });
+}
+
+/** An implementation that records what it was asked to write, and answers however told. */
+function spy(result: WritebackResult) {
+  const calls: WritebackNotice[] = [];
+  const fn = async (
+    _inst: TaskSourceInstance,
+    notice: WritebackNotice,
+  ): Promise<WritebackResult> => {
+    calls.push(notice);
+    return result;
+  };
+  return { fn, calls };
+}
+
+const delivered: WritebackResult = { error: null, outcomeUnknown: false, detail: "commented" };
+const refused: WritebackResult = {
+  error: "gh refused: Could not resolve to an Issue",
+  outcomeUnknown: false,
+  detail: null,
+};
+const unknown: WritebackResult = {
+  error: "gh did not report back - the write may have landed",
+  outcomeUnknown: true,
+  detail: null,
+};
+
+/** The seams every test replaces: a fixed clock, a fixed config, a fake implementation. */
+function deps(over: Partial<WritebackDeps> = {}): WritebackDeps {
+  return { now: () => NOW, settleMs: SETTLE, log: () => {}, ...over };
+}
+
+/** Every ledger row, oldest first. */
+function rows(): Array<{
+  id: number;
+  action: string;
+  signal: string;
+  state: string;
+  next_at: number;
+  attempts: number;
+  dedupe_key: string;
+  last_error: string | null;
+  last_detail: string | null;
+}> {
+  return openDb()
+    .prepare(`SELECT * FROM task_source_writeback ORDER BY id`)
+    .all() as never;
+}
+
+function setup(source: TaskSourceInstance | null, task: Task | null) {
+  const registry = new Registry();
+  if (task) registry.upsertTask(task);
+  return { registry, sources: () => (source ? [source] : []) };
+}
+
+// ---- 1. consent, and the task that produces nothing ----
+//
+// "Before anything is enqueued" is the property, not "refused". A row that reaches the
+// ledger is a row the worker will try to deliver, so each of these has to say no while the
+// answer is still local, cheap and certain.
+
+// The first line of both enqueue paths, and the reason this feature is invisible to people
+// who do not use task sources at all.
+test("a task that was never swept enqueues nothing", () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: true, resolve: false } });
+  const { registry, sources } = setup(s, mkSwept({ source: null }));
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(mkSwept({ source: null }));
+  assert.deepEqual(rows(), []);
+});
+
+// The default, and therefore every source in every installation that predates this.
+test("a source with every switch off enqueues nothing, on either trigger", () => {
+  const s = mkSource();
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+  enq.completed(task);
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
+  assert.deepEqual(rows(), [], "a source nobody switched on wrote to the ledger");
+});
+
+test("each trigger is asked about separately", () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: false, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+  enq.completed(task);
+  assert.deepEqual(rows(), [], "the completion trigger is off and a row was written anyway");
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
+  assert.equal(rows().length, 1);
+  assert.equal(rows()[0]!.signal, "pr-opened");
+});
+
+// A source removed between the sweep that filed the task and the completion that would
+// write back. Its consent went with it.
+test("a source that is no longer configured enqueues nothing", () => {
+  const task = mkSwept();
+  const { registry, sources } = setup(null, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  assert.deepEqual(rows(), []);
+});
+
+// Asked through `canAnnotateTo` / `canResolveTo`, never by testing `inst.kind`. Jira
+// declares both false until its verbs exist, so a Jira source with the switches on is a
+// build that honestly cannot do this yet - and it must not queue work it can never deliver.
+test("a kind that cannot write back enqueues nothing even with the switches on", () => {
+  const s = mkSource({
+    kind: "jira",
+    writeback: { onPrOpened: true, onCompleted: true, resolve: true },
+  });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  assert.deepEqual(rows(), []);
+});
+
+// ---- 2. the ledger key ----
+
+test("the same observation enqueued twice inserts once, and says which was first", () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: false, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+  const e = {
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  };
+  enq.prLinked(e);
+  enq.prLinked(e);
+  enq.prLinked({ ...e, observedAt: NOW + 60_000 });
+  assert.equal(rows().length, 1, "a re-observed pull request cost a second comment");
+
+  // The boolean is what lets the chokepoint log a first observation without logging every
+  // poller tick, so it has to be honest about which one this was.
+  const notice: WritebackNotice = {
+    signal: "pr-opened",
+    action: "annotate",
+    externalId: "acme/demo#7",
+    externalUrl: null,
+    taskTitle: "T",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    repoRoot: "/repo",
+    outcome: null,
+    observedAt: NOW,
+  };
+  const row = {
+    sourceId: "src-1",
+    externalId: "acme/demo#7",
+    signal: "pr-opened" as const,
+    action: "annotate" as const,
+    dedupeKey: "https://github.com/acme/demo/pull/9",
+    taskId: "t1",
+    notice,
+    nextAt: NOW,
+  };
+  assert.equal(enqueueWriteback(row, NOW), false, "the existing row was reported as new");
+  assert.equal(
+    enqueueWriteback({ ...row, dedupeKey: "other" }, NOW),
+    true,
+    "a genuinely new delivery was reported as a duplicate",
+  );
+});
+
+// A multi-repo task opened a pull request in each of its repositories, and the issue should
+// name all of them. The per-repo emission is what makes that happen, and the url in the
+// dedupe key is what keeps the two apart.
+test("a multi-repo task owes one comment per pull request", () => {
+  const s = mkSource({ writeback: { onPrOpened: true, onCompleted: false, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/repo",
+    prUrl: "https://github.com/acme/demo/pull/9",
+    observedAt: NOW,
+  });
+  enq.prLinked({
+    taskId: task.id,
+    repoRoot: "/other",
+    prUrl: "https://github.com/acme/other/pull/3",
+    observedAt: NOW,
+  });
+  assert.equal(rows().length, 2);
+});
+
+test("a completion with auto-resolve on owes the comment first and the close later", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  const all = rows();
+  assert.equal(all.length, 2);
+  // The ordering is bought by the ids alone, which is what `claimDueWritebacks` reads -
+  // no dependency machinery, and no half-delivered row.
+  assert.equal(all[0]!.action, "annotate");
+  assert.equal(all[1]!.action, "resolve");
+  assert.ok(all[0]!.id < all[1]!.id);
+  assert.equal(all[0]!.next_at, NOW);
+  assert.equal(all[1]!.next_at, NOW + SETTLE, "the resolve did not wait out the settle window");
+});
+
+// The correction this key exists for. `settleIfEpisodeFinished` concludes a task on an idle
+// agent, `reopenIfWorkResumed` puts it back, and the task then completes again FOR REAL.
+// Keyed on the task id alone, that second, genuine completion collides with the first
+// cycle's row - whatever became of it - and `ON CONFLICT DO NOTHING` drops it in silence,
+// so the issue is never resolved at all. Asserted against every reachable first-cycle
+// state, because the collision does not care what became of the earlier row.
+for (const first of ["delivered", "cancelled", "failed", "unknown"] as const) {
+  test(`a reopened task that completes again owes a fresh pair (first cycle: ${first})`, () => {
+    const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+    const task = mkSwept();
+    const { registry, sources } = setup(s, task);
+    const enq = makeWritebackEnqueuer(registry, deps({ sources }));
+
+    enq.completed(task);
+    for (const r of rows()) settleWriteback(r.id, first, {}, NOW);
+
+    // Reopened, worked, and completed again - a genuinely different completion, at a
+    // different instant.
+    const again = { ...task, completedAt: NOW + 3_600_000 };
+    registry.upsertTask(again);
+    enq.completed(again);
+
+    const all = rows();
+    assert.equal(all.length, 4, "the second, genuine completion was swallowed as a duplicate");
+    assert.equal(all.filter((r) => r.state === "pending").length, 2);
+    assert.notEqual(all[0]!.dedupe_key, all[2]!.dedupe_key);
+  });
+}
+
+// ---- 3. claiming ----
+
+test("a tick claims at most one row per item, so the comment goes before the close", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  // Past the settle window, so both rows are due and only the ordering decides.
+  const due = claimDueWritebacks(NOW + SETTLE + 1, 20);
+  assert.equal(due.length, 1);
+  assert.equal(due[0]!.action, "annotate");
+});
+
+test("a row not yet due is not claimed", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  settleWriteback(rows()[0]!.id, "delivered", {}, NOW);
+  assert.deepEqual(claimDueWritebacks(NOW, 20), [], "the resolve fired inside its settle window");
+  assert.equal(claimDueWritebacks(NOW + SETTLE, 20).length, 1);
+});
+
+// ---- 4. delivery, refusal, and the answer that is neither ----
+
+test("a delivered row records what was said and is never claimed again", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+
+  assert.equal(annotate.calls.length, 1);
+  assert.equal(annotate.calls[0]!.externalId, "acme/demo#7");
+  assert.equal(annotate.calls[0]!.outcome, "opened a pull request");
+  assert.equal(rows()[0]!.state, "delivered");
+  assert.equal(rows()[0]!.last_detail, "commented");
+  assert.deepEqual(claimDueWritebacks(NOW + 86_400_000, 20), []);
+});
+
+test("a refusal backs off, doubling to a ceiling, and is given up on at six attempts", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  const annotate = spy(refused);
+  // The clock has to move, or a backed-off row would never come due again.
+  let clock = NOW;
+  const d = deps({ sources, annotate: annotate.fn, now: () => clock });
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    await drainWritebacks(registry, d);
+    const row = rows()[0]!;
+    assert.equal(row.state, "pending", `attempt ${attempt} gave up early`);
+    assert.equal(row.attempts, attempt);
+    assert.equal(row.next_at, clock + backoffFor(attempt));
+    assert.match(row.last_error!, /Could not resolve to an Issue/);
+    clock = row.next_at;
+  }
+
+  await drainWritebacks(registry, d);
+  assert.equal(rows()[0]!.state, "failed");
+  assert.equal(rows()[0]!.attempts, 6);
+  assert.equal(annotate.calls.length, 6, "the implementation was asked a seventh time");
+});
+
+test("the backoff doubles and is capped", () => {
+  assert.equal(backoffFor(1), 60_000);
+  assert.equal(backoffFor(2), 120_000);
+  assert.equal(backoffFor(3), 240_000);
+  // Capped, so a wedged upstream is retried on a schedule rather than in a decade.
+  assert.equal(backoffFor(20), 30 * 60_000);
+});
+
+// The rule this whole direction turns on, and it matters more for a resolve than it ever
+// did for a push: a duplicate comment is noise, a duplicate transition undoes a person.
+test("an unknown outcome is recorded as unknown and never retried automatically", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  const annotate = spy(unknown);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  assert.equal(rows()[0]!.state, "unknown");
+  assert.match(rows()[0]!.last_error!, /may have landed/);
+
+  // Not even a year later. Only an operator, having gone and looked, moves this.
+  assert.deepEqual(claimDueWritebacks(NOW + 365 * 86_400_000, 20), []);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn, now: () => NOW + 1e10 }));
+  assert.equal(annotate.calls.length, 1, "an unknown outcome was retried on its own");
+});
+
+// ---- 5. the live re-check, and the asymmetry between the two actions ----
+
+for (const [why, patch] of [
+  ["reopened", { status: "running" as const }],
+  ["rescheduled", { status: "backlog" as const }],
+]) {
+  test(`a resolve whose task was ${why} is cancelled without asking the implementation`, async () => {
+    const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+    const task = mkSwept();
+    const { registry, sources } = setup(s, task);
+    makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+    // Deliver the annotate so the resolve is the row a later tick claims.
+    settleWriteback(rows()[0]!.id, "delivered", {}, NOW);
+
+    registry.upsertTask({ ...task, ...(patch as Partial<Task>) });
+    const resolve = spy(delivered);
+    await drainWritebacks(
+      registry,
+      deps({ sources, resolve: resolve.fn, now: () => NOW + SETTLE }),
+    );
+
+    assert.deepEqual(resolve.calls, [], "an issue was closed for work that had resumed");
+    assert.equal(rows()[1]!.state, "cancelled");
+    assert.match(rows()[1]!.last_error!, /not finished|is /);
+  });
+}
+
+test("a resolve whose task was deleted is cancelled - its completion cannot be confirmed", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  settleWriteback(rows()[0]!.id, "delivered", {}, NOW);
+
+  openDb().exec("DELETE FROM tasks");
+  const fresh = new Registry();
+  const resolve = spy(delivered);
+  await drainWritebacks(fresh, deps({ sources, resolve: resolve.fn, now: () => NOW + SETTLE }));
+  assert.deepEqual(resolve.calls, []);
+  assert.equal(rows()[1]!.state, "cancelled");
+});
+
+// The other side of that asymmetry, and it is deliberate. "A pull request opened for this"
+// was true when it was observed and stays true; the comment is worth posting whatever
+// became of the task afterwards - which is also what makes the payload a snapshot.
+test("an annotate whose task was deleted still delivers, from the snapshot", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+
+  openDb().exec("DELETE FROM tasks");
+  const annotate = spy(delivered);
+  await drainWritebacks(new Registry(), deps({ sources, annotate: annotate.fn }));
+
+  assert.equal(annotate.calls.length, 1);
+  assert.equal(annotate.calls[0]!.taskTitle, "Fix the parser");
+  assert.equal(rows()[0]!.state, "delivered");
+});
+
+test("a trigger switched off between the observation and the tick cancels the delivery", async () => {
+  const on = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry } = setup(on, task);
+  makeWritebackEnqueuer(registry, deps({ sources: () => [on] })).completed(task);
+
+  const off = mkSource();
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources: () => [off], annotate: annotate.fn }));
+  assert.deepEqual(annotate.calls, []);
+  assert.equal(rows()[0]!.state, "cancelled");
+  assert.match(rows()[0]!.last_error!, /switched off/);
+});
+
+test("a source removed between the observation and the tick cancels the delivery", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources: () => [s] })).completed(task);
+
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources: () => [], annotate: annotate.fn }));
+  assert.deepEqual(annotate.calls, []);
+  assert.equal(rows()[0]!.state, "cancelled");
+  assert.match(rows()[0]!.last_error!, /no longer configured/);
+});
+
+// A payload this build cannot read will never deliver. Settled rather than left pending, or
+// it would be re-claimed on every tick for the rest of the daemon's life.
+test("a delivery whose stored details cannot be read is failed rather than retried forever", async () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  openDb().exec(`UPDATE task_source_writeback SET payload = 'not json'`);
+
+  const annotate = spy(delivered);
+  await drainWritebacks(registry, deps({ sources, annotate: annotate.fn }));
+  assert.deepEqual(annotate.calls, []);
+  assert.equal(rows()[0]!.state, "failed");
+  assert.deepEqual(claimDueWritebacks(NOW + 86_400_000, 20), []);
+});
+
+// ---- 6. the operator's controls over the queue ----
+
+test("the queue reports what is waiting, what failed, and what nobody can vouch for", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  settleWriteback(rows()[0]!.id, "delivered", { lastDetail: "commented" }, NOW);
+  settleWriteback(rows()[1]!.id, "failed", { lastError: "gh refused: nope" }, NOW + 1);
+
+  const status = countWritebacks("src-1");
+  assert.equal(status.delivered, 1);
+  assert.equal(status.failed, 1);
+  assert.equal(status.pending, 0);
+  assert.equal(status.lastDeliveredAt, NOW);
+  assert.match(status.lastError!, /nope/);
+  // A different source's queue is a different queue.
+  assert.equal(countWritebacks("src-2").failed, 0);
+});
+
+test("retry moves failed rows back, and leaves unknown ones alone unless asked", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: true } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  settleWriteback(rows()[0]!.id, "failed", { attempts: 6, lastError: "nope" }, NOW);
+  settleWriteback(rows()[1]!.id, "unknown", { attempts: 1, lastError: "no answer" }, NOW);
+
+  assert.equal(retryWritebacks("src-1", false, NOW), 1);
+  assert.equal(rows()[0]!.state, "pending");
+  assert.equal(rows()[0]!.attempts, 0, "the retried row kept its exhausted attempt count");
+  assert.equal(rows()[1]!.state, "unknown", "an unknown outcome was retried without being asked");
+
+  // The second flag is an operator asserting they have gone and looked upstream.
+  assert.equal(retryWritebacks("src-1", true, NOW), 1);
+  assert.equal(rows()[1]!.state, "pending");
+});
+
+test("a cancelled delivery is not resurrected by either retry flag", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  settleWriteback(rows()[0]!.id, "cancelled", { lastError: "switched off" }, NOW);
+  assert.equal(retryWritebacks("src-1", true, NOW), 0);
+  assert.equal(rows()[0]!.state, "cancelled");
+});
+
+test("discarding a queue drops that source's rows and nobody else's", () => {
+  const s = mkSource({ writeback: { onPrOpened: false, onCompleted: true, resolve: false } });
+  const task = mkSwept();
+  const { registry, sources } = setup(s, task);
+  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+  enqueueWriteback(
+    {
+      sourceId: "src-2",
+      externalId: "acme/demo#8",
+      signal: "task-completed",
+      action: "annotate",
+      dedupeKey: "t2:1",
+      taskId: "t2",
+      notice: {
+        signal: "task-completed",
+        action: "annotate",
+        externalId: "acme/demo#8",
+        externalUrl: null,
+        taskTitle: "Other",
+        prUrl: null,
+        repoRoot: "/repo",
+        outcome: null,
+        observedAt: NOW,
+      },
+      nextAt: NOW,
+    },
+    NOW,
+  );
+
+  assert.equal(discardWritebacks("src-1"), 1);
+  assert.equal(rows().length, 1);
+  assert.equal(countWritebacks("src-2").pending, 1);
+});
+
+// ---- the migration ----
+//
+// The table arrives in the schema block as `CREATE TABLE IF NOT EXISTS`, with its indexes
+// beside it, so an existing database gains it by opening - no `addColumn`, no backfill, no
+// ordering to get wrong. Asserted by taking it away from a database that has everything
+// else and opening again, which is exactly the shape of an upgrade.
+test("an existing database gains the ledger, and its indexes, by opening", () => {
+  const db = openDb();
+  db.exec("DROP TABLE task_source_writeback");
+  closeDb();
+
+  const upgraded = openDb();
+  const found = upgraded
+    .prepare(
+      `SELECT name FROM sqlite_master
+        WHERE name IN ('task_source_writeback', 'idx_writeback_identity', 'idx_writeback_due')
+        ORDER BY name`,
+    )
+    .all() as unknown as Array<{ name: string }>;
+  assert.deepEqual(found.map((r) => r.name), [
+    "idx_writeback_due",
+    "idx_writeback_identity",
+    "task_source_writeback",
+  ]);
+
+  // And it works: the identity index is what makes a second observation free, so a table
+  // that came back without it would be a table that silently duplicates every comment.
+  const notice: WritebackNotice = {
+    signal: "task-completed",
+    action: "annotate",
+    externalId: "acme/demo#7",
+    externalUrl: null,
+    taskTitle: "T",
+    prUrl: null,
+    repoRoot: "/repo",
+    outcome: null,
+    observedAt: NOW,
+  };
+  const row = {
+    sourceId: "src-1",
+    externalId: "acme/demo#7",
+    signal: "task-completed" as const,
+    action: "annotate" as const,
+    dedupeKey: "t1:1",
+    taskId: "t1",
+    notice,
+    nextAt: NOW,
+  };
+  assert.equal(enqueueWriteback(row, NOW), true);
+  assert.equal(enqueueWriteback(row, NOW), false);
+});
+
+// ---- the trigger: a pull request becoming a task's ----
+//
+// The other half of `pr-opened`, and the half the enqueuer cannot prove on its own: the
+// Registry has to ANNOUNCE the association, once, from the two places the durable record
+// actually gains a pull request. Driven through `reconcilePrs` / `reconcileRepoPrs` rather
+// than by emitting the event by hand, because what is being tested is that those functions
+// fire it - a hand-emitted event would prove only that a listener can be called.
+
+const PR_PRIMARY = "https://github.com/acme/demo/pull/9";
+const PR_EXTRA = "https://github.com/acme/other/pull/3";
+
+function discovered(id: string, cwd: string): DiscoveredSession {
+  return {
+    syntheticId: id,
+    agent: "claude",
+    name: `agent-${id}`,
+    nameSource: "process",
+    cwd,
+    gitBranch: "feat/work",
+    gitRoot: "/repo",
+    repoRoot: "/repo",
+    pid: 100,
+    tty: null,
+    terminals: [],
+    startedAt: 0,
+  };
+}
+
+function extraEntry(over: Partial<TaskRepoEntry> = {}): TaskRepoEntry {
+  return {
+    repoRoot: "/other",
+    worktreePath: "/wt/linked-1",
+    branch: "feat/work",
+    provider: "git",
+    worktreeLeaseId: null,
+    baseSha: "b".repeat(40),
+    prUrl: null,
+    prState: null,
+    mergedAt: null,
+    ...over,
+  };
+}
+
+/** A live session bound to a running task, with one attached repository. */
+function linkedFixture(extras: TaskRepoEntry[] = []) {
+  const registry = new Registry();
+  const id = "linked";
+  const cwd = "/wt/linked-0";
+  registry.applyDiscovery([discovered(id, cwd)]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `${id}-episode`,
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask(
+    mkTask({
+      id: "t1",
+      title: "Fix the parser",
+      status: "running",
+      sessionId: id,
+      repoRoot: "/repo",
+      worktreePath: cwd,
+      branch: "feat/work",
+      provider: "git",
+      baseSha: "a".repeat(40),
+      extraRepos: extras,
+      source: {
+        sourceId: "src-1",
+        externalId: "acme/demo#7",
+        url: "https://github.com/acme/demo/issues/7",
+      },
+    }),
+  );
+  registry.bindTaskToWorkEpisode("t1", id);
+  const episode = registry.workEpisodeForSession(id)!;
+  const seen: TaskPrLinkedEvent[] = [];
+  registry.onTaskPrLinked((e) => seen.push(e));
+  return { registry, id, episode, seen };
+}
+
+test("the registry announces a pull request that first became a task's, and only once", () => {
+  const f = linkedFixture();
+  const match = {
+    url: PR_PRIMARY,
+    number: 9,
+    state: "open" as const,
+    checks: null,
+    branch: "feat/work",
+    agentSessionId: `${f.id}-episode`,
+    episodeId: f.episode.episodeId,
+    createdAt: f.episode.startedAt,
+    mergedAt: null,
+    headSha: "head",
+    worktreeHeadSha: "head",
+  };
+  f.registry.reconcilePrs(new Map([[f.id, match]]), new Set());
+
+  assert.equal(f.seen.length, 1);
+  assert.deepEqual(
+    { taskId: f.seen[0]!.taskId, repoRoot: f.seen[0]!.repoRoot, prUrl: f.seen[0]!.prUrl },
+    { taskId: "t1", repoRoot: "/repo", prUrl: PR_PRIMARY },
+  );
+
+  // The poller keeps reporting the same pull request on every tick. A second observation of
+  // an association that already exists is not news, and announcing it again would put the
+  // ledger's identity index in the position of being the only thing between an operator and
+  // a comment per poll.
+  f.registry.reconcilePrs(new Map([[f.id, match]]), new Set());
+  assert.equal(f.seen.length, 1, "a re-observed pull request was announced twice");
+});
+
+// The per-repository twin, and the reason `TaskPrLinked` carries a repoRoot at all: a
+// multi-repo task opened a pull request in each of its repositories, and an upstream item
+// that named only the primary's would be a report that is quietly incomplete.
+test("the registry announces an attached repository's pull request under that repository", () => {
+  const f = linkedFixture([extraEntry()]);
+  const target = f.registry
+    .extraRepoPrPollTargets()
+    .find((t) => t.taskId === "t1" && t.repoRoot === "/other");
+  assert.ok(target, "the attached repo is polled");
+
+  f.registry.reconcileRepoPrs(
+    new Map([[
+      target.key,
+      {
+        url: PR_EXTRA,
+        number: 3,
+        state: "open" as const,
+        checks: null,
+        branch: target.branch,
+        agentSessionId: target.agentSessionId,
+        episodeId: target.episodeId,
+        createdAt: f.episode.startedAt,
+        mergedAt: null,
+        headSha: "extra-head",
+        worktreeHeadSha: "extra-head",
+      },
+    ]]),
+    new Set(),
+  );
+
+  assert.equal(f.seen.length, 1);
+  assert.deepEqual(
+    { taskId: f.seen[0]!.taskId, repoRoot: f.seen[0]!.repoRoot, prUrl: f.seen[0]!.prUrl },
+    { taskId: "t1", repoRoot: "/other", prUrl: PR_EXTRA },
+  );
+});
+
+// A session working outside a task has no upstream item, so there is nothing to announce.
+test("a pull request on a session bound to no task announces nothing", () => {
+  const f = linkedFixture();
+  openDb().exec("DELETE FROM task_work_episode_bindings");
+  f.registry.reconcilePrs(
+    new Map([[f.id, {
+      url: PR_PRIMARY,
+      number: 9,
+      state: "open" as const,
+      checks: null,
+      branch: "feat/work",
+      agentSessionId: `${f.id}-episode`,
+      episodeId: f.episode.episodeId,
+      createdAt: f.episode.startedAt,
+      mergedAt: null,
+      headSha: "head",
+      worktreeHeadSha: "head",
+    }]]),
+    new Set(),
+  );
+  assert.deepEqual(f.seen, []);
+});

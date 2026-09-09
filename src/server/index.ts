@@ -65,6 +65,10 @@ import { reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
+import {
+  makeWritebackEnqueuer,
+  startWritebackWorker,
+} from "./task-sources/writeback.ts";
 import { restorePipelineProjection, startPipelineWatcher } from "./pipelines/index.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { ScheduleManager } from "./schedules/manager.ts";
@@ -486,6 +490,19 @@ const stopSkillsReloader = startSkillsReloader(registry);
 // ingest writes to the DB and the daemon is the only writer; needs none of the reload
 // loop's pane gate because it never types (see src/shared/task-source.ts).
 const stopTaskSources = startTaskSourceSweeper(tasks, () => publishSettingsStatus(registry));
+// The other direction: when a swept task gets a pull request or finishes, say so on the
+// item it came from. Two observation points feed a durable ledger and one worker drains
+// it, because both of those points are synchronous listeners that must not throw and
+// cannot await a subprocess - see `task-sources/writeback.ts`.
+//
+// Inert on the shipped configuration, and that is structural rather than lucky: a task
+// with no `source` is nearly every task, and all three write-back switches ship off per
+// source, so an installation that has not opted in enqueues nothing and the worker's tick
+// is one indexed query.
+const writebackEnqueuer = makeWritebackEnqueuer(registry);
+registry.onTaskPrLinked((e) => writebackEnqueuer.prLinked(e));
+tasks.registerWritebackEnqueuer(writebackEnqueuer);
+const stopWriteback = startWritebackWorker(registry);
 // Observes an external SDLC engine's own state files for the repositories an operator has
 // consented to, and projects them. In the daemon for the sweeper's two reasons: it writes
 // to the DB, and the port bind guarantees exactly one of it.
@@ -725,6 +742,7 @@ async function shutdown(): Promise<void> {
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();
+  stopWriteback();
   stopPipelines();
   stopSchedules();
   // Closes the library watcher and cancels the cadence. A pass already in flight is left to

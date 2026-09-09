@@ -530,7 +530,7 @@ LIMIT 20;
 
           <div class="catalog">
             <details class="family" open>
-              <summary><strong>Tasks and work episodes</strong><span>11 tables</span></summary>
+              <summary><strong>Tasks and work episodes</strong><span>12 tables</span></summary>
               <div class="table-list">
                 <div class="table-row"><code>tasks</code><p>The backlog and execution record: intent, harness choices, repository and worktree coordinates, current session binding, source or schedule provenance, status, and outcome.</p></div>
                 <div class="table-row"><code>task_repos</code><p>The secondary repositories attached to a multi-repo task, one row each, with the worktree, branch, provider and baseline commit provisioned for it. The primary repo is never in here - it stays on the tasks row - so a single-repo task has no rows at all.</p></div>
@@ -542,6 +542,7 @@ LIMIT 20;
                 <div class="table-row"><code>retro_followups</code><p>The one-to-one link from a completed source task and merged work episode to its separate post-merge retro task. The pair is unique so retries and duplicate clicks reuse the same follow-up without reopening or mutating the source task.</p></div>
                 <div class="table-row"><code>task_worktree_retention</code><p>The durable Git-visible activity clock for a terminal task that still holds a checkout: the resource generation the observation was taken against, an aggregate fingerprint across the primary and every attached worktree, when that fingerprint last changed, and the 30-day deadline it implies. A row appears at the first successful observation, never from a task timestamp, and an unreadable checkout records a bounded reason without moving the deadline.</p></div>
                 <div class="table-row"><code>task_source_seen</code><p>A durable deduplication ledger for external task sources. Its rows outlive deleted tasks so a deleted imported item stays deleted.</p></div>
+                <div class="table-row"><code>task_source_writeback</code><p>The delivery ledger for notes owed back to the external item a task was swept from: a comment when a pull request is first linked, a comment when the task completes, and optionally a resolve held for a settle window. Rows outlive the task and carry a snapshot rather than a reference, so a task deleted between the observation and the attempt still reports what was true. A unique key over the source, the item, the signal, the action and a per-cycle dedupe key makes a re-observation, a repeated tick and a restart all free.</p></div>
                 <div class="table-row"><code>session_agent_bindings</code><p>Maps a transient synthetic session ID to the harness-native agent session ID used as a durable note and queue key.</p></div>
               </div>
             </details>

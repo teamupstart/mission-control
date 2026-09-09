@@ -105,6 +105,14 @@ import {
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
 import { nextShipRecoveryAt } from "./foreman/ship-shepherd.ts";
 import { readPersistedEnum } from "@shared/schedules.ts";
+import {
+  WRITEBACK_ACTIONS,
+  WRITEBACK_SIGNALS,
+  type TaskSourceWritebackStatus,
+  type WritebackAction,
+  type WritebackNotice,
+  type WritebackSignal,
+} from "@shared/task-source.ts";
 import { HUMAN_REVIEW_STATUSES, isHumanResolvedReview } from "@shared/review-item.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 import {
@@ -1851,6 +1859,56 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       seen_at     INTEGER NOT NULL,
       PRIMARY KEY (source_id, external_id)
     );
+
+    -- One owed write-back to an external item: a comment to post, an issue to close.
+    --
+    -- A LEDGER rather than a listener, and three facts force that. The two places a
+    -- write-back is observed - a pull request first linked to a task, and a task
+    -- completing - are synchronous and on hot paths that are documented "listeners must
+    -- not throw", so neither can await a subprocess. An external write fails routinely
+    -- (gh signed out, the VPN down, Jira 503) and a signal that fires once and is lost
+    -- is a link that silently never appears. And a completion is REVERSIBLE:
+    -- settleIfEpisodeFinished concludes a task on an idle agent and reopenIfWorkResumed
+    -- puts it back, so a resolve has to wait out a settle window and re-check.
+    --
+    -- A row OUTLIVES the task that caused it, and holds no reference to one: payload is
+    -- a snapshot, so a task deleted between the observation and the attempt still delivers
+    -- what was true when it was observed. Same stance as task_source_seen above, for a
+    -- different reason - there it is "a task you deleted stays deleted", here it is "a
+    -- fact you observed stays true". task_id is provenance and is never joined on.
+    CREATE TABLE IF NOT EXISTS task_source_writeback (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id    TEXT NOT NULL,      -- TaskSourceInstance.id
+      external_id  TEXT NOT NULL,      -- the item upstream, e.g. owner/repo#123 or MC-431
+      signal       TEXT NOT NULL,      -- pr-opened | task-completed
+      action       TEXT NOT NULL,      -- annotate | resolve
+      -- What makes this delivery ONE delivery: the pull request url for pr-opened, and the
+      -- task id PLUS its completedAt for task-completed. The instant is load-bearing rather
+      -- than decoration. A completion inferred from an idle agent can be reversed by
+      -- reopenIfWorkResumed, and the task then completes again for real. Keyed on the task id
+      -- alone, that second, GENUINE completion collides with the first cycle's row - whatever
+      -- state it reached - and ON CONFLICT DO NOTHING discards it in silence, so the issue is
+      -- never resolved at all. Keyed with the instant, each completion cycle is its own
+      -- delivery, while a repeated observation of the SAME completion still dedupes to
+      -- nothing. NOT NULL and never empty, because SQLite treats NULLs as DISTINCT inside a
+      -- unique index, and a nullable half would let the same comment be enqueued twice.
+      dedupe_key   TEXT NOT NULL,
+      task_id      TEXT,               -- provenance only; never joined on
+      payload      TEXT NOT NULL,      -- the WritebackNotice, as JSON
+      state        TEXT NOT NULL,      -- pending | delivered | failed | unknown | cancelled
+      attempts     INTEGER NOT NULL DEFAULT 0,
+      next_at      INTEGER NOT NULL,   -- earliest attempt; the settle window lives here
+      last_error   TEXT,
+      last_detail  TEXT,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
+    -- The idempotency guarantee, and what makes a restart, a re-observed pull request and a
+    -- repeated poller tick all cost nothing: enqueue is INSERT ... ON CONFLICT DO NOTHING,
+    -- so a second observation of the same fact is the normal case rather than an error.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_writeback_identity
+      ON task_source_writeback(source_id, external_id, signal, action, dedupe_key);
+    CREATE INDEX IF NOT EXISTS idx_writeback_due ON task_source_writeback(state, next_at);
 
     -- API-equivalent estimates and token usage, one row per source event or export window.
     --
@@ -7500,6 +7558,327 @@ export function forgetTaskSourceSeen(sourceId: string): number {
   const before = countTaskSourceSeen(sourceId);
   openDb().prepare(`DELETE FROM task_source_seen WHERE source_id = ?`).run(sourceId);
   return before;
+}
+
+// ---- the write-back delivery ledger ----
+//
+// Read the `task_source_writeback` CREATE TABLE above before touching any of this. These
+// helpers are plain SQL over that table and decide nothing: which rows are owed, what a
+// refusal means, when a resolve may fire, and what an unknown outcome forbids all live in
+// `src/server/task-sources/writeback.ts`, which is the only caller on the write path.
+
+/**
+ * Where one owed delivery has got to.
+ *
+ * **APPEND-ONLY**, persisted in `state`. The five are not degrees of failure - they are
+ * four different things a caller must do next:
+ *
+ *  - `pending`: owed. Either never attempted, or backing off, or waiting out a settle
+ *    window. `next_at` says when it may be tried.
+ *  - `delivered`: upstream took it.
+ *  - `failed`: refused until the attempts ran out. NOTHING was written, so a retry is safe.
+ *  - `unknown`: it MAY have landed and we cannot tell. Never retried automatically; an
+ *    operator retrying one is asserting they have gone and looked. See `WritebackResult`.
+ *  - `cancelled`: the world moved on before it was spent - the trigger was switched off,
+ *    the kind lost the capability, or the task that was about to be resolved reopened.
+ */
+export const WRITEBACK_STATES = [
+  "pending",
+  "delivered",
+  "failed",
+  "unknown",
+  "cancelled",
+] as const;
+export type WritebackState = (typeof WRITEBACK_STATES)[number];
+
+/** One ledger row, as the worker reads it. */
+export interface WritebackRow {
+  id: number;
+  sourceId: string;
+  externalId: string;
+  signal: WritebackSignal;
+  action: WritebackAction;
+  dedupeKey: string;
+  /** Provenance. Present for both signals; never joined on. */
+  taskId: string | null;
+  /**
+   * The snapshot to deliver, or null when the stored payload cannot be read as one.
+   *
+   * Null rather than a throw, and rather than dropping the row: a payload this build
+   * cannot parse is a delivery that will never succeed, and the worker has to be able to
+   * settle it `failed` and say so. Skipping it silently would leave it `pending` forever,
+   * re-claimed on every tick.
+   */
+  notice: WritebackNotice | null;
+  state: WritebackState;
+  attempts: number;
+  nextAt: number;
+}
+
+/** What one row is enqueued with. Everything else is the table's own default. */
+export interface WritebackEnqueueRow {
+  sourceId: string;
+  externalId: string;
+  signal: WritebackSignal;
+  action: WritebackAction;
+  dedupeKey: string;
+  taskId: string | null;
+  notice: WritebackNotice;
+  /** Earliest attempt. `now` for an annotate; a settle window later for a resolve. */
+  nextAt: number;
+}
+
+interface WritebackDbRow {
+  id: number;
+  source_id: string;
+  external_id: string;
+  signal: string;
+  action: string;
+  dedupe_key: string;
+  task_id: string | null;
+  payload: string;
+  state: string;
+  attempts: number;
+  next_at: number;
+}
+
+/**
+ * Read a stored payload as a notice, or null.
+ *
+ * Strict about the fields a delivery is BUILT from and lenient about nothing, because
+ * every one of them ends up in text somebody else reads: an item id, a title, a link. A
+ * row that cannot supply them has nothing honest to say upstream.
+ */
+const asText = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+function readWritebackNotice(json: string): WritebackNotice | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const n = parsed as Record<string, unknown>;
+  const signal = readPersistedEnum(WRITEBACK_SIGNALS, asText(n.signal));
+  const action = readPersistedEnum(WRITEBACK_ACTIONS, asText(n.action));
+  if (!signal || !action) return null;
+  if (typeof n.externalId !== "string" || n.externalId.length === 0) return null;
+  if (typeof n.taskTitle !== "string" || typeof n.repoRoot !== "string") return null;
+  return {
+    signal,
+    action,
+    externalId: n.externalId,
+    externalUrl: typeof n.externalUrl === "string" ? n.externalUrl : null,
+    taskTitle: n.taskTitle,
+    prUrl: typeof n.prUrl === "string" ? n.prUrl : null,
+    repoRoot: n.repoRoot,
+    outcome: typeof n.outcome === "string" ? n.outcome : null,
+    observedAt: typeof n.observedAt === "number" ? n.observedAt : 0,
+  };
+}
+
+function toWritebackRow(r: WritebackDbRow): WritebackRow {
+  // The row was written by this build's own enqueue, so these read back - but they come
+  // off disk, and a row written by a build that knew a signal this one does not must not
+  // be coerced into a verb it never asked for. An unreadable half therefore lands as a
+  // NULL notice, which the worker settles `failed` and says so, rather than as a
+  // plausible-looking delivery against the wrong item.
+  const signal = readPersistedEnum(WRITEBACK_SIGNALS, r.signal);
+  const action = readPersistedEnum(WRITEBACK_ACTIONS, r.action);
+  return {
+    id: r.id,
+    sourceId: r.source_id,
+    externalId: r.external_id,
+    signal: signal ?? "task-completed",
+    action: action ?? "annotate",
+    dedupeKey: r.dedupe_key,
+    taskId: r.task_id,
+    notice: signal && action ? readWritebackNotice(r.payload) : null,
+    state: readPersistedEnum(WRITEBACK_STATES, r.state) ?? "pending",
+    attempts: r.attempts,
+    nextAt: r.next_at,
+  };
+}
+
+/**
+ * Owe one write-back, and report whether this observation was the first.
+ *
+ * `ON CONFLICT DO NOTHING` against the identity index, so a re-observed pull request, a
+ * repeated poller tick and a daemon restart all cost one refused insert and change
+ * nothing - including a row that has already been delivered, failed, or cancelled, which
+ * must not be resurrected by observing the same fact again.
+ *
+ * The boolean is for logging, not for control flow: "first time we saw this" is worth a
+ * line, and "the two hundredth tick saw it again" is not.
+ */
+export function enqueueWriteback(row: WritebackEnqueueRow, now = Date.now()): boolean {
+  const res = openDb()
+    .prepare(
+      `INSERT INTO task_source_writeback
+         (source_id, external_id, signal, action, dedupe_key, task_id, payload,
+          state, attempts, next_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+       ON CONFLICT(source_id, external_id, signal, action, dedupe_key) DO NOTHING`,
+    )
+    .run(
+      row.sourceId,
+      row.externalId,
+      row.signal,
+      row.action,
+      row.dedupeKey,
+      row.taskId,
+      JSON.stringify(row.notice),
+      row.nextAt,
+      now,
+      now,
+    );
+  return Number(res.changes) > 0;
+}
+
+/**
+ * The rows due right now, at most one per `(source_id, external_id)`.
+ *
+ * That cap is what orders an annotate before the resolve for the same item without any
+ * dependency machinery: both rows are enqueued together, the annotate has the lower `id`,
+ * so it is the one claimed and the resolve waits for the next tick. It also stops one
+ * item taking several of a tick's slots, and stops two writes racing at the same issue.
+ *
+ * Ordered by `id` - insertion order - because that is the order the facts were observed.
+ */
+export function claimDueWritebacks(now: number, limit: number): WritebackRow[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM task_source_writeback AS w
+        WHERE w.state = 'pending'
+          AND w.next_at <= ?
+          AND w.id = (
+            SELECT MIN(w2.id) FROM task_source_writeback AS w2
+             WHERE w2.source_id = w.source_id
+               AND w2.external_id = w.external_id
+               AND w2.state = 'pending'
+               AND w2.next_at <= ?
+          )
+        ORDER BY w.id
+        LIMIT ?`,
+    )
+    .all(now, now, limit) as unknown as WritebackDbRow[];
+  return rows.map(toWritebackRow);
+}
+
+/** How one attempt ended. `nextAt` moves only when the row stays `pending`. */
+export interface WritebackSettlement {
+  attempts?: number;
+  nextAt?: number;
+  lastError?: string | null;
+  lastDetail?: string | null;
+}
+
+/** Record one attempt's outcome. The single write that moves a row out of a tick. */
+export function settleWriteback(
+  id: number,
+  state: WritebackState,
+  patch: WritebackSettlement = {},
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(
+      `UPDATE task_source_writeback
+          SET state = ?,
+              attempts = COALESCE(?, attempts),
+              next_at = COALESCE(?, next_at),
+              last_error = ?,
+              last_detail = ?,
+              updated_at = ?
+        WHERE id = ?`,
+    )
+    .run(
+      state,
+      patch.attempts ?? null,
+      patch.nextAt ?? null,
+      patch.lastError ?? null,
+      patch.lastDetail ?? null,
+      now,
+      id,
+    );
+}
+
+/** One source's queue, as the panel reads it. Derived on every read, never cached. */
+export function countWritebacks(sourceId: string): TaskSourceWritebackStatus {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT state, COUNT(*) AS n FROM task_source_writeback
+        WHERE source_id = ? GROUP BY state`,
+    )
+    .all(sourceId) as unknown as Array<{ state: string; n: number }>;
+  const by = new Map(rows.map((r) => [r.state, r.n]));
+  // The most recent failure of either kind, so the panel's one line can name a reason
+  // whether the row exhausted its retries or stopped short of a guess.
+  const err = db
+    .prepare(
+      `SELECT last_error FROM task_source_writeback
+        WHERE source_id = ? AND state IN ('failed', 'unknown') AND last_error IS NOT NULL
+        ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    )
+    .get(sourceId) as { last_error: string } | undefined;
+  const delivered = db
+    .prepare(
+      `SELECT updated_at FROM task_source_writeback
+        WHERE source_id = ? AND state = 'delivered'
+        ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    )
+    .get(sourceId) as { updated_at: number } | undefined;
+  return {
+    sourceId,
+    pending: by.get("pending") ?? 0,
+    failed: by.get("failed") ?? 0,
+    unknown: by.get("unknown") ?? 0,
+    delivered: by.get("delivered") ?? 0,
+    lastError: err?.last_error ?? null,
+    lastDeliveredAt: delivered?.updated_at ?? null,
+  };
+}
+
+/**
+ * Put this source's stalled rows back in the queue, and report how many moved.
+ *
+ * Two flags rather than one, and `unknown` is behind the second on purpose: retrying a
+ * failure costs nothing, because a failure is proof that nothing was written. Retrying an
+ * unknown may write a second comment, or re-close an issue somebody deliberately
+ * reopened. So including them is an operator asserting they have looked upstream, and
+ * that assertion has to be something they said rather than something a default did.
+ *
+ * `cancelled` is never retried by either flag: the world moved on, and re-running a
+ * delivery against a trigger that is off is not a retry, it is a new decision.
+ */
+export function retryWritebacks(sourceId: string, includeUnknown: boolean, now = Date.now()): number {
+  const states = includeUnknown ? ["failed", "unknown"] : ["failed"];
+  const res = openDb()
+    .prepare(
+      `UPDATE task_source_writeback
+          SET state = 'pending', attempts = 0, next_at = ?, last_error = NULL, updated_at = ?
+        WHERE source_id = ? AND state IN (${states.map(() => "?").join(", ")})`,
+    )
+    .run(now, now, sourceId, ...states);
+  return Number(res.changes);
+}
+
+/**
+ * Drop this source's whole queue, and report how many rows went.
+ *
+ * The counterpart to "Forget seen items", for the operator who turned a switch on by
+ * mistake - and it is also what a REMOVED source's rows go through, for the reason that
+ * one does: rows kept past a removal would still be there if the source were re-added
+ * under the same id, and the identity index would then silently swallow the new
+ * deliveries as duplicates of deliveries nobody remembers. Deleted rather than marked
+ * `cancelled` for exactly that reason.
+ */
+export function discardWritebacks(sourceId: string): number {
+  const res = openDb()
+    .prepare(`DELETE FROM task_source_writeback WHERE source_id = ?`)
+    .run(sourceId);
+  return Number(res.changes);
 }
 
 // ---- pipelines: the projection of an external engine's own files ----

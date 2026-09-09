@@ -371,6 +371,21 @@ export interface TaskPrMerged {
   mergedAt: number;
 }
 
+/**
+ * A pull request that has just become a TASK's, in one of its repositories.
+ *
+ * Carries a repository rather than a session, because the consumer's question is which
+ * upstream item to write onto and a multi-repo task legitimately owes one note per repo.
+ */
+export interface TaskPrLinked {
+  taskId: string;
+  /** The repository this pull request is in - the primary's, or an attached repo's. */
+  repoRoot: string;
+  prUrl: string;
+  /** When the association was made, not when the pull request was opened. */
+  observedAt: number;
+}
+
 /** An open-or-merged PR the poller matched to a session's current branch. */
 export type PrMatch = {
   url: string;
@@ -1492,6 +1507,30 @@ export class Registry extends EventEmitter {
   onTaskPrMerged(fn: (e: TaskPrMerged) => void): () => void {
     this.on("task_pr_merged", fn);
     return () => this.off("task_pr_merged", fn);
+  }
+
+  /**
+   * Fired when a pull request was FIRST associated with a task's work episode.
+   *
+   * Emitted from `acceptPrForEpisode` and `acceptRepoPrForEpisode`, which already compute
+   * `firstAssociation` and are the two places the durable record gains a pull request -
+   * and emitted only AFTER that durable write succeeded, because a signal about a record
+   * that was not written is a comment about a link that does not exist. Once per (task,
+   * repository): a second observation of the same url is not news, and the per-repo
+   * emission is what makes a multi-repo task announce each of its pull requests rather
+   * than only the primary's.
+   *
+   * Deliberately NOT `pr_opened` above. That signal is the hook's optimistic "the agent
+   * ran `gh pr create`" evidence, scoped to a SESSION and carrying no task binding - which
+   * is exactly right for the Inspector's per-PR adoption ledger and wrong here, where the
+   * question is which TASK, and therefore which upstream item, this pull request belongs
+   * to.
+   *
+   * Listeners must not throw; this runs inside the PR poller's reconciliation.
+   */
+  onTaskPrLinked(fn: (e: TaskPrLinked) => void): () => void {
+    this.on("task_pr_linked", fn);
+    return () => this.off("task_pr_linked", fn);
   }
 
   /**
@@ -4341,6 +4380,28 @@ export class Registry extends EventEmitter {
     ) {
       return null;
     }
+    // AFTER the durable write, and only on a first association: this episode's record now
+    // holds a pull request it did not hold a moment ago, which is the fact. The task
+    // binding is read the same way `reconcilePrs` reads it, so a session working outside a
+    // task announces nothing.
+    if (firstAssociation) {
+      const binding = taskWorkEpisodeForSession(session.id);
+      // The TASK's own repoRoot in preference to the session's, because that is the one a
+      // task source was configured against and the one a multi-repo task's entries are
+      // spelled in. `session.repoRoot` is the same path for an ordinary worktree and is
+      // the fallback rather than the answer, since it is null outside a repo.
+      const repoRoot = binding
+        ? (this.tasks.get(binding.taskId)?.repoRoot ?? session.repoRoot)
+        : null;
+      if (binding && repoRoot && binding.episodeId === episode.episodeId) {
+        this.emit("task_pr_linked", {
+          taskId: binding.taskId,
+          repoRoot,
+          prUrl: match.url,
+          observedAt: at,
+        } satisfies TaskPrLinked);
+      }
+    }
     return {
       ...episode,
       branch: match.branch,
@@ -4539,6 +4600,18 @@ export class Registry extends EventEmitter {
       },
       at,
     );
+    // The per-repository twin of the primary's emission, and the reason `TaskPrLinked`
+    // carries a repoRoot at all: this task opened a pull request in each of its attached
+    // repositories, and an upstream item that named only one of them would be a report
+    // that is quietly incomplete. The target already knows which task it belongs to.
+    if (recorded && firstAssociation) {
+      this.emit("task_pr_linked", {
+        taskId: target.taskId,
+        repoRoot: target.repoRoot,
+        prUrl: match.url,
+        observedAt: at,
+      } satisfies TaskPrLinked);
+    }
     return recorded ? episode.episodeId : null;
   }
 

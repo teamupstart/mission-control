@@ -7,6 +7,9 @@ import type {
   SweepResult,
   TaskCandidate,
   TaskSourceImpl,
+  WritebackContext,
+  WritebackNotice,
+  WritebackResult,
 } from "@shared/task-source.ts";
 import { GithubIssuesConfigSchema, TASK_SOURCE_KIND_INFO } from "@shared/task-source.ts";
 import type { TaskPriority } from "@shared/types.ts";
@@ -23,9 +26,10 @@ import type { RunResult } from "../util/exec.ts";
 // secret that can leak, which is worth more than the flexibility of an API client.
 //
 // Nothing here writes to OUR database: `sweep` returns candidates for `ingest.ts` to
-// decide on, and `push` returns the ref GitHub minted for its own chokepoint to record.
-// That is what keeps this file a pure function over a subprocess's stdout, and testable
-// as one.
+// decide on, `push` returns the ref GitHub minted for its own chokepoint to record, and
+// `annotate` / `resolve` report what they managed to say for the write-back ledger to
+// record. That is what keeps this file a pure function over a subprocess's stdout, and
+// testable as one.
 
 /** How long one `gh` call may take before it is abandoned. */
 const GH_TIMEOUT_MS = 20_000;
@@ -357,6 +361,180 @@ async function push(
   return pushResultFrom(res, ctx, cfg.repo);
 }
 
+// ---- the write-back half: a note onto the issue a task was swept from ----
+//
+// Same CLI, same auth, same argv-array-to-execFile discipline as everything above: no
+// token is stored, no shell parses anything, and the interesting halves - which argv, and
+// how one run reads - are exported pure functions that need no subprocess to test.
+//
+// Where `push` CREATES, these two write onto an item somebody is already watching. The
+// consent for that is stored per source and re-checked by the worker; nothing here asks.
+
+/** What `gh` should be pointed at, and whether it needs telling which repository. */
+interface IssueTarget {
+  arg: string;
+  repo: string;
+}
+
+/**
+ * Address the issue this notice is about.
+ *
+ * From the ITEM's own id in preference to the source's `repo`, and for the reason
+ * `externalIdFor` composes that id from the URL rather than from the config: the id is
+ * stable, and a `repo` that was reconfigured (or left empty to resolve from origin) after
+ * the sweep would otherwise send a comment at a different repository than the one the
+ * issue is in. The configured `repo` is the fallback for the shape that carries none, and
+ * a bare URL is left to `gh` to resolve - passing `--repo` alongside a URL is the one
+ * combination `gh` refuses outright.
+ */
+export function issueTargetFor(cfg: GithubIssuesConfig, notice: WritebackNotice): IssueTarget {
+  const m = /^([^/\s]+\/[^#\s]+)#(\d+)$/.exec(notice.externalId);
+  if (m) return { arg: m[2]!, repo: m[1]! };
+  if (notice.externalUrl) return { arg: notice.externalUrl, repo: "" };
+  return { arg: notice.externalId, repo: cfg.repo };
+}
+
+/**
+ * The comment one write-back leaves on the issue.
+ *
+ * Short and factual, and it names Mission Control, because the person reading the thread
+ * is entitled to know what wrote this and why a machine is talking on their issue. Nothing
+ * about our internals goes in: no task id, no worktree, no status - the same restraint
+ * `PushDraft` imposes on the other outward verb, for the same reason.
+ */
+export function writebackCommentBody(notice: WritebackNotice): string {
+  const lines: string[] = [];
+  if (notice.signal === "pr-opened") {
+    lines.push("Mission Control opened a pull request for this issue.");
+    if (notice.prUrl) lines.push("", notice.prUrl);
+  } else {
+    lines.push("Mission Control finished the task for this issue.");
+    // The completion's OWN words when it left any. A completion with nothing to say gets
+    // no invented sentence - the reader can see the pull request, which is the fact.
+    if (notice.outcome?.trim()) lines.push("", notice.outcome.trim());
+    if (notice.prUrl) lines.push("", `Pull request: ${notice.prUrl}`);
+  }
+  lines.push("", `Task: ${notice.taskTitle}`);
+  return lines.join("\n");
+}
+
+/** The `gh issue comment` argv for this notice. */
+export function ghIssueCommentArgs(
+  cfg: GithubIssuesConfig,
+  notice: WritebackNotice,
+): string[] {
+  const target = issueTargetFor(cfg, notice);
+  return [
+    "issue",
+    "comment",
+    target.arg,
+    ...(target.repo ? ["--repo", target.repo] : []),
+    "--body",
+    writebackCommentBody(notice),
+  ];
+}
+
+/**
+ * Our stored close reason, in the spelling `gh` accepts.
+ *
+ * A MAPPING rather than a passthrough, and it is the whole reason the config stores our
+ * own enum. `gh issue close --reason` takes `completed` or `not planned` WITH A SPACE
+ * (gh 2.100: "Reason for closing: {completed|not planned|duplicate}"), and a persisted
+ * enum with a space in it is a value nobody would think to quote correctly for the rest of
+ * its life. Passing ours through unmapped is worse than a typo: every close a source is
+ * configured for fails identically until the ledger row exhausts its retries.
+ */
+export function ghCloseReason(stored: GithubIssuesConfig["closeReason"]): string {
+  return stored === "not-planned" ? "not planned" : "completed";
+}
+
+/** The `gh issue close` argv for this config and notice. */
+export function ghIssueCloseArgs(cfg: GithubIssuesConfig, notice: WritebackNotice): string[] {
+  const target = issueTargetFor(cfg, notice);
+  return [
+    "issue",
+    "close",
+    target.arg,
+    ...(target.repo ? ["--repo", target.repo] : []),
+    "--reason",
+    ghCloseReason(cfg.closeReason),
+  ];
+}
+
+/**
+ * Read one `gh` write-back run.
+ *
+ * The same ordering `githubIssueCreateOutcome` established, for the same reasons:
+ *
+ *  1. The child never reported its own exit (`outcomeUnknown`) - our timeout, the OOM
+ *     killer, a signal. GitHub may well have taken the request first, so this is
+ *     UNKNOWN and is never retried automatically.
+ *  2. An "already closed" answer is SUCCESS. The desired state holds; treating it as a
+ *     refusal would burn six retries reaching a state that is already true, and then
+ *     report a failure about an issue that is closed.
+ *  3. A non-zero exit otherwise is a retry-safe refusal - nothing was written.
+ *  4. Exit 0 is success.
+ *
+ * Process output never crosses this boundary on the success path, for the reason it does
+ * not there: `gh` error text can carry local filesystem paths. The caller's `detail` is
+ * what the panel shows instead.
+ */
+export function writebackResultFrom(res: RunResult, detail: string): WritebackResult {
+  if (res.outcomeUnknown) {
+    return {
+      error: "gh did not report back - the write may have landed; check GitHub before retrying",
+      outcomeUnknown: true,
+      detail: null,
+    };
+  }
+  const said = (res.stderr || res.stdout).trim();
+  if (res.code !== 0) {
+    if (/already closed/i.test(said)) {
+      return { error: null, outcomeUnknown: false, detail: "already closed" };
+    }
+    const why = (said.split("\n")[0] ?? "").slice(0, 1_000);
+    return {
+      error: `gh refused${why ? `: ${why}` : ""}`,
+      outcomeUnknown: false,
+      detail: null,
+    };
+  }
+  return { error: null, outcomeUnknown: false, detail };
+}
+
+/**
+ * Comment the notice onto its issue, from inside the source's checkout.
+ *
+ * `ctx.signal` is deliberately not read, for the reason `push` does not read it: by the
+ * time an abort could be observed `gh` has already run and the comment may exist, and
+ * `run()` has no cancellation parameter, so a signal check could only ever mislabel a
+ * completed action. `GH_TIMEOUT_MS` is the real bound.
+ */
+async function annotate(
+  cfg: GithubIssuesConfig,
+  notice: WritebackNotice,
+  ctx: WritebackContext,
+): Promise<WritebackResult> {
+  const res = await run(ghBin(), ghIssueCommentArgs(cfg, notice), {
+    cwd: ctx.repoRoot,
+    timeoutMs: GH_TIMEOUT_MS,
+  });
+  return writebackResultFrom(res, "commented");
+}
+
+/** Close the issue, with the reason this source is configured for. */
+async function resolve(
+  cfg: GithubIssuesConfig,
+  notice: WritebackNotice,
+  ctx: WritebackContext,
+): Promise<WritebackResult> {
+  const res = await run(ghBin(), ghIssueCloseArgs(cfg, notice), {
+    cwd: ctx.repoRoot,
+    timeoutMs: GH_TIMEOUT_MS,
+  });
+  return writebackResultFrom(res, `closed as ${ghCloseReason(cfg.closeReason)}`);
+}
+
 export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   // Spread rather than restated: the kind, the name and the blurb are the half the
   // settings panel renders in the browser, and it cannot import this file. The schema is
@@ -368,4 +546,7 @@ export const githubIssues: TaskSourceImpl<GithubIssuesConfig> = {
   // Present because the kind's `canPush` says so - the contract test holds the two
   // together in both directions.
   push,
+  // Likewise for `canAnnotate` / `canResolve`.
+  annotate,
+  resolve,
 };

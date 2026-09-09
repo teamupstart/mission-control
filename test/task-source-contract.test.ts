@@ -12,8 +12,12 @@ import {
 } from "../src/shared/task-source.ts";
 import {
   TASK_SOURCES,
+  annotateWith,
+  canAnnotateTo,
   canPushTo,
+  canResolveTo,
   pushToSource,
+  resolveWith,
   taskSourceKinds,
 } from "../src/server/task-sources/index.ts";
 
@@ -224,4 +228,123 @@ test("push parses config at the boundary and refuses an unusable blob as an erro
   assert.match(r.error!, /not valid for github-issues/);
   // Nothing was spawned, so a retry after fixing the config cannot duplicate anything.
   assert.equal(r.outcomeUnknown, false);
+});
+
+// ---- the write-back verbs ----
+//
+// Two more capability/verb pairs, and the same trap they exist to close: a kind that
+// advertises a capability it does not implement is a switch that fails when flipped, and
+// a kind that implements one it does not advertise is a feature nobody can reach.
+//
+// This is also where Jira's shipped `false` is held honest. Phase 1 of the write-back plan
+// lands Jira unable to write back, because it genuinely is; Phase 2 flips both booleans in
+// the same commit that implements the verbs, and this test is what makes doing one without
+// the other impossible to merge.
+
+const NOTICE = {
+  signal: "task-completed",
+  action: "annotate",
+  externalId: "acme/demo#7",
+  externalUrl: "https://github.com/acme/demo/issues/7",
+  taskTitle: "Fix the parser",
+  prUrl: "https://github.com/acme/demo/pull/9",
+  repoRoot: "/repo",
+  outcome: "opened a pull request",
+  observedAt: 1_700_000_000_000,
+} as const;
+
+test("a kind says canAnnotate exactly when its implementation can annotate", () => {
+  for (const kind of TASK_SOURCE_KINDS) {
+    const declared = TASK_SOURCE_KIND_INFO[kind].canAnnotate;
+    assert.equal(
+      TASK_SOURCES[kind].annotate !== null,
+      declared,
+      `${kind} declares canAnnotate=${declared} and implements the opposite`,
+    );
+    assert.equal(TASK_SOURCES[kind].canAnnotate, declared);
+    assert.equal(canAnnotateTo(instanceOf(kind)), declared);
+  }
+});
+
+test("a kind says canResolve exactly when its implementation can resolve", () => {
+  for (const kind of TASK_SOURCE_KINDS) {
+    const declared = TASK_SOURCE_KIND_INFO[kind].canResolve;
+    assert.equal(
+      TASK_SOURCES[kind].resolve !== null,
+      declared,
+      `${kind} declares canResolve=${declared} and implements the opposite`,
+    );
+    assert.equal(TASK_SOURCES[kind].canResolve, declared);
+    assert.equal(canResolveTo(instanceOf(kind)), declared);
+  }
+});
+
+// The same rule `pushToSource` is held to, and it matters more on the ledger: a silent
+// success marks the delivery row `delivered`, so the panel reports a comment that was
+// never written and nobody ever finds out.
+test("writing back to a kind that cannot is an error, never a silent success", async () => {
+  const ctx = { sourceId: "s1", repoRoot: "/repo", signal: new AbortController().signal };
+  const a = await annotateWith(instanceOf("jira"), NOTICE, ctx);
+  assert.match(a.error!, /jira cannot write back/);
+  assert.equal(a.detail, null);
+  // A fact, not a hedge: no subprocess ran, so nothing was said upstream.
+  assert.equal(a.outcomeUnknown, false);
+
+  const r = await resolveWith(instanceOf("jira"), { ...NOTICE, action: "resolve" }, ctx);
+  assert.match(r.error!, /jira cannot resolve/);
+  assert.equal(r.outcomeUnknown, false);
+});
+
+// The boundary parse `sweep` and `push` both get. It matters here for the same reason it
+// does there - the implementation is entitled to its own schema's output - and it is what
+// keeps this test from spawning gh against a real repository.
+test("a write-back parses config at the boundary and refuses an unusable blob", async () => {
+  const inst = {
+    ...instanceOf("github-issues"),
+    config: { assignedToMe: true, unassignedOnly: true },
+  };
+  const ctx = { sourceId: "s1", repoRoot: "/repo", signal: new AbortController().signal };
+  const r = await annotateWith(inst, NOTICE, ctx);
+  assert.match(r.error!, /not valid for github-issues/);
+  assert.equal(r.outcomeUnknown, false);
+});
+
+// ---- consent ----
+//
+// Three switches, and the whole feature's safety rests on what they default to. A source
+// stored by a build that predates this must come back with every one of them off, or an
+// upgrade starts writing on somebody's tracker without being asked.
+test("a source ships with every write-back switch off", () => {
+  const parsed = TaskSourceInstanceSchema.parse({
+    id: "s1",
+    kind: "github-issues",
+    repoRoot: "/repo",
+  });
+  assert.deepEqual(parsed.writeback, {
+    onPrOpened: false,
+    onCompleted: false,
+    resolve: false,
+  });
+});
+
+// Refused at the schema rather than stored, because a stored switch that can never fire is
+// worse than a rejected one: the panel would show auto-resolve ON while nothing resolved,
+// and that is indistinguishable from an upstream that keeps refusing.
+test("auto-resolve without the completion trigger is refused, not stored", () => {
+  const bad = TaskSourceInstanceSchema.safeParse({
+    id: "s1",
+    kind: "github-issues",
+    repoRoot: "/repo",
+    writeback: { resolve: true },
+  });
+  assert.equal(bad.success, false);
+  assert.match(JSON.stringify(bad), /needs the completion trigger/);
+
+  const good = TaskSourceInstanceSchema.safeParse({
+    id: "s1",
+    kind: "github-issues",
+    repoRoot: "/repo",
+    writeback: { onCompleted: true, resolve: true },
+  });
+  assert.equal(good.success, true);
 });

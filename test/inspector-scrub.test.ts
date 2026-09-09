@@ -40,7 +40,7 @@ test("a private key block is redacted whole, not chopped into surviving pieces",
   const pem = [
     "Found this committed:",
     "-----BEGIN RSA PRIVATE KEY-----",
-    "MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qJ4KZLQxE0ZAOB2ll3zn3Uc9Wp",
+    "MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF0qJ4TESTTESTKZLQxE0ZAOB2ll3zn3Uc9Wp",
     "AoGBAJ7yqK2Q4Z1mVQXn3xY8sT0uW9vP1kL2mN3oP4qR5sT6uV7wX8yZ9aB0cD1e",
     "-----END RSA PRIVATE KEY-----",
     "in src/config.ts.",

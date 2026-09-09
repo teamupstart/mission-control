@@ -155,12 +155,14 @@ function parseTemplate(raw: string): ScheduleTemplate | null {
     agent,
     priority,
     effort,
-    // These two carry no enum: any string is a legitimate model id or label, so there is
-    // no such thing as a value from the future to fail on.
+    // These three carry no enum: any string is a legitimate model id, label or Workflow id,
+    // so there is no such thing as a value from the future to fail on.
     labels: Array.isArray(t.labels)
       ? normalizeLabels(t.labels.filter((v): v is string => typeof v === "string"))
       : [],
     model: typeof t.model === "string" ? t.model : null,
+    // Absent is "no Workflow", never the dispatch default - see `ScheduleTemplate.workflowId`.
+    workflowId: typeof t.workflowId === "string" && t.workflowId !== "" ? t.workflowId : null,
   };
 }
 

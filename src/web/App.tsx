@@ -4080,6 +4080,7 @@ export function App(): React.JSX.Element {
               {missionsOpen && (
                 <RecurringMissionsPanel
                   schedules={schedules}
+                  workflowSummaries={workflowSummaries}
                   connected={connected}
                   hasSnapshot={hasSnapshot}
                   initialScheduleId={missionsTarget?.scheduleId ?? null}

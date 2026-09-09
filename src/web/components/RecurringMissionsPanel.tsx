@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MissionSchedule } from "@shared/schedules.ts";
+import type { WorkflowSummary } from "@shared/workflow.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { ScheduleCatalog } from "./schedules/ScheduleCatalog.tsx";
@@ -46,6 +47,7 @@ type Screen =
 
 export function RecurringMissionsPanel({
   schedules,
+  workflowSummaries,
   connected,
   hasSnapshot,
   initialScheduleId = null,
@@ -56,6 +58,16 @@ export function RecurringMissionsPanel({
   resolveTaskLink,
 }: {
   schedules: MissionSchedule[];
+  /**
+   * The live Workflow catalog. The editor offers it as the after-work handoff, and the
+   * detail names the one a mission stored - both read App's SSE-owned list rather than
+   * fetching, so a Workflow published while this overlay is open is offered immediately.
+   *
+   * Required, and passed straight through to both: this component's whole contribution to
+   * the field is plumbing, which is exactly the kind that fails silently. An optional prop
+   * would make a dropped `workflowSummaries={...}` compile and render as an empty library.
+   */
+  workflowSummaries: WorkflowSummary[];
   connected: boolean;
   hasSnapshot: boolean;
   /** A schedule to open on, from a generated task's provenance deep link. */
@@ -230,6 +242,7 @@ export function RecurringMissionsPanel({
               <ScheduleDetail
                 key={selectedSchedule.id}
                 schedule={selectedSchedule}
+                workflowSummaries={workflowSummaries}
                 initialOccurrenceId={
                   selectedSchedule.id === initialScheduleId ? initialOccurrenceId : null
                 }
@@ -266,6 +279,7 @@ export function RecurringMissionsPanel({
           ) : (
             <ScheduleEditor
               schedule={routedSchedule}
+              workflowSummaries={workflowSummaries}
               onDirtyChange={setEditorDirty}
               onBusyChange={setEditorBusy}
               onSaved={(saved) => toCatalog(saved.id)}

@@ -11,6 +11,7 @@ import { ScheduleEditor } from "../src/web/components/schedules/ScheduleEditor.t
 import { SchedulePreview } from "../src/web/components/schedules/SchedulePreview.tsx";
 import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
+import { RecurringMissionsPanel } from "../src/web/components/RecurringMissionsPanel.tsx";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 import { mkSchedule, mkScheduleTemplate } from "./helpers/schedule-fixture.ts";
 import { mkTask } from "./helpers/session-fixture.ts";
@@ -39,6 +40,41 @@ function scheduledTask(over = {}) {
   });
 }
 const NAMES = new Map([["sched-1", "Dependency audit"]]);
+
+/** A published Workflow and an archived one, so the editor's filter has something to do. */
+const WORKFLOWS = [
+  {
+    id: "wf-review",
+    name: "No-Mistakes Review",
+    description: "",
+    draftRevision: 3,
+    currentVersionId: "wfv-1",
+    publishedVersion: 2,
+    archivedAt: null,
+    updatedAt: 0,
+    errorCount: 0,
+    warningCount: 0,
+    nodeCount: 4,
+    personaCount: 2,
+    builtin: true,
+  },
+  // Archived, so it is not something a mission can newly be pointed at.
+  {
+    id: "wf-old",
+    name: "Retired sweep",
+    description: "",
+    draftRevision: 1,
+    currentVersionId: "wfv-2",
+    publishedVersion: 1,
+    archivedAt: 1,
+    updatedAt: 0,
+    errorCount: 0,
+    warningCount: 0,
+    nodeCount: 1,
+    personaCount: 0,
+    builtin: false,
+  },
+] as const;
 
 test("the catalog lists live schedules with their server-derived health", () => {
   const html = renderToStaticMarkup(
@@ -97,6 +133,7 @@ test("the detail is honest about local catch-up: never on-time, never asleep exe
   const schedule = mkSchedule();
   const html = renderToStaticMarkup(
     createElement(ScheduleDetail, {
+      workflowSummaries: [],
       schedule,
       onEdit: () => {},
       onArchived: () => {},
@@ -125,6 +162,7 @@ test("the detail leads with what the mission does, not with derived restatements
   // restatement of a value printed 200px above it. The task is the mission; it reads first.
   const html = renderToStaticMarkup(
     createElement(ScheduleDetail, {
+      workflowSummaries: [],
       schedule: mkSchedule(),
       onEdit: () => {},
       onArchived: () => {},
@@ -139,9 +177,53 @@ test("the detail leads with what the mission does, not with derived restatements
   assert.match(html, /Every Monday at 8:00 AM · America\/New_York/);
 });
 
+test("the detail names the stored after-work Workflow, and says so when there is none", () => {
+  const none = renderToStaticMarkup(
+    createElement(ScheduleDetail, {
+      schedule: mkSchedule(),
+      workflowSummaries: [...WORKFLOWS],
+      onEdit: () => {},
+      onArchived: () => {},
+    }),
+  );
+  assert.match(none, /After work/);
+  assert.match(none, /None - each run finishes without a Workflow/);
+
+  const armed = renderToStaticMarkup(
+    createElement(ScheduleDetail, {
+      schedule: mkSchedule({ template: mkScheduleTemplate({ workflowId: "wf-review" }) }),
+      workflowSummaries: [...WORKFLOWS],
+      onEdit: () => {},
+      onArchived: () => {},
+    }),
+  );
+  assert.match(armed, /No-Mistakes Review · v2/);
+});
+
+test("the overlay hands the Workflow catalog down, so the detail names it rather than an id", () => {
+  // Omitting the prop is a compile error; passing the WRONG list still renders, as
+  // "Unavailable Workflow (wf-review)".
+  const html = renderToStaticMarkup(
+    withOverlayHost(
+      createElement(RecurringMissionsPanel, {
+        schedules: [
+          mkSchedule({ template: mkScheduleTemplate({ workflowId: "wf-review" }) }),
+        ],
+        workflowSummaries: [...WORKFLOWS],
+        connected: true,
+        hasSnapshot: true,
+        onClose: () => {},
+      }),
+    ),
+  );
+  assert.match(html, /No-Mistakes Review · v2/);
+  assert.doesNotMatch(html, /Unavailable Workflow/);
+});
+
 test("the detail's Run now explains it files a backlog task, not that it runs an agent", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleDetail, {
+      workflowSummaries: [],
       schedule: mkSchedule(),
       onEdit: () => {},
       onArchived: () => {},
@@ -153,6 +235,7 @@ test("the detail's Run now explains it files a backlog task, not that it runs an
 test("the editor distinguishes Save paused from Save & enable, and only offers local catch-up", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleEditor, {
+      workflowSummaries: [],
       schedule: null,
       onSaved: () => {},
       onCancel: () => {},
@@ -179,6 +262,7 @@ test("a mission's stored effort survives a switch to an agent that does not offe
   // erasure the next time anything else on the form changed.
   const html = renderToStaticMarkup(
     createElement(ScheduleEditor, {
+      workflowSummaries: [],
       schedule: mkSchedule({ template: mkScheduleTemplate({ agent: null, effort: "max" }) }),
       onSaved: () => {},
       onCancel: () => {},
@@ -197,12 +281,92 @@ test("a mission's stored effort survives a switch to an agent that does not offe
   // A level the list DOES offer is an ordinary option with no warning attached.
   const ordinary = renderToStaticMarkup(
     createElement(ScheduleEditor, {
+      workflowSummaries: [],
       schedule: mkSchedule({ template: mkScheduleTemplate({ agent: null, effort: "high" }) }),
       onSaved: () => {},
       onCancel: () => {},
     }),
   );
   assert.doesNotMatch(ordinary, /not offered here/);
+});
+
+test("a new mission rests on no after-work Workflow, and the published ones are on offer", () => {
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: null,
+      workflowSummaries: [...WORKFLOWS],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(html, /<option value="" selected="">None - finish without a Workflow<\/option>/);
+  assert.match(html, /No-Mistakes Review/);
+  assert.doesNotMatch(html, /Dispatch default/);
+  assert.doesNotMatch(html, /Retired sweep/);
+});
+
+test("a mission's stored Workflow survives the library archiving it", () => {
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({ template: mkScheduleTemplate({ workflowId: "wf-gone" }) }),
+      workflowSummaries: [...WORKFLOWS],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(html, /<option value="wf-gone" selected="">Unavailable Workflow \(wf-gone\)<\/option>/);
+  assert.match(html, /the library no longer publishes/);
+
+  // An ARCHIVED Workflow the catalog still lists keeps its real name here, so Edit and the
+  // detail row read the same. They diverged: the detail searched the full catalog while the
+  // picker searched only the published subset and fell back to the generic label.
+  const archived = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({ template: mkScheduleTemplate({ workflowId: "wf-old" }) }),
+      workflowSummaries: [...WORKFLOWS],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(archived, /<option value="wf-old" selected="">Retired sweep · v1<\/option>/);
+  assert.doesNotMatch(archived, /Unavailable Workflow/);
+});
+
+test("a Workflow whose current version cannot be resolved is not offered", () => {
+  // `publishedVersion` is null when `currentVersionId` names a version this build cannot
+  // resolve. There is nothing to bind, and offering it would print "· vnull".
+  const unresolvable = {
+    ...WORKFLOWS[0],
+    id: "wf-dangling",
+    name: "Dangling version",
+    publishedVersion: null,
+  };
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: null,
+      workflowSummaries: [...WORKFLOWS, unresolvable],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.doesNotMatch(html, /vnull/);
+  assert.doesNotMatch(html, /<option value="wf-dangling"/);
+  assert.match(html, /No-Mistakes Review/, "a resolvable Workflow is still offered");
+});
+
+test("a diffless kind disables the after-work control and shows None", () => {
+  const html = renderToStaticMarkup(
+    createElement(ScheduleEditor, {
+      schedule: mkSchedule({
+        template: mkScheduleTemplate({ kind: "scout", workflowId: "wf-review" }),
+      }),
+      workflowSummaries: [...WORKFLOWS],
+      onSaved: () => {},
+      onCancel: () => {},
+    }),
+  );
+  assert.match(html, /A scout has no diff to review, so no Workflow runs after it\./);
+  assert.match(html, /<option value="" selected="">None - finish without a Workflow<\/option>/);
 });
 
 test("editing sequences enable/pause to the safe side, and rolls back a failed save", () => {
@@ -234,6 +398,7 @@ test("the catalog marks an unreadable execution mode", () => {
 test("the detail prevents newer-build schedules from being edited", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleDetail, {
+      workflowSummaries: [],
       schedule: mkSchedule({
         executionMode: null,
         unreadable: { reason: "Unknown execution mode", fields: ["executionMode"] },
@@ -252,6 +417,7 @@ test("the detail disables Resume for a paused newer-build schedule, but not Paus
   // round on #241). Pause must stay available so a running one can always be stopped.
   const paused = renderToStaticMarkup(
     createElement(ScheduleDetail, {
+      workflowSummaries: [],
       schedule: mkSchedule({
         enabled: false,
         executionMode: null,
@@ -266,6 +432,7 @@ test("the detail disables Resume for a paused newer-build schedule, but not Paus
 
   const enabled = renderToStaticMarkup(
     createElement(ScheduleDetail, {
+      workflowSummaries: [],
       schedule: mkSchedule({
         enabled: true,
         executionMode: null,
@@ -283,6 +450,7 @@ test("the detail disables Resume for a paused newer-build schedule, but not Paus
 test("the editor preserves a current timezone absent from the browser list", () => {
   const html = renderToStaticMarkup(
     createElement(ScheduleEditor, {
+      workflowSummaries: [],
       schedule: mkSchedule({ timezone: "Etc/UTC" }),
       onSaved: () => {},
       onCancel: () => {},
@@ -313,6 +481,7 @@ test("the preview renders the daemon's own results, and shows a loading state un
           labels: [],
           model: null,
           effort: null,
+          workflowId: null,
         },
       },
     }),

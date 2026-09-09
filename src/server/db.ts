@@ -1531,6 +1531,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       storage_relative_path TEXT NOT NULL,
       availability          TEXT NOT NULL,
       pruned_at             INTEGER,
+      -- Carry-forward provenance. NULL on every row this submission captured itself.
+      inherited_from_submission_id TEXT,
+      origin_round                 INTEGER,
+      origin_repository_fingerprint TEXT,
       created_at            INTEGER NOT NULL,
       UNIQUE(submission_id, ordinal),
       UNIQUE(submission_id, staging_id)
@@ -1548,6 +1552,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       proof_class           TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
       links_json            TEXT NOT NULL,
+      -- Carry-forward provenance. NULL on every claim its own author declared here.
+      inherited_from_submission_id TEXT,
       generation            INTEGER NOT NULL,
       created_at            INTEGER NOT NULL,
       updated_at            INTEGER NOT NULL,
@@ -1568,6 +1574,10 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       content               TEXT NOT NULL,
       availability          TEXT NOT NULL,
       pruned_at             INTEGER,
+      -- Carry-forward provenance. NULL on every row this submission captured itself.
+      inherited_from_submission_id TEXT,
+      origin_round                 INTEGER,
+      origin_repository_fingerprint TEXT,
       created_at            INTEGER NOT NULL,
       UNIQUE(submission_id, ordinal),
       UNIQUE(submission_id, staging_id)
@@ -3470,6 +3480,23 @@ function migrate(d: DatabaseSync): void {
   // Evidence belongs to the resolved human-intent episode current at registration.
   // NULL preserves legacy rows and unresolved intent without inventing provenance.
   addColumn(d, "workflow_evidence_staging", "episode_key", "TEXT");
+  // Evidence carried into a later submission instead of re-collected. Three columns rather
+  // than one flag because a Persona judging staleness needs to know WHEN the bytes were
+  // captured and against WHICH tree, not merely that they were not captured here. NULL on
+  // every historical row, which is exactly what those rows are: self-captured.
+  //
+  // All three follow the ORIGINAL capture through any number of carries, so a three-round-old
+  // screenshot still names the submission and round that took it rather than the one that last
+  // passed it along. They move together or the record contradicts itself.
+  for (const table of ["workflow_submission_images", "workflow_submission_text_artifacts"]) {
+    addColumn(d, table, "inherited_from_submission_id", "TEXT");
+    addColumn(d, table, "origin_round", "INTEGER");
+    addColumn(d, table, "origin_repository_fingerprint", "TEXT");
+  }
+  // Coverage carries the same provenance for a different reason. A carried claim is retained
+  // in full, and this column is what lets readiness tell a claim the author declared HERE from
+  // the ancestry standing behind it, rather than reading the two as competing declarations.
+  addColumn(d, "workflow_submission_evidence_coverage", "inherited_from_submission_id", "TEXT");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what

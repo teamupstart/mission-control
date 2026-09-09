@@ -11,6 +11,7 @@ import {
   type ScheduleOverlapPolicy,
   type ScheduleTriggerKind,
 } from "@shared/schedules.ts";
+import type { WorkflowNamingSource } from "@shared/workflow.ts";
 
 /**
  * Presentation-only helpers for the Recurring Missions surface.
@@ -137,6 +138,26 @@ export function completionPolicyLabel(policy: ScheduleCompletionPolicy | null): 
   if (policy === "auto-on-conclusion")
     return "Foreman may complete the task when it concludes the run's work is done";
   return "Unreadable policy";
+}
+
+/**
+ * The after-work Workflow a mission stores, named rather than printed as an id.
+ *
+ * None is a SENTENCE, not a blank: a mission that hands its work to nobody is a deliberate
+ * configuration, and the detail is where an operator checks it. An id the catalog cannot
+ * resolve keeps the id visible - it was archived, or belongs to a library this build has not
+ * caught up with, and either way "which one?" is the next question.
+ */
+export function afterWorkLabel(
+  workflowId: string | null,
+  workflows: readonly WorkflowNamingSource[],
+): string {
+  if (!workflowId) return "None - each run finishes without a Workflow";
+  const found = workflows.find((workflow) => workflow.id === workflowId);
+  if (!found) return `Unavailable Workflow (${workflowId})`;
+  return found.publishedVersion === null
+    ? found.name
+    : `${found.name} · v${found.publishedVersion}`;
 }
 
 export function missedPolicyLabel(policy: ScheduleMissedPolicy | null): string {
@@ -571,6 +592,7 @@ export function scheduleDefinitionFingerprint(def: {
     labels: string[];
     model: string | null;
     effort: string | null;
+    workflowId: string | null;
   };
 }): string {
   return JSON.stringify([
@@ -589,6 +611,11 @@ export function scheduleDefinitionFingerprint(def: {
     def.template.labels.join("\u0000"),
     def.template.model,
     def.template.effort,
+    // In the fingerprint even though no cadence preview reads it, for the same reason the
+    // name and the labels are: this answers "is the definition I am about to enable the one
+    // the preview described?", and a field left out of it is a field an operator can change
+    // between previewing and saving without the staleness hint ever noticing.
+    def.template.workflowId,
   ]);
 }
 

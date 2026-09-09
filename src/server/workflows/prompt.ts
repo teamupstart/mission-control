@@ -3,10 +3,31 @@ import type {
   PersonaSnapshot,
   WorkflowCheckEvidence,
   WorkflowContextSnapshot,
+  WorkflowEvidenceInheritance,
   WorkflowPersonaDirectiveSnapshot,
 } from "@shared/workflow.ts";
 import { REVIEW_LIMITS, reviewContract } from "@shared/review.ts";
 import { boundedSection, untrustedBlock, untrustedJsonBlock } from "../review/prompt.ts";
+
+/**
+ * The carry-forward mark, or nothing at all for evidence captured here.
+ *
+ * Spread rather than emitted as a null, because a `null` on every entry of every manifest is
+ * prompt bytes spent to say that the ordinary case is ordinary. The origin round and the
+ * repository fingerprint the bytes were captured against are the two facts a reviewer needs
+ * to decide whether a carried artifact still proves anything, and they belong in the manifest
+ * rather than in the contract text, where they would be a claim about evidence instead of
+ * part of it.
+ */
+function carriedForward(
+  item: { inheritedFrom?: WorkflowEvidenceInheritance | null },
+): { capturedInRound: number; capturedAtRepositoryFingerprint: string | null } | Record<string, never> {
+  if (!item.inheritedFrom) return {};
+  return {
+    capturedInRound: item.inheritedFrom.round,
+    capturedAtRepositoryFingerprint: item.inheritedFrom.repositoryFingerprint,
+  };
+}
 
 function priorFeedback(items: PersonaFeedbackSummary[]): string {
   if (items.length === 0) return "(none)";
@@ -78,6 +99,7 @@ export function buildPersonaPrompt(
     "# Evidence availability contract",
     "Completed Check outcomes below come only from upstream Check nodes that receipted this same immutable submission. Their command, exit code, retained output tail, omitted-byte count, HEAD SHA, and attempt identity are evidence. Read the outcome and output together: a detailed passing run can demonstrate behavior, while a bare status cannot.",
     "Submitted text artifacts were digest-bound and frozen into this submission from either a securely staged repository path or a bounded completed-command report. Their UTF-8 content is exact retained evidence; direct command artifacts include the agent-reported command and exit code, while upstream Check evidence is server-observed. Captions are claims to verify against the content. Evidence-only logs do not need to be committed.",
+    "A manifest entry carrying capturedInRound and capturedAtRepositoryFingerprint was captured for an earlier submission of this run and carried forward rather than re-collected, so it proves the tree it names and not necessarily this one. Its bytes are the exact original bytes. Judge its staleness yourself: evidence captured against a fingerprint other than this submission's may still be sufficient when the change it demonstrates is untouched, and is worth questioning when the requested fix is in what it shows.",
     "Judge the evidence available at this Persona stage. Pull-request checks, remote CI, and Inspector findings may be later workflow stages, so their absence is not a failure unless the original human intent, operator directive, or published Persona guidance explicitly requires them now.",
     "Criterion coverage declarations are validated by the evidence preflight before this review and are not rendered here, so their presence, absence, or shape is not a Persona concern and is never a reason to fail a submission.",
     "",
@@ -105,6 +127,7 @@ export function buildPersonaPrompt(
       mimeType: image.mimeType,
       bytes: image.bytes,
       sha256: image.sha256,
+      ...carriedForward(image),
     }))),
     ...untrustedJsonBlock("workflow-check-evidence", checkEvidence),
     ...untrustedJsonBlock("workflow-text-artifact-manifest", (context.evidence.artifacts ?? []).map(
@@ -117,6 +140,7 @@ export function buildPersonaPrompt(
         bytes: artifact.bytes,
         sha256: artifact.sha256,
         availability: artifact.availability,
+        ...carriedForward(artifact),
       }),
     )),
     ...(context.evidence.artifacts ?? []).flatMap((artifact) => [

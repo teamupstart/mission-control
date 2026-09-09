@@ -17,6 +17,7 @@ import {
   type PipelineHaltClass,
   type PipelineInstallerCandidatesResult,
   type PipelineInstallerLaunchResult,
+  type PipelineProbe,
   type PipelineRepoStatus,
   type PipelineRepoRegistrationResponse,
   type PipelineRunDetail,
@@ -77,30 +78,6 @@ after(() => {
   rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
-/**
- * Poll `read` until it equals `want`, or fail saying what it was.
- *
- * A poll rather than a sleep because the thing being waited for is a subprocess landing in
- * a background promise, and any fixed delay is either too short on a loaded CI box or wasted
- * wall clock on an idle one.
- */
-async function expect_<T>(
-  read: () => Promise<T>,
-  want: T,
-  message: string,
-  timeoutMs = 5000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let last: T | undefined;
-  for (;;) {
-    last = await read();
-    if (last === want) return;
-    if (Date.now() > deadline) break;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  assert.fail(`${message} (last saw ${JSON.stringify(last)})`);
-}
-
 /** A real git repository, because the route resolves a git root and refuses anything else. */
 function gitRepo(name: string): string {
   const root = join(home, name);
@@ -156,8 +133,13 @@ function fixture(
   return { registry, request };
 }
 
-test("the panel reads consent, detection and health in one call, and ships off", async () => {
+test("the panel reads consent, detection and health in one call, and ships off", async (t) => {
   const { request } = fixture();
+  // The ordinary read starts a background probe. Settle it before the next test resets the
+  // process-local cache, just as a real process exit would end every in-flight operation.
+  t.after(async () => {
+    await request("/api/pipelines/config?refresh=1");
+  });
   const res = await request("/api/pipelines/config");
   assert.equal(res.status, 200);
   const view = (await res.json()) as PipelinesView;
@@ -168,23 +150,51 @@ test("the panel reads consent, detection and health in one call, and ships off",
   assert.deepEqual(view.status, []);
 });
 
-test("an ordinary read never waits for a probe, and the next one carries its answer", async () => {
+test("an ordinary read never waits for a probe, and the next one carries its answer", async (t) => {
   // The panel polls every four seconds from a page that is mostly about other things, so a
   // route that awaited a spawn would put a `fork` + `execve` on that path - on a fleet with
   // this feature switched off entirely. So the FIRST read carries no probe and starts one in
   // the background; the panel draws its own "looking for the engine" state until it lands.
+  const provider = PIPELINE_PROVIDERS["ai-conductor"];
+  const originalProbe = provider.probe;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let answerProbe!: (probe: PipelineProbe) => void;
+  const answer = new Promise<PipelineProbe>((resolve) => {
+    answerProbe = resolve;
+  });
+  provider.probe = () => {
+    markStarted();
+    return answer;
+  };
+  t.after(() => {
+    provider.probe = originalProbe;
+  });
   const { request } = fixture();
-  const first = (await (await request("/api/pipelines/config")).json()) as PipelinesView;
+  const firstResponse = request("/api/pipelines/config");
+  await started;
+  const released = new Promise<void>((resolve) => {
+    setImmediate(() => {
+      answerProbe({
+        provider: "ai-conductor",
+        found: false,
+        bin: process.env.MISSION_CONDUCTOR_BIN!,
+        binPath: null,
+        version: null,
+        registryPath: process.env.AI_CONDUCTOR_REGISTRY!,
+        projects: [],
+        error: `${process.env.MISSION_CONDUCTOR_BIN} is not on this daemon's PATH`,
+        checkedAt: Date.now(),
+      });
+      resolve();
+    });
+  });
+  const first = (await (await firstResponse).json()) as PipelinesView;
   assert.deepEqual(first.probes, [], "the first read must not have waited for a subprocess");
 
-  await expect_(
-    async () => {
-      const view = (await (await request("/api/pipelines/config")).json()) as PipelinesView;
-      return view.probes.length;
-    },
-    1,
-    "the background probe should land and be served by a later read",
-  );
+  await released;
 
   const settled = (await (await request("/api/pipelines/config")).json()) as PipelinesView;
   assert.equal(settled.probes[0]?.provider, "ai-conductor");

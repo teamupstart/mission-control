@@ -242,8 +242,9 @@ directly on Phase 1; the phases must not run concurrently.
 
 `docs/plans/agent-sdk-sessions/phase-6-pi-rpc-driver.md` describes an earlier, unimplemented RPC
 approach. This plan supersedes that transport choice because Pi now publishes a first-class SDK with
-session runtime and UI-host contracts. The planning change marks the older phase as superseded; the
-implementation updates product documentation as each capability actually lands.
+session runtime and UI-host contracts. Phase 2 marks the older phase document as superseded after the
+SDK implementation exists; each implementation phase updates product documentation only for behavior
+it actually lands.
 
 ## Success criteria
 

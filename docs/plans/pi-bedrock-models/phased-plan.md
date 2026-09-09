@@ -151,9 +151,9 @@ were `status: backlog`, `enabled: false`, and `sessionId: null` at verification 
 
 | Phase | Task id | Stored state | Direct task dependencies | Planning-session edge |
 | --- | --- | --- | --- | --- |
-| 1. Managed Pi Bedrock runtime | `8e625014-710a-4c0d-84b9-a84f0043f0ad` | Backlog, disabled, no live session | None | Present and unsatisfied through planning task `b52bdbe6-12a2-438d-97a1-1d95c5640b94` |
-| 2. Structured Pi interaction and automation | `2d6db8bc-3897-4e8d-a49c-a133314a822b` | Backlog, disabled, no live session | Phase 1 task `8e625014-710a-4c0d-84b9-a84f0043f0ad`, unsatisfied | Present and unsatisfied through planning task `b52bdbe6-12a2-438d-97a1-1d95c5640b94` |
+| 1. Managed Pi Bedrock runtime | `8e625014-710a-4c0d-84b9-a84f0043f0ad` | Backlog, disabled, no live session | None | Present through planning task `b52bdbe6-12a2-438d-97a1-1d95c5640b94`; initially unsatisfied and later satisfied when planning concluded |
+| 2. Structured Pi interaction and automation | `2d6db8bc-3897-4e8d-a49c-a133314a822b` | Backlog, disabled, no live session | Phase 1 task `8e625014-710a-4c0d-84b9-a84f0043f0ad`, unsatisfied | Present through planning task `b52bdbe6-12a2-438d-97a1-1d95c5640b94`; initially unsatisfied and later satisfied when planning concluded |
 
-The tasks remain disabled after scheduling. Their planning-session edges prevent premature dispatch
-while this planning task is open, and the Phase 2 edge prevents it from starting before Phase 1
-completes. Enabling either task later is an explicit operator action.
+The tasks remain disabled after scheduling, which prevents dispatch until an operator explicitly
+enables them. Their planning-session edges preserve provenance, and the unsatisfied Phase 2 edge
+prevents it from starting before Phase 1 completes even after both tasks are enabled.

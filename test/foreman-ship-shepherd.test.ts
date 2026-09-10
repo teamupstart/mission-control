@@ -1,3 +1,4 @@
+import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -186,12 +187,22 @@ test("all pre-PR owners and authority gates fail closed", () => {
     ["queue", { queue: queue({ items: [{ id: "owned" } as SessionQueue["items"][number]] }) }],
     ["pending turn", { session: session({ pendingTurns: [{ id: "turn" } as Session["pendingTurns"][number]] }) }],
     ["uninvited", { session: session({ foremanInvite: null }) }],
-    ["unsupported harness", { session: session({ agent: "pi" }) }],
+    ["uninstrumented Pi", { session: session({ agent: "pi", hooksSeen: false }) }],
     ["working", { session: session({ state: "working" }) }],
     ["too recent", { session: session({ lastActivity: NOW - 19 * 60_000 }) }],
   ];
   for (const [name, over] of cases) {
     assert.equal(decideShipShepherd(input(over)).kind, "skip", name);
+  }
+});
+
+test("a harness with no work queue capability cannot receive pre-PR recovery", () => {
+  const original = HARNESS_CAPABILITIES.pi.workQueue;
+  HARNESS_CAPABILITIES.pi.workQueue = null;
+  try {
+    assert.equal(decideShipShepherd(input({ session: session({ agent: "pi" }) })).kind, "skip");
+  } finally {
+    HARNESS_CAPABILITIES.pi.workQueue = original;
   }
 });
 

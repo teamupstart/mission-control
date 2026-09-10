@@ -116,6 +116,11 @@ export interface UsageCursor {
 
 /** One billable request observed in a harness-owned local record. */
 export interface HarnessUsageEvent {
+  /**
+   * Harness-reported request cost where Mission Control has no price table (Pi).
+   * Explicitly null for locally priced Codex events; existing pricing stays authoritative.
+   */
+  vendorCostUsd: number | null;
   identity: string;
   ts: number;
   modelId: string | null;

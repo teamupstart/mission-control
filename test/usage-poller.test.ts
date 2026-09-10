@@ -311,3 +311,57 @@ test("an observed byte-idle source refreshes its cursor retention timestamp", as
     stop();
   }
 });
+
+test("Pi's dispatched identity reaches the card and ledger once; hand-run Pi stays unpriced", async () => {
+  const { mkdirSync } = await import("node:fs");
+  const { HARNESSES } = await import("../src/server/harness/index.ts");
+  const { locatePiTranscript, piProjectDir } = await import("../src/server/harness/pi/transcript.ts");
+  const { PI_SESSION_LINES } = await import("./fixtures/pi-sessions.ts");
+  const { PI_PRICE_VERSION } = await import("../src/server/harness/pi/usage.ts");
+  const id = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const cwd = join(home, "pi-checkout");
+  const sessionsDir = join(home, "pi-sessions");
+  const dir = piProjectDir(cwd, sessionsDir);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `2026-07-20T01-48-22-072Z_${id}.jsonl`);
+  writeFileSync(path, PI_SESSION_LINES.slice(0, 7).join("\n") + "\n");
+  const original = HARNESSES.pi.transcript!;
+  HARNESSES.pi.transcript = { ...original, locate: (session) => locatePiTranscript(session, sessionsDir) };
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "pi-dispatched", agent: "pi", name: "pi", nameSource: "process", cwd,
+    gitBranch: "main", gitRoot: null, repoRoot: null, pid: 4242, tty: "ttys42", terminals: [], startedAt: 0,
+  }, {
+    syntheticId: "pi-hand-run", agent: "pi", name: "pi", nameSource: "process", cwd,
+    gitBranch: "main", gitRoot: null, repoRoot: null, pid: 4343, tty: "ttys43", terminals: [], startedAt: 0,
+  }]);
+  registry.bindLaunchedAgentSession("pi-dispatched", "pi", id);
+  let stop = startUsagePoller(registry);
+  try {
+    await eventually(() => registry.getSession("pi-dispatched")?.cost?.output === 44);
+    const messages = PI_SESSION_LINES.slice(0, 7).map((line) => JSON.parse(line))
+      .filter((record) => record.message?.role === "assistant");
+    const expectedCost = messages.reduce((sum, record) => sum + record.message.usage.cost.total, 0);
+    assert.equal(registry.getSession("pi-dispatched")?.cost?.costUsd, expectedCost);
+    assert.equal(registry.getSession("pi-hand-run")?.cost, null);
+    const rows = () => openDb().prepare(
+      "SELECT window_end_ns, input, output, cache_read, cache_write, cost_usd, pricing_version FROM usage_ledger WHERE note_key = ? ORDER BY ts",
+    ).all(id).map((row) => ({ ...row }));
+    assert.deepEqual(rows(), messages.map((record) => ({
+      window_end_ns: record.id, input: record.message.usage.input, output: record.message.usage.output,
+      cache_read: record.message.usage.cacheRead, cache_write: record.message.usage.cacheWrite,
+      cost_usd: record.message.usage.cost.total, pricing_version: PI_PRICE_VERSION,
+    })));
+    stop();
+    stop = startUsagePoller(registry);
+    assert.equal(rows().length, 2, "a poller restart does not rebill consumed requests");
+    // Replaying the same Pi message entry at a new byte offset also cannot bill it twice.
+    appendFileSync(path, PI_SESSION_LINES[4]! + "\n");
+    await eventually(() => usageCursorFor(usageSourceKey("pi", id, path)).offset === statSync(path).size);
+    assert.equal(rows().length, 2);
+    assert.equal(registry.getSession("pi-dispatched")?.cost?.costUsd, expectedCost);
+  } finally {
+    stop();
+    HARNESSES.pi.transcript = original;
+  }
+});

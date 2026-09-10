@@ -584,6 +584,20 @@ test("a recoverable Engineer land refusal is visible everywhere until provider r
     })
     .toBe(1);
 
+  // Reservation precedes readiness and host launch. Emitting steps during readiness can
+  // put their revisions ahead of the readiness snapshot, correctly refusing the launch
+  // with a projection conflict. Act like the provider: start only after its host exists.
+  await expect.poll(async () => {
+    const tasks = await (await request(daemon, "/api/tasks")).json() as Array<{
+      title: string;
+      status: string;
+      sessionId: string | null;
+    }>;
+    const task = tasks.find((candidate) => candidate.title === title);
+    return task ? { status: task.status, sessionId: task.sessionId } : null;
+  }, { message: "the Engineer host must finish readiness before emitting its work events" })
+    .toMatchObject({ status: "running", sessionId: expect.any(String) });
+
   appendConductorEngineerEvent(daemon.home, "engineer_run_started");
   appendConductorEngineerEvent(daemon.home, "engineer_step_started", {
     step: "architecture_review",

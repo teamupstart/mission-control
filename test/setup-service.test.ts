@@ -9,8 +9,12 @@ import {
   type SetupServiceStarters,
 } from "../src/server/setup/service.ts";
 
+const unused = async () => {
+  throw new Error("this case starts one named service and must not reach another");
+};
+
 function starters(result: Awaited<ReturnType<SetupServiceStarters["herdr-server"]>>): SetupServiceStarters {
-  return { "herdr-server": async () => result };
+  return { "herdr-server": async () => result, "cmux-app": unused, "cmux-socket-control": unused };
 }
 
 test("every service id has exactly one daemon-owned starter", () => {

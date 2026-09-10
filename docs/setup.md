@@ -45,6 +45,20 @@ manual **Re-check**. A Herdr older than the supported release is reported with i
 reason and is not offered a start, because starting it repairs nothing. While the server is down,
 discovery simply sees no Herdr workspaces and logs nothing.
 
+The cmux row reports three facts for the same reason, and two of them are not installation.
+cmux's control socket exists only while its **app is running**, and cmux ships
+`automation.socketControlMode: "cmuxOnly"`, which admits only processes started inside cmux -
+the daemon is not one, so with the default every call it makes is denied. Under either fault the
+adapter simply sees no cmux workspaces, which is why the row used to read Ready on the strength
+of the binary alone while every dispatch to cmux failed. A closed app is **Needs setup** and
+offers **Open cmux**, which opens the app and waits for its socket to answer. A refusing socket
+is **Needs setup** and offers **Allow Mission Control to drive cmux**, which copies
+`~/.config/cmux/cmux.json` to a timestamped `.bak` and then sets that one value to `allowAll`;
+your comments and every other setting are left alone, and a file that does not parse is refused
+rather than replaced. No reload is needed - cmux watches the file - and no reload would be
+possible anyway, since `cmux reload-config` is one of the calls the default refuses. A satisfied
+row reports the mode it read, as `(socket control allowAll)`.
+
 The optional iTerm2 row uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
 configured `ITERM_BIN` filesystem
 check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is

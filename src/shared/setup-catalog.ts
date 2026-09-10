@@ -102,12 +102,17 @@ export type SetupRequirement = "required" | "recommended" | "optional";
  * fact about this machine right now, and it is the one an operator with Herdr installed is
  * far more likely to be missing.
  */
-export const SETUP_SERVICE_IDS = ["herdr-server"] as const;
+export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control"] as const;
 
 export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
 
 export const SETUP_SERVICE_INFO: Record<SetupServiceId, { id: SetupServiceId; label: string }> = {
   "herdr-server": { id: "herdr-server", label: "Herdr server" },
+  "cmux-app": { id: "cmux-app", label: "cmux app" },
+  // Not a process, and the only entry here that is not. It is in this union because it is
+  // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
+  // and no path the browser could influence. See `CMUX_SOCKET_CONTROL_REMEDY`.
+  "cmux-socket-control": { id: "cmux-socket-control", label: "cmux socket control" },
 };
 
 /**
@@ -142,6 +147,41 @@ export const HERDR_SERVER_REMEDY: SetupRemedy = {
   service: "herdr-server",
   label: "Start the Herdr server",
   note: "Start Herdr's default server now, the same way a dispatch to Herdr would.",
+};
+
+/**
+ * Open cmux, offered while the CLI is installed and the app is closed.
+ *
+ * cmux's control socket exists only while its app is running, and the adapter degrades to an
+ * empty pane list rather than saying so once a tick. Installing again repairs nothing, so
+ * this stands in for the install link on that one reading - the same trade `HERDR_SERVER_REMEDY`
+ * makes.
+ */
+export const CMUX_APP_REMEDY: SetupRemedy = {
+  kind: "service",
+  service: "cmux-app",
+  label: "Open cmux",
+  note: "Open the cmux app and wait for its control socket, which is how Mission Control reaches it.",
+};
+
+/**
+ * Let Mission Control's daemon drive cmux, offered while the socket is answering and
+ * refusing.
+ *
+ * The one remedy here that edits an operator's own configuration, and it exists because
+ * nothing else can: cmux ships `automation.socketControlMode: "cmuxOnly"`, which admits only
+ * processes started inside cmux, and under it EVERY socket call is denied - including the
+ * reload that would pick a repair up. So Setup used to report cmux as satisfied on the
+ * strength of the binary existing while every dispatch to it failed.
+ *
+ * The write is one value, the previous file is copied to a timestamped `.bak` first, and a
+ * file that will not parse is refused rather than replaced. See `setup/cmux-config.ts`.
+ */
+export const CMUX_SOCKET_CONTROL_REMEDY: SetupRemedy = {
+  kind: "service",
+  service: "cmux-socket-control",
+  label: "Allow Mission Control to drive cmux",
+  note: "Set automation.socketControlMode to allowAll in ~/.config/cmux/cmux.json, keeping a timestamped backup of the current file.",
 };
 
 export interface SetupDependencyInfo {

@@ -560,8 +560,9 @@ export function ProductIssueModal({
                     requestId: matched.requestId,
                     draftIdentity: matched.draftIdentity,
                   });
-                } catch {
+                } catch (error) {
                   // A missing or stale desktop bridge must not leave an inert control.
+                  console.error("Product issue authorization failed", error);
                 }
                 setAuthorizationError(authorizedSubmitRef.current ? null :
                   "Nothing was published. Mission Control could not authorize this report. " +

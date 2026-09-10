@@ -436,10 +436,19 @@ for (const failure of ["refused", "throws"] as const) {
         return false;
       };
     }, failure);
+    const diagnostic = failure === "throws" ? dashboard.waitForEvent("console", {
+      predicate: (message) => message.type() === "error" &&
+        message.text().includes("Product issue authorization failed"),
+    }) : null;
     await publish(dashboard);
+    if (diagnostic) {
+      expect((await diagnostic).text()).toContain("Desktop bridge disconnected");
+    }
     await expect(form(dashboard).getByRole("alert")).toContainText("Nothing was published");
     await expect(form(dashboard).getByRole("alert")).toContainText("Quit and reopen the desktop app");
     await expect(titleBox(dashboard)).toHaveValue("Test");
+    await expect(form(dashboard).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("Test issue, do nothing.");
     await expectContentClearsBorder(form(dashboard));
     expect(productCreates(daemon)).toHaveLength(0);
     if (process.env.MC_E2E_EVIDENCE === "1" && failure === "refused") {
@@ -451,6 +460,8 @@ for (const failure of ["refused", "throws"] as const) {
     await form(dashboard).getByRole("button", { name: "Clear" }).click();
     await expect(form(dashboard).getByRole("alert")).toHaveCount(0);
     await expect(titleBox(dashboard)).toHaveValue("");
+    await expect(form(dashboard).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("");
   });
 }
 

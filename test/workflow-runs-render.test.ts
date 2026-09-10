@@ -3187,7 +3187,7 @@ test("run detail shows the review contract beside its opening request and proven
   assert.doesNotMatch(render(base, { pane: "intent" }), /Opening request/);
 });
 
-test("run detail omits a relationship suffix for unresolved intent provenance", () => {
+test("run detail labels unresolved intent provenance explicitly", () => {
   const base = runningDetail();
   const first = base.submissions[0]!;
   const context = first.context as { [key: string]: WorkflowJson };
@@ -3201,5 +3201,5 @@ test("run detail omits a relationship suffix for unresolved intent provenance", 
   } }] } as WorkflowRunDetail;
   const html = render(updated, { pane: "intent" });
   const provenance = html.match(/<p class="wf-run-meta">(Objective version[^<]*)<\/p>/)?.[1];
-  assert.equal(provenance, "Objective version 2 · prompt revision 4 · resolved revision 3");
+  assert.equal(provenance, "Objective version 2 · prompt revision 4 · resolved revision 3 · unresolved");
 });

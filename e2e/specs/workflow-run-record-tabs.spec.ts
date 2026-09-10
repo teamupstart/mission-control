@@ -176,7 +176,12 @@ async function seedRun(page: Page, daemon: DaemonHandle): Promise<{
  * state sentences, which recovery buttons are offered, the collapsed decision summaries - is
  * computed by the real code from real records.
  */
-function seedRecord(daemon: DaemonHandle, runId: string, sessionId: string): void {
+function seedRecord(
+  daemon: DaemonHandle,
+  runId: string,
+  sessionId: string,
+  relationship: "steer" | null = "steer",
+): void {
   withDaemonDb(daemon, (db) => {
     const submission = db.prepare(
       `SELECT id, created_at FROM workflow_submissions WHERE run_id = ? ORDER BY round, segment LIMIT 1`,
@@ -217,7 +222,12 @@ function seedRecord(daemon: DaemonHandle, runId: string, sessionId: string): voi
         primaryGoal: {
           rawPrompt: "DURABLE OBJECTIVE BODY, frozen before review.",
           openingAsk: "Please make the run easier to read.",
-          intentSource: { objectiveVersion: 2, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer" },
+          intentSource: {
+            objectiveVersion: 2,
+            promptRevision: relationship === null ? 4 : 3,
+            resolvedPromptRevision: 3,
+            relationship,
+          },
           refined: REFINED_GOAL,
           sourceNoteKey: NOTE_KEY,
         },
@@ -487,4 +497,18 @@ test("a run with nothing blocking opens on the worklist, and offers no empty tab
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}\\?pane=intent$`));
   await expect(tab(dashboard, /^Intent/)).toHaveAttribute("aria-selected", "true");
   await expect(dashboard.getByRole("tabpanel", { name: /^Intent/ })).toBeVisible();
+});
+
+
+test("the Intent pane labels a pending relationship as unresolved", async ({ dashboard, daemon }) => {
+  const { runId, sessionId } = await seedRun(dashboard, daemon);
+  seedRecord(daemon, runId, sessionId, null);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  await tab(dashboard, /^Intent/).click();
+  const provenance = dashboard.getByText(
+    "Objective version 2 · prompt revision 4 · resolved revision 3 · unresolved",
+    { exact: true },
+  );
+  await expect(provenance).toBeVisible();
+  await shoot(dashboard, dashboard.getByRole("tabpanel", { name: /^Intent/ }), "05-unresolved-relationship");
 });

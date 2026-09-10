@@ -2348,7 +2348,7 @@ function IntentPane({
           Objective version {context.primaryGoal.intentSource.objectiveVersion}
           {` · prompt revision ${context.primaryGoal.intentSource.promptRevision}`}
           {` · resolved revision ${context.primaryGoal.intentSource.resolvedPromptRevision}`}
-          {context.primaryGoal.intentSource.relationship && ` · ${context.primaryGoal.intentSource.relationship}`}
+          {` · ${context.primaryGoal.intentSource.relationship ?? "unresolved"}`}
         </p>
       )}
       <RunDisclosure

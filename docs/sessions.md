@@ -465,11 +465,19 @@ looking up, and everything below follows from that or from what Pi itself has.
 - **No permission modes, and no questions to answer.** Pi's `manual`/`auto`/`readonly`
   vocabulary is not Mission Control's, so no mode chip is drawn and none can be set. Pi's
   structured extension prompts (`select`, `confirm`, `input`, `editor`) are not projected
-  onto the card yet either - a session that reaches one is waiting on a surface that does
-  not exist, which is why Pi remains ineligible for the Work Queue on both runtimes.
+  onto the card yet either: a session that reaches one is waiting on a surface that does not
+  exist. Foreman *can* hold a queue on a managed Pi session, because the driver is a real
+  pickup-and-completion channel - but until those prompts are projected, an extension that
+  asks something mid-turn will stall it with nothing to answer from. Project-local
+  extensions are excluded by default (below), so this needs a globally installed one to
+  bite.
 - **No Mission Control MCP tools.** Pi has no MCP client at all, so a managed Pi session
   cannot call `report_status`, `request_input` or their siblings - exactly as a terminal Pi
-  session cannot. A dispatch that *requires* those tools (an ensemble member, a scout, a
+  session cannot. A dispatch that *requires* those tools is refused before it starts.
+- **Multi-repository tasks stay on the terminal runtime.** Pi has no write boundary to grant
+  at all, but that was measured against the terminal path; the managed one declares `sdk:
+  false` rather than inheriting the answer, and the driver refuses secondary worktrees to
+  match. A dispatch that *requires* those tools (an ensemble member, a scout, a
   managed Pipeline host) is refused before it starts rather than left unable to report.
 - **Project-local Pi resources stay out unless Pi already trusts the checkout.** Pi gates
   project-local extensions, packages and `SYSTEM.md` behind a trust decision, and Mission
@@ -481,6 +489,9 @@ looking up, and everything below follows from that or from what Pi itself has.
   scrub, so the driver applies the same environment isolation itself: Pi's `bash` tool runs
   with Mission Control's disposable state home and without the daemon's loopback bearer or
   terminal identity, exactly as a Claude or Codex child does.
+- **Your repository standing instructions ride Pi's own system-prompt append**, the same
+  channel `pi --append-system-prompt` spends on the terminal runtime - so the rules reach a
+  Pi session the same way whichever runtime you dispatch it on, and they survive a Reset.
 - **Reasoning effort applies from the next turn**, the same as Codex, and the effort badge
   [says so on its face](#levels-that-apply-on-the-next-turn).
 - **Cost is reported per turn but not aggregated.** Pi prices every request and the figure

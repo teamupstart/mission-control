@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { launchedCommand } from "../fixtures/isolated-launch.ts";
 
 /**
  * Pi's managed runtime, on an Amazon Bedrock model, from the picker to the terminal handoff.
@@ -255,7 +256,10 @@ test("a Bedrock model runs on Pi's managed runtime, through every control it off
   await row.click();
 
   await expect.poll(() => workspaceCommands(daemon), { timeout: 20_000 }).toHaveLength(1);
-  const [command] = workspaceCommands(daemon);
+  // Read back THROUGH the launch wrapper: a backend is handed `'/bin/sh' '<wrapper>'` and
+  // nothing else, because Herdr can only start a command by typing it into a login shell and
+  // a long paste loses its Enter. The agent's own command line is the wrapper's last line.
+  const command = launchedCommand(workspaceCommands(daemon)[0]!);
   expect(command).toContain(join(daemon.home, "fake-bin", "fake-pi"));
   // `--session`, not `--resume` (which opens Pi's interactive picker and takes no id) and
   // not `--fork` (which branches instead of continuing). Three adjacent flags, one answer.

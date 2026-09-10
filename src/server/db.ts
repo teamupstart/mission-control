@@ -3152,6 +3152,46 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_task_worktree_retention_due
       ON task_worktree_retention(cleanup_due_at);
 
+    -- ---- closing a concluded recurring mission's agent session ----
+    --
+    -- The durable half of one terminal product boundary. When Foreman concludes a recurring
+    -- mission run whose policy is auto-on-conclusion, the task is done AND its agent is
+    -- finished with; the completion used to be recorded on its own and the session was left
+    -- live, holding its context and free to accept a prompt that reopened work already
+    -- called finished.
+    --
+    -- A row here is an OWED CLOSURE and nothing else. It is written when the completion
+    -- lands, it is cleared only once the daemon has OBSERVED that no live session answers to
+    -- session_id, and until then every restart finds it and carries on - which is the only
+    -- reason it is in SQLite rather than in a map. A stop request that was serviced is not
+    -- proof the agent is gone, so it never clears a row by itself.
+    --
+    -- deadline_at is the published guarantee (requested_at plus four minutes): the session is
+    -- out of the registry by then whether or not its backend cooperated, because a closure that
+    -- is still owed shortly before it escalates to retiring the session through the ordinary
+    -- eviction. While it is outstanding the task's automatic-cleanup summary says so, because a
+    -- closure nobody can confirm has to be visible rather than assumed. Stored rather than
+    -- computed on read for the reason the retention ledger stores its own deadline: a restart
+    -- resumes the boundary that was actually granted.
+    --
+    -- No state column on purpose. Overdue is now past deadline_at and closed is "no row", so
+    -- there is no stored state that can disagree with the clock or with the sweep.
+    CREATE TABLE IF NOT EXISTS task_session_closures (
+      task_id      TEXT NOT NULL PRIMARY KEY,
+      session_id   TEXT NOT NULL,
+      requested_at INTEGER NOT NULL,
+      deadline_at  INTEGER NOT NULL,
+      attempts     INTEGER NOT NULL DEFAULT 0,
+      -- Bounded internal diagnosis of the last attempt that did not stop the session, or NULL
+      -- while every attempt so far has been serviced. Same rule as the retention ledger's
+      -- column: what crosses to a browser is a sentence, never provider output or a path.
+      last_error   TEXT,
+      updated_at   INTEGER NOT NULL
+    );
+    -- The prompt-delivery boundary asks "is this session being closed?" before every send.
+    CREATE INDEX IF NOT EXISTS idx_task_session_closures_session
+      ON task_session_closures(session_id);
+
     -- ---- line comments in the Files workspace ----
     --
     -- A comment anchored to a line of a file a session is working in, and the review queue
@@ -7512,6 +7552,170 @@ export function settleTaskWithRetentionAdoption(input: {
   }
 }
 
+// ---- closing a concluded recurring mission's agent session ----
+//
+// Read the `task_session_closures` CREATE TABLE above before touching any of this. Two rules
+// hold the whole thing together: a row is cleared only by an OBSERVED absence, and nothing
+// here ever extends a deadline that was already granted.
+
+export interface TaskSessionClosureRow {
+  taskId: string;
+  sessionId: string;
+  requestedAt: number;
+  deadlineAt: number;
+  attempts: number;
+  lastError: string | null;
+  updatedAt: number;
+}
+
+interface TaskSessionClosureDbRow {
+  task_id: string;
+  session_id: string;
+  requested_at: number;
+  deadline_at: number;
+  attempts: number;
+  last_error: string | null;
+  updated_at: number;
+}
+
+function rowToTaskSessionClosure(r: TaskSessionClosureDbRow): TaskSessionClosureRow {
+  return {
+    taskId: r.task_id,
+    sessionId: r.session_id,
+    requestedAt: r.requested_at,
+    deadlineAt: r.deadline_at,
+    attempts: r.attempts,
+    lastError: r.last_error,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Record that this task's agent session is owed a closure, and answer the row that now holds.
+ *
+ * Idempotent, and deliberately NOT a plain replace. Re-recording the SAME session keeps the
+ * deadline, the attempt count and the last failure it already had: the guarantee is measured
+ * from the completion the operator can see, so a second signal about the same closure must not
+ * quietly buy another four minutes. A row naming a DIFFERENT session is a different closure -
+ * the previous agent went away and a new one took the task - and starts clean.
+ */
+export function openTaskSessionClosure(
+  taskId: string,
+  sessionId: string,
+  requestedAt: number,
+  deadlineAt: number,
+): TaskSessionClosureRow {
+  const d = openDb();
+  d.prepare(
+    `INSERT INTO task_session_closures
+       (task_id, session_id, requested_at, deadline_at, attempts, last_error, updated_at)
+     VALUES (?, ?, ?, ?, 0, NULL, ?)
+     ON CONFLICT(task_id) DO UPDATE SET
+       session_id   = excluded.session_id,
+       requested_at = CASE WHEN task_session_closures.session_id = excluded.session_id
+                           THEN task_session_closures.requested_at ELSE excluded.requested_at END,
+       deadline_at  = CASE WHEN task_session_closures.session_id = excluded.session_id
+                           THEN task_session_closures.deadline_at ELSE excluded.deadline_at END,
+       attempts     = CASE WHEN task_session_closures.session_id = excluded.session_id
+                           THEN task_session_closures.attempts ELSE 0 END,
+       last_error   = CASE WHEN task_session_closures.session_id = excluded.session_id
+                           THEN task_session_closures.last_error ELSE NULL END,
+       updated_at   = excluded.updated_at`,
+  ).run(taskId, sessionId, requestedAt, deadlineAt, requestedAt);
+  return getTaskSessionClosure(taskId)!;
+}
+
+/**
+ * Persist a completed task and the closure its agent is owed, in ONE transaction.
+ *
+ * The ordering problem this removes. The completion and the closure used to be two writes -
+ * the task row, then the ledger from the completion's callback - and a daemon that died
+ * between them left a durable `done` task with no record that anything was owed. That is the
+ * one interruption restart recovery cannot repair, because the surviving session is then
+ * indistinguishable from any other live agent: the task is terminal, so no sweep revisits it,
+ * and the ledger the closure sweep reads is empty. The mission's agent would run on for ever,
+ * which is the exact failure this whole path exists to end.
+ *
+ * So they commit together or not at all, exactly as `settleTaskWithRetentionAdoption` commits
+ * a settlement and its retention adoption. `upsertTask` joins this transaction rather than
+ * opening its own - see its `ownsTransaction` guard - which is what makes the pair atomic, and
+ * `displaced` is handed back so the caller still unbinds the session pointers that write moved.
+ *
+ * The deadline is computed by the caller from the `completedAt` it is writing in the same
+ * breath, so the guarantee is anchored to the completion time the operator can see.
+ */
+export function completeTaskWithSessionClosure(
+  task: Task,
+  closure: { sessionId: string; requestedAt: number; deadlineAt: number },
+): readonly string[] {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const displaced = upsertTask(task);
+    openTaskSessionClosure(task.id, closure.sessionId, closure.requestedAt, closure.deadlineAt);
+    d.exec("COMMIT");
+    return displaced;
+  } catch (err) {
+    if (d.isTransaction) d.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+export function getTaskSessionClosure(taskId: string): TaskSessionClosureRow | null {
+  const r = openDb()
+    .prepare(`SELECT * FROM task_session_closures WHERE task_id = ?`)
+    .get(taskId) as unknown as TaskSessionClosureDbRow | undefined;
+  return r ? rowToTaskSessionClosure(r) : null;
+}
+
+/**
+ * Every closure still owed, oldest deadline first.
+ *
+ * Read whole rather than filtered by due-ness: the table holds one row per mission run whose
+ * agent has not been confirmed gone yet, which is normally none and never many, and the sweep
+ * wants all of them on every pass anyway.
+ */
+export function listTaskSessionClosures(): TaskSessionClosureRow[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM task_session_closures ORDER BY deadline_at ASC, task_id ASC`)
+    .all() as unknown as TaskSessionClosureDbRow[];
+  return rows.map(rowToTaskSessionClosure);
+}
+
+/** The closure owed by a live session, if one is - the prompt boundary's question. */
+export function taskSessionClosureForSession(sessionId: string): TaskSessionClosureRow | null {
+  const r = openDb()
+    .prepare(`SELECT * FROM task_session_closures WHERE session_id = ? LIMIT 1`)
+    .get(sessionId) as unknown as TaskSessionClosureDbRow | undefined;
+  return r ? rowToTaskSessionClosure(r) : null;
+}
+
+/**
+ * Count one attempt against an owed closure.
+ *
+ * `error` is the bounded classification of an attempt that was REFUSED; null says the stop was
+ * serviced and the daemon is now waiting to observe the session leave. Either way the row
+ * stays: only an observed absence closes one.
+ */
+export function recordTaskSessionClosureAttempt(
+  taskId: string,
+  at: number,
+  error: string | null,
+): void {
+  openDb()
+    .prepare(
+      `UPDATE task_session_closures
+          SET attempts = attempts + 1, last_error = ?, updated_at = ?
+        WHERE task_id = ?`,
+    )
+    .run(error === null ? null : error.slice(0, TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT), at, taskId);
+}
+
+/** Close the ledger on a task whose session has been observed gone, or that no longer owes one. */
+export function clearTaskSessionClosure(taskId: string): void {
+  openDb().prepare(`DELETE FROM task_session_closures WHERE task_id = ?`).run(taskId);
+}
+
 /**
  * The bounded, browser-safe view of a task's automatic cleanup, or null.
  *
@@ -7523,6 +7727,14 @@ export function settleTaskWithRetentionAdoption(input: {
  * What does not cross, ever: the fingerprint, the generation, the claim token, raw git or
  * provider output, and any path the task row does not already carry. This is a maintenance
  * note on a card, not a debugging channel.
+ *
+ * TWO ledgers project here, not one, and that is on purpose: "automatic cleanup is retrying"
+ * is the one line the board has for maintenance the daemon owns and a person did not ask for,
+ * and an owed session closure is exactly that. A parallel field would have said the same
+ * sentence in a second place. They cannot meaningfully collide - a retention row only reaches
+ * `retry` thirty days after its task went terminal, and a session closure is resolved or
+ * visibly overdue within minutes of one - and where they somehow do, the closure wins: a live
+ * agent nobody could stop outranks a checkout that has been sitting quietly for a month.
  */
 export function taskAutomaticCleanupSummaries(
   taskIds: readonly string[],
@@ -7549,7 +7761,6 @@ export function taskAutomaticCleanupSummaries(
       retry_at: number | null;
       last_error: string | null;
     }>;
-  if (rows.length === 0) return out;
   const wanted = new Set(taskIds);
   for (const row of rows) {
     if (!wanted.has(row.task_id)) continue;
@@ -7559,7 +7770,59 @@ export function taskAutomaticCleanupSummaries(
       detail: row.last_error ? row.last_error.slice(0, TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT) : null,
     });
   }
+  applySessionClosureSummaries(d, wanted, Date.now(), out);
   return out;
+}
+
+/**
+ * Fold owed session closures into the automatic-cleanup projection.
+ *
+ * Only a closure that has already been REFUSED once, or that is past its four-minute
+ * guarantee, says anything. The ordinary case - a stop that was serviced and a session the
+ * daemon is about to watch disappear - is a second or two long and is not a maintenance note;
+ * announcing it would put "automatic cleanup is retrying" onto the card of every recurring
+ * mission run that finished perfectly.
+ */
+function applySessionClosureSummaries(
+  d: DatabaseSync,
+  wanted: Set<string>,
+  now: number,
+  out: Map<string, TaskAutomaticCleanup>,
+): void {
+  // Whole table for the reason the retention read above is: `listTasks` passes every task a
+  // long-lived install ever filed, which no `IN (?, …)` can take. There is at most one row per
+  // mission run whose agent is not confirmed gone, which is normally none. The single-id case
+  // still takes the primary key, because `getTask` is hot.
+  const one = wanted.size === 1 ? [...wanted][0]! : null;
+  const rows = (one === null
+    ? d.prepare(
+      `SELECT task_id, deadline_at, attempts, last_error FROM task_session_closures
+        WHERE last_error IS NOT NULL OR deadline_at <= ?`,
+    ).all(now)
+    : d.prepare(
+      `SELECT task_id, deadline_at, attempts, last_error FROM task_session_closures
+        WHERE task_id = ? AND (last_error IS NOT NULL OR deadline_at <= ?)`,
+    ).all(one, now)) as unknown as Array<{
+      task_id: string;
+      deadline_at: number;
+      attempts: number;
+      last_error: string | null;
+    }>;
+  for (const row of rows) {
+    if (!wanted.has(row.task_id)) continue;
+    const overdue = row.deadline_at <= now;
+    const reason = row.last_error ?? "the agent has not gone away yet";
+    const detail =
+      `${overdue ? "this run's agent session is still open past its close deadline" : "closing this run's agent session"} - ${reason}`;
+    out.set(row.task_id, {
+      state: "retrying",
+      // The closure sweep runs on a fixed cadence rather than a scheduled instant, so there is
+      // no honest "next attempt at" to publish. Null is what the field already means when the
+      // daemon is ready now, which is the truthful answer here.
+      retryAt: null,
+      detail: detail.slice(0, TASK_AUTOMATIC_CLEANUP_DETAIL_LIMIT),
+    });
+  }
 }
 
 // ---- task sources: what has already been filed ----

@@ -11,9 +11,19 @@
 // build does bundle it (`build:hook`), but the repo install does not, so a `.ts` import
 // here would work in the packaged app and fail in every developer's terminal.
 //
-// Contract with the agent, whichever it is: be fast, write NOTHING to stdout (the agent
-// would inject it into the model's context), swallow every error, and always exit 0 so a
-// hook never blocks or fails the session - even when the daemon is down.
+// Contract with the agent, whichever it is: be fast, swallow every error, and always exit 0.
+// Write nothing to stdout except a decision the daemon explicitly asked for - anything else
+// would be injected into the model's context - and never let the daemon being slow, down or
+// unintelligible block a session.
+//
+// That last clause used to read "a hook never blocks", full stop, and the one exception now
+// carved out of it is deliberate and narrow. `POST /hooks/:event` may answer a
+// `UserPromptSubmit` with a block decision, which is how Mission Control stops a prompt from
+// starting a turn on a session it has already concluded and is closing. It is FAIL-OPEN in
+// every direction: no answer, a slow answer, a non-JSON answer, a 204, or any error at all
+// means the prompt goes ahead exactly as it always did. Only an explicit, well-formed refusal
+// stops one, and the daemon only ever issues one for a session its durable closure ledger
+// says is owed a close.
 
 import { BASE_URL, readClientToken } from "./harness-runtime.mjs";
 
@@ -37,22 +47,38 @@ export function readStdin() {
 }
 
 /**
- * POST one already-mapped event to the daemon. Never throws and never reports failure:
- * the daemon being down is ordinary (nothing requires it to be running for an agent to
- * work), and the passive poller keeps tracking the session either way.
+ * POST one already-mapped event to the daemon, and hand back its decision if it sent one.
+ *
+ * Never throws and never reports failure: the daemon being down is ordinary (nothing requires
+ * it to be running for an agent to work), and the passive poller keeps tracking the session
+ * either way.
+ *
+ * Returns `null` for every ordinary event - a 204, no daemon, a timeout, a body that will not
+ * parse - and an object only when the daemon deliberately answered with one. Callers treat
+ * `null` as "carry on", so every failure mode lands on the permissive side by construction
+ * rather than by remembering to check.
  */
 export async function postHookEvent(body) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), POST_TIMEOUT_MS);
   try {
-    await fetch(`${BASE_URL}/hooks/${encodeURIComponent(body.event)}`, {
+    const res = await fetch(`${BASE_URL}/hooks/${encodeURIComponent(body.event)}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-harness-token": readClientToken() },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });
+    if (res.status === 204 || !res.ok) return null;
+    const text = await res.text();
+    if (!text) return null;
+    const decision = JSON.parse(text);
+    // An array is JSON and an object, and it is not a decision. Spelled out rather than left
+    // to `typeof`, because everything unrecognised has to land on "carry on" by construction.
+    if (!decision || typeof decision !== "object" || Array.isArray(decision)) return null;
+    return decision;
   } catch {
-    // daemon down or slow - ignore, the poller still tracks the session.
+    // daemon down, slow, or talking nonsense - ignore, the poller still tracks the session.
+    return null;
   } finally {
     clearTimeout(timer);
   }

@@ -3837,6 +3837,16 @@ export function buildApp(
     if (!body) return c.json({ error: "invalid json" }, 400);
     const parsed = HookIngestSchema.safeParse({ ...(body as object), event: c.req.param("event") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    // Asked BEFORE the event is applied, and the ordering is the whole point: a refused prompt
+    // must leave no trace of a turn. Applying first would mark the card `working` and open a
+    // work cycle for a generation that is about to be refused, which is a lie the board would
+    // then have to be corrected out of.
+    //
+    // 204 stays the answer for every other event and every ordinary prompt, so nothing that
+    // exists today reads a body it did not before. See `promptRefusalForHook` for how narrow
+    // the refusing case is.
+    const refusal = registry.promptRefusalForHook(parsed.data);
+    if (refusal) return c.json({ decision: "block", reason: refusal });
     registry.applyHook(parsed.data);
     return c.body(null, 204);
   });
@@ -5407,7 +5417,9 @@ export function buildApp(
     // Only a recurring mission's task with `auto-on-conclusion` moves here; `TaskManager` owns
     // every one of those gates, and for everything else this is a no-op.
     if (parsed.data.decision) {
-      tasks.concludeScheduledMissionRun(session.id, parsed.data.decision);
+      // Awaited: the concluded run's agent is asked to go before this request answers, so no
+      // window opens between Foreman recording the verdict and anything starting the teardown.
+      await tasks.concludeScheduledMissionRun(session.id, parsed.data.decision);
     }
     return c.json(queues.get(session.id));
   });

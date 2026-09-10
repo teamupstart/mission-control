@@ -1626,7 +1626,7 @@ test("a round whose captured context this build cannot read says so instead of t
   );
   // The apostrophe reaches the markup escaped, so the assertion starts after it.
   assert.match(earlier, /s captured context is not readable by this build/);
-  assert.doesNotMatch(earlier, /Original goal/);
+  assert.doesNotMatch(earlier, /Review contract/);
   // The round is otherwise intact: its verdicts and the run's own actions are still there.
   // The verdicts are a pane away rather than a scroll away, which is the whole change.
   assert.match(render(detail, { roundId: "submission-1" }), /Fix the race/);
@@ -3164,4 +3164,42 @@ test("a route naming a pane this run does not offer lands on a real one", () => 
   assert.doesNotMatch(html, /run-record-tab-deliveries/);
   assert.match(html, /id="run-record-tab-worklist" aria-selected="true"/);
   assert.match(html, /class="wf-run-worklist"/);
+});
+
+
+test("run detail shows the review contract beside its opening request and provenance", () => {
+  const base = runningDetail();
+  const first = base.submissions[0]!;
+  const context = first.context as { [key: string]: WorkflowJson };
+  const updated = { ...base, submissions: [{ ...first, context: {
+    ...context, primaryGoal: {
+      ...(context.primaryGoal as { [key: string]: WorkflowJson }), rawPrompt: "Durable completion contract", openingAsk: "Opening human words",
+      intentSource: { objectiveVersion: 2, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer" },
+    },
+  } }] } as WorkflowRunDetail;
+  const html = render(updated, { pane: "intent" });
+  assert.match(html, /Review contract/);
+  assert.match(html, /Durable completion contract/);
+  assert.match(html, /Opening request/);
+  assert.match(html, /Opening human words/);
+  assert.match(html, /Objective version 2/);
+  assert.match(html, /prompt revision 3/);
+  assert.doesNotMatch(render(base, { pane: "intent" }), /Opening request/);
+});
+
+test("run detail labels unresolved intent provenance explicitly", () => {
+  const base = runningDetail();
+  const first = base.submissions[0]!;
+  const context = first.context as { [key: string]: WorkflowJson };
+  const updated = { ...base, submissions: [{ ...first, context: {
+    ...context, primaryGoal: {
+      ...(context.primaryGoal as { [key: string]: WorkflowJson }),
+      intentSource: {
+        objectiveVersion: 2, promptRevision: 4, resolvedPromptRevision: 3, relationship: null,
+      },
+    },
+  } }] } as WorkflowRunDetail;
+  const html = render(updated, { pane: "intent" });
+  const provenance = html.match(/<p class="wf-run-meta">(Objective version[^<]*)<\/p>/)?.[1];
+  assert.equal(provenance, "Objective version 2 · prompt revision 4 · resolved revision 3 · unresolved");
 });

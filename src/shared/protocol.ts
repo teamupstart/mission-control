@@ -5299,9 +5299,18 @@ export const WorkflowCheckEvidenceSchema = z.object({
   note: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
 });
 
+const WorkflowIntentSourceSchema = z.object({
+  objectiveVersion: z.number().int().nonnegative(),
+  promptRevision: z.number().int().nonnegative(),
+  resolvedPromptRevision: z.number().int().nonnegative(),
+  relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable(),
+});
+
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
+    openingAsk: z.string().nullable().optional(),
+    intentSource: WorkflowIntentSourceSchema.nullable().optional(),
     refined: z.string().max(16_000).nullable(),
     sourceNoteKey: z.string().min(1).max(1_000),
   }),
@@ -5435,6 +5444,8 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
  */
 export const WorkflowRunIntentSnapshotSchema = z.object({
   rawGoal: z.string().max(16_000),
+  openingAsk: z.string().nullable().optional(),
+  intentSource: WorkflowIntentSourceSchema.nullable().optional(),
   refinedGoal: z.string().max(16_000).nullable(),
   sourceNoteKey: z.string().min(1).max(1_000),
   decisions: z.array(WorkflowHumanDecisionSchema).max(200),

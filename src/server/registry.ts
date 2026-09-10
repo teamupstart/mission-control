@@ -213,6 +213,8 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskSessionClosureForSession,
+  getTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   primaryRepoPrForTask,
@@ -1231,6 +1233,40 @@ export class Registry extends EventEmitter {
     }
     const current = this.sessions.get(sessionId);
     if (current) this.beginEviction(current);
+    return true;
+  }
+
+  /**
+   * Retire the agent of a concluded recurring mission run that would not stop when asked.
+   *
+   * The escalation behind the four-minute guarantee, and the reason it exists at all: asking
+   * politely is not a guarantee. A stop the multiplexer refuses, or a driver that accepts one
+   * and then does not go, used to mean the closure retried for ever while the session stayed on
+   * the fleet - which is the state the whole boundary was built to make impossible.
+   *
+   * NOT a second eviction path. It goes through `beginEviction`, exactly as
+   * `replacePipelineEngineerHost` does, so `session_remove` keeps its single producer and every
+   * durable subscriber - workflow bindings, task settling, review orphaning - sees the ordinary
+   * event. `beginEviction` is idempotent through its own timer, so a session already on its way
+   * out keeps the deadline it had.
+   *
+   * Self-authorizing rather than trusting its caller: it retires a session only when the
+   * DURABLE closure ledger says that exact task is owed that exact session's close. A caller
+   * that has confused two sessions cannot get one retired through here.
+   *
+   * What this cannot promise. Retiring the card is a statement about the registry, not about
+   * the operating system: if a pane's multiplexer genuinely refused to kill it, the process may
+   * still be alive, and passive discovery may re-adopt it as a new sighting later. The task it
+   * ran stays `done` either way - the completion is terminal - and the refusal is on the record
+   * in the daemon log. That residue is strictly better than the alternative it replaces, which
+   * was a live session bound to a finished mission for ever.
+   */
+  retireConcludedMissionSession(taskId: string, sessionId: string): boolean {
+    const owed = getTaskSessionClosure(taskId);
+    if (!owed || owed.sessionId !== sessionId) return false;
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    this.beginEviction(session);
     return true;
   }
 
@@ -3460,6 +3496,34 @@ export class Registry extends EventEmitter {
         updatedAt: Date.now(),
       });
     }
+  }
+
+  /**
+   * Why a prompt this hook is announcing must not be processed, or null to let it through.
+   *
+   * The other half of the concluded-mission boundary, and the half that reaches a prompt
+   * Mission Control never sees. `promptResourceBlockerForSession` refuses everything this
+   * daemon would DELIVER; a person typing into the pane bypasses all of it, because the
+   * agent's own harness takes the keystrokes and only then asks its hooks whether to go
+   * ahead. This is that question, answered.
+   *
+   * What it can and cannot promise, stated plainly: the keystrokes have already landed and
+   * nothing can un-type them. What a refusal buys is that no TURN begins - the prompt is not
+   * processed, no generation opens, and the concluded run's agent does no further work.
+   *
+   * Scoped hard, because a wrong answer here refuses a person's prompt at their own terminal:
+   * only a session that the DURABLE closure ledger says is owed a close is ever refused, and
+   * that ledger is empty except in the seconds between a mission run concluding and its agent
+   * going. Every other session, and every other event, is none of this function's business.
+   */
+  promptRefusalForHook(evt: HookIngest): string | null {
+    if (evt.event !== "UserPromptSubmit") return null;
+    const session = this.findSessionForHook(evt, overlayKeyFromEnv(evt.env));
+    if (!session) return null;
+    const closing = taskSessionClosureForSession(session.id);
+    if (!closing) return null;
+    const task = this.tasks.get(closing.taskId);
+    return `This session's recurring mission run${task ? ` (${task.title})` : ""} was concluded and Mission Control is closing the session, so this prompt was not run. Dispatch a new agent for follow-up work.`;
   }
 
   /**
@@ -6190,7 +6254,26 @@ export class Registry extends EventEmitter {
     );
   }
 
+  /**
+   * Why nothing may be delivered to this session right now, or null.
+   *
+   * Two refusals, and they answer different questions. The first is about RESOURCES a
+   * cancelled task still holds. The second is about a session that has been FINISHED WITH:
+   * when Foreman concludes a recurring mission run set to complete automatically, the task is
+   * done and its agent is owed a close, and a prompt arriving in that window is exactly the
+   * failure that boundary exists to remove - it reopened work the operator had seen finish and
+   * kept a mission's session alive across its own next occurrence.
+   *
+   * Reading the durable ledger rather than any in-memory flag is what makes the refusal
+   * survive the restart the closure itself survives, and it costs one indexed lookup on a
+   * table that is normally empty.
+   */
   promptResourceBlockerForSession(sessionId: string): string | null {
+    const closing = taskSessionClosureForSession(sessionId);
+    if (closing) {
+      const task = this.tasks.get(closing.taskId);
+      return `this session's recurring mission run was concluded${task ? ` (${task.title})` : ""} and the session is being closed - dispatch a new agent for follow-up work`;
+    }
     const owner = this.taskResourceOwnerForSession(
       sessionId,
       "cancelled",

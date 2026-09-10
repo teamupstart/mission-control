@@ -1,6 +1,8 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
+  claimInjectionEcho,
+  confirmReservedInjection,
   forgetInjections,
   originOf,
   recordInjection,
@@ -90,4 +92,37 @@ test("releasing one of several deliveries keeps the session and the rest", () =>
 
   assert.equal(originOf("s9", "twice-sent"), "foreman", "one delivery of it survives");
   assert.equal(originOf("s9", "once-sent"), undefined, "its only delivery was given back");
+});
+
+test("a refused retry never erases the label of a delivery that already landed", () => {
+  // The restart continuation is a fixed string, so a second restart reserves the exact text a
+  // first one already delivered. Release must give back only what its own reservation added:
+  // the earlier turn is still in the conversation, and the log asks who typed it every time it
+  // renders, so answering undefined would hand machine-typed words back to the operator.
+  const CONTINUATION = "Mission Control restarted while your previous turn was still in progress.";
+
+  reserveInjection("s10", CONTINUATION, "harness");
+  confirmReservedInjection("s10", CONTINUATION, "harness");
+  assert.equal(claimInjectionEcho("s10", CONTINUATION), "harness", "its echo is accounted for");
+  assert.equal(originOf("s10", CONTINUATION), "harness", "and the label outlives the claim");
+
+  // A second restart reserves the same text, and this time the driver refuses.
+  reserveInjection("s10", CONTINUATION, "harness");
+  releaseInjection("s10", CONTINUATION);
+
+  assert.equal(originOf("s10", CONTINUATION), "harness", "the delivered turn keeps its label");
+  assert.equal(
+    claimInjectionEcho("s10", CONTINUATION),
+    undefined,
+    "and the refused reservation owes no echo, so it cannot silence a later human turn",
+  );
+});
+
+test("a confirmed delivery settles to one owed echo, not two", () => {
+  // Reservation counts the echo; confirmation must not count a second, or the surplus is spent
+  // suppressing whatever the operator types next that repeats the text.
+  reserveInjection("s11", "packet", "workflow");
+  confirmReservedInjection("s11", "packet", "workflow");
+  assert.equal(claimInjectionEcho("s11", "packet"), "workflow");
+  assert.equal(claimInjectionEcho("s11", "packet"), undefined);
 });

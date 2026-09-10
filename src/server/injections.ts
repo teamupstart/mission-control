@@ -50,6 +50,17 @@ interface RememberedInjection {
   origin: TurnOrigin;
   /** Echoes delivered and not yet claimed by the Goal path. Incremented per delivery. */
   pending: number;
+  /**
+   * Whether any delivery of this text is known to have LANDED.
+   *
+   * A reservation is a claim about a send that has not happened, so it can be taken back. A
+   * confirmed delivery cannot: that turn is in the conversation forever, and the log asks who
+   * typed it every time it renders. Without this bit a release could not tell "undo the
+   * reservation I just made" from "nothing about this text was ever delivered", and a refused
+   * RETRY of a text that landed earlier - the restart continuation is a fixed string, so it
+   * retries verbatim - would erase the earlier turn's label and hand it back to the human.
+   */
+  delivered: boolean;
 }
 
 /** Fingerprint -> who typed it, per session. Collision-resistant hashes rather than the payloads themselves:
@@ -107,8 +118,8 @@ export function observeInjections(fn: InjectionObserver | null): void {
   observer = fn;
 }
 
-/** Write the label and count one owed echo. Shared by reservation and confirmation. */
-function remember(sessionId: string, text: string, origin: TurnOrigin): void {
+/** Write the label and count one owed echo. `landed` marks the label permanent. */
+function remember(sessionId: string, text: string, origin: TurnOrigin, landed: boolean): void {
   let byText = seen.get(sessionId);
   if (!byText) {
     // Insertion order is the Map's own, so the first key is the least recently STARTED
@@ -125,7 +136,13 @@ function remember(sessionId: string, text: string, origin: TurnOrigin): void {
   const key = injectionFingerprint(text);
   const prior = byText.get(key);
   byText.delete(key);
-  byText.set(key, { origin, pending: (prior?.pending ?? 0) + 1 });
+  byText.set(key, {
+    origin,
+    pending: (prior?.pending ?? 0) + 1,
+    // Sticky: one confirmed delivery makes the label permanent for every later reservation
+    // of the same text, which is what stops a refused retry from erasing it.
+    delivered: (prior?.delivered ?? false) || landed,
+  });
   while (byText.size > PER_SESSION) {
     const oldest = byText.keys().next();
     if (oldest.done) break;
@@ -148,7 +165,7 @@ function remember(sessionId: string, text: string, origin: TurnOrigin): void {
  * that were attempted - so the journal waits for `recordInjection` to confirm.
  */
 export function reserveInjection(sessionId: string, text: string, origin: TurnOrigin): void {
-  remember(sessionId, text, origin);
+  remember(sessionId, text, origin, false);
 }
 
 /**
@@ -167,6 +184,13 @@ export function releaseInjection(sessionId: string, text: string): void {
   if (!prior) return;
   if (prior.pending > 1) {
     byText.set(key, { ...prior, pending: prior.pending - 1 });
+    return;
+  }
+  // Give back only what this reservation added. A text that has landed before keeps its
+  // label with nothing owed: the earlier turn is still in the conversation, and answering
+  // `undefined` for it would re-attribute machine-typed words to the operator.
+  if (prior.delivered) {
+    byText.set(key, { ...prior, pending: 0 });
     return;
   }
   byText.delete(key);
@@ -198,7 +222,7 @@ function notifyObserver(sessionId: string, text: string, origin: TurnOrigin): vo
 
 /** Remember that `origin` - not the human - typed `text` into this session. */
 export function recordInjection(sessionId: string, text: string, origin: TurnOrigin): void {
-  remember(sessionId, text, origin);
+  remember(sessionId, text, origin, true);
   notifyObserver(sessionId, text, origin);
 }
 
@@ -217,6 +241,11 @@ export function confirmReservedInjection(
   text: string,
   origin: TurnOrigin,
 ): void {
+  // The one thing it changes about the entry: this send really happened, so the label is now
+  // permanent and no later release may take it away. The echo count is deliberately untouched
+  // - the reservation already counted it, and by now it may already have been spent.
+  const prior = seen.get(sessionId)?.get(injectionFingerprint(text));
+  if (prior) prior.delivered = true;
   notifyObserver(sessionId, text, origin);
 }
 

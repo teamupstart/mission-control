@@ -2046,3 +2046,70 @@ test("evidence retention removed cannot wedge the claims that outlived it", () =
     rmSync(checkout, { recursive: true, force: true });
   }
 });
+
+test("re-scoping an item does not wedge the untouched claims that link it", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-scopedrift-")));
+  try {
+    const body = "the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "scoped.log"), body);
+    const { store, noteKey } = fixture(checkout);
+    const scoped = {
+      ...logWrite({
+        id: "scoped-item",
+        clientItemId: "scoped-proof",
+        root: checkout,
+        locator: "scoped.log",
+        caption: "The suite this criterion rests on",
+        body,
+      }),
+      repositoryScope: "repo-01",
+    };
+    store.stageWorkflowEvidence(noteKey, [scoped], 2, "intent:1:1", [{
+      id: "scoped-claim",
+      clientCriterionId: "scoped-criterion",
+      criterion: "The primary repository's suite passes",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "repo-01" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "scoped-proof", role: "execution" as const }],
+    }]);
+
+    // A later call corrects the item's slot. The claim above is untouched, still staged, and
+    // now points at evidence whose scope no longer matches its own - through nothing its author
+    // did and nothing this caller can fix from here.
+    store.stageWorkflowEvidence(
+      noteKey,
+      [{ ...scoped, caption: "Actually the second repository's suite", repositoryScope: "repo-02" }],
+      3,
+      "intent:1:1",
+    );
+    assert.deepEqual(
+      store.listWorkflowEvidence(noteKey).artifacts.map((item) => item.repositoryScope),
+      ["repo-02"],
+      "the re-scope lands instead of being refused on an older claim's behalf",
+    );
+    assert.deepEqual(
+      (store.listWorkflowEvidence(noteKey).coverage ?? []).map((claim) => claim.clientCriterionId),
+      ["scoped-criterion"],
+      "and the claim it drifted away from is carried, not destroyed",
+    );
+
+    // A claim registered NOW still answers for its links: this is the one moment its author can
+    // choose a scope that matches.
+    assert.throws(
+      () => store.stageWorkflowEvidence(noteKey, [], 4, "intent:1:1", [{
+        id: "fresh-scoped-claim",
+        clientCriterionId: "fresh-scoped-criterion",
+        criterion: "A criterion registered now against the wrong slot",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "repo-01" as const,
+        sourceRoot: checkout,
+        links: [{ clientItemId: "scoped-proof", role: "execution" as const }],
+      }]),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && error.code === "coverage_link_scope",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});

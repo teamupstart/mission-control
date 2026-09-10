@@ -5238,13 +5238,22 @@ export class WorkflowStore {
         );
       }
       for (const claim of nextCoverage) {
-        // Only a claim this call is registering has to answer for its links. A claim registered
-        // earlier is re-validated here because the SET has to stay coherent, but its evidence
-        // can go missing without anyone asking for it: `runRetention` deletes a reserved row
-        // once the submission holding it is pruned. Refusing on its behalf would wedge every
-        // later registration on this conversation behind a repair only retention could make,
-        // which is the failure this whole path exists to stop. Readiness already reports a
-        // claim whose proof it cannot find, so the gap is stated rather than hidden.
+        /*
+         * Only a claim this call is registering has to answer for its links. A claim registered
+         * earlier is walked here because the whole set is validated together, but its links can
+         * stop satisfying these rules through nobody's doing and nobody's power to repair:
+         *
+         * - the evidence is gone, because `runRetention` deletes a reserved row once the
+         *   submission holding it is pruned;
+         * - the evidence is still there under a different repository scope or root, because a
+         *   later call re-registered that `clientItemId`.
+         *
+         * Both are the same shape: refusing on the older claim's behalf would wedge every later
+         * registration on this conversation behind a repair the caller cannot make, which is the
+         * failure this whole path exists to stop. Readiness already reports a claim whose proof
+         * it cannot find, so the gap is stated rather than hidden. A claim being registered NOW
+         * still answers for every link it carries, which is the one moment its author can act.
+         */
         const registeredNow = changedCriterionIds.has(claim.clientCriterionId);
         for (const link of claim.links) {
           const item = nextItemScopes.get(link.clientItemId);
@@ -5265,6 +5274,7 @@ export class WorkflowStore {
               && item.repositoryScope === claim.repositoryScope
               && item.sourceRoot === sourceRoot);
           if (!scopeMatches) {
+            if (!registeredNow) continue;
             throw new WorkflowImageEvidenceError(
               "coverage_link_scope",
               `Workflow coverage claim ${claim.clientCriterionId} links evidence`

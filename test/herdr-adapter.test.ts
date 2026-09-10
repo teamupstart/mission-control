@@ -761,6 +761,44 @@ test("a pane whose text cannot be read still gets its Enter, and is judged on wh
   }
 });
 
+test("a launch resolves the Herdr server once, however long it has to poll", async () => {
+  // Every ordinary client call runs `herdr status server --json` - a CLI subprocess - to find
+  // the socket before the request. A launch polls twice: for the paste to settle, then for the
+  // agent to start. Left per-request, a launch that has to wait out both deadlines spawns
+  // dozens of those probes for one dispatch, on the path a person is waiting on.
+  //
+  // The clock here advances 100ms per sleep, so the launch really does run its polls to the
+  // deadline rather than short-circuiting - which is the only condition under which the
+  // difference is visible at all.
+  let clock = 0;
+  const slow: Partial<HerdrClientDeps> = {
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    now: () => clock,
+  };
+  const fake = await launchFake(shellOnly);
+  const probes: Array<{ bin: string; args: string[] }> = [];
+  try {
+    const launched = await herdrMultiplexer(execStatus(fake.path, probes), slow).sessions!.spawnDetached({
+      name: "work", cwd: "/repo", select: false, argv: ["agent"], sidePane: false,
+    });
+    assert.equal(launched.ok, false, "the shell-only pane is still a failed launch");
+
+    const polls = fake.requests.filter((request) =>
+      request.method === "pane.read" || request.method === "pane.process_info").length;
+    assert.ok(polls > 20, `the polls should have run to their deadlines, got ${polls}`);
+    // One for the workspace creation's readiness, one for the resolved server, one for the
+    // rollback's close. The polls in between add none.
+    assert.ok(
+      probes.length <= 5,
+      `a launch should resolve the server once, not once per poll - ${probes.length} probes for ${polls} polls`,
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
 test("default-session selectors are scrubbed from probes, server environment, and full-client attach", () => {
   const base: NodeJS.ProcessEnv = { PATH: "/bin", KEEP: "yes" };
   const dropEnv = executableSpec("herdr").dropEnv;

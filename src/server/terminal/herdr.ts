@@ -4,6 +4,7 @@ import {
   asTerminal,
   createHerdrClient,
   type HerdrClientDeps,
+  type HerdrPaneRequests,
   type HerdrProbe,
 } from "./herdr-client.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
@@ -97,11 +98,15 @@ export function herdrMultiplexer(
    * still gets its Enter and is judged by `launchStarted` - which is the check that can
    * actually tell whether an agent is running.
    */
-  const pasteSettled = async (paneId: string, command: string): Promise<void> => {
+  const pasteSettled = async (
+    server: HerdrPaneRequests,
+    paneId: string,
+    command: string,
+  ): Promise<void> => {
     const tail = withoutWhitespace(command).slice(-PASTE_TAIL_CHARS);
     const deadline = now() + PASTE_SETTLE_TIMEOUT_MS;
     for (;;) {
-      const seen = await client.read(paneId);
+      const seen = await server.read(paneId);
       if (!seen.ok) {
         // No way to observe it. Fall back to the delay that was measured to be enough.
         await sleep(PASTE_SETTLE_FALLBACK_MS);
@@ -127,11 +132,14 @@ export function herdrMultiplexer(
    * all "cannot tell", never "not started": the field is optional in the wire schema, and
    * reading its absence as a negative would close a workspace on no evidence.
    */
-  const launchStarted = async (paneId: string): Promise<boolean | null> => {
+  const launchStarted = async (
+    server: HerdrPaneRequests,
+    paneId: string,
+  ): Promise<boolean | null> => {
     const deadline = now() + LAUNCH_START_TIMEOUT_MS;
     let last: boolean | null = null;
     for (;;) {
-      const info = await client.processInfo(paneId);
+      const info = await server.processInfo(paneId);
       const shellPid = info.ok ? info.value?.shell_pid ?? null : null;
       const foreground = info.ok ? info.value?.foreground_processes ?? [] : [];
       last = shellPid === null || foreground.length === 0
@@ -249,13 +257,22 @@ export function herdrMultiplexer(
           return delivered.outcomeUnknown ? delivered : rollback(delivered);
         }
 
-        await pasteSettled(paneId, command);
-        const submitted = await client.sendKeys(paneId, ["enter"]);
+        // One resolved server for the two polls below. Each ordinary client call runs
+        // `herdr status server --json` - a CLI subprocess - to find the socket first, which
+        // is right for a single write and wrong for a poll: settling the paste and then
+        // waiting for the agent would spawn dozens of them per dispatch. A server that
+        // cannot be resolved falls back to the client, which still works and simply pays
+        // those probes.
+        const resolved = await client.resolvedServer();
+        const server: HerdrPaneRequests = resolved.ok ? resolved.value : client;
+
+        await pasteSettled(server, paneId, command);
+        const submitted = await server.sendKeys(paneId, ["enter"]);
         if (!submitted.ok) {
           return submitted.outcomeUnknown ? submitted : rollback(submitted);
         }
 
-        const started = await launchStarted(paneId);
+        const started = await launchStarted(server, paneId);
         if (started !== true) {
           const error = started === false
             ? "Herdr accepted the launch command but the shell never ran it"

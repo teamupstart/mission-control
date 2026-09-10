@@ -116,12 +116,12 @@ function setup(): {
 } {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as unknown as ReviewManager,
+    reviews: {} as unknown as ReviewManager,
     tasks,
-    {} as unknown as QueueManager,
-  );
+    queues: {} as unknown as QueueManager,
+  });
   const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
   return {
     retry: async (id, body) =>

@@ -242,6 +242,59 @@ test("Node remediation rechecks compatibility before offering and starting the b
   f.controller.stop();
 });
 
+test("a deferred intact update can install without npm but still validates Node", async () => {
+  for (const nodeCompatible of [true, false]) {
+    const f = fixture();
+    await f.controller.start();
+    await f.controller.check(true);
+    await f.controller.apply();
+    f.controller.defer();
+    const probes: boolean[] = [];
+    f.port.runtime = async (_cwd, needsBuildTools = true) => {
+      probes.push(needsBuildTools);
+      return needsBuildTools || !nodeCompatible
+        ? { ok: false, message: needsBuildTools ? "npm is missing" : "Node is incompatible" }
+        : { ok: true, node: "/selected/node", env: {} };
+    };
+    f.port.dialogs.available = async () => "apply";
+    try {
+      const snapshot = await f.controller.checkForUpdates();
+      assert.equal(snapshot.phase, nodeCompatible ? "applying" : "available");
+      assert.deepEqual(probes, nodeCompatible ? [false, false] : [false]);
+      assert.equal(f.stageRequests.length, 1, "the deferred bundle must not rebuild");
+      assert.equal(f.handoffs.length, nodeCompatible ? 1 : 0);
+      if (snapshot.phase === "available") assert.equal(snapshot.blocker, "Node is incompatible");
+    } finally { f.controller.stop(); }
+  }
+});
+
+test("a changed or different-release deferred bundle still requires npm", async () => {
+  for (const change of ["missing", "replaced", "different-release"] as const) {
+    const f = fixture();
+    await f.controller.start();
+    await f.controller.check(true);
+    await f.controller.apply();
+    f.controller.defer();
+    if (change === "different-release") f.port.latestRelease = async () => release({ tagName: "v1.2.5" });
+    else f.port.stagedBundleIdentity = () => change === "missing"
+      ? { version: null, revision: null }
+      : { version: "1.2.4", revision: "replacement" };
+    const probes: boolean[] = [];
+    f.port.runtime = async (_cwd, needsBuildTools = true) => {
+      probes.push(needsBuildTools);
+      return { ok: false, message: "npm is missing" };
+    };
+    try {
+      const snapshot = await f.controller.checkForUpdates();
+      assert.equal(snapshot.phase, "available", change);
+      if (snapshot.phase === "available") assert.equal(snapshot.blocker, "npm is missing", change);
+      assert.deepEqual(probes, [true], change);
+      assert.equal(f.stageRequests.length, 1, change);
+      assert.equal(f.handoffs.length, 0, change);
+    } finally { f.controller.stop(); }
+  }
+});
+
 test("a runtime changed after the offer blocks before build or quit", async () => {
   const f = fixture();
   await f.controller.start();

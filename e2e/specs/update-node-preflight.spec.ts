@@ -69,12 +69,18 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     await expect(status).toContainText(message);
     await expect(update).toBeDisabled();
     expect(builds).toBe(0);
+    await status.getByRole("button", { name: "Check again" }).hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Check Node.js compatibility and the update again");
+    await expect(dashboard.locator(".tooltip")).toBeVisible();
+    await expect(status.getByRole("button", { name: "Check again" })).toHaveAccessibleDescription("Check Node.js compatibility and the update again");
     const evidence = join(process.cwd(), "e2e/.artifacts/update-node-preflight");
     const capture = async (name: string) => {
       if (process.env.MC_E2E_EVIDENCE !== "1") return;
       await mkdir(evidence, { recursive: true });
       await dashboard.screenshot({ path: join(evidence, name), fullPage: true });
     };
+    await capture("retry-tooltip.png");
+    await dashboard.mouse.move(1, 1);
     await capture("blocked.png");
     const previousProbes = probes;
     await status.getByRole("button", { name: "Check again" }).click();

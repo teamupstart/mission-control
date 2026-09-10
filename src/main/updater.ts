@@ -598,7 +598,9 @@ export class UpdateController {
         if (!release || !newVersion || !isNewerVersion(currentVersion, newVersion)) {
           return this.publish({ phase: "up-to-date", currentVersion, checkedAt, lastOutcome });
         }
-        const runtime = await this.port.runtime(this.receipt!.sourceClone);
+        const reusableStaged = this.staged?.releaseTag === release.tagName &&
+          this.stagedBundleIsIntact(this.staged);
+        const runtime = await this.port.runtime(this.receipt!.sourceClone, !reusableStaged);
         return this.publish({
           phase: "available",
           currentVersion,

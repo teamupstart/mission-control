@@ -141,7 +141,9 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
             <button type="button" className="btn btn-primary" onClick={props.onApply} disabled={!!snapshot.blocker}>Update Now</button>
           </Tooltip>
           {snapshot.blocker && (
-            <button type="button" className="btn btn-primary" onClick={props.onCheck}>Check again</button>
+            <Tooltip label="Check Node.js compatibility and the update again">
+              <button type="button" className="btn btn-primary" onClick={props.onCheck}>Check again</button>
+            </Tooltip>
           )}
           <Tooltip label="Hide this update until the next check">
             <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>

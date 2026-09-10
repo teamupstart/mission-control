@@ -56,6 +56,7 @@ const { Registry } = await import("../src/server/registry.ts");
 type TaskPrLinkedEvent = import("../src/server/registry.ts").TaskPrLinked;
 const { backoffFor, drainWritebacks, makeWritebackEnqueuer, startWritebackWorker } =
   await import("../src/server/task-sources/writeback.ts");
+const { TASK_SOURCES } = await import("../src/server/task-sources/index.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
@@ -223,18 +224,31 @@ test("a source that is no longer configured enqueues nothing", () => {
   assert.deepEqual(rows(), []);
 });
 
-// Asked through `canAnnotateTo` / `canResolveTo`, never by testing `inst.kind`. Jira
-// declares both false until its verbs exist, so a Jira source with the switches on is a
-// build that honestly cannot do this yet - and it must not queue work it can never deliver.
+// Asked through `canAnnotateTo` / `canResolveTo`, never by testing `inst.kind`: a build
+// whose kind honestly cannot write back must not queue work it can never deliver.
+//
+// Both shipped kinds declare `true` as of Phase 2 of the write-back plan, so the state is
+// reached by clearing the flags rather than by naming a kind that is in it. What is being
+// pinned is the enqueuer asking the capability at all - which stays load-bearing for the
+// next kind added, and for either of these two on a build that drops a verb. Restored in a
+// `finally`, since the registry is shared with every test in this file.
 test("a kind that cannot write back enqueues nothing even with the switches on", () => {
-  const s = mkSource({
-    kind: "jira",
-    writeback: { onPrOpened: true, onCompleted: true, resolve: true },
-  });
-  const task = mkSwept();
-  const { registry, sources } = setup(s, task);
-  makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
-  assert.deepEqual(rows(), []);
+  const entry = TASK_SOURCES["jira"];
+  const flags = { canAnnotate: entry.canAnnotate, canResolve: entry.canResolve };
+  entry.canAnnotate = false;
+  entry.canResolve = false;
+  try {
+    const s = mkSource({
+      kind: "jira",
+      writeback: { onPrOpened: true, onCompleted: true, resolve: true },
+    });
+    const task = mkSwept();
+    const { registry, sources } = setup(s, task);
+    makeWritebackEnqueuer(registry, deps({ sources })).completed(task);
+    assert.deepEqual(rows(), []);
+  } finally {
+    Object.assign(entry, flags);
+  }
 });
 
 // ---- 2. the ledger key ----

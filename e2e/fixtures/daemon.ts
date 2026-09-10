@@ -433,6 +433,12 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // single seam every `gh` call in the daemon goes through, so the PR poller and the Inspector
     // are covered by this one variable rather than each needing its own.
     MISSION_GH_BIN: ghStartsMissing ? ghInstallBin : bins.gh,
+    // The same door, on the source that can do worse. A Jira write-back MOVES an issue -
+    // `jira issue move MC-431 "Done"` transitions a ticket on somebody's board - and on a
+    // machine where the operator ran `jira init` an unfaked binary would do it for real on
+    // every run that reaches the write path. `jiraBin()` is the single seam every `jira`
+    // subprocess resolves through, so this one variable covers the sweep and both verbs.
+    MISSION_JIRA_BIN: bins.jira,
     // The external SDLC engine, redirected at a fake. Not about cost either: the probe is
     // a subprocess, and on a machine where the operator actually uses conductor an
     // unfaked binary would list THEIR repositories in the Settings panel and read THEIR

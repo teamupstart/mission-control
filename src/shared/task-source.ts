@@ -588,14 +588,15 @@ export const TASK_SOURCE_KIND_INFO: Record<TaskSourceKind, TaskSourceKindInfo> =
     // is a configuration surface of its own. Declared false so the action is hidden
     // instead of failing when pressed.
     canPush: false,
-    // Both FALSE, and honestly so rather than optimistically: this build genuinely cannot
-    // write to a Jira issue yet. Jira's two rungs, its transition matcher and the
-    // `jiraBin()` seam that keeps a test off a real issue are Phase 2 of the write-back
-    // plan, and they flip these in the same commit that implements the verbs. Declaring
-    // `true` here would be a switch the panel offers and the worker fails - which is
-    // exactly what `test/task-source-contract.test.ts` refuses to compile past.
-    canAnnotate: false,
-    canResolve: false,
+    // A comment and a remote link carrying the pull request, through the same two rungs and
+    // the same egress guard the sweep uses - so the write-back direction adds no token and
+    // no new secret here either.
+    canAnnotate: true,
+    // `resolve` moves the issue to the status the source names, matched against the
+    // transitions Jira offers from where the issue is standing. True only because both
+    // verbs exist: `test/task-source-contract.test.ts` refuses to compile past a kind that
+    // advertises either one without implementing it.
+    canResolve: true,
     configSchema: JiraConfigSchema,
   },
 };

@@ -285,7 +285,7 @@ export function seedConductorInstallerCheckout(repo: string): string {
  * rather than as a broken fixture.
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } = require("node:fs");
 const { basename, join } = require("node:path");
 const argv = process.argv.slice(2);
 
@@ -313,13 +313,285 @@ const engineerReplayFailurePath = engineerStatePath
   : null;
 const engineerMode = process.env.MC_E2E_CONDUCTOR_ENGINEER_MODE || "supported";
 const engineerLifecycleSupported = engineerMode === "supported" || engineerMode === "legacy-lifecycle";
+// ---- the Engineer store is SHARED BETWEEN PROCESSES, so it is locked ----
+//
+// Every branch below that touches a run does a read-modify-write of one JSON file, and the
+// daemon spawns one of these processes per verb - concurrently, because a Pipeline dispatch
+// is one subprocess per task and two tasks can be dispatched at once. Without a lock the
+// second writer clobbers the first, which does not merely lose a line: it deletes a run the
+// daemon has ALREADY been told it reserved, and every later verb about that run answers
+// "Unknown Engineer run" instead. That is a lost update, and it is what made
+// \`conductor-loops.spec.ts\` fail under full-suite contention and pass when run alone.
+//
+// The real engine serialises on its own store. This is the fixture's version of that.
+const engineerLockPath = engineerStatePath ? engineerStatePath + ".lock" : null;
+const engineerLockOwner = engineerLockPath ? join(engineerLockPath, "owner") : null;
+let engineerLockHeld = false;
+/**
+ * What this process stamps into a lock it claims: its pid, and a token unique to this claim.
+ *
+ * The pid alone is not an identity. A recovery that removes a lock because its stamp names
+ * the dead pid it came about will remove a BRAND NEW live lock whose owner happens to have
+ * been given that pid by the kernel, and pids are recycled. The window is small and the cost
+ * is the lost update this whole lock exists to prevent, so it is closed rather than noted:
+ * the random half makes every claim distinguishable from every other, so recovery can insist
+ * on the exact incarnation it inspected.
+ *
+ * The pid stays in front because liveness is still a pid question.
+ */
+const lockIncarnation = \`\${process.pid}-\${require("node:crypto").randomUUID()}\`;
+/** Sleep without a timer, since every caller here is synchronous. */
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/**
+ * The pid stamped inside the lock, or null when there is no readable stamp.
+ *
+ * Null covers both "the lock went away between the failed claim and this read" and "somebody
+ * is recovering it right now" - neither is ours to act on, so both mean wait and retry.
+ */
+const lockOwnerStamp = () => {
+  try {
+    const stamp = readFileSync(engineerLockOwner, "utf8").trim();
+    return stamp.length > 0 ? stamp : null;
+  } catch {
+    return null;
+  }
+};
+/** The pid half of a stamp. Liveness is a pid question; identity is the whole stamp. */
+const pidOfStamp = (stamp) => {
+  const pid = Number(String(stamp).split("-")[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+};
+/** Whether a pid is still running. EPERM means it exists and belongs to somebody else. */
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+};
+/**
+ * Take over a lock whose owner is gone, WITHOUT ever removing somebody else's.
+ *
+ * "See a dead owner, then delete the lock" is two steps, and the gap between them is a race
+ * the lock exists to prevent. Two waiters can both read the same dead owner; the first
+ * retires the stale lock, a third process claims the freshly free one, and the second - still
+ * acting on what it read a moment ago - deletes THAT lock, which is live. Both then enter the
+ * read-modify-write section and an Engineer run is lost. Deleting "whatever is at the lock
+ * path now" is what makes that possible.
+ *
+ * So recovery elects a single winner on the OWNER STAMP itself, which is the one thing that
+ * identifies the lock being recovered. Renaming a file is atomic and exactly one process can
+ * move a given stamp, so the election has one winner by construction. The winner then reads
+ * what it captured:
+ *
+ *   - the pid it came here about, so this really is the stale lock, and only now is the
+ *     directory removed. Nothing else can be holding it: a claim needs the directory gone
+ *     first, and the directory is ownerless, which every waiter treats as "wait", so the
+ *     winner is alone with it;
+ *   - some other pid, meaning the lock was released and re-claimed between the read and the
+ *     rename and this stamp belongs to a LIVE holder. It is put straight back, and nothing
+ *     is removed.
+ *
+ * The stamp goes back into the same directory it came from, where its own name is free
+ * because this process is the one that vacated it, so the restore cannot lose a race either.
+ *
+ * Pid reuse is closed rather than accepted: the stamp carries a token unique to each claim,
+ * so a recycled pid on a fresh claim is a different incarnation and the comparison above
+ * rejects it. See \`lockIncarnation\`.
+ */
+const recoverStaleLock = (staleStamp) => {
+  const token = join(engineerLockPath, \`recovering-\${process.pid}\`);
+  try {
+    renameSync(engineerLockOwner, token);
+  } catch {
+    // Somebody else won the election, or the lock is already gone. Either way, not ours.
+    return;
+  }
+  let captured = null;
+  try {
+    captured = readFileSync(token, "utf8").trim();
+  } catch {}
+  // The WHOLE stamp, not its pid: a recycled pid on a fresh claim is a different incarnation
+  // and must not be mistaken for the dead one this recovery came about.
+  if (captured === staleStamp) {
+    // Retired the same one-step way a release is, not deleted in place: a recursive delete
+    // unlinks the token and then the directory, and between those two the lock is present
+    // with neither a stamp nor a recovery token - the very state every waiter reads as "a
+    // holder crashed mid-claim". Renaming by pathname is safe HERE, and only here, because
+    // winning the election proved this directory is the one we came about and nothing else
+    // can act on it: a claim needs it gone first, and it is gone only when we move it.
+    retireLock();
+    return;
+  }
+  // Not the lock we came about. Put the stamp back and leave the holder alone.
+  try { renameSync(token, engineerLockOwner); } catch {}
+};
+/**
+ * Put an ABANDONED recovery back, so the lock returns to a state the normal path handles.
+ *
+ * A recovery claims the lock by renaming its \`owner\` stamp aside to \`recovering-<pid>\`, and
+ * that is what makes the election atomic. It also means a recovery that DIES in the middle -
+ * between the rename and either retiring the lock or restoring the stamp - leaves the
+ * directory with a token and no owner. Nothing else recognised that: \`lockOwnerStamp\` read
+ * null, every waiter treated null as "wait", and the lock was stranded for good. In a fixture
+ * whose whole purpose is to stop a spec hanging, that is the worst possible failure.
+ *
+ * So an abandoned token is identifiable - it carries its recoverer's pid in its name - and it
+ * is put BACK rather than deleted. Restoring returns the lock to an ordinary stale lock, which
+ * the next pass of the loop recovers through the usual exact-incarnation check; deleting would
+ * be a second way to remove a lock, and this file already has one too many. A recoverer that
+ * is merely slow is left alone, because its pid is still alive.
+ */
+const reclaimAbandonedRecovery = () => {
+  let entries;
+  try {
+    entries = readdirSync(engineerLockPath);
+  } catch {
+    return;
+  }
+  if (entries.includes("owner")) return;
+  for (const entry of entries) {
+    if (!entry.startsWith("recovering-")) continue;
+    const pid = Number(entry.slice("recovering-".length));
+    // Still working on it. Waiting on a live recoverer is the same rule as waiting on a live
+    // holder, and for the same reason.
+    if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return;
+    try { renameSync(join(engineerLockPath, entry), engineerLockOwner); } catch {}
+    return;
+  }
+};
+/**
+ * Take the store's lock, held until this invocation's read-modify-write is finished.
+ *
+ * The lock is BUILT COMPLETE AND THEN MOVED INTO PLACE: a private staging directory gets the
+ * owner stamp first, and one \`renameSync\` publishes it. That rename is the atomic claim -
+ * POSIX refuses to rename a directory onto a non-empty one, and a published lock always
+ * holds its \`owner\` file - so the lock never exists in an unstamped state and there is no
+ * window for anyone to misread.
+ *
+ * That property is the whole design, and it is the second thing this lock got wrong. The
+ * first draft \`mkdirSync\`ed the lock path and stamped the owner afterwards, which left a
+ * sliver where the lock existed with no owner. A waiter cannot tell that from a crash, so it
+ * reclaimed the lock after about a second - and a creator descheduled in that sliver (this
+ * host runs several browser suites at once) would have its live lock deleted, both processes
+ * would enter the read-modify-write section, and the lost update the lock exists to prevent
+ * would be back. An earlier draft than that broke ANY lock after ten seconds, with the same
+ * consequence for a merely slow holder.
+ *
+ * So there is no clock here at all. A lock is removed only when its owner is PROVABLY gone,
+ * and a live holder is waited on for as long as it takes. A wedged holder fails the spec on
+ * its own timeout rather than silently corrupting the store, which is the right way round.
+ */
+const lockEngineerState = () => {
+  if (!engineerLockPath || engineerLockHeld) return;
+  const staging = \`\${engineerLockPath}.claim-\${process.pid}\`;
+  for (;;) {
+    try {
+      mkdirSync(staging, { recursive: true });
+      writeFileSync(join(staging, "owner"), lockIncarnation);
+      // The claim. Succeeds only when nothing holds the lock, and publishes the owner with it.
+      renameSync(staging, engineerLockPath);
+      engineerLockHeld = true;
+      return;
+    } catch (err) {
+      try { rmSync(staging, { recursive: true, force: true }); } catch {}
+      // ENOTEMPTY and EEXIST are both "somebody else holds it"; which one depends on the
+      // platform. Anything else is a real filesystem failure and must not be swallowed.
+      if (err.code !== "EEXIST" && err.code !== "ENOTEMPTY") throw err;
+      // A dead owner is recovered by IDENTITY, never by pathname - see recoverStaleLock.
+      // A missing stamp means somebody released it or is recovering it; both mean wait.
+      const stamp = lockOwnerStamp();
+      // No stamp at all is either a lock being torn down, or a recovery that died holding it.
+      // The second strands the lock forever if nobody puts it back.
+      if (stamp === null) {
+        reclaimAbandonedRecovery();
+        pause(5);
+        continue;
+      }
+      const owner = pidOfStamp(stamp);
+      if (owner !== null && !pidAlive(owner)) {
+        // A test seam, and the only way the race this guards is reachable on purpose: the
+        // gap between reading a dead owner and acting on it is microseconds wide in
+        // practice, so a spec that wants to be descheduled in it has to ask. Unset in every
+        // real run, including the browser suite.
+        const stall = Number(process.env.MC_E2E_CONDUCTOR_LOCK_STALL_MS || 0);
+        if (stall > 0) pause(stall);
+        recoverStaleLock(stamp);
+      }
+      pause(5);
+    }
+  }
+};
+/**
+ * Give the lock back, as soon as this invocation's read-modify-write is finished.
+ *
+ * Called explicitly rather than only from an exit handler, and the difference is not
+ * cosmetic. Releasing at exit ties the hold to the PROCESS LIFETIME, and a fake's exit waits
+ * on its parent draining stdout - so under full-suite load a process that finished its work
+ * in milliseconds kept the lock for as long as the busy daemon took to read it, while the
+ * pipeline watcher spawned another one every second behind it. That queue is what made
+ * \`conductor-loops.spec.ts:280\` take 24s and time out. The critical section is a handful of
+ * file operations; the hold should be too.
+ *
+ * Only our own lock, checked rather than assumed: releasing one this process does not hold is
+ * how a recovered lock gets taken away from whoever legitimately holds it next.
+ */
+const releaseEngineerState = () => {
+  if (!engineerLockHeld) return;
+  engineerLockHeld = false;
+  // Holding it is the proof, not the stamp. While this process holds the lock, the directory
+  // at the lock path is ours: removing it needs a recovery that captured OUR pid and believed
+  // us dead, and we are demonstrably not. An UNREADABLE stamp therefore means a recovery is
+  // mid-election on our own directory - it will find a live pid and try to put the stamp back
+  // - and retiring underneath that is correct and leaves it nothing to restore. Refusing to
+  // retire there would leak the lock until this process exited, which is the one way a
+  // fixture lock can wedge a spec.
+  const stamped = lockOwnerStamp();
+  if (stamped !== null && stamped !== lockIncarnation) return;
+  retireLock();
+};
+/**
+ * Take the lock out of the way in ONE step, then delete it at leisure.
+ *
+ * \`rmSync\` recursive would unlink \`owner\` before the directory, which leaves the lock
+ * briefly present and ownerless - the exact state the publishing rename exists to make
+ * impossible, and one a waiter reads as "the holder crashed mid-claim". The regression test
+ * that watches the lock path caught this under full-suite load: one observation in sixteen.
+ * So the directory is renamed aside first, and only the renamed copy is removed.
+ */
+const retireLock = () => {
+  const retiring = \`\${engineerLockPath}.releasing-\${process.pid}\`;
+  try {
+    renameSync(engineerLockPath, retiring);
+  } catch {
+    // Already gone, or somebody else retired it. Nothing of ours is left to remove.
+    return;
+  }
+  try { rmSync(retiring, { recursive: true, force: true }); } catch {}
+};
+// The safety net for a branch that read and never wrote, and for a throw on the way through.
+process.on("exit", releaseEngineerState);
 const readEngineerState = () => {
   if (!engineerStatePath) return { runs: [] };
+  lockEngineerState();
   try { return JSON.parse(readFileSync(engineerStatePath, "utf8")); }
   catch { return { runs: [] }; }
 };
+/**
+ * Publish the store with one atomic rename.
+ *
+ * The spec reads this file directly, from the Playwright process, holding no lock - so a
+ * plain \`writeFileSync\` would let it observe a half-written file. \`readConductorEngineerRuns\`
+ * would then throw, or \`readEngineerState\`'s own catch would silently report NO runs, which
+ * is the same lost update wearing a different hat.
+ */
 const writeEngineerState = (state) => {
-  if (engineerStatePath) writeFileSync(engineerStatePath, JSON.stringify(state, null, 2));
+  if (!engineerStatePath) return;
+  const staging = engineerStatePath + ".writing-" + process.pid;
+  writeFileSync(staging, JSON.stringify(state, null, 2));
+  renameSync(staging, engineerStatePath);
+  releaseEngineerState();
 };
 const engineerSnapshot = (run) => ({
   schemaVersion: 1,
@@ -686,6 +958,9 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
 } else if (argv[0] === "daemon" && argv[1] === "connect") {
   say("attached to conductor-fake (read-only)");
 }
+// The work is done. Anything after this - flushing stdout, exiting - is not the store's
+// business and must not be somebody else's wait.
+releaseEngineerState();
 `;
 
 export interface FakeConductor {

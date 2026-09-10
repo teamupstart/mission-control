@@ -29,12 +29,15 @@ proposals.
 
 Capture builds the run's frozen intent from `SessionGoal.objective` - the completion contract
 the goal refiner already protects from steering - instead of `SessionGoal.prompt`, and freezes
-the human's verbatim opening ask beside it as provenance. Mission Control already decides, per
+the human's opening ask beside it as provenance, stored exactly as the Goal pipeline already
+stores every prompt - clamped by `clampPrompt` at 4,000 characters with an elided middle, so a
+very long request is preserved in that clamped form rather than byte for byte. Mission Control already decides, per
 instruction, whether new input changes the objective (`amend`, `replace`) or only steers it
 (`steer`, `unclear`); the workflow has simply never consulted that decision.
 
-The Persona prompt renders the objective as the contract and the verbatim opening ask as what
-it came from, so a reviewer still sees the words the human typed.
+The Persona prompt renders the objective as the contract and the opening ask as what it came
+from, so a reviewer still sees the request in the human's own words as the Goal pipeline
+recorded it.
 
 ### C. Steering reaches Personas as steering
 

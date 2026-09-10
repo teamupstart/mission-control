@@ -115,11 +115,14 @@ report's five proposals.</p>
 <h3>A. The durable objective is the review contract</h3>
 <p>Capture builds the run's frozen intent from <code>SessionGoal.objective</code> - the completion
 contract the goal refiner already protects from steering - instead of
-<code>SessionGoal.prompt</code>, and freezes the human's verbatim opening ask beside it as
-provenance. Mission Control already decides, per instruction, whether new input changes the
+<code>SessionGoal.prompt</code>, and freezes the human's opening ask beside it as provenance,
+stored exactly as the Goal pipeline already stores every prompt - clamped by
+<code>clampPrompt</code> at 4,000 characters with an elided middle, so a very long request is
+preserved in that clamped form rather than byte for byte. Mission Control already decides, per instruction, whether new input changes the
 objective (<code>amend</code>, <code>replace</code>) or only steers it (<code>steer</code>,
 <code>unclear</code>); the workflow has simply never consulted that decision. The Persona prompt
-renders the objective as the contract and the verbatim opening ask as what it came from.</p>
+renders the objective as the contract and the opening ask as what it came from, in the human's
+own words as the Goal pipeline recorded them.</p>
 
 <h3>C. Steering reaches Personas as steering</h3>
 <p>Once A lands, a reconciled steering instruction is no longer visible to a Persona except as raw

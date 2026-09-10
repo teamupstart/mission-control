@@ -162,3 +162,7 @@ derivation, or the write-once rule on the opening prompt.
   every prompt at `PROMPT_CAP`. Resolved in favour of the pipeline: the persisted value is the
   clamped opening prompt, stated in the findings, the steps, the tests and the downstream
   handoff, so no later phase inherits a promise the capture path cannot keep.
+- Review round 2: the correction above was applied here but not to the source plan, which still
+  promised a verbatim opening ask in both its Markdown and its rendering. `plan.md`, `plan.html`
+  and the two `phased-plan` findings now use the same language this phase does, so the headline
+  document and the phase responsible for building it make one claim rather than two.

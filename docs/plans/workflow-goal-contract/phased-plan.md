@@ -28,7 +28,7 @@ Verified against the repository at `8cc4bb6e`.
   `replace` and `initial` to move it, and an amendment must retain the prior objective as a
   literal prefix (`refiner.ts:211`). The decision this plan needs already exists and is already
   defended.
-- **The verbatim opening ask is not retained.** `objective` starts as the first prompt but is
+- **The opening ask is not retained at all.** `objective` starts as the first prompt but is
   overwritten by a later `replace`, and `pendingPrompts` is truncated with
   `current.pendingPrompts.slice(1)` (`refiner.ts:424`) as each revision resolves. Phase 1 must
   persist the opening ask itself; it cannot be recovered from the goal row.

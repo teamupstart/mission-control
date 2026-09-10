@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The goal a workflow run is judged against: phased implementation plan</title>
+<style>
+  :root {
+    --ink: #1c2433; --muted: #5b6577; --line2: #d9dee8; --bg: #ffffff;
+    --panel: #f5f7fb; --accent: #24508c; --good: #1a7a4a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e3e8f2; --muted: #9aa4b8; --line2: #333c4e; --bg: #12161f;
+            --panel: #1b2230; --accent: #7aa7e0; --good: #58c08a; }
+  }
+  html { background: var(--bg); }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: var(--ink); max-width: 60rem; margin: 2rem auto 5rem; padding: 0 1.5rem; }
+  h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .8rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--line2); padding-bottom: .3rem; }
+  code { font: .86em ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel);
+         padding: .05em .3em; border-radius: 3px; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.4rem; }
+  li { margin: .3rem 0; }
+  .lede { color: var(--muted); margin: 0 0 1.5rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .93em; }
+  th, td { text-align: left; padding: .45rem .55rem; border-bottom: 1px solid var(--line2); vertical-align: top; }
+  th { background: var(--panel); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  figure { margin: 1.2rem 0; }
+  figcaption { color: var(--muted); font-size: .85em; margin-top: .4rem; }
+  svg { display: block; width: 100%; height: auto; }
+</style>
+</head>
+<body>
+
+<h1>The goal a workflow run is judged against: phased implementation plan</h1>
+<p class="lede">Source plan: <a href="plan.md">plan.md</a>. Investigation: the Mission Control scout
+archive for task <code>5831fbba</code> (archived, not committed).</p>
+
+<h2>Incorporated decisions</h2>
+<ul>
+  <li>Implement proposals A, C and E. Proposal B is already implemented on task <code>fb317738</code>'s branch (commit <code>a8610a7b</code>) and is out of scope. Proposal D, the operator-owned goal correction, is deferred.</li>
+  <li>The intent fingerprint keeps its current derivation over <code>{rawGoal, refinedGoal, decisions}</code>. Everything added to the run snapshot is additive and excluded from it.</li>
+  <li>Runs frozen before this work keep the ask they were frozen with. Nothing rewrites a durable snapshot and nothing recompacts existing criteria.</li>
+  <li>The session Goal stays live and keeps being displayed. Only what a REVIEW reads changes.</li>
+</ul>
+
+<h2>Investigated findings</h2>
+<p>Verified against the repository at <code>8cc4bb6e</code>. Two of these overturn the obvious
+implementation and drive the phase boundaries.</p>
+<ul>
+  <li><code>readLiveWorkflowIntent</code> (<code>src/server/workflows/context.ts:993</code>) builds <code>primaryGoal.rawPrompt</code> from <code>goal?.prompt ?? goal?.text ?? ""</code>. <code>SessionGoal.objective</code> is never read by any workflow path.</li>
+  <li>The refiner already allows only <code>amend</code>, <code>replace</code> and <code>initial</code> to move the objective, and an amendment must retain the prior objective as a literal prefix. The decision this plan needs already exists and is already defended.</li>
+  <li><strong>The verbatim opening ask is not retained.</strong> <code>objective</code> starts as the first prompt but is overwritten by a later <code>replace</code>, and <code>pendingPrompts</code> is truncated as each revision resolves. Phase 1 must persist it; it cannot be recovered.</li>
+  <li><strong>There is no durable record of resolved steering.</strong> Same truncation. Phase 2 must persist classified steering as it is decided; it cannot be reconstructed afterwards.</li>
+  <li><code>WorkflowRunIntentSnapshotSchema</code> is a non-strict zod object, so a new field absent from the schema is silently stripped on both read and write.</li>
+  <li><code>workflowRunIntentFingerprint</code> is recomputed on read and a mismatch marks the run <code>unreadable</code>, which the manager turns into a blocked run. Changing what the fingerprint covers would block every existing frozen run.</li>
+</ul>
+
+<h2>Sizing estimate</h2>
+<p>Gross non-test implementation lines expected to be added or materially changed.</p>
+<table>
+<thead><tr><th>Phase</th><th class="num">Estimate</th><th>Assumptions</th></tr></thead>
+<tbody>
+<tr><td>1</td><td class="num">300 - 420</td><td>one <code>session_goals</code> column and its migration, snapshot and schema fields, capture, Persona prompt, run-model and run detail, docs</td></tr>
+<tr><td>2</td><td class="num">250 - 350</td><td>one durable steering table and its migration, a writer inside the refiner's existing commit path, bounded capture field, one Persona prompt section, run detail rendering</td></tr>
+<tr><td>3</td><td class="num">150 - 250</td><td>classifier module, one run column and migration, one run event, run detail badge</td></tr>
+</tbody>
+</table>
+<p>Total 700 - 1,020 lines. Above the one-phase threshold, and three phases are justified rather
+than assumed: Phase 1 owns the snapshot shape both others consume; Phase 2 changes what a Persona is
+told and carries verdict-quality risk plus a second new table; Phase 3 is the verification
+instrument for Phase 1 and cannot fail independently of it if it ships inside it.</p>
+
+<h2>Phases</h2>
+<table>
+<thead><tr><th>#</th><th>Phase</th><th>File</th><th>Direct prerequisites</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>The durable objective is the review contract</td><td><a href="phase-1-objective-as-review-contract.md">phase-1-objective-as-review-contract.md</a></td><td>planning PR merge</td></tr>
+<tr><td>2</td><td>Steering reaches Personas as steering</td><td><a href="phase-2-steering-context-for-personas.md">phase-2-steering-context-for-personas.md</a></td><td>Phase 1</td></tr>
+<tr><td>3</td><td>Goal provenance signals on the run</td><td><a href="phase-3-goal-provenance-signals.md">phase-3-goal-provenance-signals.md</a></td><td>Phase 1</td></tr>
+</tbody>
+</table>
+
+<figure>
+<svg viewBox="0 0 700 150" role="img" aria-labelledby="t2 d2">
+  <title id="t2">Dependency graph</title>
+  <desc id="d2">The planning pull request releases Phase 1. Phase 1 releases Phase 2 and Phase 3, which run concurrently.</desc>
+  <g font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5">
+    <rect x="8" y="52" width="150" height="44" rx="6" fill="var(--panel)" stroke="var(--line2)"/>
+    <text x="20" y="71" fill="var(--ink)">Planning PR</text>
+    <text x="20" y="88" fill="var(--muted)" font-size="11.5">merged</text>
+    <path d="M 162 74 L 208 74" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="208,70 218,74 208,78" fill="var(--muted)"/>
+    <rect x="222" y="52" width="180" height="44" rx="6" fill="var(--panel)" stroke="var(--good)"/>
+    <text x="234" y="71" fill="var(--ink)">Phase 1</text>
+    <text x="234" y="88" fill="var(--muted)" font-size="11.5">objective as contract</text>
+    <path d="M 406 66 L 440 66 L 440 30 L 484 30" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="484,26 494,30 484,34" fill="var(--muted)"/>
+    <path d="M 406 82 L 440 82 L 440 118 L 484 118" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="484,114 494,118 484,122" fill="var(--muted)"/>
+    <rect x="498" y="8" width="194" height="44" rx="6" fill="var(--panel)" stroke="var(--line2)"/>
+    <text x="510" y="27" fill="var(--ink)">Phase 2</text>
+    <text x="510" y="44" fill="var(--muted)" font-size="11.5">steering context</text>
+    <rect x="498" y="96" width="194" height="44" rx="6" fill="var(--panel)" stroke="var(--line2)"/>
+    <text x="510" y="115" fill="var(--ink)">Phase 3</text>
+    <text x="510" y="132" fill="var(--muted)" font-size="11.5">provenance signals</text>
+  </g>
+</svg>
+<figcaption>Concurrency group 1 is Phase 1 alone. Group 2 is Phases 2 and 3, which may run at the
+same time and merge in either order. Every phase is a single-repository merge unit.</figcaption>
+</figure>
+
+<h2>Merge order</h2>
+<p>1, then {2, 3} in either order. No intermediate state is broken: after Phase 1 the review reads
+the objective and the other two surfaces simply do not exist yet.</p>
+
+<h2>Cross-phase contracts</h2>
+<ul>
+  <li><strong>Phase 1 owns the run intent snapshot shape.</strong> It adds <code>openingAsk</code> and an <code>intentSource</code> provenance object. Phases 2 and 3 may read those and add their own, and neither may change <code>rawGoal</code>, <code>refinedGoal</code>, <code>decisions</code> or the fingerprint derivation over them.</li>
+  <li><strong>Phase 1 owns <code>session_goals.opening_prompt</code></strong> and the rule that it is written once and never overwritten.</li>
+  <li><strong>Phase 2 owns the steering log</strong> - its table, its writer inside the refiner, and the <code>steering</code> field it adds to the run intent snapshot, the context snapshot and the Persona prompt. Phase 3 must not read or render steering.</li>
+  <li><strong>Phase 3 owns the goal-provenance verdict</strong> - its classifier, the run column, its run event and its run detail badge. Phase 1 must not classify, Phase 2 must not read the verdict.</li>
+  <li><strong>The fingerprint is frozen for all three phases.</strong> No phase changes <code>workflowIntentFields</code>.</li>
+  <li><strong>Interaction with proposal B.</strong> B's commit touches <code>registry.ts</code>, <code>injections.ts</code>, <code>routes.ts</code>, <code>sdk/supervisor.ts</code> and the harness hook specs. Phase 1 touches <code>registry.ts</code> in the goal-capture region too, so whichever merges second resolves that file. Neither depends on the other for correctness.</li>
+</ul>
+
+<h2>Final verification</h2>
+<ul>
+  <li><code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code> on every phase.</li>
+  <li><code>npm run build</code> and <code>npm run smoke</code> on Phases 1 and 3, which change runtime surfaces.</li>
+  <li><code>npm run test:e2e</code> on every phase, each with the spec its file names.</li>
+  <li>After Phase 3 merges, re-run the scout's query against a live state with runs created since: a new run's frozen <code>rawGoal</code> equals the session's durable objective, and no new run carries a provenance verdict of <code>automation</code> without being surfaced as one.</li>
+</ul>
+
+</body>
+</html>

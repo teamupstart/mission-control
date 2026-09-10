@@ -1,7 +1,7 @@
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -198,8 +198,7 @@ async function terminalDispatch(options: {
   await dispatcher.dispatch(options.taskId);
   const task = registry.getTask(options.taskId);
   assert.equal(task?.status, "running", `dispatch failed: ${task?.error ?? "unknown"}`);
-  // Pi's turn one travels in the argv rather than through a paste - which is precisely why
-  // it is the harness that proves the prompt-prefix path end to end.
+  // Pi's turn one travels in the argv rather than through a paste.
   const prompt = pasted ?? String(argv[argv.length - 1]);
   return { registry, argv, terminalBackend, prompt, sessionId, nativeId };
 }
@@ -343,8 +342,8 @@ test("claude · terminal carries it on ONE --append-system-prompt, and not in tu
   );
 });
 
-test("codex · terminal and pi · terminal carry it in turn one, and nowhere else", async () => {
-  for (const agent of ["codex", "pi"] as const) {
+test("codex · terminal carries it in turn one, and nowhere else", async () => {
+  for (const agent of ["codex"] as const) {
     const repo = seedRepo(`${agent}-terminal`);
     setRule(repo, RULE);
     const run = await terminalDispatch({
@@ -842,3 +841,57 @@ function registryTask(run: TerminalRun, taskId: string) {
   assert.ok(task);
   return task;
 }
+
+test("Pi standing instructions move out of turn one without changing the empty launch", async () => {
+  const repo = seedRepo("pi-terminal-channel");
+  const intent = "THE-OPERATOR-REQUEST";
+  const baseline = await terminalDispatch({ agent: "pi", repo, taskId: "pi-none", intent });
+  assert.deepEqual(baseline.argv, ["--session-id", baseline.argv[1],
+    withTaskKindContract(registryTask(baseline, "pi-none"), intent)]);
+  assert.equal(baseline.registry.standingInstructionsFor(baseline.sessionId), null);
+  setRule(repo, RULE);
+  const run = await terminalDispatch({ agent: "pi", repo, taskId: "pi-rule", intent });
+  assert.deepEqual(run.argv, ["--append-system-prompt", BLOCK, "--session-id", run.argv[3], baseline.prompt]);
+  assert.equal(run.prompt, baseline.prompt);
+  assert.equal(run.prompt.includes(RULE), false);
+  const snapshot = run.registry.standingInstructionsFor(run.sessionId);
+  assert.equal(snapshot?.mechanism, "pi-append-system-prompt");
+  assert.equal(snapshot?.text, BLOCK);
+});
+
+// Opt-in runtime measurement. The temporary observer only reads the live system prompt;
+// it never supplies instructions, calls a model, or installs the later phase's extension.
+test("live Pi receives the dispatched block once and preserves another append", {
+  skip: !process.env.MISSION_PI_LIVE_PROBE_BIN,
+}, async () => {
+  const repo = seedRepo("pi-live-channel");
+  setRule(repo, RULE);
+  const run = await terminalDispatch({ agent: "pi", repo, taskId: "pi-live", intent: "LIVE-INTENT" });
+  const output = join(home, "pi-system-prompt.txt");
+  const observer = join(home, "pi-observer.ts");
+  writeFileSync(observer, `import { writeFileSync } from "node:fs";
+export default function (pi) {
+  pi.on("session_start", (_event, ctx) => {
+    writeFileSync(${JSON.stringify(output)}, ctx.getSystemPrompt());
+    process.exit(0);
+  });
+}
+`);
+  const other = "PI-INDEPENDENT-APPEND-PROBE";
+  const cwd = run.registry.getSession(run.sessionId)?.cwd;
+  assert.ok(cwd, "the dispatched session has a worktree");
+  execFileSync(process.env.MISSION_PI_LIVE_PROBE_BIN!, [
+    "--mode", "rpc", "--offline", "--no-session", "--no-extensions", "--no-skills",
+    "--no-context-files", "--extension", observer, "--append-system-prompt", other,
+    ...run.argv,
+  ], {
+    cwd,
+    env: { ...process.env, PI_CODING_AGENT_DIR: join(home, "pi-isolated") },
+    input: "", timeout: 30_000, encoding: "utf8",
+  });
+  const systemPrompt = readFileSync(output, "utf8");
+  assert.equal(systemPrompt.split(BLOCK).length - 1, 1);
+  assert.equal(systemPrompt.split(other).length - 1, 1);
+  assert.equal(run.prompt.includes(RULE), false);
+  assert.equal(run.registry.standingInstructionsFor(run.sessionId)?.mechanism, "pi-append-system-prompt");
+});

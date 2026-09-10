@@ -213,6 +213,9 @@ test("a rule written in Settings survives a reload and reads back from the daemo
   for (const pair of ["claude · terminal", "claude · sdk", "codex · terminal", "codex · sdk", "pi · terminal"]) {
     await expect(reach.getByText(pair, { exact: true })).toBeVisible();
   }
+  const piRow = reach.locator("li").filter({ hasText: "pi · terminal" });
+  await expect(piRow).toContainText("system prompt");
+  await expect(piRow).toContainText("--append-system-prompt");
   await expect(reach.getByText("sessions started outside Mission Control")).toBeVisible();
   await expect(reach.getByText("Foreman / Inspector / Persona review prompts")).toBeVisible();
   await expect(reach.getByText("sessions already running")).toBeVisible();

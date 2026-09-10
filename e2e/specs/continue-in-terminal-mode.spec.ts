@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 
@@ -73,6 +73,25 @@ function recordedWorkspaceCommands(daemon: DaemonHandle): string[] {
       return at >= 0 ? (argv[at + 1] ?? "") : "";
     })
     .filter(Boolean);
+}
+
+/**
+ * What the recorded `--command` will actually RUN, read out of the wrapper it names.
+ *
+ * The command a terminal is handed is no longer the agent's argv. It is `'/bin/sh'` and one
+ * script path, because a dispatch's environment plus argv encodes to about 3.5 KB and
+ * Herdr's launch is TYPED into a login shell, where a payload that size raced its own Enter
+ * (see `launchAndCleanupScript` in `agent-subprocess-env.ts`). The claims below - the
+ * executable, the resume flag, the conversation id, the permission mode - are all still
+ * exactly what the pane will execute; they simply live one file further along, and following
+ * that hop is what keeps this spec asserting on the user's shell command rather than on a
+ * path that changes with the wrapper's temp dir.
+ */
+function launchScript(command: string): string {
+  const words = [...command.matchAll(/'((?:[^']|'\\'')*)'/g)].map((match) => match[1]!);
+  const wrapper = words.find((word) => word.endsWith("launch-and-cleanup.sh"));
+  expect(wrapper, `no launch wrapper in the recorded command: ${command}`).toBeTruthy();
+  return readFileSync(wrapper!, "utf8");
 }
 
 function recordedWorkspaceArgv(daemon: DaemonHandle): string[][] {
@@ -184,18 +203,23 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     expect(focusAt).toBeGreaterThan(-1);
     expect(workspaceArgv?.[focusAt + 1]).toBe("true");
 
+    // What the terminal is handed is short by contract - one interpreter and one wrapper -
+    // and everything this spec is about is inside that wrapper.
+    expect(command.length).toBeLessThan(512);
+    const launch = launchScript(command);
+
     // The same conversation, on the faked CLI - not a fresh agent wearing the card.
     const executable = agent === "codex"
       ? join(daemon.home, "daemon-path-bin", "codex")
       : join(daemon.home, "fake-bin", `fake-${agent}`);
-    expect(command).toContain(executable);
-    expect(command).toContain(resumeWord);
-    expect(command).toContain(`'${agentSessionId}'`);
+    expect(launch).toContain(executable);
+    expect(launch).toContain(resumeWord);
+    expect(launch).toContain(`'${agentSessionId}'`);
     // And the mode it was running in, re-asserted in this harness's own spelling. Before
     // the fix the command ended at the conversation id and every one of these was absent.
-    for (const words of carried) expect(command).toContain(words);
+    for (const words of carried) expect(launch).toContain(words);
     if (process.env.MC_E2E_EVIDENCE) {
-      console.log(`OBSERVED the ${agent} terminal command carries the mode: ${command}`);
+      console.log(`OBSERVED the ${agent} terminal command carries the mode: ${launch}`);
     }
   });
 }

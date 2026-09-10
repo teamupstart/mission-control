@@ -106,13 +106,39 @@ export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-contr
 
 export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
 
-export const SETUP_SERVICE_INFO: Record<SetupServiceId, { id: SetupServiceId; label: string }> = {
-  "herdr-server": { id: "herdr-server", label: "Herdr server" },
-  "cmux-app": { id: "cmux-app", label: "cmux app" },
+/**
+ * Each service says what its own success and failure read like, rather than being described
+ * by a sentence built around its label.
+ *
+ * `The ${label} is running.` is true of a server and false of everything else. It produced
+ * "The cmux socket control is running." for a repair that writes one value into a config
+ * file and starts no process at all, which tells an operator nothing they can check.
+ */
+export const SETUP_SERVICE_INFO: Record<
+  SetupServiceId,
+  { id: SetupServiceId; label: string; started: string; refused: string }
+> = {
+  "herdr-server": {
+    id: "herdr-server",
+    label: "Herdr server",
+    started: "The Herdr server is running.",
+    refused: "The Herdr server could not be started.",
+  },
+  "cmux-app": {
+    id: "cmux-app",
+    label: "cmux app",
+    started: "cmux is open, and its control socket is answering.",
+    refused: "cmux could not be opened.",
+  },
   // Not a process, and the only entry here that is not. It is in this union because it is
   // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
   // and no path the browser could influence. See `CMUX_SOCKET_CONTROL_REMEDY`.
-  "cmux-socket-control": { id: "cmux-socket-control", label: "cmux socket control" },
+  "cmux-socket-control": {
+    id: "cmux-socket-control",
+    label: "cmux socket control",
+    started: "cmux socket control is set to allowAll. cmux applies it without a restart.",
+    refused: "The cmux configuration could not be written.",
+  },
 };
 
 /**

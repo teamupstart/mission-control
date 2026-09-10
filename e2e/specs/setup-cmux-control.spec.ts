@@ -101,7 +101,11 @@ test.describe("a cmux that is running and refusing", () => {
       service: "cmux-socket-control",
       outcome: "started",
       label: "cmux socket control",
+      // What the operator reads afterwards. This repair starts no process, so the sentence
+      // says what changed and that cmux needs nothing further from them.
+      detail: "cmux socket control is set to allowAll. cmux applies it without a restart.",
     });
+    await expect(cmux).toContainText("cmux applies it without a restart.");
 
     const edited = readFileSync(path, "utf8");
     expect(edited).toMatch(/"socketControlMode":\s*"allowAll"/);

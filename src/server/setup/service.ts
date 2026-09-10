@@ -62,7 +62,7 @@ export async function startSetupService(
   service: SetupServiceId,
   starters: SetupServiceStarters = DEFAULT_SETUP_SERVICE_STARTERS,
 ): Promise<SetupServiceResponse> {
-  const label = SETUP_SERVICE_INFO[service].label;
+  const { label, started, refused } = SETUP_SERVICE_INFO[service];
   const result = await starters[service]();
   if (result.ok) {
     return {
@@ -72,7 +72,9 @@ export async function startSetupService(
         service,
         outcome: "started",
         label,
-        detail: `The ${label} is running.`,
+        // The service's own sentence, because only two of the three start a process and a
+        // sentence built around the label claimed all of them did.
+        detail: started,
       },
     };
   }
@@ -87,7 +89,7 @@ export async function startSetupService(
       service,
       outcome: unknown ? "unknown" : "refused",
       label,
-      detail: result.error ?? `The ${label} could not be started.`,
+      detail: result.error ?? refused,
     },
   };
 }

@@ -46,6 +46,10 @@ function withScriptedPi(sdk: InstanceType<typeof FakePiSdk>): {
   const real = HARNESSES.pi.sdk;
   const spec = piSdkSpec(fakePiSdkDeps(sdk));
   HARNESSES.pi.sdk = {
+    // Read off the REAL spec rather than asserted here: this fake wraps the shipped driver
+    // to record its launches, so a declaration of its own would be a second answer to a
+    // question the driver already answers.
+    answersRequests: spec.answersRequests,
     launch: (opts) => {
       calls.push(opts);
       return spec.launch(opts);

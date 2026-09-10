@@ -24,7 +24,11 @@ const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { HARNESS_CAPABILITIES, capabilitiesFor } = await import(
   "../src/shared/harness-capabilities.ts"
 );
-const { HARNESSES, sdkFor } = await import("../src/server/harness/index.ts");
+const { HARNESSES, sdkFor, foremanAutomationAuthorized } = await import(
+  "../src/server/harness/index.ts"
+);
+type AgentType = import("../src/shared/types.ts").AgentType;
+type Session = import("../src/shared/types.ts").Session;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -117,6 +121,33 @@ test("a driver and the sdk interrupt that reaches it land together", () => {
       `${agent}: its driver must be able to produce the handle that performs the interrupt`,
     );
   }
+});
+
+test("Foreman may only automate an embedded session its driver can unblock", () => {
+  // An embedded session is instrumented by construction, which is why this arm exists - but
+  // being able to SEE a session is not the same as being able to answer it. A driver with no
+  // way to surface its harness's questions hands Foreman a session that can stop somewhere
+  // nobody can reach, and the queue then waits for ever with nobody told.
+  //
+  // Pi is the live fixture: its extension-UI bridge is Phase 2, so its driver declares
+  // `answersRequests: false` and its managed sessions stay out of the queue even though its
+  // harness now carries a `workQueue` spec.
+  const sdkSession = (agent: AgentType) =>
+    ({ agent, runtime: "sdk", hooksSeen: false }) as unknown as Session;
+
+  for (const agent of AGENT_TYPES) {
+    const driver = sdkFor(agent);
+    if (!driver) continue;
+    assert.equal(
+      foremanAutomationAuthorized(sdkSession(agent)),
+      driver.answersRequests && capabilitiesFor(agent).workQueue !== null,
+      `${agent}: automation must follow the driver's own answer, not the runtime alone`,
+    );
+  }
+
+  assert.equal(sdkFor("pi")!.answersRequests, false, "pi cannot surface its asks yet");
+  assert.equal(foremanAutomationAuthorized(sdkSession("pi")), false);
+  assert.equal(foremanAutomationAuthorized(sdkSession("claude")), true);
 });
 
 test("the capability record cannot have a hole in it", () => {

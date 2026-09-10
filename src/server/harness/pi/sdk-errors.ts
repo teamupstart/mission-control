@@ -54,7 +54,10 @@ const SECRETS: readonly RegExp[] = [
   // `Bearer` from it - leaving the token, and destroying the very word this rule needs to
   // find it by. Redacting the pair first means the generic rule below can only ever see an
   // already-redacted value.
-  /\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/g,
+  // Case-INSENSITIVE, because a provider that lowercases its echo (`bearer <token>`) is
+  // still echoing the token, and this rule is the only one that would have caught it: the
+  // `Authorization` rule below needs the header name, which a bare scheme does not carry.
+  /\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi,
   // Authorization headers, whatever scheme they name, INCLUDING the scheme's own token.
   // `\S+` alone stops at the first space, which on a two-part credential is exactly where
   // the secret begins.

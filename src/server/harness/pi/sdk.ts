@@ -404,12 +404,21 @@ class PiSdkSession implements SdkSessionHandle {
       // against a conversation nobody is looking at any more.
       await this.session.abort();
     } catch (err) {
-      console.warn(`[sdk] pi could not abort before shutdown:`, err);
+      // Through the classifier like every other failure here. `redact` claims there is no
+      // path that formats a provider failure without going through it, and an abort that
+      // triggers one last request can fail with the same credential-bearing message a turn
+      // would - which would then be written to the daemon's log in the clear.
+      console.warn(
+        `[sdk] pi could not abort before shutdown: ` +
+          classifyPiFailure(err, this.providerOfRecord()).message,
+      );
     }
     try {
       await this.runtime.dispose();
     } catch (err) {
-      console.error(`[sdk] pi disposal failed:`, err);
+      console.error(
+        `[sdk] pi disposal failed: ${classifyPiFailure(err, this.providerOfRecord()).message}`,
+      );
     }
     this.out.emit({ kind: "exited", reason: "the session was stopped", resumable: true });
     this.out.end();
@@ -557,6 +566,12 @@ class PiSdkSession implements SdkSessionHandle {
  */
 export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
   return {
+    // FALSE, and it is what keeps a managed Pi session out of the Work Queue. Pi's
+    // structured extension prompts (`select`, `confirm`, `input`, `editor`) have no
+    // `ExtensionUIContext` bridge here yet, so `answer()` refuses and a session that reaches
+    // one stops where nobody can answer from. Foreman may not be handed a session it cannot
+    // unblock. Phase 2 lands the bridge and flips this. See `SdkSpec.answersRequests`.
+    answersRequests: false,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       // REFUSED rather than dropped. Both are capabilities Pi does not have and nothing
       // declares it does (`mcp: null`, `multiRepoDispatch: null`), so arriving here means a

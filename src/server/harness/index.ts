@@ -361,7 +361,12 @@ export async function resumeArgvFor(
 export function foremanAutomationAuthorized(session: Session): boolean {
   const harness = HARNESSES[session.agent];
   if (!harness.workQueue) return false;
-  if (session.runtime === "sdk") return true;
+  // An embedded session is instrumented by construction - but Foreman must also be able to
+  // ANSWER it, and a driver that cannot surface its harness's questions would hand back a
+  // session stopped somewhere nobody can reach. `answersRequests` is where that is declared;
+  // see `SdkSpec`. A build with no driver for this harness answers false here too, which is
+  // the honest reading of a stored `sdk` runtime it can no longer serve.
+  if (session.runtime === "sdk") return harness.sdk?.answersRequests === true;
   if (!harness.hooks) return false;
   return harness.hooks.scope === "machine" || session.hooksSeen;
 }

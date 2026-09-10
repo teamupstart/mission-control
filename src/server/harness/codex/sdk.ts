@@ -1392,8 +1392,16 @@ function configuredDeveloperInstructions(result: unknown): string | null | undef
  * with no `codex` on the machine. Production takes the default, which is the only module
  * that spawns a subprocess.
  */
+/**
+ * True: command and file-change approvals and `request_user_input` all arrive as
+ * server-to-client requests with correlation ids, which is the reason this transport was
+ * chosen over a pane in the first place.
+ */
+const CODEX_ANSWERS_REQUESTS = true;
+
 export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec {
   return {
+    answersRequests: CODEX_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       // Launch-scoped `-c` config, in the SAME grammar a dispatched terminal Codex takes,
       // from the same descriptor: all three MCP keys or none is `mission-mcp.ts`'s rule and

@@ -281,6 +281,24 @@ export async function settle(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+/**
+ * One event of a known kind, or a failure naming what arrived instead.
+ *
+ * `assert.equal(event?.kind, "bound")` reads like a narrowing and is not one - `assert.equal`
+ * carries no assertion signature, so every field read after it is unchecked by the compiler
+ * and a renamed field would sail through as `undefined === undefined`. This does the
+ * narrowing for real, so the assertions that follow are type-checked against the variant
+ * they claim to be about.
+ */
+export function eventOfKind<K extends SdkEvent["kind"]>(
+  event: SdkEvent | undefined,
+  kind: K,
+): Extract<SdkEvent, { kind: K }> {
+  if (!event) throw new Error(`expected a ${kind} event, but the stream had none`);
+  if (event.kind !== kind) throw new Error(`expected a ${kind} event, got ${event.kind}`);
+  return event as Extract<SdkEvent, { kind: K }>;
+}
+
 /** The launch options a dispatch composes, with only the interesting fields named. */
 export function launchOptions(
   over: Partial<import("../../src/server/harness/types.ts").SdkLaunchOptions> = {},

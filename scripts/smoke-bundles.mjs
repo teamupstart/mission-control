@@ -636,6 +636,11 @@ async function smokePiSdkBundle() {
     fail("build:server could not be read out of package.json - has it been renamed?");
     return;
   }
+  // Resolved BEFORE the temp directory exists, so its failure path has nothing to clean up.
+  // It used to sit between the build and the try/finally that removes `out`, which left the
+  // built bundle on disk whenever the name could not be scraped.
+  const overrideEnv = await piSdkModuleEnvName();
+  if (!overrideEnv) return;
   const out = join(await mkdtemp(join(tmpdir(), "mc-pi-sdk-")), "pi-sdk-deps.mjs");
   // Every flag the daemon bundle is built with, minus the entry and its destination.
   const flags = splitScriptArgs(script).filter(
@@ -661,8 +666,6 @@ async function smokePiSdkBundle() {
   // that the pinned vendor package loads - without ever evaluating it. Cleared for the
   // duration and restored after: this check is about the bundle, so its answer must not
   // depend on a redirection whose whole purpose is to replace the thing being checked.
-  const overrideEnv = await piSdkModuleEnvName();
-  if (!overrideEnv) return;
   const override = process.env[overrideEnv];
   delete process.env[overrideEnv];
   try {

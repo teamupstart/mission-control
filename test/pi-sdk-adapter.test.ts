@@ -27,6 +27,7 @@ const {
   FakePiSdk,
   FakePiSession,
   collect,
+  eventOfKind,
   fakePiSdkDeps,
   launchOptions,
   settle,
@@ -150,8 +151,7 @@ test("a live effort change is applied to the session Pi is running", async () =>
 
 test("a launch binds Pi's identity and transcript before it delivers turn one", async () => {
   const { sdk, events } = await launch();
-  const bound = events[0];
-  assert.equal(bound?.kind, "bound");
+  const bound = eventOfKind(events[0], "bound");
   assert.equal(bound.agentSessionId, "pi-session-1");
   assert.match(bound.transcriptPath ?? "", /pi-session-1\.jsonl$/);
   assert.equal(bound.modelId, "amazon-bedrock/deepseek.v3.2");
@@ -444,7 +444,7 @@ test("clearing context rebinds to the replacement conversation and says it was a
   const first = sdk.runtime.session;
   await handle.clearContext!();
   await settle();
-  const rebind = events.filter((event) => event.kind === "bound").at(-1)!;
+  const rebind = eventOfKind(events.filter((event) => event.kind === "bound").at(-1), "bound");
   assert.equal(rebind.agentSessionId, "replacement-1");
   assert.equal(rebind.cleared, true);
   // The old conversation's listener is gone, so a late event from it reaches nobody, and
@@ -486,8 +486,7 @@ test("stop aborts before disposing, reports an exit, and ends the stream", async
   // streaming would go on spending against a conversation nobody is looking at.
   assert.equal(session.aborts, 1);
   assert.equal(sdk.runtime.disposals, 1);
-  const exited = events.at(-1)!;
-  assert.equal(exited.kind, "exited");
+  const exited = eventOfKind(events.at(-1), "exited");
   assert.equal(exited.resumable, true);
 });
 
@@ -557,6 +556,5 @@ test("a session that never binds a file still reports an honest transcript path"
   const handle = await piSdkSpec(fakePiSdkDeps(sdk)).launch(launchOptions());
   const { events } = collect(handle);
   await settle();
-  assert.equal(events[0]!.kind, "bound");
-  assert.equal(events[0]!.transcriptPath, null);
+  assert.equal(eventOfKind(events[0], "bound").transcriptPath, null);
 });

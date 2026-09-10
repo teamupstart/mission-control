@@ -148,11 +148,20 @@ function vendorImage(image: { data: string; mimeType: string }): PiVendorImage {
   return { type: "image", data: image.data, mimeType: image.mimeType };
 }
 
-/** A bash-shaped tool call's command line, when that is what this tool takes. */
+/**
+ * A bash-shaped tool call's command line, when that is what this tool takes.
+ *
+ * NOT clipped, deliberately, and it is the one string here that is not. This value feeds
+ * `opensPullRequest`, which reads the whole command - a `cd a && … && gh pr create` on a
+ * multi-repo task runs long, and a cap that cut the `gh pr create` off the end would drop a
+ * pull request the agent really opened, silently and unrecoverably. What reaches a CARD is
+ * clipped separately by `toolActivity`, which is where a display bound belongs. The value
+ * lives only until its own `tool_execution_end`.
+ */
 function toolCommand(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
   const command = (args as { command?: unknown }).command;
-  return typeof command === "string" ? command.slice(0, TOOL_OUTPUT_CAP) : null;
+  return typeof command === "string" ? command : null;
 }
 
 /** The text a tool returned, concatenated and clipped. Images and details are dropped. */

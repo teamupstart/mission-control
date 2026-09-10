@@ -379,5 +379,32 @@ test("every sender that writes into a pane reserves before it writes", () => {
       /\bconfirmReservedInjection\b/.test(source),
       `${sender} must settle its reservation rather than record a second claim`,
     );
+    // And gives the claim back only on POSITIVE evidence that nothing was delivered. A bare
+    // `!ok` is not that: a pane delivery can fail with the text already in the composer and
+    // only the Enter refused, and that echo may still arrive. The one sender that releases
+    // from a `catch` is the SDK supervisor, whose rejection is itself classified as a refusal.
+    const lines = source.split("\n");
+    lines.forEach((line, index) => {
+      if (!line.includes("releaseInjection(") || line.trimStart().startsWith("*")) return;
+      // The gate has to be at the CALL, not merely somewhere in the file: `routes.ts` says
+      // `pasted` in several unrelated places, and a file-wide search passed a route that had
+      // been reverted to a bare `!ok`.
+      // The nearest enclosing `if`/`catch` rather than a window of lines: the gate and its
+      // call are separated by the comment explaining why the gate is what it is, and that
+      // comment is exactly what a later edit would keep while widening the condition. A line
+      // window either misses the gate or reads a neighbouring one and passes either way.
+      let guard = "";
+      for (let above = index; above >= 0; above -= 1) {
+        if (/\b(if|catch)\s*\(/.test(lines[above] ?? "")) {
+          guard = lines[above] ?? "";
+          break;
+        }
+      }
+      assert.ok(
+        /pasted|catch \(/.test(guard),
+        `${sender}:${index + 1} releases its claim under \`${guard.trim()}\`, which is not `
+          + "positive evidence that nothing landed",
+      );
+    });
   }
 });

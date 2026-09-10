@@ -4797,13 +4797,16 @@ export function buildApp(
       parsed.data.origin,
     );
     if (daemonOrigin) {
-      // A refusal here is POSITIVE evidence that nothing landed, per the note above, so the
-      // reservation goes back: no echo is coming, and a claim left standing would be spent
-      // silencing a later turn that happens to repeat the text. A delivery that landed is
-      // confirmed rather than recorded afresh, or the reservation and the confirmation would
-      // each owe an echo.
+      // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
+      // would each owe an echo for one delivery.
       if (r.ok) confirmReservedInjection(session.id, parsed.data.text, daemonOrigin);
-      else releaseInjection(session.id, parsed.data.text);
+      // `pasted === false` and nothing weaker, which is the same line every other sender
+      // draws. The note above about a refusal being positive evidence is true of the DRIVER
+      // arm; this route also serves pane-backed sessions, where `ok: false, pasted: true` is
+      // a real outcome - the text is in the composer and only the Enter failed. That echo may
+      // still arrive, so the claim stands. Releasing on a bare `!r.ok` handed it back and
+      // reopened this race on the path Foreman's recovery packets travel.
+      else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
     }
     return c.json(r, r.ok ? 200 : 500);
   });

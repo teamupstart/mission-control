@@ -118,7 +118,19 @@ is how a check reports a healthy install that is not the one being loaded.
 
 Four arms, in increasing cost:
 
-1. **No link:** silence. A machine that never installed has nothing wrong with it.
+1. **No link, and no persisted intent to have one:** silence. A machine that never installed has
+   nothing wrong with it.
+
+   **No link, but intent says the integration is ON: warn.** This is the arm the first draft got
+   wrong by collapsing both cases into silence. Startup reconciliation only runs at startup, so a
+   link deleted afterwards - by hand, by a `pi` upgrade, by a reconcile that hit a problem and
+   reported it to a log nobody read - leaves an operator who switched the integration on with no
+   integration and no signal. That is the same silent-failure shape as the dangling link below,
+   reached a different way, and the row exists only while the check warns, so silence here means
+   the Setup panel shows nothing either.
+
+   Read the intent through Phase 5's persisted source, not by inferring it from the link's
+   presence - inferring is what makes the two cases indistinguishable in the first place.
 2. **Dangling link:** warn. The sentence must say that **Pi reports nothing** - an operator's
    reasonable prior is that a broken integration announces itself, and here it does not. Name the
    link path and the target that is missing, and the installer that repoints it from a durable
@@ -128,7 +140,29 @@ Four arms, in increasing cost:
    `node --input-type=module -e 'import(process.argv[1])'` or equivalent - with a timeout, so a
    bundle that hangs cannot hang the check. Never load it in the daemon: this is a module chosen
    to run inside Pi, and importing it here would run its module scope in the control plane.
-4. **Loads, but is out of date:** warn. Compare Phase 4's build marker against this build's. Then
+
+   Two constraints on that child, because it executes code from a path the daemon does not own:
+
+   - **Resolve the link to its canonical target and load THAT path**, not the link. It narrows
+     the window between deciding a target is acceptable and executing it, and it makes the
+     report name the file that actually ran.
+   - **Scrub the environment.** The module already runs with the operator's full privileges
+     inside every Pi session - Pi's own docs say so - so execution is not the marginal risk. The
+     marginal risk is that a daemon child inherits things a Pi session never sees, the Mission
+     API token first among them. Use `agentSubprocessEnv` / `cleanupAgentSubprocessEnv`
+     (`src/server/agent-subprocess-env.ts`), which exists for exactly this and already knows
+     which names to withhold.
+
+   Not attempted, and stated so the omission is a decision: dropping OS privileges for the
+   child, and locking the link against retargeting during the load. The daemon has no
+   privilege-dropping mechanism to reach for, and a symlink cannot be held against replacement
+   on either supported platform. Loading the resolved target rather than the link is the part of
+   that idea this codebase can actually implement.
+4. **Loads, but its baked MCP path is gone:** warn. Phase 4 bakes the absolute
+   `dist/mcp/server.mjs` path into the artifact, so a moved checkout breaks the tools half while
+   the instrumentation half keeps working - a partial state an operator cannot diagnose from the
+   symptom. Check that path resolves, and say which half is affected.
+5. **Loads, but is out of date:** warn. Compare Phase 4's build marker against this build's. Then
    ask the bridged bundle's own `tools/list` whether it still publishes what `MISSION_MCP_TOOLS`
    names - `reportMissionMcpDrift`'s question, asked on Pi's behalf, and the one that catches the
    real case where the extension is current and `dist/mcp/server.mjs` is stale.
@@ -222,6 +256,17 @@ installed and current". Do not add a second one, and do not make it repair.
   add it; recorded in Phase 4's audit as well.
 - **Phase 3's seam is retired here**, which is recorded in Phase 3's audit too, so the temporary
   probe cannot survive as a second decider.
+- **Review correction (r3), intent before silence.** Arm 1 collapsed "never installed" and
+  "installed, then the link vanished" into one silent answer. The second is a broken install and
+  the row only appears while the check warns, so it was invisible. The arm now reads the
+  persisted intent Phase 5 owns, and warns when intent is on and the link is not there.
+- **Review correction (r3), the loader child.** Loading a bundle from a path the daemon does not
+  own now resolves the canonical target and loads that, and scrubs the environment through
+  `agent-subprocess-env.ts` so a daemon child cannot carry the Mission API token into a module
+  the operator's Pi sessions run without it. Privilege dropping and link locking were declined
+  in the phase text with the reason.
+- **Review correction (r3), the baked MCP path.** Phase 4's build-time path is a second absolute
+  path inside the artifact, so this check grew an arm for it.
 - **Review correction (r2).** This phase gained the final `uninstrumentedWhy` refinement. The
   sentence's ownership now runs Phase 1 (factual) to Phase 4 (more specific, still factual) to
   Phase 5 (actionable) to here (names the Setup row), because Phase 1 originally shipped a

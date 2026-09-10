@@ -176,7 +176,21 @@ Publish via a staging directory and one rename, following
 
 ### 3. `src/pi/extension.ts` - the extension
 
-Structure it so nothing can throw where a throw is fatal:
+Split by concern rather than shipping one file that does everything. The artifact is a single
+bundled `.js` either way - esbuild flattens it - so the split costs nothing at runtime and buys
+the testable boundaries this phase's own test list already assumes:
+
+| Module | Owns | Why separate |
+| --- | --- | --- |
+| `extension.ts` | The session coordinator: registration, subscriptions, lifecycle of the child | The only file that touches Pi's API |
+| `mcp-client.ts` | The stdio child, the handshake, the frame and timeout bounds | Pure I/O, and the one part with a hostile input (a bundle that hangs or floods) |
+| `tool-adapter.ts` | MCP tool -> `pi.registerTool`, including `isError` becoming a throw | Pure transformation, table-testable against real `tools/list` output |
+| `event-map.ts` | Pi event -> `HookIngest`, and the statusline fields | Pure function, no I/O; the arm-for-arm twin of `harness/pi/hooks.ts` |
+
+Keep PR sniffing in `event-map.ts` (it is a pure read of a tool result) and
+standing-instruction delivery in `extension.ts` (it needs `event.systemPromptOptions`).
+
+Then structure it so nothing can throw where a throw is fatal:
 
 - **Module scope:** nothing but imports and the default export. A module-scope throw is Pi's
   exit-1 case.
@@ -189,11 +203,29 @@ Structure it so nothing can throw where a throw is fatal:
   `Extension error (…)` on stderr, session continues) but it costs that event, and the operator
   sees a line they cannot act on.
 
-**Tools.** On `session_start`, spawn `piExtensionPath`'s sibling `dist/mcp/server.mjs` (resolved
-by the daemon and passed in, or resolved relative to the extension - decide and document which,
-because a symlinked extension's `import.meta.url` is the link), `initialize`, `tools/list`, and
+**Tools.** On `session_start`, spawn `dist/mcp/server.mjs`, `initialize`, `tools/list`, and
 `pi.registerTool` per published tool. `pi.registerTool` works after startup and "New tools are
 refreshed immediately in the same session", so this need not block the factory.
+
+**How the extension finds that bundle is not obvious, and both of the obvious answers are
+wrong.** The daemon cannot pass the path in: a hand-run Pi session is not launched by Mission
+Control, and hand-run coverage is the entire point of this phase. Nor can the extension resolve
+it relatively, because `import.meta.url` is the **symlink** path (measured, `plan.md` P10), so
+`new URL("../../dist/mcp/server.mjs", import.meta.url)` resolves inside
+`~/.pi/agent/extensions/` - which is exactly the fallback `mcpServerPath()` uses and exactly
+where the bundle is not.
+
+So the absolute path is **baked at build time** and overridable at run time:
+
+- `build:pi-extension` passes the resolved absolute path through esbuild `--define`, from the
+  same `mcpServerPath()` that every other caller uses. One resolver, still.
+- `MISSION_MCP_SERVER` (via `envVar`, as `mcpServerPath()` already honours) overrides it, which
+  is what keeps tests and an operator's relocated build working.
+
+`mcpServerPath()` stays the source of truth; this phase only changes *when* it is read - at
+build time rather than at call time - because the process doing the reading is no longer in the
+repository. Verify it by loading through the installed symlink in a hand-run session with **no
+daemon running**: the tools must still register, because registration only needs the bundle.
 
 Bound the child the way `mission-mcp.ts` bounds its probe: a handshake timeout, a maximum
 unterminated stdout frame, and a kill grace. Those constants exist there with measured
@@ -289,7 +321,12 @@ npm run test:e2e
 ## Downstream handoff
 
 Phase 5 may rely on `piExtensionPath()` and on the artifact being a single self-contained `.js`
-reachable by a `.js`-named symlink. Phase 6 may rely on the artifact carrying a build marker -
+reachable by a `.js`-named symlink.
+
+Phase 6 must also check the **baked MCP path**, not only the extension link. It is a second
+absolute path inside the artifact, so a checkout that moves breaks both - and the tools half
+fails while the instrumentation half keeps working, which is the confusing partial state worth
+naming in a report. Phase 6 may rely on the artifact carrying a build marker -
 **add one in this phase**, because Phase 6's version-drift arm has nothing to compare without
 it, and retrofitting it means an installed extension from this phase can never be recognised as
 stale.
@@ -306,6 +343,17 @@ Phase 5 must not relocate the artifact; Phase 6 must not repair it.
 - **Review correction (r2).** This phase previously said the sentence "should name the Setup
   install". It must not: this phase ships no install, so naming one repeats Phase 1's defect one
   step later. Phase 5 owns the actionable rewrite.
+- **Review correction (r3), MCP path.** This phase previously offered two ways to find
+  `dist/mcp/server.mjs` - daemon injection or relative resolution - and **both are wrong for the
+  case this phase exists to serve.** A hand-run Pi session has no daemon, and `import.meta.url`
+  is the symlink path, so relative resolution lands in the operator's home. The path is now baked
+  at build time from `mcpServerPath()` with a `MISSION_MCP_SERVER` override, and the verification
+  explicitly requires a hand-run session with no daemon running.
+- **Review correction (r3), module split.** The single-file design combined MCP child management,
+  tool adaptation, event mapping, statusline reporting, PR parsing and standing-instruction
+  delivery. Split into four modules, which also matches the unit tests this phase already asks
+  for - a test list that names the MCP client and the payload mapper separately was already
+  assuming a boundary the design did not have.
 - Reconciliation applied **backwards into Phase 2**: the double-delivery gate is stated in Phase
   2's handoff, because that is where the channel is defined.
 - **Build marker moved into this phase** from Phase 6, where it was first noticed. Phase 6 can

@@ -148,6 +148,8 @@ return harness.hooks.scope === "machine" || session.hooksSeen;</code></pre>
 <tr><td><code>"pi-append-system-prompt"</code> appended to <code>STANDING_INSTRUCTIONS_MECHANISMS</code></td><td>Phase 2</td><td>Rename or reorder any existing value</td></tr>
 <tr><td><code>MissionToolsSpec</code> and the dispatcher's mechanism read</td><td>Phase 3</td><td>Branch on a concrete agent id again</td></tr>
 <tr><td><code>piExtensionPath()</code> in <code>src/server/config.ts</code></td><td>Phase 4</td><td>Re-derive the path from another module</td></tr>
+<tr><td>The <code>dist/mcp/server.mjs</code> path BAKED into the extension at build time, overridable by <code>MISSION_MCP_SERVER</code></td><td>Phase 4</td><td>Expect the daemon to inject it, or resolve it from <code>import.meta.url</code> - a hand-run session has no daemon and the link is not beside the bundle</td></tr>
+<tr><td>A persisted install intent, exposed as a reader</td><td>Phase 5</td><td>Infer intent from whether the link exists - that is what makes "never installed" and "link vanished" indistinguishable</td></tr>
 <tr><td>The Pi <code>HookSpec</code> event vocabulary and its ingest mapping</td><td>Phase 4</td><td>Add an event without a <code>toState</code> arm</td></tr>
 <tr><td><code>ExtensionsSpec</code> (<code>dirEnvVar</code>, <code>homeDir</code>, <code>isolatedDirName</code>, <code>linkName</code>)</td><td>Phase 5</td><td>Write to the operator's real directory from an isolated home</td></tr>
 <tr><td><code>ENVIRONMENT_CHECK_IDS</code> gains <code>"pi-extension"</code> at the END</td><td>Phase 6</td><td>Reorder the tuple</td></tr>

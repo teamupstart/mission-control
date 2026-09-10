@@ -210,6 +210,8 @@ Named once here so a later phase does not redefine them:
 | `"pi-append-system-prompt"` appended to `STANDING_INSTRUCTIONS_MECHANISMS` | Phase 2 | Rename or reorder any existing value |
 | `MissionToolsSpec` and the dispatcher's mechanism read | Phase 3 | Branch on a concrete agent id again |
 | `piExtensionPath()` in `src/server/config.ts` | Phase 4 | Re-derive the path from another module |
+| The `dist/mcp/server.mjs` path BAKED into the extension at build time, overridable by `MISSION_MCP_SERVER` | Phase 4 | Expect the daemon to inject it, or resolve it from `import.meta.url` - a hand-run session has no daemon and the link is not beside the bundle |
+| A persisted install intent, exposed as a reader | Phase 5 | Infer intent from whether the link exists - that is what makes "never installed" and "link vanished" indistinguishable |
 | The Pi `HookSpec` event vocabulary and its ingest mapping | Phase 4 | Add an event without a `toState` arm |
 | `ExtensionsSpec` (`dirEnvVar`, `homeDir`, `isolatedDirName`, `linkName`) | Phase 5 | Write to the operator's real directory from an isolated home |
 | `ENVIRONMENT_CHECK_IDS` gains `"pi-extension"` at the END | Phase 6 | Reorder the tuple |

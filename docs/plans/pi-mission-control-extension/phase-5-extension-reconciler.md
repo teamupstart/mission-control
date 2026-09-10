@@ -234,6 +234,10 @@ Plus, on a real machine, in this order:
 
 Phase 6 may rely on:
 
+- **A readable persisted intent, exported as a function rather than left as a config shape.**
+  Phase 6 has to distinguish "never installed" (silence) from "switched on, but the link is
+  gone" (warn), and it cannot infer that from the link's presence - inferring is what makes the
+  two indistinguishable. Whatever stores the intent, expose one reader for it here.
 - `uninstrumentedWhy` being actionable from this phase onward. Phase 6 refines it to name the
   Setup row once that row exists.
 - `capabilitiesFor("pi").extensions` and the resolver, to find the same directory the installer
@@ -255,6 +259,9 @@ Phase 6 must not repair the link. That is the approved report-only decision, and
   changed alone.
 - **Noted for Phase 6:** the capability-resolution requirement above was going to be an
   assumption there. Stated here as a handoff instead, because this phase owns the resolver.
+- **Review correction (r3).** The persisted intent had to become an exported reader, not just a
+  stored value: Phase 6 needs it to tell a machine that never installed from one whose link has
+  since vanished, and the second is a broken install that was silent in the first draft.
 - **Review correction (r2).** This phase acquired ownership of the `uninstrumentedWhy` rewrite.
   Phase 1 shipped that sentence naming an install, which nothing delivered until here, so an
   operator reading it in between was told to press a button that did not exist. Phases 1 and 4

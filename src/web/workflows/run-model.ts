@@ -1346,6 +1346,223 @@ export function deliveryKindLabel(kind: WorkflowDeliveryKind): string {
 }
 
 /**
+ * Everything the run record's tab bar and its panes need to COUNT, derived once.
+ *
+ * The tab labels carry counts and an amber badge, and a closed pane still has to report
+ * honestly - which makes every one of these numbers a claim a reader acts on without opening
+ * the pane that holds the rows behind it. A count computed inline in JSX can only be checked
+ * by rendering markup and reading a digit back out, and "the collapsed row states a wrong
+ * number" is the new failure this consolidation introduces. So they are derived here, once,
+ * and the view prints them.
+ *
+ * `blocking` is the sharp one and it means exactly "this pane holds something that STOPS the
+ * run", never "this pane has warnings". A refused or uncertain delivery has stopped the packet
+ * reaching the session; a captured context this build cannot read has stopped the round being
+ * auditable. A pruned payload, a truncated diff and a deterministic compaction fallback are
+ * all facts a reader may want and none of them stops anything, so none of them raises a badge.
+ */
+export interface RunRecordDeliverySummary {
+  total: number;
+  delivered: number;
+  refused: number;
+  uncertain: number;
+  /** `prepared` and `sending` together: in flight, and not yet an outcome either way. */
+  inFlight: number;
+  cancelled: number;
+  /** The newest CONFIRMED delivery, which is a different fact from the newest row. */
+  newestDeliveredAt: number | null;
+  /** How many of these packets belong to the round being read. */
+  inViewedRound: number;
+  blocking: boolean;
+}
+
+/** What the Intent pane is, before any of its bodies are read. */
+export type RunRecordIntentState = "captured" | "not_captured" | "corrupt" | "unreadable";
+
+export interface RunRecordIntentSummary {
+  state: RunRecordIntentState;
+  /** Null on every state but `captured`, and on a captured snapshot with no refinement. */
+  refinedGoal: string | null;
+  rawGoalCharacters: number;
+  hasOpeningAsk: boolean;
+  openingAskCharacters: number;
+  decisionCount: number;
+  /** Total characters across every decision body and rationale - the block this phase bounds. */
+  decisionCharacters: number;
+  decisionsWithRationale: number;
+  constraintCount: number;
+  acceptanceCriterionCount: number;
+  /** Null unless the snapshot is readable. `model` names the runner that compacted it. */
+  compaction: { status: "model" | "fallback"; runner: string | null; model: string | null } | null;
+  evidencePruned: boolean;
+  blocking: boolean;
+}
+
+export interface RunRecordSummary {
+  deliveries: RunRecordDeliverySummary;
+  intent: RunRecordIntentSummary;
+}
+
+/**
+ * The intent state of the ROUND being read, which is not the same question as `contextState`.
+ *
+ * `detail.contextState` is the run's verdict - the newest full submission's kind, or `corrupt`
+ * if any of them is - so it cannot say whether the round a scrubber selected is readable. A
+ * round that says `captured` and does not parse is `unreadable`, which is a state the pane
+ * draws rather than a crash.
+ */
+function runRecordIntentState(
+  detail: WorkflowRunDetail,
+  viewed: WorkflowSubmission | null,
+): { state: RunRecordIntentState; context: WorkflowContextSnapshot | null } {
+  if (detail.contextState === "not_captured") return { state: "not_captured", context: null };
+  if (detail.contextState === "corrupt") return { state: "corrupt", context: null };
+  const round = viewed?.mode === "full_workflow" ? viewed : null;
+  if (!round) return { state: "not_captured", context: null };
+  const context = readCapturedContext(round.context);
+  return context ? { state: "captured", context } : { state: "unreadable", context: null };
+}
+
+export function runRecordSummary(
+  detail: WorkflowRunDetail,
+  viewed: WorkflowSubmission | null,
+): RunRecordSummary {
+  const deliveries = detail.deliveries;
+  const byState = (state: WorkflowDeliveryState): number =>
+    deliveries.filter((delivery) => delivery.state === state).length;
+  const refused = byState("refused");
+  const uncertain = byState("uncertain");
+  const delivered = deliveries.filter((delivery) => delivery.state === "delivered");
+  const viewedRound = viewed
+    ? detail.submissions.find((submission) => submission.id === viewed.id)?.round ?? null
+    : null;
+  const roundOf = (submissionId: string): number | null =>
+    detail.submissions.find((submission) => submission.id === submissionId)?.round ?? null;
+  const { state, context } = runRecordIntentState(detail, viewed);
+  const decisions = context?.humanDecisions ?? [];
+  return {
+    deliveries: {
+      total: deliveries.length,
+      delivered: delivered.length,
+      refused,
+      uncertain,
+      inFlight: byState("prepared") + byState("sending"),
+      cancelled: byState("cancelled"),
+      // `deliveredAt`, never `updatedAt`: a refused packet transitions too, and the strip's
+      // "Newest" is the last time something actually reached the session.
+      newestDeliveredAt: delivered.reduce<number | null>(
+        (newest, delivery) => delivery.deliveredAt !== null
+          && (newest === null || delivery.deliveredAt > newest)
+          ? delivery.deliveredAt
+          : newest,
+        null,
+      ),
+      inViewedRound: viewedRound === null
+        ? 0
+        : deliveries.filter((delivery) => roundOf(delivery.submissionId) === viewedRound).length,
+      blocking: refused > 0 || uncertain > 0,
+    },
+    intent: {
+      state,
+      refinedGoal: context?.primaryGoal.refined ?? null,
+      rawGoalCharacters: context?.primaryGoal.rawPrompt.length ?? 0,
+      hasOpeningAsk: Boolean(context?.primaryGoal.openingAsk),
+      openingAskCharacters: context?.primaryGoal.openingAsk?.length ?? 0,
+      decisionCount: decisions.length,
+      decisionCharacters: decisions.reduce(
+        (total, decision) => total + decision.decision.length + (decision.rationale?.length ?? 0),
+        0,
+      ),
+      decisionsWithRationale: decisions.filter((decision) => Boolean(decision.rationale)).length,
+      constraintCount: context?.constraints.length ?? 0,
+      acceptanceCriterionCount: context?.acceptanceCriteria.length ?? 0,
+      compaction: context
+        ? {
+            status: context.compaction.status,
+            runner: context.compaction.runner,
+            model: context.compaction.model,
+          }
+        : null,
+      evidencePruned: context?.evidence.retention?.state === "pruned",
+      // `not_captured` is a round that stopped before its snapshot was written - a fact, and
+      // one the pane states - but `corrupt` and `unreadable` are a durable record this build
+      // cannot audit, which is the thing that stops a reader dead.
+      blocking: state === "corrupt" || state === "unreadable",
+    },
+  };
+}
+
+/**
+ * How many decisions, and how much prose, the collapsed list is standing in for.
+ *
+ * One sentence rather than two numbers on the page, because the point of collapsing nine
+ * bodies is that the closed summary answers without being opened - and "9 recorded" alone
+ * does not say that opening them costs twenty-one thousand characters of reading.
+ */
+export function humanDecisionsSummary(intent: RunRecordIntentSummary): string {
+  if (intent.decisionCount === 0) return "None captured.";
+  return `${intent.decisionCount} recorded, `
+    + `${intent.decisionCharacters.toLocaleString()} characters in total`;
+}
+
+/** One decision's own summary line, for the row that opens it. */
+export function humanDecisionSummary(decision: {
+  decision: string;
+  rationale: string | null;
+}): string {
+  const characters = decision.decision.length + (decision.rationale?.length ?? 0);
+  return `${characters.toLocaleString()} characters`
+    + (decision.rationale ? " · has rationale" : "");
+}
+
+/**
+ * The first line of a body, for a row a reader scans before deciding to open it.
+ *
+ * Trimmed and cut at the first newline rather than at a character count, because the first
+ * line of a recorded decision is a sentence somebody wrote and the first eighty characters of
+ * it are not. The cap is the fallback for a body with no newline at all; the row clamps to one
+ * line in CSS, so this is about what reaches the markup, not about what fits.
+ */
+export function firstLineOf(body: string, cap = 160): string {
+  const line = body.trim().split("\n", 1)[0]?.trim() ?? "";
+  return line.length > cap ? `${line.slice(0, cap - 1)}…` : line;
+}
+
+/**
+ * Which pane the container opens on, resolved ONCE per run.
+ *
+ * The amber badge alone does not satisfy "a blocking state cannot hide": a badge on a tab
+ * nobody clicks is still a click away from the thing that stopped the run. So the order is:
+ *
+ *  1. the pane the route names, WHEN that pane is offered for this run. An explicit pane wins
+ *     over a blocking one, so a link and the back button stay honest. The presence guard is
+ *     load-bearing rather than defensive: a pane is conditional, so a stale or hand-typed
+ *     name would otherwise select a tab that is not in the bar and leave the container drawing
+ *     nothing. An unavailable name is IGNORED here rather than acted on, and the container
+ *     spends no history entry putting the reader somewhere else - the router's own
+ *     canonicalization drops an unrecognised query value with `replaceState`, exactly as it
+ *     already drops an unknown run `status`, so the back button survives either way;
+ *  2. the worklist, when the worklist itself is blocking. It is the primary object, and a run
+ *     with both an open change and a refused delivery must not bury the change;
+ *  3. the first blocking pane in tab order;
+ *  4. the worklist.
+ *
+ * It is an INITIAL selection. A delivery that turns refused while someone is reading Intent
+ * raises the badge on Deliveries and does not move them; re-deriving this on every detail
+ * refresh would yank a reader out of the pane they chose.
+ */
+export function initialRunRecordPane<Pane extends string>(
+  panes: readonly { id: Pane; blocking: boolean }[],
+  routePane: Pane | null | undefined,
+  fallback: Pane,
+): Pane {
+  if (routePane && panes.some((pane) => pane.id === routePane)) return routePane;
+  const worklist = panes.find((pane) => pane.id === fallback);
+  if (worklist?.blocking) return worklist.id;
+  return panes.find((pane) => pane.blocking)?.id ?? fallback;
+}
+
+/**
  * Why a parked run is standing still, in one sentence, or nothing.
  *
  * The gap this closes is the quietest one on the page. A parked round shows a status and a

@@ -52,6 +52,11 @@ export const MECHANISM_PROSE: Record<StandingInstructionsMechanism, MechanismPro
     detail: "systemPrompt.append",
     inTranscript: false,
   },
+  "pi-append-system-prompt": {
+    channel: "system prompt",
+    detail: "--append-system-prompt",
+    inTranscript: false,
+  },
   "codex-developer-instructions": {
     channel: "developer instructions",
     detail: "developerInstructions",

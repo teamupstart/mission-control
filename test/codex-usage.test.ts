@@ -40,7 +40,7 @@ test("reads request deltas, carries the model, and splits every input tier", () 
   assert.deepEqual(
     { ...read.events[0], identity: "stable" },
     {
-      identity: "stable", ts: Date.parse("2026-07-22T12:00:00.000Z"),
+      identity: "stable", vendorCostUsd: null, ts: Date.parse("2026-07-22T12:00:00.000Z"),
       modelId: "gpt-5.6-sol", querySource: "main", input: 70, cacheRead: 20,
       cacheWrite: 10, output: 12, reasoningOutput: 4,
     },

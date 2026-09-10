@@ -18,6 +18,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REVIEW_LIMITS, REVIEW_TRUNCATION_MARKER } from "../src/shared/review.ts";
+import { clampPrompt } from "../src/server/util/prompt-text.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { LlmRunner } from "../src/shared/llm.ts";
@@ -39,9 +41,10 @@ const {
   readWorkflowIntentSnapshot,
   workflowIntentFingerprint,
 } = await import("../src/server/workflows/context.ts");
+const { buildPersonaPrompt } = await import("../src/server/workflows/prompt.ts");
 const { freezeWorkflowRunIntent, workflowRunIntentFingerprint } =
   await import("../src/server/workflows/intent-fingerprint.ts");
-const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
+const { WorkflowContextSnapshotSchema, WorkflowRunIntentSnapshotSchema } = await import("../src/shared/protocol.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
@@ -148,11 +151,17 @@ test("a run reviews the ask it froze, and no later prompt can reach it", async (
     "the packet must still be visible as transcript context",
   );
 
-  // The control, which is also the pre-migration path. Without a snapshot the same capture
-  // reads the packet as the request - the exact substitution this phase removes - so a run
-  // created before the freeze existed keeps the behaviour it was created under.
+  // Snapshot-less legacy runs keep the prior live-prompt contract, even when the
+  // durable objective differs. Only a newly frozen run opts into objective-based intent.
   const live = await readWorkflowContextRaw(registry, binding);
-  assert.equal(live.raw.primaryGoal.rawPrompt, REPAIR_PACKET);
+  assert.deepEqual(live.raw.primaryGoal, {
+    rawPrompt: REPAIR_PACKET,
+    refined: registry.getGoal(session.id)!.text,
+    sourceNoteKey: binding.noteKey,
+  });
+  const newlyFrozen = readWorkflowIntentSnapshot(registry, binding);
+  assert.equal(newlyFrozen?.rawGoal, HUMAN_ASK);
+  assert.equal(newlyFrozen?.openingAsk, HUMAN_ASK);
   assert.equal(
     live.raw.humanDecisions.some((decision) => decision.decision.includes("preflight")),
     true,
@@ -809,6 +818,10 @@ test("run criteria freeze once, and a second writer adopts the first", () => {
   const now = 10;
   const intent = {
     rawGoal: HUMAN_ASK,
+    openingAsk: "Please fix the spinner",
+    intentSource: {
+      objectiveVersion: 2, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer" as const,
+    },
     refinedGoal: null,
     sourceNoteKey: "note",
     decisions: [],
@@ -1076,4 +1089,135 @@ test("every created run carries a frozen ask, whatever the caller", () => {
     { ...FIXTURE_RUN_INTENT, fingerprint: workflowRunIntentFingerprint(FIXTURE_RUN_INTENT) },
     "the ask itself is still readable",
   );
+});
+
+
+test("steering freezes the durable objective and preserves opening provenance across amendments and replacement", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("objective-contract")]);
+  const { session, binding } = bindingFor(registry, "objective-contract");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  const amended = `${HUMAN_ASK}. Keep the keyboard shortcut working.`;
+  registry.captureAcceptedPrompt(session.id, "Keep the keyboard shortcut working", binding.noteKey);
+  registry.upsertGoal(session.id, {
+    objective: amended, text: amended, objectiveVersion: 2,
+    resolvedPromptRevision: 2, relationship: "amend", pendingPrompts: [],
+  });
+  registry.captureAcceptedPrompt(session.id, "create pr", binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "steer", resolvedPromptRevision: 3, pendingPrompts: [] });
+  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(frozen.rawGoal, amended);
+  assert.equal(frozen.openingAsk, HUMAN_ASK);
+  assert.deepEqual(frozen.intentSource, {
+    objectiveVersion: 2, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer",
+  });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], frozen);
+  assert.equal(captured.raw.primaryGoal.openingAsk, HUMAN_ASK);
+  assert.deepEqual(captured.raw.primaryGoal.intentSource, frozen.intentSource);
+  let compactionInput = "";
+  const compacted = await compactWorkflowContext(captured.raw, {
+    runner: "claude", model: "fake",
+    execute: async (request) => {
+      compactionInput = request;
+      return { kind: "ok", value: criteriaFor([amended]) };
+    },
+    reconcile: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
+  });
+  assert.ok(compactionInput.includes(amended));
+  assert.ok(!compactionInput.includes("create pr"));
+  assert.equal(compacted.primaryGoal.openingAsk, HUMAN_ASK);
+  const persona = {
+    sourcePersonaId: "reviewer", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null,
+  };
+  const prompt = buildPersonaPrompt(persona, compacted);
+  assert.match(prompt, /# Original human intent\nReview contract/);
+  assert.ok(prompt.includes(amended));
+  assert.ok(prompt.includes("Opening request this contract was derived from"));
+  assert.match(prompt, /Captured objective version 2; prompt revision 3; resolved revision 3; relationship steer/);
+  const sameOpening = buildPersonaPrompt(persona, {
+    ...compacted, primaryGoal: { ...compacted.primaryGoal, openingAsk: amended },
+  });
+  const intentSection = sameOpening.split("# Original human intent")[1]!.split("# Published Persona guidance")[0]!;
+  assert.ok(!intentSection.includes("Opening request this contract was derived from"));
+  registry.captureAcceptedPrompt(session.id, "Replace the spinner with a static link", binding.noteKey);
+  registry.upsertGoal(session.id, {
+    objective: "Replace the spinner with a static link", text: "Static link",
+    objectiveVersion: 3, resolvedPromptRevision: 4, relationship: "replace", pendingPrompts: [],
+  });
+  assert.equal(readWorkflowIntentSnapshot(registry, binding)?.openingAsk, HUMAN_ASK);
+  assert.equal(frozen.rawGoal, amended, "a later replacement never rewrites frozen intent");
+});
+
+test("Persona intent reports an unresolved relationship for a captured pending instruction", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("unresolved-intent-source")]);
+  const { session, binding } = bindingFor(registry, "unresolved-intent-source");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, {
+    relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [],
+  });
+  registry.captureAcceptedPrompt(session.id, "continue", binding.noteKey);
+
+  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.deepEqual(frozen.intentSource, {
+    objectiveVersion: 1, promptRevision: 2, resolvedPromptRevision: 1, relationship: null,
+  });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], frozen);
+  const prompt = buildPersonaPrompt({
+    sourcePersonaId: "reviewer", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null,
+  }, fallbackWorkflowContext(captured.raw, null));
+  // Inspect only intent: the live diff also contains these test assertions.
+  const intentSection = prompt.split("# Original human intent")[1]!.split("# Published Persona guidance")[0]!;
+  assert.ok(intentSection.includes(HUMAN_ASK));
+  assert.match(intentSection, /Captured objective version 1; prompt revision 2; resolved revision 1; relationship unresolved\./);
+  assert.doesNotMatch(intentSection, /relationship (?:null|undefined|initial|steer)/);
+});
+
+test("a session without an objective falls back to its prompt without inventing provenance", () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("no-objective")]);
+  const { session, binding } = bindingFor(registry, "no-objective");
+  registry.upsertGoal(session.id, { prompt: HUMAN_ASK });
+  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(frozen.rawGoal, HUMAN_ASK);
+  assert.equal(frozen.openingAsk, null);
+  assert.equal(frozen.intentSource, null);
+});
+
+test("the opening request stays verbatim through capture while Persona input stays bounded", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("long-opening")]);
+  const { session, binding } = bindingFor(registry, "long-opening");
+  const prompt = "\n  Opening\n" + "long request 🦊\t".repeat(20_000) + "\nFinal requirement  \n";
+  assert.ok(prompt.length > REVIEW_LIMITS.section);
+  const captured = registry.captureAcceptedPrompt(session.id, prompt, binding.noteKey)!;
+  assert.equal(captured.openingPrompt?.length, prompt.length, "capture must retain the entire request");
+  assert.equal(captured.openingPrompt, prompt);
+  const frozen = WorkflowRunIntentSnapshotSchema.parse(readWorkflowIntentSnapshot(registry, binding));
+  assert.equal(frozen.openingAsk, prompt);
+  assert.equal(frozen.rawGoal, clampPrompt(prompt.trim()), "the objective keeps its existing bound");
+  const read = await readWorkflowContextRaw(registry, binding, [], [], frozen);
+  const context = WorkflowContextSnapshotSchema.parse(fallbackWorkflowContext(read.raw, null));
+  assert.equal(context.primaryGoal.openingAsk, prompt);
+  const personaPrompt = buildPersonaPrompt({
+    sourcePersonaId: "reviewer", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null,
+  }, context);
+  const openingSection = personaPrompt.split(
+    "Opening request this contract was derived from (as recorded by the Goal pipeline):\n",
+  )[1]!.split("\nCaptured objective version")[0];
+  assert.equal(openingSection, `${prompt.slice(0, REVIEW_LIMITS.section)}\n${REVIEW_TRUNCATION_MARKER}`);
+  assert.equal(context.primaryGoal.openingAsk, prompt, "bounding the Persona never mutates stored context");
+});
+
+test("opening provenance does not change the fingerprint or legacy frozen rows", () => {
+  const old = freezeWorkflowRunIntent(FIXTURE_RUN_INTENT);
+  const augmented = { ...old, openingAsk: HUMAN_ASK, intentSource: {
+    objectiveVersion: 2, promptRevision: 4, resolvedPromptRevision: 3, relationship: "amend" as const,
+  } };
+  assert.equal(workflowRunIntentFingerprint(augmented), old.fingerprint);
+  assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(old), old);
+  assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(augmented), augmented);
 });

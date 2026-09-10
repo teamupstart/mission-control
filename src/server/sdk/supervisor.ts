@@ -22,6 +22,11 @@ import {
 import { SDK_SESSION_ID_PREFIX } from "../registry.ts";
 import type { LaunchPresentationInput } from "../launch-presentation.ts";
 import { sleep } from "../util/timers.ts";
+import {
+  confirmReservedInjection,
+  releaseInjection,
+  reserveInjection,
+} from "../injections.ts";
 import { getStandingInstructions } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
 import {
@@ -63,7 +68,13 @@ export function newSdkSessionId(): string {
   return `${SDK_SESSION_ID_PREFIX}${randomUUID()}`;
 }
 
-const RESTART_CONTINUATION_PROMPT =
+/**
+ * Exported for the tests that pin its authorship record. `recordInjection` matches on exact
+ * text, so a test asserting "this delivery was written down" - or that a refused one was not -
+ * has to hold the same bytes the supervisor sends, and a second copy is a second thing to
+ * drift.
+ */
+export const RESTART_CONTINUATION_PROMPT =
   "Mission Control restarted while your previous turn was still in progress. " +
   "Continue that work from the current checkout and conversation. Inspect the current " +
   "state before acting, do not repeat completed work, and ask again for any approval or " +
@@ -1169,12 +1180,37 @@ export class SdkSupervisor {
       }
     }
     if (row.turnInProgress) {
+      // BEFORE the send, not after it. This send is the one non-human delivery in the daemon
+      // that was never written down at all: `send` already declines to seed a Goal from it -
+      // no `acceptedGoal` is passed - but the agent's own prompt hook echoes the text straight
+      // back, and the goal path can only tell that echo from a typed prompt by asking who
+      // wrote it. Unrecorded, this prompt became a session's ask and was frozen onto the next
+      // workflow run as "Original user goal", and it read as the operator's own words in the
+      // conversation log.
+      //
+      // Recording it after the await was not enough. The driver can hand the turn over and the
+      // agent can submit it while this call is still unresolved, so the hook reaches the daemon
+      // first, finds nothing on file, and captures the continuation as the Goal - the very
+      // substitution the record exists to prevent, still reachable through its own path. The
+      // reservation closes that window; the release below gives it back when the driver is
+      // known to have taken nothing.
+      reserveInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
       try {
         // Through the ordinary send path AFTER adoption: Codex can resume with an active
         // turn, and its handle must choose `turn/steer` rather than the launch-time seed's
         // unconditional `turn/start`. Claude's handle starts the new continuation turn.
         await this.send(row.id, { text: RESTART_CONTINUATION_PROMPT });
+        // Landed. Confirming rather than recording afresh, or the reservation and this call
+        // would each owe an echo and the surplus would be spent silencing a later human turn.
+        // The journal waits until here on purpose: a reservation describes a send that has not
+        // happened, and the durable archive must carry turns that exist.
+        confirmReservedInjection(row.id, RESTART_CONTINUATION_PROMPT, "harness");
       } catch (err) {
+        // Positive evidence that nothing was delivered: `send` rejects only when the guard
+        // refused before the driver was invoked, or the driver refused the turn outright. No
+        // echo is coming, so the reservation goes back rather than sitting there waiting to
+        // swallow a later turn that happens to repeat the text.
+        releaseInjection(row.id, RESTART_CONTINUATION_PROMPT);
         // The conversation itself DID resume, so do not send it through the unresumable
         // eviction path. Keep the durable bit set: another daemon restart may recover it,
         // and the live card still gives the operator an honest place to retry.

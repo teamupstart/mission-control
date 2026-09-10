@@ -285,7 +285,7 @@ export function seedConductorInstallerCheckout(repo: string): string {
  * rather than as a broken fixture.
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { basename, join } = require("node:path");
 const argv = process.argv.slice(2);
 
@@ -320,6 +320,138 @@ const readEngineerState = () => {
 };
 const writeEngineerState = (state) => {
   if (engineerStatePath) writeFileSync(engineerStatePath, JSON.stringify(state, null, 2));
+};
+/**
+ * Hold an exclusive lock across a read-modify-write of the Engineer state file.
+ *
+ * Every mutation below is read-modify-write over ONE json file, and the provider CLI is
+ * invoked as a separate short-lived process per call. Two of those running at once - which
+ * is exactly what \`concurrent same-intent Pipeline dispatches reserve independent Engineer
+ * runs\` drives - both read the same state, both append their own run, and the second write
+ * clobbers the first.
+ *
+ * What that looks like downstream is not a lost fixture write, it is a daemon error: the
+ * reservation the first dispatch was handed is no longer in the file, so refreshing the
+ * commission cannot find its history and the dispatch fails with "the provider Engineer
+ * reservation history is not available ... Unknown Engineer run". The run ids give it away -
+ * both processes compute their attempt from a lineage they read before either wrote, so the
+ * second reservation is numbered 1 as well.
+ *
+ * mkdir is the lock because it is atomic on every platform this suite runs on and needs no
+ * dependency. The lock is OWNED: acquiring writes a token inside it, and both the break-in
+ * and the release check that token first.
+ *
+ * Ownership is what makes this safe, and a plain timeout was not. An earlier version broke
+ * in on its own wait deadline and released unconditionally, which reintroduces the very race
+ * this exists to fix: if A's section runs past the deadline under load, B deletes A's lock
+ * and starts mutating the same file, then A's \`finally\` deletes whatever lock now exists
+ * and a third contender walks in. Two runs both numbered 1, exactly as before, but only
+ * under a stall rather than a true simultaneous call. So a lock is broken only when its
+ * token is MISSING or STALE by wall clock - which a live holder's never is, because these
+ * sections are one small read and one write - and a release only removes a lock it still
+ * owns. Failing to acquire is an error rather than a forced entry, because a fixture that
+ * says so beats one that silently corrupts state.
+ *
+ * The release is registered on \`exit\` as well as run in \`finally\`. \`finally\` covers a
+ * normal return and a throw; it does NOT cover \`process.exit()\`, which stops unwinding
+ * where it stands. No branch inside a critical section calls that today - the unknown-run
+ * paths set \`process.exitCode\` and fall through precisely so the lock is released, and the
+ * one \`process.exit(2)\` in \`run-readiness\` is argument validation that runs BEFORE the
+ * lock is taken - but the fake also exits from stdin handlers, so the hook keeps the
+ * invariant from depending on that staying true.
+ */
+// Both windows are overridable so a test can probe the break-in boundary without waiting
+// thirty seconds for it. Thirty seconds is the default because a real critical section here
+// is one small read and one write, so anything near it means the holder is gone.
+//
+// Validated rather than passed through, for the reason msOverride in
+// src/server/task-sources/writeback.ts documents about its own overrides: Number("oops")
+// is NaN, and every comparison against NaN is false. A NaN wait deadline never expires and a
+// NaN staleness window never triggers, so a mistyped variable would turn a bounded wait into
+// an unbounded spin. A typo should cost the default, not the loop.
+const msWindow = (name, fallback) => {
+  const raw = process.env[name];
+  const parsed = raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const LOCK_STALE_MS = msWindow("MC_E2E_CONDUCTOR_LOCK_STALE_MS", 30000);
+const LOCK_WAIT_MS = msWindow("MC_E2E_CONDUCTOR_LOCK_WAIT_MS", 30000);
+const lockToken = String(process.pid) + "-" + String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+const lockOwnerPath = (lockPath) => lockPath + "/owner";
+/** Remove the lock only if this process still owns it. */
+const releaseEngineerLock = (lockPath) => {
+  try {
+    if (readFileSync(lockOwnerPath(lockPath), "utf8") !== lockToken) return;
+  } catch { /* no owner file: a broken-in lock, or already gone. Fall through and clean up. */ }
+  rmSync(lockPath, { recursive: true, force: true });
+};
+/** True when the lock looks abandoned rather than held by a live, working process. */
+const lockIsStale = (lockPath) => {
+  try { return Date.now() - statSync(lockOwnerPath(lockPath)).mtimeMs > LOCK_STALE_MS; }
+  catch { return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS; }
+};
+/** Whose lock this is right now, or null when it has no readable owner. */
+const lockOwnerOf = (lockPath) => {
+  try { return readFileSync(lockOwnerPath(lockPath), "utf8"); }
+  catch { return null; }
+};
+/**
+ * Break an abandoned lock, without ever deleting a live one.
+ *
+ * The check and the delete cannot be one operation on a directory, so two waiters can both
+ * decide a lock is stale, the first can remove it and acquire a fresh one, and the second
+ * can then delete THAT. Recovery is therefore serialised behind its own atomic mkdir, and
+ * the decision is remade inside it against the owner token observed outside: if the lock has
+ * changed hands or stopped being stale in between, this leaves it alone.
+ *
+ * A breaker stranded by a process killed mid-recovery costs the next caller its wait and a
+ * named error, not a corrupted state file. That is the failure this whole lock is built to
+ * avoid trading away.
+ */
+const breakStaleLock = (lockPath, observedOwner) => {
+  const breaker = lockPath + ".breaker";
+  try { mkdirSync(breaker); }
+  catch { return; } // Another waiter is already recovering. Loop and re-read.
+  try {
+    if (lockIsStale(lockPath) && lockOwnerOf(lockPath) === observedOwner) {
+      rmSync(lockPath, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(breaker, { recursive: true, force: true });
+  }
+};
+const withEngineerState = (mutate) => {
+  if (!engineerStatePath) return mutate({ runs: [] });
+  const lockPath = engineerStatePath + ".lock";
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      writeFileSync(lockOwnerPath(lockPath), lockToken);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      // The deadline is checked FIRST, before any recovery attempt. Checking it only on the
+      // wait path made a held breaker an infinite loop: a stale lock stays stale, recovery
+      // keeps deferring to whoever holds the recovery slot, and the loop never reaches a
+      // deadline it only tested on the other branch.
+      if (Date.now() > deadline) {
+        throw new Error("timed out waiting for the Engineer state lock at " + lockPath);
+      }
+      const observed = lockOwnerOf(lockPath);
+      if (lockIsStale(lockPath)) { breakStaleLock(lockPath, observed); continue; }
+      // A short spin. These critical sections are one small file read and one write.
+      const until = Date.now() + 5;
+      while (Date.now() < until) { /* wait */ }
+    }
+  }
+  const onExit = () => releaseEngineerLock(lockPath);
+  process.once("exit", onExit);
+  try { return mutate(readEngineerState()); }
+  finally {
+    process.removeListener("exit", onExit);
+    releaseEngineerLock(lockPath);
+  }
 };
 const engineerSnapshot = (run) => ({
   schemaVersion: 1,
@@ -386,7 +518,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     const correlationId = flag("correlation-id");
     const attemptKey = flag("attempt-key");
     const integrationOwner = flag("integration-owner");
-    const state = readEngineerState();
+    const run = withEngineerState((state) => {
     let run = state.runs.find((candidate) =>
       candidate.repoRoot === repoRoot &&
       candidate.correlationId === correlationId &&
@@ -430,6 +562,8 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
       state.runs.push(run);
       writeEngineerState(state);
     }
+    return run;
+    });
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
   }
 } else if (argv[0] === "engineer" && argv[1] === "run-readiness") {
@@ -440,7 +574,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     process.stderr.write("Unexpected Engineer readiness arguments\\n");
     process.exit(2);
   }
-  const state = readEngineerState();
+  withEngineerState((state) => {
   const run = state.runs.find((candidate) => candidate.engineerRunId === engineerRunId);
   if (!run || run.repoRoot !== repoRoot) {
     process.stderr.write("Unknown Engineer run\\n");
@@ -477,6 +611,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
     if (!ready) process.exitCode = 1;
   }
+  });
 } else if (argv[0] === "engineer" && argv[1] === "run-inspect") {
   const repoRoot = flag("repo-root");
   const correlationId = flag("correlation-id");
@@ -524,7 +659,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
   }
 } else if (argv[0] === "engineer" && argv[1] === "run-cancel") {
   const engineerRunId = flag("run-id");
-  const state = readEngineerState();
+  withEngineerState((state) => {
   const run = state.runs.find((candidate) => candidate.engineerRunId === engineerRunId);
   if (!run) {
     process.stderr.write("Unknown Engineer run\\n");
@@ -549,6 +684,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     }
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
   }
+  });
 } else if (argv[0] === "engineer" && flag("idea") !== null) {
   // The ENGINEER SESSION, and it has to stay up.
   //

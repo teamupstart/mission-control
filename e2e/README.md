@@ -1400,6 +1400,35 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### The run record, offered rather than stacked
+
+`e2e/.artifacts/workflow-run-record-tabs/` carries four frames from
+`specs/workflow-run-record-tabs.spec.ts`, and they exist because the change is a MEASUREMENT.
+Below the round scrubber the four sections of one real No-Mistakes run came to 7,997px - 8.9
+screens at a 900px viewport - to carry three sentences of verdict. Assertions can say the tab is
+selected and the row is one row; only a picture shows that four 560px delivery cards are now
+four lines, and that nine human decision bodies close down to nine.
+
+`01-deliveries-blocking.png` is the load-bearing one: a run whose worklist is clean and whose
+packets are not, opening on Deliveries with no click, the refused packet's sentence, its durable
+error and its recovery buttons already on screen. An amber badge alone would leave every one of
+those a click away, which is why the container resolves an initial pane at all.
+`02-intent-collapsed.png` and `03-intent-decision-open.png` are the decision rows closed and one
+of them open - closed being the state that matters, since the claim is that the prose costs a
+reader nothing until they ask for it. `04-clean-run.png` is the ordinary run, which is most of
+them: two tabs, no amber, and no `Deliveries 0` for a run that sent nothing.
+
+Regenerate the frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-run-record-tabs.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### The run header, decluttered
 
 `e2e/.artifacts/workflow-run-audit/` carries three frames
@@ -1791,6 +1820,17 @@ side effect are not one atomic act. Both are the engine's documented shape rathe
 failure mode the fixture invented, and the second is the only way to see the surface re-read a
 repository whose state moved without anyone being told.
 
+**Its Engineer store is locked, because two of these processes can run at once.** A Pipeline
+dispatch spawns one `conduct-ts` per task, and `conductor-loops.spec.ts` dispatches two at the
+same instant on purpose - that is the exclusivity it exists to prove. Each invocation
+read-modify-writes one JSON file, so without a lock the second writer erases a run the daemon
+has already been told it reserved, and every later verb about that run answers `Unknown
+Engineer run`. The fake takes an exclusive lock (an atomic `mkdirSync`) from its first read
+until it exits, and publishes with one rename so the spec - which reads that file holding no
+lock - never sees it half-written. The real engine serialises on its own store; this is the
+fixture's version of that, and it is what makes the concurrent case deterministic rather than
+dependent on how loaded the host is.
+
 `e2e/.artifacts/pipeline-controls/` carries ten frames behind `MC_E2E_EVIDENCE`: the inbox
 row with its verbs and the same row drained, the paused daemon chip, the grant form with
 `plan` absent and explained, the reseal form, the run's cost chip, the spend popover carrying
@@ -1879,7 +1919,9 @@ on the fake so that regression is caught rather than invoiced.
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MC_E2E_USE_REPO_INDEX_DEFAULTS=1` | opt-in fixture flag that removes every supported workspace override, so Settings repository-index specs exercise the config-backed shipped defaults |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
-| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
+| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec. The same override covers the two write-back verbs, and it has to: `gh issue comment` posts on a thread somebody is watching and `gh issue close` moves their work, and neither is undone by deleting a row in the daemon's ledger |
+| `MC_E2E_GH_WRITEBACK` | where that fake reads its scripted write-back answers from (see `writeGhWritebackScript`). Set for every daemon, so a spec only has to write the file; absent content means both verbs succeed, which is what every spec that never turns a source's write-back switches on already expects |
+| `MISSION_JIRA_BIN` | every `jira` call hits a fake. The same hazard as `MISSION_GH_BIN` and a worse one: a Jira write-back **moves an issue** - `jira issue move MC-431 "Done"` transitions a ticket on somebody's board - so on a machine where the operator ran `jira init`, an unfaked binary would do that for real. `jiraBin()` is the single seam every `jira` subprocess resolves through, so this covers the sweep and both write-back verbs |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 
 That last setting matters most and is the least obvious. Without `MISSION_POLL_MS=0` a daemon

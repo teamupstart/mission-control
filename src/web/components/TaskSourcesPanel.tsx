@@ -25,12 +25,15 @@ import {
   type TaskSourceInstance,
   type TaskSourceKind,
   type TaskSourceStatus,
+  type TaskSourceWritebackStatus,
 } from "@shared/task-source.ts";
 import type { TaskSourcesState } from "../useTaskSources.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { repoLeaf } from "../lib/format.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { ago } from "./InspectorSettingsPanel.tsx";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { ConsoleState, type ConsoleTone } from "./settings-console.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 // The Task sources settings category: what pulls work INTO the backlog from systems that
@@ -444,11 +447,351 @@ function JiraFields({
   );
 }
 
+// ---- writing back to the item a task was swept from ----
+//
+// The consent surface for the outward direction, and the reason it is a section of its own
+// rather than three more checkboxes among the sweep's filters: everything above this point
+// only READS somebody else's tracker, and everything in here WRITES to it. A comment on an
+// issue is visible to whoever is watching that issue, and closing one moves work in a place
+// other people plan around - neither is undone by deleting a row here.
+//
+// So all three switches ship off, the resolve switch is unreachable until the trigger that
+// would fire it is on, and a capability this build does not have renders DISABLED WITH THE
+// REASON rather than hidden. That last one matters more than it looks: "this kind cannot do
+// that" and "you have not turned that on" are different facts, and a hidden switch makes
+// them look identical - so an operator would go looking for a setting that was never there.
+
+/**
+ * What a kind can do to the items it swept, as this panel needs to know it.
+ *
+ * Passed in rather than read off `TASK_SOURCE_KIND_INFO` inside the component, so the
+ * disabled-with-a-reason rendering can be exercised against a kind that cannot write back
+ * WITHOUT pinning a shipped kind's current flags - those are expected to change as each
+ * kind's implementation lands, and a test that read them would go red on a change that made
+ * the product strictly better.
+ */
+export interface WritebackCapabilities {
+  canAnnotate: boolean;
+  canResolve: boolean;
+}
+
+/** One consent switch, with what it does and - when it is unavailable - why. */
+function WritebackSwitch({
+  label,
+  title,
+  desc,
+  tooltip,
+  checked,
+  disabledWhy,
+  onChange,
+}: {
+  /** The accessible name. Names the source, so two cards' switches are distinguishable. */
+  label: string;
+  title: string;
+  desc: string;
+  tooltip: string;
+  checked: boolean;
+  /** Why this cannot be turned on right now, or null when it can. */
+  disabledWhy: string | null;
+  onChange: (next: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <label
+      className={`settings-toggle${checked ? " is-on" : ""}${disabledWhy ? " is-unavailable" : ""}`}
+    >
+      {/* The tooltip goes on saying what the switch WOULD do, even while it cannot be
+          pressed. The reason it cannot is in the description instead, because a tooltip on
+          a disabled control is the one place a person will not look: they read the label,
+          find they cannot click it, and leave. */}
+      <Tooltip label={tooltip}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabledWhy !== null}
+          aria-label={label}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+      </Tooltip>
+      <span className="settings-toggle-text">
+        <span className="settings-toggle-label">{title}</span>
+        <span className="settings-toggle-desc">{disabledWhy ?? desc}</span>
+      </span>
+    </label>
+  );
+}
+
+/**
+ * One source's delivery queue, in one line.
+ *
+ * `failed` and `unknown` are counted separately all the way to here and are never summed
+ * into "problems", because the operator's next move differs: a failure is proof that
+ * nothing was written and is safe to retry, while an unknown outcome may already be a
+ * comment on somebody's issue. The sentence has to be able to say which.
+ */
+function queueLine(q: TaskSourceWritebackStatus | undefined): {
+  tone: ConsoleTone;
+  text: string;
+} {
+  if (!q) return { tone: "unknown", text: "No queue reported for this source yet." };
+  const parts: string[] = [];
+  if (q.pending > 0) parts.push(`${q.pending} waiting`);
+  if (q.failed > 0) parts.push(`${q.failed} failed`);
+  if (q.unknown > 0) parts.push(`${q.unknown} may already have landed`);
+  if (q.delivered > 0) parts.push(`${q.delivered} delivered`);
+  if (parts.length === 0) return { tone: "off", text: "Nothing written back yet." };
+  const tone: ConsoleTone = q.failed > 0 || q.unknown > 0 ? "attention" : "ok";
+  return { tone, text: `${parts.join(", ")}.` };
+}
+
+/** GitHub's own write-back setting: how `resolve` closes the issue. */
+function GithubWritebackFields({
+  cfg,
+  onChange,
+}: {
+  cfg: GithubIssuesConfig;
+  onChange: (next: GithubIssuesConfig) => void;
+}): React.JSX.Element {
+  return (
+    <div className="ts-fields">
+      <label className="ts-field">
+        <span className="ts-field-label">Close reason</span>
+        <Tooltip label="Which reason GitHub records when an issue is closed by a resolve. Completed for work that shipped; Not planned for work that will not be done">
+          <select
+            className="harnesses-select"
+            aria-label="How a resolved GitHub issue is closed"
+            value={cfg.closeReason}
+            onChange={(e) =>
+              onChange({
+                ...cfg,
+                closeReason: e.target.value as GithubIssuesConfig["closeReason"],
+              })
+            }
+          >
+            <option value="completed">Completed</option>
+            <option value="not-planned">Not planned</option>
+          </select>
+        </Tooltip>
+      </label>
+    </div>
+  );
+}
+
+/**
+ * Jira's own write-back settings: the status a finished issue should land in, and how the
+ * pull request is attached to it.
+ *
+ * The target status is typed rather than picked from a list because the list is a property
+ * of the ISSUE, not of the source: Jira offers the transitions reachable from wherever an
+ * issue is standing right now, and every project names "finished" whatever it likes. What
+ * this stores is the name to look for; the daemon matches it when the moment comes and
+ * refuses with the names actually on offer when it does not fit.
+ */
+function JiraWritebackFields({
+  cfg,
+  resolving,
+  onChange,
+}: {
+  cfg: JiraConfig;
+  /** Whether auto-resolve is on, which is what makes an empty target status a problem. */
+  resolving: boolean;
+  onChange: (next: JiraConfig) => void;
+}): React.JSX.Element {
+  const { val, edit, commit } = useDraftText();
+  return (
+    <div className="ts-fields">
+      <label className="ts-field">
+        <span className="ts-field-label">Target status</span>
+        <Tooltip label="The status a finished issue should land in, e.g. Done. Matched against the transitions Jira offers from the issue's current status when the moment comes">
+          <input
+            className="field-input mono"
+            placeholder="Done"
+            value={val("resolveTransition", cfg.resolveTransition)}
+            onChange={(e) => edit("resolveTransition", e.target.value)}
+            onBlur={() =>
+              commit("resolveTransition", (v) =>
+                onChange({ ...cfg, resolveTransition: v.trim() }),
+              )
+            }
+          />
+        </Tooltip>
+      </label>
+
+      <label className="ts-field">
+        <span className="ts-field-label">Link style</span>
+        <Tooltip label="A remote link is where somebody looks for what work touched this issue; a comment is what reaches the activity feed and a notification. Both, by default, because they answer different questions">
+          <select
+            className="harnesses-select"
+            aria-label="How the pull request is attached to a Jira issue"
+            value={cfg.linkVia}
+            onChange={(e) => onChange({ ...cfg, linkVia: e.target.value as JiraConfig["linkVia"] })}
+          >
+            <option value="both">Remote link and comment</option>
+            <option value="remote-link">Remote link only</option>
+            <option value="comment">Comment only</option>
+          </select>
+        </Tooltip>
+      </label>
+
+      {/* Said here rather than left to the first delivery, for the reason the empty-JQL
+          warning is said above: a stored-but-empty target status is a switch that looks
+          configured and refuses every time it fires. */}
+      {resolving && !cfg.resolveTransition.trim() && (
+        <p className="settings-warn ts-no-transition">
+          Without a target status nothing can be resolved. Type the status a finished issue
+          should land in, exactly as your project names it.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The write-back consent block: the three switches, the kind's own settings, and the queue.
+ *
+ * Exported for the same reason `SourceCard` is - the editor is gated on an effect that
+ * picks a selection, and a static render runs no effects, so this is the only way any
+ * layer below a browser can see it at all.
+ */
+export function WritebackFields({
+  src,
+  kindLabel,
+  caps,
+  queue,
+  kindFields,
+  busy,
+  onChange,
+  onRetry,
+  onDiscard,
+}: {
+  src: TaskSourceInstance;
+  kindLabel: string;
+  caps: WritebackCapabilities;
+  queue: TaskSourceWritebackStatus | undefined;
+  /** This kind's own write-back settings, composed by the one branch that names a kind. */
+  kindFields: React.ReactNode;
+  busy: string | null;
+  onChange: (next: TaskSourceInstance) => void;
+  onRetry: (includeUnknown: boolean) => void;
+  onDiscard: () => void;
+}): React.JSX.Element {
+  const name = nameOf(src, kindLabel);
+  const wb = src.writeback;
+  const line = queueLine(queue);
+  const stuck = (queue?.failed ?? 0) + (queue?.unknown ?? 0);
+  const cannotAnnotate = `${kindLabel} cannot write onto its items in this build, so there is nothing to switch on.`;
+
+  return (
+    <div className="ts-writeback" data-anchor="task-sources/writeback">
+      <p className="settings-group-label">Writing back to the item</p>
+      <p className="settings-hint">
+        Everything above only <strong>reads</strong> the upstream. These write to it: a
+        comment lands on the issue a task was swept from, where whoever filed it will see
+        it. All three ship off, and each is only ever about items <em>this</em> source
+        swept.
+      </p>
+
+      <div className="ts-writeback-switches">
+        <WritebackSwitch
+          label={`Comment on items from ${name} when a pull request opens`}
+          title="Comment when a pull request opens"
+          desc="The first pull request linked to a swept task is commented onto its item, once per repository the task touched."
+          tooltip="Comment the pull request onto the item as soon as one is linked to the task"
+          checked={wb.onPrOpened}
+          disabledWhy={caps.canAnnotate ? null : cannotAnnotate}
+          onChange={(next) =>
+            onChange({ ...src, writeback: { ...wb, onPrOpened: next } })
+          }
+        />
+        <WritebackSwitch
+          label={`Comment on items from ${name} when the task completes`}
+          title="Comment when the task completes"
+          desc="The task's own outcome, and its pull request, are commented onto the item when it finishes."
+          tooltip="Comment the outcome onto the item when the task completes"
+          checked={wb.onCompleted}
+          disabledWhy={caps.canAnnotate ? null : cannotAnnotate}
+          onChange={(next) =>
+            // Turning the trigger off takes the resolve with it, because the stored shape
+            // refuses `resolve` without it - a resolve with nothing to fire it is a switch
+            // that would read ON while nothing ever resolved. Dropped here so the panel
+            // refuses exactly what the schema refuses, rather than composing a body the
+            // daemon rejects and then explaining the rejection.
+            onChange({
+              ...src,
+              writeback: { ...wb, onCompleted: next, resolve: next && wb.resolve },
+            })
+          }
+        />
+        <div className="ts-writeback-nested">
+          <WritebackSwitch
+            label={`Resolve items from ${name} when the task completes`}
+            title="Also resolve the item upstream"
+            desc="Close the issue, or move the ticket. Held for a settle window first, and cancelled if the task turns out not to be finished."
+            tooltip="Mark the item finished upstream once the completion comment's trigger has fired"
+            checked={wb.resolve}
+            disabledWhy={
+              !caps.canResolve
+                ? `${kindLabel} cannot mark its items resolved in this build, so there is nothing to switch on.`
+                : !wb.onCompleted
+                  ? "Turn on the completion comment first - a resolve with nothing to trigger it would never fire."
+                  : null
+            }
+            onChange={(next) => onChange({ ...src, writeback: { ...wb, resolve: next } })}
+          />
+        </div>
+      </div>
+
+      {kindFields}
+
+      <ConsoleState tone={line.tone}>{line.text}</ConsoleState>
+      {queue?.lastError && <p className="settings-error ts-error">{queue.lastError}</p>}
+      {(queue?.unknown ?? 0) > 0 && (
+        <p className="settings-warn ts-writeback-unknown">
+          {queue?.unknown} delivery(s) never reported back, so they may already have been
+          written. Look at the items upstream before retrying those.
+        </p>
+      )}
+
+      <div className="ts-actions">
+        <Tooltip label="Send the refused deliveries back to the queue. A refusal is proof nothing was written, so this cannot duplicate anything">
+          <button
+            className="btn"
+            disabled={busy !== null || (queue?.failed ?? 0) === 0}
+            onClick={() => onRetry(false)}
+          >
+            {busy === "retry" ? "Retrying…" : "Retry failed"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Also retry the deliveries whose outcome could not be read. Those may already have commented or closed, so check the items upstream first - this is you saying you have">
+          <button
+            className="btn"
+            disabled={busy !== null || stuck === 0}
+            onClick={() => onRetry(true)}
+          >
+            {busy === "retry-unknown" ? "Retrying…" : "Retry including unknown"}
+          </button>
+        </Tooltip>
+        <Tooltip label="Drop this source's whole queue - what is waiting, the record of what was delivered, and the deliveries that were called off. It cannot take back anything already written">
+          {/* Live for any source the daemon has answered for, rather than gated on the
+              counts beside it. Those four do not include the deliveries that were CALLED
+              OFF - a source switched back on, a task that turned out not to be finished -
+              and a cancelled row still holds the ledger key that would otherwise swallow
+              the same fact as a duplicate if it were ever observed again. So "the counts
+              read zero" is not the same as "there is nothing here to drop". */}
+          <button className="btn" disabled={busy !== null || !queue} onClick={onDiscard}>
+            Discard queue
+          </button>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
 /** One configured source's editor. The overview chooses which source reaches this surface. */
 export function SourceCard({
   src,
   kindLabel,
   status,
+  queue,
   repos,
   now,
   onChange,
@@ -458,6 +801,8 @@ export function SourceCard({
   src: TaskSourceInstance;
   kindLabel: string;
   status: TaskSourceStatus | undefined;
+  /** This source's write-back queue, or undefined before the daemon has answered. */
+  queue?: TaskSourceWritebackStatus;
   repos: string[];
   now: number;
   onChange: (next: TaskSourceInstance) => void;
@@ -466,6 +811,15 @@ export function SourceCard({
 }): React.JSX.Element {
   const { val, edit, commit, draft } = useDraftText();
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * Whether the discard confirm is up.
+   *
+   * A confirm rather than a straight press, unlike "Forget seen items" beside it, because
+   * the two undo different things. Forgetting seen items makes a sweep file more; this
+   * drops deliveries that have not happened yet, and the comment they would have posted
+   * never appears - with nothing left to say it was owed.
+   */
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   /**
    * What the last action answered, and whether that answer was a PROBLEM.
    *
@@ -487,6 +841,48 @@ export function SourceCard({
     setBusy(null);
     setNote(said);
   }
+
+  /**
+   * This kind's two bespoke field groups, chosen ONCE.
+   *
+   * One branch producing both halves rather than two branches producing one each: the
+   * sweep filters and the write-back settings render in different places on the card, and
+   * splitting the choice would give this panel two lists of kinds to keep in step - which
+   * is exactly the parallel source of truth the registry exists to remove.
+   */
+  const kindFields: { sweep: React.ReactNode; writeback: React.ReactNode } =
+    src.kind === "github-issues"
+      ? {
+          sweep: (
+            <GithubFields
+              cfg={githubConfigOf(src)}
+              onChange={(config) => onChange({ ...src, config })}
+            />
+          ),
+          writeback: (
+            <GithubWritebackFields
+              cfg={githubConfigOf(src)}
+              onChange={(config) => onChange({ ...src, config })}
+            />
+          ),
+        }
+      : src.kind === "jira"
+        ? {
+            sweep: (
+              <JiraFields
+                cfg={jiraConfigOf(src)}
+                onChange={(config) => onChange({ ...src, config })}
+              />
+            ),
+            writeback: (
+              <JiraWritebackFields
+                cfg={jiraConfigOf(src)}
+                resolving={src.writeback.resolve}
+                onChange={(config) => onChange({ ...src, config })}
+              />
+            ),
+          }
+        : { sweep: null, writeback: null };
 
   return (
     <div className="ts-card ts-editor">
@@ -592,16 +988,10 @@ export function SourceCard({
 
       {/* The one place a kind is named in this panel, because a field group is bespoke JSX
           and cannot come off a registry the way the label, the blurb and the preflight
-          sentence do. Everything else here is kind-agnostic on purpose. */}
-      {src.kind === "github-issues" && (
-        <GithubFields
-          cfg={githubConfigOf(src)}
-          onChange={(config) => onChange({ ...src, config })}
-        />
-      )}
-      {src.kind === "jira" && (
-        <JiraFields cfg={jiraConfigOf(src)} onChange={(config) => onChange({ ...src, config })} />
-      )}
+          sentence do. Everything else here is kind-agnostic on purpose - including the
+          write-back block below, which takes its kind's own settings from the SAME branch
+          rather than opening a second one. */}
+      {kindFields.sweep}
 
       <div className="ts-defaults">
         <p className="settings-group-label">What a swept task looks like</p>
@@ -725,7 +1115,35 @@ export function SourceCard({
         </div>
       </div>
 
-      <div className="ts-actions">
+      <WritebackFields
+        src={src}
+        kindLabel={kindLabel}
+        caps={TASK_SOURCE_KIND_INFO[src.kind]}
+        queue={queue}
+        kindFields={kindFields.writeback}
+        busy={busy}
+        onChange={onChange}
+        onRetry={(includeUnknown) =>
+          void run(includeUnknown ? "retry-unknown" : "retry", async () => {
+            const moved = await state.retryWriteback(src.id, includeUnknown);
+            if (moved === null) return { say: "That retry could not run.", problem: true };
+            return {
+              say:
+                moved === 0
+                  ? "Nothing was waiting to be retried."
+                  : `${moved} delivery(s) back in the queue.`,
+              problem: false,
+            };
+          })
+        }
+        onDiscard={() => setConfirmDiscard(true)}
+      />
+
+      {/* The card's OWN actions, ruled off from the write-back block above them. Without
+          the rule the two rows read as one strip of six buttons, and "Discard queue" sits
+          a few pixels from "Forget seen items" - two undo gestures with different blast
+          radii, which is exactly the pair that must not look like siblings. */}
+      <div className="ts-actions ts-card-actions">
         <Tooltip label="Run this source's sweep right now, without waiting for its schedule">
           <button
             className="btn"
@@ -791,6 +1209,67 @@ export function SourceCard({
           stays up with the status line, since that is health rather than an answer. */}
       {note && (
         <p className={`${note.problem ? "settings-error" : "settings-hint"} ts-note`}>{note.say}</p>
+      )}
+
+      {/* Through `<Overlay>` rather than `window.confirm`, for the reason the workflow
+          builder's removals went the same way: the registry never sees a native prompt, so
+          while one is up the app believes nothing is open and the fleet's own key handler
+          is still live behind it. */}
+      {confirmDiscard && (
+        <Overlay
+          id={OVERLAY_IDS.taskSourceWritebackDiscard}
+          onClose={() => setConfirmDiscard(false)}
+          className="modal ts-discard-modal"
+          role="dialog"
+          ariaLabel={`Discard ${nameOf(src, kindLabel)}'s write-back queue`}
+          closable={busy === null}
+        >
+          <header className="modal-head">
+            <h3>Discard this queue?</h3>
+          </header>
+          <div className="modal-body">
+            <p>
+              Everything <strong>{nameOf(src, kindLabel)}</strong> still owes its items is
+              dropped, along with the record of what it already delivered. The comments and
+              closes that were waiting never happen, and nothing afterwards remembers they
+              were owed.
+            </p>
+            <p className="settings-hint">
+              What has already been written upstream stays written - this cannot take a
+              comment back. The switches above are left exactly as they are; turn them off
+              first if the queue is filling up faster than you want it to.
+            </p>
+          </div>
+          <footer className="modal-foot">
+            <Tooltip label="Leave the queue alone">
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={busy !== null}
+                onClick={() => setConfirmDiscard(false)}
+              >
+                Cancel
+              </button>
+            </Tooltip>
+            <Tooltip label="Drop every delivery this source is holding">
+              <button
+                className="btn btn-danger"
+                type="button"
+                disabled={busy !== null}
+                onClick={() =>
+                  void run("discard", async () => {
+                    const gone = await state.discardWriteback(src.id);
+                    setConfirmDiscard(false);
+                    if (gone === null) return { say: "The queue could not be discarded.", problem: true };
+                    return { say: `Discarded ${gone} delivery(s).`, problem: false };
+                  })
+                }
+              >
+                {busy === "discard" ? "Discarding…" : "Discard queue"}
+              </button>
+            </Tooltip>
+          </footer>
+        </Overlay>
       )}
     </div>
   );
@@ -1028,9 +1507,7 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       },
       maxPerSweep: DEFAULT_MAX_PER_SWEEP,
       // Every write-back switch off, for the reason `enabled` above is off: writing onto
-      // somebody else's tracker is consent, and the editor is where it is given. The
-      // switches themselves arrive with the operator surface; this only makes the minted
-      // instance match what the schema would have defaulted it to anyway.
+      // somebody else's tracker is consent, and the editor is where it is given.
       writeback: { onPrOpened: false, onCompleted: false, resolve: false },
       config: {},
     };
@@ -1073,8 +1550,10 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
         sweep files backlog tasks and nothing else: <strong>it never dispatches an agent,
         never cuts a worktree and never types into a session</strong>. What it files is a
         list you read and delete from, and a task you delete stays deleted. Work goes the
-        other way only when you send it: <strong>Create GitHub issue</strong>, in a backlog
-        task's own editor, files that one task upstream and links it here.
+        other way only when you say so: <strong>Create GitHub issue</strong>, in a backlog
+        task's own editor, files one task upstream, and a source you switch{" "}
+        <strong>Writing back to the item</strong> on comments back onto the items it swept
+        as the work on them moves.
       </p>
       {/* The daemon has not answered. Said out loud rather than drawing an empty list,
           which is indistinguishable from "no sources are configured" - and would tell an
@@ -1183,6 +1662,7 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
                   src={selected}
                   kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
                   status={view.status.find((s) => s.sourceId === selected.id)}
+                  queue={view.writeback.find((w) => w.sourceId === selected.id)}
                   repos={repos}
                   now={now}
                   onChange={replace}

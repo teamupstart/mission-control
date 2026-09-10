@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  REAL_BACKEND_UNDER_TEST_RUNNER,
   heldHomeNames,
   homeAlive,
   homeBackends,
@@ -186,6 +187,46 @@ test("an explicit backend owns liveness even when another backend holds the same
   assert.equal(await homeAlive("api", machine), true);
   assert.equal(await homeAlive("api", machine, "wezterm"), false);
   assert.equal(await homeAlive("api", machine, "future-terminal"), null);
+});
+
+// The suite must not open sessions on the machine that runs it, and this is the boundary that
+// makes that structural rather than a habit. `multi-repo-dispatch.test.ts` built a `Dispatcher`
+// without its documented `spawn` seam, and its one single-repo case reached the real launcher
+// on every run: 42 Herdr workspaces and 2 tmux sessions were left behind, one of them holding a
+// launch pointed at the operator's live daemon. The seam is a dep, so nothing enforced it.
+//
+// Shaped after `db-isolation.test.ts` rather than living beside it: the refusal belongs where
+// the session is opened, so it is stated in `home.ts` and pinned here, where every other
+// launch-policy case already is.
+test("the real backends are refused under the test runner, and injected ones are not", async () => {
+  // Every case in this file passes fakes, which is what a test that means to reach the launch
+  // path is supposed to do. Those are untouched.
+  const injected = await launchHome(SPEC, deps(fakeMultiplexer({ sessions: sessions() }), fakeEmulator()));
+  assert.equal(injected.ok, true);
+
+  // The default deps ARE the machine's real tmux, Herdr, cmux, WezTerm and the rest. A test
+  // worker reaching them opens a session nothing here will ever close.
+  const real = await launchHome(SPEC);
+  assert.equal(real.ok, false);
+  assert.equal(real.ok === false ? real.error : "", REAL_BACKEND_UNDER_TEST_RUNNER);
+  // The sentence names both repairs, because a dispatch reaches this through `spawnUniquely`
+  // and its author is looking for the Dispatcher seam, not for HomeDeps.
+  assert.match(REAL_BACKEND_UNDER_TEST_RUNNER, /spawn/);
+  assert.match(REAL_BACKEND_UNDER_TEST_RUNNER, /terminal-fakes/);
+});
+
+// The dispatcher half of the same boundary, driven through the function that actually opens
+// the session for a dispatch. `spawnUniquely` is what `Dispatcher` calls when `deps.spawn` is
+// unset, so this is exactly what a dispatcher constructed without the seam reaches.
+test("a dispatch that skipped the spawn seam cannot reach a real backend either", async () => {
+  const { spawnUniquely } = await import("../src/server/dispatcher.ts");
+  await assert.rejects(
+    () => spawnUniquely("api", "abc123", process.cwd(), "/bin/echo", []),
+    (error: Error) => {
+      assert.equal(error.message, REAL_BACKEND_UNDER_TEST_RUNNER);
+      return true;
+    },
+  );
 });
 
 test("a machine with nothing installed is told what would fix it", async () => {

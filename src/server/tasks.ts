@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -66,9 +67,15 @@ import {
   type InjectResult,
 } from "./actions.ts";
 import {
+  clearTaskSessionClosure,
+  completeTaskWithSessionClosure,
   getTask as getDurableTask,
+  getTaskSessionClosure,
+  listTaskSessionClosures,
   openDb,
+  recordTaskSessionClosureAttempt,
   settleTaskWithRetentionAdoption,
+  taskSessionClosureForSession,
   historicalTaskWorkEpisodeBindingsForTask,
   primaryRepoPrForTask,
   reserveRetroFollowup,
@@ -78,6 +85,7 @@ import {
   upsertTask as dbUpsertTask,
   workEpisodeRepoPrsForTask,
   updatePipelineCommissionRecovery,
+  type TaskSessionClosureRow,
   type TaskWorkEpisodeBinding,
 } from "./db.ts";
 import { completionPolicyForOccurrence } from "./schedules/store.ts";
@@ -91,6 +99,7 @@ import {
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { gitInfo } from "./util/git.ts";
 import {
+  kindMissionMcpRequirement,
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
@@ -159,6 +168,7 @@ import {
   type PendingTurnResetBoundary,
 } from "./reset.ts";
 import { getShippingConfig } from "./shipping/config.ts";
+import { unref } from "./util/timers.ts";
 import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
@@ -520,6 +530,15 @@ interface CompletionInput {
    * so it lands in the same tick as the write it describes.
    */
   inferredFrom: string | null;
+  /**
+   * The session this completion also finishes with, or null when it finishes with nobody.
+   *
+   * Present only for a concluded recurring mission run. Threaded through the completion
+   * rather than recorded by the caller afterwards because the two writes must be ONE: a
+   * daemon that died between a durable `done` task and the closure it owes leaves a live
+   * agent nothing will ever revisit. See `completeTaskWithSessionClosure`.
+   */
+  closeSessionId?: string | null;
 }
 
 /**
@@ -693,6 +712,67 @@ export type PipelineWorkspaceReportResult =
   | { ok: true; task: Task; replayed: boolean }
   | { ok: false; status: 404 | 409; error: string };
 
+/**
+ * How long after a concluded recurring mission run's recorded completion its agent session is
+ * guaranteed to be out of the active-session registry.
+ *
+ * Four minutes, and it is a GUARANTEE rather than an aspiration: the session is out of the
+ * registry by then whether or not its backend cooperated, because
+ * `MISSION_SESSION_CLOSURE_ESCALATE_MS` retires one that will not go. Wide enough to cover a
+ * driver that takes its time going down plus the registry's own exit linger, and far short of
+ * the hourly cadence these missions run on - a session that outlived the next occurrence is the
+ * failure this whole path exists to prevent.
+ */
+export const MISSION_SESSION_CLOSURE_DEADLINE_MS = 240_000;
+
+/**
+ * How often an unconfirmed closure is re-attempted.
+ *
+ * Fixed rather than backing off, unlike the retention ledger's hourly doubling, because the
+ * deadline is four minutes rather than a month and every pass is cheap: a stop against a
+ * driver that is already going down, or one keystroke into a pane. The common case does not
+ * wait for it at all - `session_remove` kicks the sweep the moment the registry evicts the
+ * session it just stopped.
+ */
+export const MISSION_SESSION_CLOSURE_RETRY_MS = 10_000;
+
+/**
+ * When asking stops being enough and the session is retired instead.
+ *
+ * Three minutes, deliberately INSIDE the four-minute guarantee rather than at it. Retirement
+ * goes through `Registry.beginEviction`, which lingers the card before removing it, so an
+ * escalation that fired exactly on the deadline would remove the session just after the moment
+ * it had promised to be gone. The gap leaves room for the eviction linger and a retry tick, and
+ * still gives a slow-but-honest driver eighteen attempts to go by itself first.
+ */
+export const MISSION_SESSION_CLOSURE_ESCALATE_MS = 180_000;
+
+/**
+ * How long ONE stop attempt may take before the sweep stops waiting on its answer.
+ *
+ * The guarantee is only a guarantee if nothing can hold the sweep open. `stopSession` awaits
+ * the driver all the way down - `SdkSupervisor.stop` waits on the pump, deliberately, so a
+ * caller handing the conversation to a terminal knows the file is written - and a driver that
+ * wedges never answers at all. Without a bound the pass stays in flight for ever, every later
+ * pass returns early on `sweepingClosures`, and the escalation that exists precisely for an
+ * agent that will not go is the thing that never runs. The session then outlives the four
+ * minutes while the daemon believes it is mid-close.
+ *
+ * Twenty seconds: long enough that an ordinary stop, even a slow one draining a real driver,
+ * answers well inside it; short enough that several attempts and the retirement all fit before
+ * the deadline. Worst case is a pass starting a moment before the escalation instant - it
+ * gives up at 200s, retires, and the registry's own linger removes the session by ~208s.
+ *
+ * The abandoned attempt is not cancelled, because nothing here can cancel it. It is simply no
+ * longer waited on, and its eventual rejection is absorbed rather than left unhandled.
+ */
+export const MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS = 20_000;
+
+/** The bounded sentence a refused stop contributes to the operator-visible summary. */
+function closureRefusal(result: ActionResult): string {
+  return result.error ?? "the agent could not be stopped";
+}
+
 export interface CloseMergedSessionDeps {
   resetWouldDestroyWork: typeof resetWouldDestroyWork;
   kill: typeof kill;
@@ -804,6 +884,14 @@ export class TaskManager {
   private autoCompleted = new Map<string, string>();
   /** Re-entrancy guard for `reconcileMergedTasks`, which its own completions can re-enter. */
   private reconcilingMergedTasks = false;
+  /** The self-rescheduling closure sweep, alive only while a closure is actually owed. */
+  private closureTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When that timer is due, so an earlier kick can pre-empt a pending retry. */
+  private closureDueAt: number | null = null;
+  private sweepingClosures = false;
+  /** A pass asked for while one was running, so the urgent request is not lost to the retry. */
+  private sweepUrgentlyRequested = false;
+  private closuresStopped = false;
   private completedInitialSessionSweep = false;
   private workflowEvidenceEnabledForTask: (
     task: Pick<Task, "kind" | "workflowId">,
@@ -924,6 +1012,10 @@ export class TaskManager {
         // that does not.
         this.reconcileMergedTasks();
         this.reconcileTasksBoundTo(e.id);
+        // The one signal that can CONFIRM an owed closure. `session_remove` is the durable
+        // answer to "that agent is gone" (see `Registry.beginEviction`), so a run concluded
+        // seconds ago settles here rather than waiting out a retry interval.
+        this.scheduleMissionSessionClosureSweep(0);
       }
       if (e.type === "task_remove") this.autoCompleted.delete(e.id);
       if (
@@ -941,6 +1033,7 @@ export class TaskManager {
         this.bindPipelineTask(e.session);
         this.settleIfEpisodeFinished(e.session);
         this.reopenIfWorkResumed(e.session);
+        this.interceptWorkOnClosingSession(e.session);
         // And the rows no session can settle: a terminal task whose pull request has since
         // merged, or one still bound to a session id nothing answers to. Cheap on the hot
         // path - a task whose agent is right here costs no query at all.
@@ -957,6 +1050,10 @@ export class TaskManager {
       this.completedInitialSessionSweep = true;
       this.reconcileMergedTasks();
       this.reconcileTasksWithNoLiveSession();
+      // And the closures a previous daemon left owed. Nothing before this point may act on
+      // one: until the process table has been read, a session missing from the registry has
+      // not been observed to be gone. See `sweepMissionSessionClosures`.
+      this.scheduleMissionSessionClosureSweep(0);
     });
 
     // The other way a task ends: its work landed. See `settleMergedTask`.
@@ -1398,19 +1495,39 @@ export class TaskManager {
    *    work in flight, and an unreadable stored value leaves the task alone.
    *  - **Provider-owned completion is never overridden**, exactly as the merge paths refuse it.
    *
-   * Registered as an INFERENCE (`inferredFrom`), which is the honest label and also the useful
-   * one: Foreman concluding a generation is strong evidence and not proof, so an agent that
-   * starts working on this very task again reverses it through `reopenIfWorkResumed`. That is
-   * the same bargain `settleIfEpisodeFinished` makes about idleness.
+   * TERMINAL, and deliberately not registered as an inference. This used to pass
+   * `inferredFrom` so `reopenIfWorkResumed` could undo it, on the same bargain
+   * `settleIfEpisodeFinished` makes about idleness - and for a mission run that bargain was
+   * the bug. The completion left the agent alive: it kept its context and its slot, it was
+   * still free to be prompted, and a prompt an hour later reopened a task Foreman had
+   * concluded and the operator had seen finish. Observed in the field over three consecutive
+   * hourly runs, one of which took new work thirty-five minutes after its conclusion.
    *
-   * Backgrounded and non-throwing: this is called from a route that has already committed the
-   * durable consumption, and a scout whose archive is not submitted yet simply stays running
-   * rather than failing the request that reported the verdict.
+   * So the conclusion and the closure of the agent that produced it are ONE boundary. The
+   * completion lands, `openTaskSessionClosure` records that the session is owed a close, and
+   * `settleMissionSessionClosure` keeps asking until nothing live answers to that id. Reopening
+   * has nothing left to be true about: the session this would have handed the task back to is
+   * the session being closed, and until it goes `promptResourceBlockerForSession` refuses to
+   * deliver anything to it.
+   *
+   * The two evidence bases really are different, which is what makes the asymmetry honest
+   * rather than an inconsistency with `settleIfEpisodeFinished`. That path concludes on
+   * IDLENESS - an agent that has not been typed at yet looks exactly like one that is
+   * finished - so it must be reversible. This one concludes on a settled verdict Foreman
+   * recorded ABOUT this generation, against a mission whose operator asked in advance for
+   * exactly this, and its own recurrence is what makes a lingering session compound.
+   *
+   * Non-throwing, and it AWAITS the first close attempt rather than leaving one scheduled: the
+   * agent is asked to go inside the request that concluded it, so there is no asynchronous gap
+   * between "this run is over" and "something started closing it". The completion itself is
+   * still backgrounded - this is called from a route that has already committed the durable
+   * consumption, and a scout whose archive is not submitted yet simply stays running rather
+   * than failing the request that reported the verdict.
    */
-  concludeScheduledMissionRun(
+  async concludeScheduledMissionRun(
     sessionId: string,
     decision: PromptedCompletionDisposition,
-  ): void {
+  ): Promise<void> {
     if (!foremanConcludedMission(decision.outcome)) return;
     const t = this.executingTaskOn(sessionId);
     if (!t || !t.scheduleOccurrenceId) return;
@@ -1432,8 +1549,279 @@ export class TaskManager {
       satisfyDependents: false,
       requireStopped: false,
       confirmIncompleteScout: false,
-      inferredFrom: sessionId,
+      inferredFrom: null,
+      // The other half of the boundary, written in the same transaction as the `done` row.
+      closeSessionId: sessionId,
     });
+    // AWAITED, and aimed at THIS run's own closure rather than routed through the shared sweep.
+    //
+    // The point of awaiting is a guarantee about one session: the agent is asked to stop before
+    // the request that concluded it returns, so no interval opens in which the run is over, the
+    // card is still up, and nothing has begun closing it. That is the interval the reported
+    // failure lived in.
+    //
+    // The whole-table sweep cannot carry that guarantee, and it took a review to see why. It is
+    // mutex-guarded, so a pass already in flight - a retry, the zero-delay pass `session_remove`
+    // kicks, another mission concluding in the same tick - makes this call return having asked
+    // nobody, deferring the ask to whenever that other pass finishes. And when it does run, it
+    // walks every owed row, so this request would wait out the stop budget of closures that have
+    // nothing to do with it.
+    //
+    // Settling one row directly costs the ordinary case nothing and can at worst duplicate an
+    // attempt a concurrent sweep is already making. That is harmless in every arm: the
+    // supervisor dedupes a stop it is already running, a repeated terminal kill is idempotent,
+    // `beginEviction` keeps the deadline it already had, and the only visible cost is an inflated
+    // attempt count on a row that is being closed anyway.
+    //
+    // Only when the session is actually here. Absence is what CLOSES a closure, and a session
+    // this daemon has not observed yet is not an absent one - that judgement belongs to the
+    // sweep, behind the discovery gate.
+    try {
+      const owed = getTaskSessionClosure(t.id);
+      if (owed && this.registry.getSession(sessionId)) {
+        await this.settleMissionSessionClosure(owed);
+      }
+    } catch (error) {
+      // The closure is durable, so a first attempt that could not even be made costs nothing
+      // but time: the row is still owed and the sweep will come back to it. What must not
+      // happen is this failing the request that reported the verdict, which has already
+      // committed the durable consumption behind it.
+      console.warn(`[mission] could not begin closing session ${sessionId}:`, error);
+    }
+    // Arm the cadence for whatever is still owed - this row if it was not confirmed, and any
+    // other. `finishCompletion` deliberately schedules nothing, so this is where it starts.
+    //
+    // Inside the same guard as the settle above: reading the ledger is the very thing that
+    // fails when the ledger is what is broken, and this must not be the throw that escapes a
+    // route which has already committed its durable consumption.
+    try {
+      if (listTaskSessionClosures().length > 0) this.scheduleMissionSessionClosureSweep();
+    } catch (error) {
+      console.warn(`[mission] could not arm the closure sweep for ${sessionId}:`, error);
+    }
+  }
+
+  /**
+   * Ask the sweep to run, once, after `delayMs`.
+   *
+   * A `setTimeout` chain rather than a `setInterval`, for the reason `startScheduleManager` is
+   * one: the next sleep is scheduled from the END of a pass, so a pass that waits on a driver
+   * stop cannot have a second one started on top of it. Unref'd, so an owed closure never holds
+   * the process open - it is durable, and the next daemon picks it up.
+   *
+   * Nothing schedules itself while the ledger is empty, which is why every test that never
+   * concludes a mission run pays nothing for this.
+   *
+   * An EARLIER request replaces a later one, which is not a refinement - it is the difference
+   * between confirming a closure now and confirming it a retry interval from now. `session_remove`
+   * asks for zero, and it is the one signal that can actually settle a row; dropping it because
+   * a routine ten-second retry was already pending would leave the ledger claiming a live agent
+   * that the registry has just deleted, and the operator reading that.
+   */
+  private scheduleMissionSessionClosureSweep(
+    delayMs: number = MISSION_SESSION_CLOSURE_RETRY_MS,
+  ): void {
+    if (this.closuresStopped) return;
+    const dueAt = Date.now() + delayMs;
+    if (this.closureTimer) {
+      if (this.closureDueAt !== null && this.closureDueAt <= dueAt) return;
+      clearTimeout(this.closureTimer);
+    }
+    this.closureDueAt = dueAt;
+    this.closureTimer = unref(setTimeout(() => {
+      this.closureTimer = null;
+      this.closureDueAt = null;
+      void this.sweepMissionSessionClosures();
+    }, delayMs));
+  }
+
+  /** Stop scheduling closure sweeps. Owed closures stay in SQLite for the next daemon. */
+  stopMissionSessionClosures(): void {
+    this.closuresStopped = true;
+    if (this.closureTimer) clearTimeout(this.closureTimer);
+    this.closureTimer = null;
+    this.closureDueAt = null;
+  }
+
+  /**
+   * One pass over every owed closure, and the reschedule that keeps the guarantee alive.
+   *
+   * Exported to the daemon only through the timer and the two registry signals that kick it;
+   * it is public for the tests, which drive it directly rather than waiting out a real cadence.
+   *
+   * Gated on the first COMPLETED discovery sweep, and that gate is the whole of restart
+   * recovery. Before it, a session missing from the registry has not been observed to be gone -
+   * the process table has not been read yet - and clearing a row there would abandon exactly
+   * the closure a restart exists to resume.
+   */
+  async sweepMissionSessionClosures(): Promise<void> {
+    if (!this.completedInitialSessionSweep) return;
+    // A pass asked for while one is already running is REMEMBERED rather than dropped, and
+    // that is not tidiness. The urgent caller is `interceptWorkOnClosingSession`: an agent we
+    // are closing has started working, and the answer must not be "in up to ten seconds".
+    // Dropping the request left exactly that, because the running pass then rescheduled on
+    // the ordinary retry interval and the news that a turn had started was already gone.
+    if (this.sweepingClosures) {
+      this.sweepUrgentlyRequested = true;
+      return;
+    }
+    this.sweepingClosures = true;
+    try {
+      for (const row of listTaskSessionClosures()) {
+        await this.settleMissionSessionClosure(row);
+      }
+    } finally {
+      this.sweepingClosures = false;
+      const urgent = this.sweepUrgentlyRequested;
+      this.sweepUrgentlyRequested = false;
+      if (listTaskSessionClosures().length > 0) {
+        this.scheduleMissionSessionClosureSweep(urgent ? 0 : MISSION_SESSION_CLOSURE_RETRY_MS);
+      }
+    }
+  }
+
+  /**
+   * Settle one owed closure: drop it, confirm it, or try again.
+   *
+   * The order of the three questions is the correctness argument.
+   *
+   *  - **Is it still ours?** A task that was removed, rescheduled, or handed to another session
+   *    is not a closure this ledger can act on, and holding the row would let a later sweep
+   *    kill an agent that is legitimately working. Dropped without a stop.
+   *  - **Is the session already gone?** This is the ONLY thing that closes a row. `stopSession`
+   *    answering ok is a request that was serviced, not an agent that has left - the registry
+   *    lingers an exited session before removing it, a terminal kill can be refused by the
+   *    multiplexer after the write, and a driver can throw on the way down. So absence is
+   *    observed rather than inferred, which is what "if closure cannot be confirmed, retry"
+   *    actually requires.
+   *  - **Otherwise, stop it again** - and, past `MISSION_SESSION_CLOSURE_ESCALATE_MS`, retire it
+   *    rather than keep asking. Asking is not a guarantee: a multiplexer can refuse a kill, and
+   *    a driver can accept a stop and then not go. Retrying a refused request until the heat
+   *    death of the fleet is not "the session is removed within four minutes", it is a promise
+   *    the daemon never keeps, so the last resort goes through `Registry.beginEviction` - the
+   *    one producer of `session_remove` - and the refusal stays on the record.
+   *
+   * Every attempt is counted, and a refusal - or a stop that was accepted and did not take -
+   * is recorded as a bounded sentence that reaches the operator through the task's
+   * automatic-cleanup summary for as long as the closure is outstanding.
+   *
+   * The worktree is deliberately NOT touched here, which is the difference from
+   * `closeMergedSession`. A merge proves the committed work landed, so that path may reclaim a
+   * checkout it can prove is safe. A concluded mission run proves the opposite: `empty` means
+   * nothing was committed at all, so anything in that tree is unpushed work. It stays, the
+   * 30-day retention clock owns it exactly as it owns every other terminal task's, and the
+   * closure is finished either way - the session's fate never waits on the tree's.
+   */
+  private async settleMissionSessionClosure(row: TaskSessionClosureRow): Promise<void> {
+    // SQLite, not `registry.getTask`. The in-memory task map is BOUNDED and evicts terminal
+    // rows (see `pruneTerminalTasks`), so a mission task that finished a while ago is exactly
+    // the one this would fail to find - and "not in memory" would then be read as "no longer
+    // ours" and drop a closure that is still owed, silently, for the runs that waited longest.
+    const task = getDurableTask(row.taskId);
+    if (!task || task.status !== "done" || task.sessionId !== row.sessionId) {
+      this.dropMissionSessionClosure(row.taskId);
+      return;
+    }
+    const session = this.registry.getSession(row.sessionId);
+    if (!session) {
+      this.dropMissionSessionClosure(row.taskId);
+      return;
+    }
+    // Already on its way out - the stop landed and the registry is lingering the card before
+    // it removes it. Asking again would be answered "this session has no live embedded driver"
+    // and recorded as a refusal, which is a sentence about our own timing rather than about
+    // anything the operator could act on. Wait for `session_remove`, which is due in seconds.
+    if (session.state === "exited") return;
+    const stopped = await this.stopWithinBudget(session);
+    const now = Date.now();
+    const overdue = now >= row.requestedAt + MISSION_SESSION_CLOSURE_ESCALATE_MS;
+    // A stop this pass ACCEPTED, on a session that is still here well past the point one should
+    // have taken, is its own kind of refusal and is recorded as one. Without this the summary
+    // would go quiet for exactly the case it is most needed on - a driver that says yes and
+    // does nothing - because there was no error to publish.
+    const refusal = stopped.ok
+      ? (overdue ? "the agent accepted the stop and did not leave" : null)
+      : closureRefusal(stopped);
+    recordTaskSessionClosureAttempt(row.taskId, now, refusal);
+    // The summary only says anything once an attempt has been refused or the guarantee has
+    // passed, so the ordinary close publishes nothing and a stuck one publishes on every pass.
+    this.registry.refreshTaskAutomaticCleanup(row.taskId);
+    if (!overdue) return;
+    // `stopSession` may have awaited a driver all the way down, so ask the registry again
+    // rather than escalating against the session as it looked before the stop.
+    if (!this.registry.retireConcludedMissionSession(row.taskId, row.sessionId)) return;
+    console.warn(
+      `[mission] task ${row.taskId}: session ${row.sessionId} would not close after ` +
+        `${row.attempts + 1} attempts (${refusal ?? "no reason recorded"}) - retiring it to keep ` +
+        "the mission's completion boundary. If its agent survived, it is no longer Mission " +
+        "Control's, and the task stays done.",
+    );
+  }
+
+  /**
+   * Cut short a turn that started on a session Mission Control has already finished with.
+   *
+   * `promptResourceBlockerForSession` refuses every prompt this daemon would DELIVER, and that
+   * is the whole of what a delivery boundary can promise. It is not the whole of what happens:
+   * a person can type straight into the pane, and the agent's own harness accepts that prompt
+   * and fires `UserPromptSubmit` without asking us. That is not a hypothetical - it is the
+   * reported failure, where a concluded mission run took a prompt thirty-five minutes after
+   * its conclusion and finished another whole generation six minutes later.
+   *
+   * So the transition itself is treated as the signal it is: an agent we are in the middle of
+   * closing has started working again, and the closure that was going to happen on its next
+   * ten-second tick happens NOW instead. What this can honestly promise is bounded and worth
+   * stating - a prompt already accepted by the agent's own harness cannot be un-accepted, so
+   * the guarantee is that the turn does not get to run, not that the keystroke never landed.
+   *
+   * Costs one indexed lookup on a normally-empty table, and only for a session that has just
+   * gone to work.
+   */
+  private interceptWorkOnClosingSession(s: Session): void {
+    if (s.state !== "working") return;
+    if (!taskSessionClosureForSession(s.id)) return;
+    this.scheduleMissionSessionClosureSweep(0);
+  }
+
+  /**
+   * Ask a session to stop, and stop waiting after `MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS`.
+   *
+   * A timed-out attempt is reported as a REFUSAL rather than a success, which is the honest
+   * reading and also the useful one: the sweep goes on to count it, publish it, and - once the
+   * escalation instant has passed - retire the session itself. Retirement goes through the
+   * registry and needs nothing from the driver, so it works precisely when the driver is the
+   * thing that is stuck.
+   *
+   * The losing promise is left running with its rejection absorbed. There is no cancellation
+   * to reach for - neither a driver's `stop()` nor a multiplexer kill takes an abort signal -
+   * so the choice is between waiting for ever and letting it finish unobserved. A stop that
+   * eventually lands is harmless: the session leaves, `session_remove` confirms the closure,
+   * and the ledger row is cleared by the pass that sees the absence.
+   */
+  private async stopWithinBudget(session: Session): Promise<ActionResult> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<ActionResult>((resolve) => {
+      timer = unref(setTimeout(
+        () => resolve({ ok: false, error: "the stop did not answer within its budget" }),
+        MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS,
+      ));
+    });
+    const attempt = stopSession(session, this.supervisor, this.closeMergedSessionDeps.kill)
+      .catch((error: unknown): ActionResult => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    try {
+      return await Promise.race([attempt, budget]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Close the ledger on a task that no longer owes a session, and refresh what a browser reads. */
+  private dropMissionSessionClosure(taskId: string): void {
+    clearTaskSessionClosure(taskId);
+    this.registry.refreshTaskAutomaticCleanup(taskId);
   }
 
   /**
@@ -3123,6 +3511,21 @@ export class TaskManager {
         error: `${agent} cannot be given write access to more than one repo`,
       };
     }
+    const missionToolsTask = {
+      kind: patch.kind ?? t.kind,
+      workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+    };
+    if (
+      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined) &&
+      kindMissionMcpRequirement(
+        missionToolsTask,
+        null,
+        this.workflowEvidenceEnabledForTask(missionToolsTask),
+      )
+    ) {
+      const tools = await missionToolsAvailability(agent);
+      if (!tools.available) return { ok: false, error: tools.reason! };
+    }
     let dependencies = t.dependencies;
     try {
       if (patch.dependencies !== undefined) {
@@ -4317,7 +4720,32 @@ export class TaskManager {
       completedAt: now,
       updatedAt: now,
     };
-    this.registry.upsertTask(updated);
+    // One transaction when this completion also finishes with the agent that produced it, so
+    // an interruption cannot land the task without the closure it owes. `publishPersistedTask`
+    // then broadcasts what that transaction already wrote, rather than writing it twice.
+    if (input.closeSessionId) {
+      const displaced = completeTaskWithSessionClosure(updated, {
+        sessionId: input.closeSessionId,
+        requestedAt: now,
+        deadlineAt: now + MISSION_SESSION_CLOSURE_DEADLINE_MS,
+      });
+      this.registry.publishPersistedTask(updated, displaced);
+      // Armed HERE, beside the write, and that placement is the invariant: a closure row is
+      // never committed without something scheduled to settle it.
+      //
+      // This was briefly removed as redundant, on the reasoning that
+      // `concludeScheduledMissionRun` settles its own row the moment it returns. That holds
+      // only when this ran synchronously inside that call. A scout's completion awaits
+      // `gate.ensureReady` first, so the conclusion had already looked at an empty ledger and
+      // moved on by the time the row landed here - leaving a live session with nothing
+      // scheduled to close it until some unrelated event happened by. Found in review.
+      //
+      // The ordinary path pays one extra pass, which costs a stop attempt against a session
+      // that is usually already exiting and refused by the guard at the top of the settle.
+      this.scheduleMissionSessionClosureSweep(0);
+    } else {
+      this.registry.upsertTask(updated);
+    }
     // Recorded HERE rather than by the caller, and immediately after the upsert, because the
     // window between them is the whole correctness argument: `upsertTask` may evict this row
     // from the bounded in-memory list, and its `task_upsert` listener clears exactly this map.

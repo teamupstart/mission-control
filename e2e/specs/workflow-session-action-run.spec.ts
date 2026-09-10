@@ -297,8 +297,13 @@ test("Live types the authored instruction once and resumes on a fresh child segm
   await actionCard.locator("summary").click();
   await expect(actionCard.locator("pre")).toContainText("Remove the stray scratch file and say so.");
 
-  // And the delivery section names what is in it rather than calling an action a repair.
-  await expect(dashboard.getByRole("heading", { name: "Deliveries to the session" })).toBeVisible();
+  // And the delivery ledger names what is in it rather than calling an action a repair. The
+  // heading that used to switch between "Repair delivery" and "Deliveries to the session" is
+  // gone: the run record's tab is just "Deliveries", and the distinction moved onto the row's
+  // own Kind column, which is where a ledger holding both kinds at once has to carry it.
+  await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+  const ledger = dashboard.getByRole("tabpanel", { name: /^Deliveries/ });
+  await expect(ledger.locator("tbody tr").first()).toContainText("Session action");
 });
 
 test("Preview prepares the identical packet and types nothing at all", async ({
@@ -368,8 +373,9 @@ test("Preview prepares the identical packet and types nothing at all", async ({
   // asserted against `.wf-run-attempt`, which was populated by the Session and End nodes' own
   // structural attempts; those no longer render as verdict-less reviewer cards, so the claim is
   // made against the section itself rather than against cards that are gone.
-  const verdicts = dashboard.locator("section.wf-run-section")
-    .filter({ has: dashboard.getByRole("heading", { name: "Review worklist" }) });
+  // The worklist is the run record's first and default pane. It kept its `aria-label`, so it
+  // is still one region; only the duplicate `<h4>` under its own tab label is gone.
+  const verdicts = dashboard.getByRole("region", { name: "Review worklist" });
   await expect(verdicts).toContainText("This workflow has no reviewers");
   // No card of any kind under that heading, which is the claim - the action has its own card in
   // "Session actions", and this section files nothing. Asserted on CARDS rather than on the

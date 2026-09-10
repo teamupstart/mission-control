@@ -142,6 +142,10 @@ control that saves a preference and visibly does nothing. Settings is its durabl
 
 ## Attaching more than one repository
 
+Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
+its tools have no directory write boundary to widen, so it needs no extra flags. Pi remains
+terminal-only; this does not introduce an embedded Pi runtime.
+
 Some work does not fit in one repo: a contract change and its consumers, a lockstep API
 migration, an integration that has to land on both sides at once. **+ Add another repo**
 under the Repo field attaches secondary repositories to the task.
@@ -1008,9 +1012,12 @@ starts dispatching before you have read a title. Enabling a row is you saying ye
 row; turn **Allow backlog autopilot** on for a source whose upstream is already curated and
 every later sweep of it files ready-to-schedule tasks instead.
 
-Work goes the other way exactly once, and only when you send it: **[Push a task to
-GitHub](#push-a-task-to-github)**, from a backlog task's own editor. That is a per-task
-click, never something the sweep loop does - see there for why the asymmetry is deliberate.
+Work goes the other way in two places, and neither of them is the sweep loop. **[Push a task
+to GitHub](#push-a-task-to-github)**, from a backlog task's own editor, files one task
+upstream on a per-task click. And a source you have switched
+**[writing back](#writing-back-to-the-source)** on comments back onto the items it swept as
+the work on them moves. That second one is unattended, which is why all three of its
+switches start off and are given per source.
 
 **[Settings](skills-and-settings.md#settings) → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures
 them, as master-detail: a directory summarizing which sources are healthy, awaiting a current
@@ -1030,6 +1037,8 @@ turning it on is consent. Per source:
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | can this source reach its upstream with the credential it needs, and does its filter run? Each kind checks and names its own: `gh` for GitHub issues; the selected local credential or UpstartClaw Jira skill for Jira |
 | **Forget seen items** | make everything this source has filed fileable again |
+| **Writing back to the item** | whether this source [writes back](#writing-back-to-the-source) onto the items it swept - a comment when a pull request opens, a comment when the task completes, and optionally resolving the item. All three start **off**: everything else here only reads the upstream, and these write to it |
+| **Retry / Discard queue** | repair or drop what this source still owes its items. See [Writing back to the source](#writing-back-to-the-source) for what each queue state means and why an unknown outcome is retried separately |
 
 Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
 healthy result. It remains pending until the next sweep; a manual sweep run while paused
@@ -1114,6 +1123,79 @@ Three rules worth knowing before you press it:
 
 Save your edits first: the issue is composed from the task **as the daemon holds it**, so
 the button is disabled (and says why) while the form has unsaved changes.
+
+### Writing back to the source
+
+A task swept from an issue gets worked, opens a pull request, and finishes - and by default
+the issue it came from never hears about any of it. Somebody reading the tracker sees an
+item sitting open with no link to the work; somebody reading the backlog sees a done task
+whose upstream is still waiting.
+
+**Writing back to the item** closes that loop, per source, in the source's own editor. Three
+switches, all **off** until you turn them on, because everything else about a source only
+*reads* somebody else's tracker and these *write* to it:
+
+| Switch | What it writes, and when |
+|---|---|
+| **Comment when a pull request opens** | the first pull request linked to a task swept by this source is commented onto its item, once per repository the task touched - so a task that opened three pull requests names all three |
+| **Comment when the task completes** | the task's own outcome, and its pull request, are commented onto the item when the task finishes |
+| **Also resolve the item upstream** | additionally marks the item finished. Nested under the completion trigger and **unavailable until that is on**, because a resolve with nothing to fire it would read as armed while nothing ever resolved |
+
+A kind that cannot write back in this build renders its switches **disabled with the
+reason** rather than hiding them: "this build can't" and "you haven't turned it on" are
+different facts, and hiding one makes them look identical.
+
+For a GitHub Issues source, a comment is `gh issue comment` and a resolve is
+`gh issue close` - through the CLI you are already signed in to, so this adds no token and
+no new secret. **Close reason** beside the switches picks what GitHub records:
+*Completed* or *Not planned*.
+
+**Nothing leaves the process at the moment it is observed.** A pull request being linked and
+a task completing each write one durable row into a delivery queue; a worker drains it on
+its own tick, and re-reads the source's live consent before it spends anything. Two
+consequences worth knowing:
+
+- **A completion is held briefly before it is written**, and re-checked. Mission Control can
+  conclude a task from an idle agent and then reverse that conclusion when the agent turns
+  out to still be working, so both the completion comment and the resolve wait out a settle
+  window and are **cancelled** if the task turns out not to be finished after all. A pull
+  request comment is not held: a pull request that opened stays opened.
+- **A restart, a re-observation and a repeated poller tick all cost nothing.** Each owed
+  delivery is one row keyed by what makes it that delivery, so the same fact seen twice is
+  filed once.
+
+The source's editor reports the queue in one line, and the states it distinguishes are the
+whole point:
+
+| State | What it means |
+|---|---|
+| **waiting** | owed and not yet attempted, or waiting out a backoff or the settle window |
+| **failed** | refused until the attempts ran out. **Nothing was written**, so retrying is safe |
+| **may already have landed** | the write never reported back - a timeout, a killed process. It **may** have commented or closed, and there is no way to tell from here |
+| **delivered** | the upstream accepted it |
+
+A delivery can also be **cancelled** - the source was removed, a switch was turned off, or
+the task turned out not to be finished after all. Those are not counted in that line and are
+not retried by either control: the world moved on, and re-running one would be a new
+decision rather than a retry.
+
+Three controls sit under that line:
+
+- **Retry failed** puts the refusals back on the wire. A refusal is proof nothing was
+  written, so this cannot duplicate anything.
+- **Retry including unknown** additionally retries the deliveries whose outcome could not be
+  read. **Check the items upstream first.** That is a separate press rather than a wider
+  default because pressing it is you asserting you have looked: a duplicated comment is
+  noise, but a duplicated resolve can re-close an item somebody deliberately reopened.
+- **Discard queue** drops everything this source owes and the record of what it delivered -
+  the counterpart to **Forget seen items**, and the way out for somebody who turned a switch
+  on by mistake. It asks first, because it cannot take back a comment already posted. It
+  leaves the switches exactly as they are; turn them off separately if you want the queue to
+  stop refilling.
+
+A source whose queue is stuck - anything failed, or anything unknown - lights the same
+[Settings](skills-and-settings.md#settings) dot a failing sweep does, because a delivery
+nobody notices is the failure this surface exists to prevent.
 
 ### Jira
 
@@ -1243,6 +1325,80 @@ and a preflight reads a single page:
 
 The one non-zero exit that is *not* a failure: `jira-cli` exits non-zero to say "no result
 found for given query", which is a filter that is simply up to date and stays **healthy**.
+
+#### Writing the pull request back onto the issue
+
+A Jira source can also write *outward*, onto the issue a task was swept from. It is off by
+default and stays off until somebody turns it on per source - writing on somebody else's
+ticket is consent, not configuration. Two things can be written:
+
+- a **remote link**, which is where a person looks on the issue for "what work touched
+  this". It carries the pull request's URL as its `globalId`, which is Jira's identity for a
+  link - so posting it twice **updates the one link** rather than adding a second, and a
+  retry after a half-delivered write costs nothing;
+- a **comment**, which is what reaches the activity feed and sends a notification. It says
+  what opened the pull request, the pull request's URL, the completion's own words when it
+  left any, and the task's title. Nothing about Mission Control's internals goes in it.
+
+Both by default, because they answer different questions. A source can be set to one or the
+other.
+
+**The remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
+command at all, so on a CLI-only machine that half cannot run. The comment still goes, and
+the source reports what it did and what it could not - rather than failing the whole
+delivery, which would retry a comment that has no idempotency of its own and leave one per
+attempt on the issue. A source set to **remote link only** on a machine with no credential
+refuses and says so, because then there is nothing it can do at all.
+
+**A resolve needs a target status, named on the source.** Jira has no single "close": a
+project's own workflow decides both what finished is called and which transitions are
+reachable from where an issue is standing right now. So the status is per source and typed
+by a person - it cannot be inferred, and inferring it would move somebody's ticket somewhere
+they did not ask for. It is matched case-insensitively against both the transition's own
+name and the status it lands in, since the board shows one and the workflow button may say
+the other.
+
+When it does not fit, the refusal names the transitions that **are** available from where
+the issue is:
+
+```
+MC-431 cannot move to "Done" from "In Review" - available from here:
+Ready for QA (to QA), Reject (to Rejected). Set this source's resolve status to one of those
+```
+
+That sentence is the whole point. The alternative to it is a bare "transition failed", which
+sends the reader to Jira's workflow administration screens to work out what this source
+should have said. An issue already standing in the target status is reported as **already
+there** rather than transitioned again.
+
+**Resolving therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
+them.** That list is the reason. The `jira` CLI can *move* an issue but cannot be asked what
+an issue is able to do - jira-cli ships no command that lists transitions, and its own move
+error prints them on recent versions and not on older ones. On a CLI-only machine the good
+case would work and the bad case would be unactionable, so the capability is required rather
+than discovered one issue at a time: a source with resolve on and no credential refuses
+before it spawns anything, naming the credential as the fix. With the credential present the
+CLI still goes first, exactly as a sweep does, and only a move it *refuses* is handed to the
+credential rung - which then either performs it or refuses with the list above. Commenting
+and remote links are unaffected: `annotate` still works on the CLI alone.
+
+Everything else about a resolve is arranged around one rule: **an outcome that cannot be
+read is never retried automatically**. A refusal Jira actually sent means nothing was
+written, and the queue may safely try again once the source is fixed. A timeout, or a CLI
+that died without reporting, means Jira *may* have done it - so the queue stops and says to
+go and look, because a repeated transition undoes a person rather than adding to a list.
+
+Two limits worth knowing before turning it on:
+
+- **The UpstartClaw query method is read-only.** It reaches Jira through one search tool and
+  nothing else, so a source using it refuses to write back and names the two rungs that can.
+  Widening that tool grant is a separate decision about what a Claude plugin may do.
+- **The credential goes only where the sweep's does.** The write path runs through the same
+  egress guard, so `JIRA_API_TOKEN` still reaches Jira Cloud and whatever is named in
+  `JIRA_ALLOWED_HOSTS`, and nothing else. The `jira` CLI rung is unaffected either way, since
+  it uses its own credentials - so on a host the token may not reach, the comment still goes
+  through the CLI and the remote link says why it did not.
+
 
 ### A task you delete stays deleted
 

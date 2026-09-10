@@ -28,6 +28,14 @@ which comments on pull requests under your GitHub account, and
 separate - trusting an automated reviewer to comment in a repo is not the same act as
 letting it push to that repo's base branch.
 
+A configured [task source](dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog)
+may also **write to its own upstream**, and it is off on the same terms. Its three
+[write-back](dispatch-and-backlog.md#writing-back-to-the-source) switches ship off per
+source, are re-read at delivery as well as when the work is observed, and reach only the
+items that source itself swept. Nothing about writing relaxes a rule that governs reading:
+the same credential the sweep uses does the write, no new token or host is introduced, and
+every egress guard the read path applies applies here unchanged.
+
 ## Public product issue reporting
 
 Product reports are public GitHub issues, not private support messages. The agent tool is defined
@@ -37,9 +45,10 @@ Dismissed, orphaned, free-form, malformed, and non-human review answers publish 
 
 The dashboard's [Feedback form](ui.md#report-product-feedback) publishes from one **Report
 publicly** press. The context-isolated Electron preload captures the trusted click on that exact
-control through a capability claimed once as the app module loads and retained only in that
-module's closure. The owned control requires a trusted native click before it uses the capability
-with the current preview's request id and draft identity. Synthetic clicks, implicit form submits,
+control through a capability claimed once as the authorization module loads and retained only in
+that module's closure, outside the React hot-refresh boundary. The owned control requires a
+trusted native click before it uses the capability with the current preview's request id and
+draft identity. Synthetic clicks, implicit form submits,
 and page scripts without that capability cannot arm a report. The shell accepts the request only
 from the main
 dashboard web contents and only while the browser reports an active user gesture. It shows no

@@ -230,7 +230,13 @@ test("the Workflows tab renders today's rail and reader with pipelines enabled b
   // The round scrubber, and the worklist that replaced the verdicts wall.
   await expect(dashboard.getByRole("group", { name: "Select a round" })).toBeVisible();
   await expect(dashboard.getByRole("button", { name: /Round 1/ })).toBeVisible();
-  await expect(dashboard.getByRole("heading", { name: "Review worklist" })).toBeVisible();
+  // The worklist is the run record's first and default tab now. Its region and its rail are
+  // unchanged; what moved is that its heading became the tab label above it.
+  await expect(dashboard.getByRole("tab", { name: /^Review worklist/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(dashboard.getByRole("region", { name: "Review worklist" })).toBeVisible();
   const segments = dashboard.getByRole("group", { name: "Worklist segment" });
   await expect(segments.getByRole("button", { name: /^Blocking/ })).toBeVisible();
   await expect(segments.getByRole("button", { name: /^Passed/ })).toBeVisible();

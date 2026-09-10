@@ -1,3 +1,4 @@
+import { HARNESS_CAPABILITIES } from "../src/shared/harness-capabilities.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -275,13 +276,24 @@ test("the default ship harness is capability-checked before a multi-repo task is
   const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
-  const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
+  const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
+  HARNESS_CAPABILITIES.pi.multiRepoDispatch = null;
+  try {
+    const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
+      additionalRepositories: [repoB],
+    });
+
+    assert.equal(response.status, 400);
+    assert.match(((await response.json()) as { error: string }).error, /pi cannot be given write access/);
+    assert.equal(registry.snapshot().tasks.length, before);
+  } finally {
+    HARNESS_CAPABILITIES.pi.multiRepoDispatch = original;
+  }
+  const supported = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     additionalRepositories: [repoB],
   });
-
-  assert.equal(response.status, 400);
-  assert.match(((await response.json()) as { error: string }).error, /pi cannot be given write access/);
-  assert.equal(registry.snapshot().tasks.length, before);
+  assert.equal(supported.status, 200);
+  assert.equal(registry.snapshot().tasks.length, before + 1);
 });
 
 test("a planning session in repo A can gate a task whose primary is repo B", async () => {

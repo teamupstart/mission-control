@@ -60,7 +60,9 @@ after(() => {
 // A fresh config store per test, so one test's armed YOLO does not read into the next. The
 // sweeper's in-memory health map is process-global and is NOT cleared here, so each source
 // carries a UNIQUE id and the compose reads only sources that are in the (cleared) config.
-beforeEach(() => openDb().exec("DELETE FROM app_config"));
+beforeEach(() =>
+  openDb().exec("DELETE FROM app_config; DELETE FROM task_source_writeback"),
+);
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
@@ -132,6 +134,60 @@ test("the compose counts a task source that failed its last sweep", async () => 
   setTaskSourcesConfig({ sources: [inst] });
   const report = await sweepOnce(inst, tasks);
   assert.ok(report.error, "the failing gh should surface an error on the report");
+  assert.equal(settingsStatus().taskSources.failing, 1);
+});
+
+// A stuck write-back queue is the second way a source can be failing, and the dot has to
+// count it: nothing else in the app would ever mention an owed comment that never got
+// posted, so without this it goes unnoticed until somebody happens to open the panel.
+//
+// Both stuck states count, and they are counted per SOURCE rather than per problem - a
+// source that also failed its sweep is one thing to go and look at, not two.
+test("the compose counts a source whose write-back queue is stuck", async () => {
+  const { enqueueWriteback, settleWriteback, openDb: db } = await import("../src/server/db.ts");
+  const inst = ghSource("compose-queue");
+  setTaskSourcesConfig({ sources: [inst] });
+  assert.equal(settingsStatus().taskSources.failing, 0);
+
+  const seed = (externalId: string, state: "failed" | "unknown" | "delivered"): void => {
+    enqueueWriteback({
+      sourceId: inst.id,
+      externalId,
+      signal: "pr-opened",
+      action: "annotate",
+      dedupeKey: `pr:${externalId}`,
+      taskId: null,
+      notice: {
+        signal: "pr-opened",
+        action: "annotate",
+        externalId,
+        externalUrl: null,
+        taskTitle: "Fix the parser",
+        prUrl: "https://github.com/acme/demo/pull/9",
+        repoRoot: home,
+        outcome: null,
+        observedAt: 1_700_000_000_000,
+      },
+      nextAt: 0,
+    });
+    const id = (
+      db()
+        .prepare(`SELECT id FROM task_source_writeback WHERE external_id = ?`)
+        .get(externalId) as { id: number }
+    ).id;
+    settleWriteback(id, state, { attempts: 6, lastError: state === "delivered" ? null : "gh refused" });
+  };
+
+  // A delivered queue is a healthy one, which is what keeps the dot from meaning "this
+  // source has ever written anything back".
+  seed("acme/demo#1", "delivered");
+  assert.equal(settingsStatus().taskSources.failing, 0);
+
+  seed("acme/demo#2", "failed");
+  assert.equal(settingsStatus().taskSources.failing, 1);
+
+  // A second stuck row on the SAME source is still one thing to go and look at.
+  seed("acme/demo#3", "unknown");
   assert.equal(settingsStatus().taskSources.failing, 1);
 });
 

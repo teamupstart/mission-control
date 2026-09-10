@@ -42,8 +42,10 @@ const {
   skillsAgents,
   supportsSessionEffort,
   workQueueUnsupportedWhy,
+  missionToolsUnavailableWhy,
+  workQueueBlockedReason,
 } = await import("../src/shared/harness-capabilities.ts");
-const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { HARNESSES, foremanAutomationAuthorized } = await import("../src/server/harness/index.ts");
 import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
 const { ModePicker } = await import("../src/web/components/ModePicker.tsx");
@@ -61,7 +63,7 @@ const { MODEL_PICKER_XHIGH } = await import("./fixtures/claude-panes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt";
+type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt" | "missionTools";
 
 /** An agent whose harness declares the capability, and one that declares it null. */
 function split<K extends SplitCap>(cap: K) {
@@ -155,11 +157,8 @@ test("the live effort picker follows the selected model, not the launch default"
 });
 
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {
-  // A guard nothing exercises rots. Codex was once the live proof for all five, then declared
-  // them all non-null; pi (Phase 5) then declared `workQueue` and `mcp` null for real - it has
-  // no hooks for the first and no MCP client for the second - so those two moved back OUT of
-  // the fixture list. `skills` and `clearContext` are still declared null by no shipped
-  // harness (pi has both), so they stay on `withCapabilityNull` fixtures.
+  // Pi still declares MCP null, but now declares the lifecycle capability: its missing
+  // Mission integration is a per-session refusal. WorkQueue joins the named null fixtures.
   //
   // The point of naming them HERE is that the two lists cannot drift apart silently. A
   // capability that gains a null declarer must leave `BY_FIXTURE`, and one that loses its
@@ -171,13 +170,14 @@ test("every capability's null path is exercised, by a real harness or a named fi
   // there was no interrupt primitive to reach and the pane mechanism did not exist. Adding
   // `escape` to the terminal vocabulary gave pi the only mechanism it can ever have, the
   // slot lost its last null declarer, and this test went red until `interrupt` moved here.
-  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt"];
+  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt", "workQueue", "missionTools"];
   for (const cap of [
     "permissionModes",
     "skills",
     "workQueue",
     "clearContext",
     "mcp",
+    "missionTools",
     "interrupt",
   ] as const) {
     const declared = split(cap).hasnt.length > 0;
@@ -454,7 +454,10 @@ test("a harness that can't hold a queue is never selected for a tick, or asked t
   );
   const selected = new Set(tickTargets(sessions, ["drain", "prompted"]).map((s) => s.id));
   for (const agent of hasnt) assert.equal(selected.has(`q-${agent}`), false, `${agent} must not be ticked`);
-  for (const agent of has) assert.equal(selected.has(`q-${agent}`), true, `${agent} must still be ticked`);
+  for (const agent of has) {
+    assert.equal(selected.has(`q-${agent}`), HARNESSES[agent].hooks !== null,
+      `${agent} also needs installed lifecycle instrumentation to be ticked`);
+  }
 
   for (const agent of hasnt) {
     const verdict = decidePromptedWrapup({
@@ -506,6 +509,17 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
     assert.match(why!, new RegExp(AGENT_IDENTITY[agent].label));
   }
   for (const agent of has) assert.equal(workQueueUnsupportedWhy(agent), null);
+});
+
+test("Pi's queue names extension installation as the remedy while lifecycle hooks are absent", () => {
+  const session = mkSession({ agent: "pi", runtime: "terminal", hooksSeen: false });
+  const queue = capabilitiesFor("pi").workQueue;
+  assert.ok(queue);
+  assert.equal(HARNESSES.pi.hooks, null);
+  assert.equal(foremanAutomationAuthorized(session), false);
+  assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
+  assert.match(queue.uninstrumentedWhy, /Install the Mission Control extension for Pi to enable Foreman's work queue/);
+  assert.match(queue.uninstrumentedWhy, /hasn't reported lifecycle hooks/);
 });
 
 // ---- clearing context: the defect this item fixes ----
@@ -576,4 +590,22 @@ test("a harness that DOES declare a clear command still clears - the other half 
     const r = await resetToOrigin(session, true, deps);
     assert.equal(r.cleared, true, `${agent} declares ${command} and must be reported as having run it`);
   }
+});
+
+test("Mission tools declare a route independently of a vendor MCP client", async () => {
+  for (const agent of ["claude", "codex"] as const) {
+    assert.deepEqual(capabilitiesFor(agent).missionTools, { mechanism: "mcp-client", scope: "launch" });
+    assert.equal(missionToolsUnavailableWhy(agent), null);
+  }
+  assert.deepEqual(capabilitiesFor("pi").missionTools, { mechanism: "installed-extension", scope: "machine" });
+  assert.equal(capabilitiesFor("pi").mcp, null);
+  assert.match(missionToolsUnavailableWhy("pi")!, /integration for Pi is not installed/);
+  assert.doesNotMatch(missionToolsUnavailableWhy("pi")!, /npm run build|bundle/);
+  await withCapabilityNull("codex", "missionTools", async () => {
+    const { missionToolsAvailability } = await import("../src/server/mission-tools.ts");
+    assert.deepEqual(await missionToolsAvailability("codex"), {
+      available: false, reason: missionToolsUnavailableWhy("codex"),
+    });
+    assert.match(missionToolsUnavailableWhy("codex")!, /Codex has no integration/);
+  });
 });

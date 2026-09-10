@@ -13,6 +13,12 @@ that submission as unverified rather than retrying on evidence Codex cannot prov
 session started without reporting hooks is refused at the composer with instructions to
 launch it through Mission Control, rather than accepting a batch it cannot verify.
 
+Pi supports lifecycle reporting through extensions. Its work-queue refusal names the remedy:
+install the Mission Control extension for Pi. A session without lifecycle reporting remains
+blocked, with no queue composer. This phase declares the capability and installation guidance;
+the extension, lifecycle adapter and installer remain owned by later phases of
+[Pi parity](plans/pi-mission-control-extension/phased-plan.md).
+
 **This is not the Files tab's review queue.** Both hand a session one item at a time, and they
 are otherwise different mechanisms with different owners. A work queue is *work*: Foreman
 authors the prompt, a mandatory verifier decides whether each item landed before releasing the
@@ -230,8 +236,9 @@ Sends obey the same gate as everything else: dry-run **drafts** each item and wa
 **Approve**, and live sends only happen in allowlisted repos. Verification is read-only, so
 it runs in any mode - you see Foreman's judgment before it ever types. A queue needs hook
 pickup/completion signals: Claude sessions must report installed hooks, Codex sessions must
-have the launch-scoped hooks attached, and Pi is unsupported. The panel says so rather than
-letting you queue work that can't run.
+have the launch-scoped hooks attached, and Pi needs its Mission Control extension to report
+lifecycle hooks. The panel names the missing integration and its remedy rather than letting
+you queue work that can't run.
 
 It says the same about a session Foreman was never [invited
 into](foreman.md#which-sessions-foreman-may-act-in) - and says it over an *empty* queue too,

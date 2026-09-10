@@ -110,7 +110,12 @@ import type { InspectionUpdated, InspectorComment } from "@shared/types.ts";
 import type { Registry } from "../registry.ts";
 import { noteKeyFor } from "../registry.ts";
 import { injectPrompt, type InjectResult } from "../actions.ts";
-import { recordInjection } from "../injections.ts";
+import {
+  confirmReservedInjection,
+  recordInjection,
+  releaseInjection,
+  reserveInjection,
+} from "../injections.ts";
 import { QueueManager } from "../queue.ts";
 import { getForemanConfig } from "../foreman/config.ts";
 import { harnessFor, sessionMessages } from "../harness/index.ts";
@@ -347,7 +352,9 @@ export interface WorkflowManagerOptions {
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
+  /** The authorship sink's older name, still honoured. See `confirmInjection`. */
   recordInjection?: typeof recordInjection;
+  confirmReservedInjection?: typeof confirmReservedInjection;
   /**
    * The daemon's shared review budget, spent by Persona attempts and context compaction
    * alike. Constructed here only so a test or a second embedder still gets a real ceiling.
@@ -560,7 +567,14 @@ export class WorkflowManager {
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly queues: QueueManager;
   private readonly inject: typeof injectPrompt;
-  private readonly rememberInjection: typeof recordInjection;
+  /**
+   * This manager's one authorship sink, called once per delivery that landed.
+   *
+   * Settles the reservation the attempt already made rather than opening a second one, which
+   * is why it is `confirmReservedInjection` and not `recordInjection`: a delivery owes exactly
+   * one echo however many times authorship is written down for it.
+   */
+  private readonly confirmInjection: typeof confirmReservedInjection;
   private readonly requireSkill: NonNullable<WorkflowManagerOptions["requireSkill"]>;
   private readonly schedule: ReviewScheduler;
   private retentionTimer: ReturnType<typeof setInterval> | null = null;
@@ -593,7 +607,13 @@ export class WorkflowManager {
   ) {
     this.queues = options.queueManager ?? new QueueManager(registry);
     this.inject = options.inject ?? injectPrompt;
-    this.rememberInjection = options.recordInjection ?? recordInjection;
+    // `recordInjection` is still accepted as the sink's older name. A caller that wired it -
+    // every existing test does - is asking to observe this manager's attribution, and that is
+    // what it gets; only the moment moved, from after the write to the settling of a claim
+    // made before it.
+    this.confirmInjection = options.confirmReservedInjection
+      ?? options.recordInjection
+      ?? confirmReservedInjection;
     this.requireSkill = options.requireSkill ?? requiredSkillCommand;
     // ONE scheduler, resolved once from whichever option named it, then handed to both
     // halves. Compaction used to run outside the engine's limiter entirely, so two
@@ -3275,7 +3295,10 @@ export class WorkflowManager {
       if (!resolved.idempotent) {
         if (input.resolution === "mark_delivered") {
           const session = this.registry.getSession(delivery.sessionId);
-          if (session) this.rememberInjection(session.id, delivery.payload, "workflow");
+          // The delivery really happened, so this settles the reservation its attempt made
+          // rather than opening a second one. An uncertain send keeps its claim precisely so
+          // this moment has one to settle.
+          if (session) this.confirmInjection(session.id, delivery.payload, "workflow");
           // The operator has said this instruction landed, so the action it belongs to can
           // be observed again. Without this the observer's refusal to guess about an
           // uncertain write would make "it landed" an answer nothing could act on.
@@ -5982,6 +6005,11 @@ export class WorkflowManager {
     }
     const expectedPane = paneToken(session);
     this.store.appendEvent(sending.runId, "delivery_sending", { deliveryId: sending.id });
+    // Claimed BEFORE the first byte. The agent's prompt hook can report this packet back while
+    // the write is still unresolved, and an echo that arrives with no authorship on file is
+    // captured as the human's Goal - which for a repair packet means the next round reviews
+    // the work against Mission Control's own previous complaint.
+    reserveInjection(session.id, sending.payload, "workflow");
     let result: InjectResult;
     try {
       result = await this.inject(
@@ -5996,6 +6024,11 @@ export class WorkflowManager {
     }
     if (!result.ok) {
       if (result.pasted === false) {
+        // `pasted === false` is this codebase's one definition of positive evidence that
+        // nothing reached the pane, so no echo is coming and the claim goes back. Every other
+        // outcome here is ambiguous and keeps it: an echo that may still arrive must find
+        // authorship on file, and the cost of being wrong that way is one suppressed retype.
+        releaseInjection(session.id, sending.payload);
         const reason = result.paneBlocked ? "pane_blocked" : (result.error ?? "delivery_refused");
         const refused = this.store.finishDeliverySend(sending.id, "refused", reason);
         if (!refused) return;
@@ -6028,7 +6061,9 @@ export class WorkflowManager {
       result.submitVerified,
     );
     if (!confirmed) return;
-    this.rememberInjection(session.id, sending.payload, "workflow");
+    // Settles the reservation above rather than adding to it: recording afresh would owe a
+    // second echo for one delivery, and the surplus would be spent silencing a later human turn.
+    this.confirmInjection(session.id, sending.payload, "workflow");
     if (confirmed.rearmed) this.queues.refresh(sending.noteKey);
     this.publishRun(sending.runId);
   }

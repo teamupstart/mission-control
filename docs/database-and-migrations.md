@@ -107,6 +107,22 @@ recent attempts. Their projection can be reconciled through the provider's sanct
 command, but it is not rebuildable from implementation worktrees and must not be treated as a
 disposable cache.
 
+`task_source_writeback` is a ledger of a third kind: one row per write-back a
+[task source](dispatch-and-backlog.md#writing-back-to-the-source) owes an item it swept.
+Its rows deliberately **outlive the tasks that caused them**, and hold no foreign key to
+one. A delivery is enqueued when a fact is observed - a pull request linked, a task
+completed - and attempted later, by a worker, possibly after a restart; the task may be
+gone by then, and "a pull request opened for this" stays true regardless. So the payload is
+a snapshot of what was true at observation rather than a pointer to a live row, and nothing
+on this table joins back to `tasks`. That is the same stance `task_source_seen` takes for a
+different reason: there it is "a task you deleted stays deleted", here it is "a fact you
+observed stays true". Its unique index over
+`(source_id, external_id, signal, action, dedupe_key)` is the idempotency guarantee that
+makes a restart, a re-observed pull request and a repeated poller tick all cost nothing, and
+`signal` and `action` are therefore
+[append-only identifiers](agent-guides/change-contracts.md#persisted-identifiers): renaming
+one orphans every undelivered row written under the old spelling.
+
 `archive_capture_jobs` sits beside them and is a different kind of table again: local
 coordination for archives this daemon is still WRITING, one row per archive a task work episode
 owes, holding the reserved archive identity, the directory that row covers, and the checkout

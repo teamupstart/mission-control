@@ -116,6 +116,11 @@ import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
+// Who typed a given user turn, reserved at delivery by every non-human sender. Read here so
+// a packet this daemon typed is never captured as the human's Goal - see
+// `isDaemonAuthoredPrompt`. The CONSUMING reader: one delivery buys one suppression, so the
+// same text arriving again is the human retyping it.
+import { claimInjectionEcho } from "./injections.ts";
 // The live catalog is seeded from the Phase 1 store at boot; it is a read of durable state,
 // the same shape as `loadActiveTasks` above. The store never imports the registry, so this
 // direct import is cycle-free - unlike ensembles, whose projection is a registered callback
@@ -213,6 +218,8 @@ import {
   taskWorkEpisodeForSession,
   taskWorkEpisodeForTask,
   taskAutomaticCleanupSummaries,
+  taskSessionClosureForSession,
+  getTaskSessionClosure,
   taskHasPrCarryingBinding,
   updateWorkEpisodePr,
   primaryRepoPrForTask,
@@ -1231,6 +1238,40 @@ export class Registry extends EventEmitter {
     }
     const current = this.sessions.get(sessionId);
     if (current) this.beginEviction(current);
+    return true;
+  }
+
+  /**
+   * Retire the agent of a concluded recurring mission run that would not stop when asked.
+   *
+   * The escalation behind the four-minute guarantee, and the reason it exists at all: asking
+   * politely is not a guarantee. A stop the multiplexer refuses, or a driver that accepts one
+   * and then does not go, used to mean the closure retried for ever while the session stayed on
+   * the fleet - which is the state the whole boundary was built to make impossible.
+   *
+   * NOT a second eviction path. It goes through `beginEviction`, exactly as
+   * `replacePipelineEngineerHost` does, so `session_remove` keeps its single producer and every
+   * durable subscriber - workflow bindings, task settling, review orphaning - sees the ordinary
+   * event. `beginEviction` is idempotent through its own timer, so a session already on its way
+   * out keeps the deadline it had.
+   *
+   * Self-authorizing rather than trusting its caller: it retires a session only when the
+   * DURABLE closure ledger says that exact task is owed that exact session's close. A caller
+   * that has confused two sessions cannot get one retired through here.
+   *
+   * What this cannot promise. Retiring the card is a statement about the registry, not about
+   * the operating system: if a pane's multiplexer genuinely refused to kill it, the process may
+   * still be alive, and passive discovery may re-adopt it as a new sighting later. The task it
+   * ran stays `done` either way - the completion is terminal - and the refusal is on the record
+   * in the daemon log. That residue is strictly better than the alternative it replaces, which
+   * was a live session bound to a finished mission for ever.
+   */
+  retireConcludedMissionSession(taskId: string, sessionId: string): boolean {
+    const owed = getTaskSessionClosure(taskId);
+    if (!owed || owed.sessionId !== sessionId) return false;
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    this.beginEviction(session);
     return true;
   }
 
@@ -3460,6 +3501,34 @@ export class Registry extends EventEmitter {
         updatedAt: Date.now(),
       });
     }
+  }
+
+  /**
+   * Why a prompt this hook is announcing must not be processed, or null to let it through.
+   *
+   * The other half of the concluded-mission boundary, and the half that reaches a prompt
+   * Mission Control never sees. `promptResourceBlockerForSession` refuses everything this
+   * daemon would DELIVER; a person typing into the pane bypasses all of it, because the
+   * agent's own harness takes the keystrokes and only then asks its hooks whether to go
+   * ahead. This is that question, answered.
+   *
+   * What it can and cannot promise, stated plainly: the keystrokes have already landed and
+   * nothing can un-type them. What a refusal buys is that no TURN begins - the prompt is not
+   * processed, no generation opens, and the concluded run's agent does no further work.
+   *
+   * Scoped hard, because a wrong answer here refuses a person's prompt at their own terminal:
+   * only a session that the DURABLE closure ledger says is owed a close is ever refused, and
+   * that ledger is empty except in the seconds between a mission run concluding and its agent
+   * going. Every other session, and every other event, is none of this function's business.
+   */
+  promptRefusalForHook(evt: HookIngest): string | null {
+    if (evt.event !== "UserPromptSubmit") return null;
+    const session = this.findSessionForHook(evt, overlayKeyFromEnv(evt.env));
+    if (!session) return null;
+    const closing = taskSessionClosureForSession(session.id);
+    if (!closing) return null;
+    const task = this.tasks.get(closing.taskId);
+    return `This session's recurring mission run${task ? ` (${task.title})` : ""} was concluded and Mission Control is closing the session, so this prompt was not run. Dispatch a new agent for follow-up work.`;
   }
 
   /**
@@ -6190,7 +6259,26 @@ export class Registry extends EventEmitter {
     );
   }
 
+  /**
+   * Why nothing may be delivered to this session right now, or null.
+   *
+   * Two refusals, and they answer different questions. The first is about RESOURCES a
+   * cancelled task still holds. The second is about a session that has been FINISHED WITH:
+   * when Foreman concludes a recurring mission run set to complete automatically, the task is
+   * done and its agent is owed a close, and a prompt arriving in that window is exactly the
+   * failure that boundary exists to remove - it reopened work the operator had seen finish and
+   * kept a mission's session alive across its own next occurrence.
+   *
+   * Reading the durable ledger rather than any in-memory flag is what makes the refusal
+   * survive the restart the closure itself survives, and it costs one indexed lookup on a
+   * table that is normally empty.
+   */
   promptResourceBlockerForSession(sessionId: string): string | null {
+    const closing = taskSessionClosureForSession(sessionId);
+    if (closing) {
+      const task = this.tasks.get(closing.taskId);
+      return `this session's recurring mission run was concluded${task ? ` (${task.title})` : ""} and the session is being closed - dispatch a new agent for follow-up work`;
+    }
     const owner = this.taskResourceOwnerForSession(
       sessionId,
       "cancelled",
@@ -7416,15 +7504,101 @@ export class Registry extends EventEmitter {
    *
    * WHICH event carries a prompt and WHAT inside it a human actually typed are both the
    * harness's to answer - `UserPromptSubmit` is Claude's event name and the scaffolding
-   * grammar is Claude's syntax - so both live behind `HookSpec.promptText` and this
-   * reads neither. A harness whose bridge fires no prompt event answers null throughout,
-   * and a session simply has no captured prompt for the refiner to work from.
+   * grammar is Claude's syntax - so both live behind `HookSpec.promptText` and this reads
+   * neither directly. A harness whose bridge fires no prompt event answers null throughout,
+   * and a session simply has no captured prompt for the refiner to work from. The same rule
+   * puts the unreshaped text behind `HookSpec.submittedPromptText` rather than reading
+   * `evt.prompt` here; see `isDaemonAuthoredPrompt` for why authorship needs it.
    */
   private captureHookGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
     const prompt = spec.promptText(evt);
     if (!prompt) return;
     if (this.isSeededLaunchEcho(s, prompt)) return;
+    if (this.isDaemonAuthoredPrompt(s, spec, evt, prompt)) return;
     this.captureAcceptedPrompt(s.id, prompt, noteKeyFor(s), now);
+  }
+
+  /**
+   * Whether Mission Control typed this prompt itself.
+   *
+   * A prompt event says a prompt was submitted. It does not say who wrote it, and every
+   * non-human path that drives a session - Foreman's recovery packets, workflow repair and
+   * evidence-preflight delivery, the skills broadcast, the retro packet, the restart
+   * continuation - lands as an ordinary user turn, byte-identical in shape to a typed one.
+   * Round 0 of a work item is the human's ask delivered verbatim, so nothing may be prepended
+   * to make one recognisable; the only moment authorship is known is the moment of delivery,
+   * and `recordInjection` is where the daemon writes it down.
+   *
+   * Both the SDK send door (`sdk/deliver.ts`) and the composer door (`pending-turns.ts`)
+   * already refuse to seed a Goal from a delivery they know is not the human's. This is the
+   * third door and it used to be the only one that guessed, so a completion-review packet
+   * became the session's ask, was frozen onto the next workflow run, and came back to the
+   * agent labelled "Original user goal" - the review then judging the work against Mission
+   * Control's own complaint.
+   *
+   * Matched on the SUBMITTED text, never on `promptText`'s reading of it: the goal reading
+   * collapses whitespace, so a multi-line packet arrives as one line and hashes to nothing
+   * that was recorded. The reshaped form is checked too, for a harness whose bridge reports
+   * an already-normalised prompt - a false match there costs a duplicate of text the daemon
+   * really did send.
+   *
+   * CONSUMING, and that is the difference between suppressing an echo and deafening the
+   * session. One delivery owes exactly one echo, so `claimInjectionEcho` spends it and the
+   * same text arriving a second time is captured as the instruction it now is. Text equality
+   * alone would mean a human who scrolls back, copies a packet out of the transcript and
+   * sends it again to redirect the work is silently ignored - unable to move the Goal by
+   * saying the same thing twice, with nothing on screen to say why. `isSeededLaunchEcho`
+   * bounds its own suppression for exactly this reason; this bounds by delivery count rather
+   * than by turn generation, because a packet can arrive at any point in a conversation
+   * while a launch can only arrive at the start of one.
+   *
+   * Deliberately keyed off the in-memory delivery record, which a daemon restart forgets. A
+   * restart between a delivery and its echo lets that one packet through, exactly as it lets
+   * the conversation log mis-label that turn today; nothing is silently wrong for longer than
+   * the tick it happened in.
+   */
+  private isDaemonAuthoredPrompt(
+    s: Session,
+    spec: HookSpec,
+    evt: HookIngest,
+    prompt: string,
+  ): boolean {
+    const submitted = spec.submittedPromptText(evt);
+    const delivered = (submitted !== null && claimInjectionEcho(s.id, submitted) !== undefined)
+      || claimInjectionEcho(s.id, prompt) !== undefined;
+    return delivered && !this.isRelayedWorkItemIntent(s, submitted, prompt);
+  }
+
+  /**
+   * Whether a delivery this daemon made was carrying the HUMAN'S words rather than its own.
+   *
+   * `recordInjection` answers who TYPED a turn, which is the right question for the
+   * conversation log: Foreman really did type it, and crediting the operator would hide the
+   * machinery doing its job. The Goal needs the other question - who WROTE it - and the two
+   * answers differ for exactly one payload. Round 0 of a work item is `item.intent`, the
+   * operator's own text delivered verbatim (see `payloadFor`), so suppressing it would leave
+   * a queued instruction moving nothing: no focus on the card, no revision for the intent
+   * reconciler, and `resolvedSessionIntent` still describing whatever the session launched
+   * with. Every OTHER recorded payload is prose this daemon composed - recovery packets, fix
+   * rounds, repair and preflight packets, the skills broadcast, the retro, the restart
+   * continuation - and none of them is anybody's ask.
+   *
+   * The queue is the source of that fact and is consulted rather than re-derived, so nothing
+   * here pattern-matches on what a packet looks like. Fix rounds are `renderFixPrompt`
+   * output and never equal an intent, so they stay suppressed.
+   *
+   * Compared with whitespace collapsed, because the two candidates reach here shaped
+   * differently: `submittedPromptText` is the payload verbatim while `promptText` has already
+   * been through the harness's grammar.
+   */
+  private isRelayedWorkItemIntent(
+    s: Session,
+    submitted: string | null,
+    prompt: string,
+  ): boolean {
+    const flatten = (text: string): string => text.replace(/\s+/g, " ").trim();
+    const candidates = new Set([flatten(prompt), ...(submitted ? [flatten(submitted)] : [])]);
+    return listQueueItems(noteKeyFor(s)).some((item) => candidates.has(flatten(item.intent)));
   }
 
   /**
@@ -7517,7 +7691,7 @@ export class Registry extends EventEmitter {
     const prev = this.getGoal(id);
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
-    return this.upsertGoal(id, {
+    return this.mergeGoal(id, {
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -7527,6 +7701,8 @@ export class Registry extends EventEmitter {
       ...(firstObjective
         ? {
             objective: raw,
+            // A pre-feature row cannot recover its opening ask from a later prompt.
+            ...(!prev?.promptRevision && !prev?.prompt ? { openingPrompt: prompt } : {}),
             text: goalLine(raw),
             source: "heuristic" as const,
             objectiveVersion: Math.max(1, prev?.objectiveVersion ?? 0),
@@ -7570,6 +7746,15 @@ export class Registry extends EventEmitter {
    * focus and prompt revision, but not the "when did this session change course" timestamp.
    */
   upsertGoal(id: string, patch: SetGoal, now = Date.now()): SessionGoal | null {
+    return this.mergeGoal(id, patch, now);
+  }
+
+  /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
+  private mergeGoal(
+    id: string,
+    patch: SetGoal & { openingPrompt?: string },
+    now: number,
+  ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
     const key = noteKeyFor(s);
@@ -7582,6 +7767,7 @@ export class Registry extends EventEmitter {
       text,
       source: patch.source !== undefined ? patch.source : prev?.source ?? null,
       objective,
+      openingPrompt: prev?.openingPrompt ?? patch.openingPrompt ?? null,
       prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt ?? null,
       focus: patch.focus !== undefined ? patch.focus : prev?.focus ?? null,
       relationship:

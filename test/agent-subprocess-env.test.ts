@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const root = mkdtempSync(join(tmpdir(), "mission-agent-env-test-"));
 const operatorState = join(root, "operator-state");
@@ -19,6 +19,7 @@ mkdirSync(operatorState, { recursive: true });
 writeFileSync(join(operatorState, "token"), "loopback-test-token\n", { mode: 0o600 });
 process.env.HARNESS_HOME = operatorState;
 
+const { shellCommand } = await import("../src/server/terminal/shell.ts");
 const {
   agentSubprocessEnv,
   cleanupAgentSubprocessEnv,
@@ -132,7 +133,12 @@ test("terminal argv applies isolation after the terminal server's inherited envi
   ]);
   assert.equal(argv.some((arg) => arg.includes("loopback-test-token")), false);
   assert.equal(argv.some((arg) => arg.startsWith(`${MISSION_API_TOKEN_ENV}=`)), false);
-  assert.equal(argv.some((arg) => arg.startsWith(`${MISSION_API_TOKEN_FILE_ENV}=`)), true);
+  // The environment now travels in the wrapper script rather than in the argv - see the case
+  // below for why - so what used to be an assertion about an argv element is one about the
+  // script. The end-to-end run underneath is unchanged and is what actually proves it.
+  const script = readFileSync(argv.at(-1)!, "utf8");
+  assert.match(script, new RegExp(`^export ${MISSION_API_TOKEN_FILE_ENV}=`, "m"));
+  assert.equal(script.includes("loopback-test-token"), false);
   const result = JSON.parse(execFileSync(argv[0]!, argv.slice(1), {
     encoding: "utf8",
     env: {
@@ -157,6 +163,38 @@ test("terminal argv applies isolation after the terminal server's inherited envi
   assert.equal(result.direct, undefined);
   assert.equal(result.tokenFile.startsWith(result.mission), true);
   assert.equal(result.token, "loopback-test-token");
+});
+
+test("the launch wrapper carries the environment and the agent, so what a backend types is short", () => {
+  // The Herdr defect this shape exists for: its socket API has no command parameter, so a
+  // launch is TYPED into a login shell as a bracketed paste, and at the size a real dispatch
+  // used to produce - 3,546 bytes measured on the operator's machine - the paste and its
+  // Enter race. The command sat unexecuted at the prompt and the dispatch failed thirty
+  // seconds later blaming the agent for exiting. tmux and cmux exec what they are handed and
+  // never noticed the length; they get the shorter command for free.
+  const argv = isolatedAgentArgv(["/agents/claude", "--model", "opus", "don't"]);
+
+  assert.equal(argv.length, 2, "the interpreter and the wrapper, and nothing else");
+  assert.equal(argv[0], "/bin/sh");
+  // An order of magnitude, not a byte count: the wrapper path is a temp dir whose length is
+  // the platform's business. What must hold is that this is nothing like 3,546 bytes.
+  const command = shellCommand(argv);
+  assert.ok(command.length < 300, `a backend receives ${command.length} bytes`);
+
+  const script = readFileSync(argv[1]!, "utf8");
+  // Every state-home spelling is removed before anything is exported, so the login shell's
+  // own MISSION_HOME cannot survive into the agent.
+  assert.match(script, /^unset MISSION_HOME FLEET_HOME HARNESS_HOME$/m);
+  assert.match(script, /^export PATH=/m);
+  assert.match(script, /^export MISSION_HOME=/m);
+  // The agent is the last statement, quoted the way a backend would quote it, and NOT
+  // `exec`ed: `exec` replaces the shell, so the EXIT trap below would never fire and the
+  // disposable state home would never be released.
+  assert.equal(script.includes("exec "), false);
+  assert.match(script, /^trap '\/bin\/rm -rf -- "\$MISSION_HOME"' EXIT$/m);
+  assert.equal(script.trimEnd().split("\n").at(-1), `'/agents/claude' '--model' 'opus' 'don'"'"'t'`);
+
+  rmSync(dirname(argv[1]!), { recursive: true, force: true });
 });
 
 test("a workflow-style environment gets disposable state without daemon credentials", () => {

@@ -9,7 +9,11 @@ import type { InjectResult } from "../actions.ts";
 import { pollIntervalMs, envVar } from "../config.ts";
 import { getSkillsAcks, setSkillsAck } from "../db.ts";
 import { readPaneModeLine } from "../discovery/pane-mode.ts";
-import { recordInjection } from "../injections.ts";
+import {
+  confirmReservedInjection,
+  releaseInjection,
+  reserveInjection,
+} from "../injections.ts";
 import type { PaneModeLine } from "../discovery/pane-mode.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
@@ -284,12 +288,15 @@ export async function reloadOne(
   // that never heard about it - which is precisely the "toggle that silently no-ops"
   // failure the plan disqualified codex over.
   deps.ack(noteKeyFor(session), generation);
+  // Claimed before the write, for the reason every other sender claims before its own: the
+  // prompt hook can report the command back while this send is still unresolved.
+  reserveInjection(session.id, skills.reloadCommand, "harness");
   const sent = await deps.inject(session, skills.reloadCommand);
   if (sent.ok) {
     // Nobody asked for this one - the dashboard typed it because a skill changed on
     // disk. Say so, or the conversation log shows the human interrupting their agent
     // with a slash command they've never heard of.
-    recordInjection(session.id, skills.reloadCommand, "harness");
+    confirmReservedInjection(session.id, skills.reloadCommand, "harness");
     return true;
   }
 
@@ -298,7 +305,13 @@ export async function reloadOne(
   // writing). Only then is the ack a lie worth taking back. `pasted: true` means the
   // text IS in the pane and only the Enter failed - retrying would paste a second
   // copy after the first and mangle a prompt, so that ack stands.
-  if (!sent.pasted) deps.ack(noteKeyFor(session), prior);
+  // The same `pasted: false` line decides authorship: nothing reached the pane, so no echo is
+  // coming and the claim goes back. A `pasted: true` failure leaves the text in the pane, so
+  // its echo may still arrive and the claim stands.
+  if (!sent.pasted) {
+    releaseInjection(session.id, skills.reloadCommand);
+    deps.ack(noteKeyFor(session), prior);
+  }
   return false;
 }
 

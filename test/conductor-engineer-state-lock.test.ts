@@ -192,3 +192,77 @@ test("a fresh lock is waited for, and only an abandoned one is broken", () => {
   assert.equal(runs().length, 1);
   assert.equal(existsSync(lockPath), false, "and the taker releases what it acquired");
 });
+
+// The race the second review round found: the stale CHECK and the stale DELETE are not one
+// operation, so two waiters can both decide a lock is abandoned, the first can remove it and
+// acquire a fresh one, and the second can then delete THAT - handing a third contender a
+// lock somebody is inside.
+//
+// Racing two processes cannot pin this down: winning the damaging interleaving is a coin
+// flip, and a test that flips it passes against the broken code most of the time. A version
+// of this that spawned two contenders did exactly that. So this pins the MECHANISM that
+// removes the race instead, which is deterministic: recovery is serialised behind its own
+// atomic mkdir, and a waiter that cannot take that breaker must leave the lock alone rather
+// than delete it on an observation somebody else is already acting on.
+test("a waiter cannot break a stale lock while another is already recovering it", () => {
+  rmSync(statePath, { force: true });
+  rmSync(lockPath, { recursive: true, force: true });
+  rmSync(`${lockPath}.breaker`, { recursive: true, force: true });
+
+  // An abandoned lock, plus the breaker another waiter would be holding mid-recovery.
+  mkdirSync(lockPath, { recursive: true });
+  writeFileSync(`${lockPath}/owner`, "dead-process");
+  mkdirSync(`${lockPath}.breaker`, { recursive: true });
+
+  const res = engineer([
+    "engineer", "run-create", "--repo-root", home, "--idea", "Serialised recovery",
+    "--correlation-id", "corr-serialised", "--attempt-key", "attempt-1",
+  ], { MC_E2E_CONDUCTOR_LOCK_STALE_MS: "1", MC_E2E_CONDUCTOR_LOCK_WAIT_MS: "700" });
+
+  // Stale by every measure, and still not taken: the recovery slot was occupied, so this
+  // waiter had no business deleting anything.
+  assert.notEqual(res.status, 0, "recovery must not proceed while another waiter holds it");
+  assert.equal(existsSync(lockPath), true, "the lock under recovery must survive");
+  assert.equal(
+    readFileSync(`${lockPath}/owner`, "utf8"),
+    "dead-process",
+    "and it must still carry the owner the other waiter observed",
+  );
+  assert.deepEqual(runs(), [], "nothing may be written without the lock");
+
+  // With the recovery slot free, the same abandoned lock is recoverable.
+  rmSync(`${lockPath}.breaker`, { recursive: true, force: true });
+  const after = engineer([
+    "engineer", "run-create", "--repo-root", home, "--idea", "Serialised recovery",
+    "--correlation-id", "corr-serialised", "--attempt-key", "attempt-1",
+  ], { MC_E2E_CONDUCTOR_LOCK_STALE_MS: "1", MC_E2E_CONDUCTOR_LOCK_WAIT_MS: "700" });
+  assert.equal(after.status, 0, "an abandoned lock must still be recoverable");
+  assert.equal(runs().length, 1);
+  assert.equal(existsSync(lockPath), false);
+  assert.equal(existsSync(`${lockPath}.breaker`), false, "the recovery slot must be released");
+});
+
+// A mistyped window must cost the default, not the loop: every comparison against NaN is
+// false, so a NaN wait deadline never expires and a NaN staleness window never triggers.
+test("a non-numeric lock window falls back instead of spinning forever", () => {
+  rmSync(statePath, { force: true });
+  rmSync(lockPath, { recursive: true, force: true });
+  mkdirSync(lockPath, { recursive: true });
+  writeFileSync(`${lockPath}/owner`, "someone-else");
+
+  const started = Date.now();
+  const res = engineer([
+    "engineer", "run-create", "--repo-root", home, "--idea", "Bad window",
+    "--correlation-id", "corr-bad-window", "--attempt-key", "attempt-1",
+  ], { MC_E2E_CONDUCTOR_LOCK_WAIT_MS: "not-a-number", MC_E2E_CONDUCTOR_LOCK_STALE_MS: "3000" });
+  const elapsed = Date.now() - started;
+
+  // The property at stake is that the loop still TERMINATES. With a NaN wait deadline it
+  // never would: the staleness comparison and the deadline comparison are both false against
+  // NaN, so nothing ends the spin. Falling back to the default leaves the 3s staleness window
+  // in charge, so the lock ages out and the call proceeds.
+  assert.equal(res.status, 0, "the call must finish rather than spin on a NaN window");
+  assert.ok(elapsed < 20_000, `waited ${elapsed}ms, which suggests an unbounded spin`);
+  assert.equal(runs().length, 1, "and it must actually do its work once it gets in");
+  rmSync(lockPath, { recursive: true, force: true });
+});

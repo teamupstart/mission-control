@@ -363,8 +363,19 @@ const writeEngineerState = (state) => {
 // Both windows are overridable so a test can probe the break-in boundary without waiting
 // thirty seconds for it. Thirty seconds is the default because a real critical section here
 // is one small read and one write, so anything near it means the holder is gone.
-const LOCK_STALE_MS = Number(process.env.MC_E2E_CONDUCTOR_LOCK_STALE_MS || 30000);
-const LOCK_WAIT_MS = Number(process.env.MC_E2E_CONDUCTOR_LOCK_WAIT_MS || 30000);
+//
+// Validated rather than passed through, for the reason msOverride in
+// src/server/task-sources/writeback.ts documents about its own overrides: Number("oops")
+// is NaN, and every comparison against NaN is false. A NaN wait deadline never expires and a
+// NaN staleness window never triggers, so a mistyped variable would turn a bounded wait into
+// an unbounded spin. A typo should cost the default, not the loop.
+const msWindow = (name, fallback) => {
+  const raw = process.env[name];
+  const parsed = raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const LOCK_STALE_MS = msWindow("MC_E2E_CONDUCTOR_LOCK_STALE_MS", 30000);
+const LOCK_WAIT_MS = msWindow("MC_E2E_CONDUCTOR_LOCK_WAIT_MS", 30000);
 const lockToken = String(process.pid) + "-" + String(Date.now()) + "-" + Math.random().toString(36).slice(2);
 const lockOwnerPath = (lockPath) => lockPath + "/owner";
 /** Remove the lock only if this process still owns it. */
@@ -379,6 +390,36 @@ const lockIsStale = (lockPath) => {
   try { return Date.now() - statSync(lockOwnerPath(lockPath)).mtimeMs > LOCK_STALE_MS; }
   catch { return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS; }
 };
+/** Whose lock this is right now, or null when it has no readable owner. */
+const lockOwnerOf = (lockPath) => {
+  try { return readFileSync(lockOwnerPath(lockPath), "utf8"); }
+  catch { return null; }
+};
+/**
+ * Break an abandoned lock, without ever deleting a live one.
+ *
+ * The check and the delete cannot be one operation on a directory, so two waiters can both
+ * decide a lock is stale, the first can remove it and acquire a fresh one, and the second
+ * can then delete THAT. Recovery is therefore serialised behind its own atomic mkdir, and
+ * the decision is remade inside it against the owner token observed outside: if the lock has
+ * changed hands or stopped being stale in between, this leaves it alone.
+ *
+ * A breaker stranded by a process killed mid-recovery costs the next caller its wait and a
+ * named error, not a corrupted state file. That is the failure this whole lock is built to
+ * avoid trading away.
+ */
+const breakStaleLock = (lockPath, observedOwner) => {
+  const breaker = lockPath + ".breaker";
+  try { mkdirSync(breaker); }
+  catch { return; } // Another waiter is already recovering. Loop and re-read.
+  try {
+    if (lockIsStale(lockPath) && lockOwnerOf(lockPath) === observedOwner) {
+      rmSync(lockPath, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(breaker, { recursive: true, force: true });
+  }
+};
 const withEngineerState = (mutate) => {
   if (!engineerStatePath) return mutate({ runs: [] });
   const lockPath = engineerStatePath + ".lock";
@@ -390,10 +431,15 @@ const withEngineerState = (mutate) => {
       break;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      if (lockIsStale(lockPath)) { rmSync(lockPath, { recursive: true, force: true }); continue; }
+      // The deadline is checked FIRST, before any recovery attempt. Checking it only on the
+      // wait path made a held breaker an infinite loop: a stale lock stays stale, recovery
+      // keeps deferring to whoever holds the recovery slot, and the loop never reaches a
+      // deadline it only tested on the other branch.
       if (Date.now() > deadline) {
         throw new Error("timed out waiting for the Engineer state lock at " + lockPath);
       }
+      const observed = lockOwnerOf(lockPath);
+      if (lockIsStale(lockPath)) { breakStaleLock(lockPath, observed); continue; }
       // A short spin. These critical sections are one small file read and one write.
       const until = Date.now() + 5;
       while (Date.now() < until) { /* wait */ }

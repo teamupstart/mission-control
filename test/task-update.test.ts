@@ -138,3 +138,22 @@ test("retriaging a task that does not exist reports nothing rather than creating
   assert.equal(out.ok, false);
   assert.equal(out.task, undefined);
 });
+
+test("changing a backlog task onto Pi required tools is refused, but annotation and recovery remain possible", async () => {
+  const { r, tasks } = setup();
+  r.upsertTask(mkTask({ id: "mission-kind", agent: "pi", kind: "ship", status: "backlog" }));
+  const kindChange = await tasks.update("mission-kind", { kind: "scout" });
+  assert.equal(kindChange.ok, false);
+  assert.match(kindChange.error!, /integration for Pi is not installed/);
+  assert.equal(r.getTask("mission-kind")!.kind, "ship");
+
+  r.upsertTask(mkTask({ id: "mission-agent", agent: "claude", kind: "scout", status: "backlog" }));
+  const agentChange = await tasks.update("mission-agent", { agent: "pi" });
+  assert.equal(agentChange.ok, false);
+  assert.match(agentChange.error!, /integration for Pi is not installed/);
+  assert.equal(r.getTask("mission-agent")!.agent, "claude");
+
+  r.upsertTask(mkTask({ id: "mission-old", agent: "pi", kind: "scout", status: "backlog" }));
+  assert.equal((await tasks.update("mission-old", { priority: "high" })).ok, true);
+  assert.equal((await tasks.update("mission-old", { agent: "claude" })).ok, true);
+});

@@ -32,6 +32,19 @@ The browser-safe capability registry lives in
 [harness registry](../src/server/harness/index.ts) adds process, filesystem, transcript,
 hook, and SDK adapters. Callers ask for a capability instead of branching on an agent name.
 
+`missionTools` describes how Mission Control's own tools reach a model, independently of
+`mcp`, which describes the vendor's MCP client. Claude and Codex use launch-scoped MCP
+registrations reported by their launch builders. Pi declares a machine-scoped installed
+extension route and keeps `mcp: null`. That extension is not available in this phase, so Pi
+plan and scout requests are refused during repository preparation. Existing backlog tasks,
+workflow evidence requirements, and caller-required tools are checked again before dispatch
+acquires any worktree. The task keeps the integration refusal in its error field.
+
+The installation decision lives in [`mission-tools.ts`](../src/server/mission-tools.ts).
+Its `piExtensionInstalled` probe currently answers false; the extension phase supplies the
+probe, and the later Setup phase owns the environment reading. A launch that carries tools
+still passes the separate MCP bundle `initialize` and `tools/list` verification.
+
 Terminal mechanics are similarly collected in the [terminal registry](../src/server/terminal/registry.ts).
 Multiplexer and emulator adapters can compose for one visible session. The binding layer
 chooses the innermost pane for writing and capture, while focus walks outward to the

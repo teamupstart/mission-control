@@ -1,4 +1,6 @@
 import { basename, isAbsolute } from "node:path";
+import { kindMissionMcpRequirement } from "./mission-mcp.ts";
+import { missionToolsAvailability } from "./mission-tools.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { AgentType, TaskKind } from "@shared/types.ts";
 import { resolveTaskAgent } from "./harnesses.ts";
@@ -81,6 +83,10 @@ export async function prepareTaskRepositories(
       status: 400,
       error: `${agent} cannot be given write access to more than one repo`,
     };
+  }
+  if (kindMissionMcpRequirement({ kind: input.kind, workflowId: null }, null)) {
+    const tools = await missionToolsAvailability(agent);
+    if (!tools.available) return { ok: false, status: 400, error: tools.reason! };
   }
   return { ...resolved, agent };
 }

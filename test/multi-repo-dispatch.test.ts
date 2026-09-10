@@ -282,15 +282,27 @@ test("a single-repo task on a harness with no capability still dispatches normal
   registry.upsertTask(
     mkTask({ id: "soloharness", status: "dispatching", agent: "pi", repoRoot: api }),
   );
-  const dispatcher = new Dispatcher(registry);
+  // The `spawn` seam, which this case ran without for a long time. It is the ONLY case in
+  // this file that gets past provisioning, and what it reached was the real launcher: 42
+  // Herdr workspaces and 2 tmux sessions accumulated on the machine that runs the suite,
+  // one per run, none of them ever closed - one still holding a launch pointed at the
+  // operator's live daemon. The comment that used to sit below said "the ordinary launch
+  // path, which has no pane to talk to here", and that belief is what produced them.
+  const launched: string[] = [];
+  const dispatcher = new Dispatcher(registry, undefined, {
+    spawn: async (baseName) => {
+      launched.push(baseName);
+      return baseName;
+    },
+  });
 
   await dispatcher.dispatch("soloharness");
 
-  // It gets past the guard and provisions its tree; what happens after that is the ordinary
-  // launch path, which has no pane to talk to here. The guard's refusal is what must NOT
-  // appear.
+  // It gets past the guard and provisions its tree, and reaches the launch. The guard's
+  // refusal is what must NOT appear.
   assert.doesNotMatch(registry.getTask("soloharness")?.error ?? "", /write access/);
   assert.equal(capabilitiesFor("pi").multiRepoDispatch, null);
+  assert.deepEqual(launched, ["T"], "the launch went to the seam, not to this machine");
 });
 
 test("reclaiming a task's resources clears the primary's baseline with its tree", async () => {

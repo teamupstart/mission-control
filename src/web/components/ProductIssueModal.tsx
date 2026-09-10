@@ -565,8 +565,11 @@ export function ProductIssueModal({
                   console.error("Product issue authorization failed", error);
                 }
                 setAuthorizationError(authorizedSubmitRef.current ? null :
-                  "Nothing was published. Mission Control could not authorize this report. " +
-                  "Quit and reopen the desktop app, then try again.");
+                  !window.missionDesktop
+                    ? "Nothing was published. This browser cannot authorize reports. " +
+                      "Open this report in the Mission Control desktop app to publish it."
+                    : "Nothing was published. Mission Control could not authorize this report. " +
+                      "Quit and reopen the desktop app, then try again.");
                 if (!authorizedSubmitRef.current) event.preventDefault();
               }}
             >

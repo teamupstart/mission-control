@@ -270,6 +270,8 @@ publishing content that was not shown. A report opened from a standalone browser
 because it has no private desktop authorization channel.
 If the desktop bridge cannot authorize a click, the form says that nothing was published and
 asks you to quit and reopen the desktop app. The draft stays in the form until then.
+A browser tab without the desktop bridge instead directs you to open the report in the desktop
+app; it never suggests restarting an app the tab is not connected to.
 
 **Screenshots can be chosen, pasted, or dropped.** A report accepts up to five PNG, JPEG, GIF, or
 WebP images, no more than 10 MB each or 25 MB together. GitHub CLI 2.99.0 or newer uploads them with

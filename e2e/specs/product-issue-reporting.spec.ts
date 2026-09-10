@@ -423,6 +423,37 @@ test("forged and implicit submissions do not bypass the trusted Report control",
   expect(productCreates(daemon)).toHaveLength(1);
 });
 
+test("a browser without the desktop bridge explains where reports can be published", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The beforeEach bridge is page-scoped. This new tab is a real browser client with no bridge.
+  const browserPage = await dashboard.context().newPage();
+  try {
+    await browserPage.goto(`${daemon.baseURL}/#/fleet`);
+    await openFromTopbar(browserPage);
+    await fill(browserPage, "Bug", "Test", "Test issue, do nothing.");
+    await publish(browserPage);
+    const alert = form(browserPage).getByRole("alert");
+    await expect(alert).toContainText("This browser cannot authorize reports");
+    await expect(alert).toContainText("Open this report in the Mission Control desktop app");
+    await expect(alert).not.toContainText("Quit and reopen");
+    await expect(titleBox(browserPage)).toHaveValue("Test");
+    await expect(form(browserPage).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("Test issue, do nothing.");
+    await expectContentClearsBorder(form(browserPage));
+    expect(productCreates(daemon)).toHaveLength(0);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidenceDir = join(process.cwd(), "e2e/.artifacts/report-publicly");
+      mkdirSync(evidenceDir, { recursive: true });
+      await browserPage.mouse.move(1, 1);
+      await form(browserPage).screenshot({ path: join(evidenceDir, "browser-authorization-error.png") });
+    }
+  } finally {
+    await browserPage.close();
+  }
+});
+
 for (const failure of ["refused", "throws"] as const) {
   test(`a desktop authorization bridge that ${failure} explains the failure and retains the draft`, async ({
     dashboard,

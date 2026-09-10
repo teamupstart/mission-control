@@ -61,13 +61,21 @@ test("the pipeline strip reserves a visible scrollbar the platform would not hav
   assert.ok(strip.overflow > 0, "the measured strip must overflow for a scrollbar to be due");
   assert.ok(plain.overflow > 0, "the control strip must overflow too");
 
-  assert.equal(strip.reserved, 10, "`.wf-pipeline-strip` must reserve its scrollbar track");
-  // Without this, the case above also passes on a machine set to always-visible scrollbars,
-  // where every scroller reserves space and the product's rule proves nothing.
+  const measured = `strip ${strip.reserved}px, control ${plain.reserved}px`;
   assert.equal(
+    strip.reserved,
+    10,
+    `\`.wf-pipeline-strip\` must reserve its scrollbar track (${measured})`,
+  );
+  // The control is what makes the height above mean something, and it cannot be a fixed
+  // number: this runs on macOS, whose overlay scrollbars reserve 0, and on Linux CI, whose
+  // classic ones reserve 15. What holds on both is that the strip's track is the height the
+  // product asked for and NOT whatever the platform would have done unasked - so deleting the
+  // rule makes the two equal and fails here, on either platform.
+  assert.notEqual(
+    strip.reserved,
     plain.reserved,
-    0,
-    "the same scroller without the rule must keep the platform's overlay scrollbar",
+    `the rule, not the platform, must decide the strip's track (${measured})`,
   );
 });
 

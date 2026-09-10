@@ -1972,7 +1972,7 @@ test("the store's deliberate refusals carry a code the evidence tool can relay",
   }
 });
 
-test("evidence retention removed cannot wedge the claims that outlived it", () => {
+test("evidence removed by retention cannot wedge the claims that outlived it", () => {
   const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-danglinglink-")));
   try {
     const body = "the proof a pruned round captured\n";
@@ -2108,6 +2108,69 @@ test("re-scoping an item does not wedge the untouched claims that link it", () =
       }]),
       (error: unknown) => error instanceof WorkflowImageEvidenceError
         && error.code === "coverage_link_scope",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a claim whose link drifted out of scope is left staged rather than frozen beside it", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-frozenscope-")));
+  try {
+    const body = "the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "frozen-scope.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const scoped = {
+      ...logWrite({
+        id: "frozen-scope-item",
+        clientItemId: "drifting-proof",
+        root: checkout,
+        locator: "frozen-scope.log",
+        caption: "The suite this criterion rests on",
+        body,
+      }),
+      repositoryScope: "repo-01",
+    };
+    store.stageWorkflowEvidence(noteKey, [scoped], 2, "intent:1:1", [
+      {
+        id: "drifting-claim",
+        clientCriterionId: "drifting-criterion",
+        criterion: "The primary repository's suite passes",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "repo-01" as const,
+        sourceRoot: checkout,
+        links: [{ clientItemId: "drifting-proof", role: "execution" as const }],
+      },
+      {
+        id: "intact-claim",
+        clientCriterionId: "intact-criterion",
+        criterion: "A criterion whose proof never moved",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [],
+      },
+    ]);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [{ ...scoped, caption: "Actually the second repository's suite", repositoryScope: "repo-02" }],
+      3,
+      "intent:1:1",
+    );
+
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "drift-root", now: 4 },
+      { id: "drift-first", triggerSource: "manual", triggerKey: "drift-root", context: {}, evidence: {}, now: 4 },
+    );
+    assert.deepEqual(
+      store.listSubmissionCoverage(submission.submission.id).map((claim) => claim.clientCriterionId),
+      ["intact-criterion"],
+      "a repo-01 claim is never frozen beside repo-02 evidence",
+    );
+    assert.deepEqual(
+      (store.listWorkflowEvidence(noteKey).coverage ?? []).map((claim) => claim.clientCriterionId),
+      ["drifting-criterion"],
+      "and it stays in the tray, visible and repairable, rather than being destroyed",
     );
   } finally {
     rmSync(checkout, { recursive: true, force: true });

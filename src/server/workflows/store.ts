@@ -2766,6 +2766,45 @@ export type ForemanCompletionStoreResult =
     };
 
 /**
+ * May a coverage claim cite this evidence item as proof?
+ *
+ * `all`-scoped evidence documents every issued checkout, so it satisfies any claim. Anything
+ * else has to agree with the claim on both halves of the scope: the issued slot, and the root
+ * that slot resolved to. Naming the rule once is deliberate - staging and reservation both ask
+ * it, and a submission frozen under a looser reading than the one that admitted the claim is
+ * exactly the drift this guards against.
+ */
+function coverageLinkSatisfiesScope(
+  item: { repositoryScope: string; sourceRoot: string },
+  claimScope: string,
+  claimSourceRoot: string | undefined,
+): boolean {
+  if (item.repositoryScope === "all") return true;
+  return claimScope !== "all"
+    && item.repositoryScope === claimScope
+    && item.sourceRoot === claimSourceRoot;
+}
+
+/**
+ * Why a coverage set failed its schema, in the caller's terms.
+ *
+ * The limits are the reachable failure and worth naming precisely, but they are not the only
+ * one: a bad proof class, an unexpected link role or a malformed scope all land here too, and
+ * telling that caller to shorten a list it never over-filled sends it to repair the wrong
+ * thing. The first issue Zod reports is the one to hand back.
+ */
+function coverageSchemaReason(error: unknown): string {
+  const issue = error instanceof z.ZodError ? error.issues[0] : undefined;
+  if (!issue) {
+    return `it must stay within ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims} claims and`
+      + ` ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes, with one entry`
+      + " per criterion id";
+  }
+  const where = issue.path.length > 0 ? ` (at ${issue.path.join(".")})` : "";
+  return `${issue.message}${where}`;
+}
+
+/**
  * Does an unchanged row need its intent-episode stamp moved to the episode registering it now?
  *
  * A null `episodeKey` is "this session's intent does not resolve at this instant" - the state
@@ -5225,16 +5264,15 @@ export class WorkflowStore {
       ];
       // The whole next set, not just the incoming half: `maxClaims` and the aggregate JSON
       // bound are properties of what this conversation would hold, and an agent can reach
-      // either one. Coded for the same reason the refusals below are - a Zod message about
-      // an array index tells the caller nothing it can act on.
+      // either one. Coded, and carrying the reason Zod actually gave, for the same purpose the
+      // refusals below serve - a caller told to shorten a list it never over-filled repairs
+      // the wrong thing.
       try {
         WorkflowEvidenceCoverageClaimsSchema.parse(nextCoverage);
-      } catch {
+      } catch (error) {
         throw new WorkflowImageEvidenceError(
           "coverage_invalid",
-          `Workflow coverage must stay within ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims}`
-            + ` claims and ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes,`
-            + " with one entry per criterion id",
+          `Workflow coverage was refused: ${coverageSchemaReason(error)}`,
         );
       }
       for (const claim of nextCoverage) {
@@ -5269,11 +5307,7 @@ export class WorkflowStore {
           const sourceRoot = changedCoverage.find(
             (candidate) => candidate.clientCriterionId === claim.clientCriterionId,
           )?.sourceRoot ?? existingCoverage.get(claim.clientCriterionId)?.source_root;
-          const scopeMatches = item.repositoryScope === "all"
-            || (claim.repositoryScope !== "all"
-              && item.repositoryScope === claim.repositoryScope
-              && item.sourceRoot === sourceRoot);
-          if (!scopeMatches) {
+          if (!coverageLinkSatisfiesScope(item, claim.repositoryScope, sourceRoot)) {
             if (!registeredNow) continue;
             throw new WorkflowImageEvidenceError(
               "coverage_link_scope",
@@ -10328,7 +10362,10 @@ export class WorkflowStore {
       }
       reserve.run(row.id, submissionId, ordinal, now);
     });
-    const applicableItemIds = new Set(rows.map((row) => row.client_item_id));
+    const applicableItems = new Map(rows.map((row) => [row.client_item_id, {
+      repositoryScope: row.repository_scope,
+      sourceRoot: row.source_root,
+    }] as const));
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
         WHERE note_key = ?
@@ -10355,12 +10392,27 @@ export class WorkflowStore {
     );
     for (const row of coverageRows) {
       const claim = coverageClaimFromRow(row);
-      const missingLink = claim.links.find((link) => !applicableItemIds.has(link.clientItemId));
-      if (missingLink) {
-        throw new Error(
-          `Workflow coverage claim ${claim.clientCriterionId} links evidence ${missingLink.clientItemId} outside this submission scope`,
-        );
-      }
+      /*
+       * A claim whose links no longer resolve inside this submission is LEFT STAGED, neither
+       * frozen nor allowed to fail the submission.
+       *
+       * Staging carries a claim past a link that stopped resolving, because its author cannot
+       * repair what retention deleted or what a later call re-scoped. That carry has to stop
+       * short of the frozen record: a submission that froze a `repo-01` claim beside `repo-02`
+       * evidence would be a permanent, auditable assertion that nobody made. Refusing the
+       * whole submission is no better - the stale claim is not this submission's doing, and
+       * blocking on it moves the wedge rather than removing it.
+       *
+       * So the claim stays in the tray where it is visible and repairable, and the submission
+       * proceeds carrying only the claims whose proof it actually holds. `evaluateWorkflowEvidenceReadiness`
+       * reads the frozen set, so an unfrozen claim reads as the uncovered criterion it is.
+       */
+      const coherent = claim.links.every((link) => {
+        const item = applicableItems.get(link.clientItemId);
+        return item !== undefined
+          && coverageLinkSatisfiesScope(item, claim.repositoryScope, row.source_root);
+      });
+      if (!coherent) continue;
       const marked = markCoverage.run(groupKey, now, row.id, groupKey);
       if (Number(marked.changes) !== 1) {
         throw new Error(

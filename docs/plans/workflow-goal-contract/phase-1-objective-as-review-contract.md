@@ -3,7 +3,7 @@
 ## Outcome and value
 
 A workflow run freezes the session's durable objective as the ask it reviews against, with the
-human's verbatim opening request preserved beside it. A prompt that only steered the work -
+human's opening request preserved beside it. A prompt that only steered the work -
 `continue`, `create pr`, `you still working?` - stops becoming the contract a Persona measures
 the diff against and stops being distilled into the run's acceptance criteria. The Persona
 prompt shows the contract and the words the human actually typed, so nothing a reviewer used to
@@ -23,7 +23,7 @@ captured prompt was wrong, the objective was correct.
 
 In scope:
 
-- Persisting the session's verbatim opening ask so it survives an `amend` or `replace`.
+- Persisting the session's opening ask so it survives an `amend` or `replace`.
 - Building the run's frozen intent from the durable objective plus that opening ask, with
   provenance describing which objective version and prompt revision it came from.
 - Rendering the contract and its provenance in the Persona prompt and in run detail.
@@ -43,6 +43,13 @@ Non-goals:
   reads the Goal, and it is shared by the freeze (`readWorkflowIntentSnapshot`,
   `context.ts:1031`) and by the legacy live-read path in `readWorkflowContextRaw`. Changing it
   once changes both, which is why it was written that way.
+- **Every captured prompt is already clamped.** `captureAcceptedPrompt` calls `clampPrompt`
+  (`src/server/util/prompt-text.ts:30`), which caps at `PROMPT_CAP` of 4,000 characters and
+  elides the middle rather than the tail. The opening ask is therefore the clamped opening
+  prompt, exactly as `objective` and `prompt` already are; it is not byte-verbatim for a
+  request over that cap, and this plan says so rather than promising something the pipeline
+  cannot deliver. Storing an unclamped copy is rejected: `clampPrompt` exists so a pasted log
+  cannot put a megabyte in a row, and a second unbounded column would reopen that.
 - `captureAcceptedPrompt` (`src/server/registry.ts:7589`) sets `objective: raw` only when
   `firstObjective` is true. The refiner replaces `objective` wholesale on a `replace`
   (`src/server/goal/refiner.ts:399`), and `pendingPrompts` is truncated as revisions resolve
@@ -64,7 +71,9 @@ Non-goals:
 
 ## Implementation steps
 
-1. **Persist the opening ask.** Add `openingPrompt: string | null` to `SessionGoal`
+1. **Persist the opening ask.** Add `openingPrompt: string | null` to `SessionGoal`, holding the
+   clamped opening prompt - the same value `objective` is seeded from, so the two cannot
+   disagree about what was asked.
    (`src/shared/types.ts`), `opening_prompt` to the `session_goals` CREATE TABLE and to
    `migrate()` beside the existing `addColumn` calls (`src/server/db.ts:1009`, `:4139`), and
    carry it through `rowToGoal` and `upsertSessionGoal`. A row written before the column exists
@@ -119,7 +128,8 @@ Non-goals:
 
 - `test/workflow-run-intent-snapshot.test.ts`: a run whose session has been steered freezes the
   objective, not the steering prompt; the opening ask is preserved across an `amend`; a session
-  with no objective still freezes its raw prompt.
+  with no objective still freezes its raw prompt; an opening request over `PROMPT_CAP` is stored
+  and frozen as the clamped form rather than being truncated a second time or dropped.
 - A new case pinning that the fingerprint is unchanged by the added fields.
 - `test/session-goal*.test.ts` (or the nearest existing goal test): the opening prompt is written
   on the first accepted prompt and never overwritten, including across a `replace`.
@@ -141,10 +151,14 @@ Non-goals:
 ## Downstream handoff
 
 Phases 2 and 3 may rely on: `WorkflowRunIntentSnapshot.openingAsk` and `.intentSource`;
-`session_goals.opening_prompt` as write-once; `primaryGoal.rawPrompt` meaning "the durable
+`session_goals.opening_prompt` as write-once and as the clamped opening prompt; `primaryGoal.rawPrompt` meaning "the durable
 objective". They must not change `rawGoal`, `refinedGoal`, `decisions`, the fingerprint
 derivation, or the write-once rule on the opening prompt.
 
 ## Cross-phase audit record
 
 - Initial: no earlier phases to reconcile.
+- Review round 1: the phase claimed a "verbatim" opening ask while the Goal pipeline clamps
+  every prompt at `PROMPT_CAP`. Resolved in favour of the pipeline: the persisted value is the
+  clamped opening prompt, stated in the findings, the steps, the tests and the downstream
+  handoff, so no later phase inherits a promise the capture path cannot keep.

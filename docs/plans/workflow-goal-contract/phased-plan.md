@@ -130,11 +130,14 @@ the objective and the other two surfaces simply do not exist yet.
   its run event, and its run detail badge. Phase 1 must not classify, and Phase 2 must not read
   the verdict.
 - **The fingerprint is frozen for all three phases.** No phase changes `workflowIntentFields`.
-- **Interaction with proposal B.** B's commit touches `registry.ts`, `injections.ts`,
-  `routes.ts`, `sdk/supervisor.ts` and the harness hook specs. Phase 1 touches `registry.ts` in
-  the goal-capture region as well, so whichever merges second resolves that file. Neither
-  depends on the other for correctness: B stops machine text becoming the goal, Phase 1 stops
-  the goal being the wrong field.
+- **Interaction with proposal B.** B's commit (`a8610a7b` on task `fb317738`'s branch) touches
+  `registry.ts`, `injections.ts`, `routes.ts`, `sdk/supervisor.ts` and the harness hook specs.
+  Phase 1 touches `registry.ts` in the goal-capture region as well, so whichever merges second
+  resolves that file; neither depends on the other for correctness, because B stops machine text
+  becoming the goal while Phase 1 stops the goal being the wrong field. **Phase 2 is different:
+  it assumes B.** Its steering log records what the refiner classified, and before B a
+  daemon-delivered packet could be classified `steer`, so without B that log must enforce origin
+  itself. Phase 2's entry criteria say so and require the check before implementing.
 
 ## Final verification
 

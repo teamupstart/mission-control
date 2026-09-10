@@ -124,7 +124,7 @@ the objective and the other two surfaces simply do not exist yet.</p>
   <li><strong>Phase 2 owns the steering log</strong> - its table, its writer inside the refiner, and the <code>steering</code> field it adds to the run intent snapshot, the context snapshot and the Persona prompt. Phase 3 must not read or render steering.</li>
   <li><strong>Phase 3 owns the goal-provenance verdict</strong> - its classifier, the run column, its run event and its run detail badge. Phase 1 must not classify, Phase 2 must not read the verdict.</li>
   <li><strong>The fingerprint is frozen for all three phases.</strong> No phase changes <code>workflowIntentFields</code>.</li>
-  <li><strong>Interaction with proposal B.</strong> B's commit touches <code>registry.ts</code>, <code>injections.ts</code>, <code>routes.ts</code>, <code>sdk/supervisor.ts</code> and the harness hook specs. Phase 1 touches <code>registry.ts</code> in the goal-capture region too, so whichever merges second resolves that file. Neither depends on the other for correctness.</li>
+  <li><strong>Interaction with proposal B.</strong> B's commit (<code>a8610a7b</code> on task <code>fb317738</code>'s branch) touches <code>registry.ts</code>, <code>injections.ts</code>, <code>routes.ts</code>, <code>sdk/supervisor.ts</code> and the harness hook specs. Phase 1 touches <code>registry.ts</code> in the goal-capture region too, so whichever merges second resolves that file; neither depends on the other for correctness. <strong>Phase 2 is different: it assumes B.</strong> Its steering log records what the refiner classified, and before B a daemon-delivered packet could be classified <code>steer</code>, so without B that log must enforce origin itself.</li>
 </ul>
 
 <h2>Final verification</h2>

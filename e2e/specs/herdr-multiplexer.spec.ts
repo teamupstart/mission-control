@@ -248,6 +248,60 @@ test.describe("incompatible stable Herdr", () => {
 });
 
 /**
+ * The launch Herdr accepts and never runs, which is the defect this whole path was rewritten
+ * for and the only arm of it a person reads.
+ *
+ * `pane.send_input` answering `ok` means the bytes were accepted, not that the command ran -
+ * and for every dispatch before this, it had not: the Enter was delivered inside the bracketed
+ * paste the shell was still consuming, so the command sat at the prompt. The launch was
+ * reported as a success, and the failure surfaced thirty seconds later as the dispatcher's own
+ * timeout, blaming the agent for exiting. Two things have to be true now, and only this layer
+ * can see both: the operator is told what actually happened, in a sentence they can act on,
+ * and the workspace that was opened for the launch does not survive it.
+ */
+test.describe("a Herdr launch the shell never runs", () => {
+  test.use({
+    daemonEnv: { MC_E2E_HERDR: "1", MC_E2E_HERDR_MODE: "stuck", MISSION_POLL_MS: "0" },
+  });
+
+  test("says the shell never ran it, and takes its workspace back", async ({ dashboard, daemon }) => {
+    await dispatch(dashboard, daemon);
+    const card = await openDispatchedSession(dashboard);
+    await card.locator(".conv-launch").getByRole("button", { name: "Terminal", exact: true }).click();
+    const menu = card.getByRole("menu", { name: "Open a shell in the worktree with" });
+    await menu.getByRole("menuitem").filter({ hasText: "Herdr" }).click();
+
+    // Named for what happened, at the moment it happened - not "Opened in Herdr" now and a
+    // timeout blaming the agent half a minute later.
+    await expect(card.locator(".launch-flash.is-error")).toContainText("never ran it");
+
+    // The command really was delivered and submitted; what did not happen is the shell
+    // running it, which is what the pane's own process report says.
+    const methods = herdrRequests(daemon).map((request) => request.method);
+    expect(methods).toContain("pane.send_input");
+    expect(methods).toContain("pane.send_keys");
+    expect(methods).toContain("pane.process_info");
+
+    // And every workspace opened for the launch is closed again. Stated as the invariant
+    // rather than as a count, because a refused launch is retried under a unique name and
+    // each attempt has its own workspace to take back. Left open, a failed dispatch leaks one
+    // per attempt - which is how this machine came to be holding 42 of them.
+    await expect
+      .poll(() => {
+        const requests = herdrRequests(daemon);
+        const opened = requests.filter((request) => request.method === "workspace.create").length;
+        const closed = requests.filter((request) => request.method === "workspace.close").length;
+        return opened > 0 && closed === opened;
+      }, {
+        message: "every workspace a failed launch opened should be taken back",
+        timeout: 15_000,
+      })
+      .toBe(true);
+    await shoot(dashboard, "herdr-launch-never-ran");
+  });
+});
+
+/**
  * Protocol 22, the generation stable Herdr 0.9.0 actually serves. The launch path reaches the
  * server through `probe`, and discovery reaches it again through `session.snapshot`, which
  * carries its own generation number and had its own equality check. Both are floors now, so

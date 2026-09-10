@@ -278,6 +278,11 @@ const PROTOCOL = newer ? 22 : 20;
 // without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
 // it quietly stops standing in for the server it names.
 const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
+// A server that accepts the command and whose shell never runs it - which is what every Herdr
+// dispatch used to be, when the Enter was swallowed inside the bracketed paste. The pane keeps
+// answering with its login shell and nothing else, so a launch has something to actually fail
+// against rather than only a passing path to confirm.
+const stuck = process.env.MC_E2E_HERDR_MODE === "stuck";
 if (argv[0] === "status" && argv[1] === "server") {
   if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
     status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
@@ -342,7 +347,11 @@ const ensureAgent = (pane) => {
 // two pids differ exactly as they do on a real server. Cached once resolved: the launch polls
 // this, and so does discovery on its 100ms tick.
 const foregroundProcesses = (pane) => {
-  if (!pane || !pane.shell_pid) return [];
+  if (!pane) return [];
+  // The measured shape of a real stuck pane: one foreground process, and its pid IS the
+  // login shell's. Nothing was ever started under it.
+  if (pane.stuck) return [{ pid: pane.shell_pid, name: "zsh", cwd: pane.cwd }];
+  if (!pane.shell_pid) return [];
   if (pane.foreground_pid) return [{ pid: pane.foreground_pid, name: "node", cwd: pane.cwd }];
   try {
     const found = execFileSync("pgrep", ["-P", String(pane.shell_pid)], { encoding: "utf8" })
@@ -388,7 +397,7 @@ const server = createServer((socket) => {
         serial += 1;
         const workspaceId = "fake-workspace-" + serial;
         const tabId = workspaceId + ":tab";
-        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: null, pasted: "", foreground_pid: null };
+        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: stuck ? process.pid : null, pasted: "", foreground_pid: null, stuck };
         workspaces.set(workspaceId, { workspaceId, tabId, label: p.label, panes: [pane] });
         ok(socket, request.id, {
           type: "workspace_created",
@@ -407,7 +416,7 @@ const server = createServer((socket) => {
         ok(socket, request.id);
       } else if (request.method === "pane.send_keys") {
         const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
-        if (pane && Array.isArray(p.keys) && p.keys.includes("enter") && pane.pasted) ensureAgent(pane);
+        if (!stuck && pane && Array.isArray(p.keys) && p.keys.includes("enter") && pane.pasted) ensureAgent(pane);
         ok(socket, request.id);
       } else if (request.method === "pane.split") {
         const workspace = [...workspaces.values()].find((x) => x.panes.some((pane) => pane.pane_id === p.target_pane_id));

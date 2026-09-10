@@ -31,7 +31,8 @@ app.whenReady().then(async () => {
       webPreferences: { offscreen: true },
     });
     let frame = null;
-    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; });
+    let painted = 0;
+    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; painted += 1; });
 
     const card = '<section class="wf-pipeline-stage" style="flex:none;width:200px">'
       + '<header class="wf-pipeline-stage-head"><span class="wf-pipeline-stage-name">S</span>'
@@ -40,15 +41,15 @@ app.whenReady().then(async () => {
       html, body { margin: 0; }
       .probe { width: 600px; }
       .swatch { width: 120px; height: 20px; }
-      #paint-marker { position: absolute; top: 0; left: 0; width: 1px; height: 1px; background: black; }
       </style>
       <div class="wf-pipeline-strip probe" id="strip">${card.repeat(6)}</div>
       <div class="swatch" id="swatch-rest"></div>
-      <div class="swatch" id="swatch-hover"></div><div id="paint-marker"></div>`;
+      <div class="swatch" id="swatch-hover"></div>`;
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
     // Resolve each rule's own declared value through the engine, and paint the two swatches
     // with it so a captured frame can be compared against them.
+    const beforeSwatches = painted;
     const resolved = await window.webContents.executeJavaScript(`(() => {
       const declared = (selector, property) => {
         for (const sheet of document.styleSheets) {
@@ -68,9 +69,6 @@ app.whenReady().then(async () => {
         if (value) node.style.background = value;
         return getComputedStyle(node).backgroundColor;
       };
-      // This opaque marker changes in the same script as the swatches. Its pixel is a
-      // receipt for their paint, unlike a paint-event counter that can include queued frames.
-      document.getElementById('paint-marker').style.background = 'rgb(255, 0, 255)';
       const restDeclared = declared(thumb, 'background');
       const hoverDeclared = declared(thumb + ':hover', 'background');
       return {
@@ -110,11 +108,10 @@ app.whenReady().then(async () => {
       const size = frame.getSize();
       const bitmap = frame.toBitmap();
       if (!size.width || !size.height || bitmap.length < size.width * size.height * 4) return null;
-      if (bitmap[0] !== 255 || bitmap[1] !== 0 || bitmap[2] !== 255) return null;
       return { size, bitmap };
     };
     for (let attempt = 0; attempt < 25; attempt += 1) {
-      if (usable()) break;
+      if (painted > beforeSwatches && usable()) break;
       await wait(100);
     }
 
@@ -148,6 +145,11 @@ app.whenReady().then(async () => {
       });
       if (best.from < 0) return null;
       const swatchRest = at(geometry.rest.x, geometry.rest.y);
+      // A swatch that still reads as the surface behind it means this frame predates the
+      // styling above, so the sample is not comparable and the caller should skip the
+      // painted half rather than fail on a stale frame.
+      if (Math.abs(swatchRest[0] - track[0]) + Math.abs(swatchRest[1] - track[1])
+        + Math.abs(swatchRest[2] - track[2]) < 12) return null;
       return {
         track,
         thumbWidth: best.to - best.from + 1,

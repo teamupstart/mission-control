@@ -691,25 +691,18 @@ test("a round's spent preflight refinements block the run and hand the decision 
   await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
     .toBe("waiting_for_evidence_readiness");
 
-  // Let the daemon consume each staged packet. A manual retry races its resumption sweep
-  // and can correctly return 409 after the sweep has already reserved the child. Wait for
-  // that specific child, since the parent's run already has the same waiting status.
+  // The two refinements the cap leaves room for, taken through the daemon's own route.
   let parentId = created.submission.id;
   for (const ordinal of [1, 2]) {
     stageLaterPacket(daemon, noteKey, session!.cwd, ordinal + 1, `cap-refine-${ordinal}`, false);
-    let child: WorkflowSubmission | undefined;
-    await expect.poll(async () => {
-      const detail = await api<{ submissions: WorkflowSubmission[] }>(
-        daemon,
-        `/api/workflow-runs/${runId}`,
-      );
-      child = detail.submissions.find((submission) => submission.parentSubmissionId === parentId);
-      return child && { segment: child.segment, status: child.status };
-    }, { timeout: 60_000 }).toEqual({
-      segment: ordinal,
-      status: "waiting_for_evidence_readiness",
-    });
-    parentId = child!.id;
+    const refined = await api<{ submission: { id: string } }>(
+      daemon,
+      `/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
+      { requestId: `cap-refine-${ordinal}-${Date.now()}` },
+    );
+    parentId = refined.submission.id;
+    await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
+      .toBe("waiting_for_evidence_readiness");
   }
 
   // The healthy waiting round first, so the two controls the block changes are known to have

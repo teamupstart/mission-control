@@ -126,3 +126,46 @@ test("a confirmed delivery settles to one owed echo, not two", () => {
   assert.equal(claimInjectionEcho("s11", "packet"), "workflow");
   assert.equal(claimInjectionEcho("s11", "packet"), undefined);
 });
+
+test("a refused cross-origin retry leaves the landed turn credited to its own sender", () => {
+  // Two senders can put byte-identical text into one session, and the fingerprint cannot tell
+  // them apart. A reservation is provisional, so it may not take a label from a delivery that
+  // actually happened - otherwise the earlier turn ends up credited to whoever merely tried
+  // to send it next, in a log that is read long after both.
+  const TEXT = "identical text, two senders";
+  recordInjection("s12", TEXT, "foreman");
+  assert.equal(claimInjectionEcho("s12", TEXT), "foreman");
+
+  reserveInjection("s12", TEXT, "workflow");
+  releaseInjection("s12", TEXT);
+
+  assert.equal(originOf("s12", TEXT), "foreman", "the delivered turn keeps its own author");
+});
+
+test("a delivery that lands does update the label, unlike a reservation", () => {
+  // The other half, and the behaviour this had before reservations existed: last landed
+  // delivery wins. Two turns with identical text and different authors are indistinguishable
+  // by fingerprint, so the most recent landing is the honest answer.
+  const TEXT = "the same words again";
+  recordInjection("s13", TEXT, "foreman");
+  recordInjection("s13", TEXT, "workflow");
+  assert.equal(originOf("s13", TEXT), "workflow");
+});
+
+test("the session ceiling spends itself on settled entries, not on owed echoes", () => {
+  // An entry whose echo is still owed is the one kind whose loss is a defect rather than
+  // forgetting: the agent is about to report that text back, and with no claim on file the
+  // Goal path reads it as the operator's own instruction.
+  reserveInjection("s14", "still awaiting its echo", "foreman");
+  for (let i = 0; i < 250; i++) {
+    recordInjection("s14", `settled ${i}`, "foreman");
+    claimInjectionEcho("s14", `settled ${i}`);
+  }
+
+  assert.equal(
+    claimInjectionEcho("s14", "still awaiting its echo"),
+    "foreman",
+    "an owed claim outlives settled ones however many arrive after it",
+  );
+  assert.equal(originOf("s14", "settled 0"), undefined, "and the ceiling still holds");
+});

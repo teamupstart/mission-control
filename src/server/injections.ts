@@ -137,16 +137,39 @@ function remember(sessionId: string, text: string, origin: TurnOrigin, landed: b
   const prior = byText.get(key);
   byText.delete(key);
   byText.set(key, {
-    origin,
+    // A landed delivery owns the label; a mere RESERVATION may not take it. Two senders can
+    // put byte-identical text into one session, and a reservation that is later refused would
+    // otherwise leave the earlier, genuinely delivered turn credited to whoever merely tried
+    // to send it next. A new delivery that lands does update it, which is the behaviour this
+    // had before reservations existed.
+    origin: prior?.delivered && !landed ? prior.origin : origin,
     pending: (prior?.pending ?? 0) + 1,
     // Sticky: one confirmed delivery makes the label permanent for every later reservation
     // of the same text, which is what stops a refused retry from erasing it.
     delivered: (prior?.delivered ?? false) || landed,
   });
   while (byText.size > PER_SESSION) {
-    const oldest = byText.keys().next();
-    if (oldest.done) break;
-    byText.delete(oldest.value);
+    // Spend the ceiling on entries that have nothing left to answer for. An entry with an
+    // echo still owed is the only kind whose loss is a DEFECT rather than forgetting: the
+    // agent is about to report that text back, and with no claim on file the Goal path reads
+    // it as the operator's own instruction, which is the substitution this module exists to
+    // prevent. Insertion order still decides among equals, so this stays oldest-first within
+    // the settled entries.
+    let victim: string | null = null;
+    for (const [candidate, entry] of byText) {
+      if (entry.pending > 0) continue;
+      victim = candidate;
+      break;
+    }
+    // Every entry is still owed an echo. That is pathological rather than ordinary - a
+    // session's deliveries are serialized and each is echoed within moments - and the ceiling
+    // has to hold regardless, so the oldest goes. Bounded forgetting beats an unbounded map.
+    if (victim === null) {
+      const oldest = byText.keys().next();
+      if (oldest.done) break;
+      victim = oldest.value;
+    }
+    byText.delete(victim);
   }
 }
 

@@ -1326,6 +1326,80 @@ and a preflight reads a single page:
 The one non-zero exit that is *not* a failure: `jira-cli` exits non-zero to say "no result
 found for given query", which is a filter that is simply up to date and stays **healthy**.
 
+#### Writing the pull request back onto the issue
+
+A Jira source can also write *outward*, onto the issue a task was swept from. It is off by
+default and stays off until somebody turns it on per source - writing on somebody else's
+ticket is consent, not configuration. Two things can be written:
+
+- a **remote link**, which is where a person looks on the issue for "what work touched
+  this". It carries the pull request's URL as its `globalId`, which is Jira's identity for a
+  link - so posting it twice **updates the one link** rather than adding a second, and a
+  retry after a half-delivered write costs nothing;
+- a **comment**, which is what reaches the activity feed and sends a notification. It says
+  what opened the pull request, the pull request's URL, the completion's own words when it
+  left any, and the task's title. Nothing about Mission Control's internals goes in it.
+
+Both by default, because they answer different questions. A source can be set to one or the
+other.
+
+**The remote link needs `JIRA_API_TOKEN` + `JIRA_EMAIL`.** The `jira` CLI has no remote-link
+command at all, so on a CLI-only machine that half cannot run. The comment still goes, and
+the source reports what it did and what it could not - rather than failing the whole
+delivery, which would retry a comment that has no idempotency of its own and leave one per
+attempt on the issue. A source set to **remote link only** on a machine with no credential
+refuses and says so, because then there is nothing it can do at all.
+
+**A resolve needs a target status, named on the source.** Jira has no single "close": a
+project's own workflow decides both what finished is called and which transitions are
+reachable from where an issue is standing right now. So the status is per source and typed
+by a person - it cannot be inferred, and inferring it would move somebody's ticket somewhere
+they did not ask for. It is matched case-insensitively against both the transition's own
+name and the status it lands in, since the board shows one and the workflow button may say
+the other.
+
+When it does not fit, the refusal names the transitions that **are** available from where
+the issue is:
+
+```
+MC-431 cannot move to "Done" from "In Review" - available from here:
+Ready for QA (to QA), Reject (to Rejected). Set this source's resolve status to one of those
+```
+
+That sentence is the whole point. The alternative to it is a bare "transition failed", which
+sends the reader to Jira's workflow administration screens to work out what this source
+should have said. An issue already standing in the target status is reported as **already
+there** rather than transitioned again.
+
+**Resolving therefore needs `JIRA_API_TOKEN` + `JIRA_EMAIL`, and refuses up front without
+them.** That list is the reason. The `jira` CLI can *move* an issue but cannot be asked what
+an issue is able to do - jira-cli ships no command that lists transitions, and its own move
+error prints them on recent versions and not on older ones. On a CLI-only machine the good
+case would work and the bad case would be unactionable, so the capability is required rather
+than discovered one issue at a time: a source with resolve on and no credential refuses
+before it spawns anything, naming the credential as the fix. With the credential present the
+CLI still goes first, exactly as a sweep does, and only a move it *refuses* is handed to the
+credential rung - which then either performs it or refuses with the list above. Commenting
+and remote links are unaffected: `annotate` still works on the CLI alone.
+
+Everything else about a resolve is arranged around one rule: **an outcome that cannot be
+read is never retried automatically**. A refusal Jira actually sent means nothing was
+written, and the queue may safely try again once the source is fixed. A timeout, or a CLI
+that died without reporting, means Jira *may* have done it - so the queue stops and says to
+go and look, because a repeated transition undoes a person rather than adding to a list.
+
+Two limits worth knowing before turning it on:
+
+- **The UpstartClaw query method is read-only.** It reaches Jira through one search tool and
+  nothing else, so a source using it refuses to write back and names the two rungs that can.
+  Widening that tool grant is a separate decision about what a Claude plugin may do.
+- **The credential goes only where the sweep's does.** The write path runs through the same
+  egress guard, so `JIRA_API_TOKEN` still reaches Jira Cloud and whatever is named in
+  `JIRA_ALLOWED_HOSTS`, and nothing else. The `jira` CLI rung is unaffected either way, since
+  it uses its own credentials - so on a host the token may not reach, the comment still goes
+  through the CLI and the remote link says why it did not.
+
+
 ### A task you delete stays deleted
 
 Each source keeps its own ledger of what it has already filed, keyed on the item's id in

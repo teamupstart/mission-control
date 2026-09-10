@@ -39,6 +39,7 @@ export interface FakeAgents {
     wezterm: string;
     keepAwake: string;
     gh: string;
+    jira: string;
   };
 }
 
@@ -632,6 +633,50 @@ if (argv[0] === "--version") {
 `;
 
 /**
+ * The stand-in `jira`, and the sharpest blast dam in this file.
+ *
+ * `gh issue create` publishes something new, which a person can delete. A Jira write-back
+ * MOVES AN ISSUE: `jira issue move MC-431 "Done"` transitions a ticket in somebody's
+ * project, on a board other people are working from, and nothing here takes that back. On a
+ * machine where the operator ran `jira init` - which is every machine this source was built
+ * for - an unfaked binary would do exactly that during a suite run. `jiraBin()`
+ * (`src/server/config.ts`) is the single seam every `jira` subprocess resolves through, so
+ * `MISSION_JIRA_BIN` closes the sweep and both write-back verbs with one variable.
+ *
+ * It answers rather than merely exiting, for the reason `FAKE_GH` does: the override is
+ * whole-codebase, so a Jira source's sweep reaches this too, and `--raw` output that was not
+ * JSON would turn a preflight into a parse error instead of the empty, healthy filter every
+ * spec that does not care about Jira is already in.
+ *
+ * CommonJS `require`, for the reason `FAKE_CMUX` gives: the file is extension-less, which
+ * Node treats as CJS, and an `import` here would crash at spawn time in a way that reads as
+ * a missing `jira` rather than as a broken fixture.
+ */
+const FAKE_JIRA = `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const argv = process.argv.slice(2);
+const dir = process.env.MC_E2E_RECORD_DIR;
+if (dir) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, \`jira-\${Date.now()}-\${process.pid}.json\`),
+    JSON.stringify({ argv, cwd: process.cwd() }, null, 2),
+  );
+}
+const command = argv.join(" ");
+if (command.startsWith("issue list")) {
+  // The envelope both rungs read, holding nothing: a filter that is simply up to date.
+  process.stdout.write('{"issues":[]}\\n');
+} else if (command.startsWith("issue comment add") || command.startsWith("issue move")) {
+  // What the real CLI prints on success. The record above is the assertion surface.
+  process.stdout.write("done\\n");
+} else if (argv[0] === "version" || argv[0] === "--version") {
+  process.stdout.write("jira version 1.5.0 (fake)\\n");
+}
+`;
+
+/**
  * The stand-in `caffeinate`, so the keep-awake spec can drive the real manager, routes
  * and SSE path without ever touching host power settings - `MISSION_KEEP_AWAKE_BIN`
  * makes this the provider under test on any platform, which is how Linux CI runs it.
@@ -726,5 +771,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   writeFileSync(gh, FAKE_GH);
   chmodSync(gh, 0o755);
 
-  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh } };
+  const jira = join(binDir, "fake-jira");
+  writeFileSync(jira, FAKE_JIRA);
+  chmodSync(jira, 0o755);
+
+  return { recordDir, bins: { claude, codex, pi, cmux, herdr, wezterm, keepAwake, gh, jira } };
 }

@@ -238,6 +238,25 @@ export function ghBin(): string {
   return envVar("GH_BIN") || "gh";
 }
 
+/**
+ * The `jira` binary. THE seam every jira subprocess in this codebase goes through - the
+ * Jira task source's sweep, and its write-back comment, remote link and transition.
+ *
+ * `ghBin()`'s reason applies here with one difference that makes it sharper. `gh` was
+ * redirected because `gh issue create` publishes; this one exists because a Jira write-back
+ * MOVES AN ISSUE. On a machine where the operator ran `jira init` - which is every machine
+ * this source was built for - an unfaked binary in a test run transitions a real ticket in
+ * somebody's project, and no row deleted here takes that back. `MISSION_JIRA_BIN` is what
+ * the browser-level suite points at a recording fake, and what an operator can point at a
+ * wrapper script.
+ *
+ * Read per call rather than at import, and an empty string counts as unset, both for the
+ * reasons `ghBin()` gives.
+ */
+export function jiraBin(): string {
+  return envVar("JIRA_BIN") || "jira";
+}
+
 export const DEFAULT_PRODUCT_ISSUES_REPO = "mancej-cyc/mission-control-issues";
 
 export type ProductIssuesRepoConfig =

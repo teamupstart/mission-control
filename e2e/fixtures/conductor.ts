@@ -285,7 +285,7 @@ export function seedConductorInstallerCheckout(repo: string): string {
  * rather than as a broken fixture.
  */
 const FAKE_CONDUCT_TS = `#!/usr/bin/env node
-const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } = require("node:fs");
 const { basename, join } = require("node:path");
 const argv = process.argv.slice(2);
 
@@ -338,28 +338,62 @@ const writeEngineerState = (state) => {
  * second reservation is numbered 1 as well.
  *
  * mkdir is the lock because it is atomic on every platform this suite runs on and needs no
- * dependency. The wait is bounded, and a lock older than the timeout is broken rather than
- * waited on forever: a fake killed between mkdir and rm must not wedge every later spec.
+ * dependency. The lock is OWNED: acquiring writes a token inside it, and both the break-in
+ * and the release check that token first.
  *
- * The release is registered on \`exit\` as well as run in \`finally\`, and that is deliberate
- * rather than redundant. \`finally\` covers a normal return and a throw; it does NOT cover
- * \`process.exit()\`, which stops unwinding where it stands. No branch inside a critical
- * section calls that today - the unknown-run paths set \`process.exitCode\` and fall through
- * precisely so the lock is released - but the fake also exits from stdin handlers, and a
- * future branch that reached for \`process.exit\` would strand the lock and cost every later
- * Engineer call the full timeout above before it broke it. An exit hook makes the release
- * unconditional, so the invariant does not depend on remembering this.
+ * Ownership is what makes this safe, and a plain timeout was not. An earlier version broke
+ * in on its own wait deadline and released unconditionally, which reintroduces the very race
+ * this exists to fix: if A's section runs past the deadline under load, B deletes A's lock
+ * and starts mutating the same file, then A's \`finally\` deletes whatever lock now exists
+ * and a third contender walks in. Two runs both numbered 1, exactly as before, but only
+ * under a stall rather than a true simultaneous call. So a lock is broken only when its
+ * token is MISSING or STALE by wall clock - which a live holder's never is, because these
+ * sections are one small read and one write - and a release only removes a lock it still
+ * owns. Failing to acquire is an error rather than a forced entry, because a fixture that
+ * says so beats one that silently corrupts state.
+ *
+ * The release is registered on \`exit\` as well as run in \`finally\`. \`finally\` covers a
+ * normal return and a throw; it does NOT cover \`process.exit()\`, which stops unwinding
+ * where it stands. No branch inside a critical section calls that today - the unknown-run
+ * paths set \`process.exitCode\` and fall through precisely so the lock is released, and the
+ * one \`process.exit(2)\` in \`run-readiness\` is argument validation that runs BEFORE the
+ * lock is taken - but the fake also exits from stdin handlers, so the hook keeps the
+ * invariant from depending on that staying true.
  */
-const releaseEngineerLock = (lockPath) => rmSync(lockPath, { recursive: true, force: true });
+// Both windows are overridable so a test can probe the break-in boundary without waiting
+// thirty seconds for it. Thirty seconds is the default because a real critical section here
+// is one small read and one write, so anything near it means the holder is gone.
+const LOCK_STALE_MS = Number(process.env.MC_E2E_CONDUCTOR_LOCK_STALE_MS || 30000);
+const LOCK_WAIT_MS = Number(process.env.MC_E2E_CONDUCTOR_LOCK_WAIT_MS || 30000);
+const lockToken = String(process.pid) + "-" + String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+const lockOwnerPath = (lockPath) => lockPath + "/owner";
+/** Remove the lock only if this process still owns it. */
+const releaseEngineerLock = (lockPath) => {
+  try {
+    if (readFileSync(lockOwnerPath(lockPath), "utf8") !== lockToken) return;
+  } catch { /* no owner file: a broken-in lock, or already gone. Fall through and clean up. */ }
+  rmSync(lockPath, { recursive: true, force: true });
+};
+/** True when the lock looks abandoned rather than held by a live, working process. */
+const lockIsStale = (lockPath) => {
+  try { return Date.now() - statSync(lockOwnerPath(lockPath)).mtimeMs > LOCK_STALE_MS; }
+  catch { return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS; }
+};
 const withEngineerState = (mutate) => {
   if (!engineerStatePath) return mutate({ runs: [] });
   const lockPath = engineerStatePath + ".lock";
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try { mkdirSync(lockPath); break; }
-    catch (err) {
+    try {
+      mkdirSync(lockPath);
+      writeFileSync(lockOwnerPath(lockPath), lockToken);
+      break;
+    } catch (err) {
       if (err.code !== "EEXIST") throw err;
-      if (Date.now() > deadline) { releaseEngineerLock(lockPath); continue; }
+      if (lockIsStale(lockPath)) { rmSync(lockPath, { recursive: true, force: true }); continue; }
+      if (Date.now() > deadline) {
+        throw new Error("timed out waiting for the Engineer state lock at " + lockPath);
+      }
       // A short spin. These critical sections are one small file read and one write.
       const until = Date.now() + 5;
       while (Date.now() < until) { /* wait */ }

@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,10 +45,13 @@ const env = {
   MC_E2E_CONDUCTOR_ENGINEER_MODE: "supported",
 };
 
-function engineer(args: string[]): { stdout: string; status: number } {
+function engineer(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): { stdout: string; status: number } {
   try {
     const stdout = execFileSync(process.execPath, [fake.bin, ...args], {
-      env,
+      env: { ...env, ...extraEnv },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -140,4 +143,52 @@ test("concurrent reservations for one correlation both survive", () => {
       ["attempt-a", "attempt-b"],
     );
   });
+});
+
+// The break-in path, which is the part that had to be got right rather than merely present.
+//
+// An earlier version broke in on the WAITER's own deadline and released unconditionally.
+// That reintroduces the race the lock exists to prevent, one stall removed: a holder whose
+// section overran would have its lock deleted by a waiter, then delete whichever lock existed
+// when it finished, letting a third contender in. The lock is owned instead - a token inside
+// the directory - so a break-in only takes an abandoned lock and a release only removes one
+// it still holds.
+test("a fresh lock is waited for, and only an abandoned one is broken", () => {
+  rmSync(statePath, { force: true });
+  rmSync(lockPath, { recursive: true, force: true });
+  // Short windows so this probes the boundary rather than sitting out the real one. A lock
+  // counts as abandoned after 3s here; a contender gives up after 0.4s.
+  const windows = {
+    MC_E2E_CONDUCTOR_LOCK_STALE_MS: "3000",
+    MC_E2E_CONDUCTOR_LOCK_WAIT_MS: "400",
+  };
+
+  // A lock a live holder could plausibly be inside: its owner file is NEW. A contender must
+  // refuse it rather than break in, and must say so rather than corrupt the file.
+  mkdirSync(lockPath, { recursive: true });
+  writeFileSync(`${lockPath}/owner`, "someone-else");
+  const blocked = engineer([
+    "engineer", "run-create", "--repo-root", home, "--idea", "Owned lock",
+    "--correlation-id", "corr-owned", "--attempt-key", "attempt-1",
+  ], windows);
+  assert.notEqual(blocked.status, 0, "a fresh lock held by somebody else must not be taken");
+  assert.equal(existsSync(lockPath), true, "and it must still belong to its owner afterwards");
+  assert.deepEqual(runs(), [], "nothing may be written while another process holds the lock");
+  assert.equal(
+    readFileSync(`${lockPath}/owner`, "utf8"),
+    "someone-else",
+    "the waiter must not have overwritten the owner's token",
+  );
+
+  // The same lock, now ABANDONED. Waiting past the staleness window is what makes it so, and
+  // a contender may then take it - otherwise one killed process wedges every later call.
+  const waited = Date.now() + 3_200;
+  while (Date.now() < waited) { /* let the lock age past MC_E2E_CONDUCTOR_LOCK_STALE_MS */ }
+  const after = engineer([
+    "engineer", "run-create", "--repo-root", home, "--idea", "Owned lock",
+    "--correlation-id", "corr-owned", "--attempt-key", "attempt-1",
+  ], windows);
+  assert.equal(after.status, 0, "an abandoned lock must not wedge every later call");
+  assert.equal(runs().length, 1);
+  assert.equal(existsSync(lockPath), false, "and the taker releases what it acquired");
 });

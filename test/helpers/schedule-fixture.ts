@@ -22,6 +22,7 @@ export function mkScheduleTemplate(over: Partial<ScheduleTemplate> = {}): Schedu
     labels: [],
     model: null,
     effort: null,
+    workflowId: null,
     ...over,
   };
 }

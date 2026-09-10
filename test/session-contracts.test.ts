@@ -347,6 +347,8 @@ function typecheckWithPatch(patch: ((dir: string) => void) | null): string {
   const dir = mkdtempSync(path.join(tmpdir(), "session-contract-probe-"));
   try {
     cpSync(path.join(REPO, "src"), path.join(dir, "src"), { recursive: true });
+    // App code also imports plain-Node installer policy from scripts/.
+    cpSync(path.join(REPO, "scripts"), path.join(dir, "scripts"), { recursive: true });
     symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));
     writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify(PROBE_TSCONFIG));
     patch?.(dir);

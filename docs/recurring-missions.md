@@ -23,7 +23,9 @@ The overlay has three screens:
   never runs an agent).
 - **Create / edit** - a configuration form (not a compose surface) in five groups: the task
   template, the cadence and time zone, laptop availability, the overlap, missed-run and
-  completion guardrails, and preview-and-enable. The template's **Agent** may be left on *Inherit*, which
+  completion guardrails, and preview-and-enable. The template's **After work** names the
+  [Workflow](workflows.md) that runs when each generated task finishes, and rests on *None* -
+  see [the after-work handoff](#the-after-work-handoff) below. The template's **Agent** may be left on *Inherit*, which
   takes the [task kind's agent](models.md#task-kinds) as each run fires rather than pinning a
   harness here - so repointing that kind moves a mission written months earlier. An inheriting
   mission cannot pin a Model (a model id belongs to one harness) and its Effort offers only the
@@ -142,6 +144,32 @@ Then the **overlap policy** asks whether this mission's previous work is still i
 a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default) records
 `skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
 `failed` never blocks: a mission whose last run went wrong still runs tomorrow.
+
+### The after-work handoff
+
+A mission's template names the **Workflow** that runs when the task a run files is finished,
+and it rests on **None**: nothing runs after the task unless the mission says so.
+
+That is deliberately not what an ordinary dispatch does. Dispatch may leave the field on
+*Dispatch default* and inherit whatever `Settings -> Workflows` currently names, resolved when
+the task is created. A recurring mission fires unattended, on a cadence, for as long as it is
+enabled - so inheriting would mean a default chosen in Settings today silently arming a review
+over a mission written months ago, on every run, with nobody watching. A mission states its
+own answer instead, and the daemon passes it to task creation explicitly so `null` reaches it
+as "no Workflow" rather than as an omission.
+
+Three consequences worth knowing:
+
+- **A mission stored before this field existed reads as None.** So does a `POST /api/schedules`
+  that never mentions `template.workflowId`. The absent key says its author was never asked,
+  and no run should arm a Workflow nobody picked.
+- **A kind with no diff cannot arm one.** Scout and Plan set out to produce no delivered
+  change, so the control stands down and the saved template holds `null` - a change-review over
+  a task that never planned a diff reviews an empty one. Switching the kind back hands the
+  previous choice straight back.
+- **An archived Workflow is kept, not erased.** A mission naming a Workflow the library no
+  longer publishes still shows it in the editor and on its detail, so the next save cannot
+  silently convert it into "no handoff". A run that fires meanwhile finishes without one.
 
 ### When a run finishes but its task does not
 

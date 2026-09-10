@@ -11,12 +11,14 @@ import { SCHEDULE_CATCHUP_CREATE_CAP } from "@shared/schedules.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor, portableEffortLevels } from "@shared/harness-capabilities.ts";
+import type { WorkflowSummary } from "@shared/workflow.ts";
 import {
   BACKLOG_TASK_KINDS,
   MAX_LABELS,
   PRIORITY_LABELS,
   TASK_KIND_INFO,
   TASK_PRIORITIES,
+  hasReviewableDiff,
 } from "@shared/task.ts";
 import {
   createSchedule,
@@ -43,6 +45,7 @@ import {
   ModelCatalogOptions,
   useHarnessModelCatalogs,
 } from "../../model-catalog.tsx";
+import { afterWorkLabel } from "../../lib/schedules.ts";
 import { RepoCombobox } from "../RepoCombobox.tsx";
 import { LabelChips } from "../session-bits.tsx";
 import { Tooltip } from "../Tooltip.tsx";
@@ -73,6 +76,8 @@ interface EditorDraft {
   labels: string;
   model: string;
   effort: ThinkingLevel | "";
+  /** `""` is None - no Workflow runs after the task a run files. */
+  workflowId: string;
   cadence: CadenceForm;
   timezone: string;
   overlapPolicy: ScheduleOverlapPolicy;
@@ -92,6 +97,7 @@ function emptyDraft(): EditorDraft {
     labels: "",
     model: "",
     effort: "",
+    workflowId: "",
     cadence: { preset: "weekly", weekday: 1, monthday: 1, time: "08:00", expression: "0 8 * * 1" },
     timezone: browserTimezone(),
     overlapPolicy: "skip-active",
@@ -120,6 +126,7 @@ function draftFromSchedule(schedule: MissionSchedule): EditorDraft {
     labels: (template?.labels ?? []).join(", "),
     model: template?.model ?? "",
     effort: template?.effort ?? "",
+    workflowId: template?.workflowId ?? "",
     cadence: expressionToForm(schedule.expression),
     timezone: schedule.timezone,
     overlapPolicy: schedule.overlapPolicy ?? "skip-active",
@@ -149,6 +156,7 @@ function draftToDefinition(draft: EditorDraft): ScheduleDefinitionPayload {
       labels: parseLabelInput(draft.labels),
       model: draft.model || null,
       effort: draft.effort || null,
+      workflowId: hasReviewableDiff(draft.kind) ? draft.workflowId || null : null,
     },
   };
 }
@@ -158,6 +166,7 @@ const PRESETS: CadencePreset[] = ["daily", "weekdays", "weekly", "monthly", "adv
 
 export function ScheduleEditor({
   schedule,
+  workflowSummaries,
   onSaved,
   onCancel,
   onDirtyChange,
@@ -165,6 +174,14 @@ export function ScheduleEditor({
 }: {
   /** The schedule being edited, or null to create a new one. */
   schedule: MissionSchedule | null;
+  /**
+   * The live Workflow catalog the after-work select offers. App holds it and keeps it
+   * current from `workflow_upsert`, so an open editor never offers a stale list.
+   *
+   * No empty default: an omitted catalog and an empty library render identically, so a
+   * caller with nothing to pass says `[]`.
+   */
+  workflowSummaries: WorkflowSummary[];
   /** A save landed; the argument is the canonical schedule the daemon returned. */
   onSaved: (saved: MissionSchedule) => void;
   onCancel: () => void;
@@ -230,6 +247,34 @@ export function ScheduleEditor({
   // the next time anything else on the form changed.
   const strandedEffort =
     draft.effort && !effortLevels.includes(draft.effort) ? draft.effort : null;
+  // Published, unarchived, and holding an immutable version to bind. `publishedVersion` is
+  // null when `currentVersionId` names a version this build cannot resolve, which has
+  // nothing to bind and would otherwise be offered as "· vnull".
+  const publishedWorkflows = useMemo(
+    () =>
+      workflowSummaries.filter(
+        (workflow) =>
+          workflow.archivedAt === null
+          && workflow.currentVersionId !== null
+          && workflow.publishedVersion !== null,
+      ),
+    [workflowSummaries],
+  );
+  // Kept and shown for the reason `strandedEffort` above is: otherwise the select draws
+  // None over it and saves the erasure. Named from the FULL catalog so an archived Workflow
+  // reads the same here as it does on the detail row.
+  const strandedWorkflow = useMemo(() => {
+    if (!draft.workflowId) return null;
+    if (publishedWorkflows.some((workflow) => workflow.id === draft.workflowId)) return null;
+    return {
+      id: draft.workflowId,
+      label: afterWorkLabel(draft.workflowId, workflowSummaries),
+    };
+  }, [draft.workflowId, publishedWorkflows, workflowSummaries]);
+  // A kind with no diff has nothing for a review Workflow to read, so the control stands down.
+  const afterWorkWhy = hasReviewableDiff(draft.kind)
+    ? null
+    : `A ${TASK_KIND_INFO[draft.kind].label} has no diff to review, so no Workflow runs after it.`;
   // A model id belongs to one harness, so an inheriting template cannot name one. Said here,
   // on the control, rather than left to the save route to refuse.
   const modelWhy = draft.agent
@@ -515,6 +560,40 @@ export function ScheduleEditor({
               </Tooltip>
             </Field>
           </div>
+          <Field
+            label="After work"
+            hint="optional - runs after each generated task"
+          >
+            <Tooltip label="Which Workflow runs after each generated task finishes.">
+              <select
+                className="field-input"
+                // Shows what `draftToDefinition` would save; the draft keeps the choice.
+                value={afterWorkWhy ? "" : draft.workflowId}
+                disabled={afterWorkWhy !== null}
+                onChange={(event) => update({ workflowId: event.target.value })}
+              >
+                <option value="">None - finish without a Workflow</option>
+                {publishedWorkflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.name} · v{workflow.publishedVersion}
+                  </option>
+                ))}
+                {strandedWorkflow && (
+                  <option value={strandedWorkflow.id}>{strandedWorkflow.label}</option>
+                )}
+              </select>
+            </Tooltip>
+          </Field>
+          {/* Outside the `<label>`, like `ModelCatalogNotice` below it: a sentence rendered
+              inside one joins the control's accessible name, and this select is reached by
+              that name. */}
+          {afterWorkWhy && <span className="field-hint">{afterWorkWhy}</span>}
+          {strandedWorkflow && !afterWorkWhy && (
+            <span className="field-hint">
+              This mission names a Workflow the library no longer publishes. It is kept until
+              you change it, and a run that fires meanwhile finishes with no handoff.
+            </span>
+          )}
           {draft.agent && <ModelCatalogNotice agent={draft.agent} />}
         </FormSection>
 

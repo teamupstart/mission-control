@@ -7,11 +7,11 @@ its full verification suite. For the contributor expectations and test policy, s
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
-agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions, and
-ai-conductor.
+agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions,
+ai-conductor, and the system Node.js runtime.
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
-checks are ready, and whether any gap is a required one - above a rail of the five families.
+checks are ready, and whether any gap is a required one - above a rail of dependency families.
 One family is read at a time: the rail carries each family's ready count and marks the ones
 with gaps, and the pane beside it holds that family's rows. It opens on the family holding a
 required gap, then any gap, and stays where you put it - a **Re-check** that repairs the
@@ -24,6 +24,17 @@ choose an available backend and Mission Control opens a visible terminal running
 fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
+
+The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
+installer and update preflight (currently Node.js 24). It reports a missing or older runtime as
+**Needs setup**, and failed or unparseable version probes as **Unknown**. **Run in a terminal**
+opens `brew install node` in the selected visible terminal to install or update Node.js and npm.
+This command requires Homebrew; if you manage Node another way, select a supported version in
+that manager instead. Read the command's exit status, then press **Re-check**. Opening the
+installer alone never marks Node ready. If `MISSION_NODE_BIN`, a version manager, or inherited
+PATH still selects an older runtime, correct that selection and restart Mission Control with
+the corrected environment. The updater still performs its fuller Node/npm checks in the build
+directory before preparing an update.
 
 The Herdr row reports two separate facts, because installing the CLI does not make Herdr usable.
 With the `herdr` binary present but its default server stopped, the row is **Needs setup** and

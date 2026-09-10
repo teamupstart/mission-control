@@ -1088,6 +1088,10 @@ export class ScheduleManager implements ScheduleService {
           ...(revision.template.effort !== null
             ? { effort: revision.template.effort }
             : {}),
+          // Always passed, never omitted - the opposite of `agent` two fields up. `create`
+          // reads an absent `workflowId` as the dispatch default, so `null` only means "no
+          // Workflow" if it arrives. See `ScheduleTemplate.workflowId`.
+          workflowId: revision.template.workflowId,
           // A schedule files work; it never launches it. See the class comment.
           backlog: true,
         },

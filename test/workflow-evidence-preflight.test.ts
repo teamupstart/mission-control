@@ -308,12 +308,48 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   for (const criteria of stableCriteria.slice(1)) assert.deepEqual(criteria, stableCriteria[0]);
   assert.deepEqual(submissions[0]?.readiness?.gapCodes, ["missing_rendered_output"]);
   assert.equal(submissions.at(-1)?.readiness?.status, "ready");
+  // Phase 2's cap names the last segment; carry-forward decides what that segment holds.
   const lastClaim = `claim-${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT}`;
+  const finalClaims = h.store.listSubmissionCoverage(submissions.at(-1)!.id);
   assert.deepEqual(
-    h.store.listSubmissionCoverage(submissions.at(-1)!.id).map((claim) => claim.clientCriterionId),
+    finalClaims.filter((claim) => !claim.inheritedFromSubmissionId)
+      .map((claim) => claim.clientCriterionId),
     [lastClaim],
+    "exactly one claim on this segment was declared here",
   );
-  assert.deepEqual(contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds, [lastClaim]);
+  assert.deepEqual(
+    finalClaims.filter((claim) => claim.inheritedFromSubmissionId)
+      .map((claim) => claim.clientCriterionId).sort(),
+    Array.from({ length: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT }, (_unused, index) => `claim-${index}`),
+    "and every frozen ancestor claim is retained beside it by id, marked as carried",
+  );
+  // Retained ancestry is provenance, not a competing assertion: the claim the author declared
+  // on this segment is still the one that answers for the criterion.
+  assert.deepEqual(contexts.at(-1)?.criterionMappings[0]?.matchedClientCriterionIds.includes(lastClaim), true);
+  assert.equal(submissions.at(-1)?.readiness?.criteria[0]?.matchedClientCriterionId, lastClaim);
+  assert.equal(
+    submissions.at(-1)?.readiness?.gapCodes.includes("ambiguous_mapping"),
+    false,
+    "retained ancestry never reports as the author asserting two things at once",
+  );
+  // Evidence accumulates the same way: this author mints a fresh client id every round, so
+  // nothing deduplicates and the final segment still holds what earlier ones proved.
+  const finalEvidence = h.store.listSubmissionTextArtifacts(submissions.at(-1)!.id);
+  assert.deepEqual(
+    finalEvidence.filter((item) => !item.inheritedFrom).map((item) => item.caption).sort(),
+    [
+      `Replacement ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} execution`,
+      `Replacement ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} rendered output`,
+    ],
+  );
+  assert.equal(
+    finalEvidence.filter((item) => item.inheritedFrom).length,
+    finalEvidence.length - 2,
+  );
+  for (const carried of finalEvidence.filter((item) => item.inheritedFrom)) {
+    assert.equal(carried.inheritedFrom?.round, 1, "every segment of this run is round 1");
+    assert.equal(typeof carried.inheritedFrom?.repositoryFingerprint, "string");
+  }
   const captureEvents = h.store.listEvents(runId)
     .filter((event) => event.kind === "submission_captured");
   assert.equal(captureEvents.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);

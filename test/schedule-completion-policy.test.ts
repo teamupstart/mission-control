@@ -158,6 +158,7 @@ function definition(over: Partial<ScheduleDefinition> = {}): ScheduleDefinition 
       labels: [],
       model: null,
       effort: null,
+      workflowId: null,
     },
     ...over,
   };

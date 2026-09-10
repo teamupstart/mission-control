@@ -17067,14 +17067,17 @@ td.wf-command-rule-action {
   display: flex;
   align-items: stretch;
   gap: 0;
-  padding: 4px 2px 8px;
+  padding: 4px 2px 12px;
   overflow-x: auto;
   overflow-y: hidden;
 }
 /* `overflow-x: auto` alone gets macOS's overlay scrollbar, which reserves no space and fades
    out at rest, so an overflowing strip looked like a cropped card rather than a scroller.
-   Declaring `::-webkit-scrollbar` opts out of the overlay and reserves the 10px the bottom
-   padding above was reduced to make room for. */
+   Declaring `::-webkit-scrollbar` opts out of the overlay and reserves a track.
+
+   The bottom padding above is deliberately NOT reduced to offset that 10px: the track is only
+   reserved when the content overflows, so trimming the padding would silently shorten every
+   pipeline that fits. An overflowing strip grows by the track; one that fits is untouched. */
 .wf-pipeline-strip::-webkit-scrollbar { height: 10px; }
 .wf-pipeline-strip::-webkit-scrollbar-thumb {
   background: color-mix(in oklab, var(--fg) 24%, transparent);

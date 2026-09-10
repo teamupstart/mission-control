@@ -52,9 +52,10 @@ test("the pipeline strip reserves a visible scrollbar the platform would not hav
     fileURLToPath(new URL("fixtures/pipeline-strip-scrollbar-browser.cjs", import.meta.url)),
     fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
   ]);
-  const { strip, plain } = JSON.parse(output.trim()) as {
+  const { strip, plain, fits } = JSON.parse(output.trim()) as {
     strip: { reserved: number; overflow: number };
     plain: { reserved: number; overflow: number };
+    fits: { reserved: number; overflow: number };
   };
 
   // Both scrollers hold more than they can show, so a scrollbar is due in each.
@@ -76,6 +77,15 @@ test("the pipeline strip reserves a visible scrollbar the platform would not hav
     strip.reserved,
     plain.reserved,
     `the rule, not the platform, must decide the strip's track (${measured})`,
+  );
+
+  // A pipeline that fits pays nothing for the scrollbar. The track is reserved on overflow
+  // only, so any padding trimmed to offset it would come straight out of this case's height.
+  assert.equal(fits.overflow, 0, "the single-card strip must not overflow");
+  assert.equal(
+    fits.reserved,
+    0,
+    `a strip that fits its pane must reserve no track (${fits.reserved}px)`,
   );
 });
 

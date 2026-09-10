@@ -203,7 +203,7 @@ one thing decides whether a Pi launch may declare Mission tools. A Pi plan or sc
 now **succeed** on a machine with a healthy install, which is the end-to-end proof that Phases
 3 through 6 compose.
 
-### 6. Tests
+### 7. Tests
 
 - Each of the four arms, with a fixture directory: absent, dangling, unloadable (both a parse
   error and a module-scope throw - measured to produce the same exit-1 shape), stale marker, and

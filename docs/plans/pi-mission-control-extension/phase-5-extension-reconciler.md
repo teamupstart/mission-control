@@ -15,16 +15,17 @@ that makes "hand-run" true rather than demonstrable.
 
 ## Scope
 
-0. `HARNESS_CAPABILITIES.pi.workQueue.uninstrumentedWhy` rewritten as an **actionable** sentence.
-   This is the earliest phase that may, because it is the first one whose merge gives an
-   operator something to turn on. Phases 1 and 4 deliberately keep it a statement of fact - see
-   Phase 1's handoff.
 1. An `ExtensionsSpec` capability - `dirEnvVar`, `homeDir`, `isolatedDirName`, `linkName` - non-
    null for Pi only.
 2. A reconciler that creates and removes exactly one symlink, reusing
    `src/server/skills/reconcile.ts`'s rules and its isolation guard.
-3. The daemon reconciling on startup, and the config that records the operator's intent.
+3. The daemon reconciling on startup, and the persisted intent - exposed as a reader, because
+   Phase 6 needs to tell "never installed" from "switched on, link gone".
 4. Uninstall, wired the way `hooks/install.mjs` wires the skill-link teardown.
+5. `HARNESS_CAPABILITIES.pi.workQueue.uninstrumentedWhy` rewritten as an **actionable** sentence.
+   This is the earliest phase that may, because it is the first one whose merge gives an operator
+   something to turn on. Phases 1 and 4 deliberately keep it a statement of fact - see Phase 1's
+   handoff.
 
 ### Non-goals
 

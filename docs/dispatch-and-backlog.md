@@ -142,6 +142,10 @@ control that saves a preference and visibly does nothing. Settings is its durabl
 
 ## Attaching more than one repository
 
+Claude Code and Codex receive launch-time grants for secondary worktrees. Pi is also offered:
+its tools have no directory write boundary to widen, so it needs no extra flags. Pi remains
+terminal-only; this does not introduce an embedded Pi runtime.
+
 Some work does not fit in one repo: a contract change and its consumers, a lockstep API
 migration, an integration that has to land on both sides at once. **+ Add another repo**
 under the Repo field attaches secondary repositories to the task.

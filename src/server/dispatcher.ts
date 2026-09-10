@@ -644,7 +644,7 @@ export class Dispatcher {
       // the guard exists to turn into a refusal, and asking twice is how the two answers
       // drift apart.
       const extraDirArgs =
-        extraDirs.length > 0 && multiRepo ? multiRepo.launchArgs(extraDirs) : [];
+        extraDirs.length > 0 && multiRepo?.kind === "flags" ? multiRepo.launchArgs(extraDirs) : [];
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,

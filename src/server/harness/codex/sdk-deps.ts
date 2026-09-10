@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { headlessAgentSubprocessEnv } from "../../agent-subprocess-env.ts";
 import { locateExecutable } from "../../executables/locator.ts";
-import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import type { AppServerTransport } from "./app-server/client.ts";
 
 // The ONE module that starts a `codex app-server` process.
@@ -133,7 +133,7 @@ export interface CodexSdkDeps {
 
 export const defaultCodexSdkDeps: CodexSdkDeps = {
   async connect(args, cwd, stateHome) {
-    // `sdkSubprocessEnv` for the reason it documents: a daemon started from a terminal
+    // `headlessAgentSubprocessEnv` for the reason it documents: a daemon started from a terminal
     // would otherwise hand its own `TMUX_PANE` down to every session it launches, and the
     // machine-installed hooks firing inside them would all key to that one card. Shared
     // with Claude's driver rather than restated, because it is a fact about the DAEMON's
@@ -142,7 +142,7 @@ export const defaultCodexSdkDeps: CodexSdkDeps = {
       await codexExecutable(),
       args,
       cwd,
-      sdkSubprocessEnv(process.env, cwd, stateHome),
+      headlessAgentSubprocessEnv(process.env, cwd, stateHome),
     );
   },
 };

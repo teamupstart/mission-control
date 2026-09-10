@@ -115,6 +115,26 @@ export function dropPaneIdentityEnv(env: Record<string, string | undefined>): vo
   for (const name of PANE_IDENTITY_ENV_NAMES) delete env[name];
 }
 
+/**
+ * Build the shared environment for headless provider subprocesses.
+ *
+ * A daemon started from a terminal must not hand its pane identity to embedded provider
+ * sessions. Provider hooks would otherwise attribute every child event to the daemon's own
+ * pane instead of the session identity. TERM_PROGRAM is also terminal ownership metadata for
+ * these pane-less launches, while the ordinary toolchain environment and narrow loopback
+ * capability remain intact.
+ */
+export function headlessAgentSubprocessEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
+  stateHome?: string,
+): Record<string, string | undefined> {
+  const env = agentSubprocessEnv(base, { loopbackAccess: true, cwd, stateHome });
+  dropPaneIdentityEnv(env);
+  delete env.TERM_PROGRAM;
+  return env;
+}
+
 export interface AgentSubprocessEnvOptions {
   /** Reuse one home across the cooperating processes that make up a session launch. */
   stateHome?: string;
@@ -155,6 +175,7 @@ export function agentSubprocessEnv(
         env[SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV] = isolatedScoutSubmissionCredentialPath(options.cwd);
       }
     } else {
+      delete env.MISSION_PORT;
       delete env[MISSION_API_TOKEN_ENV];
       delete env[MISSION_API_TOKEN_FILE_ENV];
       delete env[SCOUT_SUBMISSION_CREDENTIAL_ENV];

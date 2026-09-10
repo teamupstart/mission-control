@@ -432,5 +432,12 @@ test("standing-instruction mechanisms preserve every persisted index", () => {
     "claude-sdk-system-prompt-append", "codex-developer-instructions",
     "pi-append-system-prompt",
   ]);
-  assert.equal(standingInstructionsChannel("pi", "sdk"), null);
+  // Both Pi runtimes name the SAME mechanism, and that is the point rather than a
+  // coincidence: `--append-system-prompt` is the CLI spelling of the resource-loader option
+  // the managed driver passes directly, so one operator instruction is delivered one way
+  // whichever runtime the harness toggle selects.
+  assert.equal(standingInstructionsChannel("pi", "terminal"), "pi-append-system-prompt");
+  assert.equal(standingInstructionsChannel("pi", "sdk"), "pi-append-system-prompt");
+  // Codex terminal is now the live prover of the prompt-prefix fallback.
+  assert.equal(standingInstructionsChannel("codex", "terminal"), null);
 });

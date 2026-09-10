@@ -39,6 +39,7 @@ import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
 import { piControl } from "./pi/control.ts";
 import { discoverConfiguredPiModels } from "./pi/model-catalog.ts";
+import { piSdk } from "./pi/sdk.ts";
 import { resolveBinPath } from "../util/exec.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
@@ -209,9 +210,18 @@ export const HARNESSES: Record<AgentType, Harness> = {
     },
     tui: null,
     control: piControl,
-    // An embedded `--mode rpc` driver is separate work. The terminal extension already
-    // reports structured lifecycle and needs-you events through the machine HookSpec.
-    sdk: null,
+    // Pi's own SDK (`@earendil-works/pi-coding-agent`), driven IN THIS PROCESS - the one
+    // driver with no subprocess anywhere in it, which is why `bound` carries a null pid and
+    // why the bash tool's environment is isolated inside the adapter rather than at a spawn.
+    //
+    // Supersedes the `--mode rpc` transport the older phase document proposed: Pi now
+    // publishes a first-class session runtime, and choosing both would mean two session
+    // lifecycles, two event decoders and an ambiguous owner for resume. See
+    // `docs/plans/pi-bedrock-models/plan.md`.
+    //
+    // Non-null here and `"sdk"` in `runtimes` are ONE fact in two files
+    // (`harness-sdk.test.ts`).
+    sdk: piSdk,
     // `pi --session <id>`. NOT `--resume`, which opens pi's interactive picker and takes no
     // id, and NOT `--fork`, which branches rather than continues. Three adjacent flags in
     // `pi --help`, one of which is the right answer. The mode parameter is deliberately

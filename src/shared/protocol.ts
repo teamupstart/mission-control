@@ -2325,10 +2325,16 @@ const StoredTerminalBackendSchema = z.string().nullable();
 const TerminalBackendSchema = z.enum(TERMINAL_BACKEND_IDS);
 
 /**
- * The runtime an untouched installation uses for each harness. Only harnesses with a
- * declared embedded driver start on the Agent SDK; Pi remains terminal-backed until it
- * has one. Kept beside the schema so the server's first read and the browser's pre-load
- * state cannot disagree.
+ * The runtime an untouched installation uses for each harness.
+ *
+ * Pi stays TERMINAL, and that is now a choice rather than an absence: it has a managed
+ * driver, and flipping the default would move every existing Pi dispatch onto a runtime
+ * whose provider credentials, project-trust posture and in-process shell isolation the
+ * operator has not looked at yet. It is offered in the Harnesses panel and taken on
+ * purpose. Claude and Codex keep the Agent SDK they shipped on.
+ *
+ * Kept beside the schema so the server's first read and the browser's pre-load state
+ * cannot disagree.
  */
 export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
   claude: "sdk",
@@ -2461,10 +2467,11 @@ export const HarnessesConfigSchema = z.object({
    * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
    * embedded through the harness's own programmatic interface.
    *
-   * New installations use the Agent SDK for Claude and Codex, the two harnesses with
-   * embedded drivers. Pi stays terminal-backed because it has no SDK driver. Scoped to
-   * dispatch like every other key in this blob: a session an operator started themselves
-   * is pane-backed whatever this says, because we do not own their pty.
+   * New installations use the Agent SDK for Claude and Codex. Pi has one too and still
+   * ships terminal-backed - see `DEFAULT_HARNESSES_SESSION_RUNTIMES` for why that is a
+   * decision rather than a gap. Scoped to dispatch like every other key in this blob: a
+   * session an operator started themselves is pane-backed whatever this says, because we
+   * do not own their pty.
    *
    * A stored value this build cannot read, or one naming a runtime the harness does not
    * offer, falls back to `"terminal"` and says so - see `resolveDispatchRuntime`. Read at

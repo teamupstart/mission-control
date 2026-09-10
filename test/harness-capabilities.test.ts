@@ -330,8 +330,9 @@ test("when a level takes effect is declared by the harness, not inferred from it
     claude: "now",
     // `effort` is a `turn/start` parameter and `turn/steer` has none.
     codex: "next-turn",
-    // No embedded driver at all - `SdkSessionHandle.setEffort` is null.
-    pi: null,
+    // `AgentSession.setThinkingLevel` writes the agent's state and Pi clamps it to the
+    // model, but the request already in flight was built with the old level.
+    pi: "next-turn",
   });
 });
 

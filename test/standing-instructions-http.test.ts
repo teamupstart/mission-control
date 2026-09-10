@@ -200,6 +200,20 @@ test("the resolved route previews what a launch would send, for this exact pair"
     { headers: HEADERS },
   );
   assert.equal(((await pi.json()) as { mechanism: string }).mechanism, "pi-append-system-prompt");
+
+  // Pi's managed runtime answers with the SAME mechanism, because it is the same one: the
+  // driver hands `appendSystemPrompt` to the resource loader that `--append-system-prompt`
+  // feeds on the terminal side. One operator instruction cannot be delivered two different
+  // ways depending on which runtime a toggle happens to select.
+  const piSdk = await app.request(
+    `/api/instructions/resolved?repoPath=${encodeURIComponent(CHECKOUT)}&agent=pi&runtime=sdk`,
+    { headers: HEADERS },
+  );
+  assert.equal(piSdk.status, 200);
+  assert.equal(
+    ((await piSdk.json()) as { mechanism: string }).mechanism,
+    "pi-append-system-prompt",
+  );
 });
 
 test("the resolved route refuses a missing repoPath, an unknown agent and an unoffered runtime", async () => {
@@ -211,10 +225,9 @@ test("the resolved route refuses a missing repoPath, an unknown agent and an uno
     (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=gpt&runtime=terminal`)).status,
     400,
   );
-  // Pi declares no embedded driver. Answering with a default here would invent the one thing
-  // `resolveSessionRuntime` already owns.
+  // A runtime this build knows but does not accept in this query at all.
   assert.equal(
-    (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=pi&runtime=sdk`)).status,
+    (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=claude&runtime=rpc`)).status,
     400,
   );
   assert.equal(

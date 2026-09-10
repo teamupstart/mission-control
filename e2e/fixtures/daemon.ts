@@ -23,7 +23,9 @@ import {
   writeProductAuthorizationBin,
   ghPullRequestsPath,
   codexCatalogControlPath,
+  fakePiSdkModulePath,
   piCatalogControlPath,
+  piSdkModelsPath,
   writeFakeAgents,
 } from "./fake-agents.ts";
 import {
@@ -415,6 +417,17 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_PI_BIN: bins.pi,
     // Catalog-only fake has no installed extension unless a spec explicitly supplies one.
     MISSION_PI_EXTENSION: join(home, "missing-pi-extension.js"),
+    // Pi's MANAGED runtime has no subprocess - its SDK is imported into the daemon - so the
+    // binary override above cannot reach it. This is the same redirection at the only other
+    // seam Pi has, and it is set unconditionally for the reason the bins are: a daemon that
+    // missed it would load the real `@earendil-works/pi-coding-agent` and could reach a
+    // provider. See `fake-pi-sdk.mjs`.
+    MISSION_PI_SDK_MODULE: fakePiSdkModulePath(),
+    MC_E2E_PI_SDK_MODELS: piSdkModelsPath(home),
+    // Pi's own configuration directory, inside the disposable home. The fake refuses to run
+    // without it, so nothing here can read or write the operator's real `~/.pi` - which is
+    // also where its session transcripts would otherwise land.
+    PI_CODING_AGENT_DIR: join(home, "pi-agent"),
     // The one terminal backend this suite installs, so continue-in-terminal is drivable on
     // a machine with no terminal: cmux resolves through this env override, needs no
     // emulator to raise its workspaces, and the fake records the `new-workspace --command`

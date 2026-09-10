@@ -584,11 +584,155 @@ async function smokePiExtension() {
 }
 
 await smokePiExtension();
+/**
+ * Prove the pinned Pi SDK is INSIDE the daemon bundle, and that it loads.
+ *
+ * Two questions, and the artifact can only answer one of them by itself.
+ *
+ * The first is answered by reading `dist/server/index.mjs`: the vendor package must be
+ * INLINED rather than left as a runtime specifier, because a packaged app has no
+ * `node_modules` for `import("@earendil-works/pi-coding-agent")` to resolve against - and
+ * the failure would be a managed Pi dispatch that refuses on a machine where nothing looks
+ * wrong. The `createRequire` banner is checked in the same pass: Pi's dependency tree
+ * carries CommonJS modules that `require("child_process")`, which esbuild compiles to a
+ * `__require` shim that THROWS in an ESM bundle. That is the exact defect this whole script
+ * was written for, one package later.
+ *
+ * The second cannot be asked of that file at all. Its Pi module is an internal lazy chunk
+ * with no export anyone outside can reach, and importing the bundle starts a daemon. So the
+ * load is proven on a second artifact built from the daemon's OWN entry module for the
+ * driver, with the flags READ OUT OF `build:server` rather than restated here - a probe
+ * carrying its own copy of the bundler configuration would pass while the shipped one
+ * failed, which is the same class of lie as the stale MCP bundle above.
+ *
+ * It resolves a path and loads a module. It reads no credential, opens no session file, and
+ * contacts nothing.
+ */
+async function smokePiSdkBundle() {
+  const bundle = resolve("dist/server/index.mjs");
+  const source = await readFile(bundle, "utf8");
+  if (!source.startsWith("import{createRequire as __mcCreateRequire}")) {
+    fail(
+      "the daemon bundle has lost its createRequire banner - Pi's CommonJS dependencies " +
+        "compile to a __require shim that throws on first use without it",
+    );
+    return;
+  }
+  if (/import\("@earendil-works\/pi-coding-agent"\)/.test(source)) {
+    fail(
+      "the daemon bundle leaves @earendil-works/pi-coding-agent as a runtime import - a " +
+        "packaged app has no node_modules to resolve it from",
+    );
+    return;
+  }
+  if (!source.includes("createAgentSessionServices")) {
+    fail("the daemon bundle does not carry the pinned Pi SDK at all");
+    return;
+  }
+
+  const pkg = JSON.parse(await readFile(resolve("package.json"), "utf8"));
+  const script = pkg.scripts?.["build:server"];
+  if (typeof script !== "string") {
+    fail("build:server could not be read out of package.json - has it been renamed?");
+    return;
+  }
+  const out = join(await mkdtemp(join(tmpdir(), "mc-pi-sdk-")), "pi-sdk-deps.mjs");
+  // Every flag the daemon bundle is built with, minus the entry and its destination.
+  const flags = splitScriptArgs(script).filter(
+    (arg) => arg.startsWith("--") && !arg.startsWith("--outfile"),
+  );
+  // The installed esbuild EXECUTABLE, not `node <path>`: the package's `bin/esbuild` is a
+  // platform binary rather than a script, and running it through node parses Mach-O as
+  // JavaScript. `npm run build` spends the same file.
+  const built = await run(resolve("node_modules/.bin/esbuild"), [
+    "src/server/harness/pi/sdk-deps.ts",
+    ...flags,
+    `--outfile=${out}`,
+  ]);
+  if (built.code !== 0) {
+    fail(`the Pi driver's vendor seam does not bundle with the daemon's own flags`);
+    console.error(built.output.trimEnd());
+    await rm(join(out, ".."), { recursive: true, force: true });
+    return;
+  }
+  try {
+    const { defaultPiSdkDeps } = await import(pathToFileURL(out).href);
+    const sdk = await defaultPiSdkDeps.load();
+    for (const name of [
+      "agentDir",
+      "hasTrustRequiringProjectResources",
+      "projectTrust",
+      "findSessionFile",
+      "createRuntime",
+    ]) {
+      if (typeof sdk[name] !== "function") {
+        fail(`the bundled Pi SDK projection is missing ${name}`);
+        return;
+      }
+    }
+    // Evaluating the vendor's own module body is the whole point: `getAgentDir` is the
+    // cheapest call that proves it ran, and it only composes a path.
+    if (!sdk.agentDir()) {
+      fail("the bundled Pi SDK could not resolve Pi's agent directory");
+      return;
+    }
+    console.log("[smoke] the pinned Pi SDK is inlined in the daemon bundle and loads");
+  } catch (err) {
+    fail(`the bundled Pi SDK could not be loaded (${err instanceof Error ? err.message : err})`);
+  } finally {
+    await rm(join(out, ".."), { recursive: true, force: true });
+  }
+}
+
+/**
+ * Split an `npm run` script into argv the way a shell would, honouring double quotes.
+ *
+ * A character walk rather than a regex, because the one flag that matters here contains
+ * both spaces and quotes: `--banner:js="import{createRequire as ...}"`. A `\S+` tokenizer
+ * cuts it in half at the first space and the probe then builds without the banner - which
+ * would have it pass while the shipped bundle failed, the exact inversion this probe is
+ * supposed to prevent.
+ */
+function splitScriptArgs(script) {
+  const args = [];
+  let current = "";
+  let started = false;
+  let quoted = false;
+  for (const char of script) {
+    if (char === '"') {
+      quoted = !quoted;
+      started = true;
+      continue;
+    }
+    if (!quoted && /\s/.test(char)) {
+      if (started) args.push(current);
+      current = "";
+      started = false;
+      continue;
+    }
+    current += char;
+    started = true;
+  }
+  if (started) args.push(current);
+  return args;
+}
+
+/** Run a command to completion, collecting both streams. Used only by the probe above. */
+async function run(command, args) {
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", (d) => (output += d));
+  child.stderr.on("data", (d) => (output += d));
+  const code = await new Promise((r) => child.on("exit", (value) => r(value ?? 1)));
+  return { code, output };
+}
+
 await smokeNativeKeepAwake();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();
 await smokeMcp();
 await smokeSatellitePaths();
+await smokePiSdkBundle();
 await smokeMermaidRenderer();
 if (process.exitCode) process.exit(process.exitCode);
 console.log("[smoke] ok");

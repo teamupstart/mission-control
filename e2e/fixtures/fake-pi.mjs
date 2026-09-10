@@ -155,6 +155,25 @@ input.on("line", (line) => {
           reasoning: false,
           input: ["text", "image"],
         },
+        // Amazon Bedrock, exactly as a signed-in Pi reports it: a provider like any other,
+        // with ids that carry dots. Mission Control never translates one - see
+        // `pi-bedrock-managed-runtime.spec.ts`, which selects this row and dispatches it.
+        {
+          provider: "amazon-bedrock",
+          id: "deepseek.v3.2",
+          name: "DeepSeek V3.2",
+          contextWindow: 163_840,
+          reasoning: true,
+          input: ["text"],
+        },
+        {
+          provider: "amazon-bedrock",
+          id: "anthropic.claude-sonnet-4-5",
+          name: "Claude Sonnet 4.5 (Bedrock)",
+          contextWindow: 200_000,
+          reasoning: true,
+          input: ["text", "image"],
+        },
       ],
     },
   });

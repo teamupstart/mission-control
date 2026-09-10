@@ -13,9 +13,12 @@ import type {
 import {
   capabilitiesFor,
   skillCommand,
-  supportsSdkSkillInvocation,
 } from "@shared/harness-capabilities.ts";
-import { pipelineRunKeyOf } from "@shared/pipeline.ts";
+import {
+  PIPELINE_ENGINEER_SKILL,
+  pipelineRunKeyOf,
+  supportsManagedPipelineHost,
+} from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   dispatchHasNoProvisionedResources,
@@ -1214,12 +1217,12 @@ export class Dispatcher {
     }
 
     if (launch.launchRuntime === "agent-sdk") {
-      if (!supportsSdkSkillInvocation(task.agent, "engineer")) {
+      if (!supportsManagedPipelineHost(task.agent)) {
         throw new Error(
-          `agent "${task.agent}" cannot host this managed Pipeline; choose an agent with Agent SDK support and a typed engineer skill invocation`,
+          `agent "${task.agent}" cannot host this managed Pipeline; choose an agent with Agent SDK support, a typed engineer skill invocation, and an MCP client`,
         );
       }
-      const engineerCommand = skillCommand(task.agent, "engineer");
+      const engineerCommand = skillCommand(task.agent, PIPELINE_ENGINEER_SKILL);
       if (engineerCommand === null) {
         throw new Error(
           `agent "${task.agent}" has no typed engineer skill invocation; choose a supported Pipeline agent`,
@@ -1554,10 +1557,28 @@ export class Dispatcher {
     const stateHome = createDisposableAgentStateHome();
     let supervisorOwnsStateHome = false;
     try {
-    const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
-      wt.path,
-      stateHome,
-    );
+    // Asked of the HARNESS before anything is rendered, because a descriptor is only worth
+    // composing for an agent that has an MCP client to register it with. Pi has none - it
+    // extends itself with in-process TypeScript rather than side processes - so handing it
+    // one would be a launch option nothing could honour, and its driver refuses rather than
+    // dropping it. The terminal arm reaches the same conclusion by a different road: no ask
+    // channel means no registration, and `missionMcpRegistered` is false.
+    //
+    // Read through the capability rather than by agent name, so a fourth harness answers
+    // for itself.
+    const harnessMcp = capabilitiesFor(task.agent).mcp;
+    if (missionMcp && !harnessMcp) {
+      // REQUIRED tools on a harness with nowhere to publish them. Refused here rather than
+      // at the driver, because the message an operator needs names the capability that is
+      // missing - not a bundle that is built and fine.
+      throw new Error(
+        `${task.agent} has no MCP client, so this session could not call the Mission Control ` +
+          `tools it requires (${missionMcp.tools.join(", ")}) - dispatch it on a harness that has one`,
+      );
+    }
+    const mcp = harnessMcp
+      ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
+      : null;
     // Same rule the terminal path applies to its argv, asked of the thing that actually
     // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
     // session that cannot call them would run to completion unable to report it.

@@ -293,6 +293,50 @@ test("Pi discovery preserves first-seen order, deduplicates full ids, and drops 
   assert.deepEqual(result.choices[1]!.inputModes, ["text"]);
 });
 
+test("an Amazon Bedrock row survives discovery with its exact id and provider group", async () => {
+  // Bedrock is a Pi PROVIDER, not a Mission Control harness: nothing here translates the id,
+  // allowlists a model, or knows what an AWS region is. Its ids carry dots and hyphens that
+  // no other provider's do, and the nested form is the one that makes the split rule visible
+  // (`splitPiModelId` cuts at the FIRST slash, so the model half keeps its own).
+  const child = new FakeChild([
+    response([
+      model({
+        provider: "amazon-bedrock",
+        id: "deepseek.v3.2",
+        name: "DeepSeek V3.2",
+        input: ["text"],
+        contextWindow: 163_840,
+      }),
+      model({
+        provider: "amazon-bedrock",
+        id: "anthropic.claude-sonnet-4-5-20260101-v1:0".replace(":", "-"),
+        name: "Claude Sonnet 4.5",
+        input: ["text", "image"],
+      }),
+      model({
+        provider: "amazon-bedrock",
+        id: "us/meta.llama4-maverick-17b",
+        name: "Llama 4 Maverick",
+        input: ["text"],
+      }),
+    ]),
+  ]);
+
+  const result = await discoverPiModels("/fake/pi", depsFor(child));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.choices.map((choice) => choice.id), [
+    "amazon-bedrock/deepseek.v3.2",
+    "amazon-bedrock/anthropic.claude-sonnet-4-5-20260101-v1-0",
+    "amazon-bedrock/us/meta.llama4-maverick-17b",
+  ]);
+  // Every row groups under the provider the picker shows, so a signed-in Bedrock account
+  // gets its own section rather than being scattered through the flat list.
+  assert.deepEqual(new Set(result.choices.map((choice) => choice.provider)), new Set(["amazon-bedrock"]));
+  assert.equal(result.choices[0]!.contextWindow, 163_840);
+  assert.deepEqual(result.choices[1]!.inputModes, ["text", "image"]);
+});
+
 test("Pi discovery preserves safe identities when optional presentation metadata is unknown", async () => {
   const child = new FakeChild([
     response([

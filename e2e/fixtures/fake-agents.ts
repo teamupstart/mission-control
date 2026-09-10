@@ -191,6 +191,34 @@ export function writeGhProductScript(home: string, script: FakeGhProductScript):
 }
 
 /**
+ * How `FAKE_GH` should answer the two write-back verbs.
+ *
+ * These are the calls a task source makes ONTO an item somebody else is watching, and both
+ * are why this fake is a blast dam rather than a cost dam: `gh issue comment` posts on a
+ * real thread and `gh issue close` moves real work, and neither is undone by deleting a row
+ * in the daemon's ledger. On a developer's machine, where `gh` is signed in, an unfaked run
+ * would do both for real.
+ *
+ * `refused` is the shape a retry-safe refusal has - a non-zero exit with a message and no
+ * effect - which is the state the panel's **Retry** exists to clear. Distinguished from the
+ * default here rather than from the daemon's side, because the whole point of the failed /
+ * unknown split is that it is read off what the process did.
+ */
+export interface FakeGhWritebackScript {
+  comment?: "ok" | "refused";
+  close?: "ok" | "refused";
+}
+
+/** Where a spec scripts `FAKE_GH`'s write-back behavior for one daemon. */
+export function ghWritebackScriptPath(home: string): string {
+  return join(home, "gh-writeback-script.json");
+}
+
+export function writeGhWritebackScript(home: string, script: FakeGhWritebackScript): void {
+  writeFileSync(ghWritebackScriptPath(home), JSON.stringify(script, null, 2));
+}
+
+/**
  * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
  *
  * cmux, not tmux, and the choice is structural. tmux availability is a question about a
@@ -462,6 +490,17 @@ function productScript() {
     return fallback;
   }
 }
+/** The write-back script, re-read per call. Absent means both verbs succeed. */
+function writebackScript() {
+  const fallback = { comment: "ok", close: "ok" };
+  const path = process.env.MC_E2E_GH_WRITEBACK;
+  if (!path) return fallback;
+  try {
+    return { ...fallback, ...JSON.parse(require("node:fs").readFileSync(path, "utf8")) };
+  } catch {
+    return fallback;
+  }
+}
 const REQUIRED_LABELS = ${JSON.stringify(PRODUCT_ISSUE_REQUIRED_LABELS)};
 const product = productScript();
 /** Fail exactly the scripted preflight question, the way the real CLI fails it. */
@@ -490,6 +529,14 @@ if (argv[0] === "--version") {
     ? REQUIRED_LABELS.filter((name) => name !== "usability")
     : (product.labels || REQUIRED_LABELS);
   process.stdout.write(JSON.stringify([names.map((name) => ({ name }))]) + "\\n");
+} else if (command.startsWith("issue comment") || command.startsWith("issue close")) {
+  // The two write-back verbs. Recorded above like everything else, so a spec reads the body
+  // and the close reason off the argv - and nothing is published either way.
+  const verb = argv[1] === "comment" ? "comment" : "close";
+  if (writebackScript()[verb] === "refused") {
+    process.stderr.write("could not " + verb + " issue: HTTP 403 (fake)\\n");
+    process.exit(1);
+  }
 } else if (command.startsWith("issue create") && command.includes("${PRODUCT_ISSUE_STATUS_LABEL}")) {
   // A product report, distinguished from every other \`issue create\` by the fixed triage
   // label only the product reporter attaches. Task sources and the PR path keep their

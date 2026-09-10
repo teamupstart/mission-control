@@ -63,6 +63,7 @@ export const OVERLAY_IDS = {
   productIssue: "product-issue",
   standingInstructions: "standing-instructions",
   restoreSettings: "restore-settings",
+  taskSourceWritebackDiscard: "task-source-writeback-discard",
   attachmentPreview: "attachment-preview",
 } as const;
 

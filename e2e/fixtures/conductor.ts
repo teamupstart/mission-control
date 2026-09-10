@@ -321,6 +321,58 @@ const readEngineerState = () => {
 const writeEngineerState = (state) => {
   if (engineerStatePath) writeFileSync(engineerStatePath, JSON.stringify(state, null, 2));
 };
+/**
+ * Hold an exclusive lock across a read-modify-write of the Engineer state file.
+ *
+ * Every mutation below is read-modify-write over ONE json file, and the provider CLI is
+ * invoked as a separate short-lived process per call. Two of those running at once - which
+ * is exactly what \`concurrent same-intent Pipeline dispatches reserve independent Engineer
+ * runs\` drives - both read the same state, both append their own run, and the second write
+ * clobbers the first.
+ *
+ * What that looks like downstream is not a lost fixture write, it is a daemon error: the
+ * reservation the first dispatch was handed is no longer in the file, so refreshing the
+ * commission cannot find its history and the dispatch fails with "the provider Engineer
+ * reservation history is not available ... Unknown Engineer run". The run ids give it away -
+ * both processes compute their attempt from a lineage they read before either wrote, so the
+ * second reservation is numbered 1 as well.
+ *
+ * mkdir is the lock because it is atomic on every platform this suite runs on and needs no
+ * dependency. The wait is bounded, and a lock older than the timeout is broken rather than
+ * waited on forever: a fake killed between mkdir and rm must not wedge every later spec.
+ *
+ * The release is registered on \`exit\` as well as run in \`finally\`, and that is deliberate
+ * rather than redundant. \`finally\` covers a normal return and a throw; it does NOT cover
+ * \`process.exit()\`, which stops unwinding where it stands. No branch inside a critical
+ * section calls that today - the unknown-run paths set \`process.exitCode\` and fall through
+ * precisely so the lock is released - but the fake also exits from stdin handlers, and a
+ * future branch that reached for \`process.exit\` would strand the lock and cost every later
+ * Engineer call the full timeout above before it broke it. An exit hook makes the release
+ * unconditional, so the invariant does not depend on remembering this.
+ */
+const releaseEngineerLock = (lockPath) => rmSync(lockPath, { recursive: true, force: true });
+const withEngineerState = (mutate) => {
+  if (!engineerStatePath) return mutate({ runs: [] });
+  const lockPath = engineerStatePath + ".lock";
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    try { mkdirSync(lockPath); break; }
+    catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      if (Date.now() > deadline) { releaseEngineerLock(lockPath); continue; }
+      // A short spin. These critical sections are one small file read and one write.
+      const until = Date.now() + 5;
+      while (Date.now() < until) { /* wait */ }
+    }
+  }
+  const onExit = () => releaseEngineerLock(lockPath);
+  process.once("exit", onExit);
+  try { return mutate(readEngineerState()); }
+  finally {
+    process.removeListener("exit", onExit);
+    releaseEngineerLock(lockPath);
+  }
+};
 const engineerSnapshot = (run) => ({
   schemaVersion: 1,
   capability: "engineerLifecycleEventsV1",
@@ -386,7 +438,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     const correlationId = flag("correlation-id");
     const attemptKey = flag("attempt-key");
     const integrationOwner = flag("integration-owner");
-    const state = readEngineerState();
+    const run = withEngineerState((state) => {
     let run = state.runs.find((candidate) =>
       candidate.repoRoot === repoRoot &&
       candidate.correlationId === correlationId &&
@@ -430,6 +482,8 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
       state.runs.push(run);
       writeEngineerState(state);
     }
+    return run;
+    });
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
   }
 } else if (argv[0] === "engineer" && argv[1] === "run-readiness") {
@@ -440,7 +494,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     process.stderr.write("Unexpected Engineer readiness arguments\\n");
     process.exit(2);
   }
-  const state = readEngineerState();
+  withEngineerState((state) => {
   const run = state.runs.find((candidate) => candidate.engineerRunId === engineerRunId);
   if (!run || run.repoRoot !== repoRoot) {
     process.stderr.write("Unknown Engineer run\\n");
@@ -477,6 +531,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
     if (!ready) process.exitCode = 1;
   }
+  });
 } else if (argv[0] === "engineer" && argv[1] === "run-inspect") {
   const repoRoot = flag("repo-root");
   const correlationId = flag("correlation-id");
@@ -524,7 +579,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
   }
 } else if (argv[0] === "engineer" && argv[1] === "run-cancel") {
   const engineerRunId = flag("run-id");
-  const state = readEngineerState();
+  withEngineerState((state) => {
   const run = state.runs.find((candidate) => candidate.engineerRunId === engineerRunId);
   if (!run) {
     process.stderr.write("Unknown Engineer run\\n");
@@ -549,6 +604,7 @@ if (existsSync(join(daemonDir, "REFUSE")) && argv[0] !== "engineer") {
     }
     process.stdout.write(JSON.stringify(engineerSnapshot(run)) + "\\n");
   }
+  });
 } else if (argv[0] === "engineer" && flag("idea") !== null) {
   // The ENGINEER SESSION, and it has to stay up.
   //

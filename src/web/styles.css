@@ -19385,11 +19385,58 @@ button.wf-carried.is-link:focus-visible {
 .ts-defaults {
   margin-top: 14px;
 }
+/* ---- the write-back block ----
+   Set apart from the sweep settings above it with a rule rather than only with a heading,
+   because the boundary it marks is the one that matters on this card: everything above
+   reads the upstream and everything below writes to it. */
+.ts-writeback {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.ts-writeback-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* The resolve switch is a consequence of the completion switch above it, so it is indented
+   under it rather than presented as a third peer. */
+.ts-writeback-nested {
+  padding-left: 22px;
+}
+/* An unavailable switch keeps its card and loses its affordance: it still says what it
+   would do, which is the whole reason it is disabled rather than hidden. */
+.settings-toggle.is-unavailable {
+  cursor: default;
+  opacity: 0.62;
+}
+.settings-toggle.is-unavailable:hover {
+  border-color: var(--border-soft);
+}
+.ts-no-transition,
+.ts-writeback-unknown {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+  font-size: 11.5px;
+}
+/* Prose, not a form: the confirm asks one question and the paragraphs answering it should
+   not run the width of the page. */
+.ts-discard-modal {
+  max-width: 520px;
+}
 .ts-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+/* The card's own row, below the write-back block. Ruled off so the two do not read as one
+   strip - see the comment beside it in TaskSourcesPanel.tsx. */
+.ts-card-actions {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
 }
 .ts-empty,
 .ts-unknown {

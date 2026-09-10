@@ -595,6 +595,75 @@ test("a session already on its way out is left to that eviction, not stopped aga
 
 // ---- restart recovery ----
 
+test("a completion that lands asynchronously still gets its session closed", async () => {
+  // A scout's completion awaits a verified archive before it writes anything, so the closure
+  // row appears LONG after `concludeScheduledMissionRun` has looked at the ledger and found it
+  // empty. Nothing in that call can settle a row that does not exist yet, which is why the
+  // sweep is armed beside the write instead: a row is never committed with nothing scheduled
+  // to settle it. Without that, this mission's agent stays on the fleet until some unrelated
+  // event happens by.
+  const registry = new Registry();
+  const kill = killRecorder();
+  let openGate!: () => void;
+  const archiveReady = new Promise<void>((resolve) => { openGate = resolve; });
+  const archives = {
+    ensureReady: async () => {
+      await archiveReady;
+      return { ok: true as const };
+    },
+    settleBeforeCleanup: async () => ({ ok: true as const }),
+  };
+  const tasks = new TaskManager(registry, kill.deps, undefined, undefined, archives);
+  managers.push(tasks);
+
+  const { schedule, occurrenceId, taskId } = filedRun();
+  const sessionId = uid("sess");
+  registry.applyDiscovery([discovered(sessionId)]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `${sessionId}-episode`,
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask(
+    mkTask({
+      id: taskId,
+      kind: "scout",
+      status: "running",
+      sessionId,
+      repoRoot: "/repo",
+      scheduleId: schedule.id,
+      scheduleOccurrenceId: occurrenceId,
+      scheduledFor: T0 + HOUR,
+    }),
+  );
+
+  await tasks.concludeScheduledMissionRun(sessionId, EMPTY);
+  // The archive is not ready, so nothing has been written and nothing is owed yet.
+  assert.equal(registry.getTask(taskId)?.status, "running");
+  assert.equal(db.getTaskSessionClosure(taskId), null);
+  assert.deepEqual(kill.killed, [], "and no agent has been touched");
+
+  // Drained deliberately, and this is load-bearing. The fixture's own discovery sweep arms a
+  // zero-delay pass, and if that timer is still pending when the row lands it settles the
+  // closure by coincidence - which is exactly how an earlier version of this test passed with
+  // the guard under test deleted. Letting it fire first against an empty ledger leaves the
+  // sweep armed beside the write as the only thing that can act.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(db.getTaskSessionClosure(taskId), null, "still nothing owed, and nothing pending");
+
+  // The archive lands. The completion and its closure commit together, well after the call
+  // that asked for them returned.
+  openGate();
+  await until("the archive settles the completion", () => registry.getTask(taskId)?.status === "done");
+  assert.ok(db.getTaskSessionClosure(taskId), "which owes a closure");
+
+  // And it is acted on, by the sweep armed beside that write.
+  await until("the late completion's session is closed too", () => kill.killed.includes(sessionId));
+});
+
 test("a closure a previous daemon left owed is resumed, but never before discovery has run", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = terminalMission();

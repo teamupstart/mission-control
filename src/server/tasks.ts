@@ -4713,11 +4713,19 @@ export class TaskManager {
         deadlineAt: now + MISSION_SESSION_CLOSURE_DEADLINE_MS,
       });
       this.registry.publishPersistedTask(updated, displaced);
-      // No sweep scheduled here. `concludeScheduledMissionRun` - the only caller that sets
-      // `closeSessionId` - awaits one itself as soon as this returns, so scheduling a second
-      // immediate pass would just run the same work twice in a row. Recovery does not depend
-      // on it either: the row is durable, and a daemon that dies before the awaited pass finds
-      // it again behind the discovery gate.
+      // Armed HERE, beside the write, and that placement is the invariant: a closure row is
+      // never committed without something scheduled to settle it.
+      //
+      // This was briefly removed as redundant, on the reasoning that
+      // `concludeScheduledMissionRun` settles its own row the moment it returns. That holds
+      // only when this ran synchronously inside that call. A scout's completion awaits
+      // `gate.ensureReady` first, so the conclusion had already looked at an empty ledger and
+      // moved on by the time the row landed here - leaving a live session with nothing
+      // scheduled to close it until some unrelated event happened by. Found in review.
+      //
+      // The ordinary path pays one extra pass, which costs a stop attempt against a session
+      // that is usually already exiting and refused by the guard at the top of the settle.
+      this.scheduleMissionSessionClosureSweep(0);
     } else {
       this.registry.upsertTask(updated);
     }

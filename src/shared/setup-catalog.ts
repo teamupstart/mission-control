@@ -31,6 +31,7 @@ export const SETUP_DEPENDENCY_IDS = [
   "ai-conductor",
   "iterm",
   "herdr",
+  "node-runtime",
 ] as const;
 
 export type SetupDependencyId = (typeof SETUP_DEPENDENCY_IDS)[number];
@@ -42,6 +43,7 @@ export const SETUP_FAMILY_IDS = [
   "github",
   "extensions",
   "pipelines",
+  "runtime",
 ] as const;
 
 export type SetupFamilyId = (typeof SETUP_FAMILY_IDS)[number];
@@ -77,6 +79,11 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
     id: "pipelines",
     label: "Pipelines",
     description: "External SDLC engines can drive and report gated feature work.",
+  },
+  runtime: {
+    id: "runtime",
+    label: "Runtime",
+    description: "The system Node.js runtime used by app updates and Node-based tools.",
   },
 };
 
@@ -311,6 +318,18 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
       kind: "link",
       url: "https://herdr.dev/docs/install/",
       label: "Open Herdr installation guide",
+    },
+  },
+  "node-runtime": {
+    id: "node-runtime",
+    label: "Node.js",
+    family: "runtime",
+    requirement: "required",
+    enables: "A supported system Node.js installation is required to prepare app updates and run Node-based tools.",
+    remedy: {
+      kind: "command",
+      argv: ["brew", "install", "node"],
+      note: "Install or update Node.js and npm with Homebrew, then press Re-check.",
     },
   },
 };

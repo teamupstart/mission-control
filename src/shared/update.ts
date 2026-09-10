@@ -56,6 +56,8 @@ export type UpdateSnapshot =
       releaseNotes: string;
       publishedAt: string;
       checkedAt: number;
+      /** A recoverable prerequisite failure. The release remains visible, but cannot build. */
+      blocker?: string;
     })
   /**
    * The new version is being built while this app keeps running.

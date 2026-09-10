@@ -92,6 +92,8 @@ export type StageOutcome =
 export interface StageRequest {
   /** A system Node.js binary; Electron's own executable cannot run npm. */
   node: string;
+  /** Environment validated by the updater, pinned for all build children. */
+  env?: NodeJS.ProcessEnv;
   sourceClone: string;
   targetTag: string;
   signal: AbortSignal;
@@ -337,7 +339,7 @@ function runStagedBuild(request: StageRequest): Promise<StageOutcome> {
         // and installs nothing.
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: updateChildEnvironment(),
+        env: request.env ?? updateChildEnvironment(),
       });
     } catch (error) {
       settle({

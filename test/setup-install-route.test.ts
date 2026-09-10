@@ -35,6 +35,18 @@ function catalogWith(id: SetupDependencyId, remedy: SetupRemedy) {
   };
 }
 
+test("Node Setup opens the catalog-owned Homebrew remedy and reports launch refusal", async () => {
+  const calls: LaunchCall[] = [];
+  const response = await post(appFor({ calls }), { id: "node-runtime", backend: "cmux" });
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.name, "Install Node.js");
+  assert.deepEqual(calls[0]!.argv, ["/bin/sh", "-c", setupInstallerShell(["brew", "install", "node"])]);
+  const refused = await post(appFor({ calls: [], launchResult: { ok: false, label: "cmux", status: 409, error: "cmux is not running. Open it and try again." } }), { id: "node-runtime", backend: "cmux" });
+  assert.equal(refused.status, 409);
+  assert.match((await refused.json() as { detail: string }).detail, /Open it and try again/);
+});
+
 function appFor({
   calls,
   launchResult = { ok: true, label: "cmux", status: 200 },

@@ -1140,6 +1140,32 @@ test("steering freezes the durable objective and preserves opening provenance ac
   assert.equal(frozen.rawGoal, amended, "a later replacement never rewrites frozen intent");
 });
 
+test("Persona intent reports an unresolved relationship for a captured pending instruction", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("unresolved-intent-source")]);
+  const { session, binding } = bindingFor(registry, "unresolved-intent-source");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, {
+    relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [],
+  });
+  registry.captureAcceptedPrompt(session.id, "continue", binding.noteKey);
+
+  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.deepEqual(frozen.intentSource, {
+    objectiveVersion: 1, promptRevision: 2, resolvedPromptRevision: 1, relationship: null,
+  });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], frozen);
+  const prompt = buildPersonaPrompt({
+    sourcePersonaId: "reviewer", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null,
+  }, fallbackWorkflowContext(captured.raw, null));
+  // Inspect only intent: the live diff also contains these test assertions.
+  const intentSection = prompt.split("# Original human intent")[1]!.split("# Published Persona guidance")[0]!;
+  assert.ok(intentSection.includes(HUMAN_ASK));
+  assert.match(intentSection, /Captured objective version 1; prompt revision 2; resolved revision 1; relationship unresolved\./);
+  assert.doesNotMatch(intentSection, /relationship (?:null|undefined|initial|steer)/);
+});
+
 test("a session without an objective falls back to its prompt without inventing provenance", () => {
   const registry = new Registry();
   registry.applyDiscovery([discovered("no-objective")]);

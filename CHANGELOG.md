@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.14.0](https://github.com/teamupstart/mission-control/compare/v1.13.0...v1.14.0) (2026-09-10)
+
+
+### Features
+
+* **pi:** report dispatched costs and enable multi-repo tasks ([#992](https://github.com/teamupstart/mission-control/issues/992)) ([85188e9](https://github.com/teamupstart/mission-control/commit/85188e9385b19adba873f4ee86eec0f393b8d2ba))
+* **task-sources:** configure, watch and repair write-back from Settings ([#983](https://github.com/teamupstart/mission-control/issues/983)) ([8cc1763](https://github.com/teamupstart/mission-control/commit/8cc1763f335197ebd1c07b2c3f1879dade4771f5))
+* **task-sources:** write a swept Jira issue's pull request and status back to it ([#988](https://github.com/teamupstart/mission-control/issues/988)) ([dcb3954](https://github.com/teamupstart/mission-control/commit/dcb3954ac2444d0f1161087bcc5d1d01a1f498a3))
+* **workflows:** give the run record a tab bar instead of a section stack ([#981](https://github.com/teamupstart/mission-control/issues/981)) ([84a3e1d](https://github.com/teamupstart/mission-control/commit/84a3e1dbfe226956c31ce8dca52ee1f694fe7abf))
+
+
+### Bug Fixes
+
+* check Node compatibility before upgrades and in Setup ([#978](https://github.com/teamupstart/mission-control/issues/978)) ([0cd6a94](https://github.com/teamupstart/mission-control/commit/0cd6a9461317514fdf4f716229ce4f7ba80b129c))
+* **goal:** stop injected prompts overwriting the session Goal ([#986](https://github.com/teamupstart/mission-control/issues/986)) ([4786cf9](https://github.com/teamupstart/mission-control/commit/4786cf97ab39ba683b49dd67354e3261c44bb1c9))
+* **missions:** close a concluded recurring mission's agent session ([#982](https://github.com/teamupstart/mission-control/issues/982)) ([8cc4bb6](https://github.com/teamupstart/mission-control/commit/8cc4bb6ef777298d5434cb5766c619e6a13bc1c8))
+* **pi:** deliver standing instructions through system prompt ([#994](https://github.com/teamupstart/mission-control/issues/994)) ([1b5cbdc](https://github.com/teamupstart/mission-control/commit/1b5cbdc7d0d1a77251dbd44f9d2014adc29ace75))
+* **terminal:** make a Herdr dispatch actually start its agent ([#989](https://github.com/teamupstart/mission-control/issues/989)) ([4b7dcc0](https://github.com/teamupstart/mission-control/commit/4b7dcc02bf36b98cd3ec1899c409007b1e9b0545))
+* **workflows:** draw a visible scrollbar on the pipeline strip ([#984](https://github.com/teamupstart/mission-control/issues/984)) ([27f900d](https://github.com/teamupstart/mission-control/commit/27f900dd674a254a18bfd62145022350fbcb55df))
+* **workflows:** freeze durable objective as review contract ([#990](https://github.com/teamupstart/mission-control/issues/990)) ([2cace06](https://github.com/teamupstart/mission-control/commit/2cace06173eb291bf256721cb29fe10ba38c5c0a))
+* **workflows:** let proven evidence cross a review round ([#991](https://github.com/teamupstart/mission-control/issues/991)) ([5e68dd1](https://github.com/teamupstart/mission-control/commit/5e68dd1284096623ccfac452034e2f6869abe27d))
+
 ## [1.13.0](https://github.com/teamupstart/mission-control/compare/v1.12.0...v1.13.0) (2026-09-09)
 
 

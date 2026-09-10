@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { writeProductAuthorizationScript } from "../fixtures/fake-agents.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
+import { observeReactRefresh } from "../fixtures/react-refresh.ts";
 
 test.skip(process.platform !== "darwin", "the real sandboxed desktop fixture requires the macOS GUI");
 
@@ -37,13 +38,11 @@ test("a real desktop Report click still publishes after the feedback module hot 
       await dialog.getByRole("textbox", { name: "Title", exact: true }).fill("Test");
       await dialog.getByRole("textbox", { name: "Details", exact: true }).fill("Test issue, do nothing.");
       await expectContentClearsBorder(dialog);
-      const updated = page.waitForEvent("console", {
-        predicate: (message) => message.text().includes("hot updated: /components/ProductIssueModal.tsx"),
-      });
+      const refresh = await observeReactRefresh(page);
       const now = new Date();
       // Touch only the timestamp: exercise Vite's real React refresh without editing source.
       utimesSync(join(process.cwd(), "src/web/components/ProductIssueModal.tsx"), now, now);
-      await updated;
+      await refresh.completed;
       await expect(dialog.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Test");
       await expect(dialog.getByRole("textbox", { name: "Details", exact: true }))
         .toHaveValue("Test issue, do nothing.");

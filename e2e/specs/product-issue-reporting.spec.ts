@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -13,6 +13,8 @@ import {
 } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
+import { observeReactRefresh } from "../fixtures/react-refresh.ts";
 
 /**
  * Public product reporting, driven the way a person actually meets it.
@@ -421,6 +423,34 @@ test("forged and implicit submissions do not bypass the trusted Report control",
   await publish(dashboard);
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
   expect(productCreates(daemon)).toHaveLength(1);
+});
+
+test("hot updates preserve the one-time reporting capability in the browser", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dev = await startDevDashboard(daemon);
+  try {
+    // The page-scoped bridge above claims its capability only once, just like the preload.
+    // Exercise real Vite refresh with that fake on every CI platform; the separate Electron
+    // spec additionally verifies the real context-isolated bridge on macOS.
+    await dashboard.goto(`${dev.origin}/#/fleet`);
+    await openFromTopbar(dashboard);
+    await fill(dashboard, "Bug", "Test", "Test issue, do nothing.");
+    await expectContentClearsBorder(form(dashboard));
+    const refresh = await observeReactRefresh(dashboard);
+    const now = new Date();
+    utimesSync(join(process.cwd(), "src/web/components/ProductIssueModal.tsx"), now, now);
+    await refresh.completed;
+    await expect(titleBox(dashboard)).toHaveValue("Test");
+    await expect(form(dashboard).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("Test issue, do nothing.");
+    await publish(dashboard);
+    await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+    await expect.poll(() => productCreates(daemon).length).toBe(1);
+  } finally {
+    dev.stop();
+  }
 });
 
 test("a browser without the desktop bridge explains where reports can be published", async ({

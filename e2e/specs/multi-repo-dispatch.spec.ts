@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
@@ -266,12 +267,31 @@ test("a fixture harness with no multi-repo capability still hides the control", 
   await dashboard.route("**/assets/*.js", async (route) => {
     const response = await route.fetch();
     const body = await response.text();
-    const declaration = /multiRepoDispatch:\{kind:"no-boundary",why:"(?:[^"\\]|\\.)*",sdk:!1\}/g;
-    const matches = [...body.matchAll(declaration)];
+    // Read syntax rather than minifier spelling: property order, string quoting and
+    // boolean compression have no bearing on the capability we are replacing.
+    const matches: ts.ObjectLiteralExpression[] = [];
+    const source = ts.createSourceFile("bundle.js", body, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const nameOf = (name: ts.PropertyName): string | null =>
+      ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+    const visit = (node: ts.Node): void => {
+      if (ts.isPropertyAssignment(node) && nameOf(node.name) === "multiRepoDispatch" &&
+          ts.isObjectLiteralExpression(node.initializer)) {
+        const noBoundary = node.initializer.properties.some((property) =>
+          ts.isPropertyAssignment(property) && nameOf(property.name) === "kind" &&
+          ts.isStringLiteral(property.initializer) && property.initializer.text === "no-boundary");
+        if (noBoundary) matches.push(node.initializer);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
     if (matches.length) {
       expect(matches).toHaveLength(1);
       replaced = true;
-      await route.fulfill({ response, body: body.replace(declaration, "multiRepoDispatch:null") });
+      const declaration = matches[0]!;
+      await route.fulfill({
+        response,
+        body: body.slice(0, declaration.getStart(source)) + "null" + body.slice(declaration.end),
+      });
     } else {
       await route.fulfill({ response, body });
     }

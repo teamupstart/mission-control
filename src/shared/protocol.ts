@@ -101,6 +101,7 @@ import {
   WORKFLOW_EVIDENCE_READINESS_WARNING_CODES,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_STEERING_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RESUMPTION_POLICIES,
@@ -5306,7 +5307,21 @@ const WorkflowIntentSourceSchema = z.object({
   relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable(),
 });
 
+export const WorkflowSteeringNoteSchema = z.object({
+  revision: z.number().int().positive(),
+  instruction: z.string().max(WORKFLOW_STEERING_LIMITS.instruction),
+  relationship: z.literal("steer"),
+  rationale: z.string().max(WORKFLOW_STEERING_LIMITS.rationale),
+  timestamp: z.number().int().nonnegative(),
+});
+
+const WorkflowSteeringFields = {
+  steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count).optional(),
+  steeringResolvedRevision: z.number().int().nonnegative().optional(),
+};
+
 const WorkflowContextSnapshotInputSchema = z.object({
+  ...WorkflowSteeringFields,
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
     openingAsk: z.string().nullable().optional(),
@@ -5443,6 +5458,7 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
  * would be a row that freezes fine and then fails every capture that reads it.
  */
 export const WorkflowRunIntentSnapshotSchema = z.object({
+  ...WorkflowSteeringFields,
   rawGoal: z.string().max(16_000),
   openingAsk: z.string().nullable().optional(),
   intentSource: WorkflowIntentSourceSchema.nullable().optional(),

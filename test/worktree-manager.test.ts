@@ -266,6 +266,61 @@ test("concurrent acquires receive different exact slots and respect capacity", a
   }
 });
 
+test("new slots serialize shared Git metadata creation without blocking another repository", { timeout: 15_000 }, async () => {
+  const first = repository("mission-native-add-lock-");
+  const other = repository("mission-native-add-independent-");
+  const firstIdentity = worktreeRepositoryIdentity(first.clone)!;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let addingFirst = false;
+  let firstCalls = 0;
+  const git = new NativeWorktreeGit();
+  const add = git.add.bind(git);
+  git.add = async (identity, path, commit) => {
+    if (identity.gitCommonDirectory !== firstIdentity.gitCommonDirectory) {
+      return add(identity, path, commit);
+    }
+    if (addingFirst) {
+      // Git can see the first add's still-incomplete .git/worktrees/<basename>/commondir.
+      return { ok: false, reason: "overlapping shared worktree metadata creation", outcomeUnknown: false };
+    }
+    addingFirst = true;
+    try {
+      if (++firstCalls === 1) {
+        entered();
+        await held;
+      }
+      return await add(identity, path, commit);
+    } finally {
+      addingFirst = false;
+    }
+  };
+  const m = manager({ git });
+  const pendingFirst = acquire(m, first.clone, first.sha, "first-add");
+  await started;
+  const pendingSecond = acquire(m, first.clone, first.sha, "second-add");
+  let independent: NativeWorktreeLease;
+  try {
+    // The reservation remains short: the second slot is reserved even while Git is held.
+    const deadline = Date.now() + 5_000;
+    while (m.store.slots().length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(m.store.slots().length, 2, "the second reservation must not wait for Git");
+    independent = lease(await acquire(m, other.clone, other.sha, "independent-add"));
+  } finally {
+    release();
+  }
+  const results = await Promise.all([pendingFirst, pendingSecond]);
+  assert.deepEqual(results.map((result) => result.outcome), ["acquired", "acquired"], JSON.stringify(results));
+  assert.equal(firstCalls, 2);
+  for (const acquired of [...results.map(lease), independent]) {
+    await m.release(acquired);
+  }
+});
+
 test("task acquisition uses native identity, degrades at capacity, and reuses a released slot", async () => {
   const { clone, sha } = repository("mission-native-task-consumer-");
   const m = manager({

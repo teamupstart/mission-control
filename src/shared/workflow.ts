@@ -3561,6 +3561,18 @@ export interface WorkflowBindingSummary {
  */
 export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
 
+/** Classified human method, sequence or priority context, never acceptance criteria. */
+export interface WorkflowSteeringNote {
+  revision: number;
+  instruction: string;
+  relationship: "steer";
+  rationale: string;
+  timestamp: number;
+}
+
+// Goal capture keeps 4,000 prompt characters plus the five-character " […] " marker.
+export const WORKFLOW_STEERING_LIMITS = { count: 50, bytes: 32_000, instruction: 4_005, rationale: 2_000 } as const;
+
 /**
  * The human's ask, frozen onto a run the moment the run exists.
  *
@@ -3581,6 +3593,9 @@ export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
  * fingerprint documents - those are live per-submission reads, and only intent is frozen.
  */
 export interface WorkflowRunIntentSnapshot {
+  steering?: WorkflowSteeringNote[];
+  /** Goal revision read alongside the objective; later classifications belong to a new run. */
+  steeringResolvedRevision?: number;
   /** Durable objective at run creation; historical snapshots retain their captured prompt. */
   rawGoal: string;
   /** Verbatim opening request, absent on older snapshots and null when unknown. */
@@ -3989,6 +4004,8 @@ export interface WorkflowCheckEvidence {
 }
 
 export interface WorkflowContextSnapshot {
+  steering?: WorkflowSteeringNote[];
+  steeringResolvedRevision?: number;
   primaryGoal: {
     rawPrompt: string;
     openingAsk?: string | null;

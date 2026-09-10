@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
 import {
   APP_CONFIG_ENTRIES,
@@ -96,6 +97,7 @@ import {
   PROMPTED_DECISION_GAP_PATH_MAX,
   PROMPTED_DECISION_SUMMARY_MAX,
   HtmlBlockPathSchema,
+  WorkflowSteeringNoteSchema,
   PromptedRecoveryStateSchema,
   PromptedCompletionDispositionSchema,
   type HtmlBlockPathStep,
@@ -940,6 +942,19 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       pending_prompts         TEXT NOT NULL DEFAULT '[]', -- unresolved revisions, oldest first
       updated_at              INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS session_goal_steering (
+      note_key TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      instruction TEXT NOT NULL,
+      relationship TEXT NOT NULL CHECK (relationship = 'steer'),
+      rationale TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      PRIMARY KEY (note_key, revision)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_goal_steering_instruction
+      ON session_goal_steering(note_key, instruction, revision);
 
     -- Whether Foreman is invited to act in a session. Keyed like session_notes so the
     -- invite shares that lifecycle (rotation, reset, prune), and one row per key holds
@@ -10145,6 +10160,56 @@ export function upsertSessionGoal(g: SessionGoal): void {
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
       JSON.stringify(g.pendingPrompts), g.updatedAt,
     );
+}
+
+/** Commit the classification and its steering record together, before Registry publishes it. */
+export function upsertSessionGoalWithSteering(g: SessionGoal, note: WorkflowSteeringNote): void {
+  const parsed = WorkflowSteeringNoteSchema.parse(note);
+  if (g.relationship !== "steer" || g.resolvedPromptRevision !== parsed.revision) {
+    throw new Error("Steering must belong to the resolved goal revision");
+  }
+  const db = openDb();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    upsertSessionGoal(g);
+    db.prepare(`INSERT INTO session_goal_steering
+      (note_key, revision, instruction, relationship, rationale, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(note_key, revision) DO NOTHING`)
+      .run(g.noteKey, parsed.revision, parsed.instruction, parsed.relationship, parsed.rationale, parsed.timestamp);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+/** Select newest revisions first, then return the retained suffix in conversation order. */
+export function readSessionGoalSteering(noteKey: string, resolvedRevision: number): WorkflowSteeringNote[] {
+  const rows = openDb().prepare(`SELECT revision, instruction, relationship, rationale, timestamp
+    FROM session_goal_steering WHERE note_key = ? AND revision <= ?
+    ORDER BY revision DESC LIMIT ?`).all(noteKey, resolvedRevision, WORKFLOW_STEERING_LIMITS.count);
+  const notes: WorkflowSteeringNote[] = [];
+  for (const row of rows) {
+    const note = WorkflowSteeringNoteSchema.parse(row);
+    if (Buffer.byteLength(JSON.stringify([note, ...notes])) > WORKFLOW_STEERING_LIMITS.bytes) break;
+    notes.unshift(note);
+  }
+  return notes;
+}
+
+/** Also covers notes too old to fit the prompt's bounded steering suffix. */
+export function isSessionGoalSteering(noteKey: string, revision: number, instruction: string): boolean {
+  return !!openDb().prepare(`SELECT 1 FROM session_goal_steering
+    WHERE note_key = ? AND revision <= ? AND instruction = ? LIMIT 1`)
+    .get(noteKey, revision, instruction);
+}
+
+export function pruneSessionGoalSteering(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  if (!keys.length) return 0;
+  return Number(openDb().prepare(`DELETE FROM session_goal_steering
+    WHERE timestamp < ? AND note_key NOT IN (${keys.map(() => "?").join(",")})`)
+    .run(olderThan, ...keys).changes);
 }
 
 export function getSessionGoal(noteKey: string): SessionGoal | undefined {

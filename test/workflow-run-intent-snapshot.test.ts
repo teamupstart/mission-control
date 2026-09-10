@@ -1221,3 +1221,97 @@ test("opening provenance does not change the fingerprint or legacy frozen rows",
   assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(old), old);
   assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(augmented), augmented);
 });
+
+test("steering freezes by resolved revision, reaches Personas, and stays out of decisions and compaction", async () => {
+  const instruction = "skip the E2E for now, the harness is broken";
+  const transcriptPath = join(home, "steering-context.jsonl");
+  writeFileSync(transcriptPath, JSON.stringify({ type: "user", uuid: "steering-turn", timestamp: new Date().toISOString(),
+    message: { role: "user", content: instruction } }) + "\n");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("steering-capture", transcriptPath)]);
+  const { session, binding } = bindingFor(registry, "steering-capture");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
+  registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
+  registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: 2, pendingPrompts: [],
+    rationale: "The harness is temporarily unavailable" }, instruction, 100);
+  registry.captureAcceptedPrompt(session.id, "do the smaller one first", binding.noteKey);
+  const snapshot = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(snapshot.steeringResolvedRevision, 2);
+  assert.deepEqual(snapshot.steering?.map((note) => note.instruction), [instruction]);
+  assert.ok(!snapshot.decisions.some((decision) => decision.decision.includes(instruction)));
+  assert.equal(snapshot.fingerprint, workflowRunIntentFingerprint({ ...snapshot, steering: undefined } as typeof snapshot));
+  assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(snapshot).steering, snapshot.steering);
+  registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: 3, pendingPrompts: [] }, "do the smaller one first", 100);
+  const capture = await readWorkflowContextRaw(registry, binding, [], [], snapshot);
+  assert.deepEqual(capture.raw.steering, snapshot.steering);
+  assert.equal(capture.raw.steeringResolvedRevision, 2);
+  assert.equal(readWorkflowIntentSnapshot(registry, binding)!.steering!.length, 2);
+  let compactionPrompt = "";
+  const context = await compactWorkflowContext(capture.raw, {
+    execute: async (prompt) => { compactionPrompt = prompt; return { kind: "ok", value: criteriaFor([HUMAN_ASK]) }; },
+    reconcile: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
+  });
+  assert.ok(!compactionPrompt.includes(instruction));
+  assert.deepEqual(context.steering, snapshot.steering);
+  const persona = { sourcePersonaId: "steering-persona", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null };
+  const prompt = buildPersonaPrompt(persona, context);
+  const steeringIndex = prompt.indexOf("# Human steering context");
+  assert.ok(steeringIndex > prompt.indexOf("Acceptance criteria:"));
+  assert.ok(steeringIndex < prompt.indexOf("# Published Persona guidance"));
+  const section = prompt.slice(steeringIndex, prompt.indexOf("# Published Persona guidance"));
+  assert.ok(section.includes(instruction));
+  assert.match(section, /do not add, remove or narrow acceptance criteria/);
+  assert.match(section, /legitimately skipped or deferred/);
+  assert.match(section, /Frozen through resolved prompt revision 2/);
+  assert.ok(!buildPersonaPrompt(persona, { ...context, steering: [] }).split("# Published Persona guidance")[0]!.includes("# Human steering context"));
+});
+
+test("steering is bounded by count, UTF-8 bytes and the snapshot's remaining serialized budget", async () => {
+  const { withWorkflowSteering } = await import("../src/server/workflows/context.ts");
+  const { WORKFLOW_EXECUTION_LIMITS, WORKFLOW_STEERING_LIMITS } = await import("../src/shared/workflow.ts");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("bounded-steering")]);
+  const { session, binding } = bindingFor(registry, "bounded-steering");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
+  for (let i = 0; i < 60; i++) {
+    const instruction = `Method ${i}`;
+    registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
+    registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: i + 2, pendingPrompts: [] }, instruction, 100);
+  }
+  const snapshot = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(snapshot.steering!.length, WORKFLOW_STEERING_LIMITS.count);
+  assert.equal(snapshot.steering![0]!.revision, 12);
+  const instruction = "界".repeat(4_000);
+  for (let i = 62; i < 70; i++) {
+    registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
+    registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: registry.getGoal(session.id)!.promptRevision,
+      pendingPrompts: [] }, instruction, 100);
+  }
+  const bounded = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.ok(bounded.steering!.length < 50);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded.steering)) <= WORKFLOW_STEERING_LIMITS.bytes);
+  const base = freezeWorkflowRunIntent({ ...FIXTURE_RUN_INTENT, openingAsk: "", steering: [], steeringResolvedRevision: 61 });
+  const remaining = WORKFLOW_EXECUTION_LIMITS.contextJsonBytes - Buffer.byteLength(JSON.stringify(base));
+  const full = { ...base, openingAsk: "a".repeat(remaining) };
+  const dropped = withWorkflowSteering(full, snapshot.steering!, 61);
+  assert.deepEqual(dropped.steering, []);
+  assert.equal(Buffer.byteLength(JSON.stringify(dropped)), WORKFLOW_EXECUTION_LIMITS.contextJsonBytes);
+  assert.doesNotThrow(() => WorkflowRunIntentSnapshotSchema.parse(dropped));
+  const store = new WorkflowStore();
+  const storedBinding = store.insertBinding({ id: "budget-binding", workflowVersionId: "budget-version",
+    noteKey: binding.noteKey, sessionId: session.id, sessionAgent: "claude", sessionName: "Budget",
+    sessionCwd: repositoryRoot, sessionRepoRoot: repositoryRoot, triggerMode: "manual", deliveryMode: "preview",
+    maxRepairRounds: 3, now: 100 });
+  const created = store.createInitialSubmission({ id: "budget-run", binding: storedBinding,
+    triggerSource: "manual", triggerKey: "budget-trigger", now: 100, intent: dropped },
+  { id: "budget-submission", triggerSource: "manual", triggerKey: "budget-trigger", context: {}, evidence: {}, now: 100 });
+  assert.deepEqual(created.run.intent?.steering, []);
+  assert.equal(store.getRun("budget-run")?.intentState, "frozen");
+  // The additive metadata itself also yields when the pre-feature snapshot has no room.
+  const { steering: _notes, steeringResolvedRevision: _revision, ...oldShape } = full;
+  oldShape.openingAsk += "a".repeat(WORKFLOW_EXECUTION_LIMITS.contextJsonBytes - Buffer.byteLength(JSON.stringify(oldShape)));
+  assert.deepEqual(withWorkflowSteering(oldShape, snapshot.steering!, 61), oldShape);
+});

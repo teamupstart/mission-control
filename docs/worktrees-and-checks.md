@@ -49,6 +49,12 @@ than by the checkout path used to reach it. Released slot directories remain in 
 dependencies and build caches stay warm for the next lease. A repository-specific disable uses a
 cold disposable Git worktree beneath `MISSION_HOME/worktrees` instead.
 
+New slots reserve capacity independently, then serialize `git worktree add` within the same
+physical repository. Git registrations share `.git/worktrees` metadata even when their checkout
+paths differ; overlapping creation can read another slot's incomplete `commondir` file. This
+serialization ends when registration finishes, so setup, inspection, warm-slot resets, and
+creation in other repositories can still proceed concurrently.
+
 A slot never crosses a task boundary holding a branch. Reset detaches the checkout at the exact
 requested commit before it hard-resets and cleans, and both state transitions that hand a slot on
 - finalizing a lease and marking a returned slot available - independently prove path, repository,

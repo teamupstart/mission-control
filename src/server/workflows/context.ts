@@ -18,6 +18,7 @@ import type {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  WORKFLOW_EXECUTION_LIMITS,
   workflowCrossCriterionClaimIds,
 } from "@shared/workflow.ts";
 import {
@@ -116,6 +117,8 @@ export interface WorkflowCompactionDeps {
 
 export interface RawWorkflowContext {
   primaryGoal: WorkflowContextSnapshot["primaryGoal"];
+  steering?: WorkflowContextSnapshot["steering"];
+  steeringResolvedRevision?: number;
   humanDecisions: WorkflowHumanDecision[];
   priorPersonaFeedback: PersonaFeedbackSummary[];
   session: WorkflowContextSnapshot["session"];
@@ -990,8 +993,9 @@ function readLiveWorkflowIntent(
   binding: WorkflowBinding,
   session: Session,
   contextTranscript: TranscriptMessage[],
-): { primaryGoal: RawWorkflowContext["primaryGoal"]; humanDecisions: WorkflowHumanDecision[] } {
-  const goal = registry.getGoal(session.id);
+  goal = registry.getGoal(session.id),
+  excludeSteering = false,
+): Pick<RawWorkflowContext, "primaryGoal" | "humanDecisions" | "steering" | "steeringResolvedRevision"> {
   return {
     primaryGoal: {
       rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
@@ -1010,7 +1014,11 @@ function readLiveWorkflowIntent(
           rationale: clip(episode.brief ?? episode.recommendation ?? "", MAX_DECISION_TEXT) || null,
           source: { kind: "foreman_episode", id: String(episode.id) },
         })),
-      ...humanTranscriptDecisions(contextTranscript),
+      ...humanTranscriptDecisions(excludeSteering
+        ? contextTranscript.filter((message) => !registry.isGoalSteering(
+            session.id, goal?.resolvedPromptRevision ?? 0, message.text,
+          ))
+        : contextTranscript),
     ]),
   };
 }
@@ -1039,20 +1047,22 @@ export function readWorkflowIntentSnapshot(
   const located = sessionMessages(session);
   const transcriptWindow = located?.read.window(located.path, 12, 68)
     ?? { messages: [], truncated: false, headCount: 0 };
+  const goal = registry.getGoal(session.id);
   const intent = readLiveWorkflowIntent(
     registry,
     binding,
     session,
     contextTranscriptFor(session, located, transcriptWindow.messages, deliveredWorkflowAnchors),
+    goal,
+    true,
   );
-  const goal = registry.getGoal(session.id);
   // The objective and its provenance are a new-run contract, not a change to the live
   // compatibility path used by runs that predate intent snapshots.
   // Minted through the one constructor, never assembled here. The store derives a snapshot's
   // identity the same way when a run is created, and two spellings of "build a snapshot" would
   // be two places to update if derivation ever changes - with the manager-visible snapshot free
   // to disagree with the durable one in the meantime.
-  return freezeWorkflowRunIntent({
+  const snapshot = freezeWorkflowRunIntent({
     rawGoal: goal?.objective != null ? clip(goal.objective, MAX_GOAL) : intent.primaryGoal.rawPrompt,
     refinedGoal: intent.primaryGoal.refined,
     sourceNoteKey: intent.primaryGoal.sourceNoteKey,
@@ -1066,6 +1076,28 @@ export function readWorkflowIntentSnapshot(
     decisions: intent.humanDecisions,
     frozenAt: now,
   });
+  return withWorkflowSteering(snapshot, registry.getGoalSteering(session.id, goal?.resolvedPromptRevision ?? 0),
+    goal?.resolvedPromptRevision ?? 0);
+}
+
+/** Spend only the space left by the existing intent, including JSON framing and provenance. */
+export function withWorkflowSteering(
+  snapshot: WorkflowRunIntentSnapshot,
+  notes: NonNullable<WorkflowRunIntentSnapshot["steering"]>,
+  resolvedRevision: number,
+): WorkflowRunIntentSnapshot {
+  const candidate = { ...snapshot, steeringResolvedRevision: resolvedRevision, steering: [] as typeof notes };
+  let remaining = WORKFLOW_EXECUTION_LIMITS.contextJsonBytes - Buffer.byteLength(JSON.stringify(candidate));
+  // Even the additive empty-array framing must not make a previously valid freeze fail.
+  if (remaining < 0) return snapshot;
+  for (let index = notes.length - 1; index >= 0; index--) {
+    const note = notes[index]!;
+    const bytes = Buffer.byteLength(JSON.stringify(note)) + (candidate.steering.length ? 1 : 0);
+    if (bytes > remaining) break;
+    candidate.steering.unshift(note);
+    remaining -= bytes;
+  }
+  return candidate;
 }
 
 /**
@@ -1132,6 +1164,8 @@ export async function readWorkflowContextRaw(
           sourceNoteKey: frozenIntent.sourceNoteKey,
         },
         humanDecisions: frozenIntent.decisions,
+        steering: frozenIntent.steering,
+        steeringResolvedRevision: frozenIntent.steeringResolvedRevision,
       }
     : readLiveWorkflowIntent(registry, binding, session, contextTranscript);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
@@ -1139,6 +1173,7 @@ export async function readWorkflowContextRaw(
   const transcript = boundedTranscript.transcript;
   const raw: RawWorkflowContext = {
     primaryGoal: intent.primaryGoal,
+    ...(intent.steering ? { steering: intent.steering, steeringResolvedRevision: intent.steeringResolvedRevision } : {}),
     humanDecisions: intent.humanDecisions,
     priorPersonaFeedback: boundedFeedback(priorPersonaFeedback),
     session: {

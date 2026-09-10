@@ -137,8 +137,40 @@ test.describe("compatible stable Herdr", () => {
       })
       .toBe(true);
     const delivery = herdrRequests(daemon).find((request) => request.method === "pane.send_input")!;
-    expect(delivery?.params?.keys).toEqual(["enter"]);
+    // The paste carries NO keys. Herdr's `pane.send_input` can take the text and its Enter in
+    // one call, and that is the bug this whole path was rewritten for: at the size a real
+    // dispatch produces, the Enter lands inside the bracketed paste the shell is still
+    // consuming and becomes a literal newline, so the command sits at the prompt and nothing
+    // starts. The dispatcher then reported "agent session never appeared" thirty seconds
+    // later. Only this layer can see the two writes arrive as two writes.
+    expect(delivery?.params?.keys).toEqual([]);
     expect(String(delivery?.params?.text)).toContain("/bin/");
+    // And it is SHORT - the environment and the agent argv ride in the wrapper script rather
+    // than in what gets typed. A real dispatch used to deliver ~3,546 bytes here.
+    expect(String(delivery?.params?.text).length).toBeLessThan(300);
+
+    // The Enter is its own write, and it comes after the paste.
+    const methods = herdrRequests(daemon).map((request) => request.method);
+    await expect
+      .poll(() => herdrRequests(daemon).some((request) => request.method === "pane.send_keys"), {
+        message: "the Enter should be delivered as a separate key write",
+        timeout: 15_000,
+      })
+      .toBe(true);
+    const submit = herdrRequests(daemon).find((request) => request.method === "pane.send_keys")!;
+    expect(submit?.params?.keys).toEqual(["enter"]);
+    expect(methods.indexOf("pane.send_input")).toBeLessThan(
+      herdrRequests(daemon).map((request) => request.method).indexOf("pane.send_keys"),
+    );
+
+    // And the launch is not reported as one until the pane is observed running something
+    // other than its login shell. Before this, `ok` meant "the bytes were accepted".
+    await expect
+      .poll(() => herdrRequests(daemon).some((request) => request.method === "pane.process_info"), {
+        message: "the launch should verify the agent actually started",
+        timeout: 15_000,
+      })
+      .toBe(true);
 
     let terminalSession: FleetSession | null = null;
     await expect

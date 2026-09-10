@@ -6,6 +6,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { launchedCommand } from "../fixtures/isolated-launch.ts";
 
 /**
  * Continuing an Agent SDK session in a terminal carries the mode it was running in.
@@ -178,7 +179,13 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     await expect
       .poll(() => recordedWorkspaceCommands(daemon), { timeout: 15_000 })
       .toHaveLength(1);
-    const [command] = recordedWorkspaceCommands(daemon);
+    const [delivered] = recordedWorkspaceCommands(daemon);
+    // What cmux is handed is the wrapper and nothing else, so the resumed conversation is read
+    // out of the wrapper's last line. Both halves matter here: the delivery has to stay short,
+    // because Herdr types it into a login shell and a 3.5 KB paste loses its Enter, and the
+    // launch inside it still has to carry the mode this spec exists for.
+    expect(delivered.length).toBeLessThan(300);
+    const command = launchedCommand(delivered!);
     const [workspaceArgv] = recordedWorkspaceArgv(daemon);
     const focusAt = workspaceArgv?.indexOf("--focus") ?? -1;
     expect(focusAt).toBeGreaterThan(-1);
@@ -196,6 +203,7 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     for (const words of carried) expect(command).toContain(words);
     if (process.env.MC_E2E_EVIDENCE) {
       console.log(`OBSERVED the ${agent} terminal command carries the mode: ${command}`);
+      console.log(`OBSERVED the delivered command is ${delivered.length} bytes: ${delivered}`);
     }
   });
 }

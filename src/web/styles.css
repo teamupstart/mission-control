@@ -32163,6 +32163,12 @@ body.foreman-sidecar-open .modal-backdrop {
   display: grid;
   gap: 14px;
 }
+.feedback-footer {
+  flex-wrap: wrap;
+}
+.feedback-authorization-error {
+  flex-basis: 100%;
+}
 /* Prominent, and prominent ONCE. A form where every element wore a danger border would
    teach the eye to skip all of them, including this - so exactly one element carries the
    warning tone and the fields beside it stay ordinary. */

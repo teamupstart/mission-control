@@ -13,6 +13,7 @@ import {
   previewProductIssue,
 } from "../lib/api.ts";
 import { publishProductIssue } from "../lib/product-issue-submission.ts";
+import { authorizeProductIssue } from "../lib/product-issue-authorization.ts";
 import {
   AttachmentStrip,
   revokeAttachments,
@@ -177,18 +178,6 @@ function previewMatches(
   return same ? preview : null;
 }
 
-const productIssueAuthorizationCapability = typeof window === "undefined"
-  ? null
-  : window.missionDesktop?.claimProductIssueAuthorization?.() ?? null;
-
-function authorizeProductIssue(input: { requestId: string; draftIdentity: string }): boolean {
-  if (!productIssueAuthorizationCapability) return false;
-  return window.missionDesktop?.authorizeProductIssue?.(
-    productIssueAuthorizationCapability,
-    input,
-  ) === true;
-}
-
 /** Everything the presentational modal draws. Owned by the layer, so a close keeps it. */
 export interface ProductIssueModalProps {
   draft: ProductIssueDraftState;
@@ -255,6 +244,7 @@ export function ProductIssueModal({
    */
   const outcomeRef = useRef<HTMLParagraphElement | null>(null);
   const authorizedSubmitRef = useRef(false);
+  const [authorizationError, setAuthorizationError] = useState<string | null>(null);
   useEffect(() => {
     if (!result) return;
     outcomeRef.current?.scrollIntoView({ block: "nearest" });
@@ -501,12 +491,18 @@ export function ProductIssueModal({
           )}
         </div>
 
-        <footer className="modal-foot">
+        <footer className="modal-foot feedback-footer">
+          {authorizationError && (
+            <p className="feedback-error feedback-authorization-error" role="alert">{authorizationError}</p>
+          )}
           <Tooltip label="Discard this draft and the last result">
             <button
               type="button"
               className="btn btn-ghost"
-              onClick={onClear}
+              onClick={() => {
+                setAuthorizationError(null);
+                onClear();
+              }}
               disabled={submitting}
             >
               Clear
@@ -554,14 +550,22 @@ export function ProductIssueModal({
               disabled={blocked}
               aria-label="Report publicly"
               onClick={(event) => {
-                authorizedSubmitRef.current = Boolean(
-                  event.nativeEvent.isTrusted &&
-                  matched &&
-                  onAuthorize({
+                authorizedSubmitRef.current = false;
+                if (!event.nativeEvent.isTrusted || blocked || !matched) {
+                  event.preventDefault();
+                  return;
+                }
+                try {
+                  authorizedSubmitRef.current = onAuthorize({
                     requestId: matched.requestId,
                     draftIdentity: matched.draftIdentity,
-                  }),
-                );
+                  });
+                } catch {
+                  // A missing or stale desktop bridge must not leave an inert control.
+                }
+                setAuthorizationError(authorizedSubmitRef.current ? null :
+                  "Nothing was published. Mission Control could not authorize this report. " +
+                  "Quit and reopen the desktop app, then try again.");
                 if (!authorizedSubmitRef.current) event.preventDefault();
               }}
             >

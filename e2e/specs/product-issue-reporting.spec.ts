@@ -12,6 +12,7 @@ import {
   writeProductAuthorizationScript,
 } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * Public product reporting, driven the way a person actually meets it.
@@ -421,6 +422,37 @@ test("forged and implicit submissions do not bypass the trusted Report control",
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
   expect(productCreates(daemon)).toHaveLength(1);
 });
+
+for (const failure of ["refused", "throws"] as const) {
+  test(`a desktop authorization bridge that ${failure} explains the failure and retains the draft`, async ({
+    dashboard,
+    daemon,
+  }) => {
+    await openFromTopbar(dashboard);
+    await fill(dashboard, "Bug", "Test", "Test issue, do nothing.");
+    await dashboard.evaluate((mode) => {
+      window.missionDesktop!.authorizeProductIssue = () => {
+        if (mode === "throws") throw new Error("Desktop bridge disconnected");
+        return false;
+      };
+    }, failure);
+    await publish(dashboard);
+    await expect(form(dashboard).getByRole("alert")).toContainText("Nothing was published");
+    await expect(form(dashboard).getByRole("alert")).toContainText("Quit and reopen the desktop app");
+    await expect(titleBox(dashboard)).toHaveValue("Test");
+    await expectContentClearsBorder(form(dashboard));
+    expect(productCreates(daemon)).toHaveLength(0);
+    if (process.env.MC_E2E_EVIDENCE === "1" && failure === "refused") {
+      const evidenceDir = join(process.cwd(), "e2e/.artifacts/report-publicly");
+      mkdirSync(evidenceDir, { recursive: true });
+      await dashboard.mouse.move(1, 1);
+      await form(dashboard).screenshot({ path: join(evidenceDir, "authorization-error.png") });
+    }
+    await form(dashboard).getByRole("button", { name: "Clear" }).click();
+    await expect(form(dashboard).getByRole("alert")).toHaveCount(0);
+    await expect(titleBox(dashboard)).toHaveValue("");
+  });
+}
 
 test("editing before reporting publishes the latest rendered draft in one press", async ({
   dashboard,

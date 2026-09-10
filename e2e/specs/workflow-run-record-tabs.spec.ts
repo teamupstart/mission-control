@@ -459,4 +459,24 @@ test("a run with nothing blocking opens on the worklist, and offers no empty tab
   await dashboard.getByRole("group", { name: "Select a round" })
     .getByRole("button", { name: /Round 1/ }).click();
   await expect(tab(dashboard, /^Intent/)).toHaveAttribute("aria-selected", "true");
+
+  /*
+   * THE BARE RAIL, which is how the Runs page opens from the Line and from the nav.
+   *
+   * `#/runs` carries no run id, and the rail auto-selects the newest run and draws its reader
+   * anyway. The tabs have to work there too, and the route is the only thing that can carry
+   * which pane is showing - so the host has to resolve the run the rail picked rather than
+   * reading one out of a hash that does not have it. Without that, `missionRouteHash` drops a
+   * pane it cannot attach to a run, the hash never changes, and every tab on the bare rail is
+   * a control that does nothing.
+   */
+  await dashboard.goto(`${daemon.baseURL}/#/runs`);
+  await expect(dashboard.getByRole("tablist", { name: "Run record" }))
+    .toBeVisible({ timeout: 30_000 });
+  await expect(dashboard).toHaveURL(/#\/runs$/);
+  await tab(dashboard, /^Intent/).click();
+  // The run the rail picked reaches the hash WITH the pane, so the link is whole.
+  await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}\\?pane=intent$`));
+  await expect(tab(dashboard, /^Intent/)).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByRole("tabpanel", { name: /^Intent/ })).toBeVisible();
 });

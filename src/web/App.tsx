@@ -3635,9 +3635,15 @@ export function App(): React.JSX.Element {
                   // The pane joins the run in the hash rather than replacing anything already
                   // there: a filtered rail is how most readers reach a run, and losing the
                   // filter on the first tab click would take them off the list they came from.
-                  onPane={(pane) => navigate({
+                  // The RAIL's resolved run, not `route.runId`: `#/runs` carries no run id and
+                  // still draws a reader, so rebuilding the route from the hash would produce a
+                  // pane with no run to hold it, which `missionRouteHash` drops - leaving every
+                  // tab on the bare rail a control that does nothing. The filters ride along
+                  // because a filtered rail is how most readers reach a run, and losing the
+                  // filter on the first tab click would take them off the list they came from.
+                  onPane={(pane, runId) => navigate({
                     page: "runs",
-                    ...(route.page === "runs" && route.runId ? { runId: route.runId } : {}),
+                    runId,
                     ...(route.page === "runs" && route.filters ? { filters: route.filters } : {}),
                     pane,
                   })}

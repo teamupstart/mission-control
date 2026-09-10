@@ -3726,13 +3726,21 @@ export function WorkflowRuns({
   filters?: WorkflowRunFilters;
   onSelectRun: (id: string) => void;
   /**
-   * Route to a pane of the open run's record.
+   * Route to a pane of the open run's record, with the run the RAIL resolved.
    *
    * The pane lives in the ROUTE rather than in this page's state for the reason the run id
    * does: three of the panes are invisible until clicked, so a link that does not carry which
    * one is showing is a link to a different page than the one being shared.
+   *
+   * The run id is handed over rather than read back out of the route, and that is the whole
+   * point of the second argument. `#/runs` carries no run id - it is how the page opens from
+   * the Line and from the nav - and this component still draws a reader there, because
+   * `selected` falls back to the newest run. A host that rebuilt the route from `route.runId`
+   * would produce a pane with no run to attach it to, `missionRouteHash` would drop it, the
+   * hash would not change, and every tab on the bare rail would be a control that does
+   * nothing. Only this component knows which run the rail picked, so only it can say.
    */
-  onPane?: (pane: RunRecordPane) => void;
+  onPane?: (pane: RunRecordPane, runId: string) => void;
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
   /**
@@ -4340,7 +4348,10 @@ export function WorkflowRuns({
             detail={detail}
             roundId={roundId}
             pane={pane}
-            onPane={onPane}
+            // Closed over the run the rail resolved, so the view's own callback stays
+            // one-argument: a pane is a fact about the record in front of the reader, and
+            // nothing inside the view should have to know how its run was addressed.
+            onPane={onPane && selected ? (next) => onPane(next, selected) : undefined}
             onRound={setRoundId}
             onConfirm={setConfirm}
             /*

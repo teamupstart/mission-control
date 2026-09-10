@@ -545,8 +545,14 @@ test("a side split is read from both the 0.8.2 and the 0.9.0 response type", asy
   }
 });
 
-test("pane_not_found is a per-pane process miss while other process refusals remain failures", async () => {
-  for (const code of ["pane_not_found", "permission_denied"] as const) {
+// One pane's process lookup is that pane's fact, whatever went wrong with it. It used to be
+// only `pane_not_found`: every other failure ended the whole call, and `herdrMultiplexer.list()`
+// maps any failure to `[]` - so one refused or slow pane emptied every Herdr card on the
+// dashboard for that tick while the other 92 panes had answered perfectly well. Measured at 47
+// workspaces / 93 panes, `list()` costs 427ms against a 1500ms discovery tick and a 1000ms
+// per-call read timeout, so which pane loses that race is a matter of load.
+test("any per-pane process failure costs that pane's details, not the whole snapshot", async () => {
+  for (const code of ["pane_not_found", "permission_denied", "internal"] as const) {
     const fake = await fakeHerdrSocket((request, socket) => {
       if (request.method === "session.snapshot") {
         reply(socket, request.id, SNAPSHOT);
@@ -561,20 +567,138 @@ test("pane_not_found is a per-pane process miss while other process refusals rem
     });
     try {
       const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).snapshotWithProcesses();
-      if (code === "pane_not_found") {
-        assert.equal(result.ok, true);
-        if (result.ok) {
-          assert.equal(result.value.processes.get("w1:p1"), null);
-          assert.equal(result.value.processes.get("w1:p2")?.shell_pid, 202);
-        }
-      } else {
-        assert.equal(result.ok, false);
-        if (!result.ok) assert.equal(result.code, code);
-      }
+      assert.equal(result.ok, true, code);
+      if (!result.ok) continue;
+      assert.equal(result.value.processes.get("w1:p1"), null, code);
+      assert.equal(result.value.processes.get("w1:p2")?.shell_pid, 202, code);
+      // Every pane is still represented, so a caller can tell "no process details" from
+      // "no such pane".
+      assert.deepEqual([...result.value.processes.keys()], ["w1:p1", "w1:p2"], code);
     } finally {
       await fake.close();
     }
   }
+});
+
+// What still fails the whole call: an answer whose identity cannot be trusted. Degrading per
+// pane must not turn a server talking about the wrong pane into a pane with no details.
+test("a process answer about a different pane still fails the whole snapshot", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    if (request.method === "session.snapshot") reply(socket, request.id, SNAPSHOT);
+    else {
+      reply(socket, request.id, {
+        type: "pane_process_info",
+        process_info: { pane_id: "w1:p9", shell_pid: 303, tty: null },
+      });
+    }
+  });
+  try {
+    const result = await createHerdrClient(execStatus(fake.path), HERDR_BIN).snapshotWithProcesses();
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error, /identities did not match/);
+  } finally {
+    await fake.close();
+  }
+});
+
+// The single-pane lookup a launch uses to confirm its agent actually started. Same request and
+// same reading as the enumeration above - `pane.process_info` is spelled once - and a pane the
+// server does not have is null rather than an error, because that is a fact about the pane.
+test("a single pane's process details answer for that pane, and a missing pane answers null", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    if (request.params.pane_id === "w1:gone") {
+      socket.write(`${JSON.stringify({
+        id: request.id,
+        error: { code: "pane_not_found", message: "no such pane" },
+      })}\n`);
+    } else if (request.params.pane_id === "w1:elsewhere") {
+      reply(socket, request.id, {
+        type: "pane_process_info",
+        process_info: { pane_id: "w1:p2", shell_pid: 7 },
+      });
+    } else {
+      reply(socket, request.id, {
+        type: "pane_process_info",
+        process_info: {
+          pane_id: request.params.pane_id,
+          shell_pid: 1317,
+          foreground_process_group_id: 1436,
+          foreground_processes: [{ pid: 1436, name: "2.1.267", argv0: "claude" }],
+        },
+      });
+    }
+  });
+  try {
+    const client = createHerdrClient(execStatus(fake.path), HERDR_BIN);
+    const running = await client.processInfo("w1:p1");
+    assert.equal(running.ok, true);
+    if (running.ok) {
+      assert.equal(running.value?.shell_pid, 1317);
+      // The launch predicate: a foreground pid that is not the login shell's. `name` is the
+      // process TITLE - Claude's is its version string - so it can never be the predicate, and
+      // `foreground_process_group_id` is an additive 0.9.0 field the schema ignores.
+      assert.deepEqual(running.value?.foreground_processes?.map((process) => process.pid), [1436]);
+    }
+
+    const gone = await client.processInfo("w1:gone");
+    assert.equal(gone.ok, true);
+    assert.equal(gone.ok ? gone.value : undefined, null);
+
+    const elsewhere = await client.processInfo("w1:elsewhere");
+    assert.equal(elsewhere.ok, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a resolved server answers many pane requests on one status probe", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    if (request.method === "pane.read") {
+      reply(socket, request.id, { type: "pane_read", read: { pane_id: request.params.pane_id, text: "on the pane" } });
+    } else if (request.method === "pane.process_info") {
+      reply(socket, request.id, {
+        type: "pane_process_info",
+        process_info: { pane_id: request.params.pane_id, shell_pid: 11, foreground_processes: [{ pid: 12, name: "node" }] },
+      });
+    } else reply(socket, request.id, { type: "ok" });
+  });
+  const probes: Array<{ args: string[] }> = [];
+  try {
+    const client = createHerdrClient(execStatus(fake.path, probes), HERDR_BIN);
+    const resolved = await client.resolvedServer();
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) return;
+    const probesAfterResolving = probes.length;
+
+    for (let round = 0; round < 5; round += 1) {
+      assert.equal((await resolved.value.read("w1:p1")).ok, true);
+      assert.equal((await resolved.value.processInfo("w1:p1")).ok, true);
+    }
+    assert.equal((await resolved.value.sendKeys("w1:p1", ["enter"])).ok, true);
+
+    // Eleven requests, and not one of them re-ran `herdr status server --json`. That probe is
+    // a CLI subprocess, and a launch polls both `pane.read` and `pane.process_info`.
+    assert.equal(probes.length, probesAfterResolving, "a resolved server re-probes nothing");
+    assert.equal(
+      fake.requests.filter((request) => request.method !== "session.snapshot").length,
+      11,
+      "and every request still reached the server",
+    );
+    // Still one connection per request: stable Herdr closes after its first response.
+    assert.equal(fake.connectionCount, 11);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a resolved server is refused when the Herdr server is not running", async () => {
+  const stopped: TerminalExec = async () => run(status("/nonexistent/herdr.sock", {
+    status: "not_running", running: false, version: null, protocol: null, compatible: null,
+  }));
+  const resolved = await createHerdrClient(stopped, HERDR_BIN).resolvedServer();
+  assert.equal(resolved.ok, false);
+  // Passive, like every other read: resolving a handle never starts a stopped server.
+  if (!resolved.ok) assert.match(resolved.error, /not running/);
 });
 
 test("passive operations never start a stopped or incompatible Herdr server", async () => {

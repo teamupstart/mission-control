@@ -6,6 +6,7 @@ import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import { mkSession, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { launchedArgv } from "./helpers/isolated-launch.ts";
 import { MULTIPLEXER_IDS } from "../src/shared/terminal.ts";
 
 // What is at stake: this route spawns a process on the daemon's host, so the entire
@@ -222,14 +223,17 @@ test("an exited session resumes through the selected backend despite stale pane 
   assert.equal(res.status, 200);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "tmux");
-  assert.equal(launched[0]?.argv[0], "/usr/bin/env");
-  assert.ok(
-    launched[0]?.argv.includes(process.execPath),
+  // What a backend receives is `/bin/sh <wrapper>`; the agent's command line is the wrapper's
+  // last statement, which is where these facts now live. See `launchedCommand`.
+  const argv = launchedArgv(launched[0]?.argv ?? []);
+  assert.equal(
+    argv[0],
+    process.execPath,
     "the terminal receives the daemon-resolved executable, not a PATH-dependent command",
   );
   // The stored mode rides along - the reopened CLI does not restore it from the
   // conversation, so a bare `--resume` would land the operator back in manual.
-  assert.match(launched[0]?.argv.join(" ") ?? "", /--resume agent-1 --permission-mode acceptEdits/);
+  assert.match(argv.join(" "), /--resume agent-1 --permission-mode acceptEdits/);
 
   const repeated = await launch("exited", { backend: "ghostty", payload: "agent" });
   assert.equal(repeated.status, 409);

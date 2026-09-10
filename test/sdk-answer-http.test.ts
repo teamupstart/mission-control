@@ -27,6 +27,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { driverDialog } = await import("../src/server/sdk/dialog.ts");
 const { mkTask } = await import("./helpers/session-fixture.ts");
+const { launchedArgv, launchedCommand } = await import("./helpers/isolated-launch.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
 
@@ -435,8 +436,10 @@ test("the embedded agent launcher delegates to handoff instead of launching besi
   assert.deepEqual(supervisor.stopped, ["sdk:launch"]);
   assert.equal(launched.length, 1);
   assert.equal(launched[0]?.backend, "ghostty");
-  assert.match(launched[0]?.argv.join(" ") ?? "", /--resume/);
-  assert.match(launched[0]?.argv.join(" ") ?? "", /--permission-mode auto/);
+  // Read out of the launch wrapper: what a backend receives is `/bin/sh <wrapper>`, and the
+  // agent's own command line is the wrapper's last statement. See `launchedCommand`.
+  assert.match(launchedCommand(launched[0]?.argv ?? []), /--resume/);
+  assert.match(launchedCommand(launched[0]?.argv ?? []), /'--permission-mode' 'auto'/);
   assert.equal(((await res.json()) as { label: string }).label, "Ghostty");
 });
 
@@ -483,10 +486,10 @@ test("a Codex SDK handoff gives Ghostty an absolute executable", async () => {
     assert.equal(res.status, 200);
     assert.deepEqual(supervisor.stopped, ["sdk:codex-ghostty"]);
     assert.equal(launched[0]?.backend, "ghostty");
-    assert.equal(launched[0]?.argv[0], "/usr/bin/env");
-    assert.ok(launched[0]?.argv.includes(process.execPath));
-    assert.ok(!launched[0]?.argv.includes("codex"));
-    assert.match(launched[0]?.argv.join(" ") ?? "", /resume codex-session-1/);
+    const argv = launchedArgv(launched[0]?.argv ?? []);
+    assert.equal(argv[0], process.execPath, "the daemon-resolved executable, not `codex`");
+    assert.ok(!argv.includes("codex"));
+    assert.match(argv.join(" "), /resume codex-session-1/);
   } finally {
     if (previous === undefined) delete process.env.MISSION_CODEX_BIN;
     else process.env.MISSION_CODEX_BIN = previous;

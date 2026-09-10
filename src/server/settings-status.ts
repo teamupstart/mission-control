@@ -1,4 +1,5 @@
 import type { SettingsStatus } from "@shared/types.ts";
+import { countWritebacks } from "./db.ts";
 import { getPipelinesConfig } from "./pipelines/config.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig } from "./shipping/config.ts";
@@ -23,15 +24,35 @@ import {
  * Compose the current status tuple from the three stores.
  *
  * Pure-ish: it reads config but keeps no state and emits nothing. "Failing" is defined
- * exactly as the Task sources panel defines it - a source whose LAST sweep recorded an
- * error (`taskSourceStatuses(...).lastError`) - so the dot and the panel cannot disagree
- * about what a red source is.
+ * exactly as the Task sources panel defines it - so the dot and the panel cannot disagree
+ * about what a red source is. That is now TWO ways a source can be failing, and the count
+ * is per SOURCE rather than per problem, because the dot's job is to get somebody to open
+ * the panel and the panel is where a source's two lines say which of them it is:
+ *
+ *  - its last sweep recorded an error (`taskSourceStatuses(...).lastError`); or
+ *  - its write-back queue is stuck - a delivery that exhausted its retries, or one whose
+ *    outcome could not be read and which is therefore never retried automatically.
+ *
+ * The second is here because a stuck queue is exactly the failure this whole surface
+ * exists to prevent: nothing else in the app would ever mention it, so an issue that never
+ * got its comment would go unnoticed for as long as nobody happened to open the panel. It
+ * is also the reason `startWritebackWorker` recomposes this after a tick that settled
+ * anything - the recompute was already triggered, and this is what it now counts.
  */
 export function settingsStatus(): SettingsStatus {
   const inspector = getInspectorConfig();
   const shipping = getShippingConfig();
   const sources = getTaskSourcesConfig().sources;
-  const failing = taskSourceStatuses(sources).filter((s) => s.lastError !== null).length;
+  const sweepFailed = new Set(
+    taskSourceStatuses(sources)
+      .filter((s) => s.lastError !== null)
+      .map((s) => s.sourceId),
+  );
+  const failing = sources.filter((s) => {
+    if (sweepFailed.has(s.id)) return true;
+    const queue = countWritebacks(s.id);
+    return queue.failed > 0 || queue.unknown > 0;
+  }).length;
   const pipelines = getPipelinesConfig();
   return {
     inspector: { enabled: inspector.enabled, mode: inspector.mode },

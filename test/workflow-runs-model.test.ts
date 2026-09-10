@@ -1235,6 +1235,7 @@ test("runRecordSummary counts deliveries by state and names the newest confirmed
 test("runRecordSummary reads the viewed round's intent, and says when it cannot", () => {
   const captured = detail([submission("s1", 1, {
     context: snapshot({
+      primaryGoal: { rawPrompt: "RAW GOAL", refined: "Refined goal", sourceNoteKey: "note", openingAsk: "Opening words" },
       humanDecisions: [
         { decision: "Answer: keep the guard", rationale: "It is the only check", source: { kind: "review", id: "d944b3b2" } },
         { decision: "Ship phase 3 first", rationale: null, source: { kind: "foreman_episode", id: "17" } },
@@ -1247,6 +1248,8 @@ test("runRecordSummary reads the viewed round's intent, and says when it cannot"
   assert.equal(intent.state, "captured");
   assert.equal(intent.refinedGoal, "Refined goal");
   assert.equal(intent.rawGoalCharacters, "RAW GOAL".length);
+  assert.equal(intent.hasOpeningAsk, true);
+  assert.equal(intent.openingAskCharacters, "Opening words".length);
   assert.equal(intent.decisionCount, 2);
   // Bodies AND rationales, because that is what opening the rows costs a reader.
   assert.equal(

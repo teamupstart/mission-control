@@ -173,10 +173,10 @@ test("the reach block states all five harness and runtime pairs with their mecha
   assert.equal(by("claude · sdk").prose.detail, "systemPrompt.append");
   assert.equal(by("codex · sdk").prose.detail, "developerInstructions");
   assert.equal(by("codex · sdk").prose.channel, "developer instructions");
-  // The two pairs with no channel of their own are REACHED, by turn one - not excluded.
+  // Codex terminal is reached by turn one; Pi terminal has its own channel.
   assert.equal(by("codex · terminal").prose.channel, "prompt text");
   assert.equal(by("codex · terminal").prose.detail, "composed above turn one");
-  assert.equal(by("pi · terminal").prose.channel, "prompt text");
+  assert.equal(by("pi · terminal").prose.channel, "system prompt");
 });
 
 test("the mechanism prose says which channels never enter the transcript", async () => {

@@ -116,6 +116,11 @@ export interface UsageCursor {
 
 /** One billable request observed in a harness-owned local record. */
 export interface HarnessUsageEvent {
+  /**
+   * Harness-reported request cost where Mission Control has no price table (Pi).
+   * Explicitly null for locally priced Codex events; existing pricing stays authoritative.
+   */
+  vendorCostUsd: number | null;
   identity: string;
   ts: number;
   modelId: string | null;
@@ -435,6 +440,23 @@ export interface HookSpec {
    * everywhere rather than the registry testing an event name it does not own.
    */
   promptText(evt: HookIngest): string | null;
+  /**
+   * The same prompt exactly as the harness received it, before any scaffolding grammar is
+   * applied - or null for an event carrying no prompt at all.
+   *
+   * `promptText` answers "what did a human ask for", and reshaping is the whole point of it:
+   * Claude's strips scaffolding tags and collapses runs of whitespace, so a multi-line
+   * payload comes back as one line. That is right for a goal and wrong for the only other
+   * question asked of a prompt event - "did this daemon type this?" - which is answered by
+   * matching the text against what was delivered, byte for byte. Reshaped text matches
+   * nothing.
+   *
+   * Kept on the spec rather than reading `evt.prompt` at the one call site, for the reason
+   * `promptText` is here: which event carries a prompt stays the harness's answer, so a
+   * harness that fires none answers null everywhere instead of the registry testing an event
+   * name it does not own.
+   */
+  submittedPromptText(evt: HookIngest): string | null;
 }
 
 /**

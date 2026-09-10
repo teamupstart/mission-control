@@ -1384,6 +1384,8 @@ export interface RunRecordIntentSummary {
   /** Null on every state but `captured`, and on a captured snapshot with no refinement. */
   refinedGoal: string | null;
   rawGoalCharacters: number;
+  hasOpeningAsk: boolean;
+  openingAskCharacters: number;
   decisionCount: number;
   /** Total characters across every decision body and rationale - the block this phase bounds. */
   decisionCharacters: number;
@@ -1464,6 +1466,8 @@ export function runRecordSummary(
       state,
       refinedGoal: context?.primaryGoal.refined ?? null,
       rawGoalCharacters: context?.primaryGoal.rawPrompt.length ?? 0,
+      hasOpeningAsk: Boolean(context?.primaryGoal.openingAsk),
+      openingAskCharacters: context?.primaryGoal.openingAsk?.length ?? 0,
       decisionCount: decisions.length,
       decisionCharacters: decisions.reduce(
         (total, decision) => total + decision.decision.length + (decision.rationale?.length ?? 0),

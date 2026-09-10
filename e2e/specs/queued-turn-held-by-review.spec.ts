@@ -100,8 +100,16 @@ test("a queued message says the open review is what is holding it, and stops say
     card.locator(".turn-user:not(.pending-turn)").getByText(REVIEW_HELD_TURN, { exact: true }),
   ).toBeVisible();
 
+  // One at a time, each confirmed into the outbox before the next is typed. Submitting is not
+  // synchronous: the composer is cleared when the queued row comes back, so filling the second
+  // message straight after pressing Enter on the first lets that clear land ON the second,
+  // which then sends an empty box and queues nothing. The page at the moment of failure said
+  // so exactly: the ask queued, the follow-up absent, the composer active and empty.
   await composer.fill(ASK_TURN);
   await composer.press("Enter");
+  await expect(card.locator(".pending-turn").filter({ hasText: ASK_TURN })).toHaveCount(1);
+  await expect(composer).toHaveValue("");
+
   await composer.fill(FOLLOW_UP);
   await composer.press("Enter");
 

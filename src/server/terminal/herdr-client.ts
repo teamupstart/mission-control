@@ -471,7 +471,20 @@ export type HerdrProbe =
   | { state: "stopped"; socket: string }
   | { state: "failed"; error: string; retryable: boolean };
 
-export interface HerdrClient {
+/**
+ * The pane requests a launch polls, against one resolved server.
+ *
+ * `HerdrClient` satisfies this shape on its own, which is what makes the fallback trivial: a
+ * caller that could not resolve a server keeps using the client and pays the extra probes
+ * rather than failing.
+ */
+export interface HerdrPaneRequests {
+  read(paneId: string): Promise<HerdrResult<string>>;
+  processInfo(paneId: string): Promise<HerdrResult<HerdrProcessInfo | null>>;
+  sendKeys(paneId: string, keys: readonly string[]): Promise<TerminalResult>;
+}
+
+export interface HerdrClient extends HerdrPaneRequests {
   probe(): Promise<HerdrProbe>;
   ensureReady(): Promise<HerdrResult<string>>;
   snapshotWithProcesses(): Promise<HerdrResult<{
@@ -488,6 +501,20 @@ export interface HerdrClient {
    */
   processInfo(paneId: string): Promise<HerdrResult<HerdrProcessInfo | null>>;
   read(paneId: string): Promise<HerdrResult<string>>;
+  /**
+   * One already-resolved server, for a bounded sequence of pane requests.
+   *
+   * Every ordinary call above resolves the socket first, and resolving means running
+   * `herdr status server --json` - a CLI subprocess - before the request. That is right for
+   * a one-off write, and wrong for a poll: a launch watching a pane settle and then watching
+   * it start would pay ~90 of them for one dispatch. `snapshotWithProcesses` already draws
+   * this line, resolving once and then asking about 93 panes; this is the same line, drawn
+   * where the polls are.
+   *
+   * Deliberately not a cache. The handle is resolved when it is asked for and lives only as
+   * long as the caller holds it, so nothing else in this file starts trusting a stale socket.
+   */
+  resolvedServer(): Promise<HerdrResult<HerdrPaneRequests>>;
   sendText(paneId: string, text: string): Promise<TerminalResult>;
   sendKeys(paneId: string, keys: readonly string[]): Promise<TerminalResult>;
   sendInput(paneId: string, text: string, keys?: readonly string[]): Promise<TerminalResult>;
@@ -681,6 +708,31 @@ export function createHerdrClient(
     operation: `pane process info for ${paneId}`,
   });
 
+  const paneReadRequest = (paneId: string): Request<z.infer<typeof PaneReadSchema>> => ({
+    method: "pane.read",
+    params: { pane_id: paneId, source: "visible", format: "text", strip_ansi: true },
+    schema: PaneReadSchema,
+    mutation: false,
+    operation: `pane read for ${paneId}`,
+  });
+
+  const sendKeysRequest = (paneId: string, keys: readonly string[]): Request<z.infer<typeof OkSchema>> => ({
+    method: "pane.send_keys",
+    params: { pane_id: paneId, keys },
+    schema: OkSchema,
+    mutation: true,
+    operation: `key write to ${paneId}`,
+  });
+
+  const readPaneText = (
+    paneId: string,
+    result: HerdrResult<z.infer<typeof PaneReadSchema>>,
+  ): HerdrResult<string> => {
+    if (!result.ok) return result;
+    if (result.value.read.pane_id !== paneId) return failure("Herdr pane read returned a mismatched pane id");
+    return { ok: true, value: result.value.read.text, outcomeUnknown: false };
+  };
+
   /**
    * One `pane.process_info` answer, read the same way wherever it was asked from.
    *
@@ -769,26 +821,28 @@ export function createHerdrClient(
       };
     },
     processInfo: async (paneId) => readProcessInfo(paneId, await one(processInfoRequest(paneId))),
-    read: async (paneId) => {
-      const result = await one({
-        method: "pane.read",
-        params: { pane_id: paneId, source: "visible", format: "text", strip_ansi: true },
-        schema: PaneReadSchema,
-        mutation: false,
-        operation: `pane read for ${paneId}`,
-      });
-      if (!result.ok) return result;
-      if (result.value.read.pane_id !== paneId) return failure("Herdr pane read returned a mismatched pane id");
-      return { ok: true, value: result.value.read.text, outcomeUnknown: false };
+    resolvedServer: async () => {
+      const status = await socketFor(false);
+      if (!status.ok) return status;
+      const socketPath = status.value;
+      return {
+        ok: true,
+        outcomeUnknown: false,
+        value: {
+          read: async (paneId) => readPaneText(paneId, await oneAt(socketPath, paneReadRequest(paneId))),
+          processInfo: async (paneId) =>
+            readProcessInfo(paneId, await oneAt(socketPath, processInfoRequest(paneId))),
+          sendKeys: async (paneId, keys) =>
+            asTerminal(await oneAt(socketPath, sendKeysRequest(paneId, keys), deps.actionTimeoutMs)),
+        },
+      };
     },
+    read: async (paneId) => readPaneText(paneId, await one(paneReadRequest(paneId))),
     sendText: (paneId, text) => mutate({
       method: "pane.send_text", params: { pane_id: paneId, text }, schema: OkSchema,
       mutation: true, operation: `text write to ${paneId}`,
     }),
-    sendKeys: (paneId, keys) => mutate({
-      method: "pane.send_keys", params: { pane_id: paneId, keys }, schema: OkSchema,
-      mutation: true, operation: `key write to ${paneId}`,
-    }),
+    sendKeys: (paneId, keys) => mutate(sendKeysRequest(paneId, keys)),
     sendInput: (paneId, text, keys = []) => mutate({
       method: "pane.send_input", params: { pane_id: paneId, text, keys }, schema: OkSchema,
       mutation: true, operation: `bracket-aware paste to ${paneId}`,

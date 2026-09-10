@@ -981,9 +981,9 @@ function contextTranscriptFor(
 /**
  * The live intent: the session Goal and every genuine human decision behind it.
  *
- * Called from exactly two places, and the sharing is the point. A run freezes this at
- * creation and every later capture of that run thaws the frozen copy instead of calling it
- * again, so the two readings can never be bounded, clipped or ordered differently.
+ * Snapshot-less runs retain their original prompt-first contract. New runs share the
+ * bounded decisions and refined goal, but select the durable objective at the freeze
+ * boundary below. Changing this live fallback would change existing runs mid-flight.
  */
 function readLiveWorkflowIntent(
   registry: Registry,
@@ -1045,14 +1045,24 @@ export function readWorkflowIntentSnapshot(
     session,
     contextTranscriptFor(session, located, transcriptWindow.messages, deliveredWorkflowAnchors),
   );
+  const goal = registry.getGoal(session.id);
+  // The objective and its provenance are a new-run contract, not a change to the live
+  // compatibility path used by runs that predate intent snapshots.
   // Minted through the one constructor, never assembled here. The store derives a snapshot's
   // identity the same way when a run is created, and two spellings of "build a snapshot" would
   // be two places to update if derivation ever changes - with the manager-visible snapshot free
   // to disagree with the durable one in the meantime.
   return freezeWorkflowRunIntent({
-    rawGoal: intent.primaryGoal.rawPrompt,
+    rawGoal: goal?.objective != null ? clip(goal.objective, MAX_GOAL) : intent.primaryGoal.rawPrompt,
     refinedGoal: intent.primaryGoal.refined,
     sourceNoteKey: intent.primaryGoal.sourceNoteKey,
+    openingAsk: goal?.objective ? goal.openingPrompt : null,
+    intentSource: goal?.objective ? {
+      objectiveVersion: goal.objectiveVersion,
+      promptRevision: goal.promptRevision,
+      resolvedPromptRevision: goal.resolvedPromptRevision,
+      relationship: goal.relationship,
+    } : null,
     decisions: intent.humanDecisions,
     frozenAt: now,
   });
@@ -1116,6 +1126,8 @@ export async function readWorkflowContextRaw(
     ? {
         primaryGoal: {
           rawPrompt: frozenIntent.rawGoal,
+          openingAsk: frozenIntent.openingAsk ?? null,
+          intentSource: frozenIntent.intentSource ?? null,
           refined: frozenIntent.refinedGoal,
           sourceNoteKey: frozenIntent.sourceNoteKey,
         },

@@ -151,6 +151,17 @@ function promptText(evt: HookIngest): string | null {
   return substantivePrompt(evt.prompt);
 }
 
+/**
+ * The submitted text, unreshaped. Same event as `promptText`, deliberately none of its
+ * grammar: `substantivePrompt` collapses every whitespace run to a single space, so a
+ * delivered packet reaches the goal path as one line and hashes to nothing the daemon
+ * recorded typing.
+ */
+function submittedPromptText(evt: HookIngest): string | null {
+  if (evt.event !== "UserPromptSubmit") return null;
+  return evt.prompt?.trim() || null;
+}
+
 export const claudeHooks: HookSpec = {
   scope: "machine",
   events: EVENTS,
@@ -158,6 +169,7 @@ export const claudeHooks: HookSpec = {
   toState,
   workCycleSignal,
   promptText,
+  submittedPromptText,
 };
 
 // --- what one of OUR hook commands looks like in somebody else's settings file ---------

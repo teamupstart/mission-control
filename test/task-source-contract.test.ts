@@ -282,17 +282,32 @@ test("a kind says canResolve exactly when its implementation can resolve", () =>
 // The same rule `pushToSource` is held to, and it matters more on the ledger: a silent
 // success marks the delivery row `delivered`, so the panel reports a comment that was
 // never written and nobody ever finds out.
+//
+// Reached by EMPTYING a slot rather than by naming a kind, because as of Phase 2 of the
+// write-back plan both shipped kinds implement both verbs and there is no longer a kind
+// standing in the state under test. The property is `annotateWith`'s reading of an empty
+// slot, not which kind happens to have one today - and an empty slot stays reachable the
+// moment a third kind arrives, or either of these two is built without a rung. Restored in
+// a `finally`, since the registry is shared with every test below.
 test("writing back to a kind that cannot is an error, never a silent success", async () => {
   const ctx = { sourceId: "s1", repoRoot: "/repo", signal: new AbortController().signal };
-  const a = await annotateWith(instanceOf("jira"), NOTICE, ctx);
-  assert.match(a.error!, /jira cannot write back/);
-  assert.equal(a.detail, null);
-  // A fact, not a hedge: no subprocess ran, so nothing was said upstream.
-  assert.equal(a.outcomeUnknown, false);
+  const entry = TASK_SOURCES["jira"];
+  const slots = { annotate: entry.annotate, resolve: entry.resolve };
+  entry.annotate = null;
+  entry.resolve = null;
+  try {
+    const a = await annotateWith(instanceOf("jira"), NOTICE, ctx);
+    assert.match(a.error!, /jira cannot write back/);
+    assert.equal(a.detail, null);
+    // A fact, not a hedge: no subprocess ran, so nothing was said upstream.
+    assert.equal(a.outcomeUnknown, false);
 
-  const r = await resolveWith(instanceOf("jira"), { ...NOTICE, action: "resolve" }, ctx);
-  assert.match(r.error!, /jira cannot resolve/);
-  assert.equal(r.outcomeUnknown, false);
+    const r = await resolveWith(instanceOf("jira"), { ...NOTICE, action: "resolve" }, ctx);
+    assert.match(r.error!, /jira cannot resolve/);
+    assert.equal(r.outcomeUnknown, false);
+  } finally {
+    Object.assign(entry, slots);
+  }
 });
 
 // The boundary parse `sweep` and `push` both get. It matters here for the same reason it

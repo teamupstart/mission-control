@@ -130,6 +130,7 @@ import {
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
+  TaskSourceWritebackRetrySchema,
   SpendReportSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
@@ -215,7 +216,11 @@ import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
-import { recordInjection } from "./injections.ts";
+import {
+  confirmReservedInjection,
+  releaseInjection,
+  reserveInjection,
+} from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -387,7 +392,10 @@ import {
 import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
 import { checkToken } from "./auth.ts";
 import {
+  countWritebacks,
+  discardWritebacks,
   forgetTaskSourceSeen,
+  retryWritebacks,
   getSkillsAcks,
   loadHumanResolvedReviews,
   loadInspectionsAdoptedSince,
@@ -4770,6 +4778,16 @@ export function buildApp(
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
     // safely retry from.
+    // Claimed BEFORE the delivery, for the reason `reserveInjection` states: the agent's
+    // prompt hook can report this text back while the send is still unresolved, and an echo
+    // that arrives with no authorship on file is captured as the human's Goal. This is the
+    // path Foreman's recovery packets and the workflow's repair packets travel, so the window
+    // is the one that put a completion-review packet under "Original user goal" in the first
+    // place. Claiming afterwards left it open on exactly the deliveries that matter most.
+    // Narrowed once into a value rather than re-tested, so the reservation and its release
+    // cannot drift apart on which origins they consider ours.
+    const daemonOrigin = parsed.data.origin === "human" ? null : parsed.data.origin;
+    if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
@@ -4778,9 +4796,18 @@ export function buildApp(
       () => registry.promptResourceBlockerForSession(session.id),
       parsed.data.origin,
     );
-    // Only once it landed: a refused or failed delivery is not a turn anybody will read,
-    // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
-    if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
+    if (daemonOrigin) {
+      // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
+      // would each owe an echo for one delivery.
+      if (r.ok) confirmReservedInjection(session.id, parsed.data.text, daemonOrigin);
+      // `pasted === false` and nothing weaker, which is the same line every other sender
+      // draws. The note above about a refusal being positive evidence is true of the DRIVER
+      // arm; this route also serves pane-backed sessions, where `ok: false, pasted: true` is
+      // a real outcome - the text is in the composer and only the Enter failed. That echo may
+      // still arrive, so the claim stands. Releasing on a bare `!r.ok` handed it back and
+      // reopened this race on the path Foreman's recovery packets travel.
+      else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
+    }
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -6017,10 +6044,14 @@ export function buildApp(
     return {
       sources: cfg.sources,
       status: taskSourceStatuses(cfg.sources),
-      // Declared with the rest of the write-back contract and served empty until the panel
-      // that reads it exists. Empty is a valid answer - "these sources owe nothing" - so no
-      // consumer has to special-case the interval between the two.
-      writeback: [],
+      // Derived from the ledger on every read, unlike `status`, which is process-local: a
+      // sweep's outcome is re-established by sweeping again, while an owed write-back is a
+      // fact that survived a restart, so its counts come from the table that survived with
+      // it. One row per CONFIGURED source, never one per source the ledger still holds rows
+      // for: a removed source's rows are discarded by the removal itself, and reporting a
+      // queue against a source nobody has any more would be a count with no control beside
+      // it.
+      writeback: cfg.sources.map((s) => countWritebacks(s.id)),
       kinds: taskSourceKinds(),
     };
   };
@@ -6085,6 +6116,54 @@ export function buildApp(
     const id = c.req.param("id");
     if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
     return c.json({ forgotten: forgetTaskSourceSeen(id) });
+  });
+
+  /**
+   * Put this source's stalled write-backs back in the queue.
+   *
+   * `includeUnknown` is the operator asserting they have gone and looked upstream, and it
+   * is a separate flag rather than a wider default for the reason
+   * `TaskSourceWritebackRetrySchema` gives: a `failed` row is proof that nothing was
+   * written, while an `unknown` row may already have commented or closed. Retrying the
+   * first costs nothing; retrying the second can duplicate a comment or re-close an item a
+   * human deliberately reopened.
+   *
+   * Answers with the refreshed view, so the panel's counts move with the press rather than
+   * on its next four-second poll - and with how many rows actually moved, which is the one
+   * fact the view cannot state, since "nothing was retryable" and "everything was retried"
+   * both leave `failed` at zero.
+   */
+  app.post("/api/task-sources/:id/writeback/retry", async (c) => {
+    const id = c.req.param("id");
+    if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
+    const parsed = await parseBody(c, TaskSourceWritebackRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    const retried = retryWritebacks(id, parsed.data.includeUnknown);
+    // A queue that was failing may not be any more, and the gear's dot counts it.
+    publishSettingsStatus(registry);
+    // The view is NESTED rather than spread. `TaskSourcesView` has a `status` field, and the
+    // browser's request helper stamps the HTTP status onto every reply under that same name -
+    // so a spread would hand the panel `status: 200` where it expected the per-source health
+    // array, and the source lookup would fail on a 200 response.
+    return c.json({ retried, view: taskSourcesView() });
+  });
+
+  /**
+   * Discard this source's whole queue.
+   *
+   * The counterpart to "Forget seen items", and the way out for somebody who turned a
+   * switch on by mistake: it drops what has not been written yet and the record of what
+   * has, without touching the switches or the source. What it cannot do is take back a
+   * comment that has already been posted - nothing here can - which is why the panel asks
+   * before it calls this.
+   */
+  app.delete("/api/task-sources/:id/writeback", (c) => {
+    const id = c.req.param("id");
+    if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
+    const discarded = discardWritebacks(id);
+    publishSettingsStatus(registry);
+    // Nested, for the collision `retry` above explains.
+    return c.json({ discarded, view: taskSourcesView() });
   });
 
   // --- Pipelines: observing an external SDLC engine (localhost only) ---

@@ -361,6 +361,10 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   await page.emulateMedia({ colorScheme: "dark" });
   await capture(page, card, "board-dark.png");
 
+  // The card's rectangle BEFORE the resize, which is what the wait below watches move. Read
+  // here rather than inferred, because "the board re-laid out" is the only settle signal
+  // that does not depend on guessing the narrow layout's numbers.
+  const wideCardBox = (await card.boundingBox())!;
   await page.setViewportSize({ width: 720, height: 900 });
   card = artifactCard(page, LONG_REPORT, reportTurn);
   await expect(card.locator(".artifact-head")).toHaveCSS("flex-wrap", "wrap");
@@ -372,16 +376,54 @@ test("the card renders in Board terminal detail and wraps cleanly at narrow widt
   }));
   expect(nameWidths.scrollWidth).toBeGreaterThan(nameWidths.clientWidth);
   await expect(card.locator(".artifact-dir")).not.toHaveCSS("width", "0px");
+
   // Three actions now, not two. The header wraps rather than clipping, so every one of them
   // stays inside the card - measured, because a button pushed past the right edge is exactly
   // what a markup assertion cannot see.
-  const cardBox = (await card.boundingBox())!;
-  for (const label of ["Refresh preview of", "Comment on", "View"]) {
-    const button = card.getByRole("button", { name: new RegExp(`^${label} `) });
-    await expect(button).toBeVisible();
-    const box = (await button.boundingBox())!;
-    expect(box.x).toBeGreaterThanOrEqual(cardBox.x);
-    expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5);
+  //
+  // Every rectangle is read in ONE layout pass, and only once the card has actually reached
+  // the narrow layout. Both halves are load-bearing, and this spec failed under full-suite
+  // contention without them. `setViewportSize` resolves before the board finishes
+  // re-laying out, so four separate `boundingBox()` round trips can straddle that reflow:
+  // the card answers from the 1280-wide layout and a button from the 720-wide one, and the
+  // comparison is then between two different layouts rather than about overflow. Waiting
+  // first is what stops the atomic read from being taken at the old layout and quietly
+  // asserting nothing about the narrow one.
+  const actionLabels = ["Refresh preview of", "Comment on", "View"];
+  /** The card's box and its actions', from a single `getBoundingClientRect` pass. */
+  const measure = () =>
+    card.evaluate(
+      (element, labels) => ({
+        card: element.getBoundingClientRect().toJSON() as DOMRect,
+        actions: labels.map((label) => {
+          // The same accessible name `getByRole` selects on - these buttons are labelled by
+          // `aria-label`, so no test-only attribute is involved.
+          const button = element.querySelector(`button[aria-label^="${label} "]`);
+          return { label, box: (button?.getBoundingClientRect().toJSON() ?? null) as DOMRect | null };
+        }),
+      }),
+      actionLabels,
+    );
+
+  for (const label of actionLabels) {
+    await expect(card.getByRole("button", { name: new RegExp(`^${label} `) })).toBeVisible();
+  }
+  // Wait for the board to have actually re-laid out, by watching the card's own rectangle
+  // leave the one it held at 1280. Deliberately not "the card fits the viewport": it does
+  // not, and asserting a number this layout never reaches would only trade a flake for a
+  // failure.
+  await expect
+    .poll(async () => {
+      const now = (await measure()).card;
+      return now.x !== wideCardBox.x || now.width !== wideCardBox.width;
+    })
+    .toBe(true);
+
+  const laidOut = await measure();
+  for (const action of laidOut.actions) {
+    expect(action.box, `${action.label} has no box inside the card`).not.toBeNull();
+    expect(action.box!.x).toBeGreaterThanOrEqual(laidOut.card.x);
+    expect(action.box!.right).toBeLessThanOrEqual(laidOut.card.right + 0.5);
   }
   await capture(page, card, "board-narrow.png");
 });

@@ -651,6 +651,56 @@ test("a single pane's process details answer for that pane, and a missing pane a
   }
 });
 
+test("a resolved server answers many pane requests on one status probe", async () => {
+  const fake = await fakeHerdrSocket((request, socket) => {
+    if (request.method === "pane.read") {
+      reply(socket, request.id, { type: "pane_read", read: { pane_id: request.params.pane_id, text: "on the pane" } });
+    } else if (request.method === "pane.process_info") {
+      reply(socket, request.id, {
+        type: "pane_process_info",
+        process_info: { pane_id: request.params.pane_id, shell_pid: 11, foreground_processes: [{ pid: 12, name: "node" }] },
+      });
+    } else reply(socket, request.id, { type: "ok" });
+  });
+  const probes: Array<{ args: string[] }> = [];
+  try {
+    const client = createHerdrClient(execStatus(fake.path, probes), HERDR_BIN);
+    const resolved = await client.resolvedServer();
+    assert.equal(resolved.ok, true);
+    if (!resolved.ok) return;
+    const probesAfterResolving = probes.length;
+
+    for (let round = 0; round < 5; round += 1) {
+      assert.equal((await resolved.value.read("w1:p1")).ok, true);
+      assert.equal((await resolved.value.processInfo("w1:p1")).ok, true);
+    }
+    assert.equal((await resolved.value.sendKeys("w1:p1", ["enter"])).ok, true);
+
+    // Eleven requests, and not one of them re-ran `herdr status server --json`. That probe is
+    // a CLI subprocess, and a launch polls both `pane.read` and `pane.process_info`.
+    assert.equal(probes.length, probesAfterResolving, "a resolved server re-probes nothing");
+    assert.equal(
+      fake.requests.filter((request) => request.method !== "session.snapshot").length,
+      11,
+      "and every request still reached the server",
+    );
+    // Still one connection per request: stable Herdr closes after its first response.
+    assert.equal(fake.connectionCount, 11);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("a resolved server is refused when the Herdr server is not running", async () => {
+  const stopped: TerminalExec = async () => run(status("/nonexistent/herdr.sock", {
+    status: "not_running", running: false, version: null, protocol: null, compatible: null,
+  }));
+  const resolved = await createHerdrClient(stopped, HERDR_BIN).resolvedServer();
+  assert.equal(resolved.ok, false);
+  // Passive, like every other read: resolving a handle never starts a stopped server.
+  if (!resolved.ok) assert.match(resolved.error, /not running/);
+});
+
 test("passive operations never start a stopped or incompatible Herdr server", async () => {
   for (const incompatible of [false, true]) {
     let spawned = 0;

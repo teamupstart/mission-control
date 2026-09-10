@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>Pi parity: a Mission Control extension installed through Setup</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --panel-2: #eef0f4;
+    --ink: #17191d; --ink-dim: #555c66; --rule: #d9dde3;
+    --accent: #2f6fdd; --bad: #c0392b; --good: #1e8a4c;
+    --code-bg: #f2f3f6;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --panel: #1d2026; --panel-2: #23272f;
+      --ink: #e7e9ee; --ink-dim: #a0a7b4; --rule: #333944;
+      --accent: #6fa2f5; --bad: #f0736a; --good: #5ecf8f;
+      --code-bg: #1a1d23;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.25; letter-spacing: -.015em; margin: 0 0 .4rem; }
+  h2 {
+    font-size: 1.3rem; letter-spacing: -.01em; margin: 3rem 0 .75rem;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 1.9rem 0 .5rem; }
+  h4 { font-size: .97rem; margin: 1.4rem 0 .4rem; color: var(--ink-dim); }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); }
+  .lede { color: var(--ink-dim); font-size: 1.05rem; margin-top: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .88em; background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 4px; padding: .1em .35em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  .scroll { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  blockquote { margin: 1rem 0; padding: .1rem 1rem; border-left: 3px solid var(--accent); color: var(--ink-dim); }
+  figure { margin: 1.6rem 0; }
+  figure svg { display: block; width: 100%; height: auto; color: var(--ink); }
+  figcaption { color: var(--ink-dim); font-size: .87rem; margin-top: .5rem; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .svg-ink { fill: var(--ink); }
+  .svg-dim { fill: var(--ink-dim); }
+</style>
+</head>
+<body>
+<main>
+<h1>Pi parity: a Mission Control extension installed through Setup</h1>
+<p class="lede">A plan for <code>docs/plans/pi-mission-control-extension/plan.md</code>. Ten measurements against the installed Pi 0.85.1, all with zero model tokens spent. Four decisions for the human at the bottom.</p>
+<p>Pi should get, out of the box, everything Claude Code and Codex already get from Mission Control - in <strong>hand-run</strong> sessions, not only dispatched ones. Passive discovery already finds a Pi session someone starts themselves (<a href="../../../src/server/harness/pi/detect.ts"><code>harness/pi/detect.ts</code></a>); everything that discovery should lead to is missing.</p>
+<p>The mechanism is a <strong>Mission Control extension for Pi, installed machine-wide through Setup</strong>, the way "Install Claude integrations" installs Claude's hooks. That was decided explicitly and is not reopened here: a launch-scoped <code>-e &lt;path&gt;</code> would cover only sessions Mission Control dispatches, which is the half that already works.</p>
+<p>This plan is the follow-up scheduled by <a href="../multiplexer-session-launch-failures/plan.md#defect-2-pi-cannot-carry-mission-mcp-tools-scheduled-as-its-own-plan">Defect 2 of the multiplexer plan</a>. Read that finding first; it records what was already measured and why the narrow refusal it originally proposed was superseded.</p>
+<h2>Decisions taken</h2>
+<p>Reviewed and settled in the dashboard on 2026-09-10.</p>
+<ul>
+<li><strong>Tools reach Pi by bridging <code>dist/mcp/server.mjs</code> over stdio</strong>, not by reimplementing each tool natively. One implementation, new tools reach Pi for free, <code>verifyMissionMcpTools</code> keeps working unchanged, and no schema conversion is needed (P4). The cost accepted: one extra Node child per Pi session, and a dependence on a gitignored build artifact that Claude and Codex already have.</li>
+<li><strong>Distribution is a reconciled symlink in <code>~/.pi/agent/extensions/</code></strong>, not <code>pi install</code> and not the <code>extensions</code> array in <code>settings.json</code>. It reuses <code>skills/reconcile.ts</code> whole, including the isolated-home rule that exists because an isolated daemon once unlinked the live install's skills, and it creates a link rather than editing a file the operator owns. <code>pi install</code> was rejected for recording a <strong>relative</strong> path with no per-directory isolation lever (P10).</li>
+<li><strong>Staleness is reported, never repaired.</strong> <code>claude-hooks.ts</code>'s argument stands and is stronger here: the daemon reporting the problem may itself be running from a pooled worktree, and the outage it would be free to cause is every Pi session on the machine refusing to start (P10). No auto-repair, and no remedy button on the row.</li>
+<li><strong>The first cut is cost only</strong>, of the four capability groups offered: a <code>UsageSpec</code> over Pi's session JSONL. The extension, the capability guard, the reconciler, the environment check and the Setup install were <strong>not</strong> selected for it and are sequenced as later phases.</li>
+<li><strong>Both capability flips are taken now:</strong> <code>workQueue</code> on the strength of <code>agent_settled</code>, and <code>multiRepoDispatch</code> as an empty grant - meaning Pi is offered for multi-repo tasks because there is no boundary to widen. The decision is the offer, not a literal empty <code>launchArgs</code>: the repository turned out to forbid that spelling, so the same decision is expressed as a <code>kind</code>/<code>why</code> variant (below). Neither flip depends on the extension shipping - see "What the first cut actually changes" for exactly what each one does and does not buy while the extension is still deferred.</li>
+<li><strong>A phased implementation plan follows</strong>, with dependency-linked tasks.</li>
+</ul>
+<h2>Executive summary</h2>
+<p>Ten measurements against the installed Pi 0.85.1 settle almost every open question, and three of them change the shape of the work:</p>
+<ol>
+<li><strong>Nothing needs converting.</strong> Pi accepts the Mission MCP server's <strong>raw JSON Schema</strong> as a tool's <code>parameters</code> - no typebox translation - and enforces it strictly, including <code>additionalProperties: false</code> and nested <code>required</code>. All 15 tools registered, reached the provider payload with descriptions intact, and one round-tripped through <code>execute</code> and back to the model. Measured with <strong>zero model tokens</strong>.</li>
+<li><strong>Pi's event vocabulary is richer than Codex's</strong>, not poorer. <code>agent_settled</code> is the completion attribution <code>workQueue: null</code> says Pi lacks; <code>ui_prompt_start</code> is a structured needs-you signal Claude only has by string-matching a notification. So <code>workQueue: null</code> is <strong>not</strong> a permanent incapacity.</li>
+<li><strong>A stale Pi extension fails in two shapes, and both are worse than Claude's.</strong> A dangling symlink is <strong>completely silent</strong> (exit 0, nothing on stderr, no Mission Control). A bundle that exists but throws at load makes <strong>every Pi session on the machine refuse to start</strong> (exit 1). Claude's equivalent at least prints a stack every turn. The staleness check is therefore not a nicety.</li>
+</ol>
+<p>Two parity gaps turn out to need <strong>no extension at all</strong> and can land independently: cost tracking (Pi already writes priced usage into its own session JSONL) and standing instructions on the terminal runtime (<code>pi --append-system-prompt</code> is repeatable, unlike Claude's).</p>
+<h2>What Pi has today, and what each null means</h2>
+<p><code>src/shared/harness-capabilities.ts</code> is the gap list. Each null's comment says why, and the plan's first job is to sort them - because "permanent incapacity" and "nobody measured it" look identical in the type and lead to opposite work.</p>
+<div class="scroll"><table>
+<thead><tr><th>Slot</th><th>Line</th><th>Comment says</th><th><strong>Measured verdict</strong></th></tr></thead><tbody>
+<tr><td><code>mcp: null</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:817</a></td><td>"pi has no MCP client at all"</td><td><strong>Permanent and correct.</strong> <code>pi --help</code> publishes no MCP flag (P1). <code>mcp</code> describes registering with a vendor's own MCP client through its CLI; Pi has neither. This null must <strong>stay</strong>. The extension is a different mechanism, and conflating them is how <code>applyMcp</code> ends up shelling out to a <code>pi mcp add</code> that does not exist.</td></tr>
+<tr><td><code>workQueue: null</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:810</a></td><td>"authorship of the pickup is exactly the hook signal it lacks"</td><td><strong>Closable, and taken in the first cut.</strong> Pi fires <code>input</code> (the pickup, with <code>source</code> distinguishing a human from an extension) and <code>agent_settled</code> ("Pi will not continue running automatically"). Both measured in one run (P5). Becomes <code>{ uninstrumentedWhy: … }</code>, which until the extension ships changes the refusal an operator reads rather than what a queue can do - and that sentence stays a statement of fact until a supported install exists to point at.</td></tr>
+<tr><td><code>permissionModes: null</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:782</a></td><td>Pi's <code>manual</code>/<code>auto</code>/<code>readonly</code> vocabulary does not map onto the app's closed Claude-shaped union</td><td><strong>Still correct, unchanged by this work.</strong> Out of scope: widening a shared persisted union with Pi's words is its own decision. Named here so the null is not read as an oversight.</td></tr>
+<tr><td><code>multiRepoDispatch: null</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:836</a></td><td>"UNMEASURED … pi has no sandbox to widen"</td><td><strong>Now measured, and the comment was right about the reason.</strong> Pi's <code>write</code> tool wrote to <code>/tmp/pi-probe/repoB/outside-cwd.txt</code> from a session whose cwd was <code>/tmp/pi-probe/repoA</code>, with no flag, no grant and no refusal (P9). There is no boundary to widen, so the grant declares that REASON rather than rendering flags: <code>{ kind: "no-boundary"; why; sdk: false }</code>, not an empty <code>launchArgs</code>. Taken in the first cut - see <a href="#the-scope-that-was-chosen-and-what-it-actually-changes">the scope that was chosen</a> for why the shape matters.</td></tr>
+<tr><td><code>runtimes: ["terminal"]</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:765</a></td><td>"Phase 6 adds <code>sdk</code>" with the <code>--mode rpc</code> adapter</td><td><strong>Unchanged.</strong> <code>--mode rpc</code> exists and the extension works in it (<code>ctx.mode === "rpc"</code>, measured in P3), but an embedded driver is a separate project.</td></tr>
+<tr><td><code>standingInstructions.outOfBand: {}</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:851</a></td><td>"Pi has no channel on any runtime: its only door is turn one"</td><td><strong>Wrong, and closable without the extension.</strong> <code>pi --append-system-prompt</code> is documented as repeatable and measured as repeatable: two flags produced two appended blocks, each exactly once (P8). Claude's equivalent silently discards the first.</td></tr>
+<tr><td><code>effort.driverApplies: null</code> / <code>sessionPicker: null</code></td><td><a href="../../../src/shared/harness-capabilities.ts">:826</a>, <a href="../../../src/shared/harness-capabilities.ts">:829</a></td><td>no embedded driver; Shift+Tab walks seven values including <code>off</code> and <code>minimal</code></td><td><strong>Both correct and out of scope.</strong> The extension can <em>report</em> the level (<code>thinking_level_select</code>, <code>ctx.thinkingLevel</code>), which is the statusline half, not the picker half.</td></tr>
+<tr><td><code>HARNESSES.pi.hooks: null</code></td><td><a href="../../../src/server/harness/index.ts">index.ts:199</a></td><td>"pi pushes no hooks"</td><td><strong>Closable, and at <code>scope: "machine"</code></strong> - the one thing neither Claude (machine, but hooks only) nor Codex (<code>scope: "launch"</code>) manages: hand-run coverage for tools <em>and</em> state.</td></tr>
+<tr><td><code>HARNESSES.pi.usage: null</code></td><td><a href="../../../src/server/harness/index.ts">index.ts:198</a></td><td>(no comment)</td><td><strong>Closable without the extension.</strong> Pi writes <code>usage</code> with a priced <code>cost</code> object onto every assistant record in its session JSONL (P7).</td></tr>
+</tbody></table></div>
+<h2>What was measured</h2>
+<p>Everything below ran against <strong>pi 0.85.1</strong> (<code>pi --version</code>) on this machine, with <code>PI_CODING_AGENT_DIR</code> pointed at a throwaway directory under <code>/tmp</code> so the operator's real <code>~/.pi/agent</code> was never written to, and <code>PI_OFFLINE=1</code>.</p>
+<p><strong>No model tokens were spent.</strong> Every round trip runs against a local OpenAI-compatible endpoint registered through <code>pi.registerProvider</code>, which returns a hand-written tool call and then a hand-written final message. That is stronger evidence than a real model call, not weaker: it drives Pi's genuine tool-execution path while making the tool call deterministic.</p>
+<h3>P1 - Pi has no MCP client</h3>
+<pre><code>$ pi --help</code></pre>
+<p>No MCP flag anywhere in the option table. The published built-in tool names are the last block of that output:</p>
+<pre><code>Built-in Tool Names:
+  read       - Read file contents
+  bash       - Execute bash commands
+  powershell - Execute PowerShell commands on Windows
+  edit       - Edit files with find/replace
+  write      - Write files (creates/overwrites)
+  grep       - Search file contents (read-only, off by default)
+  find       - Find files by glob pattern (read-only, off by default)
+  ls         - List directory contents (read-only, off by default)</code></pre>
+<h3>P2 - the Mission MCP bundle answers a real <code>tools/list</code> over stdio</h3>
+<p>The same handshake <a href="../../../src/server/mission-mcp.ts"><code>verifyMissionMcpTools</code></a> performs, run against the freshly built bundle:</p>
+<pre><code>$ npm run build &amp;&amp; node /tmp/pi-probe/mcp-tools.mjs "$PWD/dist/mcp/server.mjs"
+serverInfo: {"name":"mission-control","version":"0.1.0"}
+tool count: 15
+ - share_plan
+ - request_plan_decisions
+ - request_review
+ - create_task
+ - request_input
+ - report_product_feedback
+ - report_product_issue
+ - report_status
+ - respond_to_file_comments
+ - adopt_pipeline_run
+ - report_pipeline_workspace
+ - complete_retro_no_change
+ - submit_ensemble_result
+ - submit_workflow_evidence
+ - submit_scout_artifacts</code></pre>
+<p><code>tools/call</code> round-trips through the same pipe. Pointed at a dead port so the operator's live daemon on 7317 was never touched:</p>
+<pre><code>$ node /tmp/pi-probe/mcp-call.mjs "$PWD/dist/mcp/server.mjs"     # MISSION_PORT=7399
+tools/call response: {
+  "result": {
+    "content": [ { "type": "text", "text": "Could not reach Mission Control: TypeError: fetch failed" } ],
+    "isError": true
+  }, "jsonrpc": "2.0", "id": 2 }</code></pre>
+<p>The framing, the dispatch and the result envelope all work; only the daemon was absent, by design. Every Mission MCP tool returns exactly one text block - <code>src/mcp/server.ts</code> has a single <code>textResult</code> helper at line 204, one <code>type: "text"</code> in the file, no <code>structuredContent</code> and no <code>outputSchema</code> - so there is nothing in the result shape for a bridge to lose.</p>
+<h3>P3 - an INSTALLED extension loads and registers all 15 tools from raw MCP JSON Schema</h3>
+<p>A probe extension at <code>&lt;agent dir&gt;/extensions/mission-probe.ts</code> - auto-discovered, no <code>-e</code> - reads <code>/tmp/pi-probe/mcp-tools.json</code> (P2's output) and passes each <code>inputSchema</code> <strong>verbatim</strong> as <code>parameters</code>:</p>
+<pre><code>$ PI_CODING_AGENT_DIR=/tmp/pi-probe/agentdir PI_OFFLINE=1 pi --mode rpc --no-session &lt;/dev/null
+factory: registering 15 tools
+event session_start reason=startup isIdle=true
+mode=rpc hasUI=true cwd=/private/tmp/pi-probe</code></pre>
+<p><code>pi.getAllTools()</code> at <code>session_start</code> returned 23 names - Pi's eight built-ins plus all fifteen Mission tools - and 19 were active (Pi leaves <code>grep</code>, <code>find</code>, <code>ls</code> and <code>powershell</code> off by default). <strong>No collision:</strong> the fifteen Mission names and Pi's eight built-ins are disjoint. <code>ask_question</code>, which <code>pi --help</code> mentions in an <code>--exclude-tools</code> example, is not in <code>getAllTools()</code> on a clean install.</p>
+<p><code>ctx.getSystemPrompt()</code> shows them in Pi's own <code>Available tools</code> section, one line each from <code>promptSnippet</code>:</p>
+<pre><code>Available tools:
+- read: Read file contents
+- bash: Execute bash commands (ls, grep, find, etc.)
+- edit: Make precise file edits …
+- write: Create or overwrite files
+- share_plan: Mission Control: share_plan
+- request_plan_decisions: Mission Control: request_plan_decisions
+…
+- submit_scout_artifacts: Mission Control: submit_scout_artifacts</code></pre>
+<h3>P4 - the schemas reach the model, and Pi enforces them strictly</h3>
+<p><code>before_provider_request</code> captured the payload actually built for the wire. 19 tools, full MCP descriptions intact:</p>
+<pre><code>payload keys: model, messages, stream, stream_options, store, max_completion_tokens, tools
+tools on the wire: 19
+{"type":"function","function":{"name":"request_plan_decisions","description":"Show a plan in the
+Mission Control dashboard with one or more decision points the human can resolve by selecting
+options and clicking Submit, or dismiss without an answer when the decision set is stale. BLOCK
+until they submit or dismiss. …","parameters":{"type":"object","properties":{"title":{"type":"string",…</code></pre>
+<p>The strictness is the finding, and it arrived as a <strong>failed</strong> probe first. A tool call whose <code>options</code> entries omitted <code>id</code> was refused before <code>execute</code> ran, with the error handed back to the model as a tool result:</p>
+<pre><code>event tool_execution_end tool=request_plan_decisions isError=true
+  result={"content":[{"type":"text","text":"Validation failed for tool \"request_plan_decisions\":
+    - decisions.0: must not have additional properties
+    - decisions.0.options.0.id: must have required properties id
+    - decisions.0.options.1.id: must have required properties id …</code></pre>
+<p>So Pi honoured <code>additionalProperties: false</code> and <code>required</code> <strong>two levels deep inside an array item</strong>, from a draft-07 schema it never converted. This is deliberate on Pi's side, not luck: <code>pi-ai</code>'s <code>validateToolArguments</code> checks <code>Object.getOwnPropertySymbols(tool.parameters)</code> for <code>Symbol.for("TypeBox.Kind")</code> and takes a plain-JSON-Schema coercion path when the symbol is absent (<code>node_modules/@earendil-works/pi-ai/dist/utils/validation.js:280</code>).</p>
+<p>The keywords the fifteen Mission schemas actually use, extracted from P2's output, are all covered: <code>type</code>, <code>properties</code>, <code>required</code>, <code>items</code>, <code>enum</code>, <code>const</code>, <code>anyOf</code>, <code>default</code>, <code>pattern</code>, <code>minLength</code>/<code>maxLength</code>, <code>minimum</code>/<code>maximum</code>, <code>minItems</code>/<code>maxItems</code>, <code>additionalProperties</code>, <code>$schema</code>.</p>
+<h3>P5 - a full tool round trip, and the lifecycle events around it</h3>
+<p>With schema-valid arguments, the same run reached <code>execute</code> and carried the result back:</p>
+<pre><code>event tool_execution_start tool=request_plan_decisions args={"title":"Probe plan",…}
+execute request_plan_decisions probe-call-1 args={"title":"Probe plan","plan":"docs/plans/probe/plan.md",
+  "decisions":[{"id":"d1","question":"Bridge or native?","options":[{"id":"bridge","label":"Bridge",
+  "detail":"one implementation","recommended":true},{"id":"native","label":"Native",…}]}]}
+event tool_execution_end tool=request_plan_decisions isError=false
+  result={"content":[{"type":"text","text":"probe-ok:request_plan_decisions"}],"details":{…}}
+event message_start role=toolResult
+event message_end role=toolResult</code></pre>
+<p>The whole event stream from that run is the parity evidence:</p>
+<pre><code>event session_start reason=startup isIdle=true
+event resources_discover reason=startup
+event input text="probe" source=interactive isIdle=true
+event before_agent_start prompt="probe"
+event agent_start isIdle=false
+event turn_start turnIndex=0
+event message_start role=user / message_end role=user
+event message_end role=assistant usage={"input":11,"output":22,…,"cost":{…,"total":0.000055}}
+event tool_execution_start / tool_execution_end tool=request_plan_decisions
+event turn_end turnIndex=0
+event turn_start turnIndex=1
+event message_end role=assistant usage={"input":44,"output":5,…,"cost":{…,"total":0.000054}}
+event agent_end isIdle=false
+event agent_settled isIdle=true
+event session_shutdown reason=quit</code></pre>
+<p><code>agent_settled</code> is what settles the <code>workQueue</code> question. Pi's own documentation is explicit about what it means - "<code>agent_end</code> fires when that run ends, but Pi may still auto-retry, auto-compact and retry, or continue with queued follow-up messages. Use <code>agent_settled</code> for status integrations that need to know Pi will not continue running automatically" - and the run confirms it: <code>isIdle=false</code> on <code>agent_end</code>, <code>isIdle=true</code> on <code>agent_settled</code>.</p>
+<p>A 12-second tool completed with no timeout and <code>signal.aborted === false</code>, so a <code>request_input</code> that blocks for as long as the human takes is fine:</p>
+<pre><code>slow_probe returned after 12006ms aborted=false</code></pre>
+<h3>P6 - live model, effort and context percentage are all readable</h3>
+<pre><code>session_start model=probe/probe-model thinking=off contextUsage={"tokens":0,"contextWindow":128000,"percent":0}
+turn_end      model=probe/probe-model thinking=off contextUsage={"tokens":2,"contextWindow":128000,"percent":0.0015625}</code></pre>
+<p><code>ctx.model</code>, <code>ctx.thinkingLevel</code> and <code>ctx.getContextUsage()</code> cover the three fields Claude's statusline wrapper exists to forward (<a href="../../../src/shared/protocol.ts"><code>StatusLineIngestSchema</code></a>) - with no status line to wrap and no sidecar to record.</p>
+<h3>P7 - cost is already on disk, priced by Pi</h3>
+<p>Every assistant record in a Pi session JSONL carries token counts <em>and</em> a cost breakdown:</p>
+<pre><code>$ node -e '…' /tmp/pi-probe/sessions/2026-09-10T02-14-21-799Z_01a08918-….jsonl
+--- type=message role=assistant
+   usage: {"input":11,"output":22,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":33,
+           "cost":{"input":0.000011,"output":0.000044,"cacheRead":0,"cacheWrite":0,"total":0.000055}}
+--- type=message role=toolResult   tool: request_plan_decisions
+--- type=message role=assistant
+   usage: {"input":44,"output":5,…,"totalTokens":49,"cost":{…,"total":0.000054}}</code></pre>
+<p>That is exactly the append-only local source <a href="../../../src/server/harness/types.ts"><code>UsageSpec</code></a> reads - a path plus a byte cursor - so <code>HARNESSES.pi.usage</code> is a transcript reader, not an export pipeline.</p>
+<p>Two things about it were measured <strong>after</strong> the decisions were taken, and both narrow the claim. See <a href="#what-the-first-cut-actually-changes">What the first cut actually changes</a>.</p>
+<ul>
+<li><strong><code>--session-id</code> lands verbatim in the header and the filename.</strong> Asked for <code>591ab9d6-c481-43e9-8cc6-2ce639602117</code>, Pi wrote <code>2026-09-10T11-37-03-987Z_591ab9d6-….jsonl</code> whose first line is <code>{"type":"session","version":3,"id":"591ab9d6-…","cwd":"/private/tmp/pi-probe"}</code>. That id is the <code>sourceId</code> the usage poller compares against <code>session.agentSessionId</code>, so a <strong>dispatched</strong> Pi session attributes exactly.</li>
+<li><strong>Pi does NOT hold its session file open</strong>, so a hand-run one cannot be identified the way Codex's is. Driven over <code>--mode rpc</code> until <code>agent_settled</code>, with the session file confirmed present on disk, <code>lsof -a -p &lt;pi pid&gt; -Fn | grep jsonl</code> returned nothing. Codex's passive identity annotator (<a href="../../../src/server/discovery/codex-rollouts.ts"><code>discovery/codex-rollouts.ts</code></a>) is built entirely on that open handle, so it has no Pi analogue - and <a href="../../../src/server/harness/pi/transcript.ts"><code>locatePiTranscript</code></a> already refuses a session with no <code>agentSessionId</code>, which the poller requires too.</li>
+</ul>
+<h3>P8 - standing instructions have a terminal channel after all</h3>
+<pre><code>$ pi --mode rpc --no-session \
+    --append-system-prompt "MISSION-STANDING-INSTRUCTION-PROBE-A" \
+    --append-system-prompt "MISSION-STANDING-INSTRUCTION-PROBE-B"
+$ grep -c PROBE-A system-prompt.txt   -&gt;  1
+$ grep -c PROBE-B system-prompt.txt   -&gt;  1</code></pre>
+<p>Both present, once each. Claude's single-valued <code>--append-system-prompt</code> is why the terminal launch composes one value from every contributor; Pi needs no such folding.</p>
+<h3>P9 - there is no write boundary to widen</h3>
+<p>Session cwd <code>/tmp/pi-probe/repoA</code>; the model called Pi's own <code>write</code> tool with an absolute path in a sibling directory:</p>
+<pre><code>tool_execution_end tool=write isError=false
+  result={"content":[{"type":"text","text":"Successfully wrote to /tmp/pi-probe/repoB/outside-cwd.txt"}]}
+$ cat /tmp/pi-probe/repoB/outside-cwd.txt
+written from repoA cwd</code></pre>
+<p>Measured in <code>-p</code> (non-interactive) mode, which is the mode a dispatch uses for one-shots and which has no approval step. <code>resolveToCwd</code> in <code>dist/core/tools/path-utils.js</code> resolves a relative path against cwd and passes an absolute one straight through; there is no boundary check in <code>write.js</code> at all. Whether a <em>TUI</em> session prompts for the write is a question about Pi's approval mode, and the answer does not vary with the directory - so either way there is no per-directory grant to render.</p>
+<h3>P10 - distribution and the failure taxonomy</h3>
+<p><strong>How Pi discovers an extension.</strong> <code>discoverExtensionsInDir</code> in <code>dist/core/extensions/loader.js:568</code> accepts a direct file whose name ends in <code>.ts</code> or <code>.js</code> (<code>isExtensionFile</code>, line 527), or a subdirectory with <code>index.ts</code>/<code>index.js</code>, or a subdirectory whose <code>package.json</code> declares <code>pi.extensions</code>. <strong>One level, no recursion.</strong> It handles <code>entry.isSymbolicLink()</code> explicitly for both files and directories - which is what makes the skills reconciler's mechanism available here.</p>
+<p>Measured, with both a plain <code>.mjs</code> and a <code>.js</code>-named symlink in the same directory:</p>
+<pre><code>$ ls -la /tmp/pi-probe/disco/extensions/
+lrwxr-xr-x  mission-control.js -&gt; /tmp/pi-probe/built/index.mjs
+-rw-r--r--  plain.mjs
+$ pi --mode rpc --no-session &lt;/dev/null
+loaded: built/index.mjs via file:///tmp/pi-probe/disco/extensions/mission-control.js
+all=read,bash,powershell,edit,write,grep,find,ls,report_status</code></pre>
+<p>One load line, from the symlink. <strong><code>.mjs</code> is not discovered</strong>; a <code>.js</code>-named symlink pointing at a built <code>.mjs</code> is. Note <code>import.meta.url</code> is the <strong>link</strong> path, not the target - so the bundle must be self-contained, which an esbuild bundle already is. The earlier finding that ".ts, .js and .mjs all load" was measured through <code>-e</code>, which takes an explicit path and never consults <code>isExtensionFile</code>.</p>
+<p>The launch flags behave as hoped:</p>
+<pre><code>--tools read,report_status      -&gt; all=read,report_status              active=["read","report_status"]
+--exclude-tools report_status   -&gt; all=read,bash,powershell,edit,write,grep,find,ls
+--no-extensions                 -&gt; (extension not loaded at all)</code></pre>
+<p>So <code>--tools</code> is Pi's <code>--allowed-tools</code>, and <strong>a dispatch must never pass <code>--no-extensions</code></strong> - it would silently take Mission Control away. Pi's current launch (<a href="../../../src/server/harness/pi/launch.ts"><code>harness/pi/launch.ts</code></a>) passes only <code>--session-id</code> and the prompt, so nothing has to change there today.</p>
+<p><strong><code>pi install &lt;local path&gt;</code> records a RELATIVE path.</strong> Given an absolute one:</p>
+<pre><code>$ PI_CODING_AGENT_DIR=/tmp/pi-probe/inst pi install /tmp/pi-probe/pkg
+Installed /tmp/pi-probe/pkg
+$ cat /tmp/pi-probe/inst/settings.json
+{ "packages": [ "../pkg" ] }
+$ pi list
+User packages:
+  ../pkg
+    /tmp/pi-probe/pkg</code></pre>
+<p>Pi normalises the path relative to the settings file's own directory, and loads the package in place without copying (<code>packages.md</code>: "Local paths … are added to settings without copying"). So a staleness check on this route has to resolve entries against the settings file's directory rather than treating them as absolute - and it is editing a third-party JSON file rather than creating a symlink.</p>
+<p><strong>The failure taxonomy, measured.</strong> This is the part that decides how the check is built.</p>
+<div class="scroll"><table>
+<thead><tr><th>What is wrong</th><th>What Pi does</th><th>Blast radius</th></tr></thead><tbody>
+<tr><td>Dangling symlink (checkout moved or deleted)</td><td><strong>Nothing.</strong> exit 0, empty stderr, no Mission Control tools</td><td>Every Pi session on the machine silently loses the integration</td></tr>
+<tr><td>Bundle exists but fails to load (parse error, module-scope throw - i.e. a half-written build)</td><td><code>Error: Failed to load extension "…": …</code> + <code>Hint: Start without extensions using "pi -ne".</code>, <strong>exit 1</strong></td><td>Every Pi session on the machine <strong>refuses to start</strong></td></tr>
+<tr><td>A handler throws at runtime</td><td><code>Extension error (…): handler blew up</code> on stderr, session continues</td><td>That handler's work is lost; the session is fine</td></tr>
+</tbody></table></div>
+<pre><code>$ ln -s /tmp/pi-probe/does-not-exist/index.mjs .../extensions/mission-control.js
+$ pi -p … "hi"                              # exit=0, stdout "probe finished", stderr EMPTY
+
+$ printf 'throw new Error("half-written bundle");\nexport default function () {}\n' &gt; .../mission-control.js
+$ pi -p … "hi"                              # exit=1
+Error: Failed to load extension "…/mission-control.js": Failed to load extension: half-written bundle
+Hint: Start without extensions using "pi -ne".
+
+$ # handler throws
+$ pi -p … "hi"                              # exit=0, stdout "probe finished"
+Extension error (…/mission-control.js): handler blew up</code></pre>
+<p>Compare Claude's: a moved checkout makes every hook event fail with <code>MODULE_NOT_FOUND</code> and print a stack into the transcript on <strong>every turn</strong> (<a href="../../../src/server/environment/claude-hooks.ts"><code>environment/claude-hooks.ts</code></a> records that outage verbatim). Loud and misdirected. Pi's first row is silent and its second row is fatal. Neither points at Mission Control.</p>
+<h3>What could not be verified</h3>
+<ul>
+<li><strong>A tool round trip driven by a real model in an interactive TUI.</strong> P4 and P5 prove the tools reach the provider payload and that Pi's execution path runs them end to end, in <code>-p</code> mode against a controlled endpoint. What a real model <em>chooses</em> to call was not measured and cannot be without spending tokens. The risk this leaves is a prompting risk, not a mechanism risk, and it is the same risk Claude and Codex already carry.</li>
+<li><strong>Whether Pi's TUI prompts for a write outside cwd under a non-default approval mode.</strong> P9 measured <code>-p</code>. The conclusion it supports - that there is no <em>per-directory</em> grant either way - does not depend on the answer.</li>
+<li><strong>Whether <code>agent_settled</code> is sufficient for Foreman in practice.</strong> It is the right signal by Pi's own definition and by the measured <code>isIdle</code> transition, but Foreman's work-cycle contract has only ever been driven by Claude's and Codex's vocabularies. That is implementation work to verify, and it is why the work queue is proposed as a later phase rather than a first-cut claim.</li>
+</ul>
+<h2>Design</h2>
+<h3>One extension, three responsibilities</h3>
+<p><code>src/pi/extension.ts</code> in source, <code>dist/pi-extension/index.js</code> as the built artifact, installed into <code>~/.pi/agent/extensions/</code>. It does three separable things, and only the first needs the MCP bundle:</p>
+<ol>
+<li><strong>Tools.</strong> Register Mission Control's tools so the model can call them.</li>
+<li><strong>Instrumentation.</strong> Map Pi's lifecycle events to <code>POST /hooks/:event</code>, plus the statusline fields to <code>POST /statusline</code>.</li>
+<li><strong>Nothing else.</strong> Cost and standing instructions are handled outside it (below), because they can be, and an installed artifact should carry as little as possible given P10's second row.</li>
+</ol>
+<p>Every handler is wrapped so a throw cannot reach Pi. Nothing runs at module scope beyond registration, and no background resource starts in the factory - Pi's own guidance ("Extension factories may run in invocations that never start a session") plus P10's evidence that a module-scope throw is fatal machine-wide.</p>
+<p>The extension does <strong>not</strong> bake the port or the token. It calls <code>readClientToken()</code> and <code>BASE_URL</code> from <a href="../../../src/shared/harness-runtime.mjs"><code>@shared/harness-runtime.mjs</code></a> at event time, exactly as <code>harness-hook.mjs</code> does - so the only value an install bakes is the path to the bundle, and that single value is what the staleness check is about. This is strictly better than Claude's OTel block, which bakes a token into <code>~/.claude/settings.json</code>.</p>
+<h3>Tools: bridge the existing bundle over stdio</h3>
+<p>The extension spawns <code>dist/mcp/server.mjs</code> as a child, speaks MCP over its stdio, and maps each published tool to a <code>pi.registerTool</code> whose <code>execute</code> forwards to <code>tools/call</code>.</p>
+<figure><svg viewBox="0 0 900 330" role="img" aria-label="Today, Claude or Codex acts as an MCP client to dist/mcp/server.mjs, which posts to the Mission Control daemon over loopback with a harness token. Proposed, a Pi TUI session calls a registered extension tool, whose execute forwards initialize, tools/list and tools/call over stdio to the same dist/mcp/server.mjs, which posts to the same daemon."><defs><marker id="t-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker><marker id="t-arrow-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2f6fdd"/></marker></defs><g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12"><text x="0" y="14" class="svg-dim" font-size="11.5" font-weight="700">TODAY &#8212; CLAUDE AND CODEX</text><rect x="0" y="28" width="186" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="93" y="56" text-anchor="middle" class="svg-ink" font-size="12.5">Claude / Codex session</text><line x1="186" y1="51" x2="338" y2="51" stroke="currentColor" stroke-width="1.5" marker-end="url(#t-arrow)"/><text x="262" y="43" text-anchor="middle" class="svg-dim" font-size="10.5">own MCP client</text><rect x="340" y="28" width="210" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="445" y="56" text-anchor="middle" class="svg-ink" font-size="12">dist/mcp/server.mjs</text><line x1="550" y1="51" x2="700" y2="51" stroke="currentColor" stroke-width="1.5" marker-end="url(#t-arrow)"/><text x="625" y="43" text-anchor="middle" class="svg-dim" font-size="10.5">POST /api/&#8230;</text><text x="625" y="68" text-anchor="middle" class="svg-dim" font-size="10.5">x-harness-token</text><rect x="702" y="28" width="196" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="800" y="56" text-anchor="middle" class="svg-ink" font-size="12.5">Mission Control daemon</text><line x1="0" y1="108" x2="898" y2="108" stroke="currentColor" stroke-width="1" stroke-dasharray="3 5" opacity=".45"/><text x="0" y="146" fill="#2f6fdd" font-size="11.5" font-weight="700">PROPOSED &#8212; PI</text><rect x="0" y="160" width="186" height="46" rx="8" fill="none" stroke="#2f6fdd" stroke-width="1.5"/><text x="93" y="188" text-anchor="middle" class="svg-ink" font-size="12.5">Pi TUI session</text><text x="93" y="228" text-anchor="middle" class="svg-dim" font-size="10.5">hand-run or dispatched</text><line x1="186" y1="183" x2="312" y2="183" stroke="#2f6fdd" stroke-width="1.5" marker-end="url(#t-arrow-a)"/><text x="249" y="175" text-anchor="middle" class="svg-dim" font-size="10.5">execute()</text><rect x="314" y="152" width="196" height="62" rx="8" fill="none" stroke="#2f6fdd" stroke-width="1.5"/><text x="412" y="178" text-anchor="middle" class="svg-ink" font-size="12">Mission Control</text><text x="412" y="196" text-anchor="middle" class="svg-ink" font-size="12">extension</text><text x="412" y="234" text-anchor="middle" class="svg-dim" font-size="10">~/.pi/agent/extensions</text><line x1="510" y1="183" x2="636" y2="183" stroke="#2f6fdd" stroke-width="1.5" marker-end="url(#t-arrow-a)"/><text x="573" y="170" text-anchor="middle" class="svg-dim" font-size="10">MCP over stdio</text><text x="573" y="199" text-anchor="middle" class="svg-dim" font-size="9.5">tools/list &#183; call</text><rect x="638" y="152" width="210" height="62" rx="8" fill="none" stroke="#2f6fdd" stroke-width="1.5" stroke-dasharray="6 4"/><text x="743" y="178" text-anchor="middle" class="svg-ink" font-size="12">dist/mcp/server.mjs</text><text x="743" y="197" text-anchor="middle" class="svg-dim" font-size="10.5">the same bundle</text><line x1="743" y1="214" x2="743" y2="268" stroke="#2f6fdd" stroke-width="1.5" marker-end="url(#t-arrow-a)"/><text x="753" y="246" class="svg-dim" font-size="10.5">POST /api/&#8230;</text><rect x="645" y="270" width="196" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="743" y="298" text-anchor="middle" class="svg-ink" font-size="12.5">Mission Control daemon</text></g></svg><figcaption>The tools path. Claude and Codex register <code>dist/mcp/server.mjs</code> with their own MCP client; Pi has no MCP client, so the extension is the client and bridges the same bundle over stdio. One implementation of every tool, one daemon-facing contract.</figcaption></figure>
+<p>Registration is derived from the server's own <code>tools/list</code> rather than from a hand-kept list, so a tool added to <code>src/mcp/server.ts</code> reaches Pi with no change here, and <code>verifyMissionMcpTools</code> keeps working unchanged because it interrogates the same bundle by the same handshake. Three adapter details, each measured:</p>
+<ul>
+<li><code>parameters</code> takes the MCP <code>inputSchema</code> <strong>verbatim</strong> (P4).</li>
+<li>MCP's <code>{ content: [{ type: "text", text }] }</code> maps onto Pi's <code>AgentToolResult.content</code> directly. Pi accepts <code>TextContent | ImageContent</code>; the Mission server emits text only.</li>
+<li>MCP's <code>isError: true</code> must become a <strong>thrown</strong> error in <code>execute</code>. Pi's contract is explicit: "Returning a value never sets the error flag regardless of what properties you include."</li>
+</ul>
+<p>What the bridge costs, stated plainly: one extra Node process per Pi session for the life of that session, and a hard dependence on <code>dist/mcp/server.mjs</code> being present and current. <code>dist/</code> is gitignored and refreshed only by <code>npm run build</code>, which is the staleness the module's own long comment already documents - so Pi inherits a failure mode Claude and Codex already have, rather than a new one. Reimplementing the fifteen tools natively would remove both costs and was rejected: it makes a second writer of the daemon-facing contract, which is the drift <code>mission-mcp.ts</code> exists to prevent.</p>
+<h3>Instrumentation: a payload mapper, at <code>scope: "machine"</code></h3>
+<p><code>postHookEvent</code> in <a href="../../../src/shared/hook-bridge.mjs"><code>@shared/hook-bridge.mjs</code></a> already "knows [no] event name, a payload key or a vendor", and <code>HookIngestSchema</code> already carries an <code>agent</code> field over <code>AGENT_TYPES</code>. So this is a <code>HookSpec</code> plus a mapper, the shape <code>harness/codex/hooks.ts</code> is - about sixty lines - not a pipeline.</p>
+<p>The mapping, from the events measured in P5:</p>
+<div class="scroll"><table>
+<thead><tr><th>Pi event</th><th>Ingested as</th><th>State / signal</th></tr></thead><tbody>
+<tr><td><code>session_start</code></td><td><code>SessionStart</code></td><td><code>idle</code>, "started (reason)"</td></tr>
+<tr><td><code>input</code> (<code>source</code> is <code>interactive</code> or <code>rpc</code>)</td><td><code>UserPromptSubmit</code></td><td><code>working</code>, prompt text; <code>work_started</code>; <code>promptText</code></td></tr>
+<tr><td><code>tool_execution_start</code></td><td><code>PreToolUse</code></td><td><code>working</code>, "running <code>&lt;tool&gt;</code>"</td></tr>
+<tr><td><code>tool_execution_end</code></td><td><code>PostToolUse</code></td><td><code>working</code>; PR-URL sniff on the <code>bash</code> tool's result</td></tr>
+<tr><td><code>ui_prompt_start</code></td><td><code>PermissionRequest</code></td><td><code>awaiting_input</code> with the prompt's <code>kind</code> and <code>title</code></td></tr>
+<tr><td><code>ui_prompt_end</code></td><td><code>PostToolUse</code>-equivalent</td><td>back to <code>working</code></td></tr>
+<tr><td><code>session_before_compact</code> / <code>session_compact</code></td><td><code>PreCompact</code> / <code>PostCompact</code></td><td><code>working</code></td></tr>
+<tr><td><code>agent_settled</code></td><td><code>Stop</code></td><td><code>idle</code>; <strong><code>turn_completed</code></strong></td></tr>
+<tr><td><code>session_shutdown</code></td><td><code>SessionEnd</code></td><td><code>exited</code>, "ended (reason)"</td></tr>
+<tr><td><code>model_select</code>, <code>thinking_level_select</code>, <code>turn_end</code></td><td><code>POST /statusline</code></td><td>model, effort, context % (P6)</td></tr>
+</tbody></table></div>
+<p>Two of these are better than what the other harnesses have. <code>ui_prompt_start</code> is structured, where Claude's needs-you signal is a regex over a notification string that its own spec documents as unreliable (<code>isIdleNudge</code>). And <code>agent_settled</code> is a settled-not-just-ended signal that neither Claude's <code>Stop</code> nor Codex's <code>Stop</code> distinguishes.</p>
+<p><code>input</code> carries <code>source</code>, so an extension-injected message (<code>source === "extension"</code>) is skipped rather than being reported as a human's ask - which is the discrimination <code>substantivePrompt</code> does for Claude by inspecting scaffolding.</p>
+<p>PR adoption needs nothing new: <code>pullRequestUrlsIn</code> and <code>opensPullRequest</code> in <a href="../../../src/shared/pr-command.mjs"><code>@shared/pr-command.mjs</code></a> are already vendor-neutral, and <code>tool_execution_end</code> hands over the <code>bash</code> tool's result and args.</p>
+<h3>The two gaps that need no extension</h3>
+<p><strong>Cost</strong> (<code>HARNESSES.pi.usage</code>) is a <code>UsageSpec</code> over Pi's session JSONL (P7): <code>read</code> walks assistant records forward from a byte cursor, <code>estimate</code> values them.</p>
+<p>Re-pricing the way Claude and Codex are priced was the obvious choice and the repository rules it out. <code>MODEL_CATALOG.pi</code> (<a href="../../../src/shared/model.ts"><code>shared/model.ts</code></a>) carries no rates at all - it is a display catalog of id, label, hint, provider, context window and input modes - and Pi is multi-provider across the thirty-odd providers its <code>--help</code> lists, so a Mission Control price table for Pi would have to track all of them. Pi's own per-message <code>cost</code> is therefore the only viable source, which means <code>HarnessUsageEvent</code> has to carry a vendor-reported cost for <code>estimate</code> to pass through. That is a shared-contract change and it belongs to the phase that introduces it.</p>
+<p><strong>Standing instructions</strong> (<code>standingInstructions.outOfBand.terminal</code>) is a new <code>StandingInstructionsMechanism</code> rendering repeated <code>--append-system-prompt</code> flags (P8). For a <strong>hand-run</strong> session the extension's <code>before_agent_start</code> is the equivalent channel - it can return a modified <code>systemPrompt</code> for the turn - which is a second delivery of the same fact and therefore has to be gated on the launch not having already carried it. That gate is the thing <code>standingInstructionsChannel</code> exists to be the single reading of, so the extension must ask the daemon rather than deciding for itself.</p>
+<h3>Installation: reconcile a symlink, the way skills already are</h3>
+<p>Decided: a symlink reconciled into <code>~/.pi/agent/extensions/</code>. <a href="../../../src/server/skills/reconcile.ts"><code>skills/reconcile.ts</code></a> already installs Mission Control artifacts into Pi's own home and carries the two rules that matter:</p>
+<ul>
+<li><strong>Symlinks, not copies.</strong> "A symlink has no drift: the file Claude reads IS the file in the repo." Measured to work for Pi extensions in P10, with the one constraint that the link's <strong>name</strong> must end in <code>.js</code>.</li>
+<li><strong>The isolated-home rule.</strong> A daemon on an explicit <code>MISSION_HOME</code> writes to <code>&lt;home&gt;/pi-extensions</code> and does not touch the machine's real directory - the fix for observed data loss where an isolated test daemon unlinked the live install's <code>mission-html-plans</code>. Reusing this is not optional: <code>npm test</code> and the E2E harness both start daemons routinely.</li>
+</ul>
+<p>So the capability grows a sibling of <code>SkillsSpec</code>:</p>
+<pre><code>extensions: {
+  dirEnvVar: "PI_EXTENSIONS_DIR",
+  homeDir: [".pi", "agent", "extensions"],
+  isolatedDirName: "pi-extensions",
+  linkName: "mission-control.js",
+}</code></pre>
+<p><code>null</code> for Claude and Codex, which is the honest answer and the one that keeps the reconciler from inventing a directory for a harness that has no such loader.</p>
+<p>Two rules the installer inherits from <code>hooks/install.mjs</code> rather than reinventing:</p>
+<ul>
+<li><strong>Refuse a transient checkout.</strong> <code>transientCheckoutRoot</code> in <a href="../../../hooks/install-checks.mjs"><code>hooks/install-checks.mjs</code></a> already refuses to bake a path from a pooled worktree. Given P10's second row - a load failure stops <strong>every</strong> Pi session on the machine - this refusal matters more here than it does for Claude.</li>
+<li><strong>Publish atomically.</strong> <code>scripts/build-state-lock-native.mjs</code> already stages into a private directory and publishes with one atomic rename, precisely so "a daemon starting up never loads a half-written addon". A half-written <code>dist/pi-extension/index.js</code> is P10's fatal row, so <code>build:pi-extension</code> gets the same treatment.</li>
+</ul>
+<h3>Staleness: report, never repair</h3>
+<p><code>environment/claude-hooks.ts</code> argues this at length and the argument transfers without weakening. A new append-only environment check id, <code>"pi-extension"</code>, that:</p>
+<ol>
+<li>Resolves the extension directory the same way the reconciler does.</li>
+<li>Reports a <strong>dangling link</strong> - P10's silent row, and the only thing that would ever tell anyone. The sentence has to say that Pi says nothing, because an operator's reasonable prior is that a broken integration announces itself.</li>
+<li>Reports a <strong>load failure</strong> by actually loading the bundle in a child - the only check that sees P10's fatal row, and worth one <code>node --input-type=module -e 'import(...)'</code> because the symptom is every Pi session on the machine refusing to start.</li>
+<li>Reports a <strong>version drift</strong> by comparing a build marker embedded in the artifact against this build's own, and by asking the bridged bundle's <code>tools/list</code> whether it still publishes what this build's <code>MISSION_MCP_TOOLS</code> names. That second half is <code>reportMissionMcpDrift</code>'s question asked on Pi's behalf.</li>
+</ol>
+<p>It must not repair, for <code>claude-hooks.ts</code>'s reason restated for this case: the daemon reporting the problem may itself be running from a pooled worktree its allocator will reclaim, so an auto-repair is free to cause the outage it just reported - and here that outage is "no Pi session starts", not "hooks print stacks". Decided: report only, and no one-press remedy on the row either, so the row's remedy stays the installer command the operator runs from a durable clone.</p>
+<p>The row lands in Setup through <code>ENVIRONMENT_ROW_METADATA</code> (<a href="../../../src/shared/setup-catalog.ts"><code>setup-catalog.ts</code></a>), which is how <code>mission-hook-script</code> already appears there, with <code>requirement: "required"</code> for that entry's stated reason: an environment row exists only while its check is warning, so it cannot nag a machine that never installed.</p>
+<h3>Replacing the concrete-agent guard</h3>
+<p><a href="../../../src/server/dispatcher.ts"><code>dispatcher.ts:667</code></a> currently reads:</p>
+<pre><code>const missionMcpRegistered =
+  codexLaunch.missionMcp || askChannel.args.includes("--mcp-config");</code></pre>
+<p>Two concrete agents named in one expression, and no third arm - which is why every Pi dispatch declaring a required Mission MCP tool fails after its worktree is cut, with a message that misdirects toward rebuilding a bundle. The repository's own code style forbids this shape, and the reason it survived is that there was no answer to read.</p>
+<p>The replacement is a capability that says <strong>how</strong> our tools reach a harness's model, and at what scope:</p>
+<pre><code>/** How Mission Control's own tools reach this harness's model. */
+export interface MissionToolsSpec {
+  mechanism: "mcp-client" | "installed-extension";
+  /** Whether the tools reach a session this daemon did NOT launch. */
+  scope: "launch" | "machine";
+}</code></pre>
+<ul>
+<li><code>claude</code>, <code>codex</code>: <code>{ mechanism: "mcp-client", scope: "launch" }</code> - the registration rides the argv this launch built, which is what makes it verifiable from the argv.</li>
+<li><code>pi</code>: <code>{ mechanism: "installed-extension", scope: "machine" }</code> - nothing rides the argv, and the question is instead whether the extension is installed and current.</li>
+</ul>
+<p>The guard then reads the mechanism and asks the matching question - the launch builder's own report for <code>mcp-client</code>, the environment check's for <code>installed-extension</code> - and a harness that can carry the tools in neither way is refused <strong>before a worktree is cut</strong>, which is the narrow fix Defect 2 originally proposed, arrived at as a consequence rather than as a special case.</p>
+<h3>The end-to-end change, before and after</h3>
+<figure><svg viewBox="0 0 900 400" role="img" aria-label="Today a hand-run Pi session is only found by passive discovery, so the card shows state from ps and the transcript and three capabilities are missing: no Mission Control tools, no pickup or completion signal so no work queue, and no cost. Proposed, the same session also loads the installed extension, which registers bridged tools, posts hook events tagged agent pi, and posts statusline fields; the session JSONL separately feeds cost through a UsageSpec with no extension involved."><defs><marker id="e-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker><marker id="e-arrow-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#c0392b"/></marker><marker id="e-arrow-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1e8a4c"/></marker></defs><g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12"><text x="0" y="14" class="svg-dim" font-size="11.5" font-weight="700">TODAY</text><rect x="0" y="28" width="170" height="44" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="85" y="55" text-anchor="middle" class="svg-ink" font-size="12.5">human runs pi</text><line x1="170" y1="50" x2="272" y2="50" stroke="currentColor" stroke-width="1.5" marker-end="url(#e-arrow)"/><rect x="274" y="28" width="176" height="44" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="362" y="55" text-anchor="middle" class="svg-ink" font-size="12">passive discovery</text><line x1="450" y1="50" x2="552" y2="50" stroke="currentColor" stroke-width="1.5" marker-end="url(#e-arrow)"/><rect x="554" y="20" width="200" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="654" y="44" text-anchor="middle" class="svg-ink" font-size="12.5">card</text><text x="654" y="64" text-anchor="middle" class="svg-dim" font-size="10">ps + transcript only</text><line x1="654" y1="80" x2="654" y2="104" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#e-arrow-bad)"/><rect x="430" y="106" width="448" height="70" rx="8" fill="none" stroke="#c0392b" stroke-width="1.5"/><text x="446" y="127" fill="#c0392b" font-size="11">no tools: cannot call request_input, share_plan, submit_*</text><text x="446" y="146" fill="#c0392b" font-size="11">no hooks: no pickup or completion, so no work queue</text><text x="446" y="165" fill="#c0392b" font-size="11">usage: null &#8212; no cost</text><line x1="0" y1="200" x2="898" y2="200" stroke="currentColor" stroke-width="1" stroke-dasharray="3 5" opacity=".45"/><text x="0" y="236" fill="#1e8a4c" font-size="11.5" font-weight="700">PROPOSED</text><rect x="0" y="250" width="170" height="44" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="85" y="277" text-anchor="middle" class="svg-ink" font-size="12.5">human runs pi</text><line x1="170" y1="272" x2="254" y2="272" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><rect x="256" y="244" width="196" height="56" rx="8" fill="none" stroke="#1e8a4c" stroke-width="1.5"/><text x="354" y="267" text-anchor="middle" class="svg-ink" font-size="12">extension loads</text><text x="354" y="286" text-anchor="middle" class="svg-dim" font-size="10">~/.pi/agent/extensions</text><line x1="452" y1="258" x2="552" y2="250" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><text x="560" y="249" class="svg-dim" font-size="10.5">registerTool &#215; N, bridged</text><line x1="452" y1="272" x2="552" y2="276" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><text x="560" y="278" class="svg-dim" font-size="10.5">POST /hooks/:event (agent: pi)</text><line x1="452" y1="288" x2="552" y2="302" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><text x="560" y="307" class="svg-dim" font-size="10.5">POST /statusline</text><rect x="0" y="330" width="280" height="46" rx="8" fill="none" stroke="#1e8a4c" stroke-width="1.5" stroke-dasharray="6 4"/><text x="140" y="350" text-anchor="middle" class="svg-ink" font-size="11.5">Pi session JSONL (priced usage)</text><text x="140" y="367" text-anchor="middle" class="svg-dim" font-size="10">UsageSpec &#8212; no extension needed</text><line x1="280" y1="353" x2="552" y2="330" stroke="#1e8a4c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#e-arrow-good)"/><text x="560" y="333" class="svg-dim" font-size="10.5">cost</text><rect x="770" y="244" width="128" height="96" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="834" y="288" text-anchor="middle" class="svg-ink" font-size="12.5">card</text><text x="834" y="307" text-anchor="middle" class="svg-dim" font-size="10">full parity</text><line x1="736" y1="250" x2="766" y2="270" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><line x1="736" y1="278" x2="766" y2="288" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><line x1="736" y1="305" x2="766" y2="310" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#e-arrow-good)"/><line x1="736" y1="331" x2="766" y2="326" stroke="#1e8a4c" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#e-arrow-good)"/></g></svg><figcaption>The whole change for a hand-run Pi session. Passive discovery already draws the card; today nothing else reaches it. Cost needs no extension at all - Pi already writes priced usage into its own session JSONL, which is the append-only source a <code>UsageSpec</code> reads.</figcaption></figure>
+<h2>The scope that was chosen, and what it actually changes</h2>
+<p>The first-cut selection named <strong>one</strong> of the four capability groups offered - cost - and both capability flips. Everything else in the design above is real work that was deliberately not put in the first cut. That produces a first cut with an unusual property worth stating before the phases are written, because it is the difference between a small change and a small change that quietly promises something it does not deliver.</p>
+<h3>First cut</h3>
+<ol>
+<li><strong><code>HARNESSES.pi.usage</code></strong> - a <code>UsageSpec</code> over Pi's session JSONL (P7). No extension and no install. This is the one item that delivers a visible capability on its own - for <strong>dispatched</strong> Pi sessions. See the correction below.</li>
+<li><strong><code>workQueue</code></strong> flipped from <code>null</code> to <code>{ uninstrumentedWhy: … }</code> on the strength of <code>agent_settled</code> (P5).</li>
+<li><strong><code>multiRepoDispatch</code></strong> declared as an empty grant, because P9 measured that Pi has no write boundary to widen. The literal shape is <strong>not</strong> an empty <code>launchArgs</code> - see below.</li>
+</ol>
+<h4>The <code>multiRepoDispatch</code> shape, corrected after the decision</h4>
+<p><code>test/multi-repo-policy.test.ts:118</code> asserts that any non-null <code>multiRepoDispatch</code> renders at least one flag naming every directory, on the stated grounds that "a spec that renders no flags would be a harness advertising a grant it does not make, which is worse than declaring null". So <code>{ launchArgs: () =&gt; [], sdk: false }</code> fails a test that is right to fail it.</p>
+<p>The decision is kept - Pi is offered for multi-repo tasks - and the spec becomes a discriminated union, so Pi declares the reason instead of returning an array that reads like a bug:</p>
+<pre><code>export type MultiRepoDispatchSpec =
+  | { kind: "flags"; launchArgs: (dirs: readonly string[]) =&gt; string[]; sdk: boolean }
+  | { kind: "no-boundary"; why: string; sdk: boolean };</code></pre>
+<p><a href="phase-1-pi-cost-and-capability-flips.md">Phase 1</a> owns the union, and <a href="phased-plan.md#3-the-empty-multirepodispatch-grant-contradicts-an-existing-test-invariant">phased-plan.md's finding 3</a> records the reasoning. Anyone implementing from this plan's summary alone should write the union, never the empty array.</p>
+<h3>What the first cut actually changes</h3>
+<p>Stated exactly, because two of the three items are declarations rather than mechanisms:</p>
+<ul>
+<li><strong>Cost appears on Pi cards - but on DISPATCHED ones only.</strong> This corrects an earlier sentence in this plan, and it is the one place the measurements moved after the decisions were taken. The usage poller needs <code>session.agentSessionId</code>, and so does <code>locatePiTranscript</code>; a dispatched Pi session has one because the launch passes <code>--session-id</code> and Pi writes it into the transcript header verbatim (P7). A <strong>hand-run</strong> Pi session has none, and cannot be given one passively: Codex's identity annotator works by <code>lsof</code>-ing the rollout the process holds open, and Pi was measured <strong>not</strong> to hold its session file open at all (P7). Nothing short of the extension reporting <code>ctx.sessionManager.getSessionId()</code> closes that, so <strong>hand-run cost moves to the extension phase</strong>. Cost on hand-run Pi sessions is not something the first cut can buy.</li>
+<li><strong><code>workQueue</code> changes the sentence, not yet the outcome.</strong> Non-null means "this harness can hold a queue, but a session that has never reported a hook takes the per-session refusal" - the Codex shape. Until the extension ships, <em>every</em> Pi session is such a session, so no Pi session can actually hold a queue. What improves is the refusal an operator reads: "Pi doesn't report its work lifecycle to Mission Control yet" in place of "Foreman doesn't drive Pi sessions", which is a claim about the harness rather than about this build.</li>
+</ul>
+<p><strong>The interim sentence must be a statement of fact, not an instruction.</strong> The first cut can merge on its own, and nothing installable exists until Phase 5, so a sentence telling the operator to install the Pi integration would point at a button that is not in the app. The transition is owned rather than assumed: Phases 1 and 4 keep it factual, Phase 5 makes it actionable because it is the first merge that provides a switch, and Phase 6 names the Setup row once the row exists.</p>
+<ul>
+<li><strong><code>multiRepoDispatch</code> makes the dispatch modal offer Pi for multi-repo tasks,</strong> and the measurement supports that: the secondary worktree really is writable (P9). The caveat to carry into the phase is that Pi has <code>permissionModes: null</code>, so <code>--tools</code> / <code>--exclude-tools</code> are the only levers on what a Pi session may do in either worktree.</li>
+<li><strong>Nothing about tools changes.</strong> A Pi task declaring a required Mission MCP tool keeps failing after its worktree is cut, with the message that misdirects toward rebuilding the bundle, because the capability guard was not selected for the first cut. This is the status quo Defect 2 already documents, and it is called out here so the omission is not read as fixed.</li>
+</ul>
+<h3>Sequenced after it</h3>
+<p>Each of these is a later phase, in this order, and the first three were offered for the first cut and not selected rather than being newly deferred:</p>
+<ol>
+<li><strong><code>standingInstructions.outOfBand.terminal</code></strong> - repeated <code>--append-system-prompt</code> (P8). Independent of everything else and the cheapest remaining item.</li>
+<li><strong><code>MissionToolsSpec</code> and the <code>dispatcher.ts:667</code> replacement.</strong> Removes a concrete-agent branch the code style forbids and moves Pi's refusal to before a worktree is cut.</li>
+<li><strong>The extension itself</strong> - the MCP bridge (tools) and the hook mapper (state), plus <code>build:pi-extension</code> with atomic publish. This is what turns item 2 of the first cut from a better sentence into a working queue.</li>
+<li><strong>The reconciler's <code>extensions</code> spec,</strong> honouring the isolated-home rule.</li>
+<li><strong>The <code>"pi-extension"</code> environment check and its Setup row,</strong> report-only.</li>
+<li><strong>Setup installs it.</strong></li>
+</ol>
+<h3>Still out of scope entirely</h3>
+<ul>
+<li><strong><code>permissionModes</code>.</strong> Needs a decision about widening a persisted union with Pi's vocabulary.</li>
+<li><strong><code>runtimes: ["sdk"]</code>.</strong> The <code>--mode rpc</code> driver is its own project, already named in the capability's own comment.</li>
+<li><strong>Blocking-tool UX in the TUI.</strong> <code>request_input</code> blocks for as long as the human takes (P5, 12 s with no timeout), but what the Pi TUI <em>shows</em> while a tool blocks was not measured, and it is a polish question rather than a mechanism one.</li>
+</ul>
+<h2>Risks</h2>
+<ul>
+<li><strong>A half-written bundle stops every Pi session on the machine</strong> (P10). Mitigated by atomic publish, by the transient-checkout refusal, and by the load-failure arm of the environment check. This is the single largest risk in the plan and the reason the artifact is a dependency-free bundle rather than a directory of modules.</li>
+<li><strong>A dangling link is silent</strong> (P10). Only the environment check will ever surface it. If the check ships late, the integration can be absent for weeks with no symptom.</li>
+<li><strong>Fifteen extra tools in Pi's system prompt.</strong> Measured: 5,973 bytes with the fifteen excluded, 6,873 bytes with them active - <strong>900 bytes</strong>, because <code>promptSnippet</code> contributes one line per tool and the full descriptions travel in the tool schemas rather than the prompt. Real but modest; <code>--tools</code> and <code>--exclude-tools</code> both work on extension tools (P10) if a dispatch wants a narrower set.</li>
+<li><strong>One extra child process per Pi session,</strong> for the life of the session. Accepted with the bridge decision.</li>
+<li><strong>Writing into a directory the operator owns.</strong> Same exposure <code>skills/reconcile.ts</code> already carries, and the same rules answer it. The symlink decision keeps this to creating and removing one link rather than editing the operator's <code>settings.json</code>.</li>
+<li><strong>A <code>workQueue</code> that is non-null before any Pi session can hold one.</strong> The refusal path is what makes this safe, and it is the reason <code>uninstrumentedWhy</code> has to be a statement of fact in the pre-install window rather than an instruction.</li>
+</ul>
+<h2>What this plan does not do</h2>
+<ul>
+<li>It does not widen <code>PermissionMode</code> with Pi's vocabulary.</li>
+<li>It does not add a Pi embedded driver.</li>
+<li>It does not change <code>mcp: null</code> for Pi. Pi still has no MCP client; the extension is a different mechanism and the two must not be folded together.</li>
+<li>It does not write extension code. Nothing in this task touches <code>src/</code>.</li>
+</ul>
+<h2>Where the decisions are recorded</h2>
+<p>The four choices this plan could not make for itself were put to the human as selectable options in the Mission Control dashboard and answered on 2026-09-10. The adopted decisions are at the top of this document under <a href="#decisions-taken">Decisions taken</a>; the alternatives that were weighed are summarised there with the reason each was rejected, and the design sections above are written to the adopted choice rather than to a menu.</p>
+</main>
+</body>
+</html>

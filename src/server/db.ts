@@ -928,6 +928,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       note_key                TEXT PRIMARY KEY,
       text                    TEXT,              -- compact durable objective for the card
       source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
+      opening_prompt          TEXT,              -- first accepted human instruction, write-once
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
       focus                   TEXT,              -- compact latest instruction
@@ -4055,6 +4056,7 @@ function migrate(d: DatabaseSync): void {
   // the best recoverable objective and let the next prompt reconcile it. Numeric defaults make
   // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
   addColumn(d, "session_goals", "objective", "TEXT");
+  addColumn(d, "session_goals", "opening_prompt", "TEXT");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -10038,6 +10040,7 @@ export function loadSessionNotes(): SessionNote[] {
 // ---- session goals ----
 
 interface SessionGoalRow {
+  opening_prompt: string | null;
   note_key: string;
   text: string | null;
   source: string | null;
@@ -10101,6 +10104,7 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     // value on a card. An unknown source reads as "no source", which the UI handles already.
     source: r.source === "heuristic" || r.source === "model" ? r.source : null,
     objective: r.objective ?? r.text ?? r.prompt,
+    openingPrompt: r.opening_prompt ?? null,
     prompt: r.prompt,
     focus: r.focus,
     relationship:
@@ -10123,11 +10127,12 @@ export function upsertSessionGoal(g: SessionGoal): void {
   openDb()
     .prepare(
       `INSERT INTO session_goals
-         (note_key, text, source, objective, prompt, focus, relationship, rationale,
+         (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
           objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
+         opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
          prompt=excluded.prompt, focus=excluded.focus, relationship=excluded.relationship,
          rationale=excluded.rationale, objective_version=excluded.objective_version,
          prompt_revision=excluded.prompt_revision,
@@ -10136,7 +10141,7 @@ export function upsertSessionGoal(g: SessionGoal): void {
          updated_at=excluded.updated_at`,
     )
     .run(
-      g.noteKey, g.text, g.source, g.objective, g.prompt, g.focus, g.relationship,
+      g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
       JSON.stringify(g.pendingPrompts), g.updatedAt,
     );

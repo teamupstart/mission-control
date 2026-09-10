@@ -117,6 +117,10 @@ test("every harness answers the multi-repo question, and null means measured-uns
   for (const agent of AGENT_TYPES) {
     const spec = HARNESS_CAPABILITIES[agent].multiRepoDispatch;
     if (spec === null) continue;
+    if (spec.kind === "no-boundary") {
+      assert.ok(spec.why.trim(), `${agent} must explain why no grant is needed`);
+      continue;
+    }
     const args = spec.launchArgs(["/wt/a", "/wt/b"]);
     assert.ok(args.length > 0, `${agent} declares the capability but renders no flags`);
     assert.ok(
@@ -130,7 +134,11 @@ test("Claude and Codex render the launch flags that were measured against a real
   // Pinned as literals rather than described, because these strings are the whole capability:
   // a typo in either is a session that starts fine and silently cannot write where it was
   // told it could.
-  assert.deepEqual(capabilitiesFor("claude").multiRepoDispatch?.launchArgs(["/wt/a", "/wt/b"]), [
+  const claude = capabilitiesFor("claude").multiRepoDispatch;
+  const codex = capabilitiesFor("codex").multiRepoDispatch;
+  assert.equal(claude?.kind, "flags");
+  assert.equal(codex?.kind, "flags");
+  assert.deepEqual(claude?.kind === "flags" && claude.launchArgs(["/wt/a", "/wt/b"]), [
     // Repeated, which is what the vendor SDK itself emits for this CLI. The variadic
     // spelling the help text documents also parses, but it would swallow a following flag.
     "--add-dir",
@@ -138,15 +146,16 @@ test("Claude and Codex render the launch flags that were measured against a real
     "--add-dir",
     "/wt/b",
   ]);
-  assert.deepEqual(capabilitiesFor("codex").multiRepoDispatch?.launchArgs(["/wt/a", "/wt/b"]), [
+  assert.deepEqual(codex?.kind === "flags" && codex.launchArgs(["/wt/a", "/wt/b"]), [
     // A TOML array through `-c`, the one grammar both the Codex TUI and `codex app-server`
     // accept - which is what lets the terminal and embedded runtimes share this renderer.
     "-c",
     'sandbox_workspace_write.writable_roots=["/wt/a","/wt/b"]',
   ]);
-  // pi is null until somebody measures it. A guess here would have the dispatch modal
-  // offer a multi-repo task that launches an agent which cannot write to half of it.
-  assert.equal(capabilitiesFor("pi").multiRepoDispatch, null);
+  const pi = capabilitiesFor("pi").multiRepoDispatch;
+  assert.equal(pi?.kind, "no-boundary");
+  assert.ok(pi?.kind === "no-boundary" && pi.why.trim());
+  assert.equal(pi?.sdk, false);
 });
 
 test("both shipped drivers can carry the grant on the embedded runtime too", () => {

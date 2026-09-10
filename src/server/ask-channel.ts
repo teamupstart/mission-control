@@ -178,13 +178,15 @@ not fine is stopping to ask where no one can hear you.`;
  * MCP bundle, and an unbuilt `dist` must not silently drop the operator's own words.
  */
 export interface AskChannelContribution {
+  /** Whether this contribution actually registered Mission Control tools. */
+  missionMcp: boolean;
   /** The MCP registration, the allow rule and the disallow. Empty when the channel is off. */
   args: string[];
   /** The system-prompt text telling the agent where to ask instead, or null. */
   redirect: string | null;
 }
 
-const ASK_CHANNEL_OFF: AskChannelContribution = { args: [], redirect: null };
+const ASK_CHANNEL_OFF: AskChannelContribution = { args: [], redirect: null, missionMcp: false };
 
 export async function askChannelContribution(
   agent: AgentType,
@@ -218,6 +220,7 @@ export async function askChannelContribution(
         DISALLOWED_TOOL,
       ],
       redirect: REDIRECT_PROMPT,
+      missionMcp: descriptor !== null,
     };
   } catch (err) {
     console.warn(

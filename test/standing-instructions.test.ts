@@ -18,6 +18,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-standing-instructions-"));
 process.env.HARNESS_HOME = home;
 
 const {
+  STANDING_INSTRUCTIONS_MECHANISMS,
   resolveStandingInstructions,
   STANDING_INSTRUCTIONS_MAX_LENGTH,
   STANDING_INSTRUCTIONS_MAX_REPOSITORIES,
@@ -405,10 +406,10 @@ test("every shipped harness · runtime pair declares exactly one delivery channe
   assert.equal(standingInstructionsChannel("claude", "terminal"), "claude-append-system-prompt");
   assert.equal(standingInstructionsChannel("claude", "sdk"), "claude-sdk-system-prompt-append");
   assert.equal(standingInstructionsChannel("codex", "sdk"), "codex-developer-instructions");
-  // The two pairs with no out-of-band channel. The composer turns this null into
+  // The pair with no out-of-band channel. The composer turns this null into
   // `prompt-prefix`, which is the OTHER half of the contract rather than a degradation.
   assert.equal(standingInstructionsChannel("codex", "terminal"), null);
-  assert.equal(standingInstructionsChannel("pi", "terminal"), null);
+  assert.equal(standingInstructionsChannel("pi", "terminal"), "pi-append-system-prompt");
 
   const config = StandingInstructionsConfigSchema.parse({ default: "a rule" });
   const pairs: [Parameters<typeof standingInstructionsChannel>[0], "terminal" | "sdk", string][] = [
@@ -416,11 +417,20 @@ test("every shipped harness · runtime pair declares exactly one delivery channe
     ["claude", "sdk", "claude-sdk-system-prompt-append"],
     ["codex", "sdk", "codex-developer-instructions"],
     ["codex", "terminal", "prompt-prefix"],
-    ["pi", "terminal", "prompt-prefix"],
+    ["pi", "terminal", "pi-append-system-prompt"],
   ];
   for (const [agent, runtime, mechanism] of pairs) {
     const delivery = composeStandingInstructions(config, [{ repoPath: "/ws/x" }], agent, runtime);
     assert.equal(delivery.mechanism, mechanism, `${agent} · ${runtime}`);
     assert.match(delivery.text, /a rule/);
   }
+});
+
+test("standing-instruction mechanisms preserve every persisted index", () => {
+  assert.deepEqual(STANDING_INSTRUCTIONS_MECHANISMS, [
+    "none", "prompt-prefix", "claude-append-system-prompt",
+    "claude-sdk-system-prompt-append", "codex-developer-instructions",
+    "pi-append-system-prompt",
+  ]);
+  assert.equal(standingInstructionsChannel("pi", "sdk"), null);
 });

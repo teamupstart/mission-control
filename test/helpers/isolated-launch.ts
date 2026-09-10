@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 
+import { shellCommand, shellWords } from "../../src/server/terminal/shell.ts";
+
 /**
  * What a terminal backend was actually asked to run, read back through `isolatedAgentArgv`.
  *
@@ -15,14 +17,11 @@ import { readFileSync } from "node:fs";
  */
 export function launchedCommand(argv: readonly string[]): string {
   const wrapper = argv.length === 2 && argv[1]?.endsWith("launch-and-cleanup.sh") ? argv[1] : null;
-  if (!wrapper) return argv.join(" ");
+  if (!wrapper) return shellCommand(argv);
   return readFileSync(wrapper, "utf8").trimEnd().split("\n").at(-1) ?? "";
 }
 
 /** The launch's own argv, unquoted - what `execFile` would have been given. */
 export function launchedArgv(argv: readonly string[]): string[] {
-  const command = launchedCommand(argv);
-  return [...command.matchAll(/'((?:[^']|'"'"')*)'|(\S+)/g)].map(
-    (match) => (match[1] ?? match[2] ?? "").replaceAll(`'"'"'`, "'"),
-  );
+  return shellWords(launchedCommand(argv));
 }

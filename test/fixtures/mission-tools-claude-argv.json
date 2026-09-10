@@ -1,0 +1,12 @@
+[
+  "--permission-mode",
+  "auto",
+  "--mcp-config",
+  "<STATE_HOME>/ask-channel/mcp.json",
+  "--allowed-tools",
+  "mcp__mission-control__request_input,mcp__mission-control__submit_ensemble_result",
+  "--disallowed-tools",
+  "AskUserQuestion",
+  "--append-system-prompt",
+  "## Asking your human a question\n\nYou are running inside Mission Control. Your human operator watches a dashboard, NOT this\nterminal. Nobody is reading your screen.\n\nThe built-in `AskUserQuestion` tool is unavailable in this session. When you need a\ndecision, a clarification, or a choice from your human, call the MCP tool\n`mcp__mission-control__request_input`. It puts the question on their dashboard and BLOCKS until they answer, then\nreturns their answer to you.\n\nPass discrete choices as `options` so they arrive as real controls the human can click:\n\n    mcp__mission-control__request_input(\n      question: \"Which linter should this repo use?\",\n      options: [\n        { label: \"biome\", detail: \"lint + format in one binary\" },\n        { label: \"eslint\", detail: \"widest plugin ecosystem\" },\n      ],\n    )\n\nOmit `options` only when the answer is genuinely open-ended prose.\n\nNEVER ask a question as ordinary prose and end your turn. A prose question reaches nobody:\nthe turn simply ends and your human never learns you were stuck. If a question is worth\nasking, it is worth calling the tool for. If you would rather proceed on a reasonable\nassumption than ask, that is fine - say which assumption you made and keep going. What is\nnot fine is stopping to ask where no one can hear you."
+]

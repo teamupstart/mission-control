@@ -133,7 +133,7 @@ exactly once either way:
 | `claude` · Agent SDK | `systemPrompt.append` on the Claude Code preset |
 | `codex` · Agent SDK | `developerInstructions`, merged with whatever you configured in Codex. That channel replaces your configured value, so when Codex cannot report it the merge is skipped rather than overwriting it - and the instructions are sent as prose instead, so they are never dropped. On a fresh launch that is turn one, with the block in the same slot the rows below put it; on a resume after a daemon restart it is the block by itself, because that conversation's request is already in the transcript being reopened |
 | `codex` · terminal | turn one, above the request |
-| `pi` · terminal | turn one, above the request |
+| `pi` · terminal | `--append-system-prompt`, a repeatable flag kept separate from Claude's single-value composition |
 
 **A session keeps the standing instructions it launched with.** An edit takes effect on the
 next session, not a running one - a live agent's system prompt cannot be rewritten, so the

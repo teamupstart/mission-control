@@ -176,7 +176,13 @@ async function seedRun(page: Page, daemon: DaemonHandle): Promise<{
  * state sentences, which recovery buttons are offered, the collapsed decision summaries - is
  * computed by the real code from real records.
  */
-function seedRecord(daemon: DaemonHandle, runId: string, sessionId: string): void {
+function seedRecord(
+  daemon: DaemonHandle,
+  runId: string,
+  sessionId: string,
+  relationship: "steer" | null = "steer",
+  openingAsk = "Please make the run easier to read.",
+): void {
   withDaemonDb(daemon, (db) => {
     const submission = db.prepare(
       `SELECT id, created_at FROM workflow_submissions WHERE run_id = ? ORDER BY round, segment LIMIT 1`,
@@ -215,7 +221,14 @@ function seedRecord(daemon: DaemonHandle, runId: string, sessionId: string): voi
     db.prepare(`UPDATE workflow_submissions SET context_json = ? WHERE id = ?`).run(
       JSON.stringify({
         primaryGoal: {
-          rawPrompt: "ORIGINAL GOAL BODY, as the repair packet carried it.",
+          rawPrompt: "DURABLE OBJECTIVE BODY, frozen before review.",
+          openingAsk,
+          intentSource: {
+            objectiveVersion: 2,
+            promptRevision: relationship === null ? 4 : 3,
+            resolvedPromptRevision: 3,
+            relationship,
+          },
           refined: REFINED_GOAL,
           sourceNoteKey: NOTE_KEY,
         },
@@ -326,6 +339,7 @@ test("the run record is one tab bar, and a blocking pane opens itself", async ({
   await expect(intent).toBeVisible();
   await expect(intent.locator(".wf-run-lead-text")).toHaveText(REFINED_GOAL);
   await expect(intent).toContainText("Compacted by claude-haiku-4-5");
+  await expect(intent).toContainText("Objective version 2 · prompt revision 3 · resolved revision 3 · steer");
   await expect(intent).toContainText("HEAD 1665b769");
   await expect(intent).toContainText("tree dirty");
   await expect(intent).toContainText("transcript truncated");
@@ -371,12 +385,17 @@ test("the run record is one tab bar, and a blocking pane opens itself", async ({
   // The original goal, the criteria, the constraints and the evidence snapshot are all still
   // here in full - one disclosure each, closed, with its own size on the closed row.
   const original = intent.locator("details.wf-run-disclosure")
-    .filter({ hasText: "Original goal" }).first();
-  await expect(original.locator("> summary")).toContainText("52 characters");
+    .filter({ hasText: "Review contract" }).first();
+  await expect(original.locator("> summary")).toContainText("45 characters");
   await expect(original.locator(".wf-run-disclosure-body")).toBeHidden();
   await original.locator("> summary").click();
   await expect(original.locator(".wf-run-disclosure-body"))
-    .toContainText("ORIGINAL GOAL BODY, as the repair packet carried it.");
+    .toContainText("DURABLE OBJECTIVE BODY, frozen before review.");
+  const opening = intent.locator("details.wf-run-disclosure")
+    .filter({ hasText: "Opening request" }).first();
+  await opening.locator("> summary").click();
+  await expect(opening.locator("pre")).toHaveText("Please make the run easier to read.");
+  await shoot(dashboard, dashboard.locator("section.wf-run-record"), "04-review-contract-opening-request");
   const snapshot = intent.locator("details.wf-run-disclosure")
     .filter({ hasText: "Evidence snapshot" }).first();
   await snapshot.locator("> summary").click();
@@ -479,4 +498,36 @@ test("a run with nothing blocking opens on the worklist, and offers no empty tab
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}\\?pane=intent$`));
   await expect(tab(dashboard, /^Intent/)).toHaveAttribute("aria-selected", "true");
   await expect(dashboard.getByRole("tabpanel", { name: /^Intent/ })).toBeVisible();
+});
+
+
+test("the Intent pane labels a pending relationship as unresolved", async ({ dashboard, daemon }) => {
+  const { runId, sessionId } = await seedRun(dashboard, daemon);
+  seedRecord(daemon, runId, sessionId, null);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  await tab(dashboard, /^Intent/).click();
+  const provenance = dashboard.getByText(
+    "Objective version 2 · prompt revision 4 · resolved revision 3 · unresolved",
+    { exact: true },
+  );
+  await expect(provenance).toBeVisible();
+  await shoot(dashboard, dashboard.getByRole("tabpanel", { name: /^Intent/ }), "05-unresolved-relationship");
+});
+
+
+test("the Intent pane retains a long opening request verbatim", async ({ dashboard, daemon }) => {
+  const { runId, sessionId } = await seedRun(dashboard, daemon);
+  const openingAsk = "\n  Opening request before clamp\n"
+    + "Preserve every detail.\n".repeat(1_000) + "\nFINAL VERBATIM REQUIREMENT  \n";
+  seedRecord(daemon, runId, sessionId, "steer", openingAsk);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  await tab(dashboard, /^Intent/).click();
+  const intent = dashboard.getByRole("tabpanel", { name: /^Intent/ });
+  const opening = intent.locator("details.wf-run-disclosure").filter({ hasText: "Opening request" });
+  await opening.locator("> summary").click();
+  await expect(opening.locator("pre")).toHaveJSProperty("textContent", openingAsk);
+  await expect(opening.locator("> summary")).toContainText(`${openingAsk.length.toLocaleString()} characters`);
+  const contract = intent.locator("details.wf-run-disclosure").filter({ hasText: "Review contract" });
+  await contract.locator("> summary").click();
+  await shoot(dashboard, dashboard.locator("section.wf-run-record"), "06-verbatim-long-opening");
 });

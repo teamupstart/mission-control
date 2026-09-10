@@ -36,6 +36,7 @@ const GOAL = "add retry handling to the uploader";
 
 function mkIntent(over: Partial<SessionGoal> = {}): SessionGoal {
   return {
+    openingPrompt: null,
     noteKey: "agent-1",
     text: "Add retry handling.",
     source: "model",

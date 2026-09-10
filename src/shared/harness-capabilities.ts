@@ -844,9 +844,9 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // This is the declaration that took `interrupt` off `harness-capabilities.test.ts`'s
     // real-null-declarer list; the slot's null path is a named fixture there now.
     interrupt: { runtimes: ["terminal"] },
-    // Pi has no channel on any runtime: its only door is turn one, which is also what
-    // makes it the harness that proves the prefix path works.
-    standingInstructions: { outOfBand: {} },
+    // Pi terminal carries a repeatable system-prompt append. Codex terminal remains
+    // the live prover for the prompt-prefix fallback; Pi has no SDK runtime.
+    standingInstructions: { outOfBand: { terminal: "pi-append-system-prompt" } },
   },
 };
 

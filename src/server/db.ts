@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { STATE_DIRS } from "@shared/harness-runtime.mjs";
@@ -11,6 +11,7 @@ import {
   type AppConfigValue,
 } from "@shared/app-config-entries.ts";
 import { DB_PATH, envVar } from "./config.ts";
+import { underTestRunner } from "./util/test-runner.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
@@ -403,89 +404,6 @@ function isInside(child: string, parent: string): boolean {
 let isolatedOverride: string | undefined;
 
 /**
- * Whether this process is a test worker - decided ONCE, at import, and not re-asked.
- *
- * `NODE_TEST_CONTEXT` alone cannot answer this. It is an ordinary environment variable, so a
- * test file that runs `delete process.env.NODE_TEST_CONTEXT` before importing this module
- * turns the whole refusal off: it returns on its first line, and the operator's database
- * opens with every check skipped. That is a worse hole than the ones the checks catch,
- * because it needs no unusual path at all.
- *
- * Three signals, because each covers what the others cannot:
- *
- *   1. A marker `test/setup-state.mjs` defines non-writable and non-configurable on
- *      `globalThis` before any test module loads. `delete` answers false and assignment is
- *      ignored, so unlike the environment it cannot be spent.
- *   2. `NODE_TEST_CONTEXT`, read at import, so a worker that reaches this line under the
- *      runner is latched as one even if the variable is removed afterwards.
- *   3. `process.execArgv`, which is how a worker launched WITHOUT the preload is still
- *      recognised after the variable is deleted. Every `node --test` child is spawned with a
- *      `--test-*` family - `--test-isolation=process`, `--test-timeout=0`, and others - and
- *      that is true of a bare `node --test file.js` with no preload and no loader. Ordinary
- *      `node` carries none of them, so the daemon is never mistaken for a worker.
- *
- * Signals 2 and 3 are both ordinary mutable JS, so both are read at module load, which
- * latches a worker that reached this line under the runner. `commandLineFromOs()` is the
- * backstop for a worker that emptied both BEFORE importing - it asks the operating system
- * rather than the process, and that answer cannot be edited from JS.
- *
- * None of this makes `openDb` a sandbox, and it is not trying to be one: a test that WANTS
- * the operator's database can import `node:sqlite` and open it directly, without coming
- * through here at all. What these close is the accident, and every spelling of "turn the
- * guard off first" that a confused test might reach for.
- *
- * The marker name is duplicated in `test/setup-state.mjs`, which cannot import from here;
- * the db-isolation case named in that file's comment fails if the two ever drift.
- */
-const CHEAP_TEST_SIGNAL =
-  Object.hasOwn(globalThis, "__missionControlTestState") ||
-  Boolean(process.env.NODE_TEST_CONTEXT) ||
-  process.execArgv.some(isTestRunnerFlag);
-
-function isTestRunnerFlag(flag: string): boolean {
-  return flag.startsWith("--test-");
-}
-
-/**
- * The command line the OPERATING SYSTEM says this process was started with - not the copy JS
- * can edit.
- *
- * `process.execArgv` and `process.env` are both ordinary mutable values, so a test can empty
- * them before importing this module and the three signals above all read false. This is the
- * one source that survives that, because it is not stored in the JS heap at all.
- *
- * Read once, lazily, and only when every cheap signal has already said no. That ordering is
- * what keeps the cost off the paths that would feel it: a test worker never reaches this,
- * because its marker or its environment answered first, and the daemon reaches it exactly
- * once, on its first `openDb()`. Measured: 0.06ms on Linux through `/proc`, and 14ms on
- * macOS, where `process.report` is the only route and rebuilds a whole diagnostic report to
- * get one field. Once, against a daemon boot already measured in hundreds of milliseconds.
- */
-let osCommandLine: readonly string[] | undefined;
-function commandLineFromOs(): readonly string[] {
-  if (osCommandLine) return osCommandLine;
-  try {
-    // Linux: the kernel's own NUL-separated copy.
-    return (osCommandLine = readFileSync("/proc/self/cmdline", "utf8").split("\0").filter(Boolean));
-  } catch {
-    try {
-      // Elsewhere: the diagnostic report regenerates this from the process, not from execArgv.
-      const report = process.report?.getReport() as { header?: { commandLine?: string[] } };
-      return (osCommandLine = report?.header?.commandLine ?? []);
-    } catch {
-      return (osCommandLine = []); // no way to ask; the signals above are all there is
-    }
-  }
-}
-
-let osVerdict: boolean | undefined;
-function underTestRunner(): boolean {
-  if (CHEAP_TEST_SIGNAL) return true;
-  if (osVerdict === undefined) osVerdict = commandLineFromOs().some(isTestRunnerFlag);
-  return osVerdict;
-}
-
-/**
  * Refuse to open anything but a disposable test state dir from inside the test runner.
  *
  * Twice now a test has destroyed live state: the state-dir rename once moved
@@ -520,9 +438,9 @@ function underTestRunner(): boolean {
  *      is the check that can say what is actually wrong.
  *   4. It lives in the platform temp dir, so what it opens is disposable by construction.
  *
- * Production pays for none of it: outside a test worker (see `underTestRunner`) this returns
- * on its first line, and the live daemon opens whatever `stateDir()` resolved, exactly as
- * before.
+ * Production pays for none of it: outside a test worker (see `underTestRunner` in
+ * `util/test-runner.ts`, which the terminal-home guard shares) this returns on its first
+ * line, and the live daemon opens whatever `stateDir()` resolved, exactly as before.
  */
 function assertTestStateIsolation(): void {
   if (!underTestRunner()) return;
@@ -1010,6 +928,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       note_key                TEXT PRIMARY KEY,
       text                    TEXT,              -- compact durable objective for the card
       source                  TEXT,              -- 'heuristic' (initial raw ask) | 'model'
+      opening_prompt          TEXT,              -- first accepted human instruction, write-once
       objective               TEXT,              -- durable completion contract
       prompt                  TEXT,              -- latest filtered human instruction
       focus                   TEXT,              -- compact latest instruction
@@ -4137,6 +4056,7 @@ function migrate(d: DatabaseSync): void {
   // the best recoverable objective and let the next prompt reconcile it. Numeric defaults make
   // legacy rows explicitly pre-versioned rather than inventing a prompt history they never had.
   addColumn(d, "session_goals", "objective", "TEXT");
+  addColumn(d, "session_goals", "opening_prompt", "TEXT");
   addColumn(d, "session_goals", "focus", "TEXT");
   addColumn(d, "session_goals", "relationship", "TEXT");
   addColumn(d, "session_goals", "rationale", "TEXT");
@@ -10120,6 +10040,7 @@ export function loadSessionNotes(): SessionNote[] {
 // ---- session goals ----
 
 interface SessionGoalRow {
+  opening_prompt: string | null;
   note_key: string;
   text: string | null;
   source: string | null;
@@ -10183,6 +10104,7 @@ function rowToGoal(r: SessionGoalRow): SessionGoal {
     // value on a card. An unknown source reads as "no source", which the UI handles already.
     source: r.source === "heuristic" || r.source === "model" ? r.source : null,
     objective: r.objective ?? r.text ?? r.prompt,
+    openingPrompt: r.opening_prompt ?? null,
     prompt: r.prompt,
     focus: r.focus,
     relationship:
@@ -10205,11 +10127,12 @@ export function upsertSessionGoal(g: SessionGoal): void {
   openDb()
     .prepare(
       `INSERT INTO session_goals
-         (note_key, text, source, objective, prompt, focus, relationship, rationale,
+         (note_key, text, source, objective, opening_prompt, prompt, focus, relationship, rationale,
           objective_version, prompt_revision, resolved_prompt_revision, pending_prompts, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          text=excluded.text, source=excluded.source, objective=excluded.objective,
+         opening_prompt=COALESCE(session_goals.opening_prompt, excluded.opening_prompt),
          prompt=excluded.prompt, focus=excluded.focus, relationship=excluded.relationship,
          rationale=excluded.rationale, objective_version=excluded.objective_version,
          prompt_revision=excluded.prompt_revision,
@@ -10218,7 +10141,7 @@ export function upsertSessionGoal(g: SessionGoal): void {
          updated_at=excluded.updated_at`,
     )
     .run(
-      g.noteKey, g.text, g.source, g.objective, g.prompt, g.focus, g.relationship,
+      g.noteKey, g.text, g.source, g.objective, g.openingPrompt, g.prompt, g.focus, g.relationship,
       g.rationale, g.objectiveVersion, g.promptRevision, g.resolvedPromptRevision,
       JSON.stringify(g.pendingPrompts), g.updatedAt,
     );

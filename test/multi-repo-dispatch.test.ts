@@ -328,15 +328,21 @@ test("a single-repo task on a harness with no capability still dispatches normal
     registry.upsertTask(
       mkTask({ id: "soloharness", status: "dispatching", agent: "pi", repoRoot: api }),
     );
-    const dispatcher = new Dispatcher(registry);
-
+    // Stub the actual launch: an uninstrumented real pane would escape the test and leak
+    // a Herdr workspace or tmux session every run. Keep main's isolation alongside the
+    // explicit null capability fixture now that Pi supports multi-repo dispatch.
+    const launched: string[] = [];
+    const dispatcher = new Dispatcher(registry, undefined, {
+      spawn: async (baseName) => {
+        launched.push(baseName);
+        return baseName;
+      },
+    });
     await dispatcher.dispatch("soloharness");
 
-    // It gets past the guard and provisions its tree; what happens after that is the ordinary
-    // launch path, which has no pane to talk to here. The guard's refusal is what must NOT
-    // appear.
     assert.doesNotMatch(registry.getTask("soloharness")?.error ?? "", /write access/);
     assert.equal(capabilitiesFor("pi").multiRepoDispatch, null);
+    assert.deepEqual(launched, ["T"], "the launch went to the seam, not the real multiplexer");
   } finally {
     HARNESS_CAPABILITIES.pi.multiRepoDispatch = original;
   }

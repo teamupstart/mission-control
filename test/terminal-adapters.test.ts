@@ -6,7 +6,7 @@ import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
 import { parseClients, parsePanes, SEP, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
 import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
-import { shellCommand } from "../src/server/terminal/shell.ts";
+import { shellCommand, shellWords } from "../src/server/terminal/shell.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
 import { withProcessEnv } from "./helpers/process-env.ts";
 
@@ -59,6 +59,30 @@ const BUF = "harness-3";
 
 const MUX = { session: "api", windowIndex: 0, paneId: "%3" };
 const EMU = { paneId: "5", tabId: "2" };
+
+test("a command round-trips through the shell encoding, apostrophes included", () => {
+  // `shellWords` exists because two test layers that cannot import each other both have to
+  // read a launch back out of the wrapper script a backend was handed. The apostrophe is the
+  // whole reason it is a parser rather than a pattern: `shellCommand` renders one as
+  // `'"'"'`, so a naive `/'([^']*)'/` reads `/tmp/O'Brien/x` as the fragment after it - a
+  // truncated path, which fails as a missing file rather than as a bad match.
+  const cases: string[][] = [
+    ["/bin/sh", "/tmp/O'Brien/launch-and-cleanup.sh"],
+    ["agent", "a b", "don't", "it's a 'quoted' word"],
+    ["claude", "--permission-mode", "acceptEdits"],
+    ["--message", 'has "double" quotes', "and\na newline"],
+    [""],
+    [],
+  ];
+  for (const argv of cases) {
+    assert.deepEqual(shellWords(shellCommand(argv)), argv, shellCommand(argv));
+  }
+
+  // Anything this encoding did not produce still reads as the tokens it appears to be, which
+  // is all a caller inspecting its own command needs.
+  assert.deepEqual(shellWords("plain words  here"), ["plain", "words", "here"]);
+  assert.deepEqual(shellWords(""), []);
+});
 
 test("every key renders into each backend's own convention", async () => {
   for (const key of ALL_KEYS) {

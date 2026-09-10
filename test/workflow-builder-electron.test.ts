@@ -131,11 +131,16 @@ test("the scrollbar thumb is painted from its own rule, and lightens under the p
     fileURLToPath(new URL("fixtures/pipeline-strip-thumb-browser.cjs", import.meta.url)),
     fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
   ]);
-  const { geometry, rest, hovered } = JSON.parse(output.trim()) as {
+  const parsed = JSON.parse(output.trim() || '{"error":"the fixture produced no output"}') as {
+    error?: string;
     geometry: { track: number; overflow: number };
     rest: Sample;
     hovered: Sample;
   };
+  // The fixture reports its own failures rather than exiting non-zero, because `app.quit()`
+  // discards `process.exitCode`. Surface the reason instead of a JSON parse error.
+  assert.equal(parsed.error, undefined, `the thumb fixture failed: ${parsed.error}`);
+  const { geometry, rest, hovered } = parsed;
 
   assert.ok(geometry.overflow > 0, "the strip must overflow for a thumb to be drawn");
   assert.ok(rest.thumb, "no thumb was found in the scrollbar band");

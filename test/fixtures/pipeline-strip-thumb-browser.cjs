@@ -34,6 +34,12 @@ app.whenReady().then(async () => {
       <div class="swatch" id="swatch-rest"></div>
       <div class="swatch" id="swatch-hover"></div>`;
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    // Mapped, not merely loaded. A window that was never shown produces no frames on a
+    // virtual display, so `capturePage` came back empty on CI while working on a desktop.
+    // `showInactive` keeps it from stealing focus from whoever is running the suite, and it
+    // is also what lets a synthesised mouse move reach the scrollbar widget below.
+    window.showInactive();
+    await wait(150);
 
     const geometry = await window.webContents.executeJavaScript(`(() => {
       const strip = document.getElementById('strip');
@@ -57,6 +63,10 @@ app.whenReady().then(async () => {
       const image = await window.webContents.capturePage();
       const bitmap = image.toBitmap();
       const size = image.getSize();
+      if (!size.width || !size.height || bitmap.length < size.width * size.height * 4) {
+        throw new Error(`capturePage returned an unusable frame: ${size.width}x${size.height},`
+          + ` ${bitmap.length} bytes`);
+      }
       // Electron hands back BGRA; the caller thinks in RGB.
       const at = (x, y) => {
         const i = (y * size.width + x) * 4;
@@ -111,8 +121,10 @@ app.whenReady().then(async () => {
     process.stdout.write(`${JSON.stringify({ geometry, rest, hovered })}\n`);
     window.destroy();
   } catch (error) {
-    console.error(error);
-    process.exitCode = 1;
+    // On stdout, not stderr: `app.quit()` below exits 0 regardless of `process.exitCode`, so
+    // anything written to stderr reaches the caller as an empty stdout and a JSON parse error
+    // rather than as the reason.
+    process.stdout.write(`${JSON.stringify({ error: String(error && error.stack || error) })}\n`);
   } finally {
     app.quit();
   }

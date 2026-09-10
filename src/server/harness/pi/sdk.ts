@@ -113,11 +113,19 @@ export function usageFrom(assistant: PiAssistantSummary | null): SdkUsage | null
     ...(usage.reasoning !== null ? { reasoningOutput: usage.reasoning } : {}),
     modelId: assistant.modelId,
     costUsd: usage.costUsd,
-    // No `turnId` and no `models`, which is what keeps this OUT of the spend ledger. Those
-    // two travel together or not at all (`SdkUsage`), and Pi mints no turn identity that
-    // survives a restart - its session entries are renumbered per file, so a resumed
-    // conversation would re-record turns it had already paid for. The flat view still
-    // reaches the card's chip, which is exactly what a pane-backed Pi session shows today.
+    // No `turnId` and no `models`, which is what keeps this OUT of the spend ledger - and
+    // that is now load-bearing rather than merely conservative. `HARNESSES.pi.usage` reads
+    // Pi's own session JSONL and writes the ledger from it, and it reads the SAME file this
+    // driver reports as `transcriptPath`, so a driver that also wrote would bill every
+    // managed turn twice. This is Codex's arrangement exactly: one writer per harness, and
+    // for Pi it is the file reader.
+    //
+    // The identity is missing anyway. `SdkUsage` takes `turnId` and `models` together or not
+    // at all, and Pi mints no turn identity that survives a restart - its session entries are
+    // renumbered per file, so a resumed conversation would re-record turns already paid for.
+    //
+    // The flat view still reaches the card's chip, which is what a pane-backed Pi session
+    // shows too.
   };
 }
 

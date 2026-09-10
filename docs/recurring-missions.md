@@ -205,8 +205,10 @@ Four properties worth knowing:
   other. A concluded run's session is asked to stop, it leaves through the same eviction every
   other session leaves by, and it is out of the active-session list within four minutes of the
   completion time on the row. Nothing Mission Control would deliver reaches it in the meantime,
-  a prompt typed straight into its pane does not get to run a turn, and a later prompt cannot
-  reopen the task. See [when a concluded run's agent goes](#when-a-concluded-runs-agent-goes).
+  a prompt typed straight into its pane is normally refused before it starts a turn, and a later
+  prompt cannot reopen the task. The pane refusal has stated exceptions - it fails open, and an
+  agent whose hooks are not installed never asks - in which case the turn starts and is cut
+  short instead. See [when a concluded run's agent goes](#when-a-concluded-runs-agent-goes).
 - **The policy that applies is the one the run was filed under.** It is read from the
   immutable revision the occurrence names, not from the schedule's current row, so editing
   or archiving a mission cannot retroactively conclude work already in flight.
@@ -234,8 +236,14 @@ So the completion writes a **closure** the daemon owes that session, and keeps i
 session is actually gone:
 
 - The guarantee is **four minutes from the completion time on the task row** - not from when
-  the daemon got round to it - and the session is out of the active-session list by then. An
+  the daemon got around to it - and the session is out of the active-session list by then. An
   exited row may remain in the SDK history; no live session does.
+- It is four minutes **of daemon uptime**, and that is a real qualification rather than a
+  hedge. Nothing enforces a deadline while Mission Control is not running: a daemon that is
+  stopped, asleep or restarting is not closing anything, and after a restart it deliberately
+  waits for its first completed discovery sweep before it acts, because until the process table
+  has been read a missing session has not been observed to be gone. A closure interrupted that
+  way is resumed rather than lost, but it lands late by however long the outage was.
 - A stop that was *serviced* is not a session that has *left*. The closure clears only once the
   daemon has observed the session leave, through the same eviction path every other session
   leaves by. Anything short of that is retried.
@@ -260,11 +268,6 @@ session is actually gone:
   an agent that starts working brings its closure forward to now rather than waiting for the
   next attempt, and the generation does not complete. On the SDK path none of this arises:
   there is no pane, this daemon's own routes are the only way in, and they refuse.
-- **A stop that never answers is given up on.** Asking a driver to stop waits for it to go all
-  the way down, and a wedged one never answers at all. Each attempt therefore has a bound: past
-  it the daemon stops waiting, records the attempt as refused, and carries on to the decision
-  below. Without that, one stuck driver would hold the closure open for ever and the escalation
-  built for an agent that will not go would be the one thing that never ran.
 - **A stop that never answers is given up on.** Asking a driver to stop waits for it to go all
   the way down, and a wedged one never answers at all. Each attempt therefore has a bound: past
   it the daemon stops waiting, records the attempt as refused, and carries on to the decision

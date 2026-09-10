@@ -69,6 +69,7 @@ import {
   clearTaskSessionClosure,
   completeTaskWithSessionClosure,
   getTask as getDurableTask,
+  getTaskSessionClosure,
   listTaskSessionClosures,
   openDb,
   recordTaskSessionClosureAttempt,
@@ -1550,26 +1551,51 @@ export class TaskManager {
       // The other half of the boundary, written in the same transaction as the `done` row.
       closeSessionId: sessionId,
     });
-    // AWAITED, so cleanup has already started by the time the verdict's own request answers.
+    // AWAITED, and aimed at THIS run's own closure rather than routed through the shared sweep.
     //
-    // This used to hand off to the scheduled sweep, which meant the pane outlived the request
-    // that concluded it by however long the event loop took to come back round. That is the
-    // window a person types into: the run is over, the card is still there, and nothing has
-    // asked the agent to stop yet. Starting the teardown inside the concluding request removes
-    // the asynchronous gap entirely - what is left is the duration of the stop itself.
+    // The point of awaiting is a guarantee about one session: the agent is asked to stop before
+    // the request that concluded it returns, so no interval opens in which the run is over, the
+    // card is still up, and nothing has begun closing it. That is the interval the reported
+    // failure lived in.
     //
-    // Non-throwing, like the completion it follows: this is called from a route that has
-    // already committed the durable consumption, and a closure that cannot be attempted yet
-    // stays owed in SQLite for the sweep rather than failing the request that reported the
-    // verdict.
+    // The whole-table sweep cannot carry that guarantee, and it took a review to see why. It is
+    // mutex-guarded, so a pass already in flight - a retry, the zero-delay pass `session_remove`
+    // kicks, another mission concluding in the same tick - makes this call return having asked
+    // nobody, deferring the ask to whenever that other pass finishes. And when it does run, it
+    // walks every owed row, so this request would wait out the stop budget of closures that have
+    // nothing to do with it.
+    //
+    // Settling one row directly costs the ordinary case nothing and can at worst duplicate an
+    // attempt a concurrent sweep is already making. That is harmless in every arm: the
+    // supervisor dedupes a stop it is already running, a repeated terminal kill is idempotent,
+    // `beginEviction` keeps the deadline it already had, and the only visible cost is an inflated
+    // attempt count on a row that is being closed anyway.
+    //
+    // Only when the session is actually here. Absence is what CLOSES a closure, and a session
+    // this daemon has not observed yet is not an absent one - that judgement belongs to the
+    // sweep, behind the discovery gate.
     try {
-      await this.sweepMissionSessionClosures();
+      const owed = getTaskSessionClosure(t.id);
+      if (owed && this.registry.getSession(sessionId)) {
+        await this.settleMissionSessionClosure(owed);
+      }
     } catch (error) {
       // The closure is durable, so a first attempt that could not even be made costs nothing
       // but time: the row is still owed and the sweep will come back to it. What must not
       // happen is this failing the request that reported the verdict, which has already
       // committed the durable consumption behind it.
       console.warn(`[mission] could not begin closing session ${sessionId}:`, error);
+    }
+    // Arm the cadence for whatever is still owed - this row if it was not confirmed, and any
+    // other. `finishCompletion` deliberately schedules nothing, so this is where it starts.
+    //
+    // Inside the same guard as the settle above: reading the ledger is the very thing that
+    // fails when the ledger is what is broken, and this must not be the throw that escapes a
+    // route which has already committed its durable consumption.
+    try {
+      if (listTaskSessionClosures().length > 0) this.scheduleMissionSessionClosureSweep();
+    } catch (error) {
+      console.warn(`[mission] could not arm the closure sweep for ${sessionId}:`, error);
     }
   }
 

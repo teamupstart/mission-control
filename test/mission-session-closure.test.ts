@@ -772,15 +772,19 @@ test("a late prompt's turn is ended by a real teardown, not merely asked about",
 });
 
 test("a prompt arriving mid-sweep is not left waiting for the retry interval", async () => {
-  // The ordering that used to lose it: a pass is already inside a stop when the prompt lands,
-  // so the request to look again arrives while `sweepingClosures` is set. Dropping it there
-  // left the news of a started turn to the ordinary ten-second retry, which is the opposite of
-  // what the interception is for.
+  // The ordering that used to lose it: a SWEEP pass is already inside a stop when the prompt
+  // lands, so the request to look again arrives while `sweepingClosures` is set. Dropping it
+  // there left the news of a started turn to the ordinary ten-second retry, which is the
+  // opposite of what the interception is for.
+  //
+  // The pass has to be a sweep rather than the conclusion's own settle: a conclusion now
+  // settles its own row directly and never takes that mutex, which is the whole point of the
+  // change this test sits beside.
+  let release!: () => void;
   // Released on a TIMER rather than straight away, because the interleaving is the subject: a
   // real stop spawns a process or waits on a driver pump, so it spans macrotasks, and the
   // zero-delay sweep the interception asks for therefore fires while the pass is still inside
   // it. Resolving on a microtask would let the pass finish first and never exercise this.
-  let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = () => { setTimeout(resolve, 100); };
   });
@@ -792,7 +796,10 @@ test("a prompt arriving mid-sweep is not left waiting for the retry interval", a
     },
     kill: async (s: Session): Promise<ActionResult> => {
       killed.push(s.id);
-      if (killed.length === 1) {
+      // The conclusion's own attempt is refused at once, so the agent is still here.
+      if (killed.length === 1) return { ok: false, error: "the pane did not answer" };
+      // The sweep's attempt is the one that hangs, holding the mutex.
+      if (killed.length === 2) {
         await gate;
         return { ok: false, error: "the pane did not answer" };
       }
@@ -803,12 +810,14 @@ test("a prompt arriving mid-sweep is not left waiting for the retry interval", a
   const f = terminalMission({}, { killed, deps });
   registry = f.registry;
 
-  // Deliberately NOT awaited: the conclusion now performs the first close attempt itself, and
-  // that attempt is the pass this test needs to still be running when the prompt lands.
-  const concluding = f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
-  await until("a pass is in flight", () => killed.length === 1);
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, EMPTY);
+  await settle();
+  assert.equal(killed.length, 1, "the conclusion asked once, and was refused");
 
-  // Delivered while that pass is still awaiting its stop.
+  // A retry pass, now in flight and stuck inside its stop.
+  const inFlight = f.tasks.sweepMissionSessionClosures();
+  await until("the sweep is inside its stop", () => killed.length === 2);
+
   f.registry.applyHook({
     agent: "claude",
     event: "UserPromptSubmit",
@@ -822,11 +831,82 @@ test("a prompt arriving mid-sweep is not left waiting for the retry interval", a
 
   await until(
     "the pass that was already running comes straight back rather than waiting ten seconds",
-    () => killed.length >= 2,
+    () => killed.length >= 3,
     3_000,
   );
+  await inFlight;
   await until("and finishes the close", () => f.registry.getSession(f.sessionId) === undefined);
-  await concluding;
+});
+
+test("a conclusion asks its own session even while another closure is mid-stop", async () => {
+  // The guarantee that "the agent is asked before the concluding request returns" cannot be
+  // routed through the shared, mutex-guarded, whole-table sweep. A pass already in flight makes
+  // that sweep return having asked nobody, and when it does run it walks every owed row - so a
+  // second mission concluding in the same moment would either be silently deferred or made to
+  // wait out an unrelated closure's stop budget.
+  const registry = new Registry();
+  const killed: string[] = [];
+  let releaseFirst!: () => void;
+  const stuck = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = uid("sess");
+  const deps = {
+    resetWouldDestroyWork: async () => {
+      throw new Error("the mission closure must not probe the checkout");
+    },
+    kill: async (s: Session): Promise<ActionResult> => {
+      killed.push(s.id);
+      // The FIRST mission's stop hangs. The second must not be behind it.
+      if (s.id === first) { await stuck; return { ok: true }; }
+      return { ok: true };
+    },
+  };
+  const tasks = new TaskManager(registry, deps);
+  managers.push(tasks);
+
+  const second = uid("sess");
+  registry.applyDiscovery([discovered(first), discovered(second)]);
+  for (const [sessionId, over] of [[first, {}], [second, {}]] as const) {
+    registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: `${sessionId}-episode`,
+      cwd: "/repo",
+      transcriptPath: null,
+      env: {},
+      ...over,
+    });
+  }
+  const runs = [first, second].map((sessionId) => {
+    const filed = filedRun();
+    registry.upsertTask(
+      mkTask({
+        id: filed.taskId,
+        status: "running",
+        sessionId,
+        repoRoot: "/repo",
+        scheduleId: filed.schedule.id,
+        scheduleOccurrenceId: filed.occurrenceId,
+        scheduledFor: T0 + HOUR,
+      }),
+    );
+    return { sessionId, taskId: filed.taskId };
+  });
+
+  // The first mission concludes and its stop hangs.
+  const stuckConclusion = tasks.concludeScheduledMissionRun(runs[0]!.sessionId, EMPTY);
+  await until("the first mission's stop is in flight", () => killed.includes(first));
+
+  // The second concludes while that one is still hanging. Its own agent must be asked before
+  // this call returns, and without waiting on the first.
+  await tasks.concludeScheduledMissionRun(runs[1]!.sessionId, EMPTY);
+  assert.ok(
+    killed.includes(second),
+    "the second run's agent was asked to stop inside its own concluding call",
+  );
+  assert.equal(registry.getTask(runs[1]!.taskId)?.status, "done");
+
+  releaseFirst();
+  await stuckConclusion;
 });
 
 test("a late prompt on the SDK path leaves no driver that could finish the turn", async (t) => {
@@ -1001,6 +1081,10 @@ test("a stop that never answers cannot hold the closure open past its guarantee"
   await settle();
   assert.equal(killed.length, 1, "the first stop was issued");
   assert.ok(f.registry.getSession(f.sessionId), "and is hanging, with the agent still here");
+  // Disarm the retry cadence so the only passes are the ones this test drives; the clock it
+  // ticks below is the stop budget, and a retry timer firing on the same tick would blur which
+  // pass made which attempt.
+  f.tasks.stopMissionSessionClosures();
 
   t.mock.timers.tick(MISSION_SESSION_CLOSURE_STOP_TIMEOUT_MS + 1_000);
   await settle();

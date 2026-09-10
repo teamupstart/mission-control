@@ -43,6 +43,36 @@ function runElectronFixture(args: string[]): string {
   }
 }
 
+type Colour = [number, number, number];
+
+/** One capturePage reading of the scrollbar band and the two reference swatches. */
+interface Sample {
+  track: Colour;
+  thumbWidth: number;
+  thumb: Colour | null;
+  thumbCorner: Colour | null;
+  swatchRest: Colour;
+  swatchHover: Colour;
+}
+
+/**
+ * Channel distance between two colours, and the slack allowed when matching one.
+ *
+ * A few counts rather than an exact match: the thumb is composited and antialiased by the
+ * platform's own scrollbar painter, so it lands a channel or two off a flat swatch of the same
+ * declaration. Wide enough to absorb that, far narrower than the 24% -> 38% step it has to tell
+ * apart, which measures ~96 here.
+ */
+const TOLERANCE = 8;
+
+/** Stand-in for an absent sample, so a failure message prints rather than throws. */
+const BLACK: Colour = [0, 0, 0];
+
+const distance = (a: Colour, b: Colour): number =>
+  Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+
+const show = (colour: Colour): string => `rgb(${colour.join(", ")})`;
+
 /**
  * Here rather than in `e2e/` because a headless browser reserves zero for every scroller
  * however it is styled, so only a real window can measure this.
@@ -86,6 +116,64 @@ test("the pipeline strip reserves a visible scrollbar the platform would not hav
     fits.reserved,
     0,
     `a strip that fits its pane must reserve no track (${fits.reserved}px)`,
+  );
+});
+
+/**
+ * The thumb's two painted states, which only a rendered scrollbar can show.
+ *
+ * Compared against swatches carrying the same declarations rather than against fixed channels,
+ * so this asserts the thumb is painted from the rule under test without pinning the theme's
+ * own colours.
+ */
+test("the scrollbar thumb is painted from its own rule, and lightens under the pointer", () => {
+  const output = runElectronFixture([
+    fileURLToPath(new URL("fixtures/pipeline-strip-thumb-browser.cjs", import.meta.url)),
+    fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
+  ]);
+  const { geometry, rest, hovered } = JSON.parse(output.trim()) as {
+    geometry: { track: number; overflow: number };
+    rest: Sample;
+    hovered: Sample;
+  };
+
+  assert.ok(geometry.overflow > 0, "the strip must overflow for a thumb to be drawn");
+  assert.ok(rest.thumb, "no thumb was found in the scrollbar band");
+  assert.ok(hovered.thumb, "no thumb was found in the scrollbar band while hovered");
+
+  // Painted at all: a thumb the same colour as the track behind it is not a scrollbar.
+  assert.ok(
+    distance(rest.thumb!, rest.track) > 12,
+    `the thumb must stand out from its track (${show(rest.thumb!)} on ${show(rest.track)})`,
+  );
+
+  // `background: color-mix(in oklab, var(--fg) 24%, transparent)`, as rendered. Removing or
+  // changing that declaration moves the thumb off its swatch and fails here.
+  assert.ok(
+    distance(rest.thumb!, rest.swatchRest) <= TOLERANCE,
+    "the resting thumb must match the 24% swatch "
+      + `(thumb ${show(rest.thumb!)}, swatch ${show(rest.swatchRest)})`,
+  );
+
+  // `border-radius: 5px` on a 10px track rounds the ends, so a corner of the thumb's bounding
+  // box is not the thumb's own colour.
+  assert.ok(
+    rest.thumbCorner && distance(rest.thumbCorner, rest.thumb!) > TOLERANCE,
+    `the thumb's corner must be rounded away (corner ${show(rest.thumbCorner ?? BLACK)})`,
+  );
+
+  // And the hover rule, which has no other test path: the pointer parks on the thumb and the
+  // paint moves to the 38% mix. Asserted as a match against that swatch AND as a change from
+  // rest, so neither a missing hover rule nor a hover rule equal to the resting one passes.
+  assert.notDeepEqual(
+    hovered.thumb,
+    rest.thumb,
+    `hovering must repaint the thumb (still ${show(rest.thumb!)})`,
+  );
+  assert.ok(
+    distance(hovered.thumb!, hovered.swatchHover) <= TOLERANCE,
+    "the hovered thumb must match the 38% swatch "
+      + `(thumb ${show(hovered.thumb!)}, swatch ${show(hovered.swatchHover)})`,
   );
 });
 

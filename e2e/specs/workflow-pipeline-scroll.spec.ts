@@ -19,12 +19,22 @@ const EVIDENCE = artifactsDir("workflow-pipeline-scroll");
 const TRACK = "10px";
 
 /**
- * The rule as the browser parsed it out of the served bundle, which a grep of `styles.css`
- * would not catch the build dropping. A scrollbar pseudo-element has no computed style to
- * read instead.
+ * One declaration of a scrollbar rule, as the browser parsed it out of the served bundle.
+ *
+ * Read from CSSOM because a grep of `styles.css` would not catch the build dropping it, and a
+ * scrollbar pseudo-element has no computed style to read instead. Returns null when the rule
+ * is absent and "" when it carries no such declaration, so the two are distinguishable.
+ *
+ * What these declarations PAINT is asserted in `test/workflow-builder-electron.test.ts`, which
+ * samples the rendered thumb at rest and under the pointer. This layer only settles that the
+ * built bundle still ships them.
  */
-async function scrollbarRule(page: Page, selector: string): Promise<string | null> {
-  return page.evaluate((wanted) => {
+async function scrollbarRule(
+  page: Page,
+  selector: string,
+  property: "height" | "background",
+): Promise<string | null> {
+  return page.evaluate(([wanted, declaration]) => {
     for (const sheet of document.styleSheets) {
       let rules: CSSRuleList;
       try {
@@ -34,11 +44,13 @@ async function scrollbarRule(page: Page, selector: string): Promise<string | nul
       }
       for (const rule of rules) {
         const styleRule = rule as CSSStyleRule;
-        if (styleRule.selectorText === wanted) return styleRule.style.height || "";
+        if (styleRule.selectorText === wanted) {
+          return styleRule.style.getPropertyValue(declaration!) || "";
+        }
       }
     }
     return null;
-  }, selector);
+  }, [selector, property] as const);
 }
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
@@ -172,13 +184,20 @@ test("a workflow run's pipeline draws a scrollbar that reaches its last stage", 
 
   // The rule reached the page; its effect is measured in the Electron case.
   expect(
-    await scrollbarRule(dashboard, ".wf-pipeline-strip::-webkit-scrollbar"),
+    await scrollbarRule(dashboard, ".wf-pipeline-strip::-webkit-scrollbar", "height"),
     "the served stylesheet should carry the strip's scrollbar rule",
   ).toBe(TRACK);
-  expect(
-    await scrollbarRule(dashboard, ".wf-pipeline-strip::-webkit-scrollbar-thumb"),
-    "the thumb rule should ship alongside it",
-  ).not.toBeNull();
+  // Both thumb states, and each with its declaration rather than merely present: a rule that
+  // shipped empty would draw the platform's own thumb and satisfy a bare null check.
+  const thumb = await scrollbarRule(
+    dashboard, ".wf-pipeline-strip::-webkit-scrollbar-thumb", "background",
+  );
+  const thumbHover = await scrollbarRule(
+    dashboard, ".wf-pipeline-strip::-webkit-scrollbar-thumb:hover", "background",
+  );
+  expect(thumb, "the thumb rule should ship a background").toBeTruthy();
+  expect(thumbHover, "the thumb's hover rule should ship a background").toBeTruthy();
+  expect(thumbHover, "hover should not repeat the resting background").not.toBe(thumb);
 
   if (process.env.MC_E2E_EVIDENCE) {
     mkdirSync(EVIDENCE, { recursive: true });
@@ -223,7 +242,7 @@ test("the builder's Pipeline view scrolls to its last stage too", async ({
 
   // The shared class carries the rule, so the surface an operator authors on gets it too.
   expect(
-    await scrollbarRule(dashboard, ".wf-pipeline-strip::-webkit-scrollbar"),
+    await scrollbarRule(dashboard, ".wf-pipeline-strip::-webkit-scrollbar", "height"),
     "the builder serves the same scrollbar rule",
   ).toBe(TRACK);
 

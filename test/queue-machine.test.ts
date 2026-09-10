@@ -161,6 +161,7 @@ function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQu
 
 function mkIntent(over: Partial<SessionGoal> = {}): SessionGoal {
   return {
+    openingPrompt: null,
     noteKey: "agent-1",
     text: "Ship the feature",
     source: "model",

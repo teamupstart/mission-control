@@ -7600,7 +7600,7 @@ export class Registry extends EventEmitter {
     const prev = this.getGoal(id);
     const firstObjective = !prev?.objective;
     const revision = (prev?.promptRevision ?? 0) + 1;
-    return this.upsertGoal(id, {
+    return this.mergeGoal(id, {
       prompt: raw,
       focus: goalLine(raw),
       relationship: null,
@@ -7610,6 +7610,8 @@ export class Registry extends EventEmitter {
       ...(firstObjective
         ? {
             objective: raw,
+            // A pre-feature row cannot recover its opening ask from a later prompt.
+            ...(!prev?.promptRevision && !prev?.prompt ? { openingPrompt: prompt } : {}),
             text: goalLine(raw),
             source: "heuristic" as const,
             objectiveVersion: Math.max(1, prev?.objectiveVersion ?? 0),
@@ -7653,6 +7655,15 @@ export class Registry extends EventEmitter {
    * focus and prompt revision, but not the "when did this session change course" timestamp.
    */
   upsertGoal(id: string, patch: SetGoal, now = Date.now()): SessionGoal | null {
+    return this.mergeGoal(id, patch, now);
+  }
+
+  /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
+  private mergeGoal(
+    id: string,
+    patch: SetGoal & { openingPrompt?: string },
+    now: number,
+  ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
     const key = noteKeyFor(s);
@@ -7665,6 +7676,7 @@ export class Registry extends EventEmitter {
       text,
       source: patch.source !== undefined ? patch.source : prev?.source ?? null,
       objective,
+      openingPrompt: prev?.openingPrompt ?? patch.openingPrompt ?? null,
       prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt ?? null,
       focus: patch.focus !== undefined ? patch.focus : prev?.focus ?? null,
       relationship:

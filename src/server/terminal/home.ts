@@ -7,6 +7,7 @@ import {
 } from "./bin.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { defaultTerminalDeps, type TerminalDeps } from "./registry.ts";
+import { underTestRunner } from "../util/test-runner.ts";
 import type { NameRules, TerminalBackendId, TerminalResult } from "./types.ts";
 
 /**
@@ -235,18 +236,49 @@ export type LaunchResult =
   | { ok: false; error: string };
 
 /**
+ * What a test worker is told when it reaches this with the real machine's backends.
+ *
+ * Exported so the case that pins the boundary asserts the same sentence the guard produces.
+ */
+export const REAL_BACKEND_UNDER_TEST_RUNNER =
+  "refusing to open a real terminal session under the test runner: pass HomeDeps built from " +
+  "test/helpers/terminal-fakes.ts, or - for a dispatch - construct the Dispatcher with its " +
+  "`spawn` seam, which is what stops `spawnUniquely` opening a session on this machine";
+
+/**
  * Open a terminal home for a dispatched agent on whichever backend is configured.
  *
  * Tries each backend on the chosen axis in order, so a machine with two multiplexers
  * installed and the first one wedged still dispatches. An explicit choice is attempted once
  * and never falls through to a different terminal. The last failure is what the operator is
  * told, because it is the one that is still true.
+ *
+ * ## Not from a test worker
+ *
+ * A test that reaches here with the real registries opens a REAL session on the machine
+ * running the suite, and nothing in the suite ever closes it. That is not hypothetical:
+ * `multi-repo-dispatch.test.ts` built a `Dispatcher` without its `spawn` seam, and its one
+ * single-repo case left 42 Herdr workspaces and 2 tmux sessions behind across its runs - one
+ * of them still holding a launch pointed at the operator's live daemon on port 7317. The
+ * seam existed and was documented for exactly this; the test simply did not use it.
+ *
+ * So the boundary is stated here, where the session is actually opened, in the same shape
+ * `openDb` states the state-dir one: under the test runner, the real backends are refused,
+ * and injected ones - which is every existing case in `terminal-home.test.ts` - are not.
+ * Production reaches `underTestRunner()` once and returns on its first line.
+ *
+ * This is not a sandbox, and like `openDb` it is not trying to be one. A test that wants a
+ * real tmux session can spawn `tmux` itself without coming through here. What it closes is
+ * the accident.
  */
 export async function launchHome(
   spec: HomeSpec,
   deps: HomeDeps = defaultHomeDeps,
   preferredBackend: string | null = null,
 ): Promise<LaunchResult> {
+  if (deps === defaultHomeDeps && underTestRunner()) {
+    return { ok: false, error: REAL_BACKEND_UNDER_TEST_RUNNER };
+  }
   const backends = homeBackends(deps, preferredBackend);
   if (!backends.length) {
     return {

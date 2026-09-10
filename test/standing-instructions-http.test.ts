@@ -192,14 +192,14 @@ test("the resolved route previews what a launch would send, for this exact pair"
   // and the same longest-match rule the launch uses.
   assert.equal(body.text, `${STANDING_INSTRUCTIONS_HEADING}\n\nnever run E2E locally`);
   // The mechanism is a property of the PAIR, not of the repository - the same text is a
-  // system prompt here and turn-one prose on pi.
+  // system prompt here and on Pi, while Codex terminal uses turn-one prose.
   assert.equal(body.mechanism, "claude-append-system-prompt");
 
   const pi = await app.request(
     `/api/instructions/resolved?repoPath=${encodeURIComponent(CHECKOUT)}&agent=pi&runtime=terminal`,
     { headers: HEADERS },
   );
-  assert.equal(((await pi.json()) as { mechanism: string }).mechanism, "prompt-prefix");
+  assert.equal(((await pi.json()) as { mechanism: string }).mechanism, "pi-append-system-prompt");
 });
 
 test("the resolved route refuses a missing repoPath, an unknown agent and an unoffered runtime", async () => {

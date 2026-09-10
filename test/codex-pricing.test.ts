@@ -5,7 +5,7 @@ import type { HarnessUsageEvent } from "../src/server/harness/types.ts";
 
 function usage(modelId: string, patch: Partial<HarnessUsageEvent> = {}): HarnessUsageEvent {
   return {
-    identity: "request", ts: 1, modelId, querySource: "main",
+    vendorCostUsd: null, identity: "request", ts: 1, modelId, querySource: "main",
     input: 1_000, cacheRead: 2_000, cacheWrite: 3_000, output: 400,
     reasoningOutput: 100, ...patch,
   };

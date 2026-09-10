@@ -220,6 +220,74 @@ test("a newer session file invalidates an exact binding without replacing it", (
   }
 });
 
+test("a driver-reported path is preferred, and ONLY for the runtime that has a driver", () => {
+  // The managed driver is handed the exact file pi is about to write, so a directory search
+  // can only agree with it or be wrong. But the staleness rule the search applies is not
+  // redundant for a TERMINAL session: its `transcriptPath` was observed from outside, and a
+  // newer file in the project dir is the evidence the binding has been outrun. So the fast
+  // path is gated on the runtime rather than on the field merely being set - otherwise a
+  // stale terminal binding would start resolving to a conversation pi has already left.
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = "/repo";
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const newerId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  try {
+    const path = writeSession(dir, sessionId, Date.parse("2026-07-20T10:00:00.000Z"));
+    writeSession(dir, newerId, Date.parse("2026-07-20T10:01:00.000Z"));
+
+    const managed = {
+      ...locateSession("pi-managed", cwd, sessionId),
+      runtime: "sdk",
+      transcriptPath: path,
+    } as Session;
+    assert.equal(
+      locatePiTranscript(managed, root),
+      path,
+      "a driver cannot be outrun by a newer file - it is the thing writing this one",
+    );
+
+    // The same stale binding on a terminal session keeps the answer it has always had.
+    const terminal = {
+      ...locateSession("pi-terminal", cwd, sessionId),
+      runtime: "terminal",
+      transcriptPath: path,
+    } as Session;
+    assert.equal(locatePiTranscript(terminal, root), null);
+
+    // And a driver path naming a DIFFERENT conversation is not trusted either: it falls
+    // through to the search, which then applies its own rules.
+    const mismatched = {
+      ...locateSession("pi-mismatch", cwd, sessionId),
+      runtime: "sdk",
+      transcriptPath: join(dir, `2026-07-20T10-02-00-000Z_${newerId}.jsonl`),
+    } as Session;
+    assert.equal(locatePiTranscript(mismatched, root), null);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pi's session store follows PI_CODING_AGENT_DIR, the way pi's own resolver does", () => {
+  // `getAgentDir()` reads that variable before falling back to `~/.pi/agent`. A module-level
+  // constant built from `homedir()` alone reported the wrong directory for every operator
+  // who had set it - on both runtimes, silently, as "no transcript for this session".
+  const before = process.env.PI_CODING_AGENT_DIR;
+  const root = mkdtempSync(join(tmpdir(), "pi-agent-dir-"));
+  try {
+    process.env.PI_CODING_AGENT_DIR = root;
+    assert.equal(piProjectDir("/repo"), join(root, "sessions", "--repo--"));
+    delete process.env.PI_CODING_AGENT_DIR;
+    assert.notEqual(piProjectDir("/repo"), join(root, "sessions", "--repo--"));
+  } finally {
+    if (before === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- messages: parse the verbatim capture ----
 
 test("text turns parse; thinking is dropped; the aborted turn falls out", () => {

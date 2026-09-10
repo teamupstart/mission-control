@@ -76,7 +76,7 @@ export function fakePiSdkModulePath(): string {
 /** The model ids the fake SDK will launch. Anything else fails the way an absent one does. */
 export const FAKE_PI_SDK_MODELS = [
   "amazon-bedrock/deepseek.v3.2",
-  "amazon-bedrock/anthropic.claude-sonnet-4-5",
+  "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
   "openai/gpt-5.6-sol",
   "anthropic/claude-sonnet-5",
 ] as const;

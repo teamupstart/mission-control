@@ -51,6 +51,32 @@ test("credential assignments are removed by SHAPE, not by the wording around the
   }
 });
 
+test("Authorization: Bearer <token> loses the TOKEN, not just the word Bearer", () => {
+  // The commonest header shape there is, and the one a whitespace-bounded value pattern gets
+  // exactly wrong: `\S+` stops at the space after `Bearer`, redacting the scheme and leaving
+  // the secret - and destroying the word the dedicated Bearer rule needed to find it by. The
+  // earlier tests missed this because they exercised the two halves as separate strings.
+  const token = "sk-ant-api03-0123456789abcdefghijklmnop";
+  const redacted = redact(`Authorization: Bearer ${token}`);
+  assert.doesNotMatch(redacted, /sk-ant-api03/, redacted);
+  assert.equal(redacted, REDACTED);
+
+  // The prose around it survives, so a diagnostic is still readable.
+  const inSentence = redact(`request failed with Authorization: Bearer ${token}, retry later`);
+  assert.doesNotMatch(inSentence, /sk-ant-api03/, inSentence);
+  assert.match(inSentence, /^request failed with .* retry later$/);
+
+  // Both other spellings of the same header, and a scheme-less value.
+  for (const header of [
+    `authorization=${token}`,
+    `Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101`,
+    `x-amz-security-token: FQoGZXIvYXdzEBYaDMOCK`,
+  ]) {
+    const out = redact(header);
+    assert.doesNotMatch(out, /sk-ant-api03|AKIAIOSFODNN7EXAMPLE|FQoGZXIvYXdzEBYaDMOCK/, out);
+  }
+});
+
 test("a JWT is removed even though nothing around it names a credential", () => {
   const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r";
   const redacted = redact(`upstream rejected ${jwt} for this account`);

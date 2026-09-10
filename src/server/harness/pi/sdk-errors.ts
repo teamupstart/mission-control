@@ -47,9 +47,18 @@ const SECRETS: readonly RegExp[] = [
   /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ABIA|ACCA)[A-Z0-9]{16}\b/g,
   // `key=value` credential assignments, in either an env or a query-string spelling.
   /\b(?:aws_)?(?:secret_access_key|session_token|security_token|access_key_id|api[_-]?key|client_secret|refresh_token|id_token|access_token|password)\b\s*[=:]\s*\S+/gi,
-  // Authorization headers, whatever scheme they name.
-  /\bAuthorization\b\s*[=:]\s*\S+/gi,
+  // A scheme-and-token pair, BEFORE the `Authorization` rule below rather than after it.
+  //
+  // The order is the whole of this fix. `Authorization: Bearer <token>` is the commonest
+  // header shape there is, and a whitespace-bounded value pattern consumes only the word
+  // `Bearer` from it - leaving the token, and destroying the very word this rule needs to
+  // find it by. Redacting the pair first means the generic rule below can only ever see an
+  // already-redacted value.
   /\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/g,
+  // Authorization headers, whatever scheme they name, INCLUDING the scheme's own token.
+  // `\S+` alone stops at the first space, which on a two-part credential is exactly where
+  // the secret begins.
+  /\bAuthorization\b\s*[=:]\s*(?:[A-Za-z][\w-]*[ \t]+)?\S+/gi,
   /\bX-Amz-(?:Security-Token|Credential|Signature)\b\s*[=:]\s*\S+/gi,
   // JSON web tokens, which carry an identity whether or not they are still valid.
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,

@@ -655,6 +655,16 @@ async function smokePiSdkBundle() {
     await rm(join(out, ".."), { recursive: true, force: true });
     return;
   }
+  // `defaultPiSdkDeps.load()` consults `MISSION_PI_SDK_MODULE` first, which is how the
+  // browser suite points every daemon at a fake. If that override is set in the environment
+  // this smoke runs in, the probe below would load the FAKE, pass every check, and report
+  // that the pinned vendor package loads - without ever evaluating it. Cleared for the
+  // duration and restored after: this check is about the bundle, so its answer must not
+  // depend on a redirection whose whole purpose is to replace the thing being checked.
+  const overrideEnv = await piSdkModuleEnvName();
+  if (!overrideEnv) return;
+  const override = process.env[overrideEnv];
+  delete process.env[overrideEnv];
   try {
     const { defaultPiSdkDeps } = await import(pathToFileURL(out).href);
     const sdk = await defaultPiSdkDeps.load();
@@ -680,8 +690,27 @@ async function smokePiSdkBundle() {
   } catch (err) {
     fail(`the bundled Pi SDK could not be loaded (${err instanceof Error ? err.message : err})`);
   } finally {
+    if (override !== undefined) process.env[overrideEnv] = override;
     await rm(join(out, ".."), { recursive: true, force: true });
   }
+}
+
+/**
+ * The name of the variable that redirects the Pi SDK, read out of the driver's own module.
+ *
+ * Scraped rather than restated, for the reason `declaredMcpTools` is: a second spelling of a
+ * name whose whole job is to redirect something is a second spelling that can drift, and the
+ * drift here would be silent - this probe would clear a variable nobody sets and go on
+ * loading the fake. A name it cannot find is a FAILURE, never a skip.
+ */
+async function piSdkModuleEnvName() {
+  const source = await readFile(resolve("src/server/harness/pi/sdk-deps.ts"), "utf8");
+  const name = /export const PI_SDK_MODULE_ENV = "([A-Z0-9_]+)"/.exec(source)?.[1];
+  if (!name) {
+    fail("PI_SDK_MODULE_ENV could not be read out of src/server/harness/pi/sdk-deps.ts");
+    return null;
+  }
+  return name;
 }
 
 /**
@@ -723,7 +752,18 @@ async function run(command, args) {
   let output = "";
   child.stdout.on("data", (d) => (output += d));
   child.stderr.on("data", (d) => (output += d));
-  const code = await new Promise((r) => child.on("exit", (value) => r(value ?? 1)));
+  // `error` as well as `exit`, for the reason `smokeMcp` already listens for it: a command
+  // that cannot be STARTED emits `error` and may never emit `exit`, so a promise waiting
+  // only on the latter can hang for ever - and an `error` with no listener is an uncaught
+  // exception that kills the smoke with an ENOENT instead of the failure it was written to
+  // report.
+  const code = await new Promise((r) => {
+    child.on("error", (err) => {
+      output += `${command} could not be started (${err.message})\n`;
+      r(1);
+    });
+    child.on("exit", (value) => r(value ?? 1));
+  });
   return { code, output };
 }
 

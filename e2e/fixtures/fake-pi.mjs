@@ -168,7 +168,9 @@ input.on("line", (line) => {
         },
         {
           provider: "amazon-bedrock",
-          id: "anthropic.claude-sonnet-4-5",
+          // The colon-bearing shape, verbatim: 41 of the 121 models pi lists for
+          // `amazon-bedrock` carry the provider's own `-v1:0` version suffix.
+          id: "anthropic.claude-sonnet-4-5-20250929-v1:0",
           name: "Claude Sonnet 4.5 (Bedrock)",
           contextWindow: 200_000,
           reasoning: true,

@@ -119,6 +119,12 @@ test("a Bedrock model runs on Pi's managed runtime, through every control it off
   // The provider group is Pi's own answer, not a Mission Control list: `amazon-bedrock` is
   // here because a signed-in Pi reported it.
   await expect(model.locator('optgroup[label="amazon-bedrock"]')).toHaveCount(1);
+  // A colon-bearing id survives discovery and reaches the picker. Pi's Bedrock ids carry the
+  // provider's own `-v1:0` version suffix on a third of its rows, and an id vocabulary that
+  // excluded `:` dropped them before anyone could select one.
+  await expect(
+    model.locator('option[value="amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"]'),
+  ).toHaveCount(1);
   await model.selectOption(BEDROCK_MODEL);
   await dialog
     .locator("select")

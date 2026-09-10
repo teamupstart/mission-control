@@ -84,6 +84,16 @@ decoder arm ships with its first consumer, and each phase's tests and docs are i
 Both phases live wholly in the source-plan repository, so neither task sets `repository` or
 `additionalRepositories`.
 
+### Scheduled tasks
+
+| Phase | Task id | Direct prerequisites |
+| --- | --- | --- |
+| 1 | `f28d0e9d-be66-436f-adbf-ba4e82b8df58` | this planning session |
+| 2 | `2ac6c33c-d819-40e6-93a0-28c791aed0be` | this planning session |
+
+Both sit in the backlog and are released by this planning pull request's merge, which is what
+publishes the phase files their intents point at. Neither depends on the other.
+
 ## Dependency graph
 
 ```

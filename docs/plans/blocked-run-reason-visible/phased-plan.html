@@ -229,6 +229,21 @@ delivery_prepare_error         pr_handoff_prepare_error      inspector_pr_switch
   or <code>additionalRepositories</code>.
 </p>
 
+<h3>Scheduled tasks</h3>
+<div class="tw">
+<table>
+  <thead><tr><th>Phase</th><th>Task id</th><th>Direct prerequisites</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td><td><code>f28d0e9d-be66-436f-adbf-ba4e82b8df58</code></td><td>this planning session</td></tr>
+    <tr><td class="num">2</td><td><code>2ac6c33c-d819-40e6-93a0-28c791aed0be</code></td><td>this planning session</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  Both sit in the backlog and are released by this planning pull request's merge, which is what
+  publishes the phase files their intents point at. Neither depends on the other.
+</p>
+
 <h2 id="graph">Dependency graph</h2>
 
 <figure>

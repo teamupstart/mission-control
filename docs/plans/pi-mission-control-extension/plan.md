@@ -38,9 +38,12 @@ Reviewed and settled in the dashboard on 2026-09-10.
   session JSONL. The extension, the capability guard, the reconciler, the environment check and
   the Setup install were **not** selected for it and are sequenced as later phases.
 - **Both capability flips are taken now:** `workQueue` on the strength of `agent_settled`, and
-  `multiRepoDispatch` as an empty grant. Neither depends on the extension shipping - see
-  "What the first cut actually changes" below for exactly what each one does and does not buy
-  while the extension is still deferred.
+  `multiRepoDispatch` as an empty grant - meaning Pi is offered for multi-repo tasks because
+  there is no boundary to widen. The decision is the offer, not a literal empty `launchArgs`:
+  the repository turned out to forbid that spelling, so the same decision is expressed as a
+  `kind`/`why` variant (below). Neither flip depends on the extension shipping - see
+  "What the first cut actually changes" for exactly what each one does and does not buy while
+  the extension is still deferred.
 - **A phased implementation plan follows**, with dependency-linked tasks.
 
 ## Executive summary
@@ -78,7 +81,7 @@ identical in the type and lead to opposite work.
 | `mcp: null` | [:817](../../../src/shared/harness-capabilities.ts) | "pi has no MCP client at all" | **Permanent and correct.** `pi --help` publishes no MCP flag (P1). `mcp` describes registering with a vendor's own MCP client through its CLI; Pi has neither. This null must **stay**. The extension is a different mechanism, and conflating them is how `applyMcp` ends up shelling out to a `pi mcp add` that does not exist. |
 | `workQueue: null` | [:810](../../../src/shared/harness-capabilities.ts) | "authorship of the pickup is exactly the hook signal it lacks" | **Closable, and taken in the first cut.** Pi fires `input` (the pickup, with `source` distinguishing a human from an extension) and `agent_settled` ("Pi will not continue running automatically"). Both measured in one run (P5). Becomes `{ uninstrumentedWhy: … }`, which until the extension ships changes the refusal an operator reads rather than what a queue can do. |
 | `permissionModes: null` | [:782](../../../src/shared/harness-capabilities.ts) | Pi's `manual`/`auto`/`readonly` vocabulary does not map onto the app's closed Claude-shaped union | **Still correct, unchanged by this work.** Out of scope: widening a shared persisted union with Pi's words is its own decision. Named here so the null is not read as an oversight. |
-| `multiRepoDispatch: null` | [:836](../../../src/shared/harness-capabilities.ts) | "UNMEASURED … pi has no sandbox to widen" | **Now measured, and the comment was right about the reason.** Pi's `write` tool wrote to `/tmp/pi-probe/repoB/outside-cwd.txt` from a session whose cwd was `/tmp/pi-probe/repoA`, with no flag, no grant and no refusal (P9). There is no boundary to widen, so the grant is declared as `[]` rather than left absent - taken in the first cut. |
+| `multiRepoDispatch: null` | [:836](../../../src/shared/harness-capabilities.ts) | "UNMEASURED … pi has no sandbox to widen" | **Now measured, and the comment was right about the reason.** Pi's `write` tool wrote to `/tmp/pi-probe/repoB/outside-cwd.txt` from a session whose cwd was `/tmp/pi-probe/repoA`, with no flag, no grant and no refusal (P9). There is no boundary to widen, so the grant declares that REASON rather than rendering flags: `{ kind: "no-boundary"; why; sdk: false }`, not an empty `launchArgs`. Taken in the first cut - see [the scope that was chosen](#the-scope-that-was-chosen-and-what-it-actually-changes) for why the shape matters. |
 | `runtimes: ["terminal"]` | [:765](../../../src/shared/harness-capabilities.ts) | "Phase 6 adds `sdk`" with the `--mode rpc` adapter | **Unchanged.** `--mode rpc` exists and the extension works in it (`ctx.mode === "rpc"`, measured in P3), but an embedded driver is a separate project. |
 | `standingInstructions.outOfBand: {}` | [:851](../../../src/shared/harness-capabilities.ts) | "Pi has no channel on any runtime: its only door is turn one" | **Wrong, and closable without the extension.** `pi --append-system-prompt` is documented as repeatable and measured as repeatable: two flags produced two appended blocks, each exactly once (P8). Claude's equivalent silently discards the first. |
 | `effort.driverApplies: null` / `sessionPicker: null` | [:826](../../../src/shared/harness-capabilities.ts), [:829](../../../src/shared/harness-capabilities.ts) | no embedded driver; Shift+Tab walks seven values including `off` and `minimal` | **Both correct and out of scope.** The extension can *report* the level (`thinking_level_select`, `ctx.thinkingLevel`), which is the statusline half, not the picker half. |
@@ -729,8 +732,29 @@ that quietly promises something it does not deliver.
    **dispatched** Pi sessions. See the correction below.
 2. **`workQueue`** flipped from `null` to `{ uninstrumentedWhy: … }` on the strength of
    `agent_settled` (P5).
-3. **`multiRepoDispatch`** declared as an empty grant, `{ launchArgs: () => [], sdk: false }`,
-   because P9 measured that Pi has no write boundary to widen.
+3. **`multiRepoDispatch`** declared as an empty grant, because P9 measured that Pi has no
+   write boundary to widen. The literal shape is **not** an empty `launchArgs` - see below.
+
+#### The `multiRepoDispatch` shape, corrected after the decision
+
+`test/multi-repo-policy.test.ts:118` asserts that any non-null `multiRepoDispatch` renders at
+least one flag naming every directory, on the stated grounds that "a spec that renders no flags
+would be a harness advertising a grant it does not make, which is worse than declaring null".
+So `{ launchArgs: () => [], sdk: false }` fails a test that is right to fail it.
+
+The decision is kept - Pi is offered for multi-repo tasks - and the spec becomes a discriminated
+union, so Pi declares the reason instead of returning an array that reads like a bug:
+
+```ts
+export type MultiRepoDispatchSpec =
+  | { kind: "flags"; launchArgs: (dirs: readonly string[]) => string[]; sdk: boolean }
+  | { kind: "no-boundary"; why: string; sdk: boolean };
+```
+
+[Phase 1](phase-1-pi-cost-and-capability-flips.md) owns the union, and
+[phased-plan.md's finding 3](phased-plan.md#3-the-empty-multirepodispatch-grant-contradicts-an-existing-test-invariant)
+records the reasoning. Anyone implementing from this plan's summary alone should write the
+union, never the empty array.
 
 ### What the first cut actually changes
 

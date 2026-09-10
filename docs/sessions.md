@@ -1319,6 +1319,28 @@ prompt it could not confirm the agent received, not you asking twice.
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
 reason: its hook delivery is the first arrival and so is the capture.
 
+**Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
+rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
+packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
+restart are all typed into the session exactly the way you type, and the agent reports each
+one back through its prompt hook. Who wrote a turn is recorded when it is delivered, so those
+arrivals are recognized and discarded rather than captured. Without that rule a
+completion-review packet became the session's ask, was frozen onto the next workflow run, and
+came back to the agent under the heading "Original user goal", leaving the review to judge
+your work against Mission Control's own last complaint.
+
+The one delivery that is still yours is round 0 of a queued
+[work item](foreman.md), which carries your text verbatim and is captured as the instruction
+it is.
+
+**Saying the same thing twice still works.** Recognition is spent, not permanent: one delivery
+accounts for the one echo the agent reports, and the next arrival of that text is you typing
+it. So if you scroll back, copy a packet out of the conversation and send it again to redirect
+the session, it is heard and the Goal moves. The conversation log still credits whoever
+originally typed each turn; only the recognition is used up. Recognition is also in-memory, so
+a daemon restart landing between a delivery and its echo lets that single turn through as
+though you had typed it.
+
 Each reconciliation records one of five relationships:
 
 - **initial** establishes the first objective;

@@ -1908,7 +1908,8 @@ on the fake so that regression is caught rather than invoiced.
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MC_E2E_USE_REPO_INDEX_DEFAULTS=1` | opt-in fixture flag that removes every supported workspace override, so Settings repository-index specs exercise the config-backed shipped defaults |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
-| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
+| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec. The same override covers the two write-back verbs, and it has to: `gh issue comment` posts on a thread somebody is watching and `gh issue close` moves their work, and neither is undone by deleting a row in the daemon's ledger |
+| `MC_E2E_GH_WRITEBACK` | where that fake reads its scripted write-back answers from (see `writeGhWritebackScript`). Set for every daemon, so a spec only has to write the file; absent content means both verbs succeed, which is what every spec that never turns a source's write-back switches on already expects |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 
 That last setting matters most and is the least obvious. Without `MISSION_POLL_MS=0` a daemon

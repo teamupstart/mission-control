@@ -774,11 +774,12 @@ export interface TaskSourcesView {
   sources: TaskSourceInstance[];
   status: TaskSourceStatus[];
   /**
-   * Each source's write-back queue.
+   * Each source's write-back queue - one entry per CONFIGURED source, in no particular
+   * relation to `sources` beyond `sourceId`.
    *
-   * Declared with the rest of the contract and served as an EMPTY array until the panel
-   * that reads it exists (Phase 3 of the write-back plan). Empty is a valid answer -
-   * "this source owes nothing" - so no consumer has to special-case the interval.
+   * A source that owes nothing still gets an entry, with zeroes: "this source owes
+   * nothing" and "there is no such source" are different answers, and the panel draws a
+   * line for the first and nothing for the second.
    */
   writeback: TaskSourceWritebackStatus[];
   /** The kinds this build offers, so the panel's "add" control is not a hand-kept list. */

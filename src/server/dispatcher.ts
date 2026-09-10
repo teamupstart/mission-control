@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
   AgentType,
   PermissionMode,
@@ -194,6 +195,8 @@ export class Dispatcher {
       supervisor?: SdkSupervisor;
       /** How the launch reaches our own MCP server. Injected for the same reason. */
       missionMcpDescriptor?: typeof missionMcpDescriptor;
+      /** Shared machine-install probe, supplied by the Pi extension phase. */
+      piExtensionInstalled?: () => boolean | Promise<boolean>;
       /** Whether that server actually publishes the tools this launch declares. Injected so a test need not spawn one. */
       verifyMissionMcpTools?: typeof verifyMissionMcpTools;
       /** Publish the checkout-scoped scout bearer before its agent starts. */
@@ -297,6 +300,17 @@ export class Dispatcher {
       if (task.kind === "pipeline") {
         await this.dispatchPipeline(taskId, task);
         return;
+      }
+      const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
+      const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence);
+      const missionTools = capabilitiesFor(task.agent).missionTools;
+      const toolsAvailability = missionMcp
+        ? await missionToolsAvailability(task.agent, this.deps.piExtensionInstalled)
+        : null;
+      // Before binary resolution, skill checks, base fetches and every worktree acquisition.
+      // This also covers older backlog rows and caller-declared requirements on ship tasks.
+      if (toolsAvailability && !toolsAvailability.available) {
+        throw new Error(toolsAvailability.reason ?? "Required Mission Control tools are unavailable.");
       }
       const configured = resolveAgentBin(task.agent);
       const agentBin = await resolveBinPath(configured);
@@ -469,7 +483,6 @@ export class Dispatcher {
       // operator's own words are never buried and the ordering is the same on both delivery
       // seams. The operator's intent remains the exact prefix; server-owned authorization
       // and the narrower kind contract follow it in one deterministic order.
-      const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
       // The operator's own standing instructions for these checkouts, resolved ONCE, here.
       //
       // A LAUNCH is the only occasion that resolves them: an assignment into a live session
@@ -510,17 +523,6 @@ export class Dispatcher {
       // FROM: `standingPrefix` is non-empty exactly when the block is already inside `intent`.
       const standingFallbackTurnOne =
         !standingPrefix && standing.text ? composeTurnOne(standing.text) : "";
-      // Which of OUR tools this launch has to be able to call. A scout ALWAYS has to be able
-      // to submit its report and a plan ALWAYS has to be able to ask its human and file the
-      // phases it schedules, so the requirement is unioned in here rather than left to
-      // whichever caller happened to dispatch it. A ship task is unaffected:
-      // `kindMissionMcpRequirement` returns the caller's requirement untouched, `null`
-      // included.
-      const missionMcp = kindMissionMcpRequirement(
-        task,
-        options.missionMcp ?? null,
-        workflowEvidence,
-      );
       if (task.kind === "scout") {
         (this.deps.provisionScoutCredential ?? provisionScoutSubmissionCredential)(taskId, wt.path);
       }
@@ -660,18 +662,11 @@ export class Dispatcher {
         ...piStandingArgs,
         ...piLaunch.args,
       ];
-      // Claude's registration rides on the ask channel and Codex's is its own override
-      // block, so "did this launch get our MCP server" has two sources - but the question is
-      // asked of the ARGV that actually reaches the child rather than of the agent id,
-      // because that is the only reading a builder which failed halfway cannot contradict.
-      // Passing `missionMcp` IS the caller declaring those tools REQUIRED, so a launch that could
-      // not carry them is a failure of that launch, not a session worth starting crippled: an
-      // ensemble member that cannot reach `submit_ensemble_result` would run to completion and then
-      // be unable to signal it is ready. Fail here, before the agent spawns, so the worktree is torn
-      // down for a clean retry rather than left holding an agent that can never submit. A dispatch
-      // that passes no `missionMcp` is unaffected - this is effectively ensemble-scoped.
-      const missionMcpRegistered =
-        codexLaunch.missionMcp || askChannel.args.includes("--mcp-config");
+      // A launch registration is reported by the builders that actually produced it.
+      // A machine install rides no argv: reuse the pre-worktree probe's answer.
+      const missionMcpRegistered = missionTools?.mechanism === "mcp-client"
+        ? codexLaunch.missionMcp || askChannel.missionMcp
+        : toolsAvailability?.available === true;
       if (missionMcp && !missionMcpRegistered) {
         throw new Error(
           `the launch could not carry the required Mission MCP tools ` +

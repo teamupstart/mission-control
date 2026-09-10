@@ -133,7 +133,7 @@ test("the standing instruction still ships when the ask channel bails entirely",
   process.env.HARNESS_MCP_SERVER = join(home, "does-not-exist.mjs");
   try {
     const contribution = await askChannelContribution("claude");
-    assert.deepEqual(contribution, { args: [], redirect: null }, "the channel is fully off");
+    assert.deepEqual(contribution, { args: [], redirect: null, missionMcp: false }, "the channel is fully off");
     assert.deepEqual(
       [...contribution.args, ...systemPromptAppendArgs([contribution.redirect, "Never force-push."])],
       ["--append-system-prompt", "Never force-push."],
@@ -202,4 +202,16 @@ test("no temp file is left beside the channel file", async () => {
   const { readdirSync } = await import("node:fs");
   const strays = readdirSync(askChannelPaths.dir).filter((f) => f.endsWith(".tmp"));
   assert.deepEqual(strays, []);
+});
+
+test("the builder reports registration only when its contribution carries the tools", async () => {
+  assert.equal((await askChannelContribution("claude")).missionMcp, true);
+  assert.equal((await askChannelContribution("pi")).missionMcp, false);
+  const prior = process.env.HARNESS_MCP_SERVER;
+  process.env.HARNESS_MCP_SERVER = join(home, "missing.mjs");
+  try {
+    assert.equal((await askChannelContribution("claude")).missionMcp, false);
+  } finally {
+    process.env.HARNESS_MCP_SERVER = prior;
+  }
 });

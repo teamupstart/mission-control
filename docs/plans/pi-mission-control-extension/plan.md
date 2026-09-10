@@ -79,7 +79,7 @@ identical in the type and lead to opposite work.
 | Slot | Line | Comment says | **Measured verdict** |
 | --- | --- | --- | --- |
 | `mcp: null` | [:817](../../../src/shared/harness-capabilities.ts) | "pi has no MCP client at all" | **Permanent and correct.** `pi --help` publishes no MCP flag (P1). `mcp` describes registering with a vendor's own MCP client through its CLI; Pi has neither. This null must **stay**. The extension is a different mechanism, and conflating them is how `applyMcp` ends up shelling out to a `pi mcp add` that does not exist. |
-| `workQueue: null` | [:810](../../../src/shared/harness-capabilities.ts) | "authorship of the pickup is exactly the hook signal it lacks" | **Closable, and taken in the first cut.** Pi fires `input` (the pickup, with `source` distinguishing a human from an extension) and `agent_settled` ("Pi will not continue running automatically"). Both measured in one run (P5). Becomes `{ uninstrumentedWhy: … }`, which until the extension ships changes the refusal an operator reads rather than what a queue can do. |
+| `workQueue: null` | [:810](../../../src/shared/harness-capabilities.ts) | "authorship of the pickup is exactly the hook signal it lacks" | **Closable, and taken in the first cut.** Pi fires `input` (the pickup, with `source` distinguishing a human from an extension) and `agent_settled` ("Pi will not continue running automatically"). Both measured in one run (P5). Becomes `{ uninstrumentedWhy: … }`, which until the extension ships changes the refusal an operator reads rather than what a queue can do - and that sentence stays a statement of fact until a supported install exists to point at. |
 | `permissionModes: null` | [:782](../../../src/shared/harness-capabilities.ts) | Pi's `manual`/`auto`/`readonly` vocabulary does not map onto the app's closed Claude-shaped union | **Still correct, unchanged by this work.** Out of scope: widening a shared persisted union with Pi's words is its own decision. Named here so the null is not read as an oversight. |
 | `multiRepoDispatch: null` | [:836](../../../src/shared/harness-capabilities.ts) | "UNMEASURED … pi has no sandbox to widen" | **Now measured, and the comment was right about the reason.** Pi's `write` tool wrote to `/tmp/pi-probe/repoB/outside-cwd.txt` from a session whose cwd was `/tmp/pi-probe/repoA`, with no flag, no grant and no refusal (P9). There is no boundary to widen, so the grant declares that REASON rather than rendering flags: `{ kind: "no-boundary"; why; sdk: false }`, not an empty `launchArgs`. Taken in the first cut - see [the scope that was chosen](#the-scope-that-was-chosen-and-what-it-actually-changes) for why the shape matters. |
 | `runtimes: ["terminal"]` | [:765](../../../src/shared/harness-capabilities.ts) | "Phase 6 adds `sdk`" with the `--mode rpc` adapter | **Unchanged.** `--mode rpc` exists and the extension works in it (`ctx.mode === "rpc"`, measured in P3), but an embedded driver is a separate project. |
@@ -773,10 +773,16 @@ Stated exactly, because two of the three items are declarations rather than mech
 - **`workQueue` changes the sentence, not yet the outcome.** Non-null means "this harness can
   hold a queue, but a session that has never reported a hook takes the per-session refusal" -
   the Codex shape. Until the extension ships, *every* Pi session is such a session, so no Pi
-  session can actually hold a queue. What improves is the refusal an operator reads: a fixable
-  install ("install the Pi extension to queue work here") in place of a permanent incapacity.
-  `uninstrumentedWhy` therefore has to be written for that state and not for the state after
-  the extension lands.
+  session can actually hold a queue. What improves is the refusal an operator reads: "Pi doesn't
+  report its work lifecycle to Mission Control yet" in place of "Foreman doesn't drive Pi
+  sessions", which is a claim about the harness rather than about this build.
+
+  **The interim sentence must be a statement of fact, not an instruction.** The first cut can
+  merge on its own, and nothing installable exists until Phase 5, so a sentence telling the
+  operator to install the Pi integration would point at a button that is not in the app. The
+  transition is owned rather than assumed: Phases 1 and 4 keep it factual, Phase 5 makes it
+  actionable because it is the first merge that provides a switch, and Phase 6 names the Setup
+  row once the row exists.
 - **`multiRepoDispatch` makes the dispatch modal offer Pi for multi-repo tasks,** and the
   measurement supports that: the secondary worktree really is writable (P9). The caveat to
   carry into the phase is that Pi has `permissionModes: null`, so `--tools` / `--exclude-tools`
@@ -831,8 +837,8 @@ cut and not selected rather than being newly deferred:
   carries, and the same rules answer it. The symlink decision keeps this to creating and
   removing one link rather than editing the operator's `settings.json`.
 - **A `workQueue` that is non-null before any Pi session can hold one.** The refusal path is
-  what makes this safe, and it is the reason `uninstrumentedWhy` has to be written for the
-  pre-extension state.
+  what makes this safe, and it is the reason `uninstrumentedWhy` has to be a statement of fact
+  in the pre-install window rather than an instruction.
 
 ## What this plan does not do
 

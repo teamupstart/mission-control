@@ -22,6 +22,7 @@ healthy.
 3. `ENVIRONMENT_ROW_METADATA` so the row reaches the Setup panel with a remedy.
 4. The Setup install action that satisfies the row.
 5. Phase 3's `deps.piExtensionInstalled` seam repointed at this check, so one thing decides.
+6. `workQueue.uninstrumentedWhy` refined to name the Setup row, now that the row exists.
 
 ### Non-goals
 
@@ -154,7 +155,14 @@ timeout on the child, and only-absence-counts for the link probe.
 Wire turning the integration **on** through the existing `/api/setup/install` route and
 `SetupPanel`. Keep its copy distinct from the repair path above.
 
-### 5. Phase 3's seam
+### 5. `uninstrumentedWhy`, finally naming the Setup row
+
+The sentence has been factual since Phase 1 and actionable since Phase 5. This is the phase that
+can name the surface an operator actually looks at, so point it at the Setup row. This is the
+last link in a chain recorded in every phase's audit record: no phase points an operator at
+something its own merge does not deliver.
+
+### 6. Phase 3's seam
 
 Repoint `deps.piExtensionInstalled` at this check's reading and delete the temporary probe, so
 one thing decides whether a Pi launch may declare Mission tools. A Pi plan or scout task should
@@ -214,6 +222,10 @@ installed and current". Do not add a second one, and do not make it repair.
   add it; recorded in Phase 4's audit as well.
 - **Phase 3's seam is retired here**, which is recorded in Phase 3's audit too, so the temporary
   probe cannot survive as a second decider.
+- **Review correction (r2).** This phase gained the final `uninstrumentedWhy` refinement. The
+  sentence's ownership now runs Phase 1 (factual) to Phase 4 (more specific, still factual) to
+  Phase 5 (actionable) to here (names the Setup row), because Phase 1 originally shipped a
+  sentence naming an install that no phase before Phase 5 delivered.
 - `SETUP_FAMILY_INFO.extensions`'s description was found to be Claude-specific while this phase
   adds a Pi row to that family. Caught in this audit rather than by the panel looking wrong;
   fixed in this phase because this phase is what puts a Pi row there.

@@ -6,8 +6,9 @@ Part of [Pi parity](plan.md) - see [phased-plan.md](phased-plan.md) for the grap
 
 A dispatched Pi session reports what it spent, on its card and in the cost ledger, the way a
 Claude or Codex session already does. Pi also stops declaring two capabilities it was measured
-to have: Foreman's work queue becomes a fixable-install refusal instead of a permanent
-incapacity, and a multi-repo task may be dispatched to Pi.
+to have: Foreman's work queue stops claiming a permanent incapacity and starts stating a
+current fact (it becomes a fixable-install refusal later, once an install exists to point at -
+see the handoff), and a multi-repo task may be dispatched to Pi.
 
 ## Entry criteria and dependencies
 
@@ -207,13 +208,22 @@ multiRepoDispatch: {
 
 ```ts
 workQueue: {
+  // A STATEMENT OF FACT, not an instruction, and that is deliberate for as long as this
+  // phase can merge alone. Nothing installable exists until the extension and its
+  // reconciler land, so an operator who reads "install the Pi integrations" in the gap
+  // is being told to press a button that is not anywhere in the app - which is worse
+  // than the permanent-incapacity sentence this replaces, because at least that one was
+  // true. The remedy arrives with the install; see the handoff below for who owns the
+  // rewrite.
   uninstrumentedWhy:
-    "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Pi integrations so Pi pushes its lifecycle events to Mission Control, then queue work here.",
+    "Pi doesn't report its work lifecycle to Mission Control yet, so Foreman can't tell when a Pi session picks work up or finishes it, and anything queued here would never move.",
 },
 ```
 
-Write that sentence for the **pre-extension** state, which is every Pi session until Phase 4
-lands. It must not promise that a queue works today.
+**The sentence must not name a remedy that does not exist yet.** This phase is scoped to merge
+independently of Phases 4 to 6, so between this merging and the install shipping there is a
+window in which Pi's queue is refusable and nothing can be done about it. State the fact and
+stop. It must also not promise that a queue works today.
 
 ### 5. Update the two `launchArgs` call sites
 
@@ -296,8 +306,12 @@ Later phases may rely on:
   must not populate it from the extension** - the transcript is the source, and a second writer
   would double-count.
 - `HARNESS_CAPABILITIES.pi.workQueue` being non-null. Phase 4 flips `HARNESSES.pi.hooks` to a
-  real spec, and that is what makes the queue reachable; Phase 4 must also revisit
-  `uninstrumentedWhy`, which this phase deliberately wrote for the pre-extension state.
+  real spec, and that is what makes the queue reachable.
+- **`uninstrumentedWhy` staying a statement of fact until a supported install actually exists.**
+  Phase 4 produces the artifact but does not install it, so it stays factual there too.
+  **Phase 5 is the earliest phase that may make this sentence actionable**, because it is the
+  one that creates the install path; Phase 6 then refines it to name the Setup row. No phase
+  may point an operator at an install that its own merge does not deliver.
 - `piUsage` reading the transcript `locate` resolves. Phase 4's hand-run identity work is what
   makes `locate` answer for a hand-run session, and it needs no change here.
 
@@ -317,7 +331,12 @@ Later phases must not:
 - After Phase 4: one reconciliation, and it was moved **into** this phase rather than patched
   later. `uninstrumentedWhy` was originally drafted here as Codex's sentence ("Start Pi through
   Mission Control so its launch-scoped hooks are attached"), which would have been wrong twice
-  over - Pi's hooks are machine-scoped once installed, and no install exists yet. The sentence
-  now names the install, and Phase 4 owns updating it when the install becomes real.
+  over - Pi's hooks are machine-scoped once installed, and no install exists yet.
+- **Review correction (r2).** The replacement for that sentence then named the Pi install, which
+  has the same defect one step removed: this phase can merge alone, so an operator reading it
+  before Phase 5 is told to do something with no button or command anywhere in the app. The
+  sentence is now a statement of current fact, and ownership of the transition to an actionable
+  one is stated in the handoff above rather than left to whichever later phase noticed. The
+  same wording was corrected in `plan.md`, Phase 4 and Phase 6.
 - After Phase 4: the hand-run cost gap is recorded here as a non-goal and owned there, so no
   requirement is unowned.

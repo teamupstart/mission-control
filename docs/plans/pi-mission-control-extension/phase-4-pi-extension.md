@@ -29,7 +29,8 @@ becomes a card.
 4. **Identity:** the extension reports its session id, which is what makes a hand-run Pi
    session attributable at all.
 5. `HARNESSES.pi.hooks` set to a real `HookSpec`, and `piExtensionPath()` in `config.ts`.
-6. `HARNESS_CAPABILITIES.pi.workQueue.uninstrumentedWhy` revisited now that an install exists.
+6. `HARNESS_CAPABILITIES.pi.workQueue.uninstrumentedWhy` made more specific about what is
+   missing - still without naming a remedy, because this phase does not install anything.
 
 ### Non-goals
 
@@ -229,10 +230,13 @@ without waiting for `hooksSeen` - re-read that function and confirm the arm you 
 
 ### 5. `src/shared/harness-capabilities.ts`
 
-Revisit `workQueue.uninstrumentedWhy`, which Phase 1 wrote for the pre-extension state. With
-`scope: "machine"`, a session that has never reported a hook now means the install is missing on
-this machine - so the sentence should name the Setup install, and Phase 6 is what makes that
-sentence's remedy real.
+Revisit `workQueue.uninstrumentedWhy`, which Phase 1 wrote as a statement of current fact. With
+`scope: "machine"`, a session that has never reported a hook now means the extension is not
+loaded on this machine - so the sentence can become more specific about *what* is missing.
+
+**It must still not name a remedy.** This phase produces the artifact; Phase 5 is what installs
+it, so between this merging and that one there is still nothing an operator can press. Keep the
+sentence factual and leave the actionable rewrite to Phase 5, per Phase 1's handoff.
 
 ### 6. Phase 3's seam
 
@@ -299,6 +303,9 @@ Phase 5 must not relocate the artifact; Phase 6 must not repair it.
 - Reconciliation applied **backwards into Phase 1**: `uninstrumentedWhy` had to be written for
   the pre-extension state there and revised here, which is recorded in both files rather than
   left as a sentence that silently becomes wrong.
+- **Review correction (r2).** This phase previously said the sentence "should name the Setup
+  install". It must not: this phase ships no install, so naming one repeats Phase 1's defect one
+  step later. Phase 5 owns the actionable rewrite.
 - Reconciliation applied **backwards into Phase 2**: the double-delivery gate is stated in Phase
   2's handoff, because that is where the channel is defined.
 - **Build marker moved into this phase** from Phase 6, where it was first noticed. Phase 6 can

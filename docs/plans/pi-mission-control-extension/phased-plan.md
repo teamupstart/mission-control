@@ -105,6 +105,14 @@ One test is designed to fail on this and must be answered rather than edited aro
 null declarer. `workQueue` loses its last one here, so it moves **into** `BY_FIXTURE` and gains
 a `withCapabilityNull` fixture.
 
+**What the sentence may say, though, is bounded by the merge order** - a review correction. Phase
+1 can merge alone, and nothing installable exists until Phase 5, so an `uninstrumentedWhy` that
+tells the operator to install the Pi integration points at a button that is not in the app: worse
+than the permanent-incapacity sentence it replaces, which was at least true. The sentence is
+therefore factual in Phases 1 and 4, actionable from Phase 5 (the first merge that provides a
+switch), and names the Setup row in Phase 6. Recorded in the contract table above so no phase
+has to rediscover it.
+
 ### 5. Pi's extension bundle must be named `.js`, and published atomically.
 
 `isExtensionFile` accepts only `.ts` and `.js`
@@ -197,6 +205,7 @@ Named once here so a later phase does not redefine them:
 | Contract | Owner | Consumers must not |
 | --- | --- | --- |
 | `MultiRepoDispatchSpec` as a discriminated union | Phase 1 | Reintroduce an unconditional `launchArgs` |
+| `workQueue.uninstrumentedWhy` stays a STATEMENT OF FACT until a supported install exists | Phase 1, held by Phase 4 | Name a remedy their own merge does not deliver. Phase 5 makes it actionable; Phase 6 names the Setup row |
 | `HarnessUsageEvent.vendorCostUsd` | Phase 1 | Populate it for Claude or Codex |
 | `"pi-append-system-prompt"` appended to `STANDING_INSTRUCTIONS_MECHANISMS` | Phase 2 | Rename or reorder any existing value |
 | `MissionToolsSpec` and the dispatcher's mechanism read | Phase 3 | Branch on a concrete agent id again |

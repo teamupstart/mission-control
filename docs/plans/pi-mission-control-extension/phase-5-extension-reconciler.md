@@ -15,6 +15,10 @@ that makes "hand-run" true rather than demonstrable.
 
 ## Scope
 
+0. `HARNESS_CAPABILITIES.pi.workQueue.uninstrumentedWhy` rewritten as an **actionable** sentence.
+   This is the earliest phase that may, because it is the first one whose merge gives an
+   operator something to turn on. Phases 1 and 4 deliberately keep it a statement of fact - see
+   Phase 1's handoff.
 1. An `ExtensionsSpec` capability - `dirEnvVar`, `homeDir`, `isolatedDirName`, `linkName` - non-
    null for Pi only.
 2. A reconciler that creates and removes exactly one symlink, reusing
@@ -168,7 +172,19 @@ it now reports two kinds of link). Never create the link on install, for the rea
 gives about skills: "the daemon reconciles from the config, and creating links from here would
 enable skills nobody switched on".
 
-### 5. Tests
+### 5. `src/shared/harness-capabilities.ts` - make the refusal actionable at last
+
+`uninstrumentedWhy` has been a statement of fact since Phase 1, because until this phase there
+was nothing an operator could do about it. Once this merges there is: the persisted intent that
+turns the integration on. Rewrite it to name that, and keep it accurate about *where* - Phase 6
+adds the Setup row, so until then the name to give is whatever surface this phase actually
+exposes, not the row that does not exist yet.
+
+If this phase's only switch is a config write with no UI, say so plainly rather than inventing
+a control. The rule the whole chain follows: never point an operator at something your own merge
+does not deliver.
+
+### 6. Tests
 
 - `extensionsDirFor` honours `PI_EXTENSIONS_DIR`, then `MISSION_HOME`, then the real home - the
   same three cases `skillsDirFor` is tested for.
@@ -218,6 +234,8 @@ Plus, on a real machine, in this order:
 
 Phase 6 may rely on:
 
+- `uninstrumentedWhy` being actionable from this phase onward. Phase 6 refines it to name the
+  Setup row once that row exists.
 - `capabilitiesFor("pi").extensions` and the resolver, to find the same directory the installer
   wrote to. **Phase 6 must resolve through the capability, not by rebuilding the path**, or the
   check and the installer will disagree on a machine with `PI_EXTENSIONS_DIR` set - which is
@@ -237,4 +255,9 @@ Phase 6 must not repair the link. That is the approved report-only decision, and
   changed alone.
 - **Noted for Phase 6:** the capability-resolution requirement above was going to be an
   assumption there. Stated here as a handoff instead, because this phase owns the resolver.
+- **Review correction (r2).** This phase acquired ownership of the `uninstrumentedWhy` rewrite.
+  Phase 1 shipped that sentence naming an install, which nothing delivered until here, so an
+  operator reading it in between was told to press a button that did not exist. Phases 1 and 4
+  now keep it factual and this phase - the first whose merge provides a switch - makes it
+  actionable.
 - Reconfirmed against Phase 1: no interaction. Cost reads a transcript; this writes a link.

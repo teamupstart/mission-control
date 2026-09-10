@@ -43,6 +43,34 @@ function runElectronFixture(args: string[]): string {
   }
 }
 
+/**
+ * Here rather than in `e2e/` because a headless browser reserves zero for every scroller
+ * however it is styled, so only a real window can measure this.
+ */
+test("the pipeline strip reserves a visible scrollbar the platform would not have drawn", () => {
+  const output = runElectronFixture([
+    fileURLToPath(new URL("fixtures/pipeline-strip-scrollbar-browser.cjs", import.meta.url)),
+    fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
+  ]);
+  const { strip, plain } = JSON.parse(output.trim()) as {
+    strip: { reserved: number; overflow: number };
+    plain: { reserved: number; overflow: number };
+  };
+
+  // Both scrollers hold more than they can show, so a scrollbar is due in each.
+  assert.ok(strip.overflow > 0, "the measured strip must overflow for a scrollbar to be due");
+  assert.ok(plain.overflow > 0, "the control strip must overflow too");
+
+  assert.equal(strip.reserved, 10, "`.wf-pipeline-strip` must reserve its scrollbar track");
+  // Without this, the case above also passes on a machine set to always-visible scrollbars,
+  // where every scroller reserves space and the product's rule proves nothing.
+  assert.equal(
+    plain.reserved,
+    0,
+    "the same scroller without the rule must keep the platform's overlay scrollbar",
+  );
+});
+
 test("published workflow nodes stay within the visible React Flow graph", () => {
   const output = runElectronFixture([
     fileURLToPath(new URL("fixtures/workflow-graph-browser.cjs", import.meta.url)),

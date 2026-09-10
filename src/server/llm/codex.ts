@@ -424,6 +424,7 @@ export const codexRunner: LlmRunner = {
   price(usage) {
     const priced = estimateStandardApiUsage({
       identity: "",
+      vendorCostUsd: null,
       ts: 0,
       modelId: usage.modelId || null,
       querySource: "main",

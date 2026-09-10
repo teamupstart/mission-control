@@ -1416,9 +1416,10 @@ export function codexSdkSpec(deps: CodexSdkDeps = defaultCodexSdkDeps): SdkSpec 
       // `-c <key=value>` override flag. Reusing that spelling is what keeps a Codex session
       // on the embedded runtime from being the one dispatch that silently cannot write to
       // the secondary worktrees its intent names.
+      const multiRepo = capabilitiesFor("codex").multiRepoDispatch;
       const extraDirArgs =
-        opts.extraDirs.length > 0
-          ? (capabilitiesFor("codex").multiRepoDispatch?.launchArgs(opts.extraDirs) ?? [])
+        opts.extraDirs.length > 0 && multiRepo?.kind === "flags"
+          ? multiRepo.launchArgs(opts.extraDirs)
           : [];
       const transport = await deps.connect([...args, ...extraDirArgs], opts.cwd, opts.stateHome);
       const config: LaunchConfig = {

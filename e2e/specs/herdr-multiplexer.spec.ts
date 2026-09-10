@@ -137,8 +137,40 @@ test.describe("compatible stable Herdr", () => {
       })
       .toBe(true);
     const delivery = herdrRequests(daemon).find((request) => request.method === "pane.send_input")!;
-    expect(delivery?.params?.keys).toEqual(["enter"]);
+    // The paste carries NO keys. Herdr's `pane.send_input` can take the text and its Enter in
+    // one call, and that is the bug this whole path was rewritten for: at the size a real
+    // dispatch produces, the Enter lands inside the bracketed paste the shell is still
+    // consuming and becomes a literal newline, so the command sits at the prompt and nothing
+    // starts. The dispatcher then reported "agent session never appeared" thirty seconds
+    // later. Only this layer can see the two writes arrive as two writes.
+    expect(delivery?.params?.keys).toEqual([]);
     expect(String(delivery?.params?.text)).toContain("/bin/");
+    // And it is SHORT - the environment and the agent argv ride in the wrapper script rather
+    // than in what gets typed. A real dispatch used to deliver ~3,546 bytes here.
+    expect(String(delivery?.params?.text).length).toBeLessThan(300);
+
+    // The Enter is its own write, and it comes after the paste.
+    const methods = herdrRequests(daemon).map((request) => request.method);
+    await expect
+      .poll(() => herdrRequests(daemon).some((request) => request.method === "pane.send_keys"), {
+        message: "the Enter should be delivered as a separate key write",
+        timeout: 15_000,
+      })
+      .toBe(true);
+    const submit = herdrRequests(daemon).find((request) => request.method === "pane.send_keys")!;
+    expect(submit?.params?.keys).toEqual(["enter"]);
+    expect(methods.indexOf("pane.send_input")).toBeLessThan(
+      herdrRequests(daemon).map((request) => request.method).indexOf("pane.send_keys"),
+    );
+
+    // And the launch is not reported as one until the pane is observed running something
+    // other than its login shell. Before this, `ok` meant "the bytes were accepted".
+    await expect
+      .poll(() => herdrRequests(daemon).some((request) => request.method === "pane.process_info"), {
+        message: "the launch should verify the agent actually started",
+        timeout: 15_000,
+      })
+      .toBe(true);
 
     let terminalSession: FleetSession | null = null;
     await expect
@@ -212,6 +244,60 @@ test.describe("incompatible stable Herdr", () => {
     );
     expect(herdrRequests(daemon)).toEqual([]);
     await shoot(dashboard, "herdr-incompatible-refusal");
+  });
+});
+
+/**
+ * The launch Herdr accepts and never runs, which is the defect this whole path was rewritten
+ * for and the only arm of it a person reads.
+ *
+ * `pane.send_input` answering `ok` means the bytes were accepted, not that the command ran -
+ * and for every dispatch before this, it had not: the Enter was delivered inside the bracketed
+ * paste the shell was still consuming, so the command sat at the prompt. The launch was
+ * reported as a success, and the failure surfaced thirty seconds later as the dispatcher's own
+ * timeout, blaming the agent for exiting. Two things have to be true now, and only this layer
+ * can see both: the operator is told what actually happened, in a sentence they can act on,
+ * and the workspace that was opened for the launch does not survive it.
+ */
+test.describe("a Herdr launch the shell never runs", () => {
+  test.use({
+    daemonEnv: { MC_E2E_HERDR: "1", MC_E2E_HERDR_MODE: "stuck", MISSION_POLL_MS: "0" },
+  });
+
+  test("says the shell never ran it, and takes its workspace back", async ({ dashboard, daemon }) => {
+    await dispatch(dashboard, daemon);
+    const card = await openDispatchedSession(dashboard);
+    await card.locator(".conv-launch").getByRole("button", { name: "Terminal", exact: true }).click();
+    const menu = card.getByRole("menu", { name: "Open a shell in the worktree with" });
+    await menu.getByRole("menuitem").filter({ hasText: "Herdr" }).click();
+
+    // Named for what happened, at the moment it happened - not "Opened in Herdr" now and a
+    // timeout blaming the agent half a minute later.
+    await expect(card.locator(".launch-flash.is-error")).toContainText("never ran it");
+
+    // The command really was delivered and submitted; what did not happen is the shell
+    // running it, which is what the pane's own process report says.
+    const methods = herdrRequests(daemon).map((request) => request.method);
+    expect(methods).toContain("pane.send_input");
+    expect(methods).toContain("pane.send_keys");
+    expect(methods).toContain("pane.process_info");
+
+    // And every workspace opened for the launch is closed again. Stated as the invariant
+    // rather than as a count, because a refused launch is retried under a unique name and
+    // each attempt has its own workspace to take back. Left open, a failed dispatch leaks one
+    // per attempt - which is how this machine came to be holding 42 of them.
+    await expect
+      .poll(() => {
+        const requests = herdrRequests(daemon);
+        const opened = requests.filter((request) => request.method === "workspace.create").length;
+        const closed = requests.filter((request) => request.method === "workspace.close").length;
+        return opened > 0 && closed === opened;
+      }, {
+        message: "every workspace a failed launch opened should be taken back",
+        timeout: 15_000,
+      })
+      .toBe(true);
+    await shoot(dashboard, "herdr-launch-never-ran");
   });
 });
 

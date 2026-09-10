@@ -83,6 +83,18 @@ text, focus an agent inside Herdr, rename a workspace, close it, detach a client
 normal full client. Passive discovery and actions on an existing pane never start a stopped
 server. Workspace creation is the only path that may start the default server.
 
+Herdr's socket API has no command parameter, so a dispatch is delivered by typing it into the new
+workspace's login shell. Mission Control sends the command and its Enter as separate writes, and
+then confirms the pane is running something other than that shell before it reports the launch as
+successful. A launch that is delivered but never executed closes its workspace and reports
+**Herdr accepted the launch command but the shell never ran it**, rather than succeeding and
+surfacing thirty seconds later as a dispatch timeout. When Herdr cannot say what the pane is
+running, the launch fails as uncertain and the workspace is left alone, because closing it could
+close a live agent.
+
+A pane whose process details cannot be read is listed with an unknown process id rather than
+removing every other Herdr pane from the dashboard for that refresh.
+
 Stable Herdr does not expose attached-client tty identities. Mission Control can still select the
 correct agent inside Herdr, but if no already-correlated terminal host can be raised, Focus opens a
 normal full Herdr client through the existing terminal fallback. Repeated Focus may therefore open

@@ -33,6 +33,7 @@ import { codexUsage } from "./codex/usage.ts";
 import { codexSdk, codexResumeModeArgs } from "./codex/sdk.ts";
 import { discoverCodexModels } from "./codex/model-catalog.ts";
 import { piTranscript } from "./pi/transcript.ts";
+import { piUsage } from "./pi/usage.ts";
 import { piDetect } from "./pi/detect.ts";
 import { piBin } from "./pi/bin.ts";
 import { piControl } from "./pi/control.ts";
@@ -195,7 +196,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
   pi: {
     ...HARNESS_CAPABILITIES.pi,
     transcript: piTranscript,
-    usage: null,
+    usage: piUsage,
     hooks: null,
     detect: piDetect,
     bin: piBin,
@@ -208,7 +209,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     tui: null,
     control: piControl,
     // Phase 6 fills this with pi's `--mode rpc` adapter, which is also where pi first gains
-    // structured needs-you evidence: its `hooks: null` and `workQueue: null` are both
+    // structured needs-you evidence: its `hooks: null` and absent work lifecycle are both
     // consequences of having no push channel, and the driver IS one.
     sdk: null,
     // `pi --session <id>`. NOT `--resume`, which opens pi's interactive picker and takes no

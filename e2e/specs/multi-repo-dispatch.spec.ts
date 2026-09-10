@@ -1,8 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import type { Page } from "@playwright/test";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { recordsIn } from "../fixtures/records.ts";
 
 // One dispatch, several repositories.
@@ -226,24 +229,80 @@ test("an attached repo can be read and detached before dispatching", async ({
   await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
 });
 
-test("a harness that cannot hold write access outside its cwd is not offered the control", async ({
-  dashboard,
-  daemon,
-}) => {
-  // pi declares no `multiRepoDispatch` - the capability is unmeasured, and null is the only
-  // honest answer for it. The control disappearing is what stops an operator composing a
-  // task that would launch an agent unable to write to half of it.
+test("Pi offers secondary repositories and submits the complete task", async ({ dashboard, daemon }) => {
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await dashboard.keyboard.press("Escape");
+  await dialog.getByLabel("Agent").selectOption("pi");
+  await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Add another repo" }).click();
+  await dialog.getByPlaceholder("repo to attach…").fill(daemon.secondRepo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Attach repo" }).click();
+  await dialog.getByPlaceholder("What should this agent do?").fill("Pi across both repositories");
+  await dialog.getByLabel("Kind").selectOption("ship");
+  await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
+  await expect(dialog.getByRole("button", { name: `Detach repo: ${daemon.secondRepo}` })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Dispatch now" })).toBeEnabled();
+  await expectContentClearsBorder(dialog);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const dir = artifactsDir("pi-cost-capabilities");
+    mkdirSync(dir, { recursive: true });
+    await dialog.screenshot({ path: join(dir, "pi-multi-repo.png") });
+  }
+  await dialog.getByRole("button", { name: "Dispatch now" }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const task = await provisionedTask(daemon, "Pi across both repositories");
+    return task?.extraRepos.map((repo) => repo.repoRoot);
+  }).toEqual([daemon.secondRepo]);
+});
 
+test("a fixture harness with no multi-repo capability still hides the control", async ({ dashboard }) => {
+  // All shipped harnesses now support multi-repo dispatch. Replace only Pi's declaration
+  // in this browser's served bundle, retaining real React controls and the null-path check
+  // without a production test switch or changing the daemon's capabilities.
+  let replaced = false;
+  await dashboard.route("**/assets/*.js", async (route) => {
+    const response = await route.fetch();
+    const body = await response.text();
+    // Read syntax rather than minifier spelling: property order, string quoting and
+    // boolean compression have no bearing on the capability we are replacing.
+    const matches: ts.ObjectLiteralExpression[] = [];
+    const source = ts.createSourceFile("bundle.js", body, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const nameOf = (name: ts.PropertyName): string | null =>
+      ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+    const visit = (node: ts.Node): void => {
+      if (ts.isPropertyAssignment(node) && nameOf(node.name) === "multiRepoDispatch" &&
+          ts.isObjectLiteralExpression(node.initializer)) {
+        const noBoundary = node.initializer.properties.some((property) =>
+          ts.isPropertyAssignment(property) && nameOf(property.name) === "kind" &&
+          ts.isStringLiteral(property.initializer) && property.initializer.text === "no-boundary");
+        if (noBoundary) matches.push(node.initializer);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    if (matches.length) {
+      expect(matches).toHaveLength(1);
+      replaced = true;
+      const declaration = matches[0]!;
+      await route.fulfill({
+        response,
+        body: body.slice(0, declaration.getStart(source)) + "null" + body.slice(declaration.end),
+      });
+    } else {
+      await route.fulfill({ response, body });
+    }
+  });
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  expect(replaced, "the fixture actually removed Pi's capability").toBe(true);
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
   await dialog.getByLabel("Agent").selectOption("pi");
   await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeHidden();
-
-  // And switching back brings it straight back, so this is the capability talking rather
-  // than a control that was torn down for good.
   await dialog.getByLabel("Agent").selectOption("claude");
   await expect(dialog.getByRole("button", { name: "Add another repo" })).toBeVisible();
 });

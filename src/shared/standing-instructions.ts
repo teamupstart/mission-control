@@ -29,7 +29,7 @@ export const STANDING_INSTRUCTIONS_MAX_KEY_LENGTH = 4_096;
  * The values name a harness · runtime channel rather than a harness, because that is what
  * the fact is: the same text is a system-prompt append on `claude · terminal`, a
  * `systemPrompt.append` on `claude · sdk`, developer instructions on `codex · sdk`, and
- * ordinary turn-one prose on the two pairs with no channel of their own.
+ * a system-prompt append on `pi · terminal`, and turn-one prose on `codex · terminal`.
  */
 export const STANDING_INSTRUCTIONS_MECHANISMS = [
   /** Nothing applies to this checkout, so nothing is carried. */
@@ -42,6 +42,8 @@ export const STANDING_INSTRUCTIONS_MECHANISMS = [
   "claude-sdk-system-prompt-append",
   /** Codex app-server `thread/start` `developerInstructions`. */
   "codex-developer-instructions",
+  /** `pi --append-system-prompt <value>`, repeatable once per contributor (Pi 0.85.1). */
+  "pi-append-system-prompt",
 ] as const;
 export type StandingInstructionsMechanism = (typeof STANDING_INSTRUCTIONS_MECHANISMS)[number];
 

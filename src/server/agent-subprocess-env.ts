@@ -22,6 +22,7 @@ import {
 } from "../shared/harness-runtime.mjs";
 import { executableChildEnv } from "./executables/locator.ts";
 import { FIXED_OS_EXECUTABLES } from "./executables/catalog.ts";
+import { shellCommand } from "./terminal/shell.ts";
 
 /** Every spelling that can redirect normal Mission Control state resolution. */
 export const STATE_HOME_ENV_NAMES = ["MISSION_HOME", "FLEET_HOME", "HARNESS_HOME"] as const;
@@ -167,9 +168,53 @@ export function agentSubprocessEnv(
 }
 
 /**
+ * The whole launch, as a script: the isolation the argv prefix used to carry, the agent
+ * itself, and the cleanup that releases the disposable state home when the agent exits.
+ *
+ * It is a script rather than an argv prefix because of what a backend has to do with the
+ * argv. tmux and cmux hand it to the multiplexer to exec, but Herdr's socket API has no
+ * command parameter at all - a launch is TYPED into the workspace's login shell as a
+ * bracketed paste. A real dispatch's prefix-plus-argv encodes to about 3.5 KB, and at that
+ * size the paste and its Enter race: measured against the live 0.9.0 server, a 3,009-byte
+ * command was executed 1 time in 6. Sweeping the size showed no clean threshold - 207, 607,
+ * 907, 1009 and 1509 bytes ran, 1109 and 3009 did not - which is the signature of a race
+ * rather than a limit, so the size is a probability and not a guarantee. Folding the
+ * environment and the agent argv in here leaves one short line to deliver, and the herdr
+ * adapter separates the Enter from the paste so the remaining probability is not relied on.
+ *
+ * Three details are load-bearing:
+ *
+ *   - The `unset` comes first and names every spelling of the state home, so the login
+ *     shell's own `MISSION_HOME` cannot survive into the agent. It replaces the
+ *     `env -u NAME` prefix rather than sitting beside it.
+ *   - The exports carry `PATH`. Herdr's `workspace.create` accepts an `env` map, and it is
+ *     NOT a substitute: measured, the map reaches the shell, but the login shell's rc files
+ *     then rewrite `PATH` back to the operator's interactive one, which is exactly the
+ *     isolation this exists to provide.
+ *   - The agent is the script's last statement and is NOT `exec`ed. `exec` replaces the
+ *     shell process, so the `EXIT` trap never fires and the disposable state home is never
+ *     removed. Running it as an ordinary command also leaves the agent's exit status as the
+ *     script's, which is what a backend reports.
+ */
+function launchAndCleanupScript(env: Record<string, string>, argv: readonly string[]): string {
+  return [
+    "#!/bin/sh",
+    `unset ${STATE_HOME_ENV_NAMES.join(" ")}`,
+    ...Object.entries(env).map(([name, value]) => `export ${name}=${shellCommand([value])}`),
+    `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT`,
+    shellCommand(argv),
+    "",
+  ].join("\n");
+}
+
+/**
  * Wrap argv for terminal backends whose launch APIs do not accept an environment object.
  * The override runs inside the pane or tab, after a long-lived terminal server contributes
  * its own inherited environment.
+ *
+ * What comes back names the interpreter and the wrapper and nothing else, so every backend
+ * receives a short command. See `launchAndCleanupScript` for why the length is a contract
+ * and not a tidiness preference.
  */
 export function isolatedAgentArgv(
   argv: readonly string[],
@@ -179,21 +224,10 @@ export function isolatedAgentArgv(
   const stateHome = env.MISSION_HOME!;
   const wrapper = join(stateHome, TERMINAL_CLEANUP_WRAPPER);
   try {
-    writeFileSync(
-      wrapper,
-      '#!/bin/sh\ntrap \'/bin/rm -rf -- "$MISSION_HOME"\' EXIT\n"$@"\n',
-      { mode: 0o700 },
-    );
+    writeFileSync(wrapper, launchAndCleanupScript(env, argv), { mode: 0o700 });
   } catch (error) {
     cleanupDisposableAgentStateHome(stateHome);
     throw error;
   }
-  return [
-    FIXED_OS_EXECUTABLES.env,
-    ...STATE_HOME_ENV_NAMES.flatMap((name) => ["-u", name]),
-    ...Object.entries(env).map(([name, value]) => `${name}=${value}`),
-    FIXED_OS_EXECUTABLES.sh,
-    wrapper,
-    ...argv,
-  ];
+  return [FIXED_OS_EXECUTABLES.sh, wrapper];
 }

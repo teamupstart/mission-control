@@ -33,6 +33,13 @@ const MAX_PARALLEL_SOCKETS = 8;
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_BATCH_BYTES = 8 * 1024 * 1024;
 
+/**
+ * This client's own code for an answer about the wrong pane, distinct from every code the
+ * Herdr server sends. Per-pane process failures are tolerated by `snapshotWithProcesses`;
+ * a mismatched identity is what it must still refuse, so the two have to be tellable apart.
+ */
+const PANE_IDENTITY_MISMATCH = "mission_pane_identity_mismatch";
+
 const Id = z.string().min(1);
 const NullableText = z.string().nullable().optional();
 
@@ -464,14 +471,50 @@ export type HerdrProbe =
   | { state: "stopped"; socket: string }
   | { state: "failed"; error: string; retryable: boolean };
 
-export interface HerdrClient {
+/**
+ * The pane requests a launch polls, against one resolved server.
+ *
+ * `HerdrClient` satisfies this shape on its own, which is what makes the fallback trivial: a
+ * caller that could not resolve a server keeps using the client and pays the extra probes
+ * rather than failing.
+ */
+export interface HerdrPaneRequests {
+  read(paneId: string): Promise<HerdrResult<string>>;
+  processInfo(paneId: string): Promise<HerdrResult<HerdrProcessInfo | null>>;
+  sendKeys(paneId: string, keys: readonly string[]): Promise<TerminalResult>;
+}
+
+export interface HerdrClient extends HerdrPaneRequests {
   probe(): Promise<HerdrProbe>;
   ensureReady(): Promise<HerdrResult<string>>;
   snapshotWithProcesses(): Promise<HerdrResult<{
     snapshot: HerdrSnapshot;
     processes: Map<string, HerdrProcessInfo | null>;
   }>>;
+  /**
+   * What one pane is running right now, or `null` for a pane the server does not have.
+   *
+   * The enumeration above asks the same question of every pane, which is the wrong shape for
+   * the two callers that care about one: a launch confirming its agent actually started, and
+   * anything else that follows a single pane. `null` is "this pane is gone", never "this pane
+   * runs nothing".
+   */
+  processInfo(paneId: string): Promise<HerdrResult<HerdrProcessInfo | null>>;
   read(paneId: string): Promise<HerdrResult<string>>;
+  /**
+   * One already-resolved server, for a bounded sequence of pane requests.
+   *
+   * Every ordinary call above resolves the socket first, and resolving means running
+   * `herdr status server --json` - a CLI subprocess - before the request. That is right for
+   * a one-off write, and wrong for a poll: a launch watching a pane settle and then watching
+   * it start would pay ~90 of them for one dispatch. `snapshotWithProcesses` already draws
+   * this line, resolving once and then asking about 93 panes; this is the same line, drawn
+   * where the polls are.
+   *
+   * Deliberately not a cache. The handle is resolved when it is asked for and lives only as
+   * long as the caller holds it, so nothing else in this file starts trusting a stale socket.
+   */
+  resolvedServer(): Promise<HerdrResult<HerdrPaneRequests>>;
   sendText(paneId: string, text: string): Promise<TerminalResult>;
   sendKeys(paneId: string, keys: readonly string[]): Promise<TerminalResult>;
   sendInput(paneId: string, text: string, keys?: readonly string[]): Promise<TerminalResult>;
@@ -657,6 +700,63 @@ export function createHerdrClient(
   const mutate = async <T>(request: Request<T>, autoStart = false): Promise<TerminalResult> =>
     asTerminal(await one(request, deps.actionTimeoutMs, autoStart));
 
+  const processInfoRequest = (paneId: string): Request<z.infer<typeof ProcessInfoSchema>> => ({
+    method: "pane.process_info",
+    params: { pane_id: paneId },
+    schema: ProcessInfoSchema,
+    mutation: false,
+    operation: `pane process info for ${paneId}`,
+  });
+
+  const paneReadRequest = (paneId: string): Request<z.infer<typeof PaneReadSchema>> => ({
+    method: "pane.read",
+    params: { pane_id: paneId, source: "visible", format: "text", strip_ansi: true },
+    schema: PaneReadSchema,
+    mutation: false,
+    operation: `pane read for ${paneId}`,
+  });
+
+  const sendKeysRequest = (paneId: string, keys: readonly string[]): Request<z.infer<typeof OkSchema>> => ({
+    method: "pane.send_keys",
+    params: { pane_id: paneId, keys },
+    schema: OkSchema,
+    mutation: true,
+    operation: `key write to ${paneId}`,
+  });
+
+  const readPaneText = (
+    paneId: string,
+    result: HerdrResult<z.infer<typeof PaneReadSchema>>,
+  ): HerdrResult<string> => {
+    if (!result.ok) return result;
+    if (result.value.read.pane_id !== paneId) return failure("Herdr pane read returned a mismatched pane id");
+    return { ok: true, value: result.value.read.text, outcomeUnknown: false };
+  };
+
+  /**
+   * One `pane.process_info` answer, read the same way wherever it was asked from.
+   *
+   * A pane that has closed since it was named is a null process rather than a failure - the
+   * pane list is a snapshot of a live server and panes leave it between the two requests. A
+   * pane that answers about a DIFFERENT pane is a failure with its own code, because the
+   * enumeration below degrades per pane and must still refuse an answer whose identity it
+   * cannot trust.
+   */
+  const readProcessInfo = (
+    paneId: string,
+    result: HerdrResult<z.infer<typeof ProcessInfoSchema>>,
+  ): HerdrResult<HerdrProcessInfo | null> => {
+    if (!result.ok) {
+      return result.code === "pane_not_found"
+        ? { ok: true, value: null, outcomeUnknown: false }
+        : result;
+    }
+    if (result.value.process_info.pane_id !== paneId) {
+      return failure("Herdr pane process identities did not match the snapshot", false, PANE_IDENTITY_MISMATCH);
+    }
+    return { ok: true, value: result.value.process_info, outcomeUnknown: false };
+  };
+
   return {
     probe,
     ensureReady,
@@ -683,7 +783,7 @@ export function createHerdrClient(
       if (panes.length + 1 > MAX_REQUESTS) {
         return failure("Herdr session snapshot exceeded the bounded pane request limit");
       }
-      const results: HerdrResult<z.infer<typeof ProcessInfoSchema>>[] = Array.from({ length: panes.length });
+      const results: HerdrResult<HerdrProcessInfo | null>[] = Array.from({ length: panes.length });
       let next = 0;
       const workers = Array.from(
         { length: Math.min(MAX_PARALLEL_SOCKETS, panes.length) },
@@ -691,14 +791,8 @@ export function createHerdrClient(
           while (next < panes.length) {
             const index = next;
             next += 1;
-            const pane = panes[index]!;
-            results[index] = await oneAt(status.value, {
-              method: "pane.process_info",
-              params: { pane_id: pane.pane_id },
-              schema: ProcessInfoSchema,
-              mutation: false,
-              operation: `pane process info for ${pane.pane_id}`,
-            });
+            const paneId = panes[index]!.pane_id;
+            results[index] = readProcessInfo(paneId, await oneAt(status.value, processInfoRequest(paneId)));
           }
         },
       );
@@ -707,17 +801,18 @@ export function createHerdrClient(
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index]!;
         const expected = panes[index]!.pane_id;
-        if (!result.ok) {
-          if (result.code === "pane_not_found") {
-            processes.set(expected, null);
-            continue;
-          }
-          return result;
-        }
-        if (result.value.process_info.pane_id !== expected || processes.has(expected)) {
+        if (processes.has(expected)) {
           return failure("Herdr pane process identities did not match the snapshot");
         }
-        processes.set(expected, result.value.process_info);
+        // One pane's process lookup failing is that PANE's fact, not the snapshot's. It used
+        // to end the whole call, and `herdrMultiplexer.list()` turns any failure into `[]` -
+        // so a single slow or refused pane made every Herdr card on the dashboard disappear
+        // for that tick, on a machine where the other panes had answered perfectly well.
+        // What genuinely invalidates the snapshot still fails the whole call above: a
+        // protocol below the floor, a failed `session.snapshot`, a duplicate pane id, and an
+        // answer about the wrong pane.
+        if (!result.ok && result.code === PANE_IDENTITY_MISMATCH) return result;
+        processes.set(expected, result.ok ? result.value : null);
       }
       return {
         ok: true,
@@ -725,26 +820,29 @@ export function createHerdrClient(
         outcomeUnknown: false,
       };
     },
-    read: async (paneId) => {
-      const result = await one({
-        method: "pane.read",
-        params: { pane_id: paneId, source: "visible", format: "text", strip_ansi: true },
-        schema: PaneReadSchema,
-        mutation: false,
-        operation: `pane read for ${paneId}`,
-      });
-      if (!result.ok) return result;
-      if (result.value.read.pane_id !== paneId) return failure("Herdr pane read returned a mismatched pane id");
-      return { ok: true, value: result.value.read.text, outcomeUnknown: false };
+    processInfo: async (paneId) => readProcessInfo(paneId, await one(processInfoRequest(paneId))),
+    resolvedServer: async () => {
+      const status = await socketFor(false);
+      if (!status.ok) return status;
+      const socketPath = status.value;
+      return {
+        ok: true,
+        outcomeUnknown: false,
+        value: {
+          read: async (paneId) => readPaneText(paneId, await oneAt(socketPath, paneReadRequest(paneId))),
+          processInfo: async (paneId) =>
+            readProcessInfo(paneId, await oneAt(socketPath, processInfoRequest(paneId))),
+          sendKeys: async (paneId, keys) =>
+            asTerminal(await oneAt(socketPath, sendKeysRequest(paneId, keys), deps.actionTimeoutMs)),
+        },
+      };
     },
+    read: async (paneId) => readPaneText(paneId, await one(paneReadRequest(paneId))),
     sendText: (paneId, text) => mutate({
       method: "pane.send_text", params: { pane_id: paneId, text }, schema: OkSchema,
       mutation: true, operation: `text write to ${paneId}`,
     }),
-    sendKeys: (paneId, keys) => mutate({
-      method: "pane.send_keys", params: { pane_id: paneId, keys }, schema: OkSchema,
-      mutation: true, operation: `key write to ${paneId}`,
-    }),
+    sendKeys: (paneId, keys) => mutate(sendKeysRequest(paneId, keys)),
     sendInput: (paneId, text, keys = []) => mutate({
       method: "pane.send_input", params: { pane_id: paneId, text, keys }, schema: OkSchema,
       mutation: true, operation: `bracket-aware paste to ${paneId}`,

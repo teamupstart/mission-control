@@ -31,8 +31,7 @@ app.whenReady().then(async () => {
       webPreferences: { offscreen: true },
     });
     let frame = null;
-    let painted = 0;
-    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; painted += 1; });
+    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; });
 
     const card = '<section class="wf-pipeline-stage" style="flex:none;width:200px">'
       + '<header class="wf-pipeline-stage-head"><span class="wf-pipeline-stage-name">S</span>'
@@ -41,16 +40,15 @@ app.whenReady().then(async () => {
       html, body { margin: 0; }
       .probe { width: 600px; }
       .swatch { width: 120px; height: 20px; }
+      #paint-marker { position: absolute; top: 0; left: 0; width: 1px; height: 1px; background: black; }
       </style>
       <div class="wf-pipeline-strip probe" id="strip">${card.repeat(6)}</div>
       <div class="swatch" id="swatch-rest"></div>
-      <div class="swatch" id="swatch-hover"></div>
-      <div class="swatch" id="swatch-control"></div>`;
+      <div class="swatch" id="swatch-hover"></div><div id="paint-marker"></div>`;
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
     // Resolve each rule's own declared value through the engine, and paint the two swatches
     // with it so a captured frame can be compared against them.
-    const beforeSwatches = painted;
     const resolved = await window.webContents.executeJavaScript(`(() => {
       const declared = (selector, property) => {
         for (const sheet of document.styleSheets) {
@@ -70,6 +68,9 @@ app.whenReady().then(async () => {
         if (value) node.style.background = value;
         return getComputedStyle(node).backgroundColor;
       };
+      // This opaque marker changes in the same script as the swatches. Its pixel is a
+      // receipt for their paint, unlike a paint-event counter that can include queued frames.
+      document.getElementById('paint-marker').style.background = 'rgb(255, 0, 255)';
       const restDeclared = declared(thumb, 'background');
       const hoverDeclared = declared(thumb + ':hover', 'background');
       return {
@@ -97,7 +98,6 @@ app.whenReady().then(async () => {
         overflow: strip.scrollWidth - strip.clientWidth,
         rest: centre('swatch-rest'),
         hover: centre('swatch-hover'),
-        control: centre('swatch-control'),
       };
     })()`);
 
@@ -110,10 +110,11 @@ app.whenReady().then(async () => {
       const size = frame.getSize();
       const bitmap = frame.toBitmap();
       if (!size.width || !size.height || bitmap.length < size.width * size.height * 4) return null;
+      if (bitmap[0] !== 255 || bitmap[1] !== 0 || bitmap[2] !== 255) return null;
       return { size, bitmap };
     };
     for (let attempt = 0; attempt < 25; attempt += 1) {
-      if (painted > beforeSwatches && usable()) break;
+      if (usable()) break;
       await wait(100);
     }
 
@@ -147,21 +148,6 @@ app.whenReady().then(async () => {
       });
       if (best.from < 0) return null;
       const swatchRest = at(geometry.rest.x, geometry.rest.y);
-      // Has the styling above landed in THIS frame? Asked against a control swatch that is
-      // never given a background, so it is the same question about the same backdrop: an
-      // unpainted swatch reads exactly as the control beside it.
-      //
-      // It used to be asked against the TRACK, which sits on the strip rather than on the
-      // page. Those two backdrops are not the same colour - measured on macOS, page (20, 20,
-      // 32) against track (16, 26, 38) - so an unpainted swatch cleared the threshold on the
-      // difference between the surfaces alone and was taken for a painted one. The caller
-      // then compared a correctly painted thumb against a blank swatch and failed, which is
-      // exactly the `thumb rgb(70, 72, 84)` against `declared rgb(20, 20, 32)` seen on CI:
-      // the thumb was right and the reference was the bare page.
-      const swatchControl = at(geometry.control.x, geometry.control.y);
-      const near = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1])
-        + Math.abs(a[2] - b[2]) < 12;
-      if (near(swatchRest, swatchControl)) return null;
       return {
         track,
         thumbWidth: best.to - best.from + 1,
@@ -173,11 +159,7 @@ app.whenReady().then(async () => {
       };
     };
 
-    let rest = read();
-    for (let attempt = 0; attempt < 12 && !rest; attempt += 1) {
-      await wait(120);
-      rest = read();
-    }
+    const rest = read();
     let hovered = null;
     if (rest) {
       window.webContents.sendInputEvent({

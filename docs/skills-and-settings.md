@@ -287,8 +287,8 @@ subdirectory is a legitimate key.
 
 Each card carries a **reach** block, and it is not decoration. It states, per harness *and*
 runtime, which sessions get the text and by which mechanism - a system-prompt append on
-`claude · terminal` and `claude · sdk`, developer instructions on `codex · sdk`, and ordinary
-turn-one prose on the two pairs with no channel of their own. It also states the three
+`claude · terminal`, `claude · sdk`, and `pi · terminal`, developer instructions on
+`codex · sdk`, and ordinary turn-one prose on `codex · terminal`. It also states the three
 answers an operator would otherwise have to guess at: sessions started outside Mission
 Control are not reachable, Mission Control's own Foreman/Inspector/Persona review prompts are
 out of scope, and sessions **already running keep what they launched with**. That last one is

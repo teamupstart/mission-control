@@ -216,7 +216,11 @@ import { planDispatchBlock } from "./plans/skills.ts";
 import { verifyScoutSubmissionCredential } from "./scouts/submission-auth.ts";
 import { SCOUT_SUBMISSION_CREDENTIAL_HEADER } from "@shared/harness-runtime.mjs";
 import { ARCHIVE_SEARCH_LIMITS } from "@shared/archives.ts";
-import { recordInjection } from "./injections.ts";
+import {
+  confirmReservedInjection,
+  releaseInjection,
+  reserveInjection,
+} from "./injections.ts";
 import { runRetro } from "./retro.ts";
 import { harnessFor, resumeArgvFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
@@ -4774,6 +4778,16 @@ export function buildApp(
     // states are unreachable for an embedded session - see `deliverToDriver` - so a refusal
     // here is positive evidence that nothing landed, which is the only state a caller may
     // safely retry from.
+    // Claimed BEFORE the delivery, for the reason `reserveInjection` states: the agent's
+    // prompt hook can report this text back while the send is still unresolved, and an echo
+    // that arrives with no authorship on file is captured as the human's Goal. This is the
+    // path Foreman's recovery packets and the workflow's repair packets travel, so the window
+    // is the one that put a completion-review packet under "Original user goal" in the first
+    // place. Claiming afterwards left it open on exactly the deliveries that matter most.
+    // Narrowed once into a value rather than re-tested, so the reservation and its release
+    // cannot drift apart on which origins they consider ours.
+    const daemonOrigin = parsed.data.origin === "human" ? null : parsed.data.origin;
+    if (daemonOrigin) reserveInjection(session.id, parsed.data.text, daemonOrigin);
     const r = await injectPromptForRuntime(
       sdkSessions,
       session,
@@ -4782,9 +4796,18 @@ export function buildApp(
       () => registry.promptResourceBlockerForSession(session.id),
       parsed.data.origin,
     );
-    // Only once it landed: a refused or failed delivery is not a turn anybody will read,
-    // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
-    if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
+    if (daemonOrigin) {
+      // Landed: confirmed rather than recorded afresh, or the reservation and the confirmation
+      // would each owe an echo for one delivery.
+      if (r.ok) confirmReservedInjection(session.id, parsed.data.text, daemonOrigin);
+      // `pasted === false` and nothing weaker, which is the same line every other sender
+      // draws. The note above about a refusal being positive evidence is true of the DRIVER
+      // arm; this route also serves pane-backed sessions, where `ok: false, pasted: true` is
+      // a real outcome - the text is in the composer and only the Enter failed. That echo may
+      // still arrive, so the claim stands. Releasing on a bare `!r.ok` handed it back and
+      // reopened this race on the path Foreman's recovery packets travel.
+      else if (r.pasted === false) releaseInjection(session.id, parsed.data.text);
+    }
     return c.json(r, r.ok ? 200 : 500);
   });
 

@@ -555,6 +555,29 @@ export function FileEditor({
     });
     exactValue.current = value;
     view.current = editor;
+    /*
+     * The panel host is sized from the SCROLLPORT, not from its containing block: it is a
+     * block widget inside `.cm-content`, whose width in a non-wrapping editor is the longest
+     * line in the file, so inheriting it left the composer wider than the pane.
+     *
+     * One gutter reference, measured and observed, so the two cannot drift apart. The view
+     * owns that element for its whole life, and this effect is keyed on the view.
+     */
+    const gutters = editor.scrollDOM.querySelector<HTMLElement>(".cm-gutters");
+    const fitPanelHost = (): void => {
+      const host = panelHost.current;
+      if (!host) return;
+      const inset = gutters?.offsetWidth ?? 0;
+      const width = editor.scrollDOM.clientWidth - inset;
+      host.style.width = width > 0 ? `${width}px` : "";
+      host.style.left = `${inset}px`;
+    };
+    fitPanelHost();
+    // The gutters are observed as well as the scrollport: a file that grows past a digit
+    // boundary widens them without the pane changing size at all.
+    const fitting = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fitPanelHost);
+    fitting?.observe(editor.scrollDOM);
+    if (gutters) fitting?.observe(gutters);
     // The rebuilt view starts with an empty model, so it is seeded from the ref rather
     // than waiting for the next model change - which may never come, since a path or
     // read-only change moves neither the markers nor the open line.
@@ -576,6 +599,7 @@ export function FileEditor({
     }
     return () => {
       alive = false;
+      fitting?.disconnect();
       editor.destroy();
       view.current = null;
     };

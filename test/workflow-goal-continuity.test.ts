@@ -223,6 +223,15 @@ test("a Foreman packet cannot reach the repair packet's Original user goal", asy
   recordInjection(s.id, FOREMAN_PACKET, "foreman");
   submitPrompt(registry, FOREMAN_PACKET);
 
+  // The packet never reached the Goal at all, which is what this change is for. Asserted
+  // beside the frozen ask rather than instead of it: since #990 the freeze prefers the durable
+  // OBJECTIVE, which an arriving packet cannot move once one exists, so the end-to-end
+  // assertion below would now hold even with this guard removed. This line is the one that
+  // fails without it, and the prompt and focus it covers are what drive the session card,
+  // Foreman's completion verification and the intent reconciler.
+  assert.equal(registry.getGoal(s.id)?.prompt, HUMAN_GOAL, "the packet never reached the Goal");
+  assert.equal(registry.getGoal(s.id)?.focus, HUMAN_GOAL, "nor the focus the card shows");
+
   // 4. The session settles again and the workflow run freezes the ask it will review against.
   const frozen = readWorkflowIntentSnapshot(registry, binding);
   assert.ok(frozen, "a bound live conversation must freeze an ask");
@@ -263,41 +272,41 @@ test("a Foreman packet cannot reach the repair packet's Original user goal", asy
   );
 });
 
-test("the same chain without the authorship record reproduces the defect", async () => {
-  // The control, and the reason the assertions above mean something. Everything is identical
-  // except that Foreman's delivery is not written down - which is precisely the state the
-  // daemon was in for the restart-continuation prompt, and the state any future sender that
-  // forgets `recordInjection` will be in.
+test("without the authorship record the packet still takes the session Goal", async () => {
+  // The control, and the reason the assertions above mean something: everything is identical
+  // except that Foreman's delivery is not written down, which is the state the daemon was in
+  // for the restart continuation and the state any future sender that forgets to reserve will
+  // be in.
+  //
+  // What it can still show changed while this branch was open. #990 now freezes the durable
+  // OBJECTIVE as the review contract rather than the latest prompt, so the frozen ask survives
+  // an unrecorded packet on its own - a second line of defence this test is glad to find. The
+  // contamination it guards is therefore asserted where it still happens, at the source: the
+  // session Goal's prompt and focus, which drive the card, Foreman's completion verification
+  // and the intent reconciler, and which are what the freeze falls back to for any run whose
+  // conversation has no objective yet.
   forgetInjections();
   const registry = new Registry();
   const s = session(registry, "goal-continuity-control");
-  const binding = {
-    id: "goal-continuity-control-binding",
-    sessionId: s.id,
-    noteKey: noteKeyFor(s),
-  } as WorkflowBinding;
 
   submitPrompt(registry, HUMAN_GOAL);
+  assert.equal(registry.getGoal(s.id)?.prompt, HUMAN_GOAL, "precondition: the ask is the Goal");
+
   submitPrompt(registry, FOREMAN_PACKET); // delivered, but never recorded
 
-  const frozen = readWorkflowIntentSnapshot(registry, binding);
-  assert.ok(frozen);
-  assert.notEqual(frozen.rawGoal, HUMAN_GOAL, "an unrecorded packet still replaces the ask");
-
-  const captured = await readWorkflowContextRaw(registry, binding, [], [], frozen);
-  const context = fallbackWorkflowContext(captured.raw, null);
-  const { version, run, submission, attempts } = reviewFixtures(context);
-  const rendered = renderWorkflowFeedback({
-    workflowName: "No-Mistakes Review",
-    version,
-    run,
-    submission,
-    attempts,
-  });
-
+  const goal = registry.getGoal(s.id);
   assert.equal(
-    rendered.payload.includes("Foreman's completion review found blocking work"),
+    goal?.prompt?.startsWith("Foreman's completion review"),
     true,
-    "and the repair packet hands Mission Control's own complaint back as the goal",
+    "an unrecorded packet still takes the Goal's prompt",
   );
+  assert.equal(
+    goal?.focus?.startsWith("Foreman's completion review"),
+    true,
+    "and the focus the session card shows",
+  );
+  // The durable objective is what #990 freezes, and it is only intact because the packet
+  // arrived after one was already established. It is not a substitute for refusing the packet:
+  // a conversation with no objective yet has nothing else to fall back to.
+  assert.equal(goal?.objective, HUMAN_GOAL, "the durable objective is the surviving copy");
 });

@@ -621,7 +621,7 @@ export class Dispatcher {
         ? preparePiLaunch(piText)
         : { args: [] as string[], sessionId: null };
       const askChannel = await askChannelContribution(task.agent, missionMcp, wt.path, stateHome);
-      // ONE `--append-system-prompt`, carrying every contributor to it. The flag is
+      // Claude: ONE `--append-system-prompt`, carrying every contributor to it. The flag is
       // single-valued and repeating it is last-wins with no warning, so a second flag beside
       // this one would silently discard whichever came first - see `systemPromptAppendArgs`.
       //
@@ -645,6 +645,11 @@ export class Dispatcher {
       // drift apart.
       const extraDirArgs =
         extraDirs.length > 0 && multiRepo ? multiRepo.launchArgs(extraDirs) : [];
+      // Pi accepts repeated appends; do not fold it through Claude's single-value helper.
+      // Flags precede piLaunch.args, whose final argument is the positional first turn.
+      const piStandingArgs = standing.mechanism === "pi-append-system-prompt"
+        ? ["--append-system-prompt", standing.text]
+        : [];
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...effortArgs,
@@ -652,6 +657,7 @@ export class Dispatcher {
         ...askArgs,
         ...extraDirArgs,
         ...codexLaunch.args,
+        ...piStandingArgs,
         ...piLaunch.args,
       ];
       // Claude's registration rides on the ask channel and Codex's is its own override

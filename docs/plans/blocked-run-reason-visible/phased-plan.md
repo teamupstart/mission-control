@@ -22,9 +22,10 @@ not open questions.
 Three findings moved work between the source plan's steps. Recorded here rather than silently
 applied.
 
-**1. Twelve blocked phases are unnamed, not four.** The source plan treats the missing clause as a
-capture-family problem. Diffing `BLOCKED_PHASE_CLAUSES` (17 keys) against the 27 phases whose
-declared statuses in `WORKFLOW_RUN_PHASE_STATUSES` include `blocked` leaves **12 with no entry**:
+**1. Fourteen blocked phases render as their own identifier, not four.** The source plan treats the
+missing clause as a capture-family problem. Diffing `BLOCKED_PHASE_CLAUSES` (17 keys) against the 27
+phases whose declared statuses in `WORKFLOW_RUN_PHASE_STATUSES` include `blocked` leaves **12 with no
+entry**:
 
 ```
 capture_interrupted            delivery_recovery_error       preflight_refinement_exhausted
@@ -33,10 +34,16 @@ conversation_changed           image_evidence_capture        unchanged_repositor
 delivery_prepare_error         pr_handoff_prepare_error      inspector_pr_switch_refused
 ```
 
-The second blocked run sitting in the operator's state database right now
-(`06438d27`, `preflight_refinement_exhausted`) is one of them. This is a vocabulary gap across the
-product, not a capture bug, and it is why the naming work is its own phase rather than three lines
-inside the capture fix.
+Two more - `delivery_blocked` and `delivery_refused` - *are* mapped, to a value
+character-for-character identical to what the fallback already produced, so mapping them changed
+nothing a reader sees. Fourteen in total, and the second blocked run sitting in the operator's state
+database right now (`06438d27`, `preflight_refinement_exhausted`) is one of them. This is a
+vocabulary gap across the product, not a capture bug, and it is why the naming work is its own phase
+rather than three lines inside the capture fix.
+
+Those two mapped-but-identical entries are why Phase 2's guard asserts that a clause **differs from**
+`phase.replaceAll("_", " ")` rather than merely that a key exists. A key-existence check is known to
+be insufficient here, not suspected to be.
 
 **2. The exhaustiveness test must be one-directional.** `BLOCKED_PHASE_CLAUSES` legitimately holds
 two keys that are *not* blocked-capable - `unchanged_evidence` and `reattached_resubmit_required` -
@@ -57,17 +64,17 @@ Estimated **300 to 340 gross non-test implementation lines**, at this repository
 (the `check_cleanup` decoder precedent is 8 lines of logic under 12 lines of prose, and every map
 entry here carries a justification comment). Assumptions: no route, wire-format or migration work
 (`WorkflowRun.gateState` already reaches the browser); roughly 60 of those lines are relocation
-rather than new logic; the twelve clause entries are ~2 lines each plus the judgement to write them.
+rather than new logic; the fourteen clause entries are ~2 lines each plus the judgement to write them.
 
 That is above the 200-line one-phase threshold, so the default is still one phase and a second has to
 earn itself. **Two phases**, and the case for the split:
 
-> Phase 2 is not a layer of Phase 1 and does not consume anything Phase 1 produces. It is twelve
+> Phase 2 is not a layer of Phase 1 and does not consume anything Phase 1 produces. It is fourteen
 > independent wording decisions across delivery, Inspector, session-action and preflight
 > subsystems - each needing its author to understand a phase that has nothing to do with evidence
 > capture - plus a shared-module relocation that changes notification behavior. Combining them
-> would hold the reported bug's fix behind eleven unrelated research questions, and would put a
-> persisted server payload change, a `src/shared/` move, twelve copy decisions, two browser specs
+> would hold the reported bug's fix behind thirteen unrelated research questions, and would put a
+> persisted server payload change, a `src/shared/` move, fourteen copy decisions, two browser specs
 > and five unit test files into one review. Split, each phase is one reviewable claim with its own
 > spec.
 

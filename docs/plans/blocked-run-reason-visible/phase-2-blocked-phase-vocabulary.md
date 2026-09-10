@@ -19,7 +19,7 @@ fires at the moment it blocks. A phase added later cannot ship unnamed, because 
 1. Move `BLOCKED_PHASE_CLAUSES` and `blockedPhaseClause` from `src/web/workflows/run-model.ts` into
    `src/shared/`, and rewire every consumer.
 2. Have the workflow alert body use the clause instead of the raw phase.
-3. Write clauses for the twelve blocked-capable phases that have none.
+3. Write clauses for the fourteen blocked-capable phases that render as the bare fallback.
 4. A test that fails when a blocked-capable phase has no clause.
 
 ## Non-goals
@@ -41,23 +41,31 @@ Verified against the checkout.
   `src/web/`. It prints `run.phase.replaceAll("_", " ")` instead. The map's own doc comment already
   names this as a hazard: *"two surfaces reading one field must not disagree about what an unmapped
   code looks like."*
-- **Twelve of the twenty-seven blocked-capable phases have no entry.** Derived by diffing the map's
-  17 keys against the phases whose `WORKFLOW_RUN_PHASE_STATUSES` entry includes `blocked`:
+- **Fourteen of the twenty-seven blocked-capable phases render as the bare fallback.** Twelve have no
+  entry at all; two more (`delivery_blocked`, `delivery_refused`) have an entry whose value is
+  character-for-character what `phase.replaceAll("_", " ")` already produces, so mapping them changed
+  nothing. All fourteen are this phase's work.
 
-  | Phase | Proposed clause |
-  | --- | --- |
-  | `image_evidence_capture` | evidence image changed |
-  | `capture_interrupted` | capture interrupted |
-  | `external_artifact_mismatch` | artifact moved |
-  | `check_cleanup_unresolved` | check cleanup held |
-  | `conversation_changed` | conversation changed |
-  | `delivery_prepare_error` | packet not prepared |
-  | `delivery_recovery_error` | recovery failed |
-  | `pr_handoff_prepare_error` | handoff not prepared |
-  | `preflight_refinement_exhausted` | out of refinements |
-  | `session_action_blocked` | session action refused |
-  | `unchanged_repository` | repository unchanged |
-  | `inspector_pr_switch_refused` | PR switch refused |
+  **The rule that makes this checkable: a clause must not equal `phase.replaceAll("_", " ")`.** An
+  entry that merely restates its own identifier is the defect wearing a map key. Proposed starting
+  points, each with the reason it is not the fallback:
+
+  | Phase | Proposed clause | Why, and what it is grounded in |
+  | --- | --- | --- |
+  | `image_evidence_capture` | evidence image changed | Names the cause, not the pipeline stage |
+  | `capture_interrupted` | daemon restarted | `engine.ts:1537` writes *"Evidence capture was interrupted by daemon restart; submit again"* - the restart is the fact the operator needs |
+  | `conversation_changed` | conversation replaced | `manager.ts:717` fires when `binding.noteKey !== noteKeyFor(session)` and pauses the binding. If you prefer naming the consequence over the cause, `binding paused` is the alternative - decide, do not average |
+  | `unchanged_repository` | same commit and tree | `runRefusedSentence` already words it *"same commit, same working tree"*; reuse that vocabulary rather than inventing a second one |
+  | `check_cleanup_unresolved` | check retry withheld | The block withholds a check retry pending a worktree lease; "cleanup unresolved" names the internal state instead |
+  | `session_action_blocked` | action could not run | `manager.ts:5357` blocks the attempt with a code and detail; the operator needs to know the action did not happen |
+  | `external_artifact_mismatch` | artifact moved | |
+  | `delivery_prepare_error` | packet not prepared | |
+  | `delivery_recovery_error` | recovery failed | |
+  | `delivery_blocked` | **already mapped, still the fallback** - reword | |
+  | `delivery_refused` | **already mapped, still the fallback** - reword | |
+  | `pr_handoff_prepare_error` | handoff not prepared | |
+  | `preflight_refinement_exhausted` | out of refinements | |
+  | `inspector_pr_switch_refused` | different PR refused | |
 
   These are proposals, not a specification. Read each phase's writer before adopting its wording: a
   clause that names the wrong thing is worse than the code it replaces, because the code at least
@@ -91,7 +99,7 @@ Verified against the checkout.
 - Check the neighbouring arms while you are there: the `resumed` arm at the bottom of the same
   function prints the raw phase the same way, and it is the same defect on the way out of a block.
 
-### 3. Write the twelve clauses
+### 3. Write the fourteen clauses
 
 One at a time, each verified against the code that writes the phase. Carry a one-line comment for any
 whose wording is not self-evident, as the existing entries do.
@@ -99,9 +107,18 @@ whose wording is not self-evident, as the existing entries do.
 ### 4. The exhaustiveness guard
 
 - A test iterating `WORKFLOW_RUN_PHASES`, filtering to those whose `WORKFLOW_RUN_PHASE_STATUSES`
-  entry includes `blocked`, and asserting each has a `BLOCKED_PHASE_CLAUSES` key.
-- The failure message should say what to do - add an entry - rather than only that a key is missing.
-  The next person to hit this will be adding an unrelated phase.
+  entry includes `blocked`, and asserting for each that a `BLOCKED_PHASE_CLAUSES` key exists **and
+  that its value is not `phase.replaceAll("_", " ")`**.
+- The second half is the half that matters, and it is not belt-and-braces. A key-existence check
+  alone would pass on `capture_interrupted: "capture interrupted"` - an entry that adds a map key and
+  changes nothing a reader sees. Two entries in the map today (`delivery_blocked`,
+  `delivery_refused`) are exactly that, which is how the weaker guard is known to be insufficient
+  rather than merely suspected.
+- The guard therefore fails on the current map until all fourteen are reworded. That is intended: it
+  is the work of this phase, not a surprise to route around by weakening the assertion.
+- The failure message should say what to do - add an entry, or write one that beats the fallback -
+  rather than only that a key is missing. The next person to hit this will be adding an unrelated
+  phase.
 
 ## Data and compatibility
 
@@ -154,3 +171,11 @@ depend on it rendering the same way.
   `BLOCKED_PHASE_CLAUSES` (~line 1063) and updates `runRemedy` (~line 2692). Textual proximity only.
 - No dependency direction between the phases in either direction. Confirmed both merge orders leave a
   coherent product, as recorded in the index.
+- **Round 1 review, 10 September 2026.** GitHub Inspector flagged that three proposed clauses
+  (`capture_interrupted`, `conversation_changed`, `unchanged_repository`) were identical or trivially
+  equivalent to the fallback they exist to replace, and that a key-existence guard would let an
+  implementer ship them. Correct, and checking it found two *existing* map entries with the same
+  defect. Resolved by adding the "must not equal the fallback" rule to the guard, grounding each
+  reworded clause in its phase's writer, and widening the phase from twelve clauses to fourteen. No
+  approved decision changed: the decision was "name the blocked phases and add an exhaustiveness
+  test", and this makes both stricter rather than different.

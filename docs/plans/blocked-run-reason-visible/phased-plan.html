@@ -110,7 +110,7 @@
     Two phases that can run at the same time and merge in either order. <strong>Phase 1 closes the
     reported incident</strong> &ndash; a capture failure explains itself on run detail, names the
     evidence item that moved, and says resubmit rather than resume. <strong>Phase 2 closes the
-    class</strong> &ndash; twelve blocked phases currently print their own identifier, and after this
+    class</strong> &ndash; fourteen blocked phases currently print their own identifier, and after this
     a thirteenth cannot ship that way.
   </p>
   <p class="standfirst" style="margin-top:14px">
@@ -142,15 +142,20 @@
 <p>Three findings moved work between the source plan's steps. Recorded here rather than silently applied.</p>
 
 <div class="call crit">
-  <p class="h">1. Twelve blocked phases are unnamed, not four.</p>
+  <p class="h">1. Fourteen blocked phases render as their own identifier, not four.</p>
   <p>
     The source plan treats the missing clause as a capture-family problem. Diffing
     <code>BLOCKED_PHASE_CLAUSES</code> (17 keys) against the 27 phases whose declared statuses in
     <code>WORKFLOW_RUN_PHASE_STATUSES</code> include <code>blocked</code> leaves <strong>12 with no
-    entry</strong>. The second blocked run sitting in the operator's state database right now
+    entry</strong>. Two more &ndash; <code>delivery_blocked</code> and
+    <code>delivery_refused</code> &ndash; <em>are</em> mapped, to a value character-for-character
+    identical to what the fallback already produced, so mapping them changed nothing a reader sees.
+    Fourteen in total, and the second blocked run sitting in the operator's state database right now
     (<code>06438d27</code>, <code>preflight_refinement_exhausted</code>) is one of them. This is a
     vocabulary gap across the product, not a capture bug, and it is why the naming work is its own
-    phase rather than three lines inside the capture fix.
+    phase rather than three lines inside the capture fix. Those two mapped-but-identical entries are
+    why Phase 2's guard asserts a clause <strong>differs from</strong>
+    <code>phase.replaceAll("_", " ")</code> rather than merely that a key exists.
   </p>
 </div>
 <pre><code>capture_interrupted            delivery_recovery_error       preflight_refinement_exhausted
@@ -186,7 +191,7 @@ delivery_prepare_error         pr_handoff_prepare_error      inspector_pr_switch
   comment density (the <code>check_cleanup</code> decoder precedent is 8 lines of logic under 12 lines
   of prose, and every map entry here carries a justification comment). Assumptions: no route,
   wire-format or migration work (<code>WorkflowRun.gateState</code> already reaches the browser);
-  roughly 60 of those lines are relocation rather than new logic; the twelve clause entries are ~2
+  roughly 60 of those lines are relocation rather than new logic; the fourteen clause entries are ~2
   lines each plus the judgement to write them.
 </p>
 <p>
@@ -195,12 +200,12 @@ delivery_prepare_error         pr_handoff_prepare_error      inspector_pr_switch
 </p>
 <blockquote>
   <p>
-    Phase 2 is not a layer of Phase 1 and does not consume anything Phase 1 produces. It is twelve
+    Phase 2 is not a layer of Phase 1 and does not consume anything Phase 1 produces. It is fourteen
     independent wording decisions across delivery, Inspector, session-action and preflight
     subsystems &ndash; each needing its author to understand a phase that has nothing to do with
     evidence capture &ndash; plus a shared-module relocation that changes notification behavior.
-    Combining them would hold the reported bug's fix behind eleven unrelated research questions, and
-    would put a persisted server payload change, a <code>src/shared/</code> move, twelve copy
+    Combining them would hold the reported bug's fix behind thirteen unrelated research questions, and
+    would put a persisted server payload change, a <code>src/shared/</code> move, fourteen copy
     decisions, two browser specs and five unit test files into one review. Split, each phase is one
     reviewable claim with its own spec.
   </p>
@@ -269,7 +274,7 @@ delivery_prepare_error         pr_handoff_prepare_error      inspector_pr_switch
 
     <rect x="382" y="164" width="420" height="68" rx="8" fill="var(--surface-2)" stroke="var(--good)"/>
     <text x="402" y="188" font-family="var(--sans)" font-size="13" font-weight="600" fill="var(--text-primary)">Phase 2 &#183; No blocked phase goes unnamed</text>
-    <text x="402" y="207" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">clause map into src/shared/ &#183; alert body &#183; twelve clauses</text>
+    <text x="402" y="207" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">clause map into src/shared/ &#183; alert body &#183; fourteen clauses</text>
     <text x="402" y="224" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">&#183; exhaustiveness guard</text>
 
     <text x="592" y="134" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="var(--text-muted)">no edge between them &#183; either merge order</text>

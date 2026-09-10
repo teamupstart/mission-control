@@ -132,9 +132,34 @@ In `sessions.spawnDetached`, replace the single `client.sendInput(paneId, shellC
    by a short deadline using the injected `sleep`/`now`. A fixed sleep is acceptable only if the
    observation proves unreliable, and then say so in the pull request.
 3. `sendKeys(paneId, ["enter"])`.
-4. Verify with `processInfo(paneId)`, polling until the pane's foreground process is something other
-   than the bare login shell, bounded by a short deadline. Treat a pane whose foreground process is
-   still only the shell at the deadline as a failed launch.
+4. Verify with `processInfo(paneId)`, polling until the pane is running something other than its
+   login shell, bounded by a short deadline.
+
+   **The predicate, exactly.** Read it from ONE response; do not capture a pre-submit baseline.
+   `shell_pid` names the login shell, not the foreground agent, so comparing `shell_pid` across
+   responses proves nothing. A pane has started the agent when `foreground_processes` contains an
+   entry whose `pid` differs from `shell_pid`. Measured, both states, on the live server:
+
+   ```jsonc
+   // shell only - the failed-launch state, from one of the three stuck workspaces
+   { "pane_id": "w1E:p1", "shell_pid": 90557,
+     "foreground_processes": [ { "pid": 90557, "name": "zsh", "argv0": "zsh" } ] }
+
+   // agent running - pid differs from shell_pid
+   { "pane_id": "w1K:p1", "shell_pid": 1317, "foreground_process_group_id": 1436,
+     "foreground_processes": [ { "pid": 1436, "name": "2.1.267", "argv0": "claude",
+                                "argv": ["/…/claude"] } ] }
+   ```
+
+   Note `name` is the process title, which for Claude is its VERSION string rather than `claude`;
+   `argv0` carries the command name. So the predicate must be the pid comparison, never a name match.
+
+   **When `foreground_processes` is absent or empty**, that is "cannot tell", not "not started".
+   `HerdrProcessInfo` declares the field optional, so treat the absence as inconclusive and keep
+   polling until the deadline, then fail. Never read an absent field as a started agent.
+
+   `foreground_process_group_id` appears in 0.9.0 responses and is not in the client's schema. Zod
+   objects ignore additive fields, so nothing breaks; do not add it unless the predicate needs it.
 5. On a failed launch, roll the workspace back the way the existing refused-`sendInput` branch
    already does via `client.closeWorkspace`, and return an error that names what happened: Herdr
    accepted the command but the shell never ran it. Preserve the existing `outcomeUnknown` handling -
@@ -187,10 +212,12 @@ node --test --import ./test/setup-state.mjs --import tsx test/<file>.ts
   passing. Add a case asserting the wrapper script carries the environment and the agent argv, and
   that the returned argv encodes to a short command. Assert an order of magnitude, not an exact byte
   count.
-- `test/herdr-adapter.test.ts` - the Enter is a separate write from the paste; a pane whose foreground
-  process never leaves the login shell is a failed launch with the workspace closed; an
-  outcome-unknown delivery is **not** rolled back; a successful launch still reports success and still
-  tolerates a failed side split.
+- `test/herdr-adapter.test.ts` - the Enter is a separate write from the paste; an outcome-unknown
+  delivery is **not** rolled back; a successful launch still reports success and still tolerates a
+  failed side split. Cover all three `process_info` shapes against the predicate above: a
+  shell-only response (`foreground_processes` pid equals `shell_pid`) is a failed launch with the
+  workspace closed; an agent-running response (pid differs) is a success; an absent or empty
+  `foreground_processes` is inconclusive and fails only at the deadline.
 - `test/herdr-client.test.ts` - one pane's failing `process_info` leaves the other panes reported;
   a protocol below the floor, a pane identity mismatch and a failed snapshot still fail the whole
   call.
@@ -245,6 +272,14 @@ There is no later phase in this plan. What a future change may rely on, and must
   `spawnUniquely`'s bare-versus-suffixed branch. All three documents now say that, and step 5.5 gains
   an explicit non-goal covering the `held.has(unique)` gap the labels expose, so the phase cannot
   absorb it by accident.
+- **2026-09-09, review reconciliation (second round).** Review found the launch predicate stated as
+  "foreground process is no longer the bare login shell", which is imprecise: `shell_pid` names the
+  login shell, not the foreground agent. Section 5.3 now states the exact predicate as a pid
+  comparison inside one `pane.process_info` response, with both measured states quoted and the
+  absent-`foreground_processes` case defined as inconclusive; section 7 tests all three shapes.
+  `plan.md` and `plan.html` carry the same predicate. Separately, an operator home path was redacted
+  from the transcript excerpt in `plan.md` and `plan.html`, per the repository's boundary on
+  operator data.
 - **Contract check.** The two repository-wide contracts named in
   [`phased-plan.md`](phased-plan.md#cross-phase-contracts) are asserted by section 7's test list:
   the state-home release by `agent-subprocess-env.test.ts`, and the meaning of `[]` by

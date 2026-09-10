@@ -121,7 +121,7 @@
 <h3>What is actually on screen</h3>
 <p>All three failed Herdr workspaces are still open. Their agent panes contain the full launch command sitting at a <code>zsh</code> prompt, <strong>unexecuted</strong>, and <code>pane.process_info</code> reports the pane's only foreground process is <code>zsh</code>:</p>
 <pre><code>✓ ❯ '/usr/bin/env' '-u' 'MISSION_HOME' '-u' 'FLEET_HOME' '-u' 'HARNESS_HOME'
-'PATH=/usr/bin:/bin:/usr/sbin:/sbin:/Users/jordanmance/bin: … :/opt/homebrew/sbin'
+'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$HOME/bin: … :/opt/homebrew/sbin'
 'MISSION_HOME=/var/folders/…/mission-control-agent-state/session-vnMcw</code></pre>
 <p>The workspace was created, the command was delivered, nothing ran. Dispatch then waited <code>READY_TIMEOUT_MS</code> (30 s) for <code>waitForSessionAtCwd</code> to see an agent, saw none, and reported the launch as having exited immediately. It never started.</p>
 
@@ -267,7 +267,8 @@
 <li><strong>Shrink what is typed.</strong> <code>isolatedAgentArgv</code> already writes a wrapper script, <code>launch-and-cleanup.sh</code>, into the disposable state home and then prefixes it with <code>/usr/bin/env -u … PATH=… MISSION_HOME=… …</code>. Folding the environment assignments and the agent argv into that script leaves one short line to type: <code>/bin/sh /var/…/launch-and-cleanup.sh</code>, about 90 bytes instead of 3,546. This is backend-agnostic and harness-agnostic; tmux and cmux get a shorter argv for free and behave identically.
 <p class="meta">The environment must stay in the exec prefix inside the script rather than move to Herdr's <code>workspace.create</code> <code>env</code> map. Measured: the <code>env</code> map does reach the shell for <code>MISSION_HOME</code>, but the login shell's rc files rewrite <code>PATH</code> straight back to the operator's interactive PATH, which defeats the isolation the prefix exists to provide.</p></li>
 <li><strong>Separate the Enter from the paste.</strong> <code>pane.send_input(text)</code> then <code>pane.send_keys(["enter"])</code>, with the paste confirmed settled in between rather than a fixed sleep - <code>pane.read</code> on the pane, or <code>pane.wait_for_output</code>, both of which the 0.9.0 API publishes.</li>
-<li><strong>Verify the launch before reporting success.</strong> After Enter, poll <code>pane.process_info</code> until the pane's foreground process is no longer the bare login shell, bounded by a short timeout. If it never changes, roll the workspace back the way a refused <code>send_input</code> already does and return the real error, so the operator reads "Herdr accepted the command but the shell never ran it" instead of a 30 s timeout blaming the agent.</li>
+<li><strong>Verify the launch before reporting success.</strong> After Enter, poll <code>pane.process_info</code> until the pane is running something other than its login shell, bounded by a short timeout. If it never is, roll the workspace back the way a refused <code>send_input</code> already does and return the real error, so the operator reads "Herdr accepted the command but the shell never ran it" instead of a 30 s timeout blaming the agent.
+<p class="meta">The predicate is a pid comparison inside one response: <code>foreground_processes</code> contains an entry whose <code>pid</code> differs from <code>shell_pid</code>. <code>shell_pid</code> names the login shell rather than the foreground agent, so it proves nothing on its own, and <code>name</code> is the process title, which for Claude is its version string rather than <code>claude</code>. An absent or empty <code>foreground_processes</code> is "cannot tell" and never a started agent. Measured for both states in <a href="phase-1-herdr-launch-delivery.md"><code>phase-1-herdr-launch-delivery.md</code></a> section 5.3.</p></li>
 </ol>
 
 <h2>Defect 2: Pi cannot carry Mission MCP tools (scheduled as its own plan)</h2>
@@ -337,7 +338,7 @@ const name = held === null || held.has(baseName) ? unique : baseName;</code></pr
 
 <h2>Verification</h2>
 <ul>
-<li>A <code>node:test</code> case for the Herdr adapter proving the Enter is a separate write from the paste, and that a pane whose foreground process never leaves the login shell is reported as a failed launch with the workspace rolled back.</li>
+<li>A <code>node:test</code> case for the Herdr adapter proving the Enter is a separate write from the paste, and covering all three <code>pane.process_info</code> shapes against the launch predicate: shell-only is a failed launch with the workspace rolled back, agent-running is a success, and an absent <code>foreground_processes</code> is inconclusive rather than either.</li>
 <li>A <code>node:test</code> case for <code>isolatedAgentArgv</code> proving the wrapper script carries the environment and the agent argv, and that the returned argv is short.</li>
 <li>A <code>node:test</code> case pinning that a dispatcher built without an explicit <code>spawn</code> seam cannot reach a real backend under the test runner.</li>
 <li>A <code>node:test</code> case for the partial Herdr enumeration: one pane whose <code>process_info</code> fails leaves the other panes reported rather than blanking the list.</li>

@@ -51,7 +51,7 @@ foreground process is `zsh`:
 
 ```
 ✓ ❯ '/usr/bin/env' '-u' 'MISSION_HOME' '-u' 'FLEET_HOME' '-u' 'HARNESS_HOME'
-'PATH=/usr/bin:/bin:/usr/sbin:/sbin:/Users/jordanmance/bin: … :/opt/homebrew/sbin'
+'PATH=/usr/bin:/bin:/usr/sbin:/sbin:$HOME/bin: … :/opt/homebrew/sbin'
 'MISSION_HOME=/var/folders/…/mission-control-agent-state/session-vnMcw
 ```
 
@@ -152,10 +152,17 @@ Three changes, and each is independently useful:
    pane, or `pane.wait_for_output`, both of which the 0.9.0 API publishes.
 
 3. **Verify the launch before reporting success.** After Enter, poll `pane.process_info` until the
-   pane's foreground process is no longer the bare login shell, bounded by a short timeout. If it
-   never changes, roll the workspace back the way a refused `send_input` already does and return
-   the real error, so the operator reads "Herdr accepted the command but the shell never ran it"
-   instead of a 30 s timeout blaming the agent.
+   pane is running something other than its login shell, bounded by a short timeout. If it never
+   is, roll the workspace back the way a refused `send_input` already does and return the real
+   error, so the operator reads "Herdr accepted the command but the shell never ran it" instead of
+   a 30 s timeout blaming the agent.
+
+   The predicate is a pid comparison inside one response: `foreground_processes` contains an entry
+   whose `pid` differs from `shell_pid`. `shell_pid` names the login shell rather than the
+   foreground agent, so it proves nothing on its own, and `name` is the process title, which for
+   Claude is its version string rather than `claude`. An absent or empty `foreground_processes` is
+   "cannot tell" and never a started agent. Measured for both states in
+   [`phase-1-herdr-launch-delivery.md`](phase-1-herdr-launch-delivery.md) section 5.3.
 
 ## Defect 2: Pi cannot carry Mission MCP tools (scheduled as its own plan)
 
@@ -314,9 +321,10 @@ which discards every pane when one pane's workspace or tab lookup misses.
 
 ## Verification
 
-- A `node:test` case for the Herdr adapter proving the Enter is a separate write from the paste,
-  and that a pane whose foreground process never leaves the login shell is reported as a failed
-  launch with the workspace rolled back.
+- A `node:test` case for the Herdr adapter proving the Enter is a separate write from the paste, and
+  covering all three `pane.process_info` shapes against the launch predicate: shell-only is a failed
+  launch with the workspace rolled back, agent-running is a success, and an absent
+  `foreground_processes` is inconclusive rather than either.
 - A `node:test` case for `isolatedAgentArgv` proving the wrapper script carries the environment
   and the agent argv, and that the returned argv is short.
 - A `node:test` case pinning that a dispatcher built without an explicit `spawn` seam cannot reach

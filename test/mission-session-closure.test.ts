@@ -87,6 +87,9 @@ function definition(over: Partial<ScheduleDefinition> = {}): ScheduleDefinition 
       labels: [],
       model: null,
       effort: null,
+      // Never inherited for a mission: it fires unattended, so "no after-work Workflow" has to
+      // reach `tasks.create` as an explicit null rather than as the dispatch default.
+      workflowId: null,
     },
     ...over,
   };

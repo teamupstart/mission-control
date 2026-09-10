@@ -87,18 +87,16 @@ async function fileOneRun(
       overlapPolicy: "skip-active",
       missedPolicy: "coalesce-latest",
       completionPolicy,
-      template: { title: name, intent, repoRoot: daemon.repo, kind: "ship" },
+      // `workflowId: null` is the mission's own way of saying "finish without a Workflow".
+      // It used to be patched onto the filed task afterwards, because the template had no such
+      // field; it does now, and a mission never inherits the dispatch default.
+      template: { title: name, intent, repoRoot: daemon.repo, kind: "ship", workflowId: null },
     },
   });
   expect(mission.completionPolicy).toBe(completionPolicy);
 
   await api(daemon, `/api/schedules/${mission.id}/run-now`, { body: {} });
-  const filed = await pollTask(daemon, intent, (task) => task.status === "backlog");
-  // Pinned to no post-work Workflow, exactly as the Dispatch modal's "finish without a
-  // Workflow" does. Left on the daemon's default the dispatch is refused in this fixture,
-  // and this spec is about what happens AFTER a run concludes, not about workflow policy.
-  await api(daemon, `/api/tasks/${filed.id}/update`, { body: { workflowId: null } });
-  return filed;
+  return await pollTask(daemon, intent, (task) => task.status === "backlog");
 }
 
 async function pollTask(

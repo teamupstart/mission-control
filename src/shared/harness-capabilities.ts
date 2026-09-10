@@ -188,8 +188,9 @@ export interface SkillsSpec {
  * up and finishes it (hooks), and its transcript must be readable back to check that it
  * did. Claude and Codex can do both and use the harness-neutral pane delivery path. Codex
  * hooks are attached only to Mission Control launches, so a discovery-only session still
- * takes the per-session refusal until one reports a hook. Pi has readable turns but no
- * pickup/completion signal, so it declares this capability null.
+ * takes the per-session refusal until one reports a hook. Pi has readable turns and lifecycle
+ * events, but its Mission integration has not shipped yet, so its per-session refusal states
+ * that current gap.
  *
  * Whatever the reason, the consequence of a null is the same and is why it is not a
  * detail: a queue on a session the worker skips is a one-way trip to nowhere. Because the
@@ -336,27 +337,24 @@ function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel 
  * and a harness that cannot express that grant at launch cannot run one of these tasks.
  *
  * A spec rather than a boolean, for the reason `permissionModes` is one: the answer the
- * dispatcher needs is not "yes" but "which flags", and keeping the rendering beside the
- * measurement is what stops a launch path from re-deriving it per harness. Null is a
+ * dispatcher needs is which flags grant access, or why no grant is needed. Keeping that beside
+ * the measurement is what stops a launch path from re-deriving it per harness. Null is a
  * MEASURED unsupported, never a placeholder.
  */
-export interface MultiRepoDispatchSpec {
-  /**
-   * Launch-time argv granting this session write access to each directory.
-   *
-   * Never called with an empty list - a single-repo dispatch renders no flags at all, so
-   * its argv stays byte-identical to what it was before this capability existed.
-   */
-  launchArgs: (dirs: readonly string[]) => string[];
-  /**
-   * Whether the harness's EMBEDDED (SDK) driver carries the same grant, so a dispatch that
-   * resolves to the `sdk` runtime is not silently handed a session that cannot write to
-   * the secondary worktrees it was told about. Both shipped drivers do; the flag exists so
-   * a harness whose terminal path can express the grant and whose driver cannot has
-   * somewhere honest to say so rather than degrading in silence.
-   */
-  sdk: boolean;
-}
+export type MultiRepoDispatchSpec =
+  | {
+      kind: "flags";
+      /** Launch argv granting every directory; called only with a non-empty list. */
+      launchArgs: (dirs: readonly string[]) => string[];
+      /** Whether the embedded driver also carries the grant. */
+      sdk: boolean;
+    }
+  | {
+      kind: "no-boundary";
+      /** Measured reason no directory grant is needed. */
+      why: string;
+      sdk: boolean;
+    };
 
 /**
  * Stopping the turn this session is running right now, without ending the session.
@@ -617,7 +615,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // control request requires its argument to be a strict subdirectory of cwd or of a
     // directory passed at launch (`sdk.d.ts`), so a sibling repository is reachable only
     // by naming it here.
-    multiRepoDispatch: { launchArgs: (dirs) => dirs.flatMap((dir) => ["--add-dir", dir]), sdk: true },
+    multiRepoDispatch: { kind: "flags", launchArgs: (dirs) => dirs.flatMap((dir) => ["--add-dir", dir]), sdk: true },
     // The embedded driver calls the vendor SDK's own `query.interrupt()`
     // (`harness/claude/sdk.ts`), which aborts the running turn and leaves the conversation
     // open. `terminal` is `Escape` into the bound pane, measured live against the TUI: a
@@ -760,6 +758,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // cwd, was measured to behave identically today. A granted secondary lands in exactly
     // the posture the primary is already in, which is the parity this capability promises.
     multiRepoDispatch: {
+      kind: "flags",
       launchArgs: (dirs) => ["-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(dirs)}`],
       sdk: true,
     },
@@ -807,7 +806,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // keys, not on a bracketed paste, so nothing intercepts the Enter. Pasting
       // `/skill:<name>` and pressing Enter once loaded the skill and ran it.
       //
-      // Foreman never types this today (pi declares `workQueue: null`, so it holds no
+      // Foreman never types this today (pi has no Mission lifecycle hooks, so it holds no
       // queue and raises no wrap-up), but the answer is measured rather than left out:
       // a null here would claim pi cannot run a skill by name, which is false.
       invoke: (name) => `/skill:${name}`,
@@ -815,12 +814,12 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",
     },
-    // Null: pi pushes no hooks (`HARNESSES.pi.hooks` is null), so Foreman has no signal for
-    // when a pi session picks work up or finishes it and cannot verify a queue. Its rich
-    // transcript proves the work was done, but authorship of the pickup is exactly the hook
-    // signal it lacks - so `foremanAutomationAuthorized` refuses regardless, and null is the
-    // honest permanent incapacity rather than the fixable-install `uninstrumentedWhy`.
-    workQueue: null,
+    // Pi can report lifecycle events through the Mission Control extension. Name the
+    // installation remedy here; the extension, installer and HookSpec belong to later phases.
+    workQueue: {
+      uninstrumentedWhy:
+        "Install the Mission Control extension for Pi to enable Foreman's work queue. This session hasn't reported lifecycle hooks, so Foreman can't tell when work starts or finishes.",
+    },
     // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
     // summarises rather than clears). Hookless sessions have no attributable transcript path.
@@ -842,12 +841,11 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // `minimal`, so neither existing live-picker shape can drive it faithfully.
       sessionPicker: null,
     },
-    // Null because it is UNMEASURED, which is the only thing null is allowed to mean here.
-    // pi has no sandbox to widen and no additional-directories flag that was verified
-    // against a real install, and guessing one would have the dispatch modal offer a
-    // multi-repo task that launches an agent which cannot write to half of it. Measuring
-    // it later is a one-line change with its evidence attached.
-    multiRepoDispatch: null,
+    multiRepoDispatch: {
+      kind: "no-boundary",
+      why: "Pi has no sandbox or directory write boundary: measured against 0.85.1, its write tool wrote an absolute path in a sibling directory without a flag, grant or refusal.",
+      sdk: false,
+    },
     // Terminal-only, which is the whole list pi has: it has no embedded driver
     // (`HARNESSES.pi.sdk` is null), so the pane keystroke is not one of two mechanisms here,
     // it is the only possible one.

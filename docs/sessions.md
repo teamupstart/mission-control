@@ -1327,6 +1327,28 @@ prompt it could not confirm the agent received, not you asking twice.
 A launch that has no driver door, such as a terminal paste, is unaffected for the same
 reason: its hook delivery is the first arrival and so is the capture.
 
+**Mission Control's own turns never become the Goal.** Foreman's recovery packets, the fix
+rounds it writes for a work item, workflow repair and evidence-preflight packets, the retro
+packet, the skills broadcast and the prompt that continues a turn interrupted by a daemon
+restart are all typed into the session exactly the way you type, and the agent reports each
+one back through its prompt hook. Who wrote a turn is recorded when it is delivered, so those
+arrivals are recognized and discarded rather than captured. Without that rule a
+completion-review packet became the session's ask, was frozen onto the next workflow run, and
+came back to the agent under the heading "Original user goal", leaving the review to judge
+your work against Mission Control's own last complaint.
+
+The one delivery that is still yours is round 0 of a queued
+[work item](foreman.md), which carries your text verbatim and is captured as the instruction
+it is.
+
+**Saying the same thing twice still works.** Recognition is spent, not permanent: one delivery
+accounts for the one echo the agent reports, and the next arrival of that text is you typing
+it. So if you scroll back, copy a packet out of the conversation and send it again to redirect
+the session, it is heard and the Goal moves. The conversation log still credits whoever
+originally typed each turn; only the recognition is used up. Recognition is also in-memory, so
+a daemon restart landing between a delivery and its echo lets that single turn through as
+though you had typed it.
+
 Each reconciliation records one of five relationships:
 
 - **initial** establishes the first objective;
@@ -1399,7 +1421,7 @@ badge** beside its model / thinking / context row, and the topbar grows a **cost
 
 | Figure | Where | What it is |
 |---|---|---|
-| **Fleet today** | chip and popover | Claude- plus Codex-estimated session usage since local midnight |
+| **Fleet today** | chip and popover | Claude- and Codex-estimated usage plus Pi-reported spend from dispatched sessions since local midnight |
 | **Rate now** | chip and popover | the last hour of that same session estimate |
 | **Tokens today** | popover | session input, output and cache, every tier summed |
 | **Per shipped PR** | popover | today's session estimate over pull requests either agent opened today, with the count it was divided by. Counts only PRs we can [prove we opened](inspector-and-shipping.md#inspector-automated-pr-review) |
@@ -1423,7 +1445,7 @@ a chip wired to them would be red by lunchtime every day. A fleet with no usage 
 reading at all renders no chip, rather than a confident `$0.00`. `Esc` or a click outside
 closes the popover; `Cost settings →` in its footer opens **Settings · Cost**.
 
-Six transports feed these figures, each kept to the facts it actually reports:
+Seven transports feed these figures, each kept to the facts it actually reports:
 
 | Source | Provides |
 |---|---|
@@ -1432,7 +1454,14 @@ Six transports feed these figures, each kept to the facts it actually reports:
 | **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows for terminal sessions; OTel has no quota metric |
 | **Claude Agent SDK usage** | the same account windows for embedded SDK sessions, refreshed when the session resumes after a daemon restart and after each completed turn |
 | **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
+| **Pi session JSONL** | dispatched sessions' assistant-message usage, including disjoint input, cache read/write and output tiers, and Pi's own `cost.total`. Mission Control passes that price through with provenance `pi-reported-v3`; it does not maintain a Pi price table |
 | **Headless run envelopes** | the app's OWN model calls: Claude's Agent SDK `result` frame reports its cost and per-model tokens by default, the supported `claude -p --output-format json` escape hatch carries the same envelope, and `codex exec --json` reports tokens on `turn.completed`. Read straight from the process the run already returns, so no exporter or endpoint is involved |
+
+Pi cost requires the exact session ID supplied by dispatch and a matching version-3 transcript
+header. Hand-run Pi sessions have no proven session ID here, so they show no cost. Mission
+Control never guesses ownership from a checkout or its newest transcript. Missing or invalid
+Pi costs remain unpriced; a reported zero is a known zero. Supporting hand-run Pi cost waits
+for its lifecycle integration to supply the exact identity.
 
 #### One writer per session, chosen by runtime
 

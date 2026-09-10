@@ -646,7 +646,7 @@ export class Dispatcher {
       // the guard exists to turn into a refusal, and asking twice is how the two answers
       // drift apart.
       const extraDirArgs =
-        extraDirs.length > 0 && multiRepo ? multiRepo.launchArgs(extraDirs) : [];
+        extraDirs.length > 0 && multiRepo?.kind === "flags" ? multiRepo.launchArgs(extraDirs) : [];
       // Pi accepts repeated appends; do not fold it through Claude's single-value helper.
       // Flags precede piLaunch.args, whose final argument is the positional first turn.
       const piStandingArgs = standing.mechanism === "pi-append-system-prompt"

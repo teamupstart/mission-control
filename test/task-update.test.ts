@@ -157,3 +157,40 @@ test("changing a backlog task onto Pi required tools is refused, but annotation 
   assert.equal((await tasks.update("mission-old", { priority: "high" })).ok, true);
   assert.equal((await tasks.update("mission-old", { agent: "claude" })).ok, true);
 });
+
+test("backlog edits reject Pi workflow-required tools using the resulting task", async () => {
+  const { r, tasks } = setup();
+  tasks.registerWorkflowEvidenceEligibility((task) =>
+    task.kind === "ship" && task.workflowId === "requires-evidence",
+  );
+  r.upsertTask(mkTask({ id: "workflow-on-pi", agent: "pi", kind: "ship", status: "backlog", workflowId: null }));
+  const workflowChange = await tasks.update("workflow-on-pi", { workflowId: "requires-evidence" });
+  assert.equal(workflowChange.ok, false);
+  assert.match(workflowChange.error!, /integration for Pi is not installed/);
+  assert.equal(r.getTask("workflow-on-pi")!.workflowId, null);
+
+  r.upsertTask(mkTask({ id: "agent-with-workflow", agent: "claude", kind: "ship", status: "backlog", workflowId: "requires-evidence" }));
+  const agentChange = await tasks.update("agent-with-workflow", { agent: "pi" });
+  assert.equal(agentChange.ok, false);
+  assert.match(agentChange.error!, /integration for Pi is not installed/);
+  assert.equal(r.getTask("agent-with-workflow")!.agent, "claude");
+
+  r.upsertTask(mkTask({ id: "kind-with-workflow", agent: "pi", kind: "scout", status: "backlog", workflowId: "requires-evidence" }));
+  const kindChange = await tasks.update("kind-with-workflow", { kind: "ship" });
+  assert.equal(kindChange.ok, false);
+  assert.equal(r.getTask("kind-with-workflow")!.kind, "scout");
+});
+
+test("clearing or replacing workflow tool requirements still permits recovery and annotation", async () => {
+  const { r, tasks } = setup();
+  tasks.registerWorkflowEvidenceEligibility((task) => task.workflowId === "requires-evidence");
+  r.upsertTask(mkTask({ id: "old-pi-workflow", agent: "pi", kind: "ship", status: "backlog", workflowId: "requires-evidence" }));
+  assert.equal((await tasks.update("old-pi-workflow", { priority: "high" })).ok, true);
+  assert.equal((await tasks.update("old-pi-workflow", { workflowId: "no-evidence" })).ok, true);
+  assert.equal(r.getTask("old-pi-workflow")!.workflowId, "no-evidence");
+
+  r.upsertTask(mkTask({ id: "remove-on-switch", agent: "claude", kind: "ship", status: "backlog", workflowId: "requires-evidence" }));
+  assert.equal((await tasks.update("remove-on-switch", { agent: "pi", workflowId: null })).ok, true);
+  assert.equal(r.getTask("remove-on-switch")!.agent, "pi");
+  assert.equal(r.getTask("remove-on-switch")!.workflowId, null);
+});

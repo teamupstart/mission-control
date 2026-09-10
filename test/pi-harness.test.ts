@@ -46,7 +46,9 @@ test("pi's unsupported capabilities are DECLARED null, not stubbed", () => {
   // Genuinely absent, each with its own reason (see `todo/pi-harness.md`).
   assert.equal(pi.permissionModes, null, "pi's manual/auto/readonly don't fit PermissionMode");
   assert.equal(pi.mcp, null, "pi has no MCP client");
-  assert.equal(pi.workQueue, null, "no hooks -> Foreman can't verify pickup/completion");
+  assert.equal(pi.hooks, null, "the Mission lifecycle integration has not shipped");
+  assert.ok(pi.workQueue, "Pi exposes lifecycle events; the missing integration is per-session");
+  assert.ok(pi.usage, "dispatched Pi usage is readable without the extension");
   // Present, and driving real behaviour.
   assert.equal(pi.clearContext?.command, "/new", "pi clears context in place with /new");
   assert.equal(pi.skills?.reloadCommand, "/reload", "bound pi sessions reload at idle");

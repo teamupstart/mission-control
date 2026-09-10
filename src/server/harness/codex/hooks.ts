@@ -52,11 +52,16 @@ function workCycleSignal(evt: HookIngest): WorkCycleSignal | null {
   }
 }
 
+/** Codex has no scaffolding grammar, so its two prompt readings are the same trim. */
+const codexPromptText = (evt: HookIngest): string | null =>
+  evt.event === "UserPromptSubmit" && evt.prompt?.trim() ? evt.prompt.trim() : null;
+
 export const codexHooks: HookSpec = {
   scope: "launch",
   events: CODEX_HOOK_EVENTS,
   matcherEvents: [],
   toState,
   workCycleSignal,
-  promptText: (evt) => evt.event === "UserPromptSubmit" && evt.prompt?.trim() ? evt.prompt.trim() : null,
+  promptText: codexPromptText,
+  submittedPromptText: codexPromptText,
 };

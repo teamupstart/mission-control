@@ -45,6 +45,7 @@ import {
 } from "../scouts/repos.ts";
 import { resolveImageUpload } from "../uploads.ts";
 import { validateLlmImages } from "../llm/images.ts";
+import { WorkflowImageEvidenceError } from "./evidence-error.ts";
 import { workflowLog } from "./log.ts";
 import { frozenEvidenceId } from "./store.ts";
 import type {
@@ -57,21 +58,13 @@ import type {
   WorkflowSubmissionTextArtifactWrite,
 } from "./store.ts";
 
+/** Re-exported so every caller that already knew this name keeps its import path. */
+export { WorkflowImageEvidenceError };
+
 export const WORKFLOW_EVIDENCE_DIR = join(STATE_DIR, "workflow-evidence");
 const RETAINED_DIR = join(WORKFLOW_EVIDENCE_DIR, "retained");
 const TEMP_DIR = join(WORKFLOW_EVIDENCE_DIR, ".tmp");
 const TRASH_DIR = join(WORKFLOW_EVIDENCE_DIR, ".trash");
-
-export class WorkflowImageEvidenceError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: 400 | 403 | 404 | 409 | 410 = 409,
-  ) {
-    super(message);
-    this.name = "WorkflowImageEvidenceError";
-  }
-}
 
 interface InspectedImage {
   path: string;

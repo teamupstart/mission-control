@@ -3511,8 +3511,18 @@ export class TaskManager {
         error: `${agent} cannot be given write access to more than one repo`,
       };
     }
-    if ((patch.agent !== undefined || patch.kind !== undefined) &&
-        kindMissionMcpRequirement({ ...t, kind: patch.kind ?? t.kind }, null)) {
+    const missionToolsTask = {
+      kind: patch.kind ?? t.kind,
+      workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+    };
+    if (
+      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined) &&
+      kindMissionMcpRequirement(
+        missionToolsTask,
+        null,
+        this.workflowEvidenceEnabledForTask(missionToolsTask),
+      )
+    ) {
       const tools = await missionToolsAvailability(agent);
       if (!tools.available) return { ok: false, error: tools.reason! };
     }

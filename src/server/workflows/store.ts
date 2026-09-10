@@ -170,6 +170,7 @@ import { BUILTIN_SESSION_ACTIONS } from "./builtin-session-actions.ts";
 import { BUILTIN_WORKFLOWS, type BuiltinWorkflow } from "./builtin-workflows.ts";
 import { validateWorkflowGraph } from "@shared/workflow-graph.ts";
 import { TERMINAL_ITEM_STATES } from "@shared/queue.ts";
+import { WorkflowImageEvidenceError } from "./evidence-error.ts";
 import { priorFindingFingerprintAudit } from "./finding-audit.ts";
 import { workflowLog } from "./log.ts";
 import { repeatOffenders } from "./repeat-offender.ts";
@@ -2764,6 +2765,59 @@ export type ForemanCompletionStoreResult =
       previousFingerprint: string | undefined;
     };
 
+/**
+ * May a coverage claim cite this evidence item as proof?
+ *
+ * `all`-scoped evidence documents every issued checkout, so it satisfies any claim. Anything
+ * else has to agree with the claim on both halves of the scope: the issued slot, and the root
+ * that slot resolved to. Naming the rule once is deliberate - staging and reservation both ask
+ * it, and a submission frozen under a looser reading than the one that admitted the claim is
+ * exactly the drift this guards against.
+ */
+function coverageLinkSatisfiesScope(
+  item: { repositoryScope: string; sourceRoot: string },
+  claimScope: string,
+  claimSourceRoot: string | undefined,
+): boolean {
+  if (item.repositoryScope === "all") return true;
+  return claimScope !== "all"
+    && item.repositoryScope === claimScope
+    && item.sourceRoot === claimSourceRoot;
+}
+
+/**
+ * Why a coverage set failed its schema, in the caller's terms.
+ *
+ * The limits are the reachable failure and worth naming precisely, but they are not the only
+ * one: a bad proof class, an unexpected link role or a malformed scope all land here too, and
+ * telling that caller to shorten a list it never over-filled sends it to repair the wrong
+ * thing. The first issue Zod reports is the one to hand back.
+ */
+function coverageSchemaReason(error: unknown): string {
+  const issue = error instanceof z.ZodError ? error.issues[0] : undefined;
+  if (!issue) {
+    return `it must stay within ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims} claims and`
+      + ` ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.aggregateJsonBytes} UTF-8 bytes, with one entry`
+      + " per criterion id";
+  }
+  const where = issue.path.length > 0 ? ` (at ${issue.path.join(".")})` : "";
+  return `${issue.message}${where}`;
+}
+
+/**
+ * Does an unchanged row need its intent-episode stamp moved to the episode registering it now?
+ *
+ * A null `episodeKey` is "this session's intent does not resolve at this instant" - the state
+ * between a prompt arriving and the refiner reconciling it - and not "this evidence belongs to
+ * no episode". Treating it as the latter would let a re-registration during that window erase a
+ * real stamp, and `promptedRegisteredEvidence` would then drop the evidence from the very
+ * verification it was captured for. So an unknown episode leaves provenance alone; only a known
+ * one moves it.
+ */
+function restampsEpisode(stamped: string | null, episodeKey: string | null): boolean {
+  return episodeKey !== null && stamped !== episodeKey;
+}
+
 export class WorkflowStore {
   /**
    * `builtins` is injectable for the contract tests, and defaults to what this build ships.
@@ -5036,7 +5090,6 @@ export class WorkflowStore {
           && row.source_locator === item.sourceLocator
           && row.inline_content === (item.inlineContent ?? null)
           && row.command_exit_code === (item.commandExitCode ?? null)
-          && row.episode_key === episodeKey
           && row.display_name === item.displayName
           && row.caption === item.caption
           && row.repository_scope === item.repositoryScope
@@ -5044,11 +5097,17 @@ export class WorkflowStore {
           && row.bytes === item.bytes
           && row.sha256 === item.sha256;
         if (same) {
-          if (row.state === "reserved") restagedItemIds.add(row.id);
+          if (row.state === "reserved" || restampsEpisode(row.episode_key, episodeKey)) {
+            restagedItemIds.add(row.id);
+          }
           continue;
         }
         if (row?.reserved_group_key) {
-          throw new Error(`Workflow evidence item ${item.clientItemId} is already reserved`);
+          throw new WorkflowImageEvidenceError(
+            "evidence_reserved",
+            `Workflow evidence item ${item.clientItemId} is already reserved`
+              + " and its content changed. Register the new content under a new id.",
+          );
         }
         changedItems.push(item);
         if (row?.repository_scope === "all" || item.repositoryScope === "all") allAffected = true;
@@ -5062,49 +5121,74 @@ export class WorkflowStore {
           && row.proof_class === claim.proofClass
           && row.repository_scope === claim.repositoryScope
           && row.source_root === claim.sourceRoot
-          && row.episode_key === episodeKey
           && row.links_json === JSON.stringify(claim.links);
         if (same) {
-          if (row.state === "reserved") restagedCoverageIds.add(row.id);
+          if (row.state === "reserved" || restampsEpisode(row.episode_key, episodeKey)) {
+            restagedCoverageIds.add(row.id);
+          }
           continue;
         }
         if (row?.reserved_group_key) {
-          throw new Error(`Workflow coverage claim ${claim.clientCriterionId} is already reserved`);
+          throw new WorkflowImageEvidenceError(
+            "coverage_reserved",
+            `Workflow coverage claim ${claim.clientCriterionId} is already reserved`
+              + " and its content changed. Register the new claim under a new criterion id.",
+          );
         }
         changedCoverage.push(claim);
         if (row?.repository_scope === "all" || claim.repositoryScope === "all") allAffected = true;
         if (row && row.repository_scope !== "all") affectedRoots.add(row.source_root);
         if (claim.repositoryScope !== "all") affectedRoots.add(claim.sourceRoot);
       }
-      // Applied BEFORE the no-change early return below, so a call that only re-stages still
-      // takes effect. The in-memory rows are updated with it because the limit arithmetic and
-      // the coverage scope checks below read those, not the table.
-      //
-      // No aggregate-limit check of its own: these bytes were within the limit when they were
-      // first staged, and `reserveWorkflowEvidenceInTransaction` re-checks the whole
-      // applicable set at submission time, which is the boundary that decides what a Persona
-      // actually receives.
+      /*
+       * Applied BEFORE the no-change early return below, so a call that only re-stages still
+       * takes effect. The in-memory rows are updated with it because the limit arithmetic and
+       * the coverage scope checks below read those, not the table.
+       *
+       * The episode stamp moves with it, and that is the half that makes re-staging mean
+       * anything across a review round. `promptedRegisteredEvidence` admits only evidence
+       * stamped with the intent episode being verified, so a row returned to the tray under
+       * its ORIGINAL stamp is present and invisible - the Foreman filters it straight back
+       * out. Re-registering unchanged bytes is the agent saying this proof still stands for
+       * the ask being verified now, which is exactly what the stamp records. The identity
+       * comparison above therefore asks only whether the evidence is the same evidence; which
+       * episode it was first captured in is provenance, and provenance is what gets updated
+       * here rather than what decides.
+       *
+       * No aggregate-limit check of its own: these bytes were within the limit when they were
+       * first staged, and `reserveWorkflowEvidenceInTransaction` re-checks the whole
+       * applicable set at submission time, which is the boundary that decides what a Persona
+       * actually receives.
+       */
       const restage = this.db.prepare(
         `UPDATE workflow_evidence_staging
-            SET state = 'staged', reserved_group_key = NULL, updated_at = ?
+            SET state = 'staged',
+                reserved_group_key = NULL,
+                episode_key = COALESCE(?, episode_key),
+                updated_at = ?
           WHERE id = ?`,
       );
       for (const row of existingRows) {
         if (!restagedItemIds.has(row.id)) continue;
-        restage.run(now, row.id);
+        restage.run(episodeKey, now, row.id);
         row.state = "staged";
         row.reserved_group_key = null;
+        row.episode_key = episodeKey ?? row.episode_key;
       }
       const restageCoverage = this.db.prepare(
         `UPDATE workflow_evidence_coverage_staging
-            SET state = 'staged', reserved_group_key = NULL, updated_at = ?
+            SET state = 'staged',
+                reserved_group_key = NULL,
+                episode_key = COALESCE(?, episode_key),
+                updated_at = ?
           WHERE id = ?`,
       );
       for (const row of existingCoverageRows) {
         if (!restagedCoverageIds.has(row.id)) continue;
-        restageCoverage.run(now, row.id);
+        restageCoverage.run(episodeKey, now, row.id);
         row.state = "staged";
         row.reserved_group_key = null;
+        row.episode_key = episodeKey ?? row.episode_key;
       }
       if (changedItems.length === 0 && changedCoverage.length === 0) {
         return this.listWorkflowEvidence(noteKey);
@@ -5122,22 +5206,45 @@ export class WorkflowStore {
       const imageItems = nextItems.filter((item) => item.kind === "image");
       const textItems = nextItems.filter((item) => item.kind === "text");
       if (imageItems.length > WORKFLOW_IMAGE_LIMITS.maxCount) {
-        throw new Error(`At most ${WORKFLOW_IMAGE_LIMITS.maxCount} workflow evidence images may be staged`);
+        throw new WorkflowImageEvidenceError(
+          "image_count",
+          `At most ${WORKFLOW_IMAGE_LIMITS.maxCount} workflow evidence images may be staged`,
+        );
       }
       if (imageItems.reduce((sum, item) => sum + item.bytes, 0) > WORKFLOW_IMAGE_LIMITS.maxAggregateBytes) {
-        throw new Error("Workflow evidence images exceed the aggregate byte limit");
+        throw new WorkflowImageEvidenceError(
+          "image_aggregate",
+          "Workflow evidence images exceed the aggregate byte limit",
+        );
       }
       if (textItems.length > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount) {
-        throw new Error(`At most ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount} workflow text artifacts may be staged`);
+        throw new WorkflowImageEvidenceError(
+          "artifact_count",
+          `At most ${WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount} workflow text artifacts may be staged`,
+        );
       }
       if (
         textItems.reduce((sum, item) => sum + item.bytes, 0)
         > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
       ) {
-        throw new Error("Workflow text artifacts exceed the aggregate byte limit");
+        throw new WorkflowImageEvidenceError(
+          "artifact_aggregate",
+          "Workflow text artifacts exceed the aggregate byte limit",
+        );
       }
+      /*
+       * Resolved against every item this conversation owns, INCLUDING reserved ones, and not
+       * just the ones still in the tray.
+       *
+       * A reservation means a submission has already consumed the item, not that the item
+       * stopped existing or stopped being provable. Resolving links against the tray alone
+       * made a claim about evidence an earlier round proved unregisterable - the one round in
+       * which the criterion is most likely to be worth claiming - and the only way out was to
+       * re-register every linked item in the same call. The scope check below is what
+       * constrains a link, and it reads the row either way.
+       */
       const nextItemScopes = new Map([
-        ...currentStaged.filter((row) => !nextIds.has(row.client_item_id)).map((row) => [
+        ...existingRows.filter((row) => !nextIds.has(row.client_item_id)).map((row) => [
           row.client_item_id,
           { repositoryScope: row.repository_scope, sourceRoot: row.source_root },
         ] as const),
@@ -5155,25 +5262,57 @@ export class WorkflowStore {
           .map(coverageClaimFromRow),
         ...changedCoverage.map(({ id: _id, sourceRoot: _sourceRoot, ...claim }) => claim),
       ];
-      WorkflowEvidenceCoverageClaimsSchema.parse(nextCoverage);
+      // The whole next set, not just the incoming half: `maxClaims` and the aggregate JSON
+      // bound are properties of what this conversation would hold, and an agent can reach
+      // either one. Coded, and carrying the reason Zod actually gave, for the same purpose the
+      // refusals below serve - a caller told to shorten a list it never over-filled repairs
+      // the wrong thing.
+      try {
+        WorkflowEvidenceCoverageClaimsSchema.parse(nextCoverage);
+      } catch (error) {
+        throw new WorkflowImageEvidenceError(
+          "coverage_invalid",
+          `Workflow coverage was refused: ${coverageSchemaReason(error)}`,
+        );
+      }
       for (const claim of nextCoverage) {
+        /*
+         * Only a claim this call is registering has to answer for its links. A claim registered
+         * earlier is walked here because the whole set is validated together, but its links can
+         * stop satisfying these rules through nobody's doing and nobody's power to repair:
+         *
+         * - the evidence is gone, because `runRetention` deletes a reserved row once the
+         *   submission holding it is pruned;
+         * - the evidence is still there under a different repository scope or root, because a
+         *   later call re-registered that `clientItemId`.
+         *
+         * Both are the same shape: refusing on the older claim's behalf would wedge every later
+         * registration on this conversation behind a repair the caller cannot make, which is the
+         * failure this whole path exists to stop. Readiness already reports a claim whose proof
+         * it cannot find, so the gap is stated rather than hidden. A claim being registered NOW
+         * still answers for every link it carries, which is the one moment its author can act.
+         */
+        const registeredNow = changedCriterionIds.has(claim.clientCriterionId);
         for (const link of claim.links) {
           const item = nextItemScopes.get(link.clientItemId);
           if (!item) {
-            throw new Error(
-              `Workflow coverage claim ${claim.clientCriterionId} links unknown evidence ${link.clientItemId}`,
+            if (!registeredNow) continue;
+            throw new WorkflowImageEvidenceError(
+              "coverage_link_unknown",
+              `Workflow coverage claim ${claim.clientCriterionId} links unknown evidence`
+                + ` ${link.clientItemId}. Register that item, in this call or an earlier one,`
+                + " before claiming it as proof.",
             );
           }
           const sourceRoot = changedCoverage.find(
             (candidate) => candidate.clientCriterionId === claim.clientCriterionId,
           )?.sourceRoot ?? existingCoverage.get(claim.clientCriterionId)?.source_root;
-          const scopeMatches = item.repositoryScope === "all"
-            || (claim.repositoryScope !== "all"
-              && item.repositoryScope === claim.repositoryScope
-              && item.sourceRoot === sourceRoot);
-          if (!scopeMatches) {
-            throw new Error(
-              `Workflow coverage claim ${claim.clientCriterionId} links evidence ${link.clientItemId} outside its repository scope`,
+          if (!coverageLinkSatisfiesScope(item, claim.repositoryScope, sourceRoot)) {
+            if (!registeredNow) continue;
+            throw new WorkflowImageEvidenceError(
+              "coverage_link_scope",
+              `Workflow coverage claim ${claim.clientCriterionId} links evidence`
+                + ` ${link.clientItemId} outside its repository scope`,
             );
           }
         }
@@ -10223,7 +10362,10 @@ export class WorkflowStore {
       }
       reserve.run(row.id, submissionId, ordinal, now);
     });
-    const applicableItemIds = new Set(rows.map((row) => row.client_item_id));
+    const applicableItems = new Map(rows.map((row) => [row.client_item_id, {
+      repositoryScope: row.repository_scope,
+      sourceRoot: row.source_root,
+    }] as const));
     const coverageRows = (this.db.prepare(
       `SELECT * FROM workflow_evidence_coverage_staging
         WHERE note_key = ?
@@ -10250,12 +10392,27 @@ export class WorkflowStore {
     );
     for (const row of coverageRows) {
       const claim = coverageClaimFromRow(row);
-      const missingLink = claim.links.find((link) => !applicableItemIds.has(link.clientItemId));
-      if (missingLink) {
-        throw new Error(
-          `Workflow coverage claim ${claim.clientCriterionId} links evidence ${missingLink.clientItemId} outside this submission scope`,
-        );
-      }
+      /*
+       * A claim whose links no longer resolve inside this submission is LEFT STAGED, neither
+       * frozen nor allowed to fail the submission.
+       *
+       * Staging carries a claim past a link that stopped resolving, because its author cannot
+       * repair what retention deleted or what a later call re-scoped. That carry has to stop
+       * short of the frozen record: a submission that froze a `repo-01` claim beside `repo-02`
+       * evidence would be a permanent, auditable assertion that nobody made. Refusing the
+       * whole submission is no better - the stale claim is not this submission's doing, and
+       * blocking on it moves the wedge rather than removing it.
+       *
+       * So the claim stays in the tray where it is visible and repairable, and the submission
+       * proceeds carrying only the claims whose proof it actually holds. `evaluateWorkflowEvidenceReadiness`
+       * reads the frozen set, so an unfrozen claim reads as the uncovered criterion it is.
+       */
+      const coherent = claim.links.every((link) => {
+        const item = applicableItems.get(link.clientItemId);
+        return item !== undefined
+          && coverageLinkSatisfiesScope(item, claim.repositoryScope, row.source_root);
+      });
+      if (!coherent) continue;
       const marked = markCoverage.run(groupKey, now, row.id, groupKey);
       if (Number(marked.changes) !== 1) {
         throw new Error(

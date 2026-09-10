@@ -240,3 +240,69 @@ the daemon fixture every existing spec boots.
   documentation true at its own merge, in either order.
 - Phase 3's panel must not assert Jira's capability booleans, because this phase flips them from
   false to true. Recorded as an explicit non-goal in Phase 3's scope.
+
+## Deviations taken during implementation
+
+Recorded here as well as in the pull request, because each one is a place a later reader
+would otherwise find the code and this document disagreeing.
+
+1. **The two `preflight` sentences moved into the verbs.** Step 5 asked for them "only when
+   the source's `writeback` switches are on", and `preflight(config, ctx)` cannot see those
+   switches: `SweepContext` carries `sourceId`, `repoRoot` and `signal`, and the consent
+   lives on the `TaskSourceInstance` the route holds. Widening that signature is an edit to
+   the contract Phase 1 froze, and adding the checks unconditionally would turn **Check it
+   works** red for every existing Jira source that never writes back. So an empty
+   `resolveTransition` and the UpstartClaw rung are refused by `resolve` / `annotate`
+   themselves - which is where the consent is actually known, and still before anything
+   leaves the process.
+
+2. **A remote link is REST-only, and a CLI-only machine degrades rather than fails.**
+   jira-cli has no remote-link command at all, so `linkVia: "both"` cannot be fully honoured
+   without `JIRA_API_TOKEN`. Failing the whole delivery would retry a comment that has no
+   idempotency of its own, leaving one comment per attempt on an issue whose link can never
+   be posted. The comment goes, the delivery succeeds, and the `detail` names the half that
+   did not run. `linkVia: "remote-link"` with no credential still refuses outright, because
+   then nothing can be written at all.
+
+3. **`WritebackResult.detail` stays null on failure.** Step 3 wanted the partial-success
+   error to carry "the link is there" in `detail`; the frozen contract documents `detail` as
+   null on failure, so that fact is appended to the `error` sentence instead.
+
+4. **`transitionFor` takes the issue as well as the transitions.** The phase file's
+   signature is `(available, wanted)`, but the refusal sentence it specifies names the issue
+   key and the status it is standing in. Splitting one sentence across two functions was
+   worse than a third argument.
+
+5. **`test/task-source-contract.test.ts` and `test/task-source-writeback.test.ts` changed
+   after all.** Both used Jira as the kind that cannot write back, which this phase makes
+   untrue - there is now no shipped kind in that state. Each empties the registry slot (or
+   the capability flag) it is testing and restores it in a `finally`, so the refusal branch
+   stays pinned rather than becoming unreachable. The capability/verb pairing tests are
+   unchanged and pass with Jira's flags true, which is the assertion the phase asked for.
+
+6. **`cliFailure` gained a `verb` parameter, and its `--paginate` branch was tightened.**
+   The write path reuses its four CLI-level diagnoses; only the fallback sentence named
+   `jira issue list`. The unknown-flag branch also had to stop claiming `--paginate` for
+   every unknown flag, since the write path passes `--no-input`.
+
+7. **No `test/jira-preflight.test.ts` additions.** Following from (1), the sentences it was
+   asked to pin are not preflight sentences. They are covered in `test/jira-writeback.test.ts`
+   against the registered kind, which is the boundary the worker calls through.
+
+### Resolve requires the credential rung
+
+The phase file has both rungs resolving. They do not, and the reason is the operator decision
+this phase is held to: **a misconfigured resolve must refuse naming the transitions actually
+available from the issue's current status.**
+
+Only a read of Jira produces that list. `jira issue move` can move an issue but cannot be
+asked what an issue is able to do - jira-cli ships no command that lists transitions, and the
+move's own error text lists them on recent versions and not on older ones. So on a CLI-only
+machine the good case works and the bad case is unactionable: "it would not move", with
+nothing to do about it. An earlier draft papered over this by pointing at whatever the CLI
+happened to print, which is a promise that is empty exactly when it is needed.
+
+So `resolve` requires the read rung and refuses before it spawns anything when that rung is
+absent, naming the credential as the fix. With the credential present the CLI still goes
+first, and only a move it refuses is handed to the read rung. `annotate` is untouched and
+still works on the CLI alone.

@@ -22,11 +22,14 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
+const { RESTART_CONTINUATION_PROMPT, SdkSupervisor } = await import(
+  "../src/server/sdk/supervisor.ts"
+);
 const { getSdkSession, listSdkSessions, upsertSdkSession } = await import(
   "../src/server/sdk/store.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
+const { claimInjectionEcho, originOf } = await import("../src/server/injections.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 const { PIPELINE_CALLER_CREDENTIAL_FILE_ENV } = await import("../src/shared/pipeline.ts");
 const { pipelineCredentialFromDescriptor } = await import("./helpers/pipeline-credential.ts");
@@ -1296,6 +1299,21 @@ test("restore automatically continues an interrupted turn without replaying its 
     assert.match(handle.sent[0]?.text ?? "", /previous turn was still in progress/i);
     assert.match(handle.sent[0]?.text ?? "", /do not repeat completed work/i);
     assert.equal(getSdkSession("sdk:continue-1")?.turnInProgress, true);
+    // Authorship, written down at delivery. This send passes no `acceptedGoal`, so the send
+    // door itself never seeds a Goal from it - but the agent echoes the text back through its
+    // prompt hook moments later, and the only thing that can tell that echo from something
+    // the operator typed is this record. Unrecorded, the continuation became the session's
+    // ask and was frozen onto the next workflow run as "Original user goal".
+    assert.equal(
+      originOf("sdk:continue-1", handle.sent[0]?.text ?? ""),
+      "harness",
+      "the restart continuation must be recorded as the daemon's own turn",
+    );
+    assert.equal(
+      registry.getGoal("sdk:continue-1"),
+      null,
+      "and it must not have seeded a Goal on the way through",
+    );
 
     handle.push({
       kind: "bound",
@@ -1312,6 +1330,108 @@ test("restore automatically continues an interrupted turn without replaying its 
 
     handle.push({ kind: "turn_done", usage: null });
     await waitFor(() => getSdkSession("sdk:continue-1")?.turnInProgress === false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("the continuation's authorship is on file before the send resolves", async () => {
+  // The race the reviewer found, pinned at the one place it can be observed. The driver takes
+  // the turn and the agent submits it while `send` is still unresolved, so the prompt hook can
+  // reach the daemon first. Authorship written after the await is therefore absent exactly
+  // when the echo needs it, and the continuation is captured as the human's Goal - the
+  // substitution the record was added to prevent, still reachable through its own path.
+  //
+  // Asserted from INSIDE the pending send, which is the only vantage point where "too late"
+  // and "in time" look different. `test/prompt-authorship.test.ts` carries the other half:
+  // that a reserved-but-unconfirmed record does suppress the echo it was bought for.
+  const handle = fakeHandle();
+  let releaseSend: (() => void) | null = null;
+  let originDuringSend: string | undefined = "unobserved";
+  handle.send = async (turn: SdkTurn) => {
+    handle.sent.push(turn);
+    // The driver has the turn. Anything the agent does now races the caller's await.
+    originDuringSend = originOf("sdk:continue-inflight", RESTART_CONTINUATION_PROMPT);
+    await new Promise<void>((resolve) => (releaseSend = resolve));
+    return "started" as const;
+  };
+  const fake = withFakeDriver(async () => handle);
+  try {
+    upsertSdkSession({
+      id: "sdk:continue-inflight",
+      agent: "claude",
+      agentSessionId: "agent-inflight",
+      cwd: "/wt/inflight",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "suspended",
+      turnInProgress: true,
+    });
+
+    const restoring = new SdkSupervisor(new Registry()).restore();
+    await waitFor(() => releaseSend !== null);
+    assert.equal(
+      originDuringSend,
+      "harness",
+      "the echo's authorship must already be on file while the send is in flight",
+    );
+    releaseSend!();
+    await restoring;
+
+    // And settling the send leaves one delivery owing one echo, not two. A surplus claim
+    // would be spent silencing whatever the operator typed next that repeated the text.
+    assert.equal(claimInjectionEcho("sdk:continue-inflight", RESTART_CONTINUATION_PROMPT), "harness");
+    assert.equal(claimInjectionEcho("sdk:continue-inflight", RESTART_CONTINUATION_PROMPT), undefined);
+    // The label outlives the claim: the conversation log still credits the daemon.
+    assert.equal(originOf("sdk:continue-inflight", RESTART_CONTINUATION_PROMPT), "harness");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("a refused continuation records no authorship, so a later turn keeps its own", async () => {
+  // The other half of "only once it landed". A driver that rejects the turn produces nothing
+  // anybody will read, and claiming it would leave a fingerprint sitting in the injection
+  // registry with nothing behind it - which the goal path reads as "Mission Control typed
+  // this". The turn it would then suppress is a LATER one carrying the same text, and the
+  // only author who can send that text now is the operator.
+  const handle = fakeHandle();
+  handle.send = async () => {
+    throw new Error("the driver refused the continuation");
+  };
+  const fake = withFakeDriver(async () => handle);
+  try {
+    upsertSdkSession({
+      id: "sdk:continue-refused",
+      agent: "claude",
+      agentSessionId: "agent-refused",
+      cwd: "/wt/refused",
+      taskId: null,
+      model: null,
+      effort: null,
+      permissionMode: null,
+      status: "suspended",
+      turnInProgress: true,
+    });
+
+    const registry = new Registry();
+    // Resume swallows the rejection on purpose: the conversation itself DID resume, so this
+    // must not take the unresumable eviction path.
+    await new SdkSupervisor(registry).restore();
+
+    assert.equal(handle.sent.length, 0, "the driver took nothing");
+    assert.equal(
+      originOf("sdk:continue-refused", RESTART_CONTINUATION_PROMPT),
+      undefined,
+      "a refused delivery must leave no authorship record",
+    );
+    assert.equal(registry.getGoal("sdk:continue-refused"), null);
+    // `send` rolls back the slot it reserved for a turn the driver refused, so the durable
+    // bit is clear. Asserted to keep the authorship boundary honest about the state it
+    // leaves behind rather than assuming a retry it does not arrange.
+    assert.equal(getSdkSession("sdk:continue-refused")?.turnInProgress, false);
   } finally {
     fake.restore();
   }

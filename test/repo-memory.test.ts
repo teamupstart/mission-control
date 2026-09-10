@@ -158,8 +158,8 @@ test("the dispatcher composes pi's turn one through the pointer", () => {
   // once - prepending the multi-repo manifest when the task attaches other repositories -
   // and every runtime path delivers that same string. Pi's pointer wraps the composed
   // intent, so a pi session reads the memory pointer first and the task second, whichever
-  // shape the task has. (Pi declares no `multiRepoDispatch`, so today that composition is
-  // always the identity for pi - but the seam is what this test pins, not the arithmetic.)
+  // shape the task has. Pi supports multi-repo dispatch without directory grant flags, so
+  // its launch message can carry both the repository manifest and this memory pointer.
   const dispatcher = readFileSync(`${here}../src/server/dispatcher.ts`, "utf8");
   // Bound to a NAMED composition rather than to one nested call, because the composed text
   // now has a second reader: the launch-presentation marker fingerprints the exact string

@@ -75,7 +75,7 @@ import {
   stagingPaths,
   swapAppBundle,
 } from "./app-bundle-swap.mjs";
-import { stateDir } from "../src/shared/harness-runtime.mjs";
+import { envVar, stateDir } from "../src/shared/harness-runtime.mjs";
 import {
   UPDATE_PROGRESS_MARKER,
   UPDATE_STAGED_MARKER,
@@ -951,9 +951,10 @@ function installApp(options) {
   // Two markers for one heading. These are the minutes - dependency install, then the
   // packaged build - and a bar that could not tell them apart would sit still for both.
   progress("dependencies");
-  run("npm", ["ci"], { cwd: clone });
+  const npm = envVar("NPM_BIN") || "npm";
+  run(npm, ["ci"], { cwd: clone });
   progress("build");
-  run("npm", ["run", "package"], { cwd: clone });
+  run(npm, ["run", "package"], { cwd: clone });
 
   // 7. Verify ----------------------------------------------------------------------------
   progress("verify");

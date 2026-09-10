@@ -57,6 +57,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "execFile", command: "executable.path", contract: "locator-result", reason: "resolved GitHub CLI" },
     { operation: "spawn", command: "args.node", contract: "current-runtime", reason: "absolute detached helper runtime" },
   ],
+  "src/main/update-runtime.ts": [
+    { operation: "execFile", command: "executable", contract: "resolved-path-parameter", reason: "bounded probes of locator-selected Node and npm, and fixed OS env for child-runtime identity" },
+  ],
   "src/server/claude-cli.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Claude CLI" },
   ],

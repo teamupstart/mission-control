@@ -132,6 +132,21 @@ Deferring hides the banner until the next scheduled check or launch. The banner 
 Electron-only preload capability: the plain browser dashboard has no update bridge, renders no
 update banner, and starts no update check.
 
+Before offering an actionable **Update Now**, Mission Control checks the selected system Node.js
+and npm in the updater clone. Node must satisfy the installer's minimum (currently Node.js 24).
+A missing, incompatible, or unusable runtime leaves the release visible with a disabled
+**Update Now**, an explanation, and **Check again**. Install or select a supported Node.js with
+npm, then use **Check again** to refresh executable discovery without closing the app. The same
+message is shown when checking from the native menu.
+
+The check runs again before preparation; installation of an already staged bundle rechecks Node
+without requiring npm. The runtime selected
+by a version-manager shim is pinned into the build's child PATH, and the installer uses the npm
+path resolved by the executable catalog through `MISSION_NPM_BIN`. The installer retains its own
+Node prerequisite check. A changed launch-time override or an inherited PATH that still prioritizes
+an old installation may require restarting Mission Control with the corrected environment; merely
+switching Node in an unrelated terminal does not change the app's inherited environment.
+
 **Update Now** does not close anything. It starts the build, and Mission Control stays open and
 usable while it runs: the banner becomes a progress bar with the stage the install script has
 reached - prerequisites, source, release, checkout, dependencies, build, verify - and a **Cancel**

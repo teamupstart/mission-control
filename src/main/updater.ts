@@ -24,7 +24,7 @@ import { locateExecutable } from "../server/executables/locator.ts";
 import { bundleShortVersion } from "./bundle-version.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
-import { findSystemNode } from "./system-node.ts";
+import { checkUpdateRuntime, type UpdateRuntime } from "./update-runtime.ts";
 import {
   stageUpdateBuild,
   updateChildEnvironment,
@@ -73,6 +73,7 @@ export interface UpdateDialogs {
 
 export interface HelperHandoff {
   node: string;
+  env?: NodeJS.ProcessEnv;
   helperSource: string;
   sourceClone: string;
   targetTag: string;
@@ -114,6 +115,7 @@ export interface StagedBundleIdentity {
 
 /** What the controller asks of a staged build; the port supplies the node binary and log. */
 export interface UpdateStageRequest {
+  runtime: Extract<UpdateRuntime, { ok: true }>;
   sourceClone: string;
   targetTag: string;
   signal: AbortSignal;
@@ -126,7 +128,7 @@ export interface UpdaterPort {
   currentVersion(): string;
   readReceipt(): InstallReceipt | null;
   latestRelease(): Promise<ReleaseInfo | null>;
-  systemNode(): string | null;
+  runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
   helperSource(): string;
   stateDirectory(): string;
   handoff(args: HelperHandoff): Promise<void>;
@@ -385,7 +387,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
           {
             detached: true,
             stdio: ["ignore", logFd, logFd],
-            env: updateChildEnvironment(),
+            env: args.env ?? updateChildEnvironment(),
           },
         );
         child.once("error", reject);
@@ -434,7 +436,6 @@ function safeUpdateError(error: unknown): {
 export class UpdateController {
   private snapshot: UpdateSnapshot;
   private receipt: InstallReceipt | null = null;
-  private node: string | null = null;
   private checkPromise: Promise<UpdateSnapshot> | null = null;
   private applyPromise: Promise<boolean> | null = null;
   private commandPromise: Promise<UpdateSnapshot> | null = null;
@@ -508,12 +509,8 @@ export class UpdateController {
       else if (!isTrustedInstallRepo(this.receipt.repo)) {
         disable(`Updates are disabled because this app was installed from ${this.receipt.repo}.`);
       } else {
-        this.node = this.port.systemNode();
-        if (!this.node) disable("A system Node.js installation is required to apply updates.");
-        else {
-          this.lastBackgroundAttempt = this.port.now();
-          this.publish(idleSnapshot(this.port.currentVersion(), lastOutcome, null));
-        }
+        this.lastBackgroundAttempt = this.port.now();
+        this.publish(idleSnapshot(this.port.currentVersion(), lastOutcome, null));
       }
     }
 
@@ -601,6 +598,9 @@ export class UpdateController {
         if (!release || !newVersion || !isNewerVersion(currentVersion, newVersion)) {
           return this.publish({ phase: "up-to-date", currentVersion, checkedAt, lastOutcome });
         }
+        const reusableStaged = this.staged?.releaseTag === release.tagName &&
+          this.stagedBundleIsIntact(this.staged);
+        const runtime = await this.port.runtime(this.receipt!.sourceClone, !reusableStaged);
         return this.publish({
           phase: "available",
           currentVersion,
@@ -611,6 +611,7 @@ export class UpdateController {
           publishedAt: release.publishedAt,
           checkedAt,
           lastOutcome,
+          ...(!runtime.ok ? { blocker: runtime.message } : {}),
         });
       } catch (error) {
         const safe = safeUpdateError(error);
@@ -665,6 +666,10 @@ export class UpdateController {
       const snapshot = await this.check(true);
       switch (snapshot.phase) {
         case "available": {
+          if (snapshot.blocker) {
+            await this.port.dialogs.error(snapshot.blocker);
+            return this.snapshot;
+          }
           let choice: "apply" | "defer";
           this.releaseDecisionPending = true;
           try {
@@ -732,7 +737,7 @@ export class UpdateController {
    */
   apply(): Promise<boolean> {
     if (this.applyPromise) return this.applyPromise;
-    if (this.snapshot.phase !== "available" || !this.receipt || !this.node) {
+    if (this.snapshot.phase !== "available" || !this.receipt || this.snapshot.blocker) {
       return Promise.resolve(false);
     }
     const offer = this.snapshot;
@@ -772,7 +777,17 @@ export class UpdateController {
     this.publish(preparing("starting"));
     this.applyPromise = (async () => {
       try {
+        const runtime = await this.port.runtime(this.receipt!.sourceClone);
+        if (abort.signal.aborted) {
+          this.publish(offer);
+          return false;
+        }
+        if (!runtime.ok) {
+          this.publish({ ...offer, blocker: runtime.message });
+          return false;
+        }
         const outcome = await this.port.stage({
+          runtime,
           sourceClone: this.receipt!.sourceClone,
           targetTag: offer.releaseTag,
           signal: abort.signal,
@@ -968,10 +983,11 @@ export class UpdateController {
       lastOutcome: target.lastOutcome,
     });
     try {
-      const node = this.port.systemNode();
-      if (!node) throw new UpdateError("A system Node.js installation is required to apply updates.");
+      const runtime = await this.port.runtime(this.receipt!.sourceClone, !stagedBundle);
+      if (!runtime.ok) throw new UpdateError(runtime.message);
       await this.port.handoff({
-        node,
+        node: runtime.node,
+        env: runtime.env,
         helperSource: this.port.helperSource(),
         sourceClone: this.receipt!.sourceClone,
         targetTag: target.releaseTag,
@@ -1081,24 +1097,13 @@ export function createDefaultUpdaterPort(options: {
     currentVersion: options.currentVersion,
     readReceipt,
     latestRelease: () => latestStableRelease(runGh),
-    systemNode: findSystemNode,
+    runtime: checkUpdateRuntime,
     helperSource: () => options.helperSource,
     stateDirectory: () => options.stateDirectory,
     handoff: (args) =>
       spawnDetachedUpdateHelper({ ...args, helperSource: options.helperSource, logPath }),
     stage: async (request) => {
-      // Electron's own executable cannot run npm, and a managed install already proved a
-      // system Node.js exists - this only re-reads it, because PATH can change under a
-      // long-running app.
-      const node = findSystemNode();
-      if (!node) {
-        return {
-          ok: false,
-          reason: "failed",
-          message: "A system Node.js installation is required to apply updates.",
-        };
-      }
-      return stageUpdateBuild({ ...request, node, log });
+      return stageUpdateBuild({ ...request, node: request.runtime.node, env: request.runtime.env, log });
     },
     stagedBundleIdentity: (path) => {
       // `mtimeMs` and the inode together: electron-builder removes and recreates this

@@ -93,6 +93,28 @@ test("the login-shell PATH reaches the build, which has to find git and npm", ()
   );
 });
 
+test("the staged installer receives the validated Node PATH and npm selection", async () => {
+  const clone = fakeClone(`
+import { writeFileSync } from "node:fs";
+writeFileSync("runtime.json", JSON.stringify({ path: process.env.PATH, npm: process.env.MISSION_NPM_BIN }));
+console.log("${UPDATE_STAGED_MARKER} 1.2.4 one " + process.cwd() + "/app");
+`);
+  try {
+    const result = await stageUpdateBuild({
+      node: process.execPath,
+      env: { ...process.env, PATH: "/selected/node/bin:/usr/bin:/bin", MISSION_NPM_BIN: "/selected/npm" },
+      sourceClone: clone, targetTag: "v1.2.4", signal: new AbortController().signal,
+      onStage: () => {}, log: () => {},
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(readFileSync(join(clone, "runtime.json"), "utf8")), {
+      path: "/selected/node/bin:/usr/bin:/bin", npm: "/selected/npm",
+    });
+  } finally {
+    rmSync(clone, { recursive: true, force: true });
+  }
+});
+
 test("a staged build reports every stage it reaches and the bundle it produced", async () => {
   const clone = fakeClone(`
 const bundle = process.cwd() + "/${BUNDLE}";

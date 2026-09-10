@@ -212,9 +212,10 @@ and it is not made worse here. It is stated plainly so nobody reads the omission
 
 ## Defect 3: `test/multi-repo-dispatch.test.ts` opens real multiplexer sessions on the operator's machine
 
-The machine currently holds **42 Herdr workspaces and 2 tmux sessions labelled `T` and
-`T-soloha`**, all rooted in `/private/var/folders/…/T/mission-multirepo-dispatch-*/` temp
-directories, all running `/bin/echo`, none of them closed. `test/multi-repo-dispatch.test.ts`
+The machine currently holds **44 leaked homes: 42 Herdr workspaces plus 2 tmux sessions**, all
+rooted in `/private/var/folders/…/T/mission-multirepo-dispatch-*/` temp directories, all running
+`/bin/echo`, none of them closed. They carry two labels, `T` and `T-soloha`, and both come from the
+**same** test case - see "Why one case produced two labels" below. `test/multi-repo-dispatch.test.ts`
 sets `MISSION_CLAUDE_BIN` and `MISSION_PI_BIN` to `/bin/echo` but constructs
 `new Dispatcher(registry, undefined, { worktrees, resolveBases })` **without injecting the `spawn`
 seam**, so `spawnUniquely` runs for real: it lists real homes, opens a real tmux session or a real
@@ -226,6 +227,36 @@ the operator's real daemon.
 The dispatcher already declares the seam for exactly this reason (`deps.spawn`, documented at
 `dispatcher.ts:258` as "`spawnUniquely` opens an actual tmux session on the machine running the
 tests"). This test simply does not use it.
+
+### Why one case produced two labels
+
+`spawnUniquely` takes the bare label when it is free and the suffixed one when it is not:
+
+```ts
+const unique = `${baseName}-${shortId}`;
+const name = held === null || held.has(baseName) ? unique : baseName;
+```
+
+The task is titled `T` with id `soloharness`, so `sessionLabel` gives `T` and `taskId.slice(0, 6)`
+gives `soloha`. The FIRST run on this machine found `T` free and took it. Every run after that found
+`T` still held - nothing ever closes these - and took `T-soloha`.
+
+Measured, which is what settles it: the two tmux sessions are rooted in `soloharness-api` worktrees
+from two different runs, `mission-multirepo-dispatch-lG5Puu` created 2026-09-08 20:57 (label `T`) and
+`mission-multirepo-dispatch-HbV8ux` created 2026-09-08 23:03 (label `T-soloha`). The 42 Herdr
+workspaces are likewise rooted in distinct `mission-multirepo-dispatch-*` directories. One case,
+many runs, two labels. There is no second leaking case to find.
+
+### A second defect the labels expose
+
+`spawnUniquely` checks `held.has(baseName)` and never `held.has(unique)`, so once the bare name is
+taken every later run lands on the SAME `T-soloha`. That is why 42 Herdr workspaces share one label.
+It matters beyond tidiness: `heldHomeNames` returns a map keyed by session NAME, so 42 workspaces
+collapse to a single entry and `killHome("T-soloha")` can only ever tear down one of them.
+
+This is **recorded, not scheduled**. Fixing it changes dispatch naming for every backend, which is
+outside what this plan's review approved, and it is invisible in normal use because a real dispatch's
+`shortId` is a distinct task id. See the follow-up note in the pull request.
 
 ### Fix
 

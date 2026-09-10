@@ -49,9 +49,12 @@ Checked against the repository before drawing boundaries. Three of these changed
   rollback case above it. Its own comment says "what happens after that is the ordinary launch path,
   which has no pane to talk to here" - which is the mistaken belief that produced the leak. It
   dispatches a `pi` task titled `T` with id `soloharness`, so `sessionLabel` yields `T` and
-  `taskId.slice(0, 6)` yields `soloha`: **`T-soloha`**, which is exactly the label on the 42 leaked
-  Herdr workspaces and the 2 leaked tmux sessions on the operator's machine. The identification is
-  confirmed, not inferred.
+  `taskId.slice(0, 6)` yields `soloha`. All 44 leaked homes come from this one case across many
+  runs, under **two** labels: `spawnUniquely` takes the bare `T` when it is free and `T-soloha` once
+  it is held, and nothing ever closes either. Measured: the two tmux sessions are `soloharness-api`
+  worktrees from two different runs (`…-lG5Puu`, 09-08 20:57, label `T`; `…-HbV8ux`, 09-08 23:03,
+  label `T-soloha`). There is no second leaking case to find, so the phase's scope is complete as
+  written.
 - **Defects 1 and 4 touch the same two files** (`herdr.ts`, `herdr-client.ts`) and in `list()`'s case
   the same function. Splitting them would produce two pull requests that conflict on merge.
 

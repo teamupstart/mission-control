@@ -85,9 +85,13 @@ Verified before this file was written. Trust these, but confirm anything you bui
   discovery tick and a 1,000 ms per-call read timeout, with a hard refusal at `panes + 1 > 512`.
 - The leaking test is `test/multi-repo-dispatch.test.ts:285`, the `soloharness` case:
   `new Dispatcher(registry)` with no `spawn` seam, agent `pi`, task id `soloharness`, title `T`.
-  `sessionLabel` gives `T` and `taskId.slice(0, 6)` gives `soloha`, producing **`T-soloha`** - the
-  label on all 42 leaked Herdr workspaces and the 2 leaked tmux sessions. The seam exists and is
-  documented for exactly this at `dispatcher.ts:258`.
+  `sessionLabel` gives `T` and `taskId.slice(0, 6)` gives `soloha`. All 44 leaked homes come from
+  this one case across many runs, under **two** labels, because `spawnUniquely` takes the bare `T`
+  when it is free and `T-soloha` once it is held (`name = held.has(baseName) ? unique : baseName`)
+  and nothing ever closes either. Measured: the two tmux sessions are `soloharness-api` worktrees
+  from two different runs (`…-lG5Puu`, 09-08 20:57, label `T`; `…-HbV8ux`, 09-08 23:03, label
+  `T-soloha`). **There is no second leaking case**, so step 5.5's sweep is a confirmation rather
+  than a hunt. The seam exists and is documented for exactly this at `dispatcher.ts:258`.
 
 ## 5. Implementation steps
 
@@ -160,6 +164,11 @@ Keep the existing side-pane behavior: a failed split still cannot fail a launch.
   reach a real backend under the test runner. Put it where the repository already states this kind of
   boundary rather than inventing a new home for it; `test/db-isolation.test.ts` is the precedent for
   the shape, not the location.
+- **Not in this phase**: `spawnUniquely` checks `held.has(baseName)` and never `held.has(unique)`, so
+  once the bare name is taken every later run lands on the same suffixed name - which is why 42
+  Herdr workspaces share one label, and why `killHome` can only tear down one of them
+  (`heldHomeNames` is keyed by session name). Changing that alters dispatch naming for every backend
+  and is outside what this plan's review approved. Leave it alone and do not "fix" it in passing.
 
 ## 6. Data, API and migration
 
@@ -229,6 +238,13 @@ There is no later phase in this plan. What a future change may rely on, and must
   2 appears in no phase, per the amended decision, and that this phase touches neither
   `dispatcher.ts`'s `missionMcpRegistered` guard nor `ask-channel.ts`, which the extension plan will
   own.
+- **2026-09-09, review reconciliation.** Review found the leak attribution stated two ways: this file
+  and the index called `T-soloha` "the label" on all 44 leaked homes, while `plan.md` described them
+  as "labelled `T` and `T-soloha`". Re-measured rather than reworded: both tmux sessions are
+  `soloharness-api` worktrees from different runs, so one case produced both labels via
+  `spawnUniquely`'s bare-versus-suffixed branch. All three documents now say that, and step 5.5 gains
+  an explicit non-goal covering the `held.has(unique)` gap the labels expose, so the phase cannot
+  absorb it by accident.
 - **Contract check.** The two repository-wide contracts named in
   [`phased-plan.md`](phased-plan.md#cross-phase-contracts) are asserted by section 7's test list:
   the state-home release by `agent-subprocess-env.test.ts`, and the meaning of `[]` by

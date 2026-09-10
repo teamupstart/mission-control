@@ -41,6 +41,16 @@ The multiplexer registry contains tmux, Herdr, and cmux in that order. The order
 inner tmux pane as the most specific identity, then prefers a persistent Herdr workspace over the
 outer self-hosting cmux surface when more than one backend can describe a process.
 
+cmux needs two things from the machine beyond its CLI, both checked and repairable in
+**Settings > Setup**: its app has to be running, since the control socket exists only while it
+is, and `automation.socketControlMode` has to be `allowAll` rather than the shipped `cmuxOnly`,
+which admits only processes cmux started itself. It is also the one backend whose paste submits.
+cmux's typing method writes a leading ESC in a terminal write of its own, so bracketed-paste
+markers written by hand reach the agent as an Escape keypress and the literal text `[200~`; its
+real paste verb delivers them correctly and appends a carriage return that no parameter
+suppresses. The adapter reports that the paste submitted and prompt delivery skips its own
+Enter, which is why the paste result carries the fact rather than the caller assuming it.
+
 ## Dispatch terminal preference
 
 Each terminal-backed harness has a **Terminal** chooser under **Settings > Harnesses**. The

@@ -1400,6 +1400,35 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### The run record, offered rather than stacked
+
+`e2e/.artifacts/workflow-run-record-tabs/` carries four frames from
+`specs/workflow-run-record-tabs.spec.ts`, and they exist because the change is a MEASUREMENT.
+Below the round scrubber the four sections of one real No-Mistakes run came to 7,997px - 8.9
+screens at a 900px viewport - to carry three sentences of verdict. Assertions can say the tab is
+selected and the row is one row; only a picture shows that four 560px delivery cards are now
+four lines, and that nine human decision bodies close down to nine.
+
+`01-deliveries-blocking.png` is the load-bearing one: a run whose worklist is clean and whose
+packets are not, opening on Deliveries with no click, the refused packet's sentence, its durable
+error and its recovery buttons already on screen. An amber badge alone would leave every one of
+those a click away, which is why the container resolves an initial pane at all.
+`02-intent-collapsed.png` and `03-intent-decision-open.png` are the decision rows closed and one
+of them open - closed being the state that matters, since the claim is that the prose costs a
+reader nothing until they ask for it. `04-clean-run.png` is the ordinary run, which is most of
+them: two tabs, no amber, and no `Deliveries 0` for a run that sent nothing.
+
+Regenerate the frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-run-record-tabs.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### The run header, decluttered
 
 `e2e/.artifacts/workflow-run-audit/` carries three frames
@@ -1879,7 +1908,8 @@ on the fake so that regression is caught rather than invoiced.
 | `MISSION_WORKSPACE_DIRS` | repo discovery sees only the seeded fixture repo |
 | `MC_E2E_USE_REPO_INDEX_DEFAULTS=1` | opt-in fixture flag that removes every supported workspace override, so Settings repository-index specs exercise the config-backed shipped defaults |
 | `MISSION_CLAUDE_BIN` / `CODEX` / `PI` | every agent launch hits a fake |
-| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec |
+| `MISSION_GH_BIN` | every `gh` call hits a fake. Not about cost: `gh issue create` **publishes** to a repository other people watch, and on a machine where `gh` is signed in an unfaked binary would file a real issue on every run of the push spec. The same override covers the two write-back verbs, and it has to: `gh issue comment` posts on a thread somebody is watching and `gh issue close` moves their work, and neither is undone by deleting a row in the daemon's ledger |
+| `MC_E2E_GH_WRITEBACK` | where that fake reads its scripted write-back answers from (see `writeGhWritebackScript`). Set for every daemon, so a spec only has to write the file; absent content means both verbs succeed, which is what every spec that never turns a source's write-back switches on already expects |
 | `MISSION_POLL_MS=0` | terminal discovery is **not** scoped either - it walks every process on the machine and cards anything that looks like an agent |
 
 That last setting matters most and is the least obvious. Without `MISSION_POLL_MS=0` a daemon

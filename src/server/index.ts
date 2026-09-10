@@ -739,6 +739,9 @@ async function shutdown(): Promise<void> {
   // reading checkouts the allocator is about to reconcile, and one still running past that
   // would report "unreadable" about trees that were healthy when it started.
   await retentionObserver.stop();
+  // Owed closures are durable, so stopping the sweep loses nothing: the next daemon picks up
+  // any recurring mission run whose agent it has not yet observed leave.
+  tasks.stopMissionSessionClosures();
   await worktrees.stop();
   stopSkillsReloader();
   stopTaskSources();

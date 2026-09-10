@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   ghProductScriptPath,
+  ghWritebackScriptPath,
   productAuthorizationBinPath,
   productAuthorizationScriptPath,
   writeProductAuthorizationBin,
@@ -88,6 +89,12 @@ export interface DaemonHandle {
    * On the handle for `ghPrsPath`'s reason: the fake reads one env var, set at spawn time.
    */
   ghProductPath: string;
+  /**
+   * Where a spec scripts the fake `gh`'s write-back behavior, for THIS daemon.
+   *
+   * On the handle for `ghPrsPath`'s reason: the fake reads one env var, set at spawn time.
+   */
+  ghWritebackPath: string;
   /** Where a spec scripts the private desktop authorization stand-in. */
   productAuthorizationPath: string;
   /** One JSON line per authorization request the daemon made. */
@@ -461,6 +468,10 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     // so a spec only has to write the file; absent content is the working default, which is
     // what every spec that never opens the Feedback form already expects.
     MC_E2E_GH_PRODUCT: ghProductScriptPath(home),
+    // And where it reads its scripted write-back behavior from. Set for every daemon for
+    // the same reason: absent content means both verbs succeed, which is what every spec
+    // that never turns a source's write-back switch on already expects.
+    MC_E2E_GH_WRITEBACK: ghWritebackScriptPath(home),
     // The public repository product reports would target. Pointed at a fixture owner/name so
     // no run - not even one whose `gh` override somehow failed - names the real tracker. The
     // blast dam is `MISSION_GH_BIN` above; this is the second lock on the same door.
@@ -717,6 +728,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     twinRepos,
     ghPrsPath: ghPullRequestsPath(home),
     ghProductPath: ghProductScriptPath(home),
+    ghWritebackPath: ghWritebackScriptPath(home),
     productAuthorizationPath: productAuthorizationScriptPath(home),
     productAuthorizationAskedPath: join(home, "product-authorization-asked.jsonl"),
     conductor,

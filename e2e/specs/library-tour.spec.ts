@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
  * Author what runs, as a browser sees it.
@@ -203,6 +205,41 @@ async function seedTerminalRun(
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${submitted.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("cancelled");
   return submitted.run.id;
+}
+
+/**
+ * Refuse one packet on a seeded run, so its blocking pane is NOT the Review worklist.
+ *
+ * The run record resolves an initial pane per run, and it opens on whichever pane holds
+ * something that stops the run - which for a refused delivery is Deliveries, leaving the
+ * worklist unmounted. `run-moving` resolves `library:run-worklist` or falls back to "the run is
+ * opening", so this is the exact shape that would have silently degraded the stop, and it is
+ * why the tour's own `showRun` names the pane rather than relying on the default.
+ */
+function refuseOneDelivery(daemon: DaemonHandle, runId: string, sessionId: string): void {
+  withDaemonDb(daemon, (db) => {
+    const submission = db.prepare(
+      `SELECT id, created_at FROM workflow_submissions WHERE run_id = ? ORDER BY round, segment LIMIT 1`,
+    ).get(runId) as { id: string; created_at: number } | undefined;
+    if (!submission) throw new Error("the seeded run should already hold its submission");
+    const payload = "The packet the tour's run never managed to send.";
+    db.prepare(
+      `INSERT INTO workflow_deliveries (
+         id, run_id, submission_id, kind, node_attempt_id, session_id, note_key, payload,
+         payload_sha256, state, error, created_at, updated_at, delivered_at, payload_pruned_at
+       ) VALUES (?, ?, ?, 'persona_feedback', NULL, ?, 'library-tour', ?, ?, 'refused',
+                 'pane_blocked', ?, ?, NULL, NULL)`,
+    ).run(
+      "library-tour-refused",
+      runId,
+      submission.id,
+      sessionId,
+      payload,
+      createHash("sha256").update(payload).digest("hex"),
+      submission.created_at,
+      submission.created_at,
+    );
+  });
 }
 
 async function builtinVersionId(daemon: DaemonHandle): Promise<string> {
@@ -588,9 +625,19 @@ test("a finished built-in run is walked in Runs and then in its session's Workfl
     "library-tour-run",
   );
 
+  // Refused BEFORE the tour starts, and that is the point: with a blocking delivery this run's
+  // record would open on Deliveries and leave the worklist unmounted, so this stop's target
+  // would resolve to nothing and the popover would read "the run is opening" forever. The
+  // tour's `showRun` names the worklist pane explicitly, which is what holds this.
+  refuseOneDelivery(daemon, runId, sessionId);
+
   await startFromPalette(dashboard);
   let dialog = await advanceTo(dashboard, "The Library", "A run, moving");
-  await expect.poll(() => hash(dashboard)).toBe(`#/runs/${runId}`);
+  await expect.poll(() => hash(dashboard)).toBe(`#/runs/${runId}?pane=worklist`);
+  // The amber badge is on Deliveries, so nothing about the blocking packet is hidden - the
+  // tour just does not get dragged onto it.
+  await expect(dashboard.getByRole("tab", { name: /^Deliveries/ }))
+    .toHaveAttribute("aria-selected", "false");
   const runStrip = dashboard.getByRole("group", { name: "Workflow run pipeline" });
   await expect(runStrip).toBeVisible({ timeout: 30_000 });
   await expect(runStrip).toHaveCSS("outline-width", "2px");
@@ -700,7 +747,7 @@ test("a session evicted mid-tour leaves the last stop naming the run's durable n
 
   await startFromPalette(dashboard);
   const moving = await advanceTo(dashboard, "The Library", "A run, moving");
-  await expect.poll(() => hash(dashboard)).toBe(`#/runs/${runId}`);
+  await expect.poll(() => hash(dashboard)).toBe(`#/runs/${runId}?pane=worklist`);
   await expect(dashboard.getByRole("group", { name: "Workflow run pipeline" }))
     .toBeVisible({ timeout: 30_000 });
 

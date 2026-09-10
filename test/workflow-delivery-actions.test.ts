@@ -34,8 +34,11 @@ test("discard keeps the live-session and exact typed-phrase guards", () => {
 test("the Runs reader renders the shared delivery descriptors", () => {
   const detail = ladderDetail("uncertain");
   const actions = deliveryResolutionActions(detail.deliveries[0]!, true);
+  // Named: the run record's panes are tabs now, and this fixture's worklist blocks too, so it
+  // wins the initial selection. The claim here is about the ledger's own markup.
   const html = renderToStaticMarkup(createElement(WorkflowRunView, {
     detail,
+    pane: "deliveries" as const,
     onCancel: async () => {},
   }));
   for (const action of actions) {

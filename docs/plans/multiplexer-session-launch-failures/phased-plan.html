@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>Multiplexer session launch failures: implementation index</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --panel-2: #eef0f4; --ink: #17191d; --ink-dim: #555c66;
+    --rule: #d9dde3; --accent: #2f6fdd; --bad: #c0392b; --good: #1e8a4c; --code-bg: #f2f3f6;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --panel: #1d2026; --panel-2: #23272f; --ink: #e7e9ee; --ink-dim: #a0a7b4;
+      --rule: #333944; --accent: #6fa2f5; --bad: #f0736a; --good: #5ecf8f; --code-bg: #1a1d23;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 1.85rem; line-height: 1.25; letter-spacing: -.015em; margin: 0 0 .4rem; }
+  h2 { font-size: 1.28rem; letter-spacing: -.01em; margin: 2.8rem 0 .7rem; padding-top: 1.4rem; border-top: 1px solid var(--rule); }
+  h3 { font-size: 1.03rem; margin: 1.8rem 0 .5rem; }
+  a { color: var(--accent); }
+  .lede { color: var(--ink-dim); font-size: 1.05rem; margin-top: 0; }
+  .meta { color: var(--ink-dim); font-size: .88rem; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .88em; background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 4px; padding: .1em .35em;
+  }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px; padding: .9rem 1rem; overflow-x: auto; font-size: .84rem; line-height: 1.55; }
+  pre code { background: none; border: 0; padding: 0; }
+  .scroll { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+  th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tfoot td { padding: .55rem .8rem; font-weight: 700; background: var(--panel-2); }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 1rem 1.2rem; box-shadow: var(--shadow); margin: 1.25rem 0; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .35rem 0; }
+  figure { margin: 1.5rem 0; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { color: var(--ink-dim); font-size: .87rem; margin-top: .5rem; }
+  .svg-ink { fill: var(--ink); }
+  .svg-dim { fill: var(--ink-dim); }
+  .excluded { color: var(--bad); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Multiplexer session launch failures: implementation index</h1>
+<p class="lede">Source plan: <a href="plan.md"><code>plan.md</code></a> (rendered: <a href="plan.html"><code>plan.html</code></a>). One phase, one task.</p>
+
+<h2>Incorporated human decisions</h2>
+<p class="meta">Settled in the dashboard on 2026-09-09, then amended in discussion the same day.</p>
+<div class="card">
+<ol style="margin:0">
+<li><strong>Herdr launch delivery gets all three changes.</strong> Shrink what is typed by folding the environment and the agent argv into <code>launch-and-cleanup.sh</code>; send the Enter as a separate <code>pane.send_keys</code> write; verify the agent actually started before reporting success.</li>
+<li><strong>Defect 3 is in scope.</strong> <code>test/multi-repo-dispatch.test.ts</code> gets the <code>spawn</code> seam injected, plus a pinned boundary.</li>
+<li><strong>Defect 4 is in scope.</strong> Herdr's <code>list()</code> collapse becomes partial rather than total.</li>
+<li><span class="excluded">Defect 2 is excluded.</span> The Pi / Mission MCP capability gate was accepted in the first review and then superseded: rather than build a refusal, Pi gets a Mission Control extension installed through Setup so hand-run Pi sessions reach parity with Claude and Codex. That is scheduled as its own plan task, <strong>Pi Mission Control Extension</strong> (<code>fa74e272-3762-4683-8fe8-bf9defe233ea</code>), and appears in no phase here.</li>
+</ol>
+</div>
+
+<h2>Investigated findings</h2>
+<p>Checked against the repository before drawing boundaries. Three of these changed the plan.</p>
+<ul>
+<li><strong><code>isolatedAgentArgv</code> has exactly two callers</strong>, <code>dispatcher.ts:2720</code> (dispatch) and <code>targets.ts:238</code> (the operator's explicit terminal launch). Both go through <code>shellCommand(argv)</code> on the way into a backend, so shortening the argv shortens every backend's command at once and neither caller changes.</li>
+<li><strong>The wrapper script already exists and already owns cleanup.</strong> <code>agent-subprocess-env.ts:182</code> writes <code>#!/bin/sh</code> plus <code>trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT</code> plus <code>"$@"</code>. The change moves the <code>env -u … NAME=VALUE …</code> prefix and the agent argv into that file's body. The <code>trap</code> must keep firing on the agent's exit, so the script must run the agent as its own last statement rather than backgrounding it, and must <strong>not</strong> <code>exec</code> it. Verified: <code>exec</code> replaces the shell process, so the <code>EXIT</code> trap never fires and the state home is never removed. <a href="phase-1-herdr-launch-delivery.md"><code>phase-1-herdr-launch-delivery.md</code></a> section 5.1 carries the same warning.</li>
+<li><strong><code>test/agent-subprocess-env.test.ts:127</code> already pins the isolation end to end</strong> by executing the returned argv and reading the state-home variables, the token file, and the post-exit removal of the state home. That test is the contract for this change.</li>
+<li><strong>The herdr client already injects <code>sleep</code> and <code>now</code></strong>, so a bounded post-Enter poll is testable without real time and without a fixed sleep.</li>
+<li><strong>The client has no single-pane process lookup.</strong> <code>snapshotWithProcesses</code> is the only path to <code>pane.process_info</code> and it fetches every pane, so the client gains a narrow <code>processInfo(paneId)</code> that <code>snapshotWithProcesses</code> then reuses.</li>
+<li><strong>The leaking test is the <code>soloharness</code> case</strong> at <code>test/multi-repo-dispatch.test.ts:285</code>, not the rollback case above it. It dispatches a <code>pi</code> task titled <code>T</code> with id <code>soloharness</code>, so <code>sessionLabel</code> gives <code>T</code> and <code>taskId.slice(0, 6)</code> gives <code>soloha</code>. All 44 leaked homes come from this one case across many runs, under <strong>two</strong> labels: <code>spawnUniquely</code> takes the bare <code>T</code> when it is free and <code>T-soloha</code> once it is held, and nothing ever closes either. Measured: the two tmux sessions are <code>soloharness-api</code> worktrees from two different runs (<code>…-lG5Puu</code>, 09-08 20:57, label <code>T</code>; <code>…-HbV8ux</code>, 09-08 23:03, label <code>T-soloha</code>). There is no second leaking case to find, so the phase's scope is complete as written.</li>
+<li><strong>Defects 1 and 4 touch the same two files</strong> and, in <code>list()</code>, the same function. Splitting them would produce two pull requests that conflict on merge.</li>
+</ul>
+
+<h2>Sizing</h2>
+<p>Gross non-test implementation lines expected to be added or materially changed:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Area</th><th>Files</th><th>Estimate</th></tr></thead>
+<tbody>
+<tr><td>Fold env and argv into the wrapper script</td><td><code>src/server/agent-subprocess-env.ts</code></td><td>30 - 45</td></tr>
+<tr><td>Split the Enter, verify the launch, roll back</td><td><code>src/server/terminal/herdr.ts</code></td><td>40 - 60</td></tr>
+<tr><td>Narrow <code>processInfo(paneId)</code> on the client</td><td><code>src/server/terminal/herdr-client.ts</code></td><td>20 - 30</td></tr>
+<tr><td>Partial enumeration collapse</td><td><code>herdr-client.ts</code>, <code>herdr.ts</code></td><td>20 - 30</td></tr>
+<tr><td>Inject the <code>spawn</code> seam</td><td><code>test/multi-repo-dispatch.test.ts</code></td><td>~5</td></tr>
+</tbody>
+<tfoot><tr><td>Total</td><td></td><td>115 - 170</td></tr></tfoot>
+</table>
+</div>
+<p class="meta">Assumptions: no new module, no schema or persistence change, no migration, no dashboard surface, and no change to the <code>Multiplexer</code> or <code>MuxSessions</code> interfaces. Tests are excluded from the count and are substantial in their own right, particularly the herdr adapter's fake-socket coverage.</p>
+
+<h2>Phase count rationale</h2>
+<p><strong>One phase, one task.</strong> The estimate is under the 200-line threshold, and three independent reasons agree with the threshold here:</p>
+<ul>
+<li>Defects 1 and 4 edit the same two files and, in <code>list()</code>, the same function. Two pull requests would conflict on merge, and the second would be reviewed against a base that no longer matches the first's reasoning.</li>
+<li>Defect 3 is a five-line change in a test file. A test-only phase is exactly what the sizing rubric says not to create, and it belongs with the enumeration work because the leak it causes is what made the enumeration cost visible.</li>
+<li>The wrapper-script change and the herdr delivery change are one behavior seen from two ends: the Enter is only reliable because the paste is small, and the paste is only small because the wrapper carries the environment. Merging one without the other leaves a launch path that is half-fixed and whose test would have to assert the intermediate state.</li>
+</ul>
+<p>There is no second phase to justify, so no combination argument is needed.</p>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Phase</th><th>Name</th><th>File</th><th>Depends on</th><th>Repository</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Herdr launch delivery and enumeration resilience</td><td><a href="phase-1-herdr-launch-delivery.md"><code>phase-1-herdr-launch-delivery.md</code></a></td><td>This planning session only</td><td>Source repository</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Dependency graph</h3>
+<figure>
+<svg viewBox="0 0 900 120" role="img" aria-label="The planning session pull request, which publishes the plan and phased plan artifacts, is the only prerequisite of Phase 1, Herdr launch delivery and enumeration resilience.">
+  <defs>
+    <marker id="g1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" color="currentColor">
+    <rect x="0" y="26" width="330" height="62" rx="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="165" y="50" text-anchor="middle" class="svg-ink" font-size="12.5">Planning session pull request</text>
+    <text x="165" y="70" text-anchor="middle" class="svg-dim" font-size="11">publishes plan.md, phased-plan.md, phase-1</text>
+
+    <line x1="330" y1="57" x2="466" y2="57" stroke="currentColor" stroke-width="1.5" marker-end="url(#g1)"/>
+    <text x="398" y="48" text-anchor="middle" class="svg-dim" font-size="10.5">merge releases</text>
+
+    <rect x="468" y="26" width="420" height="62" rx="10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="678" y="50" text-anchor="middle" class="svg-ink" font-size="12.5">Phase 1</text>
+    <text x="678" y="70" text-anchor="middle" class="svg-dim" font-size="11">Herdr launch delivery and enumeration resilience</text>
+  </g>
+</svg>
+<figcaption>One phase. Its task sits backlogged until this planning session's pull request merges the artifacts to the default branch, because the task carries paths rather than content.</figcaption>
+</figure>
+
+<h3>Concurrency and merge order</h3>
+<p>One phase, so there is nothing to run concurrently and nothing to order. Phase 1 is released when this planning session's pull request merges the artifacts to the default branch.</p>
+
+<h2>Cross-phase contracts</h2>
+<p>No cross-phase contracts exist, because there is one phase. Two contracts still bind Phase 1 against the rest of the repository and are recorded so a later change cannot undo them silently:</p>
+<ul>
+<li><strong><code>isolatedAgentArgv</code> returns a launchable argv, and the state home is released when the agent exits.</strong> Shortening the argv must not move cleanup off the agent's exit. <code>agent-subprocess-env.test.ts</code> owns this.</li>
+<li><strong><code>Multiplexer.list()</code> returning <code>[]</code> means "this backend has no panes", never "this backend had a problem".</strong> Making the collapse partial narrows what can produce <code>[]</code>; it must not introduce a third meaning, and a genuinely invalid snapshot still yields <code>[]</code>.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<ul>
+<li><code>npm test</code>, and the single-file runs the phase file names, with <code>--import ./test/setup-state.mjs --import tsx</code>.</li>
+<li><code>npm run typecheck</code> and <code>npm run lint</code>.</li>
+<li><code>npm run build</code> and <code>npm run smoke</code>, because <code>isolatedAgentArgv</code> is on the launch path that <code>smoke-bundles.mjs</code> exercises.</li>
+<li>No <code>npm run test:e2e</code> requirement: nothing in this phase changes a dashboard surface. If the new Herdr failure text ends up rendered on a card in a form a person reads differently, that arm gains a spec.</li>
+<li>Manual confirmation on the operator's machine, which is the only check that reproduces the original report: one Herdr dispatch of each of <code>claude</code> and <code>pi</code> reaching <code>working</code>.</li>
+</ul>
+
+</main>
+</body>
+</html>

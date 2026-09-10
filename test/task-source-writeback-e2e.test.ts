@@ -149,14 +149,29 @@ test("write-back consent stores and reads back through the config route", async 
     body: JSON.stringify(body),
   });
   assert.equal(res.status, 200);
-  const view = (await res.json()) as { sources: Array<{ writeback: unknown }>; writeback: [] };
+  const view = (await res.json()) as {
+    sources: Array<{ writeback: unknown }>;
+    writeback: Array<{ sourceId: string }>;
+  };
   assert.deepEqual(view.sources[0]!.writeback, {
     onPrOpened: true,
     onCompleted: true,
     resolve: true,
   });
-  // Declared and served empty until the panel that reads it exists.
-  assert.deepEqual(view.writeback, []);
+  // One queue summary per configured source, owing nothing yet. A source that has only
+  // just been switched on has an EMPTY queue rather than no queue, and the two are
+  // different answers: the panel draws a line for the first and nothing for the second.
+  assert.deepEqual(view.writeback, [
+    {
+      sourceId: "src-1",
+      pending: 0,
+      failed: 0,
+      unknown: 0,
+      delivered: 0,
+      lastError: null,
+      lastDeliveredAt: null,
+    },
+  ]);
   assert.deepEqual(getTaskSourcesConfig().sources[0]!.writeback, {
     onPrOpened: true,
     onCompleted: true,

@@ -155,9 +155,7 @@ async function seedFailingCheckRun(page: Page, daemon: DaemonHandle): Promise<st
 
 /** The widget, not the section: the join and gate packets below it print raw verdict JSON. */
 const worklistOf = (page: Page): Locator =>
-  page.locator("section.wf-run-section")
-    .filter({ has: page.getByRole("heading", { name: "Review worklist" }) })
-    .locator(".wf-run-worklist");
+  page.getByRole("region", { name: "Review worklist" }).locator(".wf-run-worklist");
 
 test("a failed command gate is the blocker, and keeps its exit code and output", async ({
   dashboard,

@@ -149,11 +149,12 @@ can only contain what the daemon durably stores:
 - **No origin chips on seeded turns.** Turn attribution (the foreman/workflow badges on a
   conversation) is in-memory only, keyed by a hash of the turn text (`src/server/injections.ts`),
   so it exists for live deliveries and cannot survive a restart. Seeded history carries none.
-- **No captured Goal on seeded sessions**, so the seeded run's "Captured intent and evidence"
-  panel reads `(No captured goal)`. A Goal exists only once a prompt has been captured from a
-  hook event (`Registry.captureGoalPrompt` is reached only from `applyHook`), and the scripted
-  CLIs install no hook bridge - so the refiner has nothing to reconcile. The instruction itself is
-  still there, under "Human decisions and rationale", read out of the transcript.
+- **No captured Goal on seeded sessions**, so the Original goal disclosure in the seeded run's
+  Intent pane reads `(No captured goal)`. A Goal exists only once a prompt has been captured
+  from a hook event (`Registry.captureGoalPrompt` is reached only from `applyHook`), and the
+  scripted CLIs install no hook bridge - so the refiner has nothing to reconcile. The
+  instruction itself is still there, under "Human decisions and rationale", read out of the
+  transcript.
 - **No quota runway on the cost chip.** The rate-limit windows a session reports through
   `/statusline` live in a private in-memory field on the registry that nothing persists, so
   seeding one would simply be undone by the seeder's own shutdown. The chip still appears and

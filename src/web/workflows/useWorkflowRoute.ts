@@ -61,6 +61,26 @@ export function isLibrarySurface(value: string): value is LibrarySurface {
 }
 
 /**
+ * The panes of one run's record, in tab order.
+ *
+ * `worklist` is first and is the default, and both facts are contracts rather than
+ * arrangement: it is the primary object on the page, and it is the pane the initial-selection
+ * order below falls back to when nothing else claims the reader. Later panes are appended, so
+ * a kept link keeps meaning what it meant.
+ *
+ * These strings reach the address bar as `?pane=`, so they are a durable spelling. A value
+ * this build does not know takes the default rather than being carried into the hash - the
+ * same rule an unknown run status and an unknown Command slot already take, and for the same
+ * reason: a parameter naming a surface that does not exist is a link to nowhere.
+ */
+export const RUN_RECORD_PANES = ["worklist", "deliveries", "intent"] as const;
+export type RunRecordPane = (typeof RUN_RECORD_PANES)[number];
+
+export function isRunRecordPane(value: string): value is RunRecordPane {
+  return (RUN_RECORD_PANES as readonly string[]).includes(value);
+}
+
+/**
  * The one surface whose asset ids are a CLOSED set that ships with the build.
  *
  * Every other Library surface deep-links to a row an operator created, so its id is opaque
@@ -168,6 +188,15 @@ export type MissionRoute =
       runId?: string;
       /** The open pipeline run. Implies the pipelines surface, and never set with `runId`. */
       pipelineRun?: PipelineRunAddress;
+      /**
+       * Which pane of the open run's record is showing.
+       *
+       * Only ever set together with `runId`: a pane names a region of ONE run's record, so
+       * on the bare rail there is nothing for it to name. Absent means "let the run decide",
+       * which is not the same as `worklist` - a run whose blocking state is not in the
+       * worklist opens on the pane holding it, and an explicit `worklist` overrules that.
+       */
+      pane?: RunRecordPane;
       filters?: WorkflowRunFilters;
     }
   | {
@@ -273,6 +302,11 @@ export function parseMissionRoute(hash: string): MissionRoute {
     ...(params.get("session") ? { session: params.get("session")! } : {}),
   };
   const withFilters = Object.keys(filters).length > 0 ? filters : undefined;
+  // Read here beside the filters because `runs` has two spellings to reach, and DROPPED when
+  // this build does not know the name: the container would otherwise select a tab that is not
+  // in its own bar and draw nothing.
+  const rawPane = params.get("pane");
+  const pane = rawPane && isRunRecordPane(rawPane) ? rawPane : undefined;
   if (path === "/scouts" || path.startsWith("/scouts/")) {
     const rawStatusFilter = params.get("status");
     const rawFrom = scoutBound(params.get("from"));
@@ -368,6 +402,9 @@ export function parseMissionRoute(hash: string): MissionRoute {
     return {
       page: "runs",
       ...(runId ? { runId } : {}),
+      // Carried only with a run to name it. An undecodable id lands on the rail, where a
+      // pane means nothing, so the two travel together or not at all.
+      ...(runId && pane ? { pane } : {}),
       ...(withFilters ? { filters: withFilters } : {}),
     };
   }
@@ -477,6 +514,9 @@ export function missionRouteHash(route: MissionRoute): string {
     if (route.kind === "pipelines") return "#/runs/pipeline";
     const path = route.runId ? `#/runs/${encodeURIComponent(route.runId)}` : "#/runs";
     const params = new URLSearchParams();
+    // Guarded on the run for the reason the parse arm is: a pane with no run to hold it is a
+    // parameter no control on the page can clear.
+    if (route.runId && route.pane) params.set("pane", route.pane);
     if (route.filters?.status) params.set("status", route.filters.status);
     if (route.filters?.workflowId) params.set("workflowId", route.filters.workflowId);
     if (route.filters?.session) params.set("session", route.filters.session);

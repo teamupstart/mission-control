@@ -130,6 +130,7 @@ import {
   PipelinesConfigPatchSchema,
   SkillsConfigPatchSchema,
   TaskSourcesConfigPatchSchema,
+  TaskSourceWritebackRetrySchema,
   SpendReportSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
@@ -391,7 +392,10 @@ import {
 import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
 import { checkToken } from "./auth.ts";
 import {
+  countWritebacks,
+  discardWritebacks,
   forgetTaskSourceSeen,
+  retryWritebacks,
   getSkillsAcks,
   loadHumanResolvedReviews,
   loadInspectionsAdoptedSince,
@@ -3841,6 +3845,16 @@ export function buildApp(
     if (!body) return c.json({ error: "invalid json" }, 400);
     const parsed = HookIngestSchema.safeParse({ ...(body as object), event: c.req.param("event") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    // Asked BEFORE the event is applied, and the ordering is the whole point: a refused prompt
+    // must leave no trace of a turn. Applying first would mark the card `working` and open a
+    // work cycle for a generation that is about to be refused, which is a lie the board would
+    // then have to be corrected out of.
+    //
+    // 204 stays the answer for every other event and every ordinary prompt, so nothing that
+    // exists today reads a body it did not before. See `promptRefusalForHook` for how narrow
+    // the refusing case is.
+    const refusal = registry.promptRefusalForHook(parsed.data);
+    if (refusal) return c.json({ decision: "block", reason: refusal });
     registry.applyHook(parsed.data);
     return c.body(null, 204);
   });
@@ -5427,7 +5441,9 @@ export function buildApp(
     // Only a recurring mission's task with `auto-on-conclusion` moves here; `TaskManager` owns
     // every one of those gates, and for everything else this is a no-op.
     if (parsed.data.decision) {
-      tasks.concludeScheduledMissionRun(session.id, parsed.data.decision);
+      // Awaited: the concluded run's agent is asked to go before this request answers, so no
+      // window opens between Foreman recording the verdict and anything starting the teardown.
+      await tasks.concludeScheduledMissionRun(session.id, parsed.data.decision);
     }
     return c.json(queues.get(session.id));
   });
@@ -6025,10 +6041,14 @@ export function buildApp(
     return {
       sources: cfg.sources,
       status: taskSourceStatuses(cfg.sources),
-      // Declared with the rest of the write-back contract and served empty until the panel
-      // that reads it exists. Empty is a valid answer - "these sources owe nothing" - so no
-      // consumer has to special-case the interval between the two.
-      writeback: [],
+      // Derived from the ledger on every read, unlike `status`, which is process-local: a
+      // sweep's outcome is re-established by sweeping again, while an owed write-back is a
+      // fact that survived a restart, so its counts come from the table that survived with
+      // it. One row per CONFIGURED source, never one per source the ledger still holds rows
+      // for: a removed source's rows are discarded by the removal itself, and reporting a
+      // queue against a source nobody has any more would be a count with no control beside
+      // it.
+      writeback: cfg.sources.map((s) => countWritebacks(s.id)),
       kinds: taskSourceKinds(),
     };
   };
@@ -6093,6 +6113,54 @@ export function buildApp(
     const id = c.req.param("id");
     if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
     return c.json({ forgotten: forgetTaskSourceSeen(id) });
+  });
+
+  /**
+   * Put this source's stalled write-backs back in the queue.
+   *
+   * `includeUnknown` is the operator asserting they have gone and looked upstream, and it
+   * is a separate flag rather than a wider default for the reason
+   * `TaskSourceWritebackRetrySchema` gives: a `failed` row is proof that nothing was
+   * written, while an `unknown` row may already have commented or closed. Retrying the
+   * first costs nothing; retrying the second can duplicate a comment or re-close an item a
+   * human deliberately reopened.
+   *
+   * Answers with the refreshed view, so the panel's counts move with the press rather than
+   * on its next four-second poll - and with how many rows actually moved, which is the one
+   * fact the view cannot state, since "nothing was retryable" and "everything was retried"
+   * both leave `failed` at zero.
+   */
+  app.post("/api/task-sources/:id/writeback/retry", async (c) => {
+    const id = c.req.param("id");
+    if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
+    const parsed = await parseBody(c, TaskSourceWritebackRetrySchema);
+    if (!parsed.ok) return parsed.res;
+    const retried = retryWritebacks(id, parsed.data.includeUnknown);
+    // A queue that was failing may not be any more, and the gear's dot counts it.
+    publishSettingsStatus(registry);
+    // The view is NESTED rather than spread. `TaskSourcesView` has a `status` field, and the
+    // browser's request helper stamps the HTTP status onto every reply under that same name -
+    // so a spread would hand the panel `status: 200` where it expected the per-source health
+    // array, and the source lookup would fail on a 200 response.
+    return c.json({ retried, view: taskSourcesView() });
+  });
+
+  /**
+   * Discard this source's whole queue.
+   *
+   * The counterpart to "Forget seen items", and the way out for somebody who turned a
+   * switch on by mistake: it drops what has not been written yet and the record of what
+   * has, without touching the switches or the source. What it cannot do is take back a
+   * comment that has already been posted - nothing here can - which is why the panel asks
+   * before it calls this.
+   */
+  app.delete("/api/task-sources/:id/writeback", (c) => {
+    const id = c.req.param("id");
+    if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
+    const discarded = discardWritebacks(id);
+    publishSettingsStatus(registry);
+    // Nested, for the collision `retry` above explains.
+    return c.json({ discarded, view: taskSourcesView() });
   });
 
   // --- Pipelines: observing an external SDLC engine (localhost only) ---

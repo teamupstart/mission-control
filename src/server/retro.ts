@@ -92,6 +92,7 @@ export interface RetroDeps {
   /** The launch-time half of the same gate, asked of the harness a retro TASK would run on. */
   skillForAgent?: typeof skillInvocationForAgent;
   inject?: typeof injectPromptForRuntime;
+  /** The authorship sink's older name, still honoured. See the call site. */
   remember?: typeof recordInjection;
   reserve?: typeof reserveInjection;
   confirm?: typeof confirmReservedInjection;
@@ -217,7 +218,15 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
   // and the transcript reader's three origins are about WHO drove the session: this is the
   // daemon acting on a human's click, which is the same authorship as the `/reload-skills`
   // broadcast that already uses it.
-  (deps.confirm ?? confirmReservedInjection)(session.id, rendered.payload, "harness");
+  // `remember` is still honoured as this sink's older name, the way `workflows/manager.ts`
+  // honours `recordInjection`. A caller that wired it is asking to observe or suppress this
+  // authorship write; only the moment moved, from after the send to the settling of a claim
+  // made before it, and silently ignoring the override would leave that caller's stub inert.
+  (deps.confirm ?? deps.remember ?? confirmReservedInjection)(
+    session.id,
+    rendered.payload,
+    "harness",
+  );
   return {
     kind: "delivered",
     sessionId: session.id,

@@ -30,8 +30,11 @@ Checked against the repository before drawing boundaries. Three of these changed
   writes `#!/bin/sh` + `trap '/bin/rm -rf -- "$MISSION_HOME"' EXIT` + `"$@"`. The change is to move
   the `env -u … NAME=VALUE …` prefix and the agent argv from the returned array into that file's
   body. The `trap` must keep firing on the agent's exit, which is what releases the disposable state
-  home, so the script must still `exec`/run the agent as its own last statement rather than
-  backgrounding it.
+  home, so the script must run the agent as its own last statement rather than backgrounding it -
+  and must **not** `exec` it. Verified: `exec` replaces the shell process, so the `EXIT` trap never
+  fires and the state home is never removed.
+  [`phase-1-herdr-launch-delivery.md`](phase-1-herdr-launch-delivery.md) section 5.1 carries the
+  same warning.
 - **`test/agent-subprocess-env.test.ts:127` already pins the isolation end to end** by executing the
   returned argv and reading `MISSION_HOME`, `FLEET_HOME`, `HARNESS_HOME`, the token file and the
   post-exit removal of the state home. That test is the contract for this change and must keep

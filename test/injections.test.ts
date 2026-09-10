@@ -1,6 +1,12 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { forgetInjections, originOf, recordInjection } from "../src/server/injections.ts";
+import {
+  forgetInjections,
+  originOf,
+  recordInjection,
+  releaseInjection,
+  reserveInjection,
+} from "../src/server/injections.ts";
 
 beforeEach(() => forgetInjections());
 
@@ -47,4 +53,41 @@ test("forgetting one session leaves the others alone", () => {
   forgetInjections("s1");
   assert.equal(originOf("s1", "a"), undefined);
   assert.equal(originOf("s2", "b"), "foreman");
+});
+
+test("a released reservation takes its session with it, instead of holding a slot", () => {
+  // The session ceiling evicts the least recently STARTED session, so dead weight at the
+  // front costs a live one at the back. Releases are the only thing that can empty a
+  // session's map - a recorded delivery never removes a fingerprint - so without cleanup
+  // enough refused deliveries push the ceiling over on empty maps and evict a session that
+  // still has a claim outstanding. Its next daemon echo is then read as the human's Goal,
+  // which is the failure this module exists to prevent.
+  recordInjection("keeper", "the operator's actual ask", "foreman");
+
+  // Comfortably past the 500-session ceiling, every one of them leaving nothing behind.
+  for (let i = 0; i < 600; i++) {
+    reserveInjection(`refused-${i}`, `packet ${i}`, "foreman");
+    releaseInjection(`refused-${i}`, `packet ${i}`);
+  }
+
+  assert.equal(
+    originOf("keeper", "the operator's actual ask"),
+    "foreman",
+    "a live session must not be evicted to make room for sessions that hold nothing",
+  );
+});
+
+test("releasing one of several deliveries keeps the session and the rest", () => {
+  // The decrement arm, which must not take the session with it. Two deliveries of one text
+  // owe two echoes; releasing one leaves the other, and releasing a second text's only
+  // delivery leaves the session because the first text is still on file.
+  reserveInjection("s9", "twice-sent", "foreman");
+  reserveInjection("s9", "twice-sent", "foreman");
+  reserveInjection("s9", "once-sent", "workflow");
+
+  releaseInjection("s9", "twice-sent");
+  releaseInjection("s9", "once-sent");
+
+  assert.equal(originOf("s9", "twice-sent"), "foreman", "one delivery of it survives");
+  assert.equal(originOf("s9", "once-sent"), undefined, "its only delivery was given back");
 });

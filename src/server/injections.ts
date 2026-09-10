@@ -165,8 +165,19 @@ export function releaseInjection(sessionId: string, text: string): void {
   const key = injectionFingerprint(text);
   const prior = byText.get(key);
   if (!prior) return;
-  if (prior.pending <= 1) byText.delete(key);
-  else byText.set(key, { ...prior, pending: prior.pending - 1 });
+  if (prior.pending > 1) {
+    byText.set(key, { ...prior, pending: prior.pending - 1 });
+    return;
+  }
+  byText.delete(key);
+  // And drop the session with its last delivery. This is the only path that can empty a
+  // session's map - before releases existed, an entry here always held at least one
+  // fingerprint - and an empty one still occupies a slot against `SESSIONS`. Left behind,
+  // enough refused deliveries push the ceiling over on dead weight and evict a LIVE session
+  // that still has a claim outstanding, whose next daemon echo then becomes the human's Goal.
+  // That is the failure this whole module exists to prevent, arrived at through its own
+  // bookkeeping.
+  if (byText.size === 0) seen.delete(sessionId);
 }
 
 /**

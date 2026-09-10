@@ -11,7 +11,7 @@ import type { TaskManager } from "../src/server/tasks.ts";
 /**
  * Every registered route, bound to an asserted result.
  *
- * A differential rather than 303 hand-written expectations, because the property at issue is
+ * A differential rather than a transcribed expectation per route, because the property at issue is
  * equivalence, and a differential cannot drift out of date the way a transcribed status can.
  * The two apps differ only in the order their dependency fields are written; every route must
  * answer identically, in both status and bytes.

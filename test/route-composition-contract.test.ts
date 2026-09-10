@@ -143,10 +143,8 @@ test("a wholly unrelated key is refused without being dressed up as a typo", () 
 });
 
 test("a misspelling hidden on a prototype is refused, not read past", () => {
-  // `Object.keys` cannot see an inherited field, but `fields[key]` can read one. An object
-  // whose prototype carries `keepAwke` therefore used to pass validation in silence and
-  // leave GET /api/keep-awake answering 503 at request time, which is precisely the deferred
-  // failure this seam exists to abolish. The shape is refused outright.
+  // `Object.keys` cannot see an inherited field, but `fields[key]` can read one. The shape
+  // is refused outright rather than validated around.
   const viaPrototype = Object.create({ keepAwke: keepAwakeStub }) as Record<string, unknown>;
   Object.assign(viaPrototype, { registry, reviews, tasks, queues });
   assert.throws(
@@ -161,8 +159,6 @@ test("a misspelling hidden on a prototype is refused, not read past", () => {
 });
 
 test("a misspelling polluted onto Object.prototype is refused, not ignored", () => {
-  // Readable through fields[key], but absent from every own-key listing and never copied by
-  // Object.hasOwn, so it would otherwise be neither reported nor honoured.
   const polluted = Object.prototype as unknown as Record<string, unknown>;
   polluted.keepAwke = keepAwakeStub;
   try {
@@ -293,8 +289,6 @@ test("a null-prototype object is accepted, having no chain to hide a name on", (
 });
 
 test("an inherited dependency value is not adopted as if it were supplied", () => {
-  // The mirror of the typo case: a CORRECTLY named field on a prototype must not be read
-  // either, or presence would depend on the chain rather than on what the caller wrote.
   const bare = Object.create(null) as Record<string, unknown>;
   Object.assign(bare, { registry, reviews, tasks, queues });
   const resolved = resolveUnchecked(bare);

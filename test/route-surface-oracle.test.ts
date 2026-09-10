@@ -13,8 +13,9 @@ import { fileURLToPath, URL } from "node:url";
  * registered route to a RECORDED expectation, so a route whose status or response VALUES
  * change fails here against a fixture written down in the repository.
  *
- * All 303 routes assert their values: `{"error":"keep-awake manager unavailable"}` is checked
- * as written, not reduced to its field names. Only genuinely unstable values are replaced,
+ * EVERY route asserts its values, with no shape-only exceptions:
+ * `{"error":"keep-awake manager unavailable"}` is checked as written, not reduced to its
+ * field names. Only genuinely unstable values are replaced,
  * each by a visible token - `<uuid>`, `<timestamp>`, `<path>`, `<epoch>`, and the per-process
  * or per-release keys named in VOLATILE_KEYS.
  *
@@ -93,14 +94,14 @@ function content(text: string): string {
 }
 
 /**
- * A body's shape, or `stream` when the response never ends.
+ * The recorded body content, or `stream` when the response never ends.
  *
  * `/events` and its kin hold the connection open by design, so reading them to completion
  * would hang the survey. Recording that as its own outcome keeps those routes IN the oracle -
  * a streaming route that started answering a normal body, or stopped streaming, would show up
  * as a change here rather than being quietly skipped.
  */
-async function bodyShape(res: Response): Promise<string> {
+async function bodyContent(res: Response): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), 250);
@@ -172,7 +173,7 @@ async function surveyRouteSurface(): Promise<Record<string, string>> {
     const split = key.indexOf(" ");
     const method = key.slice(0, split);
     const res = await app.request(concrete(key.slice(split + 1)), { method, headers: LOOPBACK });
-    surface[key] = `${res.status} ${await bodyShape(res)}`;
+    surface[key] = `${res.status} ${await bodyContent(res)}`;
   }
   return surface;
 }
@@ -196,7 +197,7 @@ test("every registered route answers the status and response values the oracle r
   const changed = Object.keys(expected)
     .filter((key) => surface[key] !== expected[key])
     .map((key) => `${key}: expected ${expected[key]}, got ${surface[key]}`);
-  assert.deepEqual(changed, [], "routes whose status or body shape changed");
+  assert.deepEqual(changed, [], "routes whose status or response content changed");
 
   const statuses = new Map<string, number>();
   for (const value of Object.values(surface)) {

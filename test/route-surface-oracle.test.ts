@@ -10,13 +10,19 @@ import { fileURLToPath, URL } from "node:url";
  *
  * `route-surface-inventory` proves the surface is order-independent, but a differential
  * cannot notice a regression that happens identically in both compositions. This binds every
- * registered route to a RECORDED expectation instead, so a route whose status or response
- * shape changes fails here against a fixture written down in the repository.
+ * registered route to a RECORDED expectation, so a route whose status or response VALUES
+ * change fails here against a fixture written down in the repository.
  *
- * The oracle stores a status and a body SHAPE - the sorted top-level keys of a JSON object,
- * or `array`, `text`, `empty` - rather than exact bytes. Ids, clock readings and file paths
- * vary between runs and machines; the shape does not, and a handler that starts returning a
- * different set of fields is what a reviewer needs to see.
+ * All 303 routes assert their values: `{"error":"keep-awake manager unavailable"}` is checked
+ * as written, not reduced to its field names. Only genuinely unstable values are replaced,
+ * each by a visible token - `<uuid>`, `<timestamp>`, `<path>`, `<epoch>`, and the per-process
+ * or per-release keys named in VOLATILE_KEYS.
+ *
+ * Three host readings are pinned rather than recorded, because a fixture describing THIS
+ * machine could not pass on another one, and one holding the operator's home directory has no
+ * business in the repository: `MISSION_WORKSPACE_DIRS` fixes the repo index, `SETUP_PROBES`
+ * fixes what the setup rows find installed, and `/events` streams forever so its read is
+ * time-bounded and recorded as `stream`.
  *
  * Regenerate after an intentional route change:
  *   MISSION_UPDATE_ROUTE_SURFACE=1 node --test --import ./test/setup-state.mjs --import tsx \
@@ -25,9 +31,12 @@ import { fileURLToPath, URL } from "node:url";
  * HARNESS_HOME is set before importing anything that resolves it: `openDb` refuses the real
  * state dir under the test runner, and a hoisted import would defeat this preamble.
  */
-
 const home = mkdtempSync(join(tmpdir(), "mission-route-oracle-"));
 process.env.HARNESS_HOME = home;
+// Pin the one host reading the daemon takes from the environment. Without this the repo
+// index resolves `~/workspace` against the real home and reports the operator's checkouts,
+// which differ per machine and must not be recorded in a committed fixture.
+process.env.MISSION_WORKSPACE_DIRS = mkdtempSync(join(tmpdir(), "mission-route-oracle-repos-"));
 
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -35,30 +44,14 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { openDb } = await import("../src/server/db.ts");
+const { stubRun } = await import("../src/server/util/exec.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
 const ORACLE = fileURLToPath(new URL("./fixtures/route-surface.json", import.meta.url));
 
-/**
- * Routes whose body is a reading of THIS MACHINE rather than of the code.
- *
- * They enumerate the operator's checkouts, probe for installed binaries, or resolve real
- * home-relative paths, so their values differ between a laptop and a CI runner and would
- * make the oracle a record of where it was generated. Two reasons to reduce these to a
- * shape: an oracle that cannot pass on another machine is worthless, and a fixture holding
- * `/Users/<someone>/workspace` is operator data this repository must not carry.
- *
- * Every OTHER route asserts its values. Keep this list short, and justify additions.
- */
-const MACHINE_DEPENDENT = new Set([
-  "GET /api/repo-index", // enumerates the operator's real checkout directories
-  "PUT /api/repo-index", // same projection, returned after a write
-  "POST /api/repo-index/rescan", // same projection, returned after a rescan
-  "GET /api/setup/checks", // probes the host for installed agent binaries and versions
-  "PUT /api/pipelines/config", // carries provider probes that look for local installs
-]);
+
 
 /** Values that differ per run or per host, replaced by a token so the rest can be asserted. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -87,24 +80,9 @@ function normalize(value: unknown): unknown {
   return value;
 }
 
-/** Only the top-level field names, for the machine-dependent routes above. */
-function shape(text: string): string {
-  if (text === "") return "empty";
-  try {
-    const value: unknown = JSON.parse(text);
-    if (Array.isArray(value)) return "array";
-    if (value && typeof value === "object") {
-      return `object{${Object.keys(value).sort().join(",")}}`;
-    }
-    return "scalar";
-  } catch {
-    return "text";
-  }
-}
 
 /** The asserted body: real values, with only the tokens above standing in. */
-function content(key: string, text: string): string {
-  if (MACHINE_DEPENDENT.has(key)) return `shape ${shape(text)}`;
+function content(text: string): string {
   if (text === "") return "empty";
   try {
     return JSON.stringify(normalize(JSON.parse(text)));
@@ -122,7 +100,7 @@ function content(key: string, text: string): string {
  * a streaming route that started answering a normal body, or stopped streaming, would show up
  * as a change here rather than being quietly skipped.
  */
-async function bodyShape(key: string, res: Response): Promise<string> {
+async function bodyShape(res: Response): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), 250);
@@ -133,13 +111,37 @@ async function bodyShape(key: string, res: Response): Promise<string> {
     await res.body?.cancel().catch(() => undefined);
     return "stream";
   }
-  return content(key, text);
+  return content(text);
 }
 
 /** `/api/tasks/:id` cannot be requested as written; give every parameter a value. */
 function concrete(path: string): string {
   return path.replace(/:[A-Za-z0-9_]+\??/g, "x").replace(/\*/g, "x");
 }
+
+/** A machine that never changes, so setup rows record the route rather than the host. */
+const SETUP_PROBES = {
+  environment: {
+    homeDir: home,
+    readText: async () => ({ ok: false, missing: true, reason: "missing" }),
+    subdirectories: async () => [],
+  },
+  agentBin: (agent: string) => `/fixture/${agent}`,
+  installedBackend: async (id: string) => `/fixture/${id}`,
+  herdrServer: async () => ({ state: "ready", socket: "/fixture/herdr.sock", version: "0.9.0" }),
+  ghBin: () => "/fixture/gh",
+  resolveBinPath: async (bin: string) => bin,
+  runCommand: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+  installedPlugins: async () => ({ ok: true, plugins: [], recordPath: "/fixture/record" }),
+  skills: () => ({ enabled: false, readable: true, configured: 0, directories: [], problems: [] }),
+  conductorProbe: async () => {
+    throw new Error("not probed in the oracle");
+  },
+  terminalTargets: () => [],
+  environmentChecks: async () => [],
+  readBannerDismissal: () => ({ firstLaunchAcknowledged: false, acknowledged: [] }),
+  writeBannerDismissal: () => undefined,
+} as never;
 
 async function surveyRouteSurface(): Promise<Record<string, string>> {
   openDb();
@@ -153,6 +155,10 @@ async function surveyRouteSurface(): Promise<Record<string, string>> {
     reviews: new ReviewManager(registry),
     tasks: new TaskManager(registry),
     queues: new QueueManager(registry),
+    // `/api/setup/checks` probes the host for installed agent binaries, so its answer is a
+    // description of whoever ran it. This is the seam the route already exposes for exactly
+    // that reason: a fixed machine, so the recorded values describe the ROUTE.
+    setupDeps: SETUP_PROBES,
   });
 
   const keys = [
@@ -166,12 +172,12 @@ async function surveyRouteSurface(): Promise<Record<string, string>> {
     const split = key.indexOf(" ");
     const method = key.slice(0, split);
     const res = await app.request(concrete(key.slice(split + 1)), { method, headers: LOOPBACK });
-    surface[key] = `${res.status} ${await bodyShape(key, res)}`;
+    surface[key] = `${res.status} ${await bodyShape(res)}`;
   }
   return surface;
 }
 
-test("every registered route answers the status and body shape the oracle records", async () => {
+test("every registered route answers the status and response values the oracle records", async () => {
   const surface = await surveyRouteSurface();
 
   if (process.env.MISSION_UPDATE_ROUTE_SURFACE === "1") {

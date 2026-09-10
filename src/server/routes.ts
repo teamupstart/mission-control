@@ -1296,9 +1296,8 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
  * rather than kept for compatibility.
  */
 export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
-  // JavaScript would discard these in silence, so a positional list whose first argument
-  // happened to be a valid object would compose an app that dropped the rest. The count is
-  // named because it is what locates the mistake for the caller.
+  // JavaScript would discard these in silence. The count is named because it is what locates
+  // the mistake for the caller.
   if (extra.length > 0) {
     throw new TypeError(
       `buildApp: received ${extra.length + 1} arguments. Route dependencies are supplied as ` +

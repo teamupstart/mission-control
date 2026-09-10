@@ -75,9 +75,8 @@ test("REQUIRED_ROUTE_DEPS matches the fields RouteDeps declares non-optional", (
 });
 
 test("there is no positional call form left to miswire", () => {
-  // The property the issue asks for. `buildApp` takes exactly one parameter, and the old
-  // 27-argument shape no longer constructs anything: it is refused at the seam rather than
-  // binding argument two onto some other domain and succeeding.
+  // `buildApp` takes exactly one parameter, and the old 27-argument shape no longer
+  // constructs anything.
   assert.equal(buildApp.length, 1);
   assert.throws(
     () => unchecked(registry, reviews, tasks, queues),
@@ -86,8 +85,8 @@ test("there is no positional call form left to miswire", () => {
 });
 
 test("an off-by-one positional list miswires nothing: it is rejected at construction", () => {
-  // `keepAwake` was positional slot 15, so one slot late is 16, which was `archives`. The
-  // call is refused at the seam and NO app is produced, so no route is left to answer for it.
+  // `keepAwake` was slot 15, so one late is 16 (`archives`). No app is produced, so no route
+  // is left to answer for it.
   const NOT_BUILT = Symbol("not built");
   const offByOne: unknown[] = [registry, reviews, tasks, queues];
   offByOne[16] = keepAwakeStub;
@@ -97,14 +96,12 @@ test("an off-by-one positional list miswires nothing: it is rejected at construc
   }, /buildApp: received 17 arguments/);
   assert.equal(built, NOT_BUILT);
 
-  // Asserting the COUNT is what ties this to the slot: it fails if the stub moves or is
-  // dropped. One position earlier is a sixteen-argument call, refused identically.
+  // The COUNT is what ties this to the slot: it fails if the stub moves or is dropped.
   const onTime: unknown[] = [registry, reviews, tasks, queues];
   onTime[15] = keepAwakeStub;
   assert.throws(() => unchecked(...onTime), /buildApp: received 16 arguments/);
 
-  // Refused for BEING positional, not by accident of these stubs: a complete, valid object
-  // followed by the same service is refused too.
+  // Refused for BEING positional, not by accident of these stubs.
   assert.throws(
     () => unchecked({ registry, reviews, tasks, queues }, keepAwakeStub),
     /buildApp: received 2 arguments/,

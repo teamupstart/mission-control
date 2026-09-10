@@ -2768,6 +2768,25 @@ export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 /**
+ * Which of a source's stalled write-backs the operator is putting back in the queue.
+ *
+ * Two states rather than one flag over "everything that is not delivered", because the
+ * two they separate are not comparable. A `failed` row is proof that nothing was written,
+ * so retrying it costs nothing. An `unknown` row may ALREADY have commented on somebody's
+ * issue or closed it, so retrying one can duplicate a comment or re-close an item a human
+ * deliberately reopened - and that is a call only somebody who has gone and looked
+ * upstream can make.
+ *
+ * Defaulting to `false` is what makes the safe request the one you get by asking for
+ * nothing, so the panel's plain **Retry** and its separate include-unknown control are the
+ * same route with the assertion made explicitly or not made at all.
+ */
+export const TaskSourceWritebackRetrySchema = z.object({
+  includeUnknown: z.boolean().default(false),
+});
+export type TaskSourceWritebackRetry = z.infer<typeof TaskSourceWritebackRetrySchema>;
+
+/**
  * Which repositories an external SDLC engine may be observed in, as the panel sends it back.
  *
  * A whole-object PUT for `TaskSourcesConfigPatchSchema`'s reason: adding a repository,

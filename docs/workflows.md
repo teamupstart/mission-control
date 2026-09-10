@@ -329,6 +329,9 @@ within its stage, and <kbd>Delete</kbd> removes the focused card after a confirm
 Announcements and labels name members and stages; no surface prints a node id. A stage's name
 is derived, not stored: one member names its own stage, and a parallel stage reads "Stage N".
 
+A chain longer than the pane **scrolls sideways** and shows a horizontal scrollbar, so stages
+past the right edge can be scrolled to. A pipeline that fits shows no bar.
+
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
 **All-pass Join**, **Check**, **Session action** and End nodes from the left palette, then
 connect the directional handles: Session emits `submitted`; a Persona, Check or Join emits

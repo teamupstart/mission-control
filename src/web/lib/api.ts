@@ -1917,6 +1917,26 @@ export const api = {
   /** Forget what this source has filed, so it can file it again. */
   forgetTaskSourceSeen: (id: string) =>
     del(`/api/task-sources/${encodeURIComponent(id)}/seen`),
+  /**
+   * Put this source's stalled write-backs back in the queue.
+   *
+   * `includeUnknown` is always sent, never defaulted away, because the two presses it
+   * distinguishes are different acts: retrying a refusal costs nothing, while retrying a
+   * delivery whose outcome could not be read may comment twice or re-close an item
+   * somebody reopened. A caller that omitted it would be making the riskier request by
+   * accident.
+   */
+  retryTaskSourceWriteback: (id: string, includeUnknown: boolean) =>
+    post<ActionResult & { retried: number; view: TaskSourcesView }>(
+      `/api/task-sources/${encodeURIComponent(id)}/writeback/retry`,
+      { includeUnknown },
+    ),
+  /** Drop this source's whole write-back queue. The counterpart to forgetting seen items. */
+  discardTaskSourceWriteback: (id: string) =>
+    request<ActionResult & { discarded: number; view: TaskSourcesView }>(
+      "DELETE",
+      `/api/task-sources/${encodeURIComponent(id)}/writeback`,
+    ),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),

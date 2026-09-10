@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The goal a workflow run is judged against</title>
+<style>
+  :root {
+    --ink: #1c2433; --muted: #5b6577; --line2: #d9dee8; --bg: #ffffff;
+    --panel: #f5f7fb; --accent: #24508c; --good: #1a7a4a; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e3e8f2; --muted: #9aa4b8; --line2: #333c4e; --bg: #12161f;
+            --panel: #1b2230; --accent: #7aa7e0; --good: #58c08a; --bad: #f2857c; }
+  }
+  html { background: var(--bg); }
+  body { font: 15px/1.55 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: var(--ink); max-width: 60rem; margin: 2rem auto 5rem; padding: 0 1.5rem; }
+  h1 { font-size: 1.5rem; line-height: 1.25; margin: 0 0 .8rem; }
+  h2 { font-size: 1.15rem; margin: 2rem 0 .6rem; border-bottom: 1px solid var(--line2); padding-bottom: .3rem; }
+  h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+  p, li { color: var(--ink); }
+  code { font: .86em ui-monospace, "SF Mono", Menlo, monospace; background: var(--panel);
+         padding: .05em .3em; border-radius: 3px; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.4rem; }
+  li { margin: .3rem 0; }
+  .lede { color: var(--muted); margin: 0 0 1.5rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line2); border-radius: 8px;
+           padding: .9rem 1.1rem; margin: 1rem 0; }
+  .panel p:last-child { margin-bottom: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .93em; }
+  th, td { text-align: left; padding: .45rem .55rem; border-bottom: 1px solid var(--line2); vertical-align: top; }
+  th { background: var(--panel); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  figure { margin: 1.2rem 0; }
+  figcaption { color: var(--muted); font-size: .85em; margin-top: .4rem; }
+  svg { display: block; width: 100%; height: auto; }
+  .tag { display: inline-block; font-size: .72em; letter-spacing: .05em; text-transform: uppercase;
+         padding: .1rem .4rem; border-radius: 4px; border: 1px solid var(--line2); color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>The goal a workflow run is judged against</h1>
+<p class="lede">Approved plan. Investigation: the Mission Control scout archive for task <code>5831fbba</code>,
+"Fix goal overwriting in workflow rounds" (archived, not committed). Phased implementation:
+<a href="phased-plan.md">phased-plan.md</a>.</p>
+
+<h2>Problem</h2>
+<p>A workflow run reviews a submission against <code>primaryGoal.rawPrompt</code>, and that value is
+the session's LATEST accepted prompt rather than its durable objective. Personas read it as
+<code>#&nbsp;Original human intent</code>, may cite it as evidence of kind <code>goal</code> to fail a
+change, and the run's constraints, canonical acceptance criteria and evidence-readiness gate are
+compacted from it and nothing else. A prompt that only steered the work - <code>continue</code>,
+<code>you still working?</code>, <code>create pr</code> - therefore becomes the contract the diff is
+measured against, and the repair packet prints it back to the agent under the heading
+<code>Original user goal:</code>.</p>
+
+<div class="panel">
+<p>Measured read-only against the operator's live state on 2026-09-10: <strong>21 of 25</strong> runs
+carrying a frozen intent were judged against something other than the session's durable objective,
+and <strong>10 of those 25</strong> were text Mission Control typed itself.</p>
+</div>
+
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-labelledby="t1 d1">
+  <title id="t1">What changes</title>
+  <desc id="d1">Today the run freezes the latest accepted prompt. After this plan it freezes the durable objective, with the opening ask beside it, plus steering as separate context and a provenance verdict.</desc>
+  <g font-family="-apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5">
+    <text x="8" y="18" fill="var(--muted)" font-size="11.5">TODAY</text>
+    <rect x="8" y="26" width="200" height="46" rx="6" fill="var(--panel)" stroke="var(--line2)"/>
+    <text x="20" y="45" fill="var(--ink)">session_goals.prompt</text>
+    <text x="20" y="62" fill="var(--bad)" font-size="11.5">the latest instruction</text>
+    <path d="M 212 49 L 258 49" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="258,45 268,49 258,53" fill="var(--muted)"/>
+    <rect x="272" y="26" width="200" height="46" rx="6" fill="var(--panel)" stroke="var(--line2)"/>
+    <text x="284" y="45" fill="var(--ink)">frozen run intent</text>
+    <text x="284" y="62" fill="var(--muted)" font-size="11.5">rawGoal</text>
+    <path d="M 476 49 L 522 49" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="522,45 532,49 522,53" fill="var(--muted)"/>
+    <rect x="536" y="26" width="216" height="46" rx="6" fill="var(--panel)" stroke="var(--line2)"/>
+    <text x="548" y="45" fill="var(--ink)">Persona verdict</text>
+    <text x="548" y="62" fill="var(--muted)" font-size="11.5">and canonical criteria</text>
+
+    <text x="8" y="106" fill="var(--muted)" font-size="11.5">AFTER</text>
+    <rect x="8" y="114" width="200" height="64" rx="6" fill="var(--panel)" stroke="var(--good)"/>
+    <text x="20" y="133" fill="var(--ink)">session_goals.objective</text>
+    <text x="20" y="150" fill="var(--good)" font-size="11.5">the durable contract</text>
+    <text x="20" y="168" fill="var(--muted)" font-size="11.5">+ opening_prompt (new)</text>
+    <path d="M 212 146 L 258 146" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="258,142 268,146 258,150" fill="var(--muted)"/>
+    <rect x="272" y="114" width="200" height="64" rx="6" fill="var(--panel)" stroke="var(--good)"/>
+    <text x="284" y="133" fill="var(--ink)">frozen run intent</text>
+    <text x="284" y="150" fill="var(--muted)" font-size="11.5">rawGoal, openingAsk,</text>
+    <text x="284" y="168" fill="var(--muted)" font-size="11.5">intentSource, steering</text>
+    <path d="M 476 146 L 522 146" stroke="var(--muted)" stroke-width="2" fill="none"/>
+    <polygon points="522,142 532,146 522,150" fill="var(--muted)"/>
+    <rect x="536" y="114" width="216" height="64" rx="6" fill="var(--panel)" stroke="var(--good)"/>
+    <text x="548" y="133" fill="var(--ink)">Persona verdict</text>
+    <text x="548" y="150" fill="var(--muted)" font-size="11.5">contract, opening ask,</text>
+    <text x="548" y="168" fill="var(--muted)" font-size="11.5">steering, provenance badge</text>
+  </g>
+</svg>
+<figcaption>The fingerprint keeps covering exactly <code>rawGoal</code>, <code>refinedGoal</code> and
+<code>decisions</code>, so no existing run becomes unreadable.</figcaption>
+</figure>
+
+<h2>Approved goal</h2>
+<p>A workflow run is judged against what the human is actually trying to achieve, the operator can
+see which ask a run froze and whether it looks wrong, and steering a session no longer silently
+rewrites the acceptance contract. Three changes deliver that, selected by the operator from the
+report's five proposals.</p>
+
+<h3>A. The durable objective is the review contract</h3>
+<p>Capture builds the run's frozen intent from <code>SessionGoal.objective</code> - the completion
+contract the goal refiner already protects from steering - instead of
+<code>SessionGoal.prompt</code>, and freezes the human's opening ask beside it as provenance,
+stored exactly as the Goal pipeline already stores every prompt - clamped by
+<code>clampPrompt</code> at 4,000 characters with an elided middle, so a very long request is
+preserved in that clamped form rather than byte for byte. Mission Control already decides, per instruction, whether new input changes the
+objective (<code>amend</code>, <code>replace</code>) or only steers it (<code>steer</code>,
+<code>unclear</code>); the workflow has simply never consulted that decision. The Persona prompt
+renders the objective as the contract and the opening ask as what it came from, in the human's
+own words as the Goal pipeline recorded them.</p>
+
+<h3>C. Steering reaches Personas as steering</h3>
+<p>Once A lands, a reconciled steering instruction is no longer visible to a Persona except as raw
+transcript, and real steering is often exactly what a fair review needs: "skip the E2E for now, the
+harness is broken" must not read as missing evidence. Personas receive a bounded, clearly
+subordinate section carrying the steering the session accepted, stated as method and sequencing
+changes that do not move the acceptance contract above them.</p>
+
+<h3>E. A suspicious goal is visible before it decides anything</h3>
+<p>The freeze classifies the ask it is about to write - it matches a known automated payload shape,
+it is implausibly short, or the session's newest instruction is still unreconciled - records that
+verdict on the run, and surfaces it in run detail. The defect this plan fixes was a query anybody
+could have run for months and the product said nothing.</p>
+
+<h2>Decisions already taken</h2>
+<table>
+<thead><tr><th>Decision</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><span class="tag">out of scope</span> Proposal B, refusing to capture a goal from text Mission Control typed</td>
+    <td>Implemented on task <code>fb317738</code>'s branch as <code>a8610a7b</code>. This plan assumes it merges and does not restate it. Four senders there still record authorship after the write rather than reserving before it (<code>workflows/manager.ts:6031</code> and <code>:3278</code>, <code>retro.ts:204</code>, <code>skills/reload.ts:292</code>); that residue belongs to B's follow-up.</td></tr>
+<tr><td><span class="tag">deferred</span> Proposal D, an operator-owned goal correction on the run</td>
+    <td>Three of the 25 measured runs are the operator typing the goal back into the pane to win the race against capture, so the demand is real. It is a product surface with its own review and is not required for A, C or E.</td></tr>
+<tr><td><span class="tag">fixed</span> The intent fingerprint keeps its derivation</td>
+    <td><code>workflowRunIntentFingerprint</code> is recomputed on every read and a mismatch marks the run unreadable and blocked. Everything added is additive and excluded from it.</td></tr>
+<tr><td><span class="tag">fixed</span> Existing runs keep the ask they froze</td>
+    <td>Nothing rewrites a durable snapshot. The improvement applies to runs created after the change, exactly as the intent snapshot itself did.</td></tr>
+</tbody>
+</table>
+
+<h2>Constraints</h2>
+<ul>
+  <li><code>src/shared/</code> stays browser-safe and carries wire contracts only.</li>
+  <li>Schema changes live beside their upgrade path in <code>src/server/db.ts</code>.</li>
+  <li>The session Goal itself stays live and keeps being displayed as the conversation's current objective. This plan changes what a REVIEW reads, not what the card shows.</li>
+  <li>Every UI surface this plan changes carries a Playwright spec in <code>e2e/</code>.</li>
+  <li>Mid-run human input is still not an amendment. An ask that genuinely changed is a new run.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+  <li>Changing how the session Goal is captured, refined, or reconciled. The refiner's classification is consumed here, not modified.</li>
+  <li>Any change to transcript capture, evidence staging, coverage, or the Inspector.</li>
+  <li>Re-compacting or repairing criteria for runs that already exist.</li>
+</ul>
+
+</body>
+</html>

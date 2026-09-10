@@ -1281,6 +1281,13 @@ queue in capture order, one instruction at a time, using the prompt and a small 
 window. Rapid prompts are never coalesced, so an objective change cannot disappear behind later
 steering.
 
+The Goal also retains the first accepted human request, unchanged by later amendments or
+replacements. It is stored in the same clamped form as other prompts: requests over 4,000
+characters have their middle elided. Sessions created before this field existed have no opening
+request recorded. A new Workflow run freezes the durable objective as its review contract and
+keeps this opening request and the captured intent revisions beside it. Later steering leaves
+that frozen review contract unchanged; the Goal shown on the session remains live.
+
 An instruction still in the editable pending-turn outbox has not reached this pipeline. Once
 the agent accepts it, the instruction leaves the outbox, enters the reconciliation queue, and
 can update the session detail's tactical focus immediately. Agent SDK delivery records that boundary

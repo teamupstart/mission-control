@@ -2328,12 +2328,29 @@ function IntentPane({
         </p>
       </div>
       <RunDisclosure
-        title="Original goal"
+        title="Review contract"
         meta={`${intent.rawGoalCharacters.toLocaleString()} characters`}
-        tooltip="Show the exact prompt this round was captured against"
+        tooltip="Show the frozen objective this round reviews; historical runs retain their captured goal"
       >
         <pre>{context.primaryGoal.rawPrompt || "(No captured goal)"}</pre>
       </RunDisclosure>
+      {intent.hasOpeningAsk && (
+        <RunDisclosure
+          title="Opening request"
+          meta={`${intent.openingAskCharacters.toLocaleString()} characters`}
+          tooltip="Show the human's opening request as recorded by the Goal pipeline"
+        >
+          <pre>{context.primaryGoal.openingAsk}</pre>
+        </RunDisclosure>
+      )}
+      {context.primaryGoal.intentSource && (
+        <p className="wf-run-meta">
+          Objective version {context.primaryGoal.intentSource.objectiveVersion}
+          {` · prompt revision ${context.primaryGoal.intentSource.promptRevision}`}
+          {` · resolved revision ${context.primaryGoal.intentSource.resolvedPromptRevision}`}
+          {context.primaryGoal.intentSource.relationship && ` · ${context.primaryGoal.intentSource.relationship}`}
+        </p>
+      )}
       <RunDisclosure
         title="Human decisions and rationale"
         meta={humanDecisionsSummary(intent)}

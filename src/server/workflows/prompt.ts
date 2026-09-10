@@ -78,8 +78,15 @@ export function buildPersonaPrompt(
     }),
     "",
     "# Original human intent",
-    "Raw goal:",
+    "Review contract (durable objective; historical runs retain their captured goal):",
     boundedSection(context.primaryGoal.rawPrompt),
+    ...(context.primaryGoal.openingAsk && context.primaryGoal.openingAsk !== context.primaryGoal.rawPrompt ? [
+      "Opening request this contract was derived from (as recorded by the Goal pipeline):",
+      boundedSection(context.primaryGoal.openingAsk),
+    ] : []),
+    ...(context.primaryGoal.intentSource ? [
+      `Captured objective version ${context.primaryGoal.intentSource.objectiveVersion}; prompt revision ${context.primaryGoal.intentSource.promptRevision}; resolved revision ${context.primaryGoal.intentSource.resolvedPromptRevision}; relationship ${context.primaryGoal.intentSource.relationship ?? "unresolved"}.`,
+    ] : []),
     "",
     `Refined goal: ${context.primaryGoal.refined ?? "(none)"}`,
     "Human decisions:",

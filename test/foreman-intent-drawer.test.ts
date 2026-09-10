@@ -9,6 +9,7 @@ import { mkSession } from "./helpers/session-fixture.ts";
 
 function goal(over: Partial<SessionGoal> = {}): SessionGoal {
   return {
+    openingPrompt: null,
     noteKey: "session-1",
     text: "Make Foreman track the durable objective",
     source: "model",

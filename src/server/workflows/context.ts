@@ -994,7 +994,14 @@ function readLiveWorkflowIntent(
   const goal = registry.getGoal(session.id);
   return {
     primaryGoal: {
-      rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
+      rawPrompt: clip(goal?.objective ?? goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
+      openingAsk: goal?.objective && goal.openingPrompt ? clip(goal.openingPrompt, MAX_GOAL) : null,
+      intentSource: goal?.objective ? {
+        objectiveVersion: goal.objectiveVersion,
+        promptRevision: goal.promptRevision,
+        resolvedPromptRevision: goal.resolvedPromptRevision,
+        relationship: goal.relationship,
+      } : null,
       refined: goal?.text ? clip(goal.text, MAX_GOAL) : null,
       sourceNoteKey: binding.noteKey,
     },
@@ -1053,6 +1060,8 @@ export function readWorkflowIntentSnapshot(
     rawGoal: intent.primaryGoal.rawPrompt,
     refinedGoal: intent.primaryGoal.refined,
     sourceNoteKey: intent.primaryGoal.sourceNoteKey,
+    openingAsk: intent.primaryGoal.openingAsk ?? null,
+    intentSource: intent.primaryGoal.intentSource ?? null,
     decisions: intent.humanDecisions,
     frozenAt: now,
   });
@@ -1116,6 +1125,8 @@ export async function readWorkflowContextRaw(
     ? {
         primaryGoal: {
           rawPrompt: frozenIntent.rawGoal,
+          openingAsk: frozenIntent.openingAsk ?? null,
+          intentSource: frozenIntent.intentSource ?? null,
           refined: frozenIntent.refinedGoal,
           sourceNoteKey: frozenIntent.sourceNoteKey,
         },

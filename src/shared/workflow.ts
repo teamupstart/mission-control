@@ -6,6 +6,7 @@ import type {
   InspectorComment,
   InspectorInspection,
   InspectorMode,
+  IntentRelationship,
   SessionIntentGuard,
 } from "./types.ts";
 import { providerModelDefault } from "./model.ts";
@@ -3580,8 +3581,17 @@ export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
  * fingerprint documents - those are live per-submission reads, and only intent is frozen.
  */
 export interface WorkflowRunIntentSnapshot {
-  /** The unrefined human prompt as the Goal held it at run creation. */
+  /** Durable objective at run creation; historical snapshots retain their captured prompt. */
   rawGoal: string;
+  /** Clamped opening request, absent on older snapshots and null when unknown. */
+  openingAsk?: string | null;
+  /** Objective provenance at capture, excluded from the intent fingerprint. */
+  intentSource?: {
+    objectiveVersion: number;
+    promptRevision: number;
+    resolvedPromptRevision: number;
+    relationship: IntentRelationship | null;
+  } | null;
   /** The refined objective, or null when the Goal carried only a raw prompt. */
   refinedGoal: string | null;
   /** The note the goal and decisions were read from, mirrored into `primaryGoal`. */
@@ -3981,6 +3991,8 @@ export interface WorkflowCheckEvidence {
 export interface WorkflowContextSnapshot {
   primaryGoal: {
     rawPrompt: string;
+    openingAsk?: string | null;
+    intentSource?: WorkflowRunIntentSnapshot["intentSource"];
     refined: string | null;
     sourceNoteKey: string;
   };

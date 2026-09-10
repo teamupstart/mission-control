@@ -34,6 +34,7 @@ test("an existing goal table gains the durable intent columns", () => {
   const names = new Set(columns.map((column) => column.name));
   for (const name of [
     "objective",
+    "opening_prompt",
     "focus",
     "relationship",
     "rationale",
@@ -49,6 +50,7 @@ test("an existing goal table gains the durable intent columns", () => {
 test("a legacy model goal remains a resolved initial objective after migration", () => {
   const goal = getSessionGoal("legacy-session");
   assert.ok(goal);
+  assert.equal(goal.openingPrompt, null);
   assert.equal(goal.objective, "Ship the existing feature");
   assert.equal(goal.text, "Ship the existing feature");
   assert.equal(goal.objectiveVersion, 1);
@@ -67,6 +69,7 @@ test("a legacy unresolved revision gap becomes a fail-closed queue barrier", () 
 
   const goal = getSessionGoal("legacy-session");
   assert.ok(goal);
+  assert.equal(goal.openingPrompt, null);
   assert.deepEqual(goal.pendingPrompts, [
     { revision: 2, prompt: null },
     { revision: 3, prompt: "latest steering prompt" },

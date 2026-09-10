@@ -46,6 +46,7 @@ function persistedGoal(noteKey: string, text: string, prompt: string, updatedAt:
     text,
     source: "model",
     objective: prompt,
+    openingPrompt: null,
     prompt,
     focus: prompt,
     relationship: "initial",
@@ -408,4 +409,32 @@ test("an empty live-key set means liveness unknown, not nothing is live", () => 
   // A real set still prunes: the refusal is about the empty case, not the helper.
   assert.equal(pruneSessionGoals(["some-other-session"], 20), 1, "a real live set stopped pruning");
   assert.equal(getSessionGoal("db-orphan"), undefined);
+});
+
+
+test("the first accepted opening prompt survives steering, amendments, replacement, and restart", () => {
+  const { r, s } = withSession("opening-provenance", "%50");
+  const key = s.agentSessionId ?? s.id;
+  const opening = "Fix the spinner\nKeep keyboard access.";
+  r.captureAcceptedPrompt(s.id, opening, key);
+  assert.equal(r.getGoal(s.id)?.openingPrompt, opening);
+  for (const relationship of ["steer", "amend", "replace"] as const) {
+    r.captureAcceptedPrompt(s.id, `${relationship} instruction`, key);
+    r.upsertGoal(s.id, { objective: `${relationship} objective`, relationship });
+    assert.equal(r.getGoal(s.id)?.openingPrompt, opening);
+    assert.equal(getSessionGoal(key)?.openingPrompt, opening);
+  }
+  // Storage enforces write-once even if an internal caller passes a changed copy.
+  upsertSessionGoal({ ...r.getGoal(s.id)!, openingPrompt: "overwrite attempt" });
+  assert.equal(getSessionGoal(key)?.openingPrompt, opening);
+  const restarted = new Registry();
+  restarted.applyDiscovery([mkDiscovered({ syntheticId: s.id })]);
+  assert.equal(restarted.getGoal(s.id)?.openingPrompt, opening);
+});
+
+test("a legacy goal does not mistake a new instruction for its missing opening request", () => {
+  const { r, s } = withSession("legacy-opening", "%51");
+  r.upsertGoal(s.id, { prompt: "an older ask", promptRevision: 1 });
+  r.captureAcceptedPrompt(s.id, "continue", s.agentSessionId ?? s.id);
+  assert.equal(r.getGoal(s.id)?.openingPrompt, null);
 });

@@ -215,7 +215,9 @@ function seedRecord(daemon: DaemonHandle, runId: string, sessionId: string): voi
     db.prepare(`UPDATE workflow_submissions SET context_json = ? WHERE id = ?`).run(
       JSON.stringify({
         primaryGoal: {
-          rawPrompt: "ORIGINAL GOAL BODY, as the repair packet carried it.",
+          rawPrompt: "DURABLE OBJECTIVE BODY, frozen before review.",
+          openingAsk: "Please make the run easier to read.",
+          intentSource: { objectiveVersion: 2, promptRevision: 3, resolvedPromptRevision: 3, relationship: "steer" },
           refined: REFINED_GOAL,
           sourceNoteKey: NOTE_KEY,
         },
@@ -326,6 +328,7 @@ test("the run record is one tab bar, and a blocking pane opens itself", async ({
   await expect(intent).toBeVisible();
   await expect(intent.locator(".wf-run-lead-text")).toHaveText(REFINED_GOAL);
   await expect(intent).toContainText("Compacted by claude-haiku-4-5");
+  await expect(intent).toContainText("Objective version 2 · prompt revision 3 · resolved revision 3 · steer");
   await expect(intent).toContainText("HEAD 1665b769");
   await expect(intent).toContainText("tree dirty");
   await expect(intent).toContainText("transcript truncated");
@@ -371,12 +374,17 @@ test("the run record is one tab bar, and a blocking pane opens itself", async ({
   // The original goal, the criteria, the constraints and the evidence snapshot are all still
   // here in full - one disclosure each, closed, with its own size on the closed row.
   const original = intent.locator("details.wf-run-disclosure")
-    .filter({ hasText: "Original goal" }).first();
-  await expect(original.locator("> summary")).toContainText("52 characters");
+    .filter({ hasText: "Review contract" }).first();
+  await expect(original.locator("> summary")).toContainText("45 characters");
   await expect(original.locator(".wf-run-disclosure-body")).toBeHidden();
   await original.locator("> summary").click();
   await expect(original.locator(".wf-run-disclosure-body"))
-    .toContainText("ORIGINAL GOAL BODY, as the repair packet carried it.");
+    .toContainText("DURABLE OBJECTIVE BODY, frozen before review.");
+  const opening = intent.locator("details.wf-run-disclosure")
+    .filter({ hasText: "Opening request" }).first();
+  await opening.locator("> summary").click();
+  await expect(opening.locator("pre")).toHaveText("Please make the run easier to read.");
+  await shoot(dashboard, dashboard.locator("section.wf-run-record"), "04-review-contract-opening-request");
   const snapshot = intent.locator("details.wf-run-disclosure")
     .filter({ hasText: "Evidence snapshot" }).first();
   await snapshot.locator("> summary").click();

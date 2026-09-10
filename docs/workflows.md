@@ -732,18 +732,23 @@ decisions and rationale, repository HEAD and diff, transcript evidence, reposito
 and prior Persona feedback. Confirmed workflow packets are matched to the transcript turn at
 their durable delivery byte anchor and excluded from both transcript evidence and human decisions,
 including after a daemon restart. A later human turn that repeats the same text remains evidence.
-A run FREEZES its intent when it is created. The raw goal, refined goal, and human decisions as
-they stood at that moment are copied onto the run, and every submission of that run is reviewed
-against the copy. The session Goal stays live and keeps being displayed as the conversation's
-current objective; it is simply no longer what a review is judged by. This matters because the
-Goal is writable by the prompt hook, which reports every prompt typed into the pane - including
-the repair packets a workflow types there itself - so a run that read it per submission could
-distil its own acceptance criteria out of its previous complaint. Transcript, diff, standards,
-coverage, and evidence remain live per-submission reads: only intent is frozen. A later human
-turn or review answer reaches Personas as transcript and prior-feedback context, labelled as what
-it is, and does not amend the frozen ask; an ask that genuinely changed is a new run. A run
-created before the snapshot existed carries none and keeps the live-read behaviour it was created
-under for its whole life.
+A run FREEZES its intent when it is created. Its review contract is the session's durable
+objective, falling back to the latest prompt only when no objective exists. The compact goal
+and human decisions are frozen beside it. Steering such as "continue" or "create pr" does not
+replace that contract or become the goal used to distil acceptance criteria.
+
+The run also keeps the opening human request as recorded by the Goal pipeline, plus the objective
+version, prompt revision, resolved revision and latest relationship at capture. The opening request
+is write-once, survives amendments and replacements, and uses the same 4,000-character middle
+elision as other captured prompts. Older sessions have no recoverable opening request. Personas
+see a differing opening request as provenance beside the review contract; the Intent tab exposes
+both and the captured revision metadata. These additions do not affect the intent fingerprint.
+
+The session Goal stays live and keeps being displayed as the conversation's current objective.
+Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent
+is frozen. Later human input does not amend the frozen ask; an ask that genuinely changed needs
+a new run. Existing frozen runs keep their original snapshots and criteria unchanged. Runs from
+before snapshots existed still read intent live and now consult the durable objective too.
 
 A deterministic intent fingerprint covers only the raw/refined goal and deduplicated genuine
 human decision content, and on a snapshot-bearing run it is the frozen one on every submission. A

@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { AppPageShell } from "../src/web/components/AppPageShell.tsx";
 import type { MissionRoute } from "../src/web/workflows/useWorkflowRoute.ts";
 import {
+  RUN_RECORD_PANES,
   missionRouteHash,
   parseMissionRoute,
   pipelineRunHash,
@@ -237,6 +238,64 @@ test("a Scouts link nobody can honour degrades to the filtered list, never to a 
 //
 // This is the whole redirect contract in one table, and it is a table because the failure it
 // guards against is per-spelling: a redirect written as a branch per route is a redirect that
+/**
+ * The run record's pane is an ADDRESS, because three of the four panes are invisible until
+ * clicked.
+ *
+ * A link that does not carry which pane is showing is a link to a different page than the one
+ * being shared, and the round scrubber makes it worse: changing rounds must not silently change
+ * which surface a reader is looking at. What this pins is the round trip and the two refusals -
+ * a name this build does not know takes the default rather than reaching the address bar, and a
+ * pane with no run to hold it is not an address at all.
+ */
+test("the run record pane round-trips in the hash, and an unknown one takes the default", () => {
+  assert.deepEqual(parseMissionRoute("#/runs/r1?pane=deliveries"), {
+    page: "runs",
+    runId: "r1",
+    pane: "deliveries",
+  });
+  assert.equal(
+    missionRouteHash({ page: "runs", runId: "r1", pane: "deliveries" }),
+    "#/runs/r1?pane=deliveries",
+  );
+  // Every offered pane, so adding one to the tuple without teaching the route about it fails
+  // here rather than in a link somebody kept.
+  for (const pane of RUN_RECORD_PANES) {
+    const route: MissionRoute = { page: "runs", runId: "r1", pane };
+    assert.deepEqual(parseMissionRoute(missionRouteHash(route)), route, `${pane} did not survive`);
+  }
+  // With the filters, because a filtered rail is how most readers reach a run and the first tab
+  // click must not take them off the list they came from.
+  assert.deepEqual(parseMissionRoute("#/runs/r1?pane=intent&status=running"), {
+    page: "runs",
+    runId: "r1",
+    pane: "intent",
+    filters: { status: "running" },
+  });
+  assert.equal(
+    missionRouteHash({
+      page: "runs",
+      runId: "r1",
+      pane: "intent",
+      filters: { status: "running" },
+    }),
+    "#/runs/r1?pane=intent&status=running",
+  );
+  // A name this build does not offer is DROPPED, not carried: the container would otherwise
+  // select a tab that is not in its own bar and draw nothing.
+  assert.deepEqual(parseMissionRoute("#/runs/r1?pane=completion"), { page: "runs", runId: "r1" });
+  assert.deepEqual(parseMissionRoute("#/runs/r1?pane="), { page: "runs", runId: "r1" });
+  // And a pane with no run to name is not an address. The rail has no record to open a pane of.
+  assert.deepEqual(parseMissionRoute("#/runs?pane=intent"), { page: "runs" });
+  assert.equal(missionRouteHash({ page: "runs", pane: "intent" }), "#/runs");
+  // Through the legacy prefix too, which is one rule rather than a parallel copy of the parse.
+  assert.deepEqual(parseMissionRoute("#/workflows/runs/r1?pane=deliveries"), {
+    page: "runs",
+    runId: "r1",
+    pane: "deliveries",
+  });
+});
+
 // gets one of them wrong, and the symptom is a bookmark or a desktop notification quietly
 // landing on the fleet. The RUN rows also carry a query, because the legacy prefix is stripped
 // before matching precisely so the run filters cannot be dropped on the way through - what

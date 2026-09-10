@@ -184,9 +184,7 @@ async function seedFailedRound(page: Page, daemon: DaemonHandle): Promise<string
  * round 2's objection" would fail on a page that is perfectly correct.
  */
 const worklistOf = (page: Page): Locator =>
-  page.locator("section.wf-run-section")
-    .filter({ has: page.getByRole("heading", { name: "Review worklist" }) })
-    .locator(".wf-run-worklist");
+  page.getByRole("region", { name: "Review worklist" }).locator(".wf-run-worklist");
 
 /** Give one reviewer a run-scoped directive from its own worklist row. */
 async function directReviewer(page: Page, reviewer: string, marker: string): Promise<void> {

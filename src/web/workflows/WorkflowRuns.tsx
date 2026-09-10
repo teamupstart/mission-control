@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type {
   EvidenceRef,
   PersonaVerdict,
+  WorkflowContextSnapshot,
+  WorkflowDelivery,
+  WorkflowHumanDecision,
   WorkflowCheckOutcome,
   WorkflowExternalSource,
   WorkflowNodeAttempt,
@@ -40,14 +43,19 @@ import { Tooltip } from "../components/Tooltip.tsx";
 import { workflowRunTone } from "../components/session-bits.tsx";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { formatBytes, relativeTime, repoLeaf } from "../lib/format.ts";
-import type { WorkflowRunFilters } from "./useWorkflowRoute.ts";
+import type { RunRecordPane, WorkflowRunFilters } from "./useWorkflowRoute.ts";
 import { requestWorkflowVersionOpen } from "./workflowSelection.ts";
 import {
   useWorkflowEvidenceDraft,
   workflowBindingEvidenceOwner,
   workflowEvidenceScopes,
 } from "./WorkflowEvidenceComposer.tsx";
-import type { ChangeWorklistRow, ChangeWorklistState } from "./run-model.ts";
+import type {
+  ChangeWorklistRow,
+  ChangeWorklistState,
+  RunRecordDeliverySummary,
+  RunRecordIntentSummary,
+} from "./run-model.ts";
 import {
   actionBlockSentence,
   actionWaitSentence,
@@ -66,6 +74,10 @@ import {
   eventsByRound,
   deliveryKindLabel,
   deliveryStateView,
+  firstLineOf,
+  humanDecisionSummary,
+  humanDecisionsSummary,
+  initialRunRecordPane,
   gateSummaryStatus,
   gateWaitSentence,
   inheritedAttempts,
@@ -87,12 +99,14 @@ import {
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
   runRefusedSentence,
+  runRecordSummary,
   runRoundGroups,
   runRounds,
   runStalemates,
   runStatusLabel,
   segmentProvenanceSentence,
   selectedSubmission,
+  submissionRoundLabel,
   provenPullRequest,
   sessionActionProgress,
   sessionActionStatus,
@@ -1141,44 +1155,39 @@ function WorklistRailRow({
  * three segment counts and the card together; nothing in this section may state a fact from a
  * round later than the one being viewed.
  */
-function RunWorklist({
-  detail,
-  round,
-  attempts,
-  calls,
-  nameOfNode,
-  inspectorOnly,
-  reviewerlessVersion,
-  personaNodeIds,
-  disabledNodeIds,
-  initialNodeIds = [],
-  onOpenFile,
-  onCopyChange,
-  changeCopied = false,
-  onOpenPersonaDirective,
-  onToggleNodesDisabled,
-}: {
-  detail: WorkflowRunDetail;
+/**
+ * The worklist's four buckets, classified without rendering.
+ *
+ * Lifted out of `RunWorklist` when the run record grew a tab bar, and lifted rather than
+ * copied on purpose: the worklist's tab label carries a count and an amber badge, and both are
+ * claims about the same classification the rail draws. A second derivation of "how many things
+ * are blocking" would be two answers to one question, and the label - the half a reader trusts
+ * without opening the pane - is the half that would be wrong.
+ *
+ * `passed` and `pending` are handed back separately rather than pre-merged: the rail shows them
+ * in one panel and counts only the real passes, because a queued reviewer counted as a pass
+ * would claim an outcome nobody reached.
+ */
+export interface WorklistSegments {
+  /** What this run is still asking for: failed commands, stalled reviewers, open changes. */
+  blocking: WorklistItem[];
+  /** Reviewers and commands that are not asking for anything in this round. */
+  passed: WorklistItem[];
+  /** Reviewers this round has not heard from yet. Not blocking, and not a pass either. */
+  pending: WorklistItem[];
+  /** Changes a later verdict from their own reviewer settled, or left unconfirmed. */
+  archive: WorklistItem[];
+}
+
+export function runWorklistSegments(
+  detail: WorkflowRunDetail,
   /** The viewed round. `null` means the latest submission's round. */
-  round: number | null;
+  round: number | null,
   /** This round's non-action attempts, with the structural nodes already filtered out. */
-  attempts: readonly WorkflowNodeAttempt[];
-  calls: NonNullable<WorkflowRunDetail["llmCalls"]>;
-  nameOfNode: (nodeId: string) => string | null;
-  inspectorOnly: boolean;
-  reviewerlessVersion: boolean;
-  personaNodeIds: ReadonlySet<string>;
-  disabledNodeIds: readonly string[];
-  /** Settled pipeline nodes requested before this keyed worklist instance mounted. */
-  initialNodeIds?: readonly string[];
-  onOpenFile?: (path: string) => void;
-  onCopyChange?: (text: string) => void;
-  changeCopied?: boolean;
-  onOpenPersonaDirective?: (nodeId: string) => void;
-  onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
-}): React.JSX.Element {
+  attempts: readonly WorkflowNodeAttempt[],
+  nameOfNode: (nodeId: string) => string | null,
+): WorklistSegments {
   const worklist = runChangeWorklist(detail, round);
-  const stalemates = runStalemates(detail, round);
 
   /*
    * Checks never flow through the change model and never will - a row keyed on a title cannot
@@ -1300,6 +1309,48 @@ function RunWorklist({
     }));
   const archive: WorklistItem[] = archived
     .map((row): WorklistItem => ({ kind: "change", key: changeKey(row), row }));
+  return { blocking, passed, pending, archive };
+}
+
+function RunWorklist({
+  detail,
+  round,
+  attempts,
+  calls,
+  nameOfNode,
+  inspectorOnly,
+  reviewerlessVersion,
+  personaNodeIds,
+  disabledNodeIds,
+  initialNodeIds = [],
+  onOpenFile,
+  onCopyChange,
+  changeCopied = false,
+  onOpenPersonaDirective,
+  onToggleNodesDisabled,
+}: {
+  detail: WorkflowRunDetail;
+  /** The viewed round. `null` means the latest submission's round. */
+  round: number | null;
+  /** This round's non-action attempts, with the structural nodes already filtered out. */
+  attempts: readonly WorkflowNodeAttempt[];
+  calls: NonNullable<WorkflowRunDetail["llmCalls"]>;
+  nameOfNode: (nodeId: string) => string | null;
+  inspectorOnly: boolean;
+  reviewerlessVersion: boolean;
+  personaNodeIds: ReadonlySet<string>;
+  disabledNodeIds: readonly string[];
+  /** Settled pipeline nodes requested before this keyed worklist instance mounted. */
+  initialNodeIds?: readonly string[];
+  onOpenFile?: (path: string) => void;
+  onCopyChange?: (text: string) => void;
+  changeCopied?: boolean;
+  onOpenPersonaDirective?: (nodeId: string) => void;
+  onToggleNodesDisabled?: (nodeIds: string[], disabled: boolean) => void;
+}): React.JSX.Element {
+  const stalemates = runStalemates(detail, round);
+  const { blocking, passed, pending, archive } =
+    runWorklistSegments(detail, round, attempts, nameOfNode);
   const bySegment: Record<WorklistSegment, WorklistItem[]> = {
     blocking,
     passed: [...passed, ...pending],
@@ -1723,9 +1774,649 @@ function ChangeDetail({
   );
 }
 
+/**
+ * The run record's tab bar and one pane of it.
+ *
+ * A pane is `{ id, label, count, blocking, render }` and that shape is the contract every
+ * later pane joins by. `render` returning null means the pane is not offered AT ALL - not
+ * disabled, not empty - which is how a conditional record (a gate that was never adopted, a
+ * completion nobody claimed) stays absent from the bar instead of being a tab that draws
+ * nothing.
+ *
+ * `blocking` drives the amber badge and it means "this pane holds something that STOPS the
+ * run". It never means "this pane has warnings". Every pane sets it honestly; none of them
+ * adds a selection rule of its own.
+ */
+interface RunRecordPaneSpec {
+  id: RunRecordPane;
+  label: string;
+  /** What this pane answers, on the tab itself. */
+  hint: string;
+  /** The count on the label. `null` for a pane whose contents are not a countable set. */
+  count: number | null;
+  blocking: boolean;
+  /** Called during the container's render. Must create elements only - never call a hook. */
+  render: () => React.JSX.Element | null;
+}
+
+const runRecordTabId = (pane: RunRecordPane): string => `run-record-tab-${pane}`;
+const runRecordPaneId = (pane: RunRecordPane): string => `run-record-pane-${pane}`;
+
+function RunRecordTabs({
+  panes,
+  routePane,
+  onPane,
+}: {
+  panes: readonly RunRecordPaneSpec[];
+  /** The pane the address bar names, or null. Ignored when this run does not offer it. */
+  routePane: RunRecordPane | null;
+  /**
+   * Ask the host to route to a pane. Absent on a host that does not route, in which case the
+   * bar keeps the pick in local state - which is what makes the tabs work in a markup test.
+   *
+   * When it IS present the ROUTE is the source of truth and no local pick is kept, and that is
+   * what makes the back button move the tab: a reader who clicked Intent and then went back has
+   * changed nothing about this component, only the hash, so anything remembered here would
+   * fight the history entry they just asked for.
+   */
+  onPane?: (pane: RunRecordPane) => void;
+}): React.JSX.Element {
+  const offered = panes
+    .map((pane) => ({ pane, content: pane.render() }))
+    .filter((entry): entry is { pane: RunRecordPaneSpec; content: React.JSX.Element } =>
+      entry.content !== null);
+  const offers = (pane: RunRecordPane | null): boolean =>
+    pane !== null && offered.some((entry) => entry.pane.id === pane);
+  /*
+   * Resolved ONCE, at mount, and this component mounts once per run: the host nulls `detail`
+   * when another run is selected, so the view under it is destroyed and rebuilt.
+   *
+   * That is the whole of why a delivery turning refused under a reader raises the badge and
+   * does not move them. `detail` is refreshed in place from the run's SSE summary, so
+   * re-deriving this on every commit would drag anyone reading Intent onto Deliveries the
+   * moment a packet failed.
+   */
+  const [initial] = useState(() => initialRunRecordPane(
+    offered.map((entry) => ({ id: entry.pane.id, blocking: entry.pane.blocking })),
+    routePane,
+    "worklist",
+  ));
+  const [pick, setPick] = useState<RunRecordPane | null>(null);
+  const routed = offers(routePane) ? routePane : null;
+  const localPick = offers(pick) ? pick : null;
+  // `initial` was resolved against the registry this run mounted with, so it is guarded again
+  // rather than trusted: a pane can stop being offered under a live update - a delivery ledger
+  // does not empty, but a later phase's conditional pane may - and a selection naming a tab
+  // that is no longer in the bar would draw nothing at all.
+  const fallback = offers(initial) ? initial : offered[0]?.pane.id ?? "worklist";
+  const selected = routed ?? localPick ?? fallback;
+  const tabs = useRef(new Map<RunRecordPane, HTMLButtonElement>());
+  const select = (pane: RunRecordPane): void => {
+    if (pane === selected) return;
+    if (onPane) onPane(pane);
+    else setPick(pane);
+  };
+  /**
+   * Arrow keys move between tabs, which is the half of `role="tablist"` a plain row of buttons
+   * does not get for free. Home and End are included because a bar that grows a fifth pane
+   * makes "the first one" a real destination.
+   *
+   * The move SELECTS as well as focusing, which is the automatic-activation pattern: every
+   * pane here is already rendered from records in hand, so there is nothing to load and
+   * nothing that a separate confirming keystroke would protect.
+   */
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    const step = event.key === "ArrowRight" || event.key === "ArrowDown"
+      ? 1
+      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+    const target = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? offered.length - 1
+        : step === 0 ? -1 : (index + step + offered.length) % offered.length;
+    if (target < 0) return;
+    const next = offered[target];
+    if (!next) return;
+    event.preventDefault();
+    select(next.pane.id);
+    tabs.current.get(next.pane.id)?.focus();
+  };
+  const active = offered.find((entry) => entry.pane.id === selected) ?? offered[0];
+  return (
+    <section className="wf-run-section wf-run-record">
+      <div className="workflow-tabs" role="tablist" aria-label="Run record">
+        {offered.map(({ pane }, index) => (
+          <Tooltip key={pane.id} label={pane.hint}>
+            <button
+              type="button"
+              role="tab"
+              id={runRecordTabId(pane.id)}
+              aria-selected={pane.id === selected}
+              aria-controls={runRecordPaneId(pane.id)}
+              // Roving tabindex: one stop for the whole bar, and the arrows move within it.
+              tabIndex={pane.id === selected ? 0 : -1}
+              className={pane.id === selected ? "active" : ""}
+              ref={(node) => {
+                if (node) tabs.current.set(pane.id, node);
+                else tabs.current.delete(pane.id);
+              }}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
+              onClick={() => select(pane.id)}
+            >
+              {pane.label}
+              {(pane.count !== null || pane.blocking) && (
+                // Amber ONLY when something in there stops the run. A count is not an attention
+                // fact, which is the same call `RunsKindTabs` made about its own run counts.
+                //
+                // `!` is the fallback for a pane that blocks over something it cannot count -
+                // a corrupt context is one unreadable record, not "one" of anything - and it
+                // reaches the accessible name rather than being a colour nobody can hear.
+                <span className={pane.blocking ? "workflow-tab-badge" : "wf-run-tab-count"}>
+                  {pane.count ?? "!"}
+                </span>
+              )}
+            </button>
+          </Tooltip>
+        ))}
+      </div>
+      {active && (
+        <div
+          className="wf-run-pane"
+          role="tabpanel"
+          id={runRecordPaneId(active.pane.id)}
+          aria-labelledby={runRecordTabId(active.pane.id)}
+        >
+          {active.content}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One labelled number in a pane's stat strip. */
+function RunStat({
+  label,
+  value,
+  tone = null,
+}: {
+  label: string;
+  value: string | number;
+  /** `alert` for a number that stops the run, `ok` for one that says it did not. */
+  tone?: "alert" | "ok" | null;
+}): React.JSX.Element {
+  return (
+    <div className="wf-run-stat">
+      <span className="wf-run-stat-key">{label}</span>
+      <strong className={tone ? `wf-run-stat-value is-${tone}` : "wf-run-stat-value"}>
+        {value}
+      </strong>
+    </div>
+  );
+}
+
+/**
+ * Every packet this run sent, as a ledger.
+ *
+ * This section was four cards of exactly 560px each - 2,331px on the run this was measured
+ * against, of which the payloads were already the capped part. The cost was the card: a
+ * five-field definition list and a state sentence before the payload started, per packet, so
+ * ten deliveries would have cost 5,600px without one extra character of payload. The fields
+ * are all still here; they moved behind the row's own disclosure.
+ *
+ * What does NOT move behind a disclosure is a refused or uncertain packet. Its sentence, its
+ * durable error and its recovery buttons sit open under the row, because the run is stopped on
+ * exactly that and a control a reader has to go looking for is a control that was hidden.
+ */
+function DeliveriesPane({
+  detail,
+  summary,
+  viewedRound,
+  sessionBound,
+  isActionPending,
+  onConfirm,
+  onRetryDelivery,
+  onResolveDelivery,
+}: {
+  detail: WorkflowRunDetail;
+  summary: RunRecordDeliverySummary;
+  /** The round the scrubber is on, so the ledger can open on it. `null` shows every row. */
+  viewedRound: number | null;
+  sessionBound: boolean;
+  isActionPending: (id: RunActionId) => boolean;
+  onConfirm: (request: WorkflowConfirmRequest) => void;
+  onRetryDelivery: (deliveryId: string) => Promise<void>;
+  onResolveDelivery: (
+    deliveryId: string,
+    resolution: "mark_delivered" | "discard_and_new_round",
+    confirmation?: string,
+  ) => Promise<void>;
+}): React.JSX.Element {
+  /*
+   * EVERY round by default, with the viewed round one click away - which is the opposite of
+   * what the phase document proposed, and the repository is why.
+   *
+   * A delivery is not scoped to the round being read. This file's own rule, and the sentence
+   * the scrubber prints when an older round is selected, both say so: "the Inspector gate,
+   * deliveries and every recovery action are always the live run's". Opening this ledger
+   * pre-filtered would answer "did the packets reach the session" with the packets of one
+   * round - and on the common case, a reader scrubbed back to round 1 of a three-round run,
+   * it would answer with an EMPTY table under a tab labelled 4.
+   *
+   * So the ledger is the whole ledger, each row carrying the round it belongs to, and the
+   * narrowing is offered rather than assumed. The mockups drew it this way too.
+   */
+  const [thisRoundOnly, setThisRoundOnly] = useState(false);
+  const [openPacket, setOpenPacket] = useState<string | null>(null);
+  const roundOf = (submissionId: string): number | null =>
+    detail.submissions.find((submission) => submission.id === submissionId)?.round ?? null;
+  // A refused or uncertain packet forces the whole ledger open: a refusal in an unread round
+  // is exactly the thing that must not hide behind a filter.
+  const scoped = viewedRound !== null && thisRoundOnly && !summary.blocking;
+  const rows = scoped
+    ? detail.deliveries.filter((delivery) => roundOf(delivery.submissionId) === viewedRound)
+    : detail.deliveries;
+  const labelOf = (delivery: WorkflowDelivery): string => {
+    const submission = detail.submissions.find((entry) => entry.id === delivery.submissionId);
+    return submission ? submissionRoundLabel(detail, submission) : "Round unknown";
+  };
+  return (
+    <>
+      <div className="wf-run-strip">
+        <RunStat label="Delivered" value={summary.delivered} tone={summary.delivered > 0 ? "ok" : null} />
+        <RunStat label="Refused" value={summary.refused} tone={summary.refused > 0 ? "alert" : null} />
+        <RunStat
+          label="Uncertain"
+          value={summary.uncertain}
+          tone={summary.uncertain > 0 ? "alert" : null}
+        />
+        <RunStat
+          label="Newest"
+          value={summary.newestDeliveredAt === null
+            ? "none confirmed"
+            : new Date(summary.newestDeliveredAt).toLocaleTimeString()}
+        />
+      </div>
+      {scoped ? (
+        <p className="wf-run-meta">
+          {`Showing round ${viewedRound}'s ${rows.length} of ${detail.deliveries.length} packets. `}
+          <Tooltip label="Show every packet this run has sent, in every round">
+            <button className="btn btn-ghost" onClick={() => setThisRoundOnly(false)}>
+              Show every round
+            </button>
+          </Tooltip>
+        </p>
+      ) : viewedRound !== null && summary.inViewedRound < detail.deliveries.length && (
+        <p className="wf-run-meta">
+          {`Showing all ${detail.deliveries.length} packets, every round. `}
+          {summary.blocking
+            ? "A refused or uncertain packet keeps the whole ledger open."
+            : (
+              <Tooltip label="Show only the packets belonging to the round being read">
+                <button className="btn btn-ghost" onClick={() => setThisRoundOnly(true)}>
+                  Show round {viewedRound} only
+                </button>
+              </Tooltip>
+            )}
+        </p>
+      )}
+      <div className="wf-run-table wf-run-ledger">
+        <table>
+          <caption className="sr-only">Packets this run sent to the session</caption>
+          <thead>
+            <tr>
+              <th>Round</th>
+              <th>Kind</th>
+              <th>State</th>
+              <th>Delivered</th>
+              <th>Payload</th>
+              <th>Size</th>
+              <th>Packet</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((delivery) => {
+              const view = deliveryStateView(delivery.state);
+              const open = openPacket === delivery.id;
+              const alarming = delivery.state === "refused" || delivery.state === "uncertain";
+              return (
+                <Fragment key={delivery.id}>
+                  <tr className={`wf-run-ledger-row is-${delivery.state}`}>
+                    <td>{labelOf(delivery)}</td>
+                    <td>{deliveryKindLabel(delivery.kind)}</td>
+                    <td>
+                      <span className={`workflow-chip workflow-${
+                        delivery.state === "delivered" ? "passed"
+                          : alarming ? "failed" : "waiting"}`}>
+                        {view.label}
+                      </span>
+                    </td>
+                    <td>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</td>
+                    <td><code>{delivery.payloadSha256.slice(0, 16)}</code></td>
+                    <td>
+                      {delivery.payloadPrunedAt
+                        ? "pruned"
+                        : `${delivery.payload.length.toLocaleString()} ch`}
+                    </td>
+                    <td>
+                      <Tooltip label={open
+                        ? "Hide this packet's payload and transition record"
+                        : "Show this packet's exact payload and its transition record"}>
+                        <button
+                          className="btn btn-ghost wf-run-ledger-toggle"
+                          aria-expanded={open}
+                          aria-controls={`wf-run-packet-${delivery.id}`}
+                          onClick={() => setOpenPacket(open ? null : delivery.id)}
+                        >
+                          {open ? "Hide packet" : "Show packet"}
+                        </button>
+                      </Tooltip>
+                    </td>
+                  </tr>
+                  {/* Never behind the disclosure: this is why the run is standing still. */}
+                  {alarming && (
+                    <tr className="wf-run-ledger-alert">
+                      <td colSpan={7}>
+                        <p className="wf-run-sentence">{view.sentence}</p>
+                        <ErrorLine raw={delivery.error} />
+                        {delivery.state === "refused" && (
+                          <Tooltip label={sessionBound
+                            ? "Retry this packet after a positive delivery refusal"
+                            : "The bound session is gone, so there is nowhere to send this packet"}>
+                            <button
+                              className="btn"
+                              disabled={!sessionBound}
+                              onClick={() => void onRetryDelivery(delivery.id)}
+                            >
+                              Retry refused delivery
+                            </button>
+                          </Tooltip>
+                        )}
+                        {delivery.state === "uncertain" && (
+                          <div className="wf-run-recovery">
+                            {deliveryResolutionActions(delivery, sessionBound).map((action) => {
+                              const pending = isActionPending(action.id);
+                              return (
+                                <Tooltip key={action.id} label={runActionTooltip(action, pending)}>
+                                  <button
+                                    className={action.confirm.danger ? "btn btn-danger-ghost" : "btn"}
+                                    disabled={action.disabled || pending}
+                                    onClick={() => onConfirm({
+                                      ...action.confirm,
+                                      onConfirm: () => void onResolveDelivery(
+                                        action.deliveryId,
+                                        action.resolution,
+                                        action.confirm.requirePhrase,
+                                      ),
+                                    })}
+                                  >
+                                    {action.label}
+                                  </button>
+                                </Tooltip>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  {open && (
+                    <tr className="wf-run-ledger-detail" id={`wf-run-packet-${delivery.id}`}>
+                      <td colSpan={7}>
+                        {!alarming && <p className="wf-run-sentence">{view.sentence}</p>}
+                        {!alarming && <ErrorLine raw={delivery.error} />}
+                        <dl className="wf-run-facts-list">
+                          <div><dt>Conversation</dt><dd>{delivery.noteKey}</dd></div>
+                          <div><dt>Payload hash</dt><dd><code>{delivery.payloadSha256.slice(0, 16)}</code></dd></div>
+                          <div><dt>Prepared</dt><dd>{when(delivery.createdAt)}</dd></div>
+                          <div><dt>Last transition</dt><dd>{when(delivery.updatedAt)}</dd></div>
+                          <div><dt>Delivered</dt><dd>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</dd></div>
+                        </dl>
+                        {delivery.payloadPrunedAt ? (
+                          <p className="wf-run-pruned">
+                            Payload pruned {when(delivery.payloadPrunedAt)}. SHA-256 and transition
+                            metadata remain available.
+                          </p>
+                        ) : <pre>{delivery.payload}</pre>}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/**
+ * One human decision, as a row that opens.
+ *
+ * The submitted decision, and the largest single win on the page: nine of these rendered as
+ * flowing prose measured 2,996px, which was more than a third of the whole run detail below the
+ * scrubber. Nothing is truncated on expansion - the row is a summary of a body that is still
+ * printed in full underneath it.
+ */
+function CapturedDecision({ decision }: { decision: WorkflowHumanDecision }): React.JSX.Element {
+  return (
+    <details className="wf-run-disclosure wf-run-decision">
+      <Tooltip label="Show this decision's full body and its rationale">
+        <summary>
+          <span className="wf-run-disclosure-title">
+            {firstLineOf(decision.decision) || "(Empty decision)"}
+          </span>
+          <span className="wf-run-disclosure-meta">
+            <code>{decision.source.kind}:{decision.source.id}</code>
+            {" · "}
+            {humanDecisionSummary(decision)}
+          </span>
+        </summary>
+      </Tooltip>
+      <div className="wf-run-disclosure-body">
+        <p>{decision.decision}</p>
+        {decision.rationale && <small>Rationale: {decision.rationale}</small>}
+      </div>
+    </details>
+  );
+}
+
+/** A labelled disclosure whose closed state states what opening it costs. */
+function RunDisclosure({
+  title,
+  meta,
+  children,
+  tooltip,
+}: {
+  title: string;
+  meta: string;
+  children: React.ReactNode;
+  tooltip: string;
+}): React.JSX.Element {
+  return (
+    <details className="wf-run-disclosure">
+      <Tooltip label={tooltip}>
+        <summary>
+          <span className="wf-run-disclosure-title">{title}</span>
+          <span className="wf-run-disclosure-meta">{meta}</span>
+        </summary>
+      </Tooltip>
+      <div className="wf-run-disclosure-body">{children}</div>
+    </details>
+  );
+}
+
+/**
+ * What this round was trying to do, and who decided it.
+ *
+ * Leads with the refined goal, because that is the one sentence answering "what was this round
+ * for". Everything else is a disclosure whose closed state carries its own size, so a reader
+ * can tell that the original goal is 2,566 characters of repair packet before opening it.
+ *
+ * The three degraded arms are STATES OF THIS PANE rather than sections of their own: a round
+ * that never captured a snapshot, a durable context that does not match its submission mode,
+ * and a round this build cannot read are all answers to "what was the intent", and each keeps
+ * the copy and the `role="alert"` it had as a section.
+ */
+function IntentPane({
+  detail,
+  intent,
+  context,
+  evidenceFingerprint,
+}: {
+  detail: WorkflowRunDetail;
+  intent: RunRecordIntentSummary;
+  /** The parsed snapshot. Non-null exactly when `intent.state` is `captured`. */
+  context: WorkflowContextSnapshot | null;
+  evidenceFingerprint: string | undefined;
+}): React.JSX.Element {
+  if (intent.state === "not_captured") {
+    return (
+      <>
+        <h5>Intent and evidence not captured</h5>
+        <p className="wf-run-empty">
+          This submission stopped before its immutable context snapshot was recorded.
+        </p>
+      </>
+    );
+  }
+  if (intent.state === "corrupt") {
+    return (
+      <>
+        <h5>Captured intent and evidence are corrupt</h5>
+        <p className="wf-run-error" role="alert">
+          The durable context does not match its submission mode. Check daemon logs or restore it from backup.
+        </p>
+      </>
+    );
+  }
+  if (intent.state === "unreadable" || !context) {
+    return (
+      <>
+        <h5>Captured intent and evidence</h5>
+        <p className="wf-run-error" role="alert">
+          This round's captured context is not readable by this build, though the run's
+          newest one is. Check daemon logs or restore it from backup.
+        </p>
+      </>
+    );
+  }
+  const chip = (label: string): React.JSX.Element => (
+    <span className="workflow-chip workflow-stopped" key={label}>{label}</span>
+  );
+  return (
+    <>
+      <p className="wf-run-chiprow">
+        {chip(context.compaction.status === "model"
+          ? `Compacted by ${context.compaction.model ?? context.compaction.runner ?? "a model"}`
+          : "Deterministic fallback")}
+        {chip(`HEAD ${shortSha(context.evidence.headSha) ?? "unavailable"}`)}
+        {chip(`tree ${context.evidence.workingTreeDirty ? "dirty" : "clean"}`)}
+        {chip(`diff ${context.evidence.diffTruncated ? "truncated" : "complete"}`)}
+        {chip(`transcript ${context.evidence.transcriptTruncated ? "truncated" : "complete"}`)}
+        {chip(`standards ${context.evidence.standardsTruncated ? "truncated" : "complete"}`)}
+        {intent.evidencePruned && context.evidence.retention?.state === "pruned" && (
+          <span className="wf-run-pruned">
+            Raw evidence pruned {when(context.evidence.retention.prunedAt)}
+          </span>
+        )}
+      </p>
+      <div className="wf-run-lead">
+        <p className="wf-run-meta">Refined goal</p>
+        <p className="wf-run-lead-text">
+          {intent.refinedGoal ?? "No refined goal was recorded for this round."}
+        </p>
+      </div>
+      <RunDisclosure
+        title="Original goal"
+        meta={`${intent.rawGoalCharacters.toLocaleString()} characters`}
+        tooltip="Show the exact prompt this round was captured against"
+      >
+        <pre>{context.primaryGoal.rawPrompt || "(No captured goal)"}</pre>
+      </RunDisclosure>
+      <RunDisclosure
+        title="Human decisions and rationale"
+        meta={humanDecisionsSummary(intent)}
+        tooltip="Show every decision a human recorded for this work, one row each"
+      >
+        {context.humanDecisions.length === 0 ? (
+          <p className="wf-run-empty">None captured.</p>
+        ) : context.humanDecisions.map((decision) => (
+          <CapturedDecision
+            key={`${decision.source.kind}:${decision.source.id}`}
+            decision={decision}
+          />
+        ))}
+      </RunDisclosure>
+      {intent.acceptanceCriterionCount > 0 && (
+        <RunDisclosure
+          title="Acceptance criteria"
+          meta={`${intent.acceptanceCriterionCount}`}
+          tooltip="Show the criteria this round's evidence is judged against"
+        >
+          <ul>{context.acceptanceCriteria.map((item) => <li key={item}>{item}</li>)}</ul>
+        </RunDisclosure>
+      )}
+      {intent.constraintCount > 0 && (
+        <RunDisclosure
+          title="Compacted constraints"
+          meta={`${intent.constraintCount}`}
+          tooltip="Show the constraints the compaction carried into this round"
+        >
+          <ul>{context.constraints.map((item) => <li key={item}>{item}</li>)}</ul>
+        </RunDisclosure>
+      )}
+      {context.compaction.status === "fallback" && context.compaction.error && (
+        <p className="wf-run-meta">Compaction fallback: {context.compaction.error}</p>
+      )}
+      <details className="wf-run-disclosure">
+        <Tooltip label="Show the exact repository state this review was given">
+          <summary>
+            <span className="wf-run-disclosure-title">Evidence snapshot</span>
+            <span className="wf-run-disclosure-meta">
+              {shortSha(context.evidence.headSha) ?? "no HEAD"}
+              {` · ${detail.submissions.length} submission${detail.submissions.length === 1 ? "" : "s"} in this run`}
+            </span>
+          </summary>
+        </Tooltip>
+        <div className="wf-run-disclosure-body">
+          <dl className="wf-run-facts-list">
+            <div><dt>HEAD</dt><dd>{shortSha(context.evidence.headSha) ?? "unavailable"}</dd></div>
+            <div>
+              <dt>Working tree</dt>
+              <dd>
+                {context.evidence.workingTreeDirty ? "dirty" : "clean"}
+                {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
+              </dd>
+            </div>
+            <div><dt>Fingerprint</dt><dd><code>{evidenceFingerprint}</code></dd></div>
+            <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
+            <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
+            <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
+          </dl>
+          {context.evidence.retention?.state === "pruned" ? (
+            <p>
+              Raw diff, transcript, status paths, and standards bodies were pruned.
+              Fingerprints, counts, caps, HEAD, branch, decisions, constraints, verdicts,
+              and audit history remain.
+            </p>
+          ) : context.evidence.workingTreeStatus.length > 0 && (
+            <pre>{context.evidence.workingTreeStatus.join("\n")}</pre>
+          )}
+          {context.evidence.retention?.state !== "pruned" && (
+            <pre>{context.evidence.diff || "(No diff)"}</pre>
+          )}
+        </div>
+      </details>
+    </>
+  );
+}
+
 export function WorkflowRunView({
   detail,
   roundId = null,
+  pane = null,
+  onPane,
   onRound = () => {},
   onNextMove = () => {},
   onCancel,
@@ -1757,6 +2448,19 @@ export function WorkflowRunView({
   detail: WorkflowRunDetail;
   /** The submission being read. `null` means the newest one. */
   roundId?: string | null;
+  /**
+   * The pane of the run record the address bar names, or null for "let the run decide".
+   *
+   * Null is NOT the same as `"worklist"`: a run whose blocking state is not in the worklist
+   * opens on the pane holding it, and an explicit `worklist` overrules that. A name this run
+   * does not offer is ignored rather than rewritten out of the hash.
+   */
+  pane?: RunRecordPane | null;
+  /**
+   * Route to a pane. Absent on a host that does not route, in which case the tab bar keeps the
+   * reader's pick in its own state - which is what makes the tabs work in a markup test.
+   */
+  onPane?: (pane: RunRecordPane) => void;
   onRound?: (submissionId: string) => void;
   /**
    * Dispatch the ONE move `runNextMove` derived for this run - the only run-advancing intent
@@ -2021,6 +2725,22 @@ export function WorkflowRunView({
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
   const refusedSentence = runRefusedSentence(detail);
+  /*
+   * Every count and every summary sentence the tab bar and its panes print, derived once.
+   *
+   * The bar's labels are claims a reader acts on WITHOUT opening the pane behind them, so a
+   * wrong number here is worse than the long page this replaced. They are pure selectors with
+   * their own cases in `test/workflow-runs-model.test.ts`; nothing below counts anything.
+   */
+  const record = runRecordSummary(detail, viewed);
+  // Through the worklist's own classifier rather than a second count of "things that block":
+  // the label and the rail have to agree, and the label is the half nobody can check by eye.
+  const worklistBlocking = runWorklistSegments(
+    detail,
+    viewed?.round ?? null,
+    reviewAttempts,
+    nameOfNode,
+  ).blocking.length;
   /*
    * The grant's result, drawn and announced.
    *
@@ -2462,56 +3182,129 @@ export function WorkflowRunView({
         </section>
       )}
 
-      <section className="wf-run-section" aria-label="Review worklist" ref={tourWorklistRef}>
-        <h4>Review worklist</h4>
-        {/* Keyed on the run so selecting another run resets the list, and on a pipeline-tile
-            request so repeated clicks remount with that node as the initial worklist choice. */}
-        <RunWorklist
-          key={`${detail.run.id}:${currentWorklistFocus?.sequence ?? 0}`}
-          detail={detail}
-          round={viewed?.round ?? null}
-          attempts={reviewAttempts}
-          calls={calls}
-          nameOfNode={nameOfNode}
-          inspectorOnly={inspectorOnly}
-          reviewerlessVersion={reviewerlessVersion}
-          personaNodeIds={personaNodeIds}
-          disabledNodeIds={detail.run.disabledNodeIds ?? []}
-          initialNodeIds={currentWorklistFocus?.nodeIds ?? []}
-          onOpenFile={onOpenFile}
-          onCopyChange={onCopyChange}
-          changeCopied={changeCopied}
-          onOpenPersonaDirective={onSetPersonaDirective && onRemovePersonaDirective
-            ? setDirectiveNodeId
-            : undefined}
-          onToggleNodesDisabled={onToggleNodesDisabled}
-        />
-        {version?.graph.nodes.filter((node) => node.kind === "all_pass").map((join) => {
-          const incoming = version.graph.edges.filter((edge) => edge.target === join.id);
-          const received = detail.receipts.filter((receipt) =>
-            receipt.submissionId === viewed?.id
-            && incoming.some((edge) => edge.id === receipt.edgeId));
-          return (
-            <details className="wf-run-packet" key={join.id}>
-              <Tooltip label="Show the payloads each reviewer in this stage handed its join">
-                <summary>
-                  {nodeLabel(version.graph, join, [])} · {received.length} of{" "}
-                  {new Set(incoming.map((edge) => edge.source)).size} reviewers reported
-                </summary>
+      {/*
+        * The run's record, offered rather than stacked.
+        *
+        * Measured on one real run, the four sections below the scrubber came to 7,997px - 8.9
+        * screens at a 900px viewport - to carry three sentences of verdict. The worklist was
+        * the only one already behaving: a bounded rail and detail at 220px. So it keeps its
+        * place as the first and default pane and the others join it as siblings, each rewritten
+        * from a stack of cards into a ledger.
+        *
+        * The bar is `.workflow-tabs`, which the Runs page already ships; nothing here is a
+        * second tab family. Image evidence, Evidence readiness, the Inspector gate and the
+        * Foreman completion claim are still their own sections below this container and are
+        * unchanged - two later phases move them in.
+        */}
+      <RunRecordTabs
+        routePane={pane}
+        onPane={onPane}
+        panes={[
+          {
+            id: "worklist",
+            label: "Review worklist",
+            hint: "The changes, failed commands and stalled reviewers this run is still asking for",
+            // The BLOCKING count, and withheld at zero: this label answers "is anything still
+            // being asked for", and "Review worklist 0" reads as "no reviewers" rather than as
+            // "nothing outstanding". The rail's own segment control carries the full tallies.
+            count: worklistBlocking > 0 ? worklistBlocking : null,
+            blocking: worklistBlocking > 0,
+            render: () => (
+        <section
+          className="wf-run-worklist-pane"
+          aria-label="Review worklist"
+          ref={tourWorklistRef}
+        >
+          {/* Keyed on the run so selecting another run resets the list, and on a pipeline-tile
+              request so repeated clicks remount with that node as the initial worklist choice. */}
+          <RunWorklist
+            key={`${detail.run.id}:${currentWorklistFocus?.sequence ?? 0}`}
+            detail={detail}
+            round={viewed?.round ?? null}
+            attempts={reviewAttempts}
+            calls={calls}
+            nameOfNode={nameOfNode}
+            inspectorOnly={inspectorOnly}
+            reviewerlessVersion={reviewerlessVersion}
+            personaNodeIds={personaNodeIds}
+            disabledNodeIds={detail.run.disabledNodeIds ?? []}
+            initialNodeIds={currentWorklistFocus?.nodeIds ?? []}
+            onOpenFile={onOpenFile}
+            onCopyChange={onCopyChange}
+            changeCopied={changeCopied}
+            onOpenPersonaDirective={onSetPersonaDirective && onRemovePersonaDirective
+              ? setDirectiveNodeId
+              : undefined}
+            onToggleNodesDisabled={onToggleNodesDisabled}
+          />
+          {version?.graph.nodes.filter((node) => node.kind === "all_pass").map((join) => {
+            const incoming = version.graph.edges.filter((edge) => edge.target === join.id);
+            const received = detail.receipts.filter((receipt) =>
+              receipt.submissionId === viewed?.id
+              && incoming.some((edge) => edge.id === receipt.edgeId));
+            return (
+              <details className="wf-run-packet" key={join.id}>
+                <Tooltip label="Show the payloads each reviewer in this stage handed its join">
+                  <summary>
+                    {nodeLabel(version.graph, join, [])} · {received.length} of{" "}
+                    {new Set(incoming.map((edge) => edge.source)).size} reviewers reported
+                  </summary>
+                </Tooltip>
+                <pre>{JSON.stringify(received.map((receipt) => receipt.payload), null, 2)}</pre>
+              </details>
+            );
+          }) ?? null}
+          {detail.run.gateState && (
+            <details className="wf-run-packet">
+              <Tooltip label="Show the raw join and final-gate state for this run">
+                <summary>Join and gate packet</summary>
               </Tooltip>
-              <pre>{JSON.stringify(received.map((receipt) => receipt.payload), null, 2)}</pre>
+              <pre>{JSON.stringify(detail.run.gateState, null, 2)}</pre>
             </details>
-          );
-        }) ?? null}
-        {detail.run.gateState && (
-          <details className="wf-run-packet">
-            <Tooltip label="Show the raw join and final-gate state for this run">
-              <summary>Join and gate packet</summary>
-            </Tooltip>
-            <pre>{JSON.stringify(detail.run.gateState, null, 2)}</pre>
-          </details>
-        )}
-      </section>
+          )}
+        </section>
+            ),
+          },
+          {
+            id: "deliveries",
+            label: "Deliveries",
+            hint: "Every packet this run sent to the session, and what became of each",
+            count: record.deliveries.total,
+            blocking: record.deliveries.blocking,
+            // Absent, not empty: a run that sent nothing has no delivery ledger to read, and a
+            // tab reading "Deliveries 0" is a control that answers a question nobody asked.
+            render: () => detail.deliveries.length === 0 ? null : (
+              <DeliveriesPane
+                detail={detail}
+                summary={record.deliveries}
+                viewedRound={viewed?.round ?? null}
+                sessionBound={sessionBound}
+                isActionPending={isActionPending}
+                onConfirm={onConfirm}
+                onRetryDelivery={onRetryDelivery}
+                onResolveDelivery={onResolveDelivery}
+              />
+            ),
+          },
+          {
+            id: "intent",
+            label: "Intent",
+            hint: "What this round was trying to do, and the decisions a human recorded for it",
+            // The decision count, because that is what the pane is FOR - the goal is one
+            // sentence and the decisions are the record a reader came to check.
+            count: record.intent.state === "captured" ? record.intent.decisionCount : null,
+            blocking: record.intent.blocking,
+            render: () => (
+              <IntentPane
+                detail={detail}
+                intent={record.intent}
+                context={context}
+                evidenceFingerprint={viewed?.evidenceFingerprint}
+              />
+            ),
+          },
+        ]}
+      />
 
       {inspectorGate && (
         <section className={`wf-run-section wf-run-gate is-${detail.summary.gate}`}>
@@ -2649,102 +3442,7 @@ export function WorkflowRunView({
         </section>
       )}
 
-      {detail.deliveries.length > 0 && (
-        <section className="wf-run-section">
-          {/* "Repair delivery" was true while every packet was a repair. A session action's
-              instruction travels this same path and is the opposite of a repair, so the
-              heading follows what is actually in the list rather than naming one kind of it. */}
-          <h4>
-            {detail.deliveries.some((delivery) => delivery.kind === "session_action")
-              ? "Deliveries to the session"
-              : "Repair delivery"}
-          </h4>
-          <div className="wf-run-cards">
-            {detail.deliveries.map((delivery) => {
-              const view = deliveryStateView(delivery.state);
-              return (
-                <article className={`wf-run-card wf-run-delivery is-${delivery.state}`} key={delivery.id}>
-                  <header className="wf-run-card-head">
-                    <span className={`workflow-chip workflow-${
-                      delivery.state === "delivered" ? "passed"
-                        : delivery.state === "uncertain" || delivery.state === "refused" ? "failed"
-                          : "waiting"}`}>
-                      {view.label}
-                    </span>
-                    <strong>Round {roundOfSubmission(delivery.submissionId) ?? "?"}</strong>
-                    <span>{deliveryKindLabel(delivery.kind)}</span>
-                  </header>
-                  <p className="wf-run-sentence">{view.sentence}</p>
-                  <ErrorLine raw={delivery.error} />
-                  <dl className="wf-run-facts-list">
-                    <div><dt>Conversation</dt><dd>{delivery.noteKey}</dd></div>
-                    <div><dt>Payload hash</dt><dd><code>{delivery.payloadSha256.slice(0, 16)}</code></dd></div>
-                    <div><dt>Prepared</dt><dd>{when(delivery.createdAt)}</dd></div>
-                    <div><dt>Last transition</dt><dd>{when(delivery.updatedAt)}</dd></div>
-                    <div><dt>Delivered</dt><dd>{delivery.deliveredAt ? when(delivery.deliveredAt) : "not confirmed"}</dd></div>
-                  </dl>
-                  {delivery.payloadPrunedAt ? (
-                    <p className="wf-run-pruned">
-                      Payload pruned {when(delivery.payloadPrunedAt)}. SHA-256 and transition
-                      metadata remain available.
-                    </p>
-                  ) : <pre>{delivery.payload}</pre>}
-                  {delivery.state === "refused" && (
-                    <Tooltip label={sessionBound
-                      ? "Retry this packet after a positive delivery refusal"
-                      : "The bound session is gone, so there is nowhere to send this packet"}>
-                      <button
-                        className="btn"
-                        disabled={!sessionBound}
-                        onClick={() => void onRetryDelivery(delivery.id)}
-                      >
-                        Retry refused delivery
-                      </button>
-                    </Tooltip>
-                  )}
-                  {delivery.state === "uncertain" && (
-                    <div className="wf-run-recovery">
-                      {deliveryResolutionActions(delivery, sessionBound).map((action) => {
-                        const pending = isActionPending(action.id);
-                        return (
-                          <Tooltip
-                            key={action.id}
-                            label={runActionTooltip(action, pending)}
-                          >
-                            <button
-                              className={action.confirm.danger
-                                ? "btn btn-danger-ghost"
-                                : "btn"}
-                              disabled={action.disabled || pending}
-                              onClick={() => onConfirm({
-                                ...action.confirm,
-                                onConfirm: () => void onResolveDelivery(
-                                  action.deliveryId,
-                                  action.resolution,
-                                  action.confirm.requirePhrase,
-                                ),
-                              })}
-                            >
-                              {action.label}
-                            </button>
-                          </Tooltip>
-                        );
-                      })}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
 
-      {detail.contextState === "not_captured" && (
-        <section className="wf-run-section">
-          <h4>Intent and evidence not captured</h4>
-          <p className="wf-run-empty">This submission stopped before its immutable context snapshot was recorded.</p>
-        </section>
-      )}
       {viewed && (
         <SubmissionImageEvidence
           runId={detail.run.id}
@@ -2775,93 +3473,6 @@ export function WorkflowRunView({
           onRetry={preflightExhausted ? undefined : () => onRetryEvidenceReadiness(viewed.id)}
           onOverride={(reason) => onOverrideEvidenceReadiness(viewed.id, reason)}
         />
-      )}
-      {detail.contextState === "corrupt" && (
-        <section className="wf-run-section">
-          <h4>Captured intent and evidence are corrupt</h4>
-          <p className="wf-run-error" role="alert">
-            The durable context does not match its submission mode. Check daemon logs or restore it from backup.
-          </p>
-        </section>
-      )}
-      {contextUnreadable && (
-        <section className="wf-run-section">
-          <h4>Captured intent and evidence</h4>
-          <p className="wf-run-error" role="alert">
-            This round's captured context is not readable by this build, though the run's
-            newest one is. Check daemon logs or restore it from backup.
-          </p>
-        </section>
-      )}
-      {context && (
-        <section className="wf-run-section wf-run-context">
-          <header className="wf-run-section-head">
-            <h4>Captured intent and evidence</h4>
-            <span className="wf-run-meta">
-              {context.compaction.status === "model" ? "Context compacted" : "Deterministic fallback"}
-            </span>
-            {context.evidence.retention?.state === "pruned" && (
-              <span className="wf-run-pruned">
-                Raw evidence pruned {when(context.evidence.retention.prunedAt)}
-              </span>
-            )}
-          </header>
-          <h5>Original goal</h5>
-          <pre>{context.primaryGoal.rawPrompt || "(No captured goal)"}</pre>
-          {context.primaryGoal.refined && <p><strong>Refined:</strong> {context.primaryGoal.refined}</p>}
-          <h5>Human decisions and rationale</h5>
-          {context.humanDecisions.length === 0 ? <p className="wf-run-empty">None captured.</p> : (
-            <ul className="wf-run-decisions">
-              {context.humanDecisions.map((decision) => (
-                <li key={`${decision.source.kind}:${decision.source.id}`}>
-                  <p>{decision.decision}</p>
-                  {decision.rationale && <small>Rationale: {decision.rationale}</small>}
-                  <code>{decision.source.kind}:{decision.source.id}</code>
-                </li>
-              ))}
-            </ul>
-          )}
-          {context.constraints.length > 0 && (
-            <><h5>Compacted constraints</h5><ul>{context.constraints.map((item) => <li key={item}>{item}</li>)}</ul></>
-          )}
-          {context.acceptanceCriteria.length > 0 && (
-            <><h5>Acceptance criteria</h5><ul>{context.acceptanceCriteria.map((item) => <li key={item}>{item}</li>)}</ul></>
-          )}
-          {context.compaction.status === "fallback" && context.compaction.error && (
-            <p className="wf-run-meta">Compaction fallback: {context.compaction.error}</p>
-          )}
-          <details>
-            <Tooltip label="Show the exact repository state this review was given">
-              <summary>Evidence snapshot</summary>
-            </Tooltip>
-            <dl className="wf-run-facts-list">
-              <div><dt>HEAD</dt><dd>{shortSha(context.evidence.headSha) ?? "unavailable"}</dd></div>
-              <div>
-                <dt>Working tree</dt>
-                <dd>
-                  {context.evidence.workingTreeDirty ? "dirty" : "clean"}
-                  {context.evidence.workingTreeStatusTruncated ? " · status truncated" : ""}
-                </dd>
-              </div>
-              <div><dt>Fingerprint</dt><dd><code>{viewed?.evidenceFingerprint}</code></dd></div>
-              <div><dt>Diff</dt><dd>{context.evidence.diffTruncated ? "truncated" : "complete"}</dd></div>
-              <div><dt>Transcript</dt><dd>{context.evidence.transcriptTruncated ? "truncated" : "complete"}</dd></div>
-              <div><dt>Standards</dt><dd>{context.evidence.standardsTruncated ? "truncated" : "complete"}</dd></div>
-            </dl>
-            {context.evidence.retention?.state === "pruned" ? (
-              <p>
-                Raw diff, transcript, status paths, and standards bodies were pruned.
-                Fingerprints, counts, caps, HEAD, branch, decisions, constraints, verdicts,
-                and audit history remain.
-              </p>
-            ) : context.evidence.workingTreeStatus.length > 0 && (
-              <pre>{context.evidence.workingTreeStatus.join("\n")}</pre>
-            )}
-            {context.evidence.retention?.state !== "pruned" && (
-              <pre>{context.evidence.diff || "(No diff)"}</pre>
-            )}
-          </details>
-        </section>
       )}
 
       <section className="wf-run-section">
@@ -3096,8 +3707,10 @@ export function WorkflowRuns({
   runs,
   sessions = [],
   selectedRunId,
+  pane = null,
   filters,
   onSelectRun,
+  onPane,
   onFilters = () => {},
   onOpenSession = () => {},
   onOpenSessionPath,
@@ -3108,8 +3721,18 @@ export function WorkflowRuns({
   /** Live session projections issue the primary-first repository slots used by evidence scope. */
   sessions?: Session[];
   selectedRunId: string | null;
+  /** Which pane of the open run's record the address bar names. Null lets the run decide. */
+  pane?: RunRecordPane | null;
   filters?: WorkflowRunFilters;
   onSelectRun: (id: string) => void;
+  /**
+   * Route to a pane of the open run's record.
+   *
+   * The pane lives in the ROUTE rather than in this page's state for the reason the run id
+   * does: three of the panes are invisible until clicked, so a link that does not carry which
+   * one is showing is a link to a different page than the one being shared.
+   */
+  onPane?: (pane: RunRecordPane) => void;
   onFilters?: (filters: WorkflowRunFilters | undefined) => void;
   onOpenSession?: (id: string) => void;
   /**
@@ -3716,6 +4339,8 @@ export function WorkflowRuns({
           <WorkflowRunView
             detail={detail}
             roundId={roundId}
+            pane={pane}
+            onPane={onPane}
             onRound={setRoundId}
             onConfirm={setConfirm}
             /*

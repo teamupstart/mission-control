@@ -1615,7 +1615,10 @@ export function App(): React.JSX.Element {
       shelf: "workflows",
       assetId: NO_MISTAKES_REVIEW_WORKFLOW_ID,
     }),
-    showRun: (runId) => navigate({ page: "runs", runId }),
+    // ON THE WORKLIST, explicitly. The run record's initial pane opens on whichever pane holds
+    // something blocking, so a run with a refused delivery would not have the worklist mounted
+    // at all - and `run-moving` resolves that element or falls back to "the run is opening".
+    showRun: (runId) => navigate({ page: "runs", runId, pane: "worklist" }),
     showRunSession: (sessionId) => {
       if (!navigate({ page: "fleet" })) return false;
       setSelectedId(sessionId);
@@ -3626,11 +3629,22 @@ export function App(): React.JSX.Element {
                   runs={workflowRuns}
                   sessions={sessions}
                   selectedRunId={route.page === "runs" ? route.runId ?? null : null}
+                  pane={route.page === "runs" ? route.pane ?? null : null}
                   filters={route.page === "runs" ? route.filters : undefined}
                   onSelectRun={openWorkflowRun}
+                  // The pane joins the run in the hash rather than replacing anything already
+                  // there: a filtered rail is how most readers reach a run, and losing the
+                  // filter on the first tab click would take them off the list they came from.
+                  onPane={(pane) => navigate({
+                    page: "runs",
+                    ...(route.page === "runs" && route.runId ? { runId: route.runId } : {}),
+                    ...(route.page === "runs" && route.filters ? { filters: route.filters } : {}),
+                    pane,
+                  })}
                   onFilters={(filters) => navigate({
                     page: "runs",
                     ...(route.page === "runs" && route.runId ? { runId: route.runId } : {}),
+                    ...(route.page === "runs" && route.pane ? { pane: route.pane } : {}),
                     filters,
                   })}
                   onOpenSession={openSessionOnFleet}

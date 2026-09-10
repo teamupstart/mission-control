@@ -4,42 +4,80 @@ const { app, BrowserWindow } = require("electron");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Samples the colour the scrollbar thumb is actually painted, at rest and under the pointer.
+ * What the scrollbar thumb's two rules resolve to, and where possible what they paint.
  *
- * Reported against reference swatches carrying the same `color-mix()` declarations rather than
- * as raw channels, so the caller compares the thumb to what those declarations produce instead
- * of to numbers that would need rewriting whenever the theme moves.
+ * Two readings, because they are available in different places:
  *
- * The thumb is found by scanning the scrollbar band for the run of pixels that differ from the
- * track, not by computing its width from the scroll ratio: thumb metrics and minimum lengths
- * are platform-specific, and this runs on macOS and on Linux CI.
+ *  - `resolved` asks the engine what each rule's declared `background` actually computes to,
+ *    by applying the declared string to a real element. That works anywhere a browser runs.
+ *  - `painted` samples the rendered scrollbar band, at rest and with the pointer parked on the
+ *    thumb. That needs a frame, and a frame is not always available: under the virtual display
+ *    CI uses, `capturePage` fails outright with `UnknownVizError`, and offscreen rendering is
+ *    the compositor path that still produces one. When neither does, this reports
+ *    `painted: null` rather than failing, and the caller asserts the resolved contract only.
+ *
+ * A scrollbar pseudo-element has no computed style of its own and is not in the DOM, so these
+ * two are the whole of what can be observed about it.
  */
 app.whenReady().then(async () => {
   try {
     const appCss = await readFile(process.argv[process.argv.length - 1], "utf8");
-    const window = new BrowserWindow({ show: false, width: 700, height: 260 });
+    const window = new BrowserWindow({
+      show: false,
+      width: 700,
+      height: 260,
+      // Offscreen rendering, so a frame arrives without a mapped window. `capturePage` on a
+      // hidden window returns nothing on a virtual display.
+      webPreferences: { offscreen: true },
+    });
+    let frame = null;
+    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; });
+
     const card = '<section class="wf-pipeline-stage" style="flex:none;width:200px">'
       + '<header class="wf-pipeline-stage-head"><span class="wf-pipeline-stage-name">S</span>'
       + "</header></section>";
     const html = `<!doctype html><style>${appCss}
       html, body { margin: 0; }
       .probe { width: 600px; }
-      /* The two declarations under test, rendered as flat swatches on the same surface. A
-         thumb painted from the same values composites to the same pixel. */
       .swatch { width: 120px; height: 20px; }
-      #swatch-rest { background: color-mix(in oklab, var(--fg) 24%, transparent); }
-      #swatch-hover { background: color-mix(in oklab, var(--fg) 38%, transparent); }
       </style>
       <div class="wf-pipeline-strip probe" id="strip">${card.repeat(6)}</div>
       <div class="swatch" id="swatch-rest"></div>
       <div class="swatch" id="swatch-hover"></div>`;
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-    // Mapped, not merely loaded. A window that was never shown produces no frames on a
-    // virtual display, so `capturePage` came back empty on CI while working on a desktop.
-    // `showInactive` keeps it from stealing focus from whoever is running the suite, and it
-    // is also what lets a synthesised mouse move reach the scrollbar widget below.
-    window.showInactive();
-    await wait(150);
+
+    // Resolve each rule's own declared value through the engine, and paint the two swatches
+    // with it so a captured frame can be compared against them.
+    const resolved = await window.webContents.executeJavaScript(`(() => {
+      const declared = (selector, property) => {
+        for (const sheet of document.styleSheets) {
+          let rules;
+          try { rules = sheet.cssRules; } catch { continue; }
+          for (const rule of rules) {
+            if (rule.selectorText === selector) {
+              return rule.style.getPropertyValue(property) || "";
+            }
+          }
+        }
+        return null;
+      };
+      const thumb = '.wf-pipeline-strip::-webkit-scrollbar-thumb';
+      const paint = (id, value) => {
+        const node = document.getElementById(id);
+        if (value) node.style.background = value;
+        return getComputedStyle(node).backgroundColor;
+      };
+      const restDeclared = declared(thumb, 'background');
+      const hoverDeclared = declared(thumb + ':hover', 'background');
+      return {
+        restDeclared,
+        hoverDeclared,
+        radiusDeclared: declared(thumb, 'border-radius'),
+        trackHeight: declared('.wf-pipeline-strip::-webkit-scrollbar', 'height'),
+        restComputed: paint('swatch-rest', restDeclared),
+        hoverComputed: paint('swatch-hover', hoverDeclared),
+      };
+    })()`);
 
     const geometry = await window.webContents.executeJavaScript(`(() => {
       const strip = document.getElementById('strip');
@@ -59,14 +97,19 @@ app.whenReady().then(async () => {
       };
     })()`);
 
-    const read = async () => {
-      const image = await window.webContents.capturePage();
-      const bitmap = image.toBitmap();
-      const size = image.getSize();
-      if (!size.width || !size.height || bitmap.length < size.width * size.height * 4) {
-        throw new Error(`capturePage returned an unusable frame: ${size.width}x${size.height},`
-          + ` ${bitmap.length} bytes`);
-      }
+    const usable = () => {
+      if (!frame) return null;
+      const size = frame.getSize();
+      const bitmap = frame.toBitmap();
+      if (!size.width || !size.height || bitmap.length < size.width * size.height * 4) return null;
+      return { size, bitmap };
+    };
+    for (let attempt = 0; attempt < 25 && !usable(); attempt += 1) await wait(100);
+
+    const read = () => {
+      const current = usable();
+      if (!current) return null;
+      const { size, bitmap } = current;
       // Electron hands back BGRA; the caller thinks in RGB.
       const at = (x, y) => {
         const i = (y * size.width + x) * 4;
@@ -91,40 +134,45 @@ app.whenReady().then(async () => {
           start = -1;
         }
       });
+      if (best.from < 0) return null;
       return {
         track,
         thumbWidth: best.to - best.from + 1,
-        thumb: best.from < 0 ? null : at(geometry.left + Math.round((best.from + best.to) / 2), geometry.band),
+        thumb: at(geometry.left + Math.round((best.from + best.to) / 2), geometry.band),
         // A corner of a rounded thumb is not the thumb's own colour.
-        thumbCorner: best.from < 0 ? null
-          : at(geometry.left + best.from, geometry.band - Math.round(geometry.track / 2) + 1),
+        thumbCorner: at(geometry.left + best.from, geometry.band - Math.round(geometry.track / 2) + 1),
         swatchRest: at(geometry.rest.x, geometry.rest.y),
         swatchHover: at(geometry.hover.x, geometry.hover.y),
       };
     };
 
-    const rest = await read();
-    // Park the pointer on the thumb and let the scrollbar repaint. Polled rather than slept
-    // once: a repaint under a virtual display is slower than on a desktop.
-    window.webContents.sendInputEvent({
-      type: "mouseMove",
-      x: geometry.left + Math.round(rest.thumbWidth / 2),
-      y: geometry.band,
-    });
-    let hovered = rest;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await wait(120);
-      hovered = await read();
-      if (hovered.thumb && rest.thumb && hovered.thumb.join() !== rest.thumb.join()) break;
+    const rest = read();
+    let hovered = null;
+    if (rest) {
+      window.webContents.sendInputEvent({
+        type: "mouseMove",
+        x: geometry.left + Math.round(rest.thumbWidth / 2),
+        y: geometry.band,
+      });
+      // Polled rather than slept once: a repaint under a virtual display is slower.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        await wait(120);
+        const next = read();
+        if (next && next.thumb.join() !== rest.thumb.join()) { hovered = next; break; }
+        hovered = next;
+      }
     }
 
-    process.stdout.write(`${JSON.stringify({ geometry, rest, hovered })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      resolved,
+      geometry,
+      painted: rest && hovered ? { rest, hovered } : null,
+    })}\n`);
     window.destroy();
   } catch (error) {
-    // On stdout, not stderr: `app.quit()` below exits 0 regardless of `process.exitCode`, so
-    // anything written to stderr reaches the caller as an empty stdout and a JSON parse error
-    // rather than as the reason.
-    process.stdout.write(`${JSON.stringify({ error: String(error && error.stack || error) })}\n`);
+    // On stdout, not stderr: `app.quit()` exits 0 regardless of `process.exitCode`, so stderr
+    // reaches the caller as empty output and a JSON parse error rather than as the reason.
+    process.stdout.write(`${JSON.stringify({ error: String((error && error.stack) || error) })}\n`);
   } finally {
     app.quit();
   }

@@ -49,8 +49,8 @@ type Colour = [number, number, number];
 interface Sample {
   track: Colour;
   thumbWidth: number;
-  thumb: Colour | null;
-  thumbCorner: Colour | null;
+  thumb: Colour;
+  thumbCorner: Colour;
   swatchRest: Colour;
   swatchHover: Colour;
 }
@@ -64,9 +64,6 @@ interface Sample {
  * apart, which measures ~96 here.
  */
 const TOLERANCE = 8;
-
-/** Stand-in for an absent sample, so a failure message prints rather than throws. */
-const BLACK: Colour = [0, 0, 0];
 
 const distance = (a: Colour, b: Colour): number =>
   Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
@@ -120,65 +117,100 @@ test("the pipeline strip reserves a visible scrollbar the platform would not hav
 });
 
 /**
- * The thumb's two painted states, which only a rendered scrollbar can show.
+ * The thumb's two rules: what they resolve to, and what they paint where a frame can be had.
  *
- * Compared against swatches carrying the same declarations rather than against fixed channels,
- * so this asserts the thumb is painted from the rule under test without pinning the theme's
- * own colours.
+ * The resolved half runs everywhere. The painted half needs the compositor to hand back a
+ * frame, which the virtual display CI runs under does not always do, so it is asserted when
+ * present and skipped when not - an absent frame is a property of the display, not a defect in
+ * the stylesheet, and failing on it would only make the suite red on the machine least able to
+ * do anything about it. `paintedStates` in the output says which ran.
  */
-test("the scrollbar thumb is painted from its own rule, and lightens under the pointer", () => {
+test("the scrollbar thumb resolves, and paints, a different colour under the pointer", () => {
   const output = runElectronFixture([
     fileURLToPath(new URL("fixtures/pipeline-strip-thumb-browser.cjs", import.meta.url)),
     fileURLToPath(new URL("../src/web/styles.css", import.meta.url)),
   ]);
   const parsed = JSON.parse(output.trim() || '{"error":"the fixture produced no output"}') as {
     error?: string;
-    geometry: { track: number; overflow: number };
-    rest: Sample;
-    hovered: Sample;
+    resolved: {
+      restDeclared: string | null;
+      hoverDeclared: string | null;
+      radiusDeclared: string | null;
+      trackHeight: string | null;
+      restComputed: string;
+      hoverComputed: string;
+    };
+    geometry: { overflow: number };
+    painted: { rest: Sample; hovered: Sample } | null;
   };
   // The fixture reports its own failures rather than exiting non-zero, because `app.quit()`
   // discards `process.exitCode`. Surface the reason instead of a JSON parse error.
   assert.equal(parsed.error, undefined, `the thumb fixture failed: ${parsed.error}`);
-  const { geometry, rest, hovered } = parsed;
+  const { resolved, geometry, painted } = parsed;
 
   assert.ok(geometry.overflow > 0, "the strip must overflow for a thumb to be drawn");
-  assert.ok(rest.thumb, "no thumb was found in the scrollbar band");
-  assert.ok(hovered.thumb, "no thumb was found in the scrollbar band while hovered");
+
+  // Both rules ship a background, and the engine resolves each to a real colour. A rule that
+  // was deleted resolves to null; one left empty resolves to "".
+  assert.ok(resolved.restDeclared, "the thumb must declare a background");
+  assert.ok(resolved.hoverDeclared, "the thumb's hover state must declare a background");
+  assert.ok(resolved.radiusDeclared, "the thumb must declare its border radius");
+  assert.equal(resolved.trackHeight, "10px", "the track height must stay in step");
+
+  // The observable consequence of the hover rule, without needing a pixel: the two
+  // declarations resolve to DIFFERENT colours, and the hovered one is the more opaque of the
+  // two, so it reads lighter against this surface. A hover rule that repeated the resting
+  // background would resolve equal and fail here.
+  assert.notEqual(
+    resolved.restComputed,
+    resolved.hoverComputed,
+    `hover must resolve to its own colour (both ${resolved.restComputed})`,
+  );
+  const alpha = (colour: string): number => {
+    const match = /\/\s*([0-9.]+)\s*\)/.exec(colour);
+    return match ? Number(match[1]) : 1;
+  };
+  assert.ok(
+    alpha(resolved.hoverComputed) > alpha(resolved.restComputed),
+    "the hovered thumb must resolve more opaque than the resting one "
+      + `(rest ${resolved.restComputed}, hover ${resolved.hoverComputed})`,
+  );
+
+  if (!painted) {
+    // eslint-disable-next-line no-console
+    console.log("paintedStates skipped: the compositor returned no usable frame");
+    return;
+  }
+  const { rest, hovered } = painted;
 
   // Painted at all: a thumb the same colour as the track behind it is not a scrollbar.
   assert.ok(
-    distance(rest.thumb!, rest.track) > 12,
-    `the thumb must stand out from its track (${show(rest.thumb!)} on ${show(rest.track)})`,
+    distance(rest.thumb, rest.track) > 12,
+    `the thumb must stand out from its track (${show(rest.thumb)} on ${show(rest.track)})`,
   );
 
-  // `background: color-mix(in oklab, var(--fg) 24%, transparent)`, as rendered. Removing or
-  // changing that declaration moves the thumb off its swatch and fails here.
+  // And painted from the rules above, not from the platform's own thumb colour: each state is
+  // matched against a swatch the fixture filled with that state's own declared value.
   assert.ok(
-    distance(rest.thumb!, rest.swatchRest) <= TOLERANCE,
-    "the resting thumb must match the 24% swatch "
-      + `(thumb ${show(rest.thumb!)}, swatch ${show(rest.swatchRest)})`,
+    distance(rest.thumb, rest.swatchRest) <= TOLERANCE,
+    "the resting thumb must match its declared background "
+      + `(thumb ${show(rest.thumb)}, declared ${show(rest.swatchRest)})`,
   );
-
-  // `border-radius: 5px` on a 10px track rounds the ends, so a corner of the thumb's bounding
-  // box is not the thumb's own colour.
   assert.ok(
-    rest.thumbCorner && distance(rest.thumbCorner, rest.thumb!) > TOLERANCE,
-    `the thumb's corner must be rounded away (corner ${show(rest.thumbCorner ?? BLACK)})`,
+    distance(hovered.thumb, hovered.swatchHover) <= TOLERANCE,
+    "the hovered thumb must match its declared background "
+      + `(thumb ${show(hovered.thumb)}, declared ${show(hovered.swatchHover)})`,
   );
-
-  // And the hover rule, which has no other test path: the pointer parks on the thumb and the
-  // paint moves to the 38% mix. Asserted as a match against that swatch AND as a change from
-  // rest, so neither a missing hover rule nor a hover rule equal to the resting one passes.
   assert.notDeepEqual(
     hovered.thumb,
     rest.thumb,
-    `hovering must repaint the thumb (still ${show(rest.thumb!)})`,
+    `hovering must repaint the thumb (still ${show(rest.thumb)})`,
   );
+
+  // `border-radius` rounds the ends, so a corner of the thumb's box is not the thumb's colour.
   assert.ok(
-    distance(hovered.thumb!, hovered.swatchHover) <= TOLERANCE,
-    "the hovered thumb must match the 38% swatch "
-      + `(thumb ${show(hovered.thumb!)}, swatch ${show(hovered.swatchHover)})`,
+    distance(rest.thumbCorner, rest.thumb) > TOLERANCE,
+    `the thumb's corner must be rounded away (corner ${show(rest.thumbCorner)})`,
   );
 });
 

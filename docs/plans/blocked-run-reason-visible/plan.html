@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: say why a workflow run is blocked</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013;
+    --surface-1: #16181c;
+    --surface-2: #1d2026;
+    --surface-3: #262a31;
+    --line:      #2f343c;
+    --line-soft: #23272e;
+    --text-primary:   #f2f3f5;
+    --text-secondary: #b6bcc6;
+    --text-muted:     #868e99;
+    --series-1: #4f95e8;
+    --series-2: #e2703c;
+    --good:     #2eb188;
+    --warn:     #d59a1e;
+    --critical: #ea7a7a;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:where(:not([data-theme="dark"])) {
+      color-scheme: light;
+      --surface-0: #f4f4f2;
+      --surface-1: #fcfcfb;
+      --surface-2: #f0f0ed;
+      --surface-3: #e6e6e2;
+      --line:      #d5d5d0;
+      --line-soft: #e4e4e0;
+      --text-primary:   #101114;
+      --text-secondary: #45484e;
+      --text-muted:     #63666c;
+      --series-1: #2367bd;
+      --series-2: #b8501f;
+      --good:     #14795a;
+      --warn:     #8a6200;
+      --critical: #b32e2d;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--surface-0); color: var(--text-primary);
+    font-family: var(--sans); font-size: 15px; line-height: 1.65; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 28px 110px; }
+  header.mast { padding: 58px 0 34px; border-bottom: 1px solid var(--line); margin-bottom: 38px; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px; }
+  h1 { font-size: 36px; line-height: 1.14; letter-spacing: -0.022em; margin: 0 0 18px; font-weight: 620; }
+  .standfirst { font-size: 17.5px; line-height: 1.6; color: var(--text-secondary); max-width: 70ch; margin: 0; }
+  .standfirst strong { color: var(--text-primary); font-weight: 600; }
+  h2 { font-size: 23px; letter-spacing: -0.015em; margin: 56px 0 8px; padding-top: 24px; border-top: 1px solid var(--line); font-weight: 620; }
+  h2:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+  h3 { font-size: 16.5px; margin: 32px 0 10px; font-weight: 620; letter-spacing: -0.006em; }
+  p { margin: 0 0 14px; max-width: 78ch; }
+  ul, ol { max-width: 78ch; padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  blockquote {
+    margin: 18px 0 20px; padding: 14px 18px; border-left: 3px solid var(--good);
+    background: var(--surface-1); border-radius: 0 8px 8px 0; color: var(--text-primary);
+    max-width: 78ch; font-size: 14.5px;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+  code { font-family: var(--mono); font-size: .875em; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; color: var(--text-primary); white-space: nowrap; }
+  pre { background: var(--surface-1); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: var(--text-primary); margin: 18px 0 24px; }
+  pre code { background: none; border: none; padding: 0; white-space: pre; font-size: inherit; }
+  a { color: var(--series-1); }
+  .tw { overflow-x: auto; margin: 22px 0 28px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  td code, th code { background: transparent; border: none; padding: 0; }
+  .call { border-left: 3px solid var(--series-1); background: var(--surface-1); border-radius: 0 8px 8px 0; padding: 15px 18px; margin: 22px 0; max-width: 82ch; }
+  .call.crit { border-left-color: var(--critical); }
+  .call.warn { border-left-color: var(--warn); }
+  .call p:last-child { margin-bottom: 0; }
+  .call .h { font-weight: 620; margin: 0 0 6px; }
+  figure { margin: 30px 0 34px; background: var(--surface-1); border: 1px solid var(--line); border-radius: 10px; padding: 22px 22px 18px; }
+  figcaption { font-size: 12.5px; color: var(--text-secondary); margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--line-soft); line-height: 1.5; }
+  .fig-title { font-size: 15px; font-weight: 620; margin: 0 0 3px; }
+  .fig-sub { font-size: 12.5px; color: var(--text-muted); margin: 0 0 18px; }
+  .figscroll { overflow-x: auto; }
+  svg { display: block; }
+  .steps { counter-reset: step; list-style: none; padding-left: 0; }
+  .steps > li { counter-increment: step; position: relative; padding-left: 44px; margin-bottom: 26px; }
+  .steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: 1px;
+    width: 28px; height: 28px; border-radius: 8px; background: var(--surface-3);
+    border: 1px solid var(--line); color: var(--text-primary);
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps > li > h3 { margin-top: 0; }
+  footer.end { margin-top: 64px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Mission Control &middot; plan &middot; 10 September 2026</p>
+  <h1>Say why a workflow run is blocked</h1>
+  <p class="standfirst">
+    The daemon already writes an exact, human sentence when evidence capture refuses a submission.
+    <strong>Four surfaces try to tell the operator why a run stopped, and all four fail on this
+    phase</strong> &ndash; three print the phase code back at the reader, and the run page prints
+    nothing at all. Everything needed to fix it is already persisted, already typed, and already on
+    the wire.
+  </p>
+</header>
+
+<h2 id="problem">The problem</h2>
+<p>
+  On 10 September 2026 a No-Mistakes Review run stopped 1.27 seconds after it started. Evidence
+  capture had re-hashed a registered screenshot, found the file had been overwritten by a later
+  Playwright run, and refused the whole submission. The daemon wrote an exact, correct, human
+  sentence into the run's <code>gate_state_json</code>:
+</p>
+<pre><code>{"error":"Evidence image changed after it was staged; register it again","code":"image_changed"}</code></pre>
+<p>
+  Nobody saw it. The operator found the run two hours later, could not tell why it was blocked, and
+  asked. Answering took a read of the state database and four source files.
+</p>
+<p>The sentence exists. Four surfaces try to tell the operator something, and all four fail on this phase:</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Surface</th><th>Where</th><th>What it says today</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Desktop and in-app alert, fired at the moment of the block</td>
+      <td><a href="../../../src/shared/alerts.ts"><code>alerts.ts:403</code></a></td>
+      <td>Title <code>No-Mistakes Review blocked</code>, body <code>run.phase.replaceAll("_"," ")</code>
+          &rarr; <strong>&ldquo;image evidence capture&rdquo;</strong></td>
+    </tr>
+    <tr>
+      <td>Line strip and Review drawer, grouped by phase</td>
+      <td><a href="../../../src/web/lib/line-review-groups.ts"><code>line-review-groups.ts:171</code></a></td>
+      <td><strong>&ldquo;image evidence capture&rdquo;</strong></td>
+    </tr>
+    <tr>
+      <td>Runs rail row remedy clause</td>
+      <td><a href="../../../src/web/workflows/run-model.ts"><code>run-model.ts:2692</code></a></td>
+      <td><strong>&ldquo;image evidence capture&rdquo;</strong></td>
+    </tr>
+    <tr>
+      <td>Run detail header</td>
+      <td><a href="../../../src/web/workflows/WorkflowRuns.tsx"><code>WorkflowRuns.tsx:2846</code></a></td>
+      <td><strong>nothing at all</strong></td>
+    </tr>
+    <tr>
+      <td>Gate packet disclosure</td>
+      <td><a href="../../../src/web/workflows/WorkflowRuns.tsx"><code>WorkflowRuns.tsx:3274</code></a></td>
+      <td>The real message, as raw JSON, inside a collapsed <code>&lt;details&gt;</code> labelled
+          <em>Join and gate packet</em></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="call crit">
+  <p class="h">The run detail silence is not an oversight.</p>
+  <p>
+    <code>runNoMoveReason</code> returns <code>null</code> whenever <code>runNextMove</code> returns a
+    descriptor, and the comment at <code>WorkflowRuns.tsx:2704</code> states the invariant
+    deliberately: <em>&ldquo;the header cannot show a primary and an excuse for not having one at
+    once.&rdquo;</em> That invariant is right for the phases it was written for. It fails here because
+    <code>resubmitAvailability</code> correctly treats <code>blocked</code> as recoverable, so the page
+    concludes &ldquo;there is a button, so no paragraph is needed&rdquo; for a failure the reader has
+    not been told about. The operator is shown a resubmit control for a cause they cannot see, and
+    clicking it without fixing the underlying file reproduces the block.
+  </p>
+</div>
+
+<h2 id="decisions">Decisions taken</h2>
+<p>
+  Reviewed and submitted in the Mission Control dashboard on 10 September 2026. Every recommended
+  option was adopted, so the plan below is the resolved scope rather than a menu.
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Decision</th><th>Adopted</th></tr></thead>
+  <tbody>
+    <tr><td>Which surfaces carry the reason</td>
+        <td><strong>All four, including the alert.</strong> <code>BLOCKED_PHASE_CLAUSES</code> moves into
+            <code>src/shared/</code> so the notification fired at the moment of the block names the cause.</td></tr>
+    <tr><td>Name the failing evidence item</td>
+        <td><strong>Yes.</strong> <code>inspectReservedSource</code> attaches the item's
+            <code>displayName</code> and <code>clientItemId</code>, and the phase detail records them.</td></tr>
+    <tr><td>Phase coverage</td>
+        <td><strong>The whole capture family, plus an exhaustiveness test</strong> so no future blocked
+            phase can ship unnamed.</td></tr>
+    <tr><td>The session's swallowed second completion</td>
+        <td><strong>Show it, do not fix it here.</strong> The display half is step 7; the behavioral fix
+            stays out of scope.</td></tr>
+    <tr><td>After this plan</td>
+        <td>Create a phased implementation plan and schedule the dependent tasks.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="exists">What the codebase already provides</h2>
+<p>Nothing here needs inventing. Three mechanisms exist and are unused by this phase.</p>
+
+<h3>A typed phase-detail contract</h3>
+<p>
+  <code>WORKFLOW_RUN_PHASE_DETAIL_KEYS</code> in
+  <a href="../../../src/shared/workflow-lifecycle.ts"><code>workflow-lifecycle.ts:353</code></a>
+  already declares <code>image_evidence_capture: ["error", "code"]</code>, alongside
+  <code>capture_error</code>, <code>capture_interrupted</code> and <code>stale_capture</code>.
+  <code>decodeWorkflowRunLifecycle</code> classifies all four as <code>opaque</code> today. A
+  <code>capture_failure</code> arm on the <code>WorkflowGateDetail</code> union, following the
+  <code>check_cleanup</code> precedent at <code>workflow-lifecycle.ts:646</code>, gives every surface a
+  typed read of a payload that is already persisted and already bounded.
+</p>
+
+<h3>A sentence slot for exactly this shape</h3>
+<p>
+  <code>runRefusedSentence</code> in <code>run-model.ts:1616</code> exists to explain <em>a run that
+  still has a move</em>. Its own doc comment names the problem verbatim:
+</p>
+<blockquote>
+  <p>
+    The header's existing sentence is the NO-MOVE one: it explains an empty action row. A refused
+    resubmission is the opposite shape &ndash; the daemon said no, and put a different button in place
+    of the one that was clicked &ndash; so nothing drew the reason.
+  </p>
+</blockquote>
+<p>
+  It handles <code>unchanged_repository</code> and <code>unchanged_evidence</code>. It has no case for
+  the capture family. It already renders at <code>WorkflowRuns.tsx:2858</code> with styling at
+  <code>styles.css:1776</code>.
+</p>
+
+<h3>The offending item's identity, at the throw site</h3>
+<p>
+  <code>inspectReservedSource</code>
+  (<a href="../../../src/server/workflows/images.ts"><code>images.ts:588</code></a>) holds the whole
+  <code>WorkflowReservedEvidence</code> row &ndash; including <code>clientItemId</code>,
+  <code>displayName</code> and <code>sourceLocator</code> &ndash; when it calls
+  <code>inspectOpenFile</code>. The error it raises names none of them, so a run with eleven reserved
+  items says only &ldquo;an evidence image changed&rdquo;.
+</p>
+
+<h2 id="wire">The client is already served the data</h2>
+<p>
+  <code>WorkflowRun.gateState</code> is <code>WorkflowJson | null</code>
+  (<code>src/shared/workflow.ts:3656</code>) and reaches the browser today.
+  <code>src/shared/workflow-lifecycle.ts</code> is browser-safe and <code>WorkflowRuns.tsx</code>
+  already imports from it. <strong>No route changes, no new fields on the wire, no migration.</strong>
+</p>
+
+<figure>
+  <p class="fig-title">One decode, four readers</p>
+  <p class="fig-sub">The payload is already persisted and already sent; only the decode arm and the four call sites are new</p>
+  <div class="figscroll">
+  <svg viewBox="0 0 900 300" width="900" height="300" role="img"
+       aria-label="Diagram: gate_state_json carrying error and code is decoded by decodeWorkflowRunLifecycle, which today returns kind opaque. A new capture_failure arm feeds four readers: the run detail sentence, the Line strip clause, the Runs rail clause, and the alert body.">
+    <rect x="0" y="0" width="900" height="300" fill="var(--surface-1)"/>
+
+    <rect x="14" y="118" width="228" height="64" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="30" y="142" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--text-primary)">gate_state_json</text>
+    <text x="30" y="160" font-family="var(--mono)" font-size="10.5" fill="var(--text-secondary)">{ error, code }</text>
+    <text x="30" y="175" font-family="var(--sans)" font-size="11" fill="var(--good)">persisted today &#183; on the wire today</text>
+
+    <path d="M242 150 H 292" stroke="var(--series-1)" stroke-width="2" fill="none" marker-end="url(#a1)"/>
+
+    <rect x="302" y="112" width="216" height="76" rx="8" fill="var(--surface-2)" stroke="var(--series-2)"/>
+    <text x="318" y="135" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--text-primary)">decodeWorkflowRunLifecycle</text>
+    <text x="318" y="154" font-family="var(--mono)" font-size="10.5" fill="var(--text-muted)">today: kind &#8220;opaque&#8221;</text>
+    <text x="318" y="172" font-family="var(--mono)" font-size="10.5" fill="var(--series-2)">add: kind &#8220;capture_failure&#8221;</text>
+
+    <path d="M518 150 H 556 V 44  H 596" stroke="var(--series-1)" stroke-width="1.6" fill="none" marker-end="url(#a1)"/>
+    <path d="M518 150 H 556 V 112 H 596" stroke="var(--series-1)" stroke-width="1.6" fill="none" marker-end="url(#a1)"/>
+    <path d="M518 150 H 556 V 180 H 596" stroke="var(--series-1)" stroke-width="1.6" fill="none" marker-end="url(#a1)"/>
+    <path d="M518 150 H 556 V 248 H 596" stroke="var(--series-1)" stroke-width="1.6" fill="none" marker-end="url(#a1)"/>
+
+    <rect x="606" y="22" width="280" height="44" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="622" y="41" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--text-primary)">Run detail sentence</text>
+    <text x="622" y="57" font-family="var(--mono)" font-size="10.5" fill="var(--text-secondary)">runRefusedSentence &#183; beside the button</text>
+
+    <rect x="606" y="90" width="280" height="44" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="622" y="109" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--text-primary)">Line strip &amp; Review drawer</text>
+    <text x="622" y="125" font-family="var(--mono)" font-size="10.5" fill="var(--text-secondary)">blockedPhaseClause</text>
+
+    <rect x="606" y="158" width="280" height="44" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="622" y="177" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--text-primary)">Runs rail row</text>
+    <text x="622" y="193" font-family="var(--mono)" font-size="10.5" fill="var(--text-secondary)">runRemedy clause</text>
+
+    <rect x="606" y="226" width="280" height="44" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+    <text x="622" y="245" font-family="var(--sans)" font-size="12.5" font-weight="600" fill="var(--text-primary)">Alert at the moment it blocks</text>
+    <text x="622" y="261" font-family="var(--mono)" font-size="10.5" fill="var(--text-secondary)">alerts.ts &#183; needs the map in shared/</text>
+
+    <defs>
+      <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="var(--series-1)"/></marker>
+    </defs>
+  </svg>
+  </div>
+  <figcaption>
+    The alert reader is the one that needs a move rather than an addition: <code>BLOCKED_PHASE_CLAUSES</code>
+    lives in <code>src/web/</code> today, which is why <code>alerts.ts</code> carries its own duplicate
+    fallback.
+  </figcaption>
+</figure>
+
+<h2 id="change">Proposed change</h2>
+
+<ol class="steps">
+  <li>
+    <h3>Decode the payload once, in shared</h3>
+    <p>
+      Add <code>{ kind: "capture_failure"; failure: { error: string; code: string | null } }</code> to
+      <code>WorkflowGateDetail</code>, decoded for the capture-family phases, plus a
+      <code>workflowCaptureFailure(record)</code> accessor mirroring
+      <code>workflowCheckCleanupBlock</code>. Tests extend
+      <code>test/workflow-run-lifecycle.test.ts</code>, which already fixtures
+      <code>image_evidence_capture</code> at line 143.
+    </p>
+  </li>
+  <li>
+    <h3>Give the run detail header its sentence</h3>
+    <p>
+      Add a capture-family case to <code>runRefusedSentence</code>. It renders in the existing
+      <code>.wf-run-refused</code> slot, <strong>beside the resubmit button rather than instead of
+      it</strong>, and names the remedy the operator actually needs:
+    </p>
+    <blockquote>
+      <p>
+        Evidence capture refused this round: an evidence image changed after it was staged. Nothing
+        was reviewed and no repair round was spent. Re-register the screenshot, then resubmit &ndash;
+        resuming would re-check the same stale reservation and stop here again.
+      </p>
+    </blockquote>
+    <p>
+      That last clause matters. <code>resumeImageEvidenceCapture</code> (<code>manager.ts:1876</code>)
+      deliberately replays <em>the same immutable reservation</em>, so on this failure it is guaranteed
+      to fail identically. An operator told only &ldquo;blocked&rdquo; has no way to know which of the
+      two recoveries is the working one.
+    </p>
+  </li>
+  <li>
+    <h3>Name the phases in the clause map</h3>
+    <p>
+      Add <code>BLOCKED_PHASE_CLAUSES</code> entries for the capture family so the Line strip, the
+      Review drawer and the Runs rail stop printing phase codes. Three or four words each, per the
+      map's stated grain: <code>image_evidence_capture</code> &rarr; &ldquo;evidence image
+      changed&rdquo;, <code>capture_error</code> &rarr; &ldquo;capture failed&rdquo; (already present),
+      <code>capture_interrupted</code> &rarr; &ldquo;capture interrupted&rdquo;,
+      <code>external_artifact_mismatch</code> &rarr; &ldquo;artifact moved&rdquo;.
+    </p>
+  </li>
+  <li>
+    <h3>Name which image, at the source</h3>
+    <p>
+      Have <code>inspectReservedSource</code> attach the failing item's <code>displayName</code> and
+      <code>clientItemId</code> to the error, and record them in the phase detail. This converts
+      &ldquo;an evidence image changed&rdquo; into &ldquo;<code>steering-context.png</code>
+      (<code>phase2-steering-disclosure</code>) changed&rdquo;, which is the difference between knowing
+      there is a problem and knowing what to do about it. It adds two optional keys to
+      <code>WORKFLOW_RUN_PHASE_DETAIL_KEYS.image_evidence_capture</code>, which the whitelist contract
+      explicitly permits: <em>&ldquo;An ALLOWED-key whitelist rather than a required-key list.&rdquo;</em>
+    </p>
+  </li>
+  <li>
+    <h3>Fix the alert body</h3>
+    <p>
+      <code>alerts.ts:403</code> prints <code>run.phase.replaceAll("_", " ")</code> because the clause
+      map lives in <code>src/web/</code>. Moving <code>BLOCKED_PHASE_CLAUSES</code> and
+      <code>blockedPhaseClause</code> into <code>src/shared/</code> lets the notification that fires at
+      the moment of the block name the cause. The comment at <code>run-model.ts:1058</code> already
+      flags the duplication as a hazard: <em>&ldquo;two surfaces reading one field must not disagree
+      about what an unmapped code looks like.&rdquo;</em>
+    </p>
+  </li>
+  <li>
+    <h3>Stop new phases from arriving unnamed</h3>
+    <p>
+      A test over <code>WORKFLOW_RUN_PHASES</code> asserting that every phase whose declared statuses
+      include <code>blocked</code> has a <code>BLOCKED_PHASE_CLAUSES</code> entry. This defect is not
+      specific to <code>image_evidence_capture</code>; it is what happens by default when a phase is
+      added, because the fallback is silent and plausible-looking.
+    </p>
+  </li>
+  <li>
+    <h3>Show that the session tried again and was refused</h3>
+    <p>
+      The run this plan comes from was retried by its own session an hour after it blocked, and the
+      attempt left a durable <code>workflow_completion_blocked</code> event. That event does reach the
+      Timeline section today, because <code>eventLine</code> falls back to a generic reading of any
+      event kind &ndash; but it reads &ldquo;Workflow completion blocked / prompted, blocked,
+      image_evidence_capture&rdquo;, filed under round 1 among every other event, below the fold, and
+      only when the event is inside the fetched page. As a signal that the work is finished and waiting
+      on a click, it is invisible.
+    </p>
+    <p>
+      Promote it. When the newest event on a blocked run is a refused completion claim, the header says
+      so beside the cause:
+    </p>
+    <blockquote>
+      <p>
+        This session finished again 1 hour ago and the review could not accept it, because the run was
+        already blocked. Its new evidence is staged and waiting; resubmitting is what picks it up.
+      </p>
+    </blockquote>
+    <p>
+      This is display only. <code>store.ts:6630</code> still refuses the claim and still retires the
+      guard; nothing here changes what the daemon does. Making a blocked-capture run accept a fresh
+      claim is the behavioral fix, and it is deliberately left to its own plan.
+    </p>
+  </li>
+</ol>
+
+<h2 id="scope">Not in scope</h2>
+
+<div class="call warn">
+  <p class="h">The swallowed retry.</p>
+  <p>
+    An hour after the block, the session re-registered correct evidence and completed again.
+    <code>store.ts:6630</code> only advances a run whose status is not-yet-started,
+    <code>waiting_for_session</code>, <code>capturing</code> or <code>running</code>;
+    <code>blocked</code> falls to the <code>else</code> branch, which logs
+    <code>workflow_completion_blocked</code>, <strong>still retires the prompted completion
+    guard</strong>, and returns <code>claimed: true</code> with <code>submissionId: null</code>. The
+    session was told it completed. Making a blocked-capture run accept a fresh claim is a real fix and
+    a behavioral one, and it belongs in its own plan. Step 7 above makes the attempt visible;
+    nothing in this plan makes it work.
+  </p>
+</div>
+
+<div class="call">
+  <p class="h">Making capture tolerant.</p>
+  <p>
+    Refusing a changed image is correct: the bytes a Persona reviews must be the bytes the session
+    claimed. Nothing here relaxes that guard.
+  </p>
+</div>
+
+<h2 id="verify">Verification</h2>
+<ul>
+  <li><code>test/workflow-run-lifecycle.test.ts</code> &ndash; the new decoder arm, and the payload with and without the item identity.</li>
+  <li><code>test/workflow-runs-model.test.ts</code> and <code>test/workflow-run-next-move.test.ts</code> &ndash; the sentence appears <em>with</em> the resubmit move rather than instead of it.</li>
+  <li><code>test/line-review-groups.test.ts</code> &ndash; the strip groups under the new clause.</li>
+  <li><code>test/workflow-alerts.test.ts</code> &ndash; the alert body carries the clause, not the phase code.</li>
+  <li><code>test/workflow-runs-model.test.ts</code> &ndash; the refused-completion sentence appears only
+      when a refused claim is the newest event on a blocked run, and not on a run that never had one.</li>
+  <li>
+    A new spec in <code>e2e/specs/</code> seeding a blocked <code>image_evidence_capture</code> run
+    through <code>withDaemonDb</code> (the fixture
+    <code>workflow-evidence-reserved-refusal.spec.ts</code> already uses) and asserting the operator
+    reads the cause on run detail <strong>without opening any disclosure</strong>. Per the
+    repository's standing rule, this is a UI change and the spec is not optional.
+  </li>
+</ul>
+
+<footer class="end">
+  Source of truth: <code>docs/plans/blocked-run-reason-visible/plan.md</code>. This page is a
+  rendering of it. The blocked-run investigation behind it was delivered in the planning
+  session; report artifacts are not committed to this repository.
+</footer>
+
+</div>
+</body>
+</html>

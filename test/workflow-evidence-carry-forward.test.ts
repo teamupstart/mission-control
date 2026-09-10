@@ -17,6 +17,7 @@ const {
   captureSubmissionImages,
   captureSubmissionTextArtifacts,
   inheritSubmissionEvidence,
+  WorkflowImageEvidenceError,
   WORKFLOW_EVIDENCE_DIR,
 } = await import("../src/server/workflows/images.ts");
 const { workflowRepositoryFingerprint } = await import("../src/server/workflows/context.ts");
@@ -1772,6 +1773,274 @@ test("a carry never exceeds the aggregate evidence limits it competes for", asyn
       { ...(truncation[0]!.payload as Record<string, unknown>), submissionId: undefined, sourceSubmissionId: undefined },
       { images: 0, artifacts: 2, claims: 0, submissionId: undefined, sourceSubmissionId: undefined },
       "naming exactly how much of the parent's set the limit refused",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+/*
+ * The four below hold the boundary between "the same evidence" and "the same episode".
+ *
+ * A live session's evidence is stamped with the intent episode that registered it, and that
+ * episode advances on every accepted prompt - including the workflow's own repair prompt. The
+ * re-staging contract above is only worth anything if it survives that, so each of these passes
+ * a real episode key rather than the `null` the older cases default to.
+ */
+
+test("identical bytes re-registered in a later episode return to the tray under the new stamp", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-episode-")));
+  try {
+    writeFileSync(join(checkout, "round.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const write = imageWrite({
+      id: "episode-item",
+      clientItemId: "round-proof",
+      root: checkout,
+      locator: "round.png",
+      caption: "Proof this round and the next",
+      bytes: PNG,
+    });
+    store.stageWorkflowEvidence(noteKey, [write], 2, "intent:1:1");
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "episode-root", now: 3 },
+      { id: "episode-first", triggerSource: "manual", triggerKey: "episode-root", context: {}, evidence: {}, now: 3 },
+    );
+    assert.equal(store.listReservedWorkflowEvidence(first.submission.id).length, 1);
+    const generation = store.workflowEvidenceGeneration(noteKey, checkout);
+
+    // The repair prompt that opens the next round is itself an accepted prompt, so the episode
+    // has moved on by the time the agent presents the same proof again.
+    store.stageWorkflowEvidence(noteKey, [write], 4, "intent:1:2");
+    const staged = store.listWorkflowEvidence(noteKey).images;
+    assert.deepEqual(
+      staged.map((image) => image.clientItemId),
+      ["round-proof"],
+      "a new round does not make unchanged bytes unregisterable",
+    );
+    assert.equal(
+      staged[0]?.episodeKey,
+      "intent:1:2",
+      "and the stamp moves, so the verifier for THIS episode admits it",
+    );
+    assert.equal(
+      store.workflowEvidenceGeneration(noteKey, checkout),
+      generation,
+      "re-registering bytes that already exist is still not new evidence about the work",
+    );
+    assert.equal(
+      store.listReservedWorkflowEvidence(first.submission.id).length,
+      1,
+      "and the submission that already reserved them keeps them",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("an unresolved intent returns evidence to the tray without erasing the stamp it has", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-unresolved-")));
+  try {
+    writeFileSync(join(checkout, "unresolved.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const write = imageWrite({
+      id: "unresolved-item",
+      clientItemId: "unresolved-proof",
+      root: checkout,
+      locator: "unresolved.png",
+      caption: "Captured while the intent still resolved",
+      bytes: PNG,
+    });
+    store.stageWorkflowEvidence(noteKey, [write], 2, "intent:1:1");
+    store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "unresolved-root", now: 3 },
+      { id: "unresolved-first", triggerSource: "manual", triggerKey: "unresolved-root", context: {}, evidence: {}, now: 3 },
+    );
+
+    // A prompt has arrived and the refiner has not reconciled it yet, so the session's intent
+    // does not resolve. That is an unknown episode, not the absence of one.
+    store.stageWorkflowEvidence(noteKey, [write], 4, null);
+    const staged = store.listWorkflowEvidence(noteKey).images;
+    assert.deepEqual(staged.map((image) => image.clientItemId), ["unresolved-proof"]);
+    assert.equal(
+      staged[0]?.episodeKey,
+      "intent:1:1",
+      "provenance an unknown episode cannot improve on is left alone",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a coverage claim may link evidence an earlier submission already reserved", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-linkreserved-")));
+  try {
+    const body = "\u2714 the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "suite.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [logWrite({
+      id: "link-item",
+      clientItemId: "suite-run",
+      root: checkout,
+      locator: "suite.log",
+      caption: "The suite this criterion rests on",
+      body,
+    })], 2, "intent:1:1");
+    const first = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "link-root", now: 3 },
+      { id: "link-first", triggerSource: "manual", triggerKey: "link-root", context: {}, evidence: {}, now: 3 },
+    );
+    assert.equal(store.listReservedWorkflowEvidence(first.submission.id).length, 1);
+    assert.deepEqual(store.listWorkflowEvidence(noteKey).artifacts, [], "reservation empties the tray");
+
+    // The criterion is worth claiming precisely because a previous round proved it. The item is
+    // not re-registered here, and it does not need to be.
+    store.stageWorkflowEvidence(noteKey, [], 4, "intent:1:2", [{
+      id: "link-claim",
+      clientCriterionId: "suite-passes",
+      criterion: "The suite the change touches passes",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "suite-run", role: "execution" as const }],
+    }]);
+    const coverage = store.listWorkflowEvidence(noteKey).coverage ?? [];
+    assert.deepEqual(
+      coverage.map((claim) => claim.clientCriterionId),
+      ["suite-passes"],
+      "a link resolves against evidence this conversation owns, reserved or not",
+    );
+    assert.deepEqual(
+      coverage[0]?.links,
+      [{ clientItemId: "suite-run", role: "execution" }],
+      "and the link it was registered with survives intact",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("the store's deliberate refusals carry a code the evidence tool can relay", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refusalcode-")));
+  try {
+    writeFileSync(join(checkout, "coded.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const write = imageWrite({
+      id: "coded-item",
+      clientItemId: "coded-proof",
+      root: checkout,
+      locator: "coded.png",
+      caption: "The claim this submission froze",
+      bytes: PNG,
+    });
+    store.stageWorkflowEvidence(noteKey, [write], 2, "intent:1:1");
+    store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "coded-root", now: 3 },
+      { id: "coded-first", triggerSource: "manual", triggerKey: "coded-root", context: {}, evidence: {}, now: 3 },
+    );
+
+    // Changed bytes under a reserved id are still refused - that claim is frozen - but the
+    // refusal now says which item and why, instead of arriving as an opaque 409.
+    assert.throws(
+      () => store.stageWorkflowEvidence(
+        noteKey,
+        [{ ...write, caption: "A different claim entirely" }],
+        4,
+        "intent:1:2",
+      ),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && error.code === "evidence_reserved"
+        && error.status === 409
+        && error.message.includes("coded-proof"),
+    );
+    assert.throws(
+      () => store.stageWorkflowEvidence(noteKey, [], 5, "intent:1:2", [{
+        id: "coded-claim",
+        clientCriterionId: "never-proved",
+        criterion: "A criterion whose proof was never registered",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [{ clientItemId: "no-such-item", role: "execution" as const }],
+      }]),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && error.code === "coverage_link_unknown"
+        && error.message.includes("no-such-item"),
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("evidence retention removed cannot wedge the claims that outlived it", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-danglinglink-")));
+  try {
+    const body = "the proof a pruned round captured\n";
+    writeFileSync(join(checkout, "pruned.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    store.stageWorkflowEvidence(noteKey, [logWrite({
+      id: "dangling-item",
+      clientItemId: "pruned-proof",
+      root: checkout,
+      locator: "pruned.log",
+      caption: "The proof a pruned round captured",
+      body,
+    })], 2, "intent:1:1");
+    store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "dangling-root", now: 3 },
+      { id: "dangling-first", triggerSource: "manual", triggerKey: "dangling-root", context: {}, evidence: {}, now: 3 },
+    );
+    store.stageWorkflowEvidence(noteKey, [], 4, "intent:1:2", [{
+      id: "dangling-claim",
+      clientCriterionId: "pruned-criterion",
+      criterion: "A criterion whose proof retention later removed",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "pruned-proof", role: "execution" as const }],
+    }]);
+
+    // Retention drops a reserved row once the submission holding it is gone. The claim it was
+    // registered against is still staged, so its link now names nothing.
+    store.setRunState(runId, "completed", "complete", {}, 5);
+    store.runRetention({ rawEvidenceBefore: 6, completedRunsBefore: 6, maxCompletedRuns: 0, now: 7 });
+    assert.deepEqual(
+      openDb().prepare(
+        `SELECT client_item_id FROM workflow_evidence_staging WHERE note_key = ?`,
+      ).all(noteKey),
+      [],
+      "the row the claim links is gone from the table, not merely out of the tray",
+    );
+
+    // Unrelated work must not be held hostage to a repair only retention could make.
+    writeFileSync(join(checkout, "later.log"), body);
+    store.stageWorkflowEvidence(noteKey, [logWrite({
+      id: "later-item",
+      clientItemId: "later-proof",
+      root: checkout,
+      locator: "later.log",
+      caption: "Evidence captured after the prune",
+      body,
+    })], 8, "intent:1:3");
+    assert.deepEqual(
+      store.listWorkflowEvidence(noteKey).artifacts.map((item) => item.clientItemId),
+      ["later-proof"],
+      "a later registration is not refused on a pruned round's behalf",
+    );
+
+    // A claim being registered NOW still has to name evidence that exists.
+    assert.throws(
+      () => store.stageWorkflowEvidence(noteKey, [], 9, "intent:1:3", [{
+        id: "fresh-dangling-claim",
+        clientCriterionId: "fresh-criterion",
+        criterion: "A criterion registered now against nothing",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [{ clientItemId: "pruned-proof", role: "execution" as const }],
+      }]),
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && error.code === "coverage_link_unknown",
     );
   } finally {
     rmSync(checkout, { recursive: true, force: true });

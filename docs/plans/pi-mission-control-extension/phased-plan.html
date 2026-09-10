@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>Pi parity: phased implementation</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --panel-2: #eef0f4;
+    --ink: #17191d; --ink-dim: #555c66; --rule: #d9dde3;
+    --accent: #2f6fdd; --bad: #c0392b; --good: #1e8a4c;
+    --code-bg: #f2f3f6;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --panel: #1d2026; --panel-2: #23272f;
+      --ink: #e7e9ee; --ink-dim: #a0a7b4; --rule: #333944;
+      --accent: #6fa2f5; --bad: #f0736a; --good: #5ecf8f;
+      --code-bg: #1a1d23;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased; overflow-x: hidden;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.25; letter-spacing: -.015em; margin: 0 0 .4rem; }
+  h2 {
+    font-size: 1.3rem; letter-spacing: -.01em; margin: 3rem 0 .75rem;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 1.9rem 0 .5rem; }
+  h4 { font-size: .97rem; margin: 1.4rem 0 .4rem; color: var(--ink-dim); }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); }
+  .lede { color: var(--ink-dim); font-size: 1.05rem; margin-top: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .88em; background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 4px; padding: .1em .35em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  .scroll { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  blockquote { margin: 1rem 0; padding: .1rem 1rem; border-left: 3px solid var(--accent); color: var(--ink-dim); }
+  figure { margin: 1.6rem 0; }
+  figure svg { display: block; width: 100%; height: auto; color: var(--ink); }
+  figcaption { color: var(--ink-dim); font-size: .87rem; margin-top: .5rem; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .svg-ink { fill: var(--ink); }
+  .svg-dim { fill: var(--ink-dim); }
+</style>
+</head>
+<body>
+<main>
+<h1>Pi parity: phased implementation</h1>
+<p class="lede">The implementation index for <code>plan.md</code>. Six phases, sized at 1,100-1,700 non-test implementation lines, with five findings from testing the plan against the repository - three of which changed a phase.</p>
+<p>The implementation index for <a href="plan.md"><code>plan.md</code></a>. That plan is the approved goal and its decisions are settled; this document is how the work is split into merge units, what the repository said when each assumption was tested against it, and which task owns which phase.</p>
+<h2>Incorporated decisions</h2>
+<p>Answered in the Mission Control dashboard on 2026-09-10 and treated here as requirements, not options:</p>
+<div class="scroll"><table>
+<thead><tr><th>Decision</th><th>Answer</th></tr></thead><tbody>
+<tr><td>Tools mechanism</td><td><strong>Bridge <code>dist/mcp/server.mjs</code> over stdio</strong>, not a native reimplementation</td></tr>
+<tr><td>Distribution</td><td><strong>Reconciled symlink in <code>~/.pi/agent/extensions/</code></strong>, not <code>pi install</code>, not the <code>settings.json</code> <code>extensions</code> array</td></tr>
+<tr><td>Staleness</td><td><strong>Report only</strong>, matching <code>claude-hooks.ts</code>. No auto-repair, and no one-press remedy on the Setup row</td></tr>
+<tr><td>First cut</td><td><strong>Cost only.</strong> Standing instructions, the capability guard and the extension were offered and not selected</td></tr>
+<tr><td>Capability flips</td><td><strong>Both taken now</strong>: <code>workQueue</code> on the strength of <code>agent_settled</code>, <code>multiRepoDispatch</code> as an empty grant</td></tr>
+<tr><td>Follow-up</td><td>Create this phased plan</td></tr>
+</tbody></table></div>
+<h2>What the repository said when the plan was tested against it</h2>
+<p>Five findings, each measured after the decisions were taken. Three of them change a phase and one of them narrows what the first cut delivers, so they are recorded here rather than absorbed into the phase files quietly.</p>
+<h3>1. Hand-run Pi cost is not reachable in Phase 1. It moves to the extension.</h3>
+<p><code>plan.md</code> claimed cost would work on hand-run sessions "because passive discovery already locates the transcript". It does not.</p>
+<ul>
+<li><code>startUsagePoller</code> skips any session without <code>agentSessionId</code> (<code>src/server/usage.ts:48</code>), and <code>locatePiTranscript</code> returns null without one (<code>src/server/harness/pi/transcript.ts:82</code>).</li>
+<li>A <strong>dispatched</strong> Pi session has one: <code>preparePiLaunch</code> passes <code>--session-id &lt;uuid&gt;</code> (<code>src/server/harness/pi/launch.ts</code>), and Pi writes that id verbatim into both the filename and the transcript header - measured.</li>
+<li>A <strong>hand-run</strong> Pi session has none, and cannot be given one the way Codex's is. <code>annotateCodexRollouts</code> works entirely off the rollout file the Codex process holds <strong>open</strong> (<code>src/server/discovery/codex-rollouts.ts</code>), and Pi was measured <strong>not to hold its session file open at all</strong>: driven over <code>--mode rpc</code> until <code>agent_settled</code>, with the file confirmed on disk, <code>lsof -a -p &lt;pid&gt; -Fn | grep jsonl</code> returned nothing.</li>
+</ul>
+<p>A cwd-plus-newest-file heuristic was considered and rejected. The poller's own comment states the rule - "cwd and a synthetic discovery id are never enough to attach dollars to a card" - and two Pi sessions in one checkout would be indistinguishable. The extension already knows the answer exactly (<code>ctx.sessionManager.getSessionId()</code>), so hand-run identity is <strong>Phase 4's</strong>, and hand-run cost arrives with it. Phase 1 delivers dispatched-session cost and says so.</p>
+<h3>2. Pi cannot be re-priced locally, so <code>HarnessUsageEvent</code> must carry a vendor cost.</h3>
+<p><code>plan.md</code> leaned toward re-pricing from <code>MODEL_CATALOG.pi</code>. That catalog carries <strong>no rates</strong> - it is id, label, hint, provider, context window, reasoning and input modes (<code>src/shared/model.ts:138</code>) - and Pi is multi-provider across the thirty-odd providers its <code>--help</code> lists, so a local price table for Pi would have to track all of them.</p>
+<p>Pi's own per-message <code>cost</code> object is the only viable source, and <code>UsageSpec.estimate(event)</code> receives only a <code>HarnessUsageEvent</code>, which has no cost field. Phase 1 therefore widens <code>HarnessUsageEvent</code> with an optional vendor-reported cost that <code>estimate</code> passes through. Claude and Codex leave it null and keep pricing from their own tables, so no existing row changes. <code>codex/usage.ts:109</code> and <code>llm/codex.ts:429</code> are the only two constructors.</p>
+<h3>3. The empty <code>multiRepoDispatch</code> grant contradicts an existing test invariant.</h3>
+<p><code>test/multi-repo-policy.test.ts:118</code> asserts that <strong>any non-null</strong> <code>multiRepoDispatch</code> renders at least one flag naming every directory, with the stated reason that "a spec that renders no flags would be a harness advertising a grant it does not make, which is worse than declaring null". A literal <code>launchArgs: () =&gt; []</code> fails it.</p>
+<p>The decision is kept and the shape changes: <code>MultiRepoDispatchSpec</code> becomes a discriminated union, so Pi declares <em>why</em> it needs no flags instead of returning an empty array that reads like a bug.</p>
+<pre><code>export type MultiRepoDispatchSpec =
+  | { kind: "flags"; launchArgs: (dirs: readonly string[]) =&gt; string[]; sdk: boolean }
+  | { kind: "no-boundary"; why: string; sdk: boolean };</code></pre>
+<p>This preserves the invariant (a <code>"flags"</code> spec must still render flags), keeps the human's decision (Pi is offered for multi-repo tasks), and makes the two existing <code>launchArgs</code> call sites - <code>dispatcher.ts:366</code> and <code>codex/sdk.ts:1421</code> - state the branch rather than assume a renderer exists. Phase 1 owns the union because Phase 1 is what introduces the second variant.</p>
+<h3>4. Flipping <code>workQueue</code> is safe, and the test suite will say so.</h3>
+<p><code>foremanAutomationAuthorized</code> (<code>src/server/harness/index.ts:350</code>) reads:</p>
+<pre><code>if (!harness.workQueue) return false;
+if (session.runtime === "sdk") return true;
+if (!harness.hooks) return false;
+return harness.hooks.scope === "machine" || session.hooksSeen;</code></pre>
+<p>With <code>workQueue</code> non-null and <code>hooks</code> still null, a Pi terminal session is refused at the third line. The browser half, <code>workQueueBlockedReason</code>, returns <code>queue.uninstrumentedWhy</code> whenever <code>hooksSeen</code> is false, so the panel hides its add box - the two halves agree arm for arm, which is what that function's comment requires. <code>hooksSeen</code> cannot become true for Pi in the meantime: <code>Registry.applyHook</code> returns immediately when <code>hooksFor(evt.agent)</code> is null (<code>src/server/registry.ts:2890</code>).</p>
+<p>One test is designed to fail on this and must be answered rather than edited around: <code>test/harness-capabilities.test.ts:156</code> keeps a <code>BY_FIXTURE</code> list of capabilities with no real null declarer. <code>workQueue</code> loses its last one here, so it moves <strong>into</strong> <code>BY_FIXTURE</code> and gains a <code>withCapabilityNull</code> fixture.</p>
+<h3>5. Pi's extension bundle must be named <code>.js</code>, and published atomically.</h3>
+<p><code>isExtensionFile</code> accepts only <code>.ts</code> and <code>.js</code> (<code>node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js:527</code>), and <code>discoverExtensionsInDir</code> handles <code>entry.isSymbolicLink()</code> for both files and directories - which is what makes the skills reconciler's symlink mechanism available. Measured: a <code>.js</code>-named symlink to a built <code>.mjs</code> loads; a <code>.mjs</code> sitting in the directory does not. <code>import.meta.url</code> resolves to the <strong>link</strong> path, so the artifact must be self-contained.</p>
+<p>The failure taxonomy is why the publish must be atomic: a bundle that exists but fails to load makes every Pi session on the machine exit 1, and a dangling link is completely silent. Both measured; see <code>plan.md</code> P10.</p>
+<h2>Sizing and phase count</h2>
+<p><strong>Estimate: 1,100-1,700 gross non-test implementation lines</strong>, across shared contracts, the harness registry, a new built artifact, the reconciler, an environment check and two UI surfaces. Assumptions: the extension is the largest single unit at 400-600 lines (an MCP stdio client, a fifteen-tool registration loop, a lifecycle mapper and a build script); each capability or contract change is 60-260; no phase carries another's tests.</p>
+<p>That is far above the 200-line one-phase threshold, so the question is not whether to split but where. Six phases, and for each one past the first, why folding it into its neighbour would be worse:</p>
+<ul>
+<li><strong>Phase 1</strong> is one coherent slice - the three items the human put in the first cut, plus the two contract changes they require. Splitting cost from the flips would ship a <code>UsageSpec</code> whose <code>estimate</code> has nowhere to get a cost from.</li>
+<li><strong>Phase 2</strong> (standing instructions) is independent: it touches an append-only vocabulary and the launch composer, and shares no file with Phase 1. Folding it in would put an unrelated persisted-vocabulary change in the same review as a pricing contract.</li>
+<li><strong>Phase 3</strong> (the capability guard) must precede the extension, because the guard is what decides whether a Pi launch may declare Mission tools at all. Folding it into Phase 4 would mean the dispatcher's refusal and the thing that satisfies the refusal land unreviewable together, and the guard is separately valuable: it fixes today's misdirecting failure.</li>
+<li><strong>Phase 4</strong> (the extension) is the largest unit and cannot be split further without leaving a dead surface: a registered tool with no bridge cannot answer, and a bridge nothing registers is unreachable. Its own hand-run identity work belongs here because it is the only phase that can know a hand-run session's id.</li>
+<li><strong>Phase 5</strong> (the reconciler) must follow Phase 4 because it installs Phase 4's artifact, and must precede Phase 6 because the check inspects what it installed. Folding it into Phase 4 would put the artifact and the machine-wide install of the artifact in one review, and the install is the half that can lose an operator's data.</li>
+<li><strong>Phase 6</strong> (the environment check and its Setup row) is where the install becomes visible and where the Setup row lands. It could fold into Phase 5, and it is kept apart for one reason: Phase 5's risk is data loss in the operator's home and Phase 6's is a wrong sentence in a dialog, and reviewing them together means the second gets the first's attention.</li>
+</ul>
+<p>Phase 6 also carries the Setup install action, rather than a seventh phase for it: the row and the button that satisfies the row are one surface, and a Setup row whose remedy does not work is not an operable state.</p>
+<h2>Phases</h2>
+<div class="scroll"><table>
+<thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Direct prerequisites</th><th>Concurrency</th></tr></thead><tbody>
+<tr><td>1</td><td><a href="phase-1-pi-cost-and-capability-flips.md">Pi cost and the two capability flips</a></td><td>Cost on dispatched Pi cards; <code>workQueue</code> and <code>multiRepoDispatch</code> declared</td><td>planning session</td><td>with Phase 2</td></tr>
+<tr><td>2</td><td><a href="phase-2-pi-standing-instructions.md">Standing instructions on Pi's terminal runtime</a></td><td>Operator standing instructions reach a dispatched Pi out of band</td><td>planning session</td><td>with Phase 1</td></tr>
+<tr><td>3</td><td><a href="phase-3-mission-tools-capability.md">MissionToolsSpec and the dispatcher guard</a></td><td>Pi refused before a worktree is cut; the concrete-agent branch removed</td><td>planning session</td><td>with Phases 1 and 2</td></tr>
+<tr><td>4</td><td><a href="phase-4-pi-extension.md">The Mission Control extension for Pi</a></td><td>Mission tools and session state in any Pi session, hand-run included</td><td>Phase 3</td><td>-</td></tr>
+<tr><td>5</td><td><a href="phase-5-extension-reconciler.md">Install the extension into Pi's home</a></td><td>The extension reaches the operator's real Pi install</td><td>Phase 4</td><td>-</td></tr>
+<tr><td>6</td><td><a href="phase-6-staleness-and-setup.md">Staleness reporting and the Setup row</a></td><td>A stale or broken install is reported, and installable from Setup</td><td>Phase 5</td><td>-</td></tr>
+</tbody></table></div>
+<h2>Dependency graph</h2>
+<figure><svg viewBox="0 0 900 430" role="img" aria-label="The planning session's pull request releases Phase 1 (cost and capability flips), Phase 2 (standing instructions) and Phase 3 (MissionToolsSpec and the dispatcher guard), which may run concurrently. Phase 3 releases Phase 4, the extension. Phase 4 releases Phase 5, the reconciler that installs it. Phase 5 releases Phase 6, the staleness check and Setup row."><defs><marker id="p-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker><marker id="p-arrow-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2f6fdd"/></marker></defs><g font-family="ui-monospace, SFMono-Regular, Menlo, monospace"><rect x="290" y="8" width="320" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="450" y="29" text-anchor="middle" class="svg-ink" font-size="12">this planning session's pull request</text><text x="450" y="46" text-anchor="middle" class="svg-dim" font-size="10">publishes every artifact the tasks name</text><line x1="330" y1="56" x2="140" y2="96" stroke="currentColor" stroke-width="1.5" marker-end="url(#p-arrow)"/><line x1="450" y1="56" x2="450" y2="96" stroke="currentColor" stroke-width="1.5" marker-end="url(#p-arrow)"/><line x1="570" y1="56" x2="760" y2="96" stroke="currentColor" stroke-width="1.5" marker-end="url(#p-arrow)"/><rect x="10" y="98" width="260" height="52" rx="8" fill="none" stroke="#2f6fdd" stroke-width="1.5"/><text x="140" y="119" text-anchor="middle" class="svg-ink" font-size="12">Phase 1</text><text x="140" y="137" text-anchor="middle" class="svg-dim" font-size="10">cost + capability flips</text><rect x="320" y="98" width="260" height="52" rx="8" fill="none" stroke="#2f6fdd" stroke-width="1.5"/><text x="450" y="119" text-anchor="middle" class="svg-ink" font-size="12">Phase 2</text><text x="450" y="137" text-anchor="middle" class="svg-dim" font-size="10">standing instructions</text><rect x="630" y="98" width="260" height="52" rx="8" fill="none" stroke="#2f6fdd" stroke-width="1.5"/><text x="760" y="119" text-anchor="middle" class="svg-ink" font-size="12">Phase 3</text><text x="760" y="137" text-anchor="middle" class="svg-dim" font-size="10">MissionToolsSpec + guard</text><text x="140" y="172" text-anchor="middle" class="svg-dim" font-size="9.5">concurrent</text><text x="450" y="172" text-anchor="middle" class="svg-dim" font-size="9.5">concurrent</text><line x1="760" y1="150" x2="760" y2="196" stroke="#2f6fdd" stroke-width="1.5" marker-end="url(#p-arrow-a)"/><rect x="630" y="198" width="260" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="760" y="219" text-anchor="middle" class="svg-ink" font-size="12">Phase 4</text><text x="760" y="237" text-anchor="middle" class="svg-dim" font-size="10">the extension</text><line x1="760" y1="250" x2="760" y2="296" stroke="currentColor" stroke-width="1.5" marker-end="url(#p-arrow)"/><rect x="630" y="298" width="260" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="760" y="319" text-anchor="middle" class="svg-ink" font-size="12">Phase 5</text><text x="760" y="337" text-anchor="middle" class="svg-dim" font-size="10">reconcile into Pi's home</text><line x1="760" y1="350" x2="760" y2="370" stroke="currentColor" stroke-width="1.5" marker-end="url(#p-arrow)"/><rect x="630" y="372" width="260" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="760" y="393" text-anchor="middle" class="svg-ink" font-size="12">Phase 6</text><text x="760" y="411" text-anchor="middle" class="svg-dim" font-size="10">staleness check + Setup row</text><text x="20" y="215" class="svg-dim" font-size="10">Phases 1-3 share only</text><text x="20" y="231" class="svg-dim" font-size="10">src/shared/harness-capabilities.ts,</text><text x="20" y="247" class="svg-dim" font-size="10">where they add disjoint slots:</text><text x="20" y="263" class="svg-dim" font-size="10">a textual merge, not a contradiction.</text><text x="20" y="299" class="svg-dim" font-size="10">Phases 4-6 are serial because each</text><text x="20" y="315" class="svg-dim" font-size="10">one's subject is the previous one's</text><text x="20" y="331" class="svg-dim" font-size="10">output: an artifact, its install, and</text><text x="20" y="347" class="svg-dim" font-size="10">the report on that install.</text></g></svg><figcaption>The dependency graph. Phases 1, 2 and 3 depend only on this planning session's pull request and may merge in any order; 4, 5 and 6 are strictly serial because each one's subject is the previous one's output.</figcaption></figure>
+<p>Phases 1, 2 and 3 depend only on the planning session and may run concurrently: they share no file. Phase 1 owns <code>MultiRepoDispatchSpec</code>, <code>WorkQueueSpec</code>'s Pi entry and <code>HarnessUsageEvent</code>; Phase 2 owns <code>STANDING_INSTRUCTIONS_MECHANISMS</code> and the launch composer; Phase 3 owns a new <code>MissionToolsSpec</code> and <code>dispatcher.ts</code>'s guard. All three touch <code>src/shared/harness-capabilities.ts</code>, which is a textual merge conflict rather than a contradiction - they add disjoint slots to the same record, and whichever merges second rebases over one block.</p>
+<p>Phases 4, 5 and 6 are strictly serial: each one's subject is the previous one's output.</p>
+<h2>Cross-phase contracts</h2>
+<p>Named once here so a later phase does not redefine them:</p>
+<div class="scroll"><table>
+<thead><tr><th>Contract</th><th>Owner</th><th>Consumers must not</th></tr></thead><tbody>
+<tr><td><code>MultiRepoDispatchSpec</code> as a discriminated union</td><td>Phase 1</td><td>Reintroduce an unconditional <code>launchArgs</code></td></tr>
+<tr><td><code>HarnessUsageEvent.vendorCostUsd</code></td><td>Phase 1</td><td>Populate it for Claude or Codex</td></tr>
+<tr><td><code>"pi-append-system-prompt"</code> appended to <code>STANDING_INSTRUCTIONS_MECHANISMS</code></td><td>Phase 2</td><td>Rename or reorder any existing value</td></tr>
+<tr><td><code>MissionToolsSpec</code> and the dispatcher's mechanism read</td><td>Phase 3</td><td>Branch on a concrete agent id again</td></tr>
+<tr><td><code>piExtensionPath()</code> in <code>src/server/config.ts</code></td><td>Phase 4</td><td>Re-derive the path from another module</td></tr>
+<tr><td>The Pi <code>HookSpec</code> event vocabulary and its ingest mapping</td><td>Phase 4</td><td>Add an event without a <code>toState</code> arm</td></tr>
+<tr><td><code>ExtensionsSpec</code> (<code>dirEnvVar</code>, <code>homeDir</code>, <code>isolatedDirName</code>, <code>linkName</code>)</td><td>Phase 5</td><td>Write to the operator's real directory from an isolated home</td></tr>
+<tr><td><code>ENVIRONMENT_CHECK_IDS</code> gains <code>"pi-extension"</code> at the END</td><td>Phase 6</td><td>Reorder the tuple</td></tr>
+</tbody></table></div>
+<h2>Verification strategy</h2>
+<p>Per phase, in the phase file. Across the set:</p>
+<ul>
+<li><code>npm run typecheck</code> and <code>npm run lint</code> on every phase.</li>
+<li><code>npm test</code> on every phase. Phase 1 and Phase 3 each turn an existing assertion red by design (<code>multi-repo-policy.test.ts</code> and <code>harness-capabilities.test.ts</code> for Phase 1); those are answered, not deleted.</li>
+<li><strong><code>npm run test:e2e</code> with a new or updated spec on Phases 1, 6</strong> - the two with UI surface. Phase 1 makes the dispatch modal offer Pi for multi-repo tasks, which <code>e2e/specs/multi-repo-dispatch.spec.ts:233</code> currently asserts it does not. Phase 6 adds a Setup row.</li>
+<li><code>npm run build</code> and <code>npm run smoke</code> on Phases 4 and 6 - Phase 4 adds a build output, and Phase 6's check loads it.</li>
+<li>No phase may leave <code>dist/pi-extension/index.js</code> half-written; Phase 4 owns the atomic publish and pins it, the way <code>test/native-state-lock-provisioning.test.ts</code> pins its neighbour.</li>
+</ul>
+<h2>Final audit</h2>
+<p>Every requirement in <code>plan.md</code> and every submitted selection is owned by exactly one phase:</p>
+<div class="scroll"><table>
+<thead><tr><th>Requirement</th><th>Phase</th></tr></thead><tbody>
+<tr><td>Cost tracking</td><td>1 (dispatched), 4 (hand-run identity)</td></tr>
+<tr><td><code>workQueue</code> flip</td><td>1</td></tr>
+<tr><td><code>multiRepoDispatch</code> flip</td><td>1</td></tr>
+<tr><td>Standing instructions</td><td>2</td></tr>
+<tr><td>Bridge decision</td><td>3 (capability), 4 (implementation)</td></tr>
+<tr><td><code>dispatcher.ts:667</code> replacement</td><td>3</td></tr>
+<tr><td>Mission tools in Pi</td><td>4</td></tr>
+<tr><td>Session state, statusline, PR sniffing</td><td>4</td></tr>
+<tr><td>Symlink distribution decision</td><td>5</td></tr>
+<tr><td>Report-only staleness decision</td><td>6</td></tr>
+<tr><td>Setup install</td><td>6</td></tr>
+</tbody></table></div>
+<p>Deliberately unowned, and out of scope in <code>plan.md</code>: <code>permissionModes</code>, the <code>sdk</code> runtime, and blocking-tool TUI polish.</p>
+</main>
+</body>
+</html>

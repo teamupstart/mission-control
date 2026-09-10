@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<title>Multiplexer session launches: why Herdr dispatches fail</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f6f7f9;
+    --panel-2: #eef0f4;
+    --ink: #17191d;
+    --ink-dim: #555c66;
+    --rule: #d9dde3;
+    --accent: #2f6fdd;
+    --bad: #c0392b;
+    --good: #1e8a4c;
+    --code-bg: #f2f3f6;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --panel: #1d2026;
+      --panel-2: #23272f;
+      --ink: #e7e9ee;
+      --ink-dim: #a0a7b4;
+      --rule: #333944;
+      --accent: #6fa2f5;
+      --bad: #f0736a;
+      --good: #5ecf8f;
+      --code-bg: #1a1d23;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  main { max-width: 62rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.25; letter-spacing: -.015em; margin: 0 0 .4rem; }
+  h2 {
+    font-size: 1.3rem; letter-spacing: -.01em; margin: 3rem 0 .75rem;
+    padding-top: 1.4rem; border-top: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 1.9rem 0 .5rem; color: var(--ink); }
+  p, li { color: var(--ink); }
+  a { color: var(--accent); }
+  .lede { color: var(--ink-dim); font-size: 1.05rem; margin-top: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .88em; background: var(--code-bg); border: 1px solid var(--rule);
+    border-radius: 4px; padding: .1em .35em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1rem; overflow-x: auto; font-size: .84rem; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  .scroll { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+  th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--panel-2); font-weight: 600; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .fail { color: var(--bad); font-weight: 600; }
+  .pass { color: var(--good); font-weight: 600; }
+  blockquote { margin: 1rem 0; padding: .1rem 1rem; border-left: 3px solid var(--accent); color: var(--ink-dim); }
+  figure { margin: 1.5rem 0; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { color: var(--ink-dim); font-size: .87rem; margin-top: .5rem; }
+  .card { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 1rem 1.2rem; box-shadow: var(--shadow); margin: 1.25rem 0; }
+  .meta { color: var(--ink-dim); font-size: .88rem; }
+  ul, ol { padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .svg-ink { fill: var(--ink); }
+  .svg-dim { fill: var(--ink-dim); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Multiplexer session launches: why Herdr dispatches fail</h1>
+<p class="lede">A plan for <code>docs/plans/multiplexer-session-launch-failures/plan.md</code>. Four defects, measured against five real dispatches and a live Herdr 0.9.0 server. Three of them are phased here; the Pi one is scheduled as its own plan.</p>
+
+<h2>What this plan was measured against</h2>
+<p>Five dispatches the operator ran between 20:49 and 20:54 on 2026-09-09, read out of the live <code>tasks</code> table, plus reproduction against the running Herdr 0.9.0 server (protocol 22) and the running tmux 3.7c on the same machine.</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Task</th><th>Agent</th><th>Backend</th><th>Outcome</th></tr></thead>
+<tbody>
+<tr><td><code>b996da19</code></td><td>claude</td><td>herdr</td><td><span class="fail">failed</span> - "agent session never appeared (the launch may have exited immediately)"</td></tr>
+<tr><td><code>442fdef2</code></td><td>pi</td><td>herdr</td><td><span class="fail">failed</span> - same</td></tr>
+<tr><td><code>f216ab61</code></td><td>pi</td><td>herdr</td><td><span class="fail">failed</span> - same</td></tr>
+<tr><td><code>d2b819a9</code></td><td>pi</td><td>tmux</td><td><span class="pass">done</span></td></tr>
+<tr><td><code>159cdeca</code></td><td>pi</td><td>(none reached)</td><td><span class="fail">failed</span> - "the launch could not carry the required Mission MCP tools request_plan_decisions, create_task"</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Two distinct defects, and the split is exactly along those lines. Herdr fails for every agent; tmux succeeds for the same agent. Pi fails before any backend is chosen, for a reason that has nothing to do with terminals, and that one leaves this plan for its own, larger piece of work.</p>
+<p>Two further defects were found while reproducing, and both make the first one worse rather than being independent annoyances.</p>
+
+<h2>Decisions taken</h2>
+<p class="meta">Reviewed and settled in the dashboard on 2026-09-09.</p>
+<div class="card">
+<ul style="margin:0">
+<li><strong>Herdr launch delivery: all three changes.</strong> Shrink what is typed, send the Enter as a separate key write, and verify the agent actually started before reporting success. The narrower options were considered and rejected: shrinking alone makes the failure rare rather than impossible, because the race is size-sensitive rather than size-bounded; and blocking Herdr for dispatch costs the operator the terminal they actually use.</li>
+<li><strong>Both defects found while reproducing are in scope</strong>, defect 3 and defect 4.</li>
+<li><strong>Defect 2 leaves this plan entirely.</strong> The first review settled on a harness capability gate that would refuse a Pi task requiring Mission MCP tools before a worktree was cut. That decision was then superseded in discussion: rather than build a refusal, make Pi capable. Pi gets a Mission Control extension installed through Setup, so a <strong>hand-run</strong> Pi session reaches Mission Control the same way Claude and Codex already do. Defect 2 is therefore recorded here as a finding and scheduled as its own plan, not phased from this one.</li>
+<li><strong>Phases cover defects 1, 3 and 4 only.</strong></li>
+</ul>
+</div>
+
+<h2>Defect 1: the Herdr adapter types the launch command into a shell, and the Enter is lost</h2>
+
+<h3>What is actually on screen</h3>
+<p>All three failed Herdr workspaces are still open. Their agent panes contain the full launch command sitting at a <code>zsh</code> prompt, <strong>unexecuted</strong>, and <code>pane.process_info</code> reports the pane's only foreground process is <code>zsh</code>:</p>
+<pre><code>✓ ❯ '/usr/bin/env' '-u' 'MISSION_HOME' '-u' 'FLEET_HOME' '-u' 'HARNESS_HOME'
+'PATH=/usr/bin:/bin:/usr/sbin:/sbin:/Users/jordanmance/bin: … :/opt/homebrew/sbin'
+'MISSION_HOME=/var/folders/…/mission-control-agent-state/session-vnMcw</code></pre>
+<p>The workspace was created, the command was delivered, nothing ran. Dispatch then waited <code>READY_TIMEOUT_MS</code> (30 s) for <code>waitForSessionAtCwd</code> to see an agent, saw none, and reported the launch as having exited immediately. It never started.</p>
+
+<h3>Why Herdr and not tmux</h3>
+<p>Every other multiplexer hands the command to the multiplexer to <strong>exec</strong>. Herdr is the only one that <strong>types</strong> it:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Backend</th><th>How <code>spawnDetached</code> starts the agent</th></tr></thead>
+<tbody>
+<tr><td>tmux</td><td><code>new-session -d -s NAME -c CWD -- &lt;command&gt;</code> - tmux execs it</td></tr>
+<tr><td>cmux</td><td><code>new-workspace --name … --command &lt;command&gt;</code> - cmux execs it</td></tr>
+<tr><td><strong>Herdr</strong></td><td><code>workspace.create</code> opens a login shell, then <code>pane.send_input(text, keys: ["enter"])</code> types the command at its prompt</td></tr>
+</tbody>
+</table>
+</div>
+<p>Herdr's socket API has no command parameter. <code>WorkspaceCreateParams</code> accepts <code>cwd</code>, <code>label</code>, <code>env</code>, <code>focus</code> and <code>source_workspace_id</code>, and <code>PaneSplitParams</code> and <code>TabCreateParams</code> are the same. <code>agent.start</code> exists but takes a fixed <code>kind</code> for a supported interactive agent, not an arbitrary argv. So typing is currently the only door, and the adapter is not wrong to use it. What is wrong is how it types.</p>
+
+<h3>The measurement</h3>
+<p><code>pane.send_input</code> carries the text and the Enter in one call. Against the live server, into a fresh unfocused workspace, with a command of the size dispatch actually produces:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Delivery</th><th>Command size</th><th>Executed</th></tr></thead>
+<tbody>
+<tr><td><code>send_input(text, keys: ["enter"])</code> - one call</td><td>3,009 bytes</td><td class="fail">1 of 6</td></tr>
+<tr><td><code>send_input(text)</code>, wait 400 ms, <code>send_keys(["enter"])</code></td><td>3,009 bytes</td><td class="pass">6 of 6</td></tr>
+</tbody>
+</table>
+</div>
+<p>Sweeping the size in a single call shows no clean threshold: 207, 607, 907, 1009 and 1509 bytes executed; 1109 and 3009 did not. That is the signature of a race, not a limit. The Enter is delivered before the shell has finished consuming the bracketed paste, so it lands inside the paste and becomes a literal newline in the edit buffer instead of a submit.</p>
+<div class="card">
+<p style="margin:0"><strong>A real dispatch command is 3,546 bytes</strong> (measured from the live <code>tmux new-session</code> argv of a dispatched session). At that size the single call loses the race almost every time, which is why all three Herdr dispatches failed and none of the operator's short manual launches ever did.</p>
+</div>
+
+<h3>The second half of the defect</h3>
+<p><code>spawnDetached</code> returns <code>{ ok: true }</code> as soon as <code>send_input</code> answers <code>ok</code>. <code>ok</code> means "the bytes were accepted", not "the command ran". So the adapter reports a successful launch for a workspace where nothing started, and the failure surfaces 30 s later as a timeout in the dispatcher with a message that blames the agent for exiting. The workspace and the worktree are then kept, per the dispatcher's own rule, which is why all three are still on the machine.</p>
+
+<h3>The flow, before and after</h3>
+
+<figure>
+<svg viewBox="0 0 900 260" role="img" aria-label="Today: the dispatcher hands a 3546-byte argv to the Herdr adapter, which creates a workspace and sends text plus Enter in one call; the Enter is lost inside the paste, the command sits in the shell buffer, the adapter reports ok, and the dispatcher times out 30 seconds later.">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="a1b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#c0392b"/>
+    </marker>
+  </defs>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" color="currentColor">
+    <text x="0" y="16" class="svg-dim" font-family="inherit" font-size="12" font-weight="700">TODAY</text>
+
+    <rect x="0" y="34" width="150" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="75" y="63" text-anchor="middle" class="svg-ink" font-size="12.5">Dispatcher</text>
+
+    <line x1="150" y1="58" x2="272" y2="58" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
+    <text x="211" y="50" text-anchor="middle" class="svg-dim" font-size="10.5">3,546 bytes</text>
+
+    <rect x="274" y="34" width="170" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="359" y="63" text-anchor="middle" class="svg-ink" font-size="12.5">Herdr adapter</text>
+
+    <line x1="444" y1="48" x2="596" y2="48" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
+    <text x="520" y="40" text-anchor="middle" class="svg-dim" font-size="10.5">workspace.create</text>
+    <line x1="444" y1="72" x2="596" y2="72" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
+    <text x="520" y="88" text-anchor="middle" class="svg-dim" font-size="10.5">send_input(text + enter)</text>
+
+    <rect x="598" y="34" width="150" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="673" y="63" text-anchor="middle" class="svg-ink" font-size="12.5">Herdr server</text>
+
+    <line x1="673" y1="82" x2="673" y2="126" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
+    <rect x="598" y="128" width="150" height="42" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="673" y="154" text-anchor="middle" class="svg-ink" font-size="12.5">login zsh</text>
+
+    <line x1="673" y1="170" x2="673" y2="206" stroke="#c0392b" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a1b)"/>
+    <text x="758" y="192" text-anchor="middle" fill="#c0392b" font-size="10.5">Enter lost in paste</text>
+    <rect x="558" y="208" width="230" height="42" rx="8" fill="none" stroke="#c0392b" stroke-width="1.5"/>
+    <text x="673" y="234" text-anchor="middle" fill="#c0392b" font-size="12">command sits in buffer</text>
+
+    <line x1="274" y1="70" x2="152" y2="70" stroke="currentColor" stroke-width="1.5" marker-end="url(#a1)"/>
+    <text x="213" y="86" text-anchor="middle" class="svg-dim" font-size="10.5">ok</text>
+
+    <line x1="75" y1="82" x2="75" y2="206" stroke="#c0392b" stroke-width="1.5" marker-end="url(#a1b)"/>
+    <text x="83" y="150" fill="#c0392b" font-size="10.5">30 s later</text>
+    <rect x="0" y="208" width="230" height="42" rx="8" fill="none" stroke="#c0392b" stroke-width="1.5"/>
+    <text x="115" y="234" text-anchor="middle" fill="#c0392b" font-size="12">waitForSessionAtCwd times out</text>
+  </g>
+</svg>
+<figcaption>Today. The adapter's <code>ok</code> means the bytes were accepted, so the dispatcher is told the launch succeeded and only learns otherwise from a 30 s timeout that blames the agent.</figcaption>
+</figure>
+
+<figure>
+<svg viewBox="0 0 900 230" role="img" aria-label="Proposed: the dispatcher folds the environment and argv into launch-and-cleanup.sh so the adapter types about 90 bytes, sends Enter as a separate key write, then verifies through pane.process_info that the agent is running before reporting ok or rolling back with a real error.">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="a2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#1e8a4c"/>
+    </marker>
+  </defs>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" color="currentColor">
+    <text x="0" y="16" class="svg-dim" font-size="12" font-weight="700">PROPOSED</text>
+
+    <rect x="0" y="34" width="150" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="75" y="63" text-anchor="middle" class="svg-ink" font-size="12.5">Dispatcher</text>
+
+    <line x1="150" y1="58" x2="272" y2="58" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+    <text x="211" y="44" text-anchor="middle" class="svg-dim" font-size="10">env + argv folded</text>
+    <text x="211" y="55" text-anchor="middle" class="svg-dim" font-size="10">into wrapper script</text>
+
+    <rect x="274" y="34" width="170" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="359" y="63" text-anchor="middle" class="svg-ink" font-size="12.5">Herdr adapter</text>
+
+    <line x1="444" y1="44" x2="596" y2="44" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+    <text x="520" y="36" text-anchor="middle" class="svg-dim" font-size="10">workspace.create</text>
+    <line x1="444" y1="62" x2="596" y2="62" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+    <text x="520" y="76" text-anchor="middle" class="svg-dim" font-size="10">send_input(text) ~90 bytes</text>
+    <line x1="444" y1="90" x2="596" y2="90" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+    <text x="520" y="104" text-anchor="middle" class="svg-dim" font-size="10">send_keys(enter)</text>
+    <line x1="444" y1="118" x2="596" y2="118" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#a2g)"/>
+    <text x="520" y="132" text-anchor="middle" fill="#1e8a4c" font-size="10">process_info: is it running?</text>
+
+    <rect x="598" y="34" width="150" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="673" y="63" text-anchor="middle" class="svg-ink" font-size="12.5">Herdr server</text>
+
+    <line x1="673" y1="82" x2="673" y2="118" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+    <rect x="598" y="120" width="150" height="40" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="673" y="145" text-anchor="middle" class="svg-ink" font-size="12.5">login zsh</text>
+    <line x1="673" y1="160" x2="673" y2="178" stroke="#1e8a4c" stroke-width="1.5" marker-end="url(#a2g)"/>
+    <rect x="598" y="180" width="150" height="40" rx="8" fill="none" stroke="#1e8a4c" stroke-width="1.5"/>
+    <text x="673" y="205" text-anchor="middle" fill="#1e8a4c" font-size="12.5">agent process</text>
+
+    <line x1="274" y1="70" x2="152" y2="70" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)"/>
+    <text x="213" y="86" text-anchor="middle" class="svg-dim" font-size="10">ok, or rollback</text>
+    <text x="213" y="97" text-anchor="middle" class="svg-dim" font-size="10">+ real error</text>
+  </g>
+</svg>
+<figcaption>Proposed. Shrinking what is typed removes the race, the separate key write removes the ordering assumption, and verification removes the false <code>ok</code>.</figcaption>
+</figure>
+
+<h3>Fix</h3>
+<p>Three changes, and each is independently useful:</p>
+<ol>
+<li><strong>Shrink what is typed.</strong> <code>isolatedAgentArgv</code> already writes a wrapper script, <code>launch-and-cleanup.sh</code>, into the disposable state home and then prefixes it with <code>/usr/bin/env -u … PATH=… MISSION_HOME=… …</code>. Folding the environment assignments and the agent argv into that script leaves one short line to type: <code>/bin/sh /var/…/launch-and-cleanup.sh</code>, about 90 bytes instead of 3,546. This is backend-agnostic and harness-agnostic; tmux and cmux get a shorter argv for free and behave identically.
+<p class="meta">The environment must stay in the exec prefix inside the script rather than move to Herdr's <code>workspace.create</code> <code>env</code> map. Measured: the <code>env</code> map does reach the shell for <code>MISSION_HOME</code>, but the login shell's rc files rewrite <code>PATH</code> straight back to the operator's interactive PATH, which defeats the isolation the prefix exists to provide.</p></li>
+<li><strong>Separate the Enter from the paste.</strong> <code>pane.send_input(text)</code> then <code>pane.send_keys(["enter"])</code>, with the paste confirmed settled in between rather than a fixed sleep - <code>pane.read</code> on the pane, or <code>pane.wait_for_output</code>, both of which the 0.9.0 API publishes.</li>
+<li><strong>Verify the launch before reporting success.</strong> After Enter, poll <code>pane.process_info</code> until the pane's foreground process is no longer the bare login shell, bounded by a short timeout. If it never changes, roll the workspace back the way a refused <code>send_input</code> already does and return the real error, so the operator reads "Herdr accepted the command but the shell never ran it" instead of a 30 s timeout blaming the agent.</li>
+</ol>
+
+<h2>Defect 2: Pi cannot carry Mission MCP tools (scheduled as its own plan)</h2>
+<p><code>159cdeca</code> is a Pi task that declared <code>request_plan_decisions</code> and <code>create_task</code> as required Mission MCP tools. <code>dispatcher.ts</code> gates that with:</p>
+<pre><code>const missionMcpRegistered = codexLaunch.missionMcp || askChannel.args.includes("--mcp-config");</code></pre>
+<p><code>askChannelContribution</code> returns the off contribution for any agent that is not <code>claude</code>, and <code>codexLaunch.missionMcp</code> is Codex's own path. There is no third arm, so for Pi <code>missionMcpRegistered</code> is <strong>always false</strong> and every Pi dispatch declaring a required Mission MCP tool fails at launch.</p>
+<p>This is not a missing registration. <strong>Pi has no MCP client at all.</strong> <code>pi --help</code> on the installed 0.85.1 publishes no MCP flag, and <code>src/shared/harness-capabilities.ts</code> already declares <code>mcp: null</code> for Pi with exactly that reasoning: it "extends via in-process TS extensions, not MCP". So the tool can never be carried today, and the current code tells the truth in the worst possible place: after the task was accepted, after the worktree was cut, in a message that asks whether a bundle is built when rebuilding it would change nothing.</p>
+
+<h3>Why this is not fixed here</h3>
+<p>The narrow fix is a harness capability gate that refuses the combination before a worktree is cut. It was reviewed and initially accepted, then superseded: a refusal is work that the real fix deletes. The real fix is a <strong>Mission Control extension for Pi, installed through Setup</strong>, giving Pi the integrations Claude and Codex already have, in <strong>hand-run sessions</strong> and not only in dispatched ones. Passive session discovery already works for a Pi session someone starts themselves; what is missing is everything the discovery leads to.</p>
+<p>Pi's extension point is the right shape for it. <code>pi.registerTool()</code> takes a name, a description, a typebox parameter schema and an async <code>execute</code> with full Node access, which is the same shape an MCP tool has. Verified against the installed Pi 0.85.1: an extension passed with <code>-e</code> is evaluated before Pi validates its model arguments, and <code>.ts</code>, <code>.js</code> and <code>.mjs</code> all load, so a built <code>.mjs</code> can ship from <code>dist/</code>. Two further facts make the fit better than expected. Mission Control's prompts already name tools bare (<code>src/server/plans/prompt.ts</code> writes <code>request_plan_decisions</code>, not the Claude-namespaced form), so a Pi tool registered under the bare name matches every existing prompt unchanged. And Pi's <code>--tools</code> allowlist covers extension tools, mirroring Claude's <code>--allowed-tools</code>.</p>
+<p>That work is scheduled as its own plan task, because it is a parity project rather than a bug fix: Mission MCP tools, workflow participation, cost tracking, terminal input and response reading, and whatever else Claude and Codex get from their hooks. It also carries a problem this plan does not: an extension installed into the operator's home from a build has to be detected when it goes stale, the way <code>src/server/environment/claude-hooks.ts</code> already reports stale Claude hook paths without repairing them.</p>
+
+<h3>What this costs until that lands</h3>
+<div class="card"><p style="margin:0">A Pi task that declares required Mission MCP tools keeps failing at dispatch, after its worktree is cut, with a message that misdirects toward rebuilding the MCP bundle. That is the status quo and it is not made worse here. It is stated plainly so nobody reads the omission as an oversight.</p></div>
+
+<h2>Defect 3: <code>test/multi-repo-dispatch.test.ts</code> opens real multiplexer sessions on the operator's machine</h2>
+<p>The machine currently holds <strong>42 Herdr workspaces and 2 tmux sessions labelled <code>T</code> and <code>T-soloha</code></strong>, all rooted in <code>/private/var/folders/…/T/mission-multirepo-dispatch-*/</code> temp directories, all running <code>/bin/echo</code>, none of them closed. <code>test/multi-repo-dispatch.test.ts</code> sets <code>MISSION_CLAUDE_BIN</code> and <code>MISSION_PI_BIN</code> to <code>/bin/echo</code> but constructs <code>new Dispatcher(registry, undefined, { worktrees, resolveBases })</code> <strong>without injecting the <code>spawn</code> seam</strong>, so <code>spawnUniquely</code> runs for real: it lists real homes, opens a real tmux session or a real Herdr workspace, and leaves it behind when the test's temp home is deleted.</p>
+<blockquote>One of those leaked tmux sessions is still holding a live launch pointed at <code>MISSION_PORT=7317</code>, the operator's real daemon.</blockquote>
+<p>The dispatcher already declares the seam for exactly this reason (<code>deps.spawn</code>, documented at <code>dispatcher.ts:258</code> as "<code>spawnUniquely</code> opens an actual tmux session on the machine running the tests"). This test simply does not use it.</p>
+
+<h3>Fix</h3>
+<p>Inject the <code>spawn</code> seam in that test. Then pin the boundary the way the repository pins its other "a test must not reach the operator's machine" rules: a test that fails if a dispatcher constructed without an explicit <code>spawn</code> seam can reach a real backend under the test runner.</p>
+
+<h2>Defect 4: one slow pane makes every Herdr session disappear at once</h2>
+<p><code>herdrMultiplexer.list()</code> calls <code>snapshotWithProcesses</code>, which issues one <code>session.snapshot</code> plus <strong>one <code>pane.process_info</code> per pane, each on its own unix socket connection</strong>, eight at a time. Any single one of those failing for a reason other than <code>pane_not_found</code> returns a failure for the whole call, and <code>list()</code> maps any failure to <code>[]</code>. <code>[]</code> means every Herdr card on the machine vanishes for that tick.</p>
+<p>Measured on the live server, with the 42 leaked workspaces present:</p>
+<div class="scroll">
+<table>
+<tbody>
+<tr><th>Workspaces / panes</th><td>47 / 93</td></tr>
+<tr><th><code>session.snapshot</code></th><td>113 ms</td></tr>
+<tr><th>93 × <code>pane.process_info</code>, 8 concurrent</th><td>314 ms</td></tr>
+<tr><th>Per call p50 / p95 / max</th><td>2 ms / 104 ms / 106 ms</td></tr>
+<tr><th><strong>Whole <code>list()</code></strong></th><td><strong>427 ms</strong></td></tr>
+<tr><th>Discovery tick</th><td>1,500 ms</td></tr>
+<tr><th>Per-call read timeout</th><td>1,000 ms</td></tr>
+<tr><th>Hard refusal</th><td><code>panes + 1 &gt; 512</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>This is not failing today, and the numbers say so plainly. What they also say is that the cost is linear in pane count, that 94 socket connections are opened every 1.5 s, and that the failure mode when it does arrive is all-or-nothing rather than degraded. Defect 3 is what pushed this machine from 5 panes to 93; the two belong in the same plan.</p>
+
+<h3>Fix</h3>
+<p>Make the collapse partial rather than total: a pane whose <code>process_info</code> fails is reported with a null pid, exactly as <code>pane_not_found</code> already is, instead of discarding the other 92. Keep the whole-call failure only for the cases that genuinely invalidate the snapshot (protocol below the floor, identity mismatch). The same applies to the <code>return []</code> inside the adapter's own loop, which discards every pane when one pane's workspace or tab lookup misses.</p>
+
+<h2>Scope and non-goals</h2>
+<ul>
+<li><strong>Not</strong> reaping the 42 leaked workspaces automatically. They are operator state and a daemon that deletes multiplexer workspaces it did not create is a worse defect than the one it cleans up. The plan fixes the source; removing what already leaked is a one-line manual step the operator can take when they choose.</li>
+<li><strong>Not</strong> changing tmux or cmux launch semantics beyond the shorter argv that falls out of the wrapper-script change.</li>
+<li><strong>Not</strong> the Pi work. Defect 2 is recorded as a finding and scheduled separately; see the decisions above.</li>
+<li><strong>Not</strong> raising <code>HERDR_MIN_PROTOCOL</code>. Herdr 0.9.0 / protocol 22 is compatible and the floor is correctly a floor. The four "Herdr server is incompatible" task failures earlier on 2026-09-09 predate the running build and did not recur.</li>
+</ul>
+
+<h2>Verification</h2>
+<ul>
+<li>A <code>node:test</code> case for the Herdr adapter proving the Enter is a separate write from the paste, and that a pane whose foreground process never leaves the login shell is reported as a failed launch with the workspace rolled back.</li>
+<li>A <code>node:test</code> case for <code>isolatedAgentArgv</code> proving the wrapper script carries the environment and the agent argv, and that the returned argv is short.</li>
+<li>A <code>node:test</code> case pinning that a dispatcher built without an explicit <code>spawn</code> seam cannot reach a real backend under the test runner.</li>
+<li>A <code>node:test</code> case for the partial Herdr enumeration: one pane whose <code>process_info</code> fails leaves the other panes reported rather than blanking the list.</li>
+<li>No Playwright spec. Nothing in the phased scope changes a dashboard surface: the launch path, the test seam and the enumeration collapse are all server-side. If the Herdr failure message lands on a card in a form a person reads differently, that arm gains one.</li>
+<li>Manual confirmation on this machine: one Herdr dispatch of each of claude and pi reaching <code>working</code>, which is the exact thing that failed three times on 2026-09-09.</li>
+</ul>
+
+</main>
+</body>
+</html>

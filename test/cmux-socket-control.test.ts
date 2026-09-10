@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -158,5 +158,12 @@ test("a config that will not parse is refused rather than replaced", () => {
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.error, /is not valid JSON\/JSONC/);
   assert.equal(readFileSync(path, "utf8"), broken);
-  assert.equal(existsSync(cmuxConfigBackupPath(path, new Date())), false);
+  // Every `.bak` in the directory, not the one name this second would produce: the write and
+  // the assertion can land either side of a second boundary, and a backup taken at 10:23:32
+  // would pass a check that only looked for 10:23:33.
+  assert.deepEqual(
+    readdirSync(dirname(path)).filter((name) => name.endsWith(".bak")),
+    [],
+    "a refused edit backs nothing up",
+  );
 });

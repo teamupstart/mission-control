@@ -52,10 +52,11 @@ the daemon is not one, so with the default every call it makes is denied. Under 
 adapter simply sees no cmux workspaces, which is why the row used to read Ready on the strength
 of the binary alone while every dispatch to cmux failed. A closed app is **Needs setup** and
 offers **Open cmux**, which opens the app and waits for its socket to answer. A refusing socket
-is **Needs setup** and offers **Allow Mission Control to drive cmux**, which copies
-`~/.config/cmux/cmux.json` to a timestamped `.bak` and then sets that one value to `allowAll`;
-your comments and every other setting are left alone, and a file that does not parse is refused
-rather than replaced. No reload is needed - cmux watches the file - and no reload would be
+is **Needs setup** and offers **Allow Mission Control to drive cmux**, which sets that one value
+to `allowAll`, copying `~/.config/cmux/cmux.json` to a timestamped `.bak` first when there is
+already a file to copy - a machine with no cmux config yet gets one written and nothing is backed
+up. Your comments and every other setting are left alone, and a file that does not parse is
+refused rather than replaced. No reload is needed - cmux watches the file - and no reload would be
 possible anyway, since `cmux reload-config` is one of the calls the default refuses. A satisfied
 row reports the mode it read, as `(socket control allowAll)`.
 

@@ -1399,7 +1399,7 @@ badge** beside its model / thinking / context row, and the topbar grows a **cost
 
 | Figure | Where | What it is |
 |---|---|---|
-| **Fleet today** | chip and popover | Claude- plus Codex-estimated session usage since local midnight |
+| **Fleet today** | chip and popover | Claude- and Codex-estimated usage plus Pi-reported spend from dispatched sessions since local midnight |
 | **Rate now** | chip and popover | the last hour of that same session estimate |
 | **Tokens today** | popover | session input, output and cache, every tier summed |
 | **Per shipped PR** | popover | today's session estimate over pull requests either agent opened today, with the count it was divided by. Counts only PRs we can [prove we opened](inspector-and-shipping.md#inspector-automated-pr-review) |

@@ -20,13 +20,10 @@ import type { TaskManager } from "../src/server/tasks.ts";
 import type { WorktreeOperationsService } from "../src/server/worktrees/operations.ts";
 
 /**
- * The composition contract for `buildApp`. See `resolveRouteDeps` in `src/server/routes.ts`
- * for why the seam is named rather than positional.
- *
- * These tests hold it closed from both ends: the named object is the only call form that
- * exists, and every representation of the dependency contract is pinned to the `RouteDeps`
- * interface rather than restated beside it.
- */
+  * The composition contract for `buildApp`: which call forms it accepts, which dependency
+  * names it recognises, and that every representation of the contract stays pinned to the
+  * `RouteDeps` interface.
+  */
 
 /** The loopback Host every data endpoint requires. See `hostIsLoopback` in routes.ts. */
 const LOOPBACK = { host: "127.0.0.1:7317" };
@@ -355,15 +352,11 @@ test("a named dependency reaches its own route domain and no other", async () =>
   assert.deepEqual(await served.json(), KEEP_AWAKE_STATUS);
 
   // Supplying keep-awake did not confer a worktree operations service on any other domain.
-  // This is the property positional composition could not state: one domain's dependency
-  // never changes the meaning of another's.
   const neighbour = await app.request("/api/worktrees", { headers: LOOPBACK });
   assert.equal(neighbour.status, 503);
 });
 
 test("field order in the literal is irrelevant to which domain gets what", async () => {
-  // The positional hazard, structurally absent: the same two services written in opposite
-  // orders compose the same app, because identity comes from the name and nothing else.
   for (const deps of [
     { registry, reviews, tasks, queues, keepAwake: keepAwakeStub, worktreeOperations: worktreeOperationsStub },
     { worktreeOperations: worktreeOperationsStub, keepAwake: keepAwakeStub, queues, tasks, reviews, registry },
@@ -424,9 +417,8 @@ function positionalCallsIn(source: string): string[] {
 }
 
 test("no caller anywhere composes routes by position", () => {
-  // The guard against reintroduction. A positional call cannot typecheck today, but a future
-  // `as unknown as` cast or a re-added overload could bring the hazard back one file at a
-  // time; this fails the moment any call site passes a second argument.
+  // A cast can still reach a positional call that the signature refuses, so this scans the
+  // tree rather than trusting the type checker alone.
   const root = fileURLToPath(new URL("..", import.meta.url));
   // This file is excluded because it is the guard: it necessarily contains the pattern it
   // looks for, in `unchecked(registry, reviews, tasks, queues)` above.

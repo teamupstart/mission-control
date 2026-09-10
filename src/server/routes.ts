@@ -1178,8 +1178,8 @@ function suggestRouteDep(name: string): string {
 /**
  * Validate and normalize the one named object `buildApp` accepts.
  *
- * **This is the canonical explanation for the whole seam.** There is no positional form. There
- * was one, taking 27 arguments, and it is gone rather than deprecated: a positional list
+ * There is no positional form. There was one, taking 27 arguments, and it is gone rather
+ * than deprecated: a positional list
  * assigns by index with no identity check, so an argument skipped or inserted in the middle
  * binds a perfectly valid service to a DIFFERENT route domain and constructs successfully. The
  * wrong domain then answers 503 much later, nowhere near the mistake. A name cannot do that,

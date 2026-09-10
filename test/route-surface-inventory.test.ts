@@ -11,14 +11,10 @@ import type { TaskManager } from "../src/server/tasks.ts";
 /**
  * Every registered route, bound to an asserted result.
  *
- * The composition contract test proves `buildApp` refuses a miswired dependency. This proves
- * the other half: that composing by name did not change WHICH route answers WHAT. It is a
- * differential rather than 303 hand-written expectations, because the property at issue is
+ * A differential rather than 303 hand-written expectations, because the property at issue is
  * equivalence, and a differential cannot drift out of date the way a transcribed status can.
- *
- * The two apps differ only in the order their dependency fields are written. Under the old
- * positional seam that was the whole bug surface; under a named one it must be invisible, on
- * every route, in both status and bytes.
+ * The two apps differ only in the order their dependency fields are written; every route must
+ * answer identically, in both status and bytes.
  */
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
@@ -101,10 +97,9 @@ test("every registered route answers identically however the deps are ordered", 
     console.log(`  ${String(a.status).padStart(3)}  ${key}`);
   }
 
-  // The tally is a census, not a pass mark. These stubs are bare objects, so a handler that
-  // reaches into the registry throws and Hono answers 500; that is a property of the fixture,
-  // not of the route. What is asserted per route is EQUIVALENCE - same status, same bytes,
-  // either ordering - which is exactly what a positional seam could not guarantee.
+  // A census, not a pass mark. These stubs are bare objects, so a handler that reaches into
+  // the registry throws and Hono answers 500; that is the fixture, not the route. What is
+  // asserted per route is equivalence: same status, same bytes, either ordering.
   const tally = [...byStatus.entries()]
     .sort((x, y) => x[0] - y[0])
     .map(([status, count]) => `${status}:${count}`)

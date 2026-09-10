@@ -70,6 +70,7 @@ function definition(over: Record<string, unknown> = {}) {
       labels: [],
       model: null,
       effort: null,
+      workflowId: null,
     },
     ...over,
   };

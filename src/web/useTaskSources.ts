@@ -36,6 +36,16 @@ export interface TaskSourcesState {
   preflight: (id: string) => Promise<string | null>;
   /** Forget what a source has filed, so it can file it again. */
   forget: (id: string) => Promise<void>;
+  /**
+   * Put a source's stalled write-backs back in the queue, and say how many moved.
+   *
+   * `includeUnknown` is the operator asserting they have looked upstream. Null means the
+   * daemon refused, which is a different answer from "nothing was retryable" - the panel
+   * says so rather than reporting a zero it did not get.
+   */
+  retryWriteback: (id: string, includeUnknown: boolean) => Promise<number | null>;
+  /** Drop a source's whole write-back queue, and say how many rows went. */
+  discardWriteback: (id: string) => Promise<number | null>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
 }
@@ -217,5 +227,83 @@ export function useTaskSources(): TaskSourcesState {
     [refresh],
   );
 
-  return { view, save, sweep, preflight, forget, error };
+  /**
+   * Apply a view that came back ON a write, under the same rule a read is applied under.
+   *
+   * Both ledger routes answer with the refreshed `TaskSourcesView`, and that answer is the
+   * one the panel uses - there is no follow-up GET. Two mechanisms for the same post-action
+   * state was a real seam: it cost an extra request per press, and it left two places where
+   * "how a response becomes the view" could drift apart.
+   *
+   * The guard is not optional just because this response is newer than any poll. It is the
+   * rule the whole hook is built on: a response may be written into the view only if the
+   * client's picture of the world has not moved since it was REQUESTED. A retry landing
+   * beside an in-flight switch edit would otherwise put the pre-edit switches back, which is
+   * the same defect the poll path already has four scars from.
+   */
+  const applyWriteResult = useCallback(
+    (v: TaskSourcesView, seqAtRequest: number, genAtRequest: number): void => {
+      if (!readIsCurrent(seqAtRequest, editSeq.current)) return;
+      if (!readIsCurrent(genAtRequest, writeGen.current)) return;
+      setView(v);
+    },
+    [setView],
+  );
+
+  /**
+   * The two ledger actions.
+   *
+   * Not queued behind `writing`, unlike `save`: that one PUTs the WHOLE source list, so two
+   * in flight together are decided by arrival rather than by intent. These write a source's
+   * DELIVERY QUEUE and touch no part of that list, so they cannot overwrite an edit and have
+   * nothing to take a turn behind.
+   *
+   * A REFUSAL is the one case that still reads: the response carries an error rather than a
+   * view, and the queue is wherever it was, so the panel has to go and look rather than keep
+   * showing a picture composed around an action that did not happen.
+   */
+  const retryWriteback = useCallback(
+    async (id: string, includeUnknown: boolean): Promise<number | null> => {
+      const seq = editSeq.current;
+      const gen = writeGen.current;
+      const res = await api.retryTaskSourceWriteback(id, includeUnknown);
+      if (!res.ok) {
+        setError(whyItFailed(res.error));
+        await refresh();
+        return null;
+      }
+      setError(null);
+      applyWriteResult(res.view, seq, gen);
+      return res.retried;
+    },
+    [applyWriteResult, refresh],
+  );
+
+  const discardWriteback = useCallback(
+    async (id: string): Promise<number | null> => {
+      const seq = editSeq.current;
+      const gen = writeGen.current;
+      const res = await api.discardTaskSourceWriteback(id);
+      if (!res.ok) {
+        setError(whyItFailed(res.error));
+        await refresh();
+        return null;
+      }
+      setError(null);
+      applyWriteResult(res.view, seq, gen);
+      return res.discarded;
+    },
+    [applyWriteResult, refresh],
+  );
+
+  return {
+    view,
+    save,
+    sweep,
+    preflight,
+    forget,
+    retryWriteback,
+    discardWriteback,
+    error,
+  };
 }

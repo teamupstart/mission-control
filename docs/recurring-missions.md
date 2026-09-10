@@ -23,7 +23,9 @@ The overlay has three screens:
   never runs an agent).
 - **Create / edit** - a configuration form (not a compose surface) in five groups: the task
   template, the cadence and time zone, laptop availability, the overlap, missed-run and
-  completion guardrails, and preview-and-enable. The template's **Agent** may be left on *Inherit*, which
+  completion guardrails, and preview-and-enable. The template's **After work** names the
+  [Workflow](workflows.md) that runs when each generated task finishes, and rests on *None* -
+  see [the after-work handoff](#the-after-work-handoff) below. The template's **Agent** may be left on *Inherit*, which
   takes the [task kind's agent](models.md#task-kinds) as each run fires rather than pinning a
   harness here - so repointing that kind moves a mission written months earlier. An inheriting
   mission cannot pin a Model (a model id belongs to one harness) and its Effort offers only the
@@ -143,6 +145,32 @@ a task in `backlog`, `dispatching` or `running`. **Skip if active** (the default
 `skipped_overlap` and names the task in the way; **Allow** files regardless. A run that
 `failed` never blocks: a mission whose last run went wrong still runs tomorrow.
 
+### The after-work handoff
+
+A mission's template names the **Workflow** that runs when the task a run files is finished,
+and it rests on **None**: nothing runs after the task unless the mission says so.
+
+That is deliberately not what an ordinary dispatch does. Dispatch may leave the field on
+*Dispatch default* and inherit whatever `Settings -> Workflows` currently names, resolved when
+the task is created. A recurring mission fires unattended, on a cadence, for as long as it is
+enabled - so inheriting would mean a default chosen in Settings today silently arming a review
+over a mission written months ago, on every run, with nobody watching. A mission states its
+own answer instead, and the daemon passes it to task creation explicitly so `null` reaches it
+as "no Workflow" rather than as an omission.
+
+Three consequences worth knowing:
+
+- **A mission stored before this field existed reads as None.** So does a `POST /api/schedules`
+  that never mentions `template.workflowId`. The absent key says its author was never asked,
+  and no run should arm a Workflow nobody picked.
+- **A kind with no diff cannot arm one.** Scout and Plan set out to produce no delivered
+  change, so the control stands down and the saved template holds `null` - a change-review over
+  a task that never planned a diff reviews an empty one. Switching the kind back hands the
+  previous choice straight back.
+- **An archived Workflow is kept, not erased.** A mission naming a Workflow the library no
+  longer publishes still shows it in the editor and on its detail, so the next save cannot
+  silently convert it into "no handoff". A run that fires meanwhile finishes without one.
+
 ### When a run finishes but its task does not
 
 `skip-active` asks whether the previous task is still in flight, and it takes the task's
@@ -170,11 +198,17 @@ artifact, another non-shipping settled turn). A `held` verdict is Foreman saying
 paths still own the completion. None of those conclude anything. The list lives in
 `foremanConcludedMission` (`src/shared/schedules.ts`), beside the policy it serves.
 
-Three properties worth knowing:
+Four properties worth knowing:
 
-- **The completion is an inference, and it is reversible.** It is recorded the same way
-  `settleIfEpisodeFinished` records one, so an agent that starts working on that very task
-  again reopens it. Foreman concluding a generation is strong evidence, not proof.
+- **The completion is terminal, and the agent is closed with it.** The task going `done` and
+  its session being finished with are one boundary, not two events that happen to follow each
+  other. A concluded run's session is asked to stop, it leaves through the same eviction every
+  other session leaves by, and it is out of the active-session list within four minutes of the
+  completion time on the row. Nothing Mission Control would deliver reaches it in the meantime,
+  a prompt typed straight into its pane is normally refused before it starts a turn, and a later
+  prompt cannot reopen the task. The pane refusal has stated exceptions - it fails open, and an
+  agent whose hooks are not installed never asks - in which case the turn starts and is cut
+  short instead. See [when a concluded run's agent goes](#when-a-concluded-runs-agent-goes).
 - **The policy that applies is the one the run was filed under.** It is read from the
   immutable revision the occurrence names, not from the schedule's current row, so editing
   or archiving a mission cannot retroactively conclude work already in flight.
@@ -189,6 +223,79 @@ Three properties worth knowing:
   keeps saving the behaviour it was written for, and no mission an operator already owns
   changes what it does. The editor's *new mission* default is the other one, because a
   mission written today is one whose cadence is the whole point.
+
+### When a concluded run's agent goes
+
+Completing the task used to be the whole of it, and the agent was left running. For a mission
+on an hourly cadence that compounds quickly: the session keeps its runtime and its whole
+context, it still counts against the fleet, and it is still promptable - so a follow-up typed
+half an hour later reopened a run the operator had already watched finish, on a session that
+had outlived its own next occurrence.
+
+So the completion writes a **closure** the daemon owes that session, and keeps it until the
+session is actually gone:
+
+- The guarantee is **four minutes from the completion time on the task row** - not from when
+  the daemon got around to it - and the session is out of the active-session list by then. An
+  exited row may remain in the SDK history; no live session does.
+- It is four minutes **of daemon uptime**, and that is a real qualification rather than a
+  hedge. Nothing enforces a deadline while Mission Control is not running: a daemon that is
+  stopped, asleep or restarting is not closing anything, and after a restart it deliberately
+  waits for its first completed discovery sweep before it acts, because until the process table
+  has been read a missing session has not been observed to be gone. A closure interrupted that
+  way is resumed rather than lost, but it lands late by however long the outage was.
+- A stop that was *serviced* is not a session that has *left*. The closure clears only once the
+  daemon has observed the session leave, through the same eviction path every other session
+  leaves by. Anything short of that is retried.
+- **The teardown starts in the request that concluded the run.** Not on a later sweep: the
+  agent is asked to stop, and a pane is destroyed, before Foreman's own call returns. So there
+  is no interval in which the run is over, the card is still up, and nothing has begun closing
+  it - which is the interval the reported failure lived in.
+- **A late prompt is refused before it starts a turn.** Refusing delivery covers everything
+  Mission Control would send, and that is not everything that can happen: type into the pane
+  yourself and none of it applies - which is exactly how a concluded run once took a prompt
+  half an hour later and finished another whole generation. So the agent is asked. Claude runs
+  a `UserPromptSubmit` hook before it processes anything, and for a session with a closure
+  still owed the daemon answers with a refusal: the prompt is not processed, no generation
+  opens, and you are told why at your own terminal. The keystrokes landed - nothing can
+  un-type them - but no turn begins.
+- **That refusal is narrow and fails open.** Only a session the durable closure ledger says is
+  owed a close is ever refused, and only `UserPromptSubmit`. A daemon that is down, slow, or
+  answers anything unexpected lets the prompt through exactly as before, because every failure
+  path returns "carry on" rather than needing to remember to.
+- **A turn that starts anyway is still cut short.** Where a pane outlives its first kill - a
+  multiplexer that refuses, a driver on its way down, an agent whose hooks are not installed -
+  an agent that starts working brings its closure forward to now rather than waiting for the
+  next attempt, and the generation does not complete. On the SDK path none of this arises:
+  there is no pane, this daemon's own routes are the only way in, and they refuse.
+- **A stop that never answers is given up on.** Asking a driver to stop waits for it to go all
+  the way down, and a wedged one never answers at all. Each attempt therefore has a bound: past
+  it the daemon stops waiting, records the attempt as refused, and carries on to the decision
+  below. Without that, one stuck driver would hold the closure open for ever and the escalation
+  built for an agent that will not go would be the one thing that never ran.
+- **Asking is not the last resort.** A multiplexer can refuse a kill, and a driver can accept a
+  stop and then not go. Three minutes in, the daemon stops asking and retires the session
+  itself - through that same eviction, so the card leaves and everything keyed on it settles
+  normally, inside the four minutes. The refusal is written to the daemon log with the session
+  it names. Mission Control can promise you the *session* is gone; if a pane's multiplexer
+  genuinely refused to kill its process, that process is no longer something Mission Control
+  can speak for, and passive discovery may later re-adopt it as a new sighting. The task it ran
+  stays `done` either way.
+- It is durable, so **an interrupted or restarted daemon resumes it** - and acts only after its
+  first completed discovery sweep, because until the process table has been read a missing
+  session has not been observed to be gone. The completion and the closure it owes are written
+  in one transaction, so there is no instant at which a run is finished and nothing records
+  that its agent still needs closing.
+- **While a closure is outstanding it is visible.** The task stays `done` and its row says
+  automatic cleanup is retrying and why - including the quiet case, where nothing errored and
+  the agent simply did not go - rather than the daemon calling a live agent closed.
+- **The checkout is not part of this.** An `empty` run committed nothing, so the worktree may
+  hold work; it stays, the ordinary
+  [30-day retention clock](worktrees-and-checks.md#task-worktree-retention) owns it, and
+  **Clean up** on the task row is still yours. The session's fate never waits on the tree's.
+
+None of it applies to a mission left on **manual**: nothing concluded the run, so nothing is
+owed, and the session is yours until you close it.
 
 Two more properties, both deliberate:
 

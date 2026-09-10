@@ -589,9 +589,8 @@ export const ProductIssueDraftSchema = z.object(PRODUCT_ISSUE_DRAFT_FIELDS).stri
 export type ProductIssueDraftInput = z.infer<typeof ProductIssueDraftSchema>;
 
 /** One preview/submission opening, shared by the dashboard and authenticated MCP routes. */
-export const ProductIssueRequestSchema = z
-  .object({
-    ...PRODUCT_ISSUE_DRAFT_FIELDS,
+export const ProductIssueRequestSchema = ProductIssueDraftSchema
+  .extend({
     requestId: z.string().uuid(),
     client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
   })
@@ -636,11 +635,8 @@ export type ProductIssueDashboardSubmitInput = z.infer<
 >;
 
 /** MCP identity is transport-owned and added beside the same bounded report request. */
-export const McpProductIssueRequestSchema = z
-  .object({
-    ...PRODUCT_ISSUE_DRAFT_FIELDS,
-    requestId: z.string().uuid(),
-    client: z.enum(PRODUCT_ISSUE_CLIENTS).default("browser"),
+export const McpProductIssueRequestSchema = ProductIssueRequestSchema
+  .extend({
     env: EnvSchema,
     sessionId: z.string().nullable().optional().default(null),
     cwd: z.string().nullable().optional().default(null),
@@ -2772,6 +2768,25 @@ export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
 export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 /**
+ * Which of a source's stalled write-backs the operator is putting back in the queue.
+ *
+ * Two states rather than one flag over "everything that is not delivered", because the
+ * two they separate are not comparable. A `failed` row is proof that nothing was written,
+ * so retrying it costs nothing. An `unknown` row may ALREADY have commented on somebody's
+ * issue or closed it, so retrying one can duplicate a comment or re-close an item a human
+ * deliberately reopened - and that is a call only somebody who has gone and looked
+ * upstream can make.
+ *
+ * Defaulting to `false` is what makes the safe request the one you get by asking for
+ * nothing, so the panel's plain **Retry** and its separate include-unknown control are the
+ * same route with the assertion made explicitly or not made at all.
+ */
+export const TaskSourceWritebackRetrySchema = z.object({
+  includeUnknown: z.boolean().default(false),
+});
+export type TaskSourceWritebackRetry = z.infer<typeof TaskSourceWritebackRetrySchema>;
+
+/**
  * Which repositories an external SDLC engine may be observed in, as the panel sends it back.
  *
  * A whole-object PUT for `TaskSourcesConfigPatchSchema`'s reason: adding a repository,
@@ -4897,6 +4912,8 @@ export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCove
       (links) => new Set(links.map((link) => `${link.clientItemId}\0${link.role}`)).size === links.length,
       "Workflow coverage links must be unique by evidence item and proof role",
     ),
+  // Absent on every claim an author registers, and on every historical frozen row.
+  inheritedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
 });
 
 export const WorkflowEvidenceCoverageClaimsSchema = z.array(WorkflowEvidenceCoverageClaimSchema)
@@ -4975,6 +4992,19 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
   `Workflow readiness exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.readinessJsonBytes} UTF-8 bytes`,
 );
 
+/**
+ * Where evidence came from when this submission did not capture it.
+ *
+ * All three fields describe the ORIGINAL capture, not the hand-off, so a Persona reading a
+ * manifest can tell a screenshot taken against this tree from one taken three rounds and
+ * several commits ago. Absent means the submission captured it itself.
+ */
+export const WorkflowEvidenceInheritanceSchema = z.object({
+  submissionId: z.string().min(1).max(200),
+  round: z.number().int().positive(),
+  repositoryFingerprint: z.string().min(1).max(200).nullable(),
+});
+
 export const WorkflowEvidenceImageSchema = z.object({
   id: z.string().min(1).max(200),
   ordinal: z.number().int().nonnegative(),
@@ -4984,6 +5014,7 @@ export const WorkflowEvidenceImageSchema = z.object({
   mimeType: z.enum(RASTER_IMAGE_MIME_TYPES),
   bytes: z.number().int().positive().max(WORKFLOW_IMAGE_LIMITS.maxBytesPerImage),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  inheritedFrom: WorkflowEvidenceInheritanceSchema.nullable().optional().default(null),
   availability: z.enum(["retained", "pruned"]),
   prunedAt: z.number().int().nonnegative().nullable(),
   createdAt: z.number().int().nonnegative(),
@@ -5007,6 +5038,7 @@ export const WorkflowEvidenceTextArtifactSchema = z.object({
   bytes: z.number().int().positive().max(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxBytesPerArtifact),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   content: z.string(),
+  inheritedFrom: WorkflowEvidenceInheritanceSchema.nullable().optional().default(null),
   availability: z.enum(["retained", "pruned"]),
   prunedAt: z.number().int().nonnegative().nullable(),
   createdAt: z.number().int().nonnegative(),
@@ -6816,6 +6848,13 @@ const ScheduleTemplateSchema = z
     labels: z.array(z.string()).max(MAX_LABELS).default([]).transform(normalizeLabels),
     model: ModelIdSchema.nullable().default(null),
     effort: EffortLevelSchema.nullable().default(null),
+    /**
+     * Defaults to NONE, unlike `DispatchSchema` where an omitted `workflowId` means the
+     * dispatch default - see `ScheduleTemplate.workflowId` for why a template never
+     * inherits. Not checked against the Workflow catalog: one can be archived between two
+     * runs of a mission that names it, and refusing the save would block unrelated edits.
+     */
+    workflowId: z.string().min(1).nullable().default(null),
   })
   // The same split the kind rows keep, because it is the same fact about the two fields: a
   // model id is agent-namespaced, so an inheriting template cannot name one; an effort is

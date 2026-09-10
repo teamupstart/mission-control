@@ -74,8 +74,9 @@ guided review that walks the agent through one thread at a time. A terminal in t
 is one click away in the terminal or multiplexer you actually use.
 
 Mission Control supports tmux, Herdr, and cmux through one multiplexer registry. Herdr support
-requires stable Herdr 0.8.2 or newer on protocol 20 and currently runs on macOS and Linux. It uses
-the default local Herdr server only, and `HERDR_BIN` can point at a non-standard installation.
+requires stable Herdr 0.8.2 or newer on protocol 20 or newer, and currently runs on macOS and
+Linux. It uses the default local Herdr server only, and `HERDR_BIN` can point at a non-standard
+installation.
 Mission Control can create, discover, write, safely paste into, capture, focus, rename, close,
 detach from, and reattach to Herdr workspaces. See [Harnesses and terminal
 backends](docs/harnesses-and-terminals.md#herdr) for the compatibility and focus boundaries.
@@ -258,8 +259,11 @@ and control surface stay coherent.
 There are two paths through this repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
-  the window closed, and receives updates. See the
+  the window closed, and receives updates. Updates check Node.js and npm before building and
+  offer remediation with **Check again** when the runtime is incompatible. See the
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
+  **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
+  command in a visible terminal, with **Re-check** to confirm the repair.
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh
@@ -284,6 +288,10 @@ See [Configuration](docs/configuration.md) for the complete precedence rules and
 tradeoffs.
 
 ## Community participation
+
+Sessions can [report product feedback](docs/sessions.md) with the
+`report_product_feedback` MCP tool. An explicit user request publishes a public Mission Control
+issue automatically and returns its GitHub URL, without a second dashboard approval.
 
 Public users may open bug reports and feature requests through GitHub Issues. This repository
 does not accept external pull requests: pull request creation is limited to authorized repository

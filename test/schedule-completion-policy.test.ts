@@ -1,4 +1,4 @@
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkTask } from "./helpers/session-fixture.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { Session } from "../src/shared/types.ts";
 import {
   foremanConcludedMission,
   revisionIsRunnable,
@@ -157,6 +158,7 @@ function definition(over: Partial<ScheduleDefinition> = {}): ScheduleDefinition 
       labels: [],
       model: null,
       effort: null,
+      workflowId: null,
     },
     ...over,
   };
@@ -300,6 +302,36 @@ function discovered(id: string): DiscoveredSession {
 }
 
 /**
+ * Every TaskManager built here, so the closure sweep a conclusion starts is stopped with the
+ * test that started it. One daemon has one manager; this file has one per fixture.
+ */
+const managers: Array<{ stopMissionSessionClosures(): void }> = [];
+afterEach(() => {
+  for (const m of managers.splice(0)) m.stopMissionSessionClosures();
+});
+
+/**
+ * A stop that records rather than performs one.
+ *
+ * Not optional decoration. Concluding an `auto-on-conclusion` run now also closes the agent
+ * that produced it, and the shipped terminal arm signals `session.pid` - which in a fixture is
+ * a number this file made up. Every manager below is handed this instead.
+ */
+function killRecorder() {
+  const killed: string[] = [];
+  return {
+    killed,
+    deps: {
+      resetWouldDestroyWork: async () => null,
+      kill: async (s: Session) => {
+        killed.push(s.id);
+        return { ok: true as const };
+      },
+    },
+  };
+}
+
+/**
  * A live agent, idle, executing the task a mission run filed.
  *
  * Driven through the REAL registry rather than a session literal, because idleness is what
@@ -308,7 +340,9 @@ function discovered(id: string): DiscoveredSession {
  */
 function runningMission(over: Partial<ScheduleDefinition> = {}) {
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const kill = killRecorder();
+  const tasks = new TaskManager(registry, kill.deps);
+  managers.push(tasks);
   const { schedule, occurrenceId, taskId } = filedRun(over);
   const sessionId = uid("sess");
   const agentSessionId = `${sessionId}-episode`;
@@ -335,12 +369,12 @@ function runningMission(over: Partial<ScheduleDefinition> = {}) {
       scheduledFor: T0 + HOUR,
     }),
   );
-  return { registry, tasks, sessionId, agentSessionId, taskId, schedule, occurrenceId };
+  return { registry, tasks, sessionId, agentSessionId, taskId, schedule, occurrenceId, kill };
 }
 
-test("a mission set to auto-complete lands its task on Foreman's empty verdict", () => {
+test("a mission set to auto-complete lands its task on Foreman's empty verdict", async () => {
   const f = runningMission({ completionPolicy: "auto-on-conclusion" });
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "empty",
     summary: "the session changed nothing",
     gaps: [],
@@ -354,18 +388,21 @@ test("a mission set to auto-complete lands its task on Foreman's empty verdict",
   assert.match(task?.outcome ?? "", /changed nothing/);
 });
 
-test("the conclusion is an inference, so an agent working again on that task reopens it", () => {
+test("the conclusion is terminal, and the session that produced it is closed with it", async () => {
   const f = runningMission({ completionPolicy: "auto-on-conclusion" });
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "retired",
     summary: "a review-only artifact",
     gaps: [],
   });
+  for (let i = 0; i < 100; i++) await Promise.resolve();
   assert.equal(f.registry.getTask(f.taskId)?.status, "done");
 
-  // Idleness and a settled verdict are strong evidence and not proof. The agent typing
-  // again on this very task contradicts it, and the completion is undone rather than
-  // defended - the same bargain `settleIfEpisodeFinished` makes.
+  // This used to be reversible - the completion was registered as an inference, so an agent
+  // typing again on this very task reopened it. For a recurring mission that was the bug:
+  // the conclusion left the agent alive, and a prompt half an hour later reopened work the
+  // operator had watched finish. The conclusion and the closure of the agent that produced it
+  // are now one boundary. See `test/mission-session-closure.test.ts`.
   f.registry.applyHook({
     agent: "claude",
     event: "UserPromptSubmit",
@@ -377,13 +414,18 @@ test("the conclusion is an inference, so an agent working again on that task reo
   });
   assert.equal(f.registry.getSession(f.sessionId)?.state, "working");
   const task = f.registry.getTask(f.taskId);
-  assert.equal(task?.status, "running");
-  assert.equal(task?.outcome, null);
+  assert.equal(task?.status, "done", "a concluded mission run stays concluded");
+  assert.match(task?.outcome ?? "", /review-only artifact/);
+  // And nothing may be delivered to that session while its closure is owed.
+  assert.match(
+    f.registry.promptResourceBlockerForSession(f.sessionId) ?? "",
+    /recurring mission run was concluded/,
+  );
 });
 
-test("a mission left on manual keeps its task open for a merge or for the operator", () => {
+test("a mission left on manual keeps its task open for a merge or for the operator", async () => {
   const f = runningMission({ completionPolicy: "manual" });
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "empty",
     summary: "the session changed nothing",
     gaps: [],
@@ -391,10 +433,10 @@ test("a mission left on manual keeps its task open for a merge or for the operat
   assert.equal(f.registry.getTask(f.taskId)?.status, "running");
 });
 
-test("a verdict that is not a conclusion never completes the task, whatever the policy", () => {
+test("a verdict that is not a conclusion never completes the task, whatever the policy", async () => {
   const f = runningMission({ completionPolicy: "auto-on-conclusion" });
   for (const outcome of ["held", "asked", "workflow_claimed", "verification_failed"] as const) {
-    f.tasks.concludeScheduledMissionRun(f.sessionId, {
+    await f.tasks.concludeScheduledMissionRun(f.sessionId, {
       outcome,
       summary: "still going",
       gaps: [],
@@ -403,11 +445,12 @@ test("a verdict that is not a conclusion never completes the task, whatever the 
   }
 });
 
-test("an ordinary task's completion stays the operator's, mission policy or not", () => {
+test("an ordinary task's completion stays the operator's, mission policy or not", async () => {
   // The gate that keeps this feature inside Recurring Missions: a task with no occurrence
   // has no revision to read a policy from, and nothing here may invent one for it.
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const tasks = new TaskManager(registry, killRecorder().deps);
+  managers.push(tasks);
   const sessionId = uid("sess");
   registry.applyDiscovery([discovered(sessionId)]);
   registry.applyHook({
@@ -421,7 +464,7 @@ test("an ordinary task's completion stays the operator's, mission policy or not"
   const taskId = uid("task");
   registry.upsertTask(mkTask({ id: taskId, status: "running", sessionId, repoRoot: "/repo" }));
 
-  tasks.concludeScheduledMissionRun(sessionId, {
+  await tasks.concludeScheduledMissionRun(sessionId, {
     outcome: "empty",
     summary: "the session changed nothing",
     gaps: [],
@@ -437,7 +480,9 @@ test("the prompted-consumption route is what carries the verdict to the task", a
   // this one route, and a hook that is not called from there is a feature that exists only
   // in a test. So this drives the real request, against the real consumption guards.
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
+  const kill = killRecorder();
+  const tasks = new TaskManager(registry, kill.deps);
+  managers.push(tasks);
   const queues = new QueueManager(registry);
   const app = buildApp(registry, {} as ReviewManager, tasks, queues);
 
@@ -561,7 +606,7 @@ test("a concluded run carries the pull request it opened onto the finished task"
   const url = "https://github.com/example/repo/pull/7001";
   openPr(f, url);
 
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "retired",
     summary: "a review-only artifact",
     gaps: [],
@@ -606,7 +651,7 @@ test("a task the merge already landed is not re-concluded by a later verdict", a
   assert.equal(landed?.status, "done");
   const outcomeFromMerge = landed?.outcome;
 
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "empty",
     summary: "the session changed nothing",
     gaps: [],
@@ -620,7 +665,7 @@ test("a task the merge already landed is not re-concluded by a later verdict", a
 
 // ---- the recorded sentence ----
 
-test("a long emoji summary is cut on characters, never through a surrogate pair", () => {
+test("a long emoji summary is cut on characters, never through a surrogate pair", async () => {
   // The summary is model-authored prose and routinely carries emoji. A UTF-16 code-unit cut
   // can land between the halves of a surrogate pair, and the lone surrogate that leaves is
   // persisted once at completion and never revised - so it renders as a replacement glyph on
@@ -636,7 +681,7 @@ test("a long emoji summary is cut on characters, never through a surrogate pair"
   const prefix = "Foreman concluded this recurring mission run: ".length;
   const summary = "x".repeat(MAX - 2 - prefix) + "\u{1F680}".repeat(20);
 
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "retired",
     summary,
     gaps: [],
@@ -655,9 +700,9 @@ test("a long emoji summary is cut on characters, never through a surrogate pair"
   assert.ok(outcome.endsWith("\u{1F680}\u2026"), JSON.stringify(outcome.slice(-4)));
 });
 
-test("a short summary is recorded whole, ellipsis and all left off", () => {
+test("a short summary is recorded whole, ellipsis and all left off", async () => {
   const f = runningMission({ completionPolicy: "auto-on-conclusion" });
-  f.tasks.concludeScheduledMissionRun(f.sessionId, {
+  await f.tasks.concludeScheduledMissionRun(f.sessionId, {
     outcome: "empty",
     summary: "the session changed nothing \u{1F680}",
     gaps: [],

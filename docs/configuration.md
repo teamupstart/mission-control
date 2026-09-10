@@ -59,7 +59,7 @@
 | `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](sessions.md#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |
 | `ITERM_BIN` | `/Applications/iTerm.app/Contents/MacOS/iTerm2` | [iTerm2](sessions.md#iterm2-automation-and-permission-recovery) app-bundle binary override for a non-standard installation. Availability reads only this path. Mission Control never runs it for discovery or actions; it controls an already-running iTerm2 through AppleScript, and passive checks do not launch the app |
 | `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |
-| `HERDR_BIN` | `herdr` | [Herdr](harnesses-and-terminals.md#herdr) CLI path override. Initial support requires stable Herdr 0.8.2 or newer on protocol 20, controls only the default local server, and is allowlisted to macOS and Linux |
+| `HERDR_BIN` | `herdr` | [Herdr](harnesses-and-terminals.md#herdr) CLI path override. Initial support requires stable Herdr 0.8.2 or newer on protocol 20 or newer, controls only the default local server, and is allowlisted to macOS and Linux |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
@@ -134,7 +134,7 @@ exactly once either way:
 | `claude` · Agent SDK | `systemPrompt.append` on the Claude Code preset |
 | `codex` · Agent SDK | `developerInstructions`, merged with whatever you configured in Codex. That channel replaces your configured value, so when Codex cannot report it the merge is skipped rather than overwriting it - and the instructions are sent as prose instead, so they are never dropped. On a fresh launch that is turn one, with the block in the same slot the rows below put it; on a resume after a daemon restart it is the block by itself, because that conversation's request is already in the transcript being reopened |
 | `codex` · terminal | turn one, above the request |
-| `pi` · terminal | turn one, above the request |
+| `pi` · terminal | `--append-system-prompt`, a repeatable flag kept separate from Claude's single-value composition |
 
 **A session keeps the standing instructions it launched with.** An edit takes effect on the
 next session, not a running one - a live agent's system prompt cannot be rewritten, so the

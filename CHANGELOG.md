@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.13.0](https://github.com/teamupstart/mission-control/compare/v1.12.0...v1.13.0) (2026-09-09)
+
+
+### Features
+
+* **mcp:** report product feedback through shared issue facilities ([#965](https://github.com/teamupstart/mission-control/issues/965)) ([d29f0f1](https://github.com/teamupstart/mission-control/commit/d29f0f17c6fb8abd81bc6b29448727b06e9d5885))
+* **schedules:** let a recurring mission choose its after-work Workflow ([#968](https://github.com/teamupstart/mission-control/issues/968)) ([2c227e5](https://github.com/teamupstart/mission-control/commit/2c227e538fd9ad3d17a8e96a9b7778547be5674c))
+* **task-sources:** write a swept task's pull request and outcome back to its issue ([#953](https://github.com/teamupstart/mission-control/issues/953)) ([42008de](https://github.com/teamupstart/mission-control/commit/42008dedc17f1a2fa5af30ec50fe32c100587360))
+* **workflows:** carry sufficient evidence across review rounds ([#969](https://github.com/teamupstart/mission-control/issues/969)) ([8761645](https://github.com/teamupstart/mission-control/commit/87616450c3fe45c868ae099ed4df7480490e3d52))
+* **workflows:** scope coverage out of Persona judgment and bound the evidence preflight loop ([#963](https://github.com/teamupstart/mission-control/issues/963)) ([e83d0c5](https://github.com/teamupstart/mission-control/commit/e83d0c5f4d929281c6ee4a2e5b3c254d3454b563))
+
+
+### Bug Fixes
+
+* **goal:** retry transport failures instead of recording them as verdicts ([#962](https://github.com/teamupstart/mission-control/issues/962)) ([35a55df](https://github.com/teamupstart/mission-control/commit/35a55dfc750ff8f2067a111b93aa7ac8ea76fc85))
+* **terminal:** accept a Herdr newer than the supported protocol floor ([#967](https://github.com/teamupstart/mission-control/issues/967)) ([5c70299](https://github.com/teamupstart/mission-control/commit/5c70299326c54e8c82a868f92a4852da255c7340))
+* **terminal:** accept the Herdr 0.9.0 pane.split response type ([#970](https://github.com/teamupstart/mission-control/issues/970)) ([9d7074d](https://github.com/teamupstart/mission-control/commit/9d7074d6371474f20c571a0a45ccb801b154a4f6))
+* **workflows:** give withCaptureLock real mutual exclusion ([#966](https://github.com/teamupstart/mission-control/issues/966)) ([667d4fc](https://github.com/teamupstart/mission-control/commit/667d4fc7b6366c822c09a114d842f0242614e91c))
+
 ## [1.12.0](https://github.com/teamupstart/mission-control/compare/v1.11.0...v1.12.0) (2026-09-09)
 
 

@@ -132,6 +132,22 @@ flowchart LR
   coverage wholesale. A preflight refinement is a mapping repair, not a re-measurement; on the
   observed run the round-1 screenshot vanished at 2.0/2.1 and a Persona rejected the submission for
   its absence.
+  - **Amended 2026-09-09, by operator decision during Phase 3 implementation.** "Wholesale" is
+    bounded by the aggregate evidence limits, and cannot be otherwise. Coverage is wholesale
+    within the frozen-coverage limit: every parent claim is retained, and only a link whose
+    evidence is absent is dropped. That limit binds only when a parent already at `maxClaims`
+    meets a child that declared claims of its own, because `listSubmissionCoverage` reads the
+    table through a schema capped at `maxClaims` and exceeding it would make the submission's
+    coverage unreadable rather than larger. Reaching it is recorded as
+    `evidence_carry_truncated`. Evidence cannot be, because `WORKFLOW_IMAGE_LIMITS.maxCount` is
+    `LLM_IMAGE_LIMITS.maxCount`, the number of images a single model call accepts, enforced by
+    `validateDescriptorSet`; a submission carrying a ninth image cannot be sent to the Persona
+    that has to read it. The same counts cap the frozen arrays in `WorkflowContextSnapshotSchema`,
+    so an unbounded carry fails the capture as `stale_capture` and loses every item rather than
+    the few at the margin, and giving the parent absolute priority instead starves the child's
+    repair evidence so the refinement can never succeed. Both were measured. At the cap the carry
+    gives up the oldest ancestry first and never an item the previous submission captured itself,
+    and records `evidence_carry_truncated` naming what it refused.
 - Registering evidence whose `sha256` already exists frozen for the same note reuses the frozen
   blob instead of copying it, and re-staging a byte-identical item becomes attachable to the next
   submission rather than a silent no-op. This removes the minted-id-per-round pattern and the 41.6%

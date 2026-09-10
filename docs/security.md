@@ -28,6 +28,14 @@ which comments on pull requests under your GitHub account, and
 separate - trusting an automated reviewer to comment in a repo is not the same act as
 letting it push to that repo's base branch.
 
+A configured [task source](dispatch-and-backlog.md#task-sources-pulling-work-into-the-backlog)
+may also **write to its own upstream**, and it is off on the same terms. Its three
+[write-back](dispatch-and-backlog.md#writing-back-to-the-source) switches ship off per
+source, are re-read at delivery as well as when the work is observed, and reach only the
+items that source itself swept. Nothing about writing relaxes a rule that governs reading:
+the same credential the sweep uses does the write, no new token or host is introduced, and
+every egress guard the read path applies applies here unchanged.
+
 ## Public product issue reporting
 
 Product reports are public GitHub issues, not private support messages. The agent tool is defined
@@ -55,12 +63,14 @@ labels, source, environment and body at submission prevents a configuration chan
 preview and publication from sending content the form did not show. The request id and submission
 claim prevent double-clicks and replays from creating duplicate issues.
 
-**A daemon outside the desktop shell publishes nothing.** A standalone browser or adopted daemon
+**Dashboard reporting outside the desktop shell publishes nothing.** A standalone browser or adopted daemon
 has no private utility-process channel, so preflight reports that the report must be opened in the
 desktop app. It never falls back to an HTTP value that another local process could reproduce.
 
-The agent path is separate and stricter - it is token-guarded, neither preview mints a grant, there
-is no MCP confirming route at all, and its authorization is the human-submitted `input` review.
+The agent path is separate and token-guarded, and requires an active session. After an explicit
+user request, `report_product_feedback` previews and publishes automatically through MCP. It
+does not request a second dashboard approval. The compatibility tool `report_product_issue`
+still waits for a human-submitted `input` review. Neither preview mints a dashboard grant.
 
 Screenshots use daemon-issued upload locators, never caller-supplied filesystem paths. The daemon
 resolves every locator again immediately before publication, refuses symlinks and paths outside

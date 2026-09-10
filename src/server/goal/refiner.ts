@@ -32,12 +32,30 @@ const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
  */
 const GOAL_REFRESH_MS = Number(envVar("GOAL_REFRESH_MS") ?? 60_000);
 /**
- * Sized for Haiku emitting one short object from a ~12-turn window. Deliberately not the
- * reviewer's 120s: that budget is for Opus reading a 60-turn head+tail window with the whole
- * POLICY, and a
- * goal that takes half a minute has already failed at being a glanceable status line.
+ * Sized for Haiku emitting one short object from a ~12-turn window.
+ *
+ * Was 30s, reasoned against the wrong consequence: a goal that takes half a minute has
+ * already failed at being a glanceable status line, which is true of the CARD but not of
+ * what this call actually gates. An unresolved revision pauses automatic wrap-up and parks a
+ * managed ship task with no owner - not a rendering delay. Measured on real headless Haiku
+ * goal calls: five for five answered, at 28.2s, 56.9s, 28.3s, 52.0s and 31.2s, so the 30s cap
+ * was killing three of five HEALTHY calls mid-flight, and (before `cause`-aware retry below)
+ * every one of those got latched as a permanent "unclear" verdict. 120s is roughly 2x the
+ * observed 56.9s maximum. Once the retry below is proven out, this cap could come back down -
+ * but that would be a second unmeasured guess landing in the same change, so it stays here.
  */
-const GOAL_TIMEOUT_MS = Number(envVar("GOAL_TIMEOUT_MS") ?? 30_000);
+const GOAL_TIMEOUT_MS = Number(envVar("GOAL_TIMEOUT_MS") ?? 120_000);
+/**
+ * How many times a TRANSPORT failure (spawn/timeout/exit - evidence about the machine, never
+ * about the human's instruction) gets retried before this revision falls back to today's
+ * fail-closed latch.
+ *
+ * No new timer: each attempt already rides the per-session `debounce` floor below
+ * (`GOAL_REFRESH_MS`), so three attempts cost roughly one and two refresh windows of total
+ * wait - an escalating budget for free, without a second scheduling mechanism next to the one
+ * the poller already owns.
+ */
+const MAX_TRANSPORT_ATTEMPTS = 3;
 /**
  * Concurrent model runs across every session.
  *
@@ -94,6 +112,16 @@ export function startGoalRefiner(registry: Registry): () => void {
    * side of that trade, and it is how a transient outage eventually heals.
    */
   const failedFor = new Map<string, string>();
+  /**
+   * In-flight retry count for a TRANSPORT failure, per session, keyed the same way as
+   * `failedFor` so a new instruction resets it exactly as it resets that latch.
+   *
+   * Cleaned up for dead sessions on the same sweep as `failedFor`, for the same reason: an
+   * evicted session's id must not accumulate here forever. In-memory on purpose, same trade
+   * as `failedFor` - a daemon restart forgets the count and starts a fresh three attempts,
+   * which is the cheap, correct side of that trade.
+   */
+  const transportAttempts = new Map<string, { key: string; attempts: number }>();
 
   const tick = (): void => {
     if (stopped) return;
@@ -107,10 +135,19 @@ export function startGoalRefiner(registry: Registry): () => void {
         // whether or not any work follows it.
         if (!debounce.claim(s.id)) continue;
         refining.add(s.id);
-        void refine(registry, s, pending, limit, failedFor).finally(() => refining.delete(s.id));
+        void refine(
+          registry,
+          s,
+          pending,
+          limit,
+          failedFor,
+          transportAttempts,
+          () => stopped,
+        ).finally(() => refining.delete(s.id));
       }
       const liveIds = new Set(live.map((x) => x.id));
       for (const id of failedFor.keys()) if (!liveIds.has(id)) failedFor.delete(id);
+      for (const id of transportAttempts.keys()) if (!liveIds.has(id)) transportAttempts.delete(id);
       const now = Date.now();
       // `sessionsObserved` before the window, not inside it: this tick runs before the poller's
       // first sweep has returned, and claiming the hour on a sweep the registry is going to
@@ -212,6 +249,8 @@ async function refine(
   pending: PendingRefinement,
   limit: <T>(fn: () => Promise<T>) => Promise<T>,
   failedFor: Map<string, string>,
+  transportAttempts: Map<string, { key: string; attempts: number }>,
+  isStopped: () => boolean,
 ): Promise<void> {
   const { goal, prompt } = pending;
   try {
@@ -241,12 +280,74 @@ async function refine(
         }),
         (raw) => parseModelJson(raw, GoalSchema),
         "Goal",
-        { timeoutMs: GOAL_TIMEOUT_MS },
+        {
+          timeoutMs: GOAL_TIMEOUT_MS,
+          // The observer exists precisely so a caller with a durable lifecycle can refuse the
+          // JSON-syntax retry after its owner has stopped. Without one, `cause: "cancelled"`
+          // is unreachable from this call site and the branch below is dead code: shutdown
+          // arrives as a killed child, which is indistinguishable from a real transport
+          // failure at the provider boundary. `finish` has nothing to record here - the
+          // `llm_calls` ledger belongs to callers that write rows.
+          observer: { start: () => !isStopped(), finish: () => {} },
+        },
       );
       if (r.kind === "failed") {
-        // Fail closed for completion: keep the objective, mark the relationship unclear, and
-        // leave this revision at the head so no later steering prompt can leapfrog it. The
-        // failure key prevents a retry storm until new human context arrives.
+        if (r.cause === "cancelled") {
+          // The daemon is stopping mid-attempt (or stopped just before this one started).
+          // Nothing here is evidence about the instruction OR the provider, so nothing is
+          // written and nothing latches: the next poll - this daemon once it is back up,
+          // or the next one - finds the same unresolved revision and tries again clean.
+          return;
+        }
+        if (r.cause === "transport") {
+          // A spawn/timeout/exit failure is evidence about the MACHINE, never about the
+          // human's instruction, so it must not be stamped as an "unclear" verdict - that
+          // value means the instruction itself was ambiguous, and `resolvedSessionIntent`
+          // treats it as a durable answer. Retry a bounded number of times instead, riding
+          // the per-session debounce floor below for spacing rather than owning a second
+          // timer.
+          //
+          // Except when the refiner itself has already been stopped. Daemon shutdown runs
+          // `stopGoalRefiner()` and THEN `killLiveLlmRuns()` (see `server/index.ts`), so a
+          // call that was in flight across those two lines comes back as a killed child -
+          // a transport failure by every signal the provider boundary can offer, and
+          // actually a cancellation. No observer can catch that one: it is not between
+          // attempts, it is inside one. Counting it would spend a retry the next daemon has
+          // to repeat, and on the third such kill it would persist "the classifier could not
+          // be reached" about a machine that was merely turned off.
+          if (isStopped()) return;
+          const key = failureKey(pending);
+          const prior = transportAttempts.get(s.id);
+          const attempts = (prior?.key === key ? prior.attempts : 0) + 1;
+          if (attempts < MAX_TRANSPORT_ATTEMPTS) {
+            transportAttempts.set(s.id, { key, attempts });
+            console.error(
+              `[goal] ${s.name}: transport attempt ${attempts}/${MAX_TRANSPORT_ATTEMPTS} failed, retrying: ${r.reason}`,
+            );
+            return;
+          }
+          // Retries exhausted. Fail closed like any other failure - keep the objective and
+          // leave this revision at the head - but the persisted text must name the real
+          // cause rather than claim ambiguity. `relationship` is left untouched (never set
+          // to "unclear" here): the dashboard already renders this session as "resolving"
+          // while any revision is unresolved and never surfaces `rationale` in that state,
+          // so there is no card that would otherwise show a stale relationship either.
+          transportAttempts.delete(s.id);
+          failedFor.set(s.id, key);
+          const current = registry.getGoal(s.id);
+          if (
+            current?.pendingPrompts[0]?.revision === prompt.revision &&
+            current.pendingPrompts[0].prompt === prompt.prompt
+          ) {
+            registry.upsertGoal(s.id, {
+              rationale: `The classifier could not be reached after ${MAX_TRANSPORT_ATTEMPTS} attempts: ${r.reason}`,
+            });
+          }
+          console.error(`[goal] ${s.name}: ${r.reason}`);
+          return;
+        }
+        // cause === "parse": the model answered, but nothing it said validated. That IS a
+        // real signal about the reply, so today's fail-closed behaviour stands unchanged.
         failedFor.set(s.id, failureKey(pending));
         const current = registry.getGoal(s.id);
         if (
@@ -323,6 +424,7 @@ async function refine(
         pendingPrompts: current.pendingPrompts.slice(1),
       });
       failedFor.delete(s.id);
+      transportAttempts.delete(s.id);
     });
   } catch (err) {
     // `limit` only rejects if the body throws, which `runStructured` promises not to do -

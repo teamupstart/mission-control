@@ -127,6 +127,7 @@ function definition(over: Partial<ScheduleDefinition> = {}): ScheduleDefinition 
       labels: ["infra", "recurring"],
       model: null,
       effort: "high",
+      workflowId: null,
     },
     ...over,
   };
@@ -441,6 +442,32 @@ test("a template that simply set no priority or effort is ordinary, not unreadab
   assert.equal(back.template!.priority, null);
   assert.equal(back.template!.effort, null);
   assert.equal(back.health, "healthy");
+});
+
+test("a template written before the after-work field reads as no Workflow, not the default", () => {
+  // Unlike the priority and effort above, absence here is NOT ambiguous: no older build
+  // could have stored a Workflow id this one cannot read, so the row loads healthy rather
+  // than failing closed.
+  const s = mkSchedule();
+  const row = db
+    .openDb()
+    .prepare(`SELECT template_json AS t FROM mission_schedule_revisions WHERE schedule_id = ?`)
+    .get(s.id) as { t: string };
+  const { workflowId: _dropped, ...legacy } = JSON.parse(row.t) as Record<string, unknown>;
+  assert.equal("workflowId" in legacy, false);
+  db.openDb()
+    .prepare(`UPDATE mission_schedule_revisions SET template_json = ? WHERE schedule_id = ?`)
+    .run(JSON.stringify(legacy), s.id);
+
+  const back = store.getSchedule(s.id, T0)!;
+  assert.equal(back.unreadable, null);
+  assert.equal(back.health, "healthy");
+  assert.equal(back.template!.workflowId, null);
+
+  const armed = mkSchedule({
+    template: { ...definition().template, workflowId: "wf-no-mistakes" },
+  });
+  assert.equal(store.getSchedule(armed.id, T0)!.template!.workflowId, "wf-no-mistakes");
 });
 
 test("an unparseable template costs that one schedule, not the whole catalog", () => {

@@ -48,6 +48,7 @@ import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 import { buildPersonaPrompt } from "./prompt.ts";
 import { resolvePersonaExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
+import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
 import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
 import { workflowLog } from "./log.ts";
 import { resolveSubmissionImageInputs } from "./images.ts";
@@ -1094,6 +1095,25 @@ export class WorkflowEngine {
       persona: node.persona.name,
       verdict: verdict.verdict,
     }, this.now());
+    // Read from the row rather than the captured argument: readiness is written by the capture
+    // that activated this submission, and the argument predates it on the recovery path.
+    const disagreement = readinessReviewDisagreementEvent({
+      submission: latestSubmission ?? submission,
+      nodeId: node.id,
+      attemptId: claimed.id,
+      persona: node.persona.name,
+      verdict,
+      version,
+    });
+    if (disagreement) {
+      this.store.appendEvent(
+        run.id,
+        "readiness_review_disagreement",
+        disagreement.payload,
+        this.now(),
+        disagreement.eventId,
+      );
+    }
     const evidenceAudit = testEvidenceAuditEvent({
       persona: node.persona,
       nodeId: node.id,

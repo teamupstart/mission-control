@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WORKFLOW_CHECK_STATUSES, WORKFLOW_GATE_WAIT_REASONS } from "../src/shared/workflow.ts";
 import type {
+  WorkflowDelivery,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowSubmission,
@@ -27,7 +28,11 @@ import {
   errorView,
   eventLine,
   eventsByRound,
+  firstLineOf,
   gateWaitSentence,
+  humanDecisionSummary,
+  humanDecisionsSummary,
+  initialRunRecordPane,
   inheritedAttempts,
   inheritedPasses,
   priorAttemptPassed,
@@ -43,6 +48,7 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  runRecordSummary,
   runRoundGroups,
   runRounds,
   selectedSubmission,
@@ -1027,6 +1033,57 @@ test("timeline events are phrased in names and carry their round forward", () =>
   assert.equal(prepared.detail, "");
 });
 
+test("the two guardrail events read as operator prose in the timeline without a widget", () => {
+  const names = { node: (id: string) => id === "quality" ? "Code Quality Judge" : null, round: () => 1 };
+  // A Persona failing a submission the preflight passed. The reviewer is named, the durable
+  // ids stay in the export, and the reader is told which gate said what.
+  const disagreement = eventLine({
+    id: 7,
+    runId: "run",
+    timestamp: 7,
+    kind: "readiness_review_disagreement",
+    payload: {
+      submissionId: "s1",
+      nodeId: "quality",
+      persona: "Code Quality Judge",
+      round: 1,
+      segment: 0,
+      policy: "criterion_mapped_v1",
+      evaluatorVersion: "criterion_mapped_v1",
+      readiness: "ready",
+      summary: "No acceptance criterion coverage was declared",
+    },
+  }, names, 1);
+  assert.equal(disagreement.title, "Readiness review disagreement");
+  assert.match(disagreement.detail, /Code Quality Judge/);
+  assert.match(disagreement.detail, /readiness ready/);
+  assert.match(disagreement.detail, /No acceptance criterion coverage was declared/);
+  assert.doesNotMatch(disagreement.detail, /s1/);
+
+  // The round that spent its refinements. The count and the limit are the two numbers an
+  // operator needs to know the block is a bound rather than a failure.
+  const exhausted = eventLine({
+    id: 8,
+    runId: "run",
+    timestamp: 8,
+    kind: "preflight_refinement_exhausted",
+    payload: {
+      submissionId: "s1",
+      round: 1,
+      segment: 2,
+      refinements: 2,
+      limit: 2,
+      manualRetry: true,
+    },
+  }, names, 1);
+  assert.equal(exhausted.title, "Preflight refinement exhausted");
+  assert.match(exhausted.detail, /refinements 2/);
+  assert.match(exhausted.detail, /limit 2/);
+  // A true boolean prints its key, which for a camelCase key is the key itself. That is the
+  // existing rendering rule for every boolean payload field, not something this event opts into.
+  assert.match(exhausted.detail, /manualRetry/);
+});
+
 // ---- Check outcomes ----
 //
 // Vocabulary lives in this module so a new durable enum value fails typecheck until somebody
@@ -1076,4 +1133,221 @@ test("a check outcome is read from output_json, and a Persona attempt is not mis
     checkOutcomeOf(attempt("d", "s", "gate", { output: { ...outcome, status: "flaky" } })),
     null,
   );
+});
+
+/**
+ * What the tab labels claim before anyone opens the pane behind them.
+ *
+ * This consolidation's new failure mode is a wrong number in a closed summary. A long page is
+ * merely long; a tab reading "Deliveries 4" over a ledger holding three, or "9 recorded" over a
+ * list of eight, is the surface lying to a reader who has no reason to check. Every count and
+ * every summary sentence is therefore derived once, here, and pinned directly.
+ */
+const delivery = (
+  id: string,
+  submissionId: string,
+  state: WorkflowDelivery["state"],
+  overrides: Partial<WorkflowDelivery> = {},
+): WorkflowDelivery => ({
+  id,
+  runId: "run",
+  submissionId,
+  kind: "persona_feedback",
+  nodeAttemptId: null,
+  sessionId: "session",
+  noteKey: "note",
+  payload: "PACKET",
+  payloadSha256: "a".repeat(64),
+  state,
+  error: null,
+  createdAt: 1,
+  updatedAt: 2,
+  deliveredAt: state === "delivered" ? 3 : null,
+  ...overrides,
+});
+
+const snapshot = (overrides: Record<string, unknown> = {}): WorkflowSubmission["context"] => ({
+  primaryGoal: { rawPrompt: "RAW GOAL", refined: "Refined goal", sourceNoteKey: "note" },
+  humanDecisions: [],
+  constraints: [],
+  acceptanceCriteria: [],
+  priorPersonaFeedback: [],
+  session: { agent: "claude", name: "session", cwd: null, branch: null },
+  evidence: {
+    headSha: "1665b769cafe",
+    diffFingerprint: "diff",
+    diff: "",
+    diffTruncated: false,
+    workingTreeDirty: true,
+    workingTreeStatus: [],
+    workingTreeStatusTruncated: false,
+    transcript: [],
+    transcriptAnchor: null,
+    transcriptTruncated: false,
+    standards: [],
+    standardsTruncated: false,
+  },
+  compaction: { status: "model", runner: "claude", model: "claude-haiku-4-5", error: null },
+  ...overrides,
+}) as unknown as WorkflowSubmission["context"];
+
+test("runRecordSummary counts deliveries by state and names the newest confirmed one", () => {
+  const base = detail([submission("s1", 1), submission("s2", 2)], [], {
+    deliveries: [
+      delivery("d1", "s1", "delivered", { deliveredAt: 100 }),
+      delivery("d2", "s1", "delivered", { deliveredAt: 400 }),
+      // A refused packet transitions too, so `updatedAt` is deliberately the newest row here:
+      // "Newest" is the last time something actually REACHED the session, never the last time
+      // the ledger moved.
+      delivery("d3", "s2", "refused", { updatedAt: 900 }),
+      delivery("d4", "s2", "uncertain"),
+      delivery("d5", "s2", "prepared"),
+      delivery("d6", "s2", "cancelled"),
+    ],
+  });
+  const { deliveries } = runRecordSummary(base, base.submissions[1]!);
+  assert.equal(deliveries.total, 6);
+  assert.equal(deliveries.delivered, 2);
+  assert.equal(deliveries.refused, 1);
+  assert.equal(deliveries.uncertain, 1);
+  assert.equal(deliveries.inFlight, 1);
+  assert.equal(deliveries.cancelled, 1);
+  assert.equal(deliveries.newestDeliveredAt, 400);
+  assert.equal(deliveries.inViewedRound, 4);
+  assert.equal(deliveries.blocking, true);
+
+  // The clean case: nothing blocking, and "newest" is honest about there being none.
+  const clean = detail([submission("s1", 1)], [], {
+    deliveries: [delivery("d1", "s1", "prepared")],
+  });
+  const cleanSummary = runRecordSummary(clean, clean.submissions[0]!).deliveries;
+  assert.equal(cleanSummary.blocking, false);
+  assert.equal(cleanSummary.newestDeliveredAt, null);
+  assert.equal(cleanSummary.delivered, 0);
+
+  // And the empty one, which is what withholds the tab entirely.
+  const empty = runRecordSummary(detail([submission("s1", 1)], []), null).deliveries;
+  assert.equal(empty.total, 0);
+  assert.equal(empty.inViewedRound, 0);
+  assert.equal(empty.blocking, false);
+});
+
+test("runRecordSummary reads the viewed round's intent, and says when it cannot", () => {
+  const captured = detail([submission("s1", 1, {
+    context: snapshot({
+      humanDecisions: [
+        { decision: "Answer: keep the guard", rationale: "It is the only check", source: { kind: "review", id: "d944b3b2" } },
+        { decision: "Ship phase 3 first", rationale: null, source: { kind: "foreman_episode", id: "17" } },
+      ],
+      constraints: ["Cap frozen arrays at 8"],
+      acceptanceCriteria: ["Evidence survives a repair round", "Digests deduplicate"],
+    }),
+  })], [], { contextState: "captured" });
+  const intent = runRecordSummary(captured, captured.submissions[0]!).intent;
+  assert.equal(intent.state, "captured");
+  assert.equal(intent.refinedGoal, "Refined goal");
+  assert.equal(intent.rawGoalCharacters, "RAW GOAL".length);
+  assert.equal(intent.decisionCount, 2);
+  // Bodies AND rationales, because that is what opening the rows costs a reader.
+  assert.equal(
+    intent.decisionCharacters,
+    "Answer: keep the guard".length + "It is the only check".length + "Ship phase 3 first".length,
+  );
+  assert.equal(intent.decisionsWithRationale, 1);
+  assert.equal(intent.constraintCount, 1);
+  assert.equal(intent.acceptanceCriterionCount, 2);
+  assert.deepEqual(intent.compaction, {
+    status: "model",
+    runner: "claude",
+    model: "claude-haiku-4-5",
+  });
+  assert.equal(intent.evidencePruned, false);
+  // A captured snapshot is not blocking however truncated its evidence is: a warning is not a
+  // stop, and the amber badge means "this pane holds something that stops the run".
+  assert.equal(intent.blocking, false);
+  assert.equal(humanDecisionsSummary(intent), "2 recorded, 60 characters in total");
+
+  const notCaptured = detail([submission("s1", 1)], [], { contextState: "not_captured" });
+  const missing = runRecordSummary(notCaptured, notCaptured.submissions[0]!).intent;
+  assert.equal(missing.state, "not_captured");
+  assert.equal(missing.decisionCount, 0);
+  assert.equal(humanDecisionsSummary(missing), "None captured.");
+  // A round that stopped before its snapshot was written is a FACT, and the pane states it.
+  // Nothing is stopped by it, so nothing is badged.
+  assert.equal(missing.blocking, false);
+
+  const corrupt = detail([submission("s1", 1)], [], { contextState: "corrupt" });
+  assert.equal(runRecordSummary(corrupt, corrupt.submissions[0]!).intent.blocking, true);
+
+  // `contextState` is the RUN's verdict - the newest full submission's kind - so a scrubbed
+  // round can be unreadable while the run still says "captured". That is a durable record this
+  // build cannot audit, and it blocks.
+  const unreadable = detail([
+    submission("s1", 1, { context: { primaryGoal: {}, evidence: {}, compaction: {} } }),
+    submission("s2", 2, { context: snapshot() }),
+  ], [], { contextState: "captured" });
+  const stale = runRecordSummary(unreadable, unreadable.submissions[0]!).intent;
+  assert.equal(stale.state, "unreadable");
+  assert.equal(stale.blocking, true);
+  assert.equal(runRecordSummary(unreadable, unreadable.submissions[1]!).intent.state, "captured");
+
+  // An Inspector-only round never captures one at all, and says so rather than reading the
+  // run's newest snapshot as though it were this round's.
+  const bypass = detail([submission("s1", 1, { mode: "inspector_only", context: snapshot() })], [], {
+    contextState: "captured",
+  });
+  assert.equal(runRecordSummary(bypass, bypass.submissions[0]!).intent.state, "not_captured");
+});
+
+test("a decision row summarises its size and its first line without truncating the body", () => {
+  assert.equal(
+    humanDecisionSummary({ decision: "a".repeat(2600), rationale: "b".repeat(23) }),
+    "2,623 characters · has rationale",
+  );
+  assert.equal(humanDecisionSummary({ decision: "short", rationale: null }), "5 characters");
+  // The FIRST LINE, cut at the newline rather than at a character count: the opening line of a
+  // recorded decision is a sentence somebody wrote and its first eighty characters are not.
+  assert.equal(firstLineOf("  Keep the guard  \n\nBecause the check is the only one"), "Keep the guard");
+  assert.equal(firstLineOf("no newline here"), "no newline here");
+  assert.equal(firstLineOf("x".repeat(200)), `${"x".repeat(159)}…`);
+  // Leading blank lines are skipped rather than yielding an empty row: a decision pasted in
+  // with a blank first line is still a decision, and a row with nothing on it is unscannable.
+  assert.equal(firstLineOf("   \n  body"), "body");
+});
+
+/**
+ * Which pane opens, and what may never move a reader off the one they are on.
+ *
+ * The amber badge alone does not satisfy "a blocking state cannot hide": a badge on a tab
+ * nobody clicks is still one click away from the thing that stopped the run. So the container
+ * opens itself on a blocking pane - and an EXPLICIT pane in the address bar overrules that,
+ * because a link and the back button have to stay honest.
+ */
+test("the run record opens on the route's pane, then on a blocking one, then on the worklist", () => {
+  const bar = (blocking: string[]) =>
+    ["worklist", "deliveries", "intent"].map((id) => ({ id, blocking: blocking.includes(id) }));
+
+  // Nothing blocking: the worklist, which is the primary object and the final fallback.
+  assert.equal(initialRunRecordPane(bar([]), null, "worklist"), "worklist");
+  // A blocking worklist beats a blocking Deliveries. A run with both an open change and a
+  // refused packet must not bury the change.
+  assert.equal(initialRunRecordPane(bar(["worklist", "deliveries"]), null, "worklist"), "worklist");
+  // With the worklist clean, the first blocking pane in TAB ORDER.
+  assert.equal(initialRunRecordPane(bar(["deliveries", "intent"]), null, "worklist"), "deliveries");
+  assert.equal(initialRunRecordPane(bar(["intent"]), null, "worklist"), "intent");
+  // An explicit pane wins over a blocking one, in both directions.
+  assert.equal(initialRunRecordPane(bar(["deliveries"]), "worklist", "worklist"), "worklist");
+  assert.equal(initialRunRecordPane(bar(["worklist"]), "intent", "worklist"), "intent");
+  // A name this run does not OFFER is ignored for selection and the fallback applies - it is
+  // not rewritten out of the address bar, and it does not leave the container drawing nothing.
+  const withoutIntent = [
+    { id: "worklist", blocking: false },
+    { id: "deliveries", blocking: true },
+  ];
+  assert.equal(initialRunRecordPane(withoutIntent, "intent", "worklist"), "deliveries");
+  assert.equal(initialRunRecordPane(
+    [{ id: "worklist", blocking: false }],
+    "deliveries",
+    "worklist",
+  ), "worklist");
 });

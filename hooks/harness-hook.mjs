@@ -116,7 +116,21 @@ async function main() {
     payload = {};
   }
   const event = process.argv[2] || payload.hook_event_name || "";
-  await postHookEvent(toIngest(payload, event));
+  const decision = await postHookEvent(toIngest(payload, event));
+  // The one thing this bridge ever writes to stdout, and only when the daemon asked for it.
+  // Claude reads `{"decision":"block","reason":…}` on a `UserPromptSubmit` as "do not process
+  // this prompt", and shows the reason to the person who typed it. That is how a prompt typed
+  // straight into a concluded mission's pane is stopped BEFORE a turn begins, rather than
+  // having its turn killed afterwards.
+  //
+  // Guarded on the event as well as the shape: nothing else may be refused through here, so a
+  // daemon that answered oddly on some other event can only be ignored.
+  if (event === "UserPromptSubmit" && decision?.decision === "block") {
+    process.stdout.write(JSON.stringify({
+      decision: "block",
+      reason: typeof decision.reason === "string" ? decision.reason : "Mission Control closed this session.",
+    }));
+  }
 }
 
 main().finally(() => process.exit(0));

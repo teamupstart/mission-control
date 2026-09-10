@@ -192,6 +192,34 @@ export function writeGhProductScript(home: string, script: FakeGhProductScript):
 }
 
 /**
+ * How `FAKE_GH` should answer the two write-back verbs.
+ *
+ * These are the calls a task source makes ONTO an item somebody else is watching, and both
+ * are why this fake is a blast dam rather than a cost dam: `gh issue comment` posts on a
+ * real thread and `gh issue close` moves real work, and neither is undone by deleting a row
+ * in the daemon's ledger. On a developer's machine, where `gh` is signed in, an unfaked run
+ * would do both for real.
+ *
+ * `refused` is the shape a retry-safe refusal has - a non-zero exit with a message and no
+ * effect - which is the state the panel's **Retry** exists to clear. Distinguished from the
+ * default here rather than from the daemon's side, because the whole point of the failed /
+ * unknown split is that it is read off what the process did.
+ */
+export interface FakeGhWritebackScript {
+  comment?: "ok" | "refused";
+  close?: "ok" | "refused";
+}
+
+/** Where a spec scripts `FAKE_GH`'s write-back behavior for one daemon. */
+export function ghWritebackScriptPath(home: string): string {
+  return join(home, "gh-writeback-script.json");
+}
+
+export function writeGhWritebackScript(home: string, script: FakeGhWritebackScript): void {
+  writeFileSync(ghWritebackScriptPath(home), JSON.stringify(script, null, 2));
+}
+
+/**
  * The stand-in terminal backend, so a spec can watch what a click asks a terminal to run.
  *
  * cmux, not tmux, and the choice is structural. tmux availability is a question about a
@@ -236,18 +264,32 @@ const FAKE_HERDR = `#!/usr/bin/env node
 const { appendFileSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } = require("node:fs");
 const { createServer } = require("node:net");
 const { join } = require("node:path");
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const argv = process.argv.slice(2);
 const home = process.env.MISSION_HOME;
 const socketPath = join(home, "fake-herdr.sock");
 const recordPath = join(process.env.MC_E2E_RECORD_DIR, "herdr-requests.jsonl");
 const status = (body) => process.stdout.write(JSON.stringify(body) + "\\n");
+// "newer" is a Herdr past the supported floor on both axes, which is what a real 0.9.0 is.
+// Mission Control pins a minimum, not an equality, so this must be as ordinary as the floor.
+const newer = process.env.MC_E2E_HERDR_MODE === "newer";
+const VERSION = newer ? "0.9.0" : "0.8.2";
+const PROTOCOL = newer ? 22 : 20;
+// 0.9.0 renamed the \`pane.split\` response type. It is the one response whose type moved
+// without a field moving, so a fake claiming to be 0.9.0 has to answer under the new name or
+// it quietly stops standing in for the server it names.
+const SPLIT_TYPE = newer ? "pane_info" : "pane_created";
+// A server that accepts the command and whose shell never runs it - which is what every Herdr
+// dispatch used to be, when the Enter was swallowed inside the bracketed paste. The pane keeps
+// answering with its login shell and nothing else, so a launch has something to actually fail
+// against rather than only a passing path to confirm.
+const stuck = process.env.MC_E2E_HERDR_MODE === "stuck";
 if (argv[0] === "status" && argv[1] === "server") {
   if (process.env.MC_E2E_HERDR_MODE === "incompatible") {
     status({ status: "running", running: true, version: "0.7.0", protocol: 19, capabilities: {}, compatible: false, socket: socketPath, session: null, restart_needed: true });
   } else {
     const running = existsSync(socketPath);
-    status({ status: running ? "running" : "not_running", running, version: running ? "0.8.2" : null, protocol: running ? 20 : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
+    status({ status: running ? "running" : "not_running", running, version: running ? VERSION : null, protocol: running ? PROTOCOL : null, capabilities: running ? {} : null, compatible: running ? true : null, socket: socketPath, session: null, restart_needed: false });
   }
   process.exit(0);
 }
@@ -300,6 +342,30 @@ const ensureAgent = (pane) => {
   pane.shell_pid = child.pid;
   return child.pid;
 };
+// What the pane is REALLY running, which is what \`pane.process_info\` reports and what the
+// launch path now verifies before it calls a launch successful. \`shell_pid\` is the pane's
+// shell - here the \`script\` process that owns the tty - and the agent is its child, so the
+// two pids differ exactly as they do on a real server. Cached once resolved: the launch polls
+// this, and so does discovery on its 100ms tick.
+const foregroundProcesses = (pane) => {
+  if (!pane) return [];
+  // The measured shape of a real stuck pane: one foreground process, and its pid IS the
+  // login shell's. Nothing was ever started under it.
+  if (pane.stuck) return [{ pid: pane.shell_pid, name: "zsh", cwd: pane.cwd }];
+  if (!pane.shell_pid) return [];
+  if (pane.foreground_pid) return [{ pid: pane.foreground_pid, name: "node", cwd: pane.cwd }];
+  try {
+    const found = execFileSync("pgrep", ["-P", String(pane.shell_pid)], { encoding: "utf8" })
+      .split("\\n").map((line) => Number(line.trim())).filter((pid) => pid > 0);
+    if (found.length) pane.foreground_pid = found[0];
+  } catch {
+    // pgrep exits 1 when the shell has no children yet. That is "still only the shell",
+    // which is the honest answer and the one a launch keeps polling through.
+  }
+  return pane.foreground_pid
+    ? [{ pid: pane.foreground_pid, name: "node", cwd: pane.cwd }]
+    : [{ pid: pane.shell_pid, name: "script", cwd: pane.cwd }];
+};
 // Stable Herdr closes a non-subscription connection after its first response.
 const ok = (socket, id, result = { type: "ok" }) => socket.end(JSON.stringify({ id, result }) + "\\n");
 const server = createServer((socket) => {
@@ -318,7 +384,7 @@ const server = createServer((socket) => {
         ok(socket, request.id, {
           type: "session_snapshot",
           snapshot: {
-            version: "0.8.2", protocol: 20,
+            version: VERSION, protocol: PROTOCOL,
             workspaces: values.map((x) => ({ workspace_id: x.workspaceId, label: x.label })),
             tabs: values.map((x) => ({ tab_id: x.tabId, workspace_id: x.workspaceId, number: 1, label: "main" })),
             panes: values.flatMap((x) => x.panes.map((pane) => ({ pane_id: pane.pane_id, workspace_id: x.workspaceId, tab_id: x.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd }))),
@@ -327,12 +393,12 @@ const server = createServer((socket) => {
         });
       } else if (request.method === "pane.process_info") {
         const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
-        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: pane?.shell_pid || null, tty: null, foreground_processes: [] } });
+        ok(socket, request.id, { type: "pane_process_info", process_info: { pane_id: p.pane_id, shell_pid: pane?.shell_pid || null, tty: null, foreground_processes: foregroundProcesses(pane) } });
       } else if (request.method === "workspace.create") {
         serial += 1;
         const workspaceId = "fake-workspace-" + serial;
         const tabId = workspaceId + ":tab";
-        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: null };
+        const pane = { pane_id: workspaceId + ":pane", cwd: p.cwd, shell_pid: stuck ? process.pid : null, pasted: "", foreground_pid: null, stuck };
         workspaces.set(workspaceId, { workspaceId, tabId, label: p.label, panes: [pane] });
         ok(socket, request.id, {
           type: "workspace_created",
@@ -341,16 +407,31 @@ const server = createServer((socket) => {
           root_pane: { pane_id: pane.pane_id, workspace_id: workspaceId, tab_id: tabId, cwd: pane.cwd, foreground_cwd: pane.cwd },
         });
       } else if (request.method === "pane.send_input") {
+        // A paste lands in the pane's edit buffer and runs NOTHING until it is submitted.
+        // Modelling that is the point: Mission Control used to send the text and its Enter in
+        // one call, and at dispatch size the Enter was swallowed by the shell's bracketed
+        // paste, so the command sat here unexecuted. The Enter arrives separately below.
         const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        if (pane) pane.pasted = String(p.text || "");
         if (pane && Array.isArray(p.keys) && p.keys.includes("enter")) ensureAgent(pane);
+        ok(socket, request.id);
+      } else if (request.method === "pane.send_keys") {
+        const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        if (!stuck && pane && Array.isArray(p.keys) && p.keys.includes("enter") && pane.pasted) ensureAgent(pane);
         ok(socket, request.id);
       } else if (request.method === "pane.split") {
         const workspace = [...workspaces.values()].find((x) => x.panes.some((pane) => pane.pane_id === p.target_pane_id));
-        const pane = { pane_id: workspace.workspaceId + ":side", cwd: p.cwd, shell_pid: null };
+        const pane = { pane_id: workspace.workspaceId + ":side", cwd: p.cwd, shell_pid: null, pasted: "", foreground_pid: null };
         workspace.panes.push(pane);
-        ok(socket, request.id, { type: "pane_created", pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
+        ok(socket, request.id, { type: SPLIT_TYPE, pane: { pane_id: pane.pane_id, workspace_id: workspace.workspaceId, tab_id: workspace.tabId, cwd: pane.cwd, foreground_cwd: pane.cwd } });
       } else if (request.method === "pane.read") {
-        ok(socket, request.id, { type: "pane_read", read: { pane_id: p.pane_id, text: "fake Herdr pane output" } });
+        const pane = [...workspaces.values()].flatMap((x) => x.panes).find((x) => x.pane_id === p.pane_id);
+        // Wrapped across two rows the way a real pane wraps a long command, so a reader that
+        // matched on layout rather than on content would fail here.
+        const shown = pane?.pasted
+          ? "~ % " + String(pane.pasted).slice(0, 8) + "\\n" + String(pane.pasted).slice(8)
+          : "fake Herdr pane output";
+        ok(socket, request.id, { type: "pane_read", read: { pane_id: p.pane_id, text: shown } });
       } else if (request.method === "workspace.rename") {
         const workspace = workspaces.get(p.workspace_id);
         if (workspace) workspace.label = p.label;
@@ -463,6 +544,17 @@ function productScript() {
     return fallback;
   }
 }
+/** The write-back script, re-read per call. Absent means both verbs succeed. */
+function writebackScript() {
+  const fallback = { comment: "ok", close: "ok" };
+  const path = process.env.MC_E2E_GH_WRITEBACK;
+  if (!path) return fallback;
+  try {
+    return { ...fallback, ...JSON.parse(require("node:fs").readFileSync(path, "utf8")) };
+  } catch {
+    return fallback;
+  }
+}
 const REQUIRED_LABELS = ${JSON.stringify(PRODUCT_ISSUE_REQUIRED_LABELS)};
 const product = productScript();
 /** Fail exactly the scripted preflight question, the way the real CLI fails it. */
@@ -491,6 +583,14 @@ if (argv[0] === "--version") {
     ? REQUIRED_LABELS.filter((name) => name !== "usability")
     : (product.labels || REQUIRED_LABELS);
   process.stdout.write(JSON.stringify([names.map((name) => ({ name }))]) + "\\n");
+} else if (command.startsWith("issue comment") || command.startsWith("issue close")) {
+  // The two write-back verbs. Recorded above like everything else, so a spec reads the body
+  // and the close reason off the argv - and nothing is published either way.
+  const verb = argv[1] === "comment" ? "comment" : "close";
+  if (writebackScript()[verb] === "refused") {
+    process.stderr.write("could not " + verb + " issue: HTTP 403 (fake)\\n");
+    process.exit(1);
+  }
 } else if (command.startsWith("issue create") && command.includes("${PRODUCT_ISSUE_STATUS_LABEL}")) {
   // A product report, distinguished from every other \`issue create\` by the fixed triage
   // label only the product reporter attaches. Task sources and the PR path keep their

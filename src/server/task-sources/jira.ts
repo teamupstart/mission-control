@@ -1543,17 +1543,32 @@ export function commentBodyText(notice: WritebackNotice): string {
  */
 export function commentBodyAdf(notice: WritebackNotice): unknown {
   const url = notice.prUrl ?? "";
+  /**
+   * Plain text as inline nodes, with every newline as a `hardBreak`.
+   *
+   * ADF does not allow a literal newline inside a text node - Jira answers one with a 400 -
+   * and a completion's own words are the block that can carry them, since `outcome` is
+   * whatever the task wrote. The CLI rung keeps the newlines as newlines, which is what it
+   * wants; this is the same words in the shape the REST rung accepts.
+   */
+  const text = (raw: string): unknown[] => {
+    const parts = raw.split("\n");
+    const nodes: unknown[] = [];
+    for (const [i, part] of parts.entries()) {
+      if (i > 0) nodes.push({ type: "hardBreak" });
+      if (part) nodes.push({ type: "text", text: part });
+    }
+    return nodes;
+  };
   const paragraph = (block: string): unknown => {
     const at = url ? block.indexOf(url) : -1;
-    if (at < 0) return { type: "paragraph", content: [{ type: "text", text: block }] };
-    const before = block.slice(0, at);
-    const after = block.slice(at + url.length);
+    if (at < 0) return { type: "paragraph", content: text(block) };
     return {
       type: "paragraph",
       content: [
-        ...(before ? [{ type: "text", text: before }] : []),
+        ...text(block.slice(0, at)),
         { type: "text", text: url, marks: [{ type: "link", attrs: { href: url } }] },
-        ...(after ? [{ type: "text", text: after }] : []),
+        ...text(block.slice(at + url.length)),
       ],
     };
   };
@@ -1765,6 +1780,37 @@ export function restWritebackFailure(
     outcomeUnknown: unknown,
     detail: null,
   };
+}
+
+/**
+ * Read one failed REST READ, which can never be an unknown outcome.
+ *
+ * A read does not mutate, so there is nothing about it that "may have landed". Routing it
+ * through the write reader was wrong in a way that costs real work: that one reports any
+ * answerless failure other than a refused connection as `outcomeUnknown`, and a timed-out
+ * `AbortSignal` produces exactly that - so a transient blip while fetching an issue's
+ * transitions marked the delivery unknown, and the ledger never retries an unknown
+ * automatically. A resolve that changed nothing in Jira would sit there waiting for somebody
+ * to go and look. It is always safe to retry a read, so this always says so.
+ */
+export function restReadFailure(res: RestAnswer, cfg: JiraConfig, label: string): WritebackResult {
+  const why = restMessage(res.body);
+  const host = siteHost(cfg.site) || "the configured site";
+  let reason: string;
+  if (res.status === 0) {
+    reason = EGRESS_REFUSAL.test(res.body)
+      ? res.body
+      : `could not reach Jira at ${host}${why ? ` - ${why}` : ""}`;
+  } else if (res.status === 401 || res.status === 403) {
+    reason =
+      `Jira refused this read (HTTP ${res.status})${why ? ` - ${why}` : ""} - check that ` +
+      "JIRA_EMAIL is allowed to see this issue";
+  } else if (res.status === 404) {
+    reason = `Jira has no such issue at ${host} (HTTP 404)${why ? ` - ${why}` : ""}`;
+  } else {
+    reason = `Jira refused this read (HTTP ${res.status})${why ? ` - ${why}` : ""}`;
+  }
+  return { error: `${label} - ${reason}`, outcomeUnknown: false, detail: null };
 }
 
 /** Read one failed CLI write, under the same rule. A child that never reported is unknown. */
@@ -1998,7 +2044,9 @@ async function restResolve(
     `/rest/api/3/issue/${key}?fields=status&expand=transitions`,
     { method: "GET" },
   );
-  if (!read.ok) return restWritebackFailure(read, cfg, `${key} could not be read`);
+  // The read's own failure path. Reserve the write reader's unknown-outcome handling for the
+  // transition POST below, which is the only call here that can leave a move in doubt.
+  if (!read.ok) return restReadFailure(read, cfg, `${key} could not be read`);
   let body: unknown;
   try {
     body = JSON.parse(read.body);

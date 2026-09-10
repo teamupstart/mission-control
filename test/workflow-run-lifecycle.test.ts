@@ -173,6 +173,10 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   session_action_parallel_unsupported: { detail: asJson({ error: "parallel" }), kind: "opaque" },
   session_disappeared: { detail: asJson({ reason: "session_disappeared" }), kind: "opaque" },
   stale_capture: { detail: asJson({ error: "stale" }), kind: "opaque" },
+  preflight_refinement_exhausted: {
+    detail: asJson({ submissionId: "s1", round: 1, refinements: 2 }),
+    kind: "opaque",
+  },
   unchanged_evidence: {
     detail: asJson({ evidenceFingerprint: "fp", unchangedRefusals: 1 }),
     kind: "opaque",

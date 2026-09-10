@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi-managed Amazon Bedrock models</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0b1020; --panel:#121a2d; --ink:#edf2ff; --muted:#aebbd3; --line:#2a3855; --accent:#77d3ff; --green:#72e0a4; --amber:#ffc96b; --red:#ff8f9b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { width:min(1120px,calc(100% - 32px)); margin:0 auto; padding:38px 0 72px; }
+  header, section { background:var(--panel); border:1px solid var(--line); border-radius:18px; padding:28px; margin:0 0 20px; }
+  header { background:linear-gradient(145deg,#152541,#10182a); }
+  h1 { font-size:clamp(2rem,4vw,3.5rem); line-height:1.04; margin:0 0 12px; letter-spacing:-.035em; }
+  h2 { margin:0 0 14px; font-size:1.45rem; }
+  h3 { margin:24px 0 8px; font-size:1.08rem; }
+  p { margin:8px 0 14px; }
+  .lede { max-width:900px; font-size:1.16rem; color:#dce7fb; }
+  .kicker { color:var(--accent); text-transform:uppercase; letter-spacing:.12em; font-size:.76rem; font-weight:750; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+  .chip { border:1px solid #395071; border-radius:999px; padding:5px 10px; color:#cfe9ff; background:#0e1729; font-size:.82rem; }
+  .answer { border-left:4px solid var(--green); padding-left:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; }
+  .card { background:#0d1527; border:1px solid var(--line); border-radius:13px; padding:16px; }
+  .card h3 { margin:0 0 6px; }
+  .card p { color:var(--muted); margin:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0; }
+  th, td { border-bottom:1px solid var(--line); padding:11px 10px; text-align:left; vertical-align:top; }
+  th { color:#c7d8f5; font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; }
+  code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:#bde7ff; font-size:.9em; }
+  ul, ol { padding-left:22px; }
+  li { margin:7px 0; }
+  .muted { color:var(--muted); }
+  .callout { border:1px solid #41658c; background:#0d2036; border-radius:12px; padding:14px 16px; }
+  .warn { border-color:#765b2b; background:#251d10; }
+  figure { margin:18px 0 4px; overflow:auto; }
+  svg { width:100%; min-width:760px; height:auto; display:block; background:#091223; border:1px solid var(--line); border-radius:14px; }
+  .node { fill:#14233d; stroke:#4a668f; stroke-width:2; }
+  .external { fill:#1c2938; stroke:#ffc96b; stroke-width:2; }
+  .flow { stroke:#77d3ff; stroke-width:2.4; fill:none; marker-end:url(#arrow); }
+  .dash { stroke-dasharray:7 6; }
+  .t { fill:#edf2ff; font:600 15px ui-sans-serif,system-ui,sans-serif; text-anchor:middle; }
+  .s { fill:#aebbd3; font:12px ui-sans-serif,system-ui,sans-serif; text-anchor:middle; }
+  .phase { border-top:4px solid var(--accent); }
+  .phase + .phase { border-top-color:var(--green); }
+  a { color:var(--accent); }
+  footer { color:var(--muted); padding:4px 6px; font-size:.85rem; }
+  @media print { body { background:white; color:#172033; } header,section,.card { background:white; border-color:#ccd4df; } .lede,.muted,.card p,footer { color:#445167; } code { color:#075985; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="kicker">Implementation plan</div>
+    <h1>Pi-managed Amazon Bedrock models</h1>
+    <p class="lede answer"><strong>Answer:</strong> integrate Bedrock through Pi's first-class TypeScript SDK, not through a new AWS client or Bifrost. Keep Pi's current terminal runtime, add the shared managed SDK runtime, preserve provider-qualified model ids, and leave all AWS credentials under Pi's ownership.</p>
+    <div class="chips">
+      <span class="chip">2 mergeable phases</span>
+      <span class="chip">1,100-1,650 production LOC</span>
+      <span class="chip">No database migration expected</span>
+      <span class="chip">No AWS secrets in Mission Control</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Outcome</h2>
+    <p>Operators sign in with Pi's <code>/login amazon-bedrock</code>, select a live <code>amazon-bedrock/&lt;model-id&gt;</code> in Mission Control's existing picker, and run it in either Pi terminal or managed SDK mode. Managed sessions gain the lifecycle and interaction behavior already expected from Claude and Codex sessions.</p>
+    <p>The current terminal route already works: Pi discovers provider-qualified model ids and the dispatcher passes the selected id to <code>pi --model</code>. The feature is therefore a managed-runtime integration and product-hardening effort, not an Amazon Bedrock API implementation.</p>
+  </section>
+
+  <section>
+    <h2>Locked decisions</h2>
+    <table>
+      <thead><tr><th>Decision</th><th>Contract</th></tr></thead>
+      <tbody>
+        <tr><td>Provider ownership</td><td>Bedrock stays a Pi provider. Pi owns discovery, model metadata, credentials, refresh, and inference.</td></tr>
+        <tr><td>Managed transport</td><td>Pin <code>@earendil-works/pi-coding-agent</code> and use <code>createAgentSessionRuntime</code>, <code>ModelRuntime</code>, <code>SessionManager</code>, typed events, and <code>ExtensionUIContext</code>.</td></tr>
+        <tr><td>Model identity</td><td>Preserve the complete id such as <code>amazon-bedrock/deepseek.v3.2</code>. No Mission-owned allowlist or AWS payload translation.</td></tr>
+        <tr><td>Credentials</td><td>Mission Control stores no AWS keys, profiles, regions, or SSO cache. Errors point back to Pi login or AWS refresh.</td></tr>
+        <tr><td>Lifecycle</td><td>The Pi adapter joins the existing <code>SdkSpec</code> registry and supervisor. Restore, stop, handoff, and eviction remain shared.</td></tr>
+        <tr><td>Trust</td><td>Project-local executable resources do not load before Pi project trust is resolved.</td></tr>
+        <tr><td>Automation</td><td>Work Queue support arrives only after lifecycle, question, and turn-complete events are deterministic.</td></tr>
+      </tbody>
+    </table>
+    <div class="callout warn"><strong>Explicit exclusions:</strong> no Bifrost coding-tool key, direct AWS SDK, MCP client inside Pi, invented Pi permission modes, or unproven multi-repository support.</div>
+  </section>
+
+  <section>
+    <h2>Architecture and request flow</h2>
+    <figure>
+      <svg viewBox="0 0 1080 470" role="img" aria-label="Operator configures Amazon Bedrock through Pi. Mission Control dispatches a provider-qualified model to terminal Pi or to the shared SDK supervisor and Pi adapter. Pi performs Bedrock requests, while normalized events return through the registry to the dashboard and Work Queue.">
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#77d3ff"/></marker></defs>
+        <rect class="node" x="40" y="45" width="205" height="74" rx="12"/><text class="t" x="142" y="76">Operator</text><text class="s" x="142" y="99">/login amazon-bedrock</text>
+        <rect class="external" x="438" y="35" width="220" height="94" rx="12"/><text class="t" x="548" y="72">Pi model runtime</text><text class="s" x="548" y="95">auth + live catalog</text>
+        <rect class="external" x="835" y="45" width="205" height="74" rx="12"/><text class="t" x="937" y="76">Amazon Bedrock</text><text class="s" x="937" y="99">Converse API</text>
+        <path class="flow" d="M245 82 L438 82"/><path class="flow" d="M658 82 L835 82"/>
+
+        <rect class="node" x="40" y="198" width="205" height="80" rx="12"/><text class="t" x="142" y="231">Model picker</text><text class="s" x="142" y="253">provider/model id</text>
+        <rect class="node" x="320" y="198" width="205" height="80" rx="12"/><text class="t" x="422" y="231">Shared dispatcher</text><text class="s" x="422" y="253">terminal or sdk</text>
+        <rect class="node" x="600" y="176" width="205" height="80" rx="12"/><text class="t" x="702" y="209">SDK supervisor</text><text class="s" x="702" y="231">durable lifecycle</text>
+        <rect class="node" x="835" y="176" width="205" height="80" rx="12"/><text class="t" x="937" y="209">Pi SDK adapter</text><text class="s" x="937" y="231">typed normalization</text>
+        <rect class="node" x="600" y="313" width="205" height="80" rx="12"/><text class="t" x="702" y="346">Registry + SSE</text><text class="s" x="702" y="368">one ownership path</text>
+        <rect class="node" x="835" y="313" width="205" height="80" rx="12"/><text class="t" x="937" y="346">Dashboard + queue</text><text class="s" x="937" y="368">questions and work</text>
+        <rect class="node" x="320" y="329" width="205" height="64" rx="12"/><text class="t" x="422" y="356">Pi terminal</text><text class="s" x="422" y="377">existing path retained</text>
+
+        <path class="flow" d="M245 238 L320 238"/><path class="flow" d="M525 224 L600 216"/><path class="flow" d="M805 216 L835 216"/>
+        <path class="flow dash" d="M937 176 L937 129"/><path class="flow" d="M835 238 C790 278 760 292 732 313"/>
+        <path class="flow" d="M805 353 L835 353"/><path class="flow" d="M422 278 L422 329"/>
+        <path class="flow dash" d="M548 129 C548 150 675 145 884 176"/>
+      </svg>
+    </figure>
+    <p class="muted">Mission Control owns orchestration and projection. Pi owns provider configuration and model execution. Both runtime choices consume the same model identity.</p>
+  </section>
+
+  <section>
+    <h2>Requirements</h2>
+    <div class="grid">
+      <div class="card"><h3>Discover and dispatch</h3><p>Show Bedrock exactly when Pi reports it. Preserve the full model id through terminal and SDK paths, including stored-model fallback behavior.</p></div>
+      <div class="card"><h3>Launch and restore</h3><p>Bind the Mission Control session to a durable Pi session file. Restart restoration must reopen that exact conversation or fail explicitly.</p></div>
+      <div class="card"><h3>Normalize lifecycle</h3><p>Map Pi events to bound, state, activity, text, thinking, tool, usage, turn completion, question, and exit events without duplicate turns.</p></div>
+      <div class="card"><h3>Control sessions</h3><p>Support prompt, steer/follow-up, interrupt, model/thinking, clear/new-session, stop, and terminal handoff through the shared SDK contract.</p></div>
+      <div class="card"><h3>Trust and UI</h3><p>Resolve project trust before local resources load. Correlate select, confirm, input, and editor prompts to one answer or cancellation.</p></div>
+      <div class="card"><h3>Automate safely</h3><p>Enable Work Queue only for idle managed sessions after question and turn-completion invariants are proven. Attribute PR creation from observed tool output.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Failure contracts</h2>
+    <table>
+      <thead><tr><th>Condition</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr><td>SDK unavailable</td><td>Refuse managed launch with a focused diagnostic while terminal Pi remains usable.</td></tr>
+        <tr><td>Bedrock login absent or expired</td><td>Explain the Pi login or AWS refresh action. Never solicit or mutate a credential.</td></tr>
+        <tr><td>Stored model disappears</td><td>Retain the configured id visibly and fail launch. Never substitute a different model.</td></tr>
+        <tr><td>Session file missing or corrupt</td><td>Refuse resume. Never create a new conversation under the prior Mission Control id.</td></tr>
+        <tr><td>Project trust unresolved</td><td>Do not load local executable resources.</td></tr>
+        <tr><td>Question consumer disappears</td><td>Cancel or time out the Pi promise exactly once so the session cannot deadlock.</td></tr>
+        <tr><td>Terminal session queued</td><td>Retain the shared SDK-runtime eligibility refusal.</td></tr>
+      </tbody>
+    </table>
+    <p>No schema migration is expected. The existing runtime, driver session id, usage, question, and event records are reused. Any essential persisted-field discovery follows the additive database upgrade path and is documented as a deviation.</p>
+  </section>
+
+  <section>
+    <h2>Delivery shape</h2>
+    <div class="grid">
+      <div class="card phase"><h3>Phase 1: Managed Pi Bedrock runtime</h3><p>650-950 production LOC. Pin the SDK, add the Pi <code>SdkSpec</code>, normalize core events and lifecycle, wire capabilities, harden provider diagnostics, and prove terminal plus SDK Bedrock dispatch with fakes.</p></div>
+      <div class="card phase"><h3>Phase 2: Structured interaction and automation</h3><p>450-700 production LOC. Add project trust, the SDK UI bridge, question cleanup, Work Queue eligibility and acknowledgement, and pull-request provenance.</p></div>
+    </div>
+    <p>Phase 2 depends directly on Phase 1 and cannot run concurrently. The split makes direct managed sessions independently usable while isolating the harder question/concurrency boundary from the base transport.</p>
+  </section>
+
+  <section>
+    <h2>Verification</h2>
+    <ul>
+      <li>Inject fake Pi SDK dependencies for unit and supervisor tests. Never read <code>~/.pi</code>, contact AWS, renew SSO, or spend model tokens.</li>
+      <li>Cover provider-qualified ids, session persistence, event ordering, usage, control methods, trust, questions, and diagnostic classification.</li>
+      <li>Add Playwright coverage for selecting a fake Bedrock model, choosing SDK, dispatching, answering, interrupting, clearing, handoff, and queue follow-up.</li>
+      <li>Run focused tests, <code>npm run typecheck</code>, <code>npm run lint</code>, <code>npm test</code>, <code>npm run build</code>, <code>npm run smoke</code>, and <code>npm run test:e2e</code>. Add <code>npm run package</code> when packaged asset loading differs.</li>
+      <li>An opt-in harmless real Bedrock prompt is supplemental manual evidence only.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation ownership</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Owner</th></tr></thead>
+      <tbody>
+        <tr><td>Vendor boundary</td><td>New <code>src/server/harness/pi/sdk-deps.ts</code> plus focused adapter modules</td></tr>
+        <tr><td>Registration and capabilities</td><td><code>src/server/harness/index.ts</code> and <code>src/shared/harness-capabilities.ts</code></td></tr>
+        <tr><td>Lifecycle</td><td>Reuse <code>src/server/sdk/supervisor.ts</code>, control/store/restore, and registry eviction</td></tr>
+        <tr><td>Questions and queue</td><td>Reuse shared SDK question and Work Queue contracts; Pi code only adapts typed events</td></tr>
+        <tr><td>Browser proof</td><td>Extend Pi catalog and SDK E2E fixtures/specs with fake agents</td></tr>
+        <tr><td>Documentation</td><td><code>docs/sessions.md</code> and supersession note for the older Pi RPC phase</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Success criteria</h2>
+    <ul>
+      <li>A configured <code>amazon-bedrock/*</code> model works in terminal and managed Pi with its exact id preserved.</li>
+      <li>Managed Pi survives navigation and daemon restart and supports send, interrupt, clear, stop, and handoff with honest usage and state.</li>
+      <li>No AWS secret-bearing data enters Mission Control state, logs, task intents, or tests.</li>
+      <li>Project resources remain trust-gated, structured questions cannot hang, and Work Queue starts only after its invariants are proven.</li>
+      <li>Existing Pi terminal, Claude, and Codex behavior remains green.</li>
+    </ul>
+    <p>Full detail is retained in <a href="plan.md">plan.md</a>.</p>
+  </section>
+  <footer>Static, self-contained plan. No external requests or client-side scripts.</footer>
+</main>
+</body>
+</html>

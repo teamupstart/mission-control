@@ -20,6 +20,7 @@ import {
   writebackBlocks,
   cliFailure,
   cliFault,
+  restReadFailure,
   restWritebackFailure,
 } from "../src/server/task-sources/jira.ts";
 import { TASK_SOURCES } from "../src/server/task-sources/index.ts";
@@ -784,6 +785,68 @@ test("a comment is POSTed as ADF, and the link goes first so a retry stays cheap
   assert.match(flat, /"type":"link"/);
   assert.match(flat, /https:\/\/github\.com\/acme\/demo\/pull\/9/);
   assert.match(flat, /Fix the parser/);
+});
+
+// ADF does not allow a literal newline inside a text node - Jira answers one with a 400 - and
+// a completion's own words are the block that can carry them, since `outcome` is whatever the
+// task wrote. The CLI rung keeps them as newlines, which is what it wants.
+test("a multi-line outcome becomes hardBreak nodes, never a newline inside a text node", () => {
+  const n = notice({ signal: "task-completed", outcome: "shipped it\nand tidied up\n\nthen left" });
+  const doc = commentBodyAdf(n) as {
+    content: { content: { type: string; text?: string }[] }[];
+  };
+  const nodes = doc.content.flatMap((p) => p.content);
+  for (const node of nodes) {
+    if (node.type !== "text") continue;
+    assert.doesNotMatch(node.text ?? "", /\n/, "a text node carried a literal newline");
+  }
+  assert.ok(
+    nodes.some((node) => node.type === "hardBreak"),
+    "a multi-line outcome produced no hardBreak",
+  );
+  // The words survive, in order, whichever shape they are in.
+  const rendered = nodes.map((node) => (node.type === "hardBreak" ? "\n" : node.text ?? "")).join("");
+  assert.match(rendered, /shipped it\nand tidied up/);
+  // And the CLI rung still gets the newlines it wants.
+  assert.match(commentBodyText(n), /shipped it\nand tidied up/);
+});
+
+// A read never mutates, so nothing about it can be "may have landed". Routing it through the
+// write reader marked a resolve unknown on a transient blip, and the ledger never retries an
+// unknown automatically - leaving a resolve that changed nothing waiting for a human.
+test("a failed transitions read is retryable, never an unknown outcome", async () => {
+  restMachine();
+  const { result, sent } = await withScriptedJira([], () =>
+    jira.resolve!(
+      cfg({ resolveTransition: "Done" }),
+      notice({ action: "resolve", signal: "task-completed" }),
+      ctx,
+    ),
+  );
+  // The stub runs out of scripted replies and answers 500, which is a read failure.
+  assert.match(result.error!, /MC-431 could not be read/);
+  assert.equal(result.outcomeUnknown, false);
+  assert.equal(sent.length, 1, "a failed read was followed by a transition POST");
+});
+
+// The same rule under the failure that actually produces an unknown on the write path: a
+// timeout. The read still reports retryable, because a GET cannot have moved anything.
+test("a timed-out transitions read is still retryable", () => {
+  const r = restReadFailure(
+    { ok: false, status: 0, body: "The operation was aborted due to timeout (TimeoutError)" },
+    cfg(),
+    "MC-431 could not be read",
+  );
+  assert.equal(r.outcomeUnknown, false);
+  assert.match(r.error!, /could not reach Jira at acme\.atlassian\.net/);
+  assert.doesNotMatch(r.error!, /check the issue in Jira before retrying/);
+  // Contrast: the same shape on the WRITE path is unknown, and must stay that way.
+  const w = restWritebackFailure(
+    { ok: false, status: 0, body: "The operation was aborted due to timeout (TimeoutError)" },
+    cfg(),
+    'MC-431 could not be moved to "Done"',
+  );
+  assert.equal(w.outcomeUnknown, true);
 });
 
 test("a comment-only source posts the comment and never asks for a remote link", async () => {

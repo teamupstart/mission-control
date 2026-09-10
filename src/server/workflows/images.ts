@@ -26,6 +26,7 @@ import type {
   WorkflowEvidenceRepositoryScope,
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
+  WorkflowSubmission,
   WorkflowUploadEvidenceLocator,
 } from "@shared/workflow.ts";
 import {
@@ -44,7 +45,10 @@ import {
 } from "../scouts/repos.ts";
 import { resolveImageUpload } from "../uploads.ts";
 import { validateLlmImages } from "../llm/images.ts";
+import { workflowLog } from "./log.ts";
+import { frozenEvidenceId } from "./store.ts";
 import type {
+  WorkflowInheritableEvidence,
   WorkflowReservedEvidence,
   WorkflowStagedEvidenceWrite,
   WorkflowStagedEvidenceCoverageWrite,
@@ -615,10 +619,6 @@ async function inspectReservedSource(item: WorkflowReservedEvidence): Promise<In
   return inspectOpenFile(retained, expected);
 }
 
-function stableImageId(submissionId: string, stagingId: string): string {
-  return `img_${createHash("sha256").update(`${submissionId}\0${stagingId}`).digest("hex").slice(0, 32)}`;
-}
-
 function writeImmutableCopy(path: string, data: Buffer, expectedSha: string): void {
   if (existsSync(path)) {
     const present = inspectOpenFile(path);
@@ -638,6 +638,18 @@ function writeImmutableCopy(path: string, data: Buffer, expectedSha: string): vo
   }
 }
 
+/** The retained body for a digest, or null when nothing on disk can be trusted for it. */
+function shareableStoragePath(store: WorkflowStore, sha256: string): string | null {
+  const candidate = store.retainedImageStoragePathForDigest(sha256);
+  if (!candidate) return null;
+  try {
+    const path = resolveEvidenceStoragePath(candidate);
+    return existsSync(path) && inspectOpenFile(path).sha256 === sha256 ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Freeze every reserved source before context compaction or Persona model spend. */
 export async function captureSubmissionImages(
   store: WorkflowStore,
@@ -652,19 +664,40 @@ export async function captureSubmissionImages(
   mkdirSync(RETAINED_DIR, { recursive: true });
   const writes: WorkflowSubmissionImageWrite[] = [];
   const created: string[] = [];
+  // Digests frozen by THIS call, which no query can see yet: the rows are inserted together
+  // once every source has been read. Without it a submission that proves the same bytes under
+  // two captions writes the file twice and only later captures get to share it.
+  const writtenHere = new Map<string, string>();
+  // Digests whose body this call did NOT write, keyed to the bytes and to the path this
+  // submission would own. Only these can be taken away underneath the capture, and only these
+  // are re-checked below.
+  const borrowed = new Map<string, { data: Buffer; ownPath: string }>();
   try {
     for (const item of reserved) {
       const inspected = await inspectReservedSource(item);
-      const id = stableImageId(submissionId, item.id);
-      const storageRelativePath = join(
-        "retained",
-        submissionId,
-        `${id}.${extensionFor(inspected.mimeType)}`,
-      );
-      const destination = resolveEvidenceStoragePath(storageRelativePath);
-      const existed = existsSync(destination);
-      writeImmutableCopy(destination, inspected.data, inspected.sha256);
-      if (!existed) created.push(destination);
+      const id = frozenEvidenceId("img", submissionId, item.id);
+      /*
+       * These exact bytes, wherever they already live.
+       *
+       * A digest that is already retained has a body on disk that is byte-identical by
+       * definition, so the only thing a second copy would add is a second file to delete.
+       * The row is a claim about the filesystem rather than the filesystem itself, so the
+       * shared path is re-inspected before it is trusted: a body that has gone missing or
+       * disagrees with its digest sends this capture back to writing its own copy instead of
+       * freezing a reference to nothing.
+       */
+      const shared = writtenHere.get(inspected.sha256)
+        ?? shareableStoragePath(store, inspected.sha256);
+      const ownPath = join("retained", submissionId, `${id}.${extensionFor(inspected.mimeType)}`);
+      const storageRelativePath = shared ?? ownPath;
+      if (!shared) {
+        const destination = resolveEvidenceStoragePath(storageRelativePath);
+        const existed = existsSync(destination);
+        writeImmutableCopy(destination, inspected.data, inspected.sha256);
+        if (!existed) created.push(destination);
+      }
+      writtenHere.set(inspected.sha256, storageRelativePath);
+      if (shared) borrowed.set(inspected.sha256, { data: inspected.data, ownPath });
       writes.push({
         id,
         stagingId: item.id,
@@ -679,15 +712,53 @@ export async function captureSubmissionImages(
         createdAt: now,
       });
     }
+    /*
+     * A borrowed body can be deleted between choosing it and recording the row that reads it.
+     *
+     * `shareableStoragePath` checks the body it selects, but the loop above then awaits the
+     * next source. Retention sweeps on a timer, and one sweep prunes a run and then calls
+     * `reconcileWorkflowEvidenceFiles`, which deletes the queued bodies - so a body this
+     * capture chose can be gone before the row that would have protected it exists. The
+     * enqueue guard cannot see a row that has not been inserted yet.
+     *
+     * This pass runs with no `await` between it and `finalizeSubmissionImages`, which is
+     * synchronous, so nothing can interleave: on one thread, that is the whole race closed.
+     * A body that vanished or no longer matches is REWRITTEN to a path this submission owns
+     * rather than refused, because the bytes are still in hand and refusing would fail a
+     * capture over a file another run happened to reclaim.
+     */
+    for (const [sha256, body] of borrowed) {
+      const current = writtenHere.get(sha256);
+      if (!current) continue;
+      const path = resolveEvidenceStoragePath(current);
+      let intact = false;
+      try {
+        intact = existsSync(path) && inspectOpenFile(path).sha256 === sha256;
+      } catch {
+        intact = false;
+      }
+      if (intact) continue;
+      const destination = resolveEvidenceStoragePath(body.ownPath);
+      const existed = existsSync(destination);
+      writeImmutableCopy(destination, body.data, sha256);
+      if (!existed) created.push(destination);
+      writtenHere.set(sha256, body.ownPath);
+      for (const write of writes) {
+        if (write.sha256 === sha256) write.storageRelativePath = body.ownPath;
+      }
+    }
     return store.finalizeSubmissionImages(submissionId, writes);
   } catch (error) {
-    for (const path of created) rmSync(path, { force: true });
+    // Only bodies this call brought into existence, and only while nothing has claimed them.
+    // `created` already excludes a path that was present beforehand; the reference test covers
+    // the remaining case, where a concurrent capture of the same digest finalized its own row
+    // against a body this one had just written.
+    for (const path of created) {
+      if (store.imageStoragePathIsReferenced(workflowEvidenceRelativePath(path))) continue;
+      rmSync(path, { force: true });
+    }
     throw error;
   }
-}
-
-function stableTextArtifactId(submissionId: string, stagingId: string): string {
-  return `txt_${createHash("sha256").update(`${submissionId}\0${stagingId}`).digest("hex").slice(0, 32)}`;
 }
 
 /** Freeze every reserved UTF-8 text/log source before context compaction or Persona spend. */
@@ -742,7 +813,7 @@ export async function captureSubmissionTextArtifacts(
       );
     }
     writes.push({
-      id: stableTextArtifactId(submissionId, item.id),
+      id: frozenEvidenceId("txt", submissionId, item.id),
       stagingId: item.id,
       ordinal: item.ordinal,
       displayName: item.displayName,
@@ -756,6 +827,94 @@ export async function captureSubmissionTextArtifacts(
     });
   }
   return store.finalizeSubmissionTextArtifacts(submissionId, writes);
+}
+
+/**
+ * Does this carried item still describe the source it was captured from?
+ *
+ * Only a repository path can answer. A completed command's bytes are frozen in the staging
+ * row itself and have no live source to drift from; an upload and a retained reattachment
+ * name daemon-owned storage, not the tree under review. Those carry unconditionally, and the
+ * mark is what tells a Persona how old they are.
+ *
+ * A path that no longer resolves is NOT a change. A gitignored screenshot that the agent has
+ * since deleted is exactly the artifact this phase exists to keep in front of a reviewer, and
+ * refusing to carry it would reproduce the failure by a different route. Only a path that
+ * still reads and reads DIFFERENTLY is dropped, because that is the one case where the bytes
+ * demonstrably no longer describe what they name.
+ */
+async function carriedEvidenceStillMatches(item: WorkflowInheritableEvidence): Promise<boolean> {
+  if (item.sourceKind !== "agent" || !item.sourceRoot || !item.sourceLocator) return true;
+  try {
+    const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
+    // The expected case, and the only one that is not a surprise: the path no longer names a
+    // readable file in the checkout. That is the gitignored capture the agent has since
+    // deleted, and it is reported as a result rather than thrown, so it returns quietly.
+    if (!resolved.ok) return true;
+    const inspected = item.kind === "image"
+      ? inspectOpenFile(resolved.path, undefined, item.sourceRoot)
+      : inspectOpenTextFile(resolved.path, undefined, item.sourceRoot);
+    return inspected.sha256 === item.sha256;
+  } catch (error) {
+    /*
+     * An unexpected failure still carries, and says so.
+     *
+     * The expected outcome returned above rather than throwing, so anything reaching here is a
+     * surprise: a permission error, a transient read fault, a bug in the inspectors. Carrying
+     * is still the right fallback, because none of those is evidence that the source CHANGED
+     * and dropping a Persona's proof over one would be the worse answer. What they do mean is
+     * that this item's staleness went unverified, and a systematic failure would otherwise
+     * degrade verification across every carry with nothing to show for it.
+     *
+     * Deliberately spanning the resolve as well as the inspect. Letting a throw escape this
+     * function would abort the whole capture, turning a single unreadable carried item into a
+     * failed submission - a far worse outcome than carrying it with its mark and a log line.
+     */
+    workflowLog("warn", {
+      event: "evidence_carry_unverified",
+      error: error instanceof Error ? error.message : "unknown_read_failure",
+    });
+    return true;
+  }
+}
+
+/**
+ * Carry the previous submission's evidence into this one, so sufficiency survives a round.
+ *
+ * Runs after this submission has frozen whatever it staged itself, and adds only what is
+ * missing. Two policies, chosen by `evidenceInheritanceSource`:
+ *
+ * - An `evidence_preflight` refinement child repairs a coverage MAPPING inside one round. Its
+ *   tree is its parent's tree, so its parent's evidence is carried wholesale and is not
+ *   re-read. Re-reading would be worse than useless here: the observed run's round-1
+ *   screenshot was a gitignored file the agent had already removed, so verification would
+ *   drop the very artifact the carry exists to preserve.
+ * - A new repair round's first submission carries across a tree that HAS moved. Each carried
+ *   item is checked against its source where that source still reads, and dropped when the
+ *   source now says something different.
+ *
+ * Returns how many items were carried, so the caller knows whether to re-read the submission's
+ * frozen sets.
+ */
+export async function inheritSubmissionEvidence(
+  store: WorkflowStore,
+  submission: WorkflowSubmission,
+  now = Date.now(),
+): Promise<number> {
+  const resolved = store.evidenceInheritanceSource(submission);
+  if (!resolved) return 0;
+  const candidates = store.listInheritableSubmissionEvidence(resolved.source.id);
+  const carried: string[] = [];
+  for (const item of candidates) {
+    if (resolved.mode === "round" && !(await carriedEvidenceStillMatches(item))) continue;
+    carried.push(item.stagingId);
+  }
+  return store.inheritSubmissionEvidence({
+    submissionId: submission.id,
+    sourceSubmissionId: resolved.source.id,
+    stagingIds: carried,
+    now,
+  });
 }
 
 export function resolveSubmissionImageInputs(

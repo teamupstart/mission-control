@@ -329,6 +329,9 @@ within its stage, and <kbd>Delete</kbd> removes the focused card after a confirm
 Announcements and labels name members and stages; no surface prints a node id. A stage's name
 is derived, not stored: one member names its own stage, and a parallel stage reads "Stage N".
 
+A chain longer than the pane **scrolls sideways** and shows a horizontal scrollbar, so stages
+past the right edge can be scrolled to. A pipeline that fits shows no bar.
+
 **Graph** is the other half of the toolbar toggle, and it still edits anything. Add Persona,
 **All-pass Join**, **Check**, **Session action** and End nodes from the left palette, then
 connect the directional handles: Session emits `submitted`; a Persona, Check or Join emits
@@ -833,9 +836,76 @@ opened without following symlinks and re-hashed before context compaction or Per
 Images are re-sniffed and copied to submission-owned storage. Text is decoded strictly as
 UTF-8 and copied into a submission-owned immutable row with its byte count and digest. A
 changed, missing, oversized, or invalid source blocks the whole run in the historical
-`image_evidence_capture` recovery phase. Normal repair rounds take only newly staged evidence;
-explicit retry of a capture fault revives the same submission and therefore the same reserved
-bytes.
+`image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
+submission and therefore the same reserved bytes.
+
+An image whose digest is already frozen and retained references that existing body instead of
+copying it again, so registering the same screenshot in five rounds stores it once. That is a
+rule about bodies, not records: a submission may hold two records with byte-identical content
+under two client ids, sharing one body, and a carry keeps both. Collapsing them into one record
+would leave the other's client id unresolvable and silently drop any coverage link that cited
+it, for evidence whose bytes are present under its sibling. Bodies are
+therefore shared between submissions and between runs: one is queued for deletion only when no
+retained row anywhere still reads it, and a queued body a later capture reuses is taken off the
+queue rather than deleted.
+
+Registering byte-identical evidence under an id a previous submission already reserved returns
+it to the mutable tray for the next submission instead of doing nothing. That is not new
+evidence about the work, so it does not move the staged generation and does not resume a
+waiting run. It also does not detach anything from the submission that reserved it: that
+submission's frozen bytes are immutable. Registering genuinely different content under a
+reserved id is still refused.
+
+A repair round's first submission and an `evidence_preflight` refinement child both start from
+what they staged themselves and then carry forward what the previous submission of the run
+froze and this one did not supply. A carried item never displaces fresh evidence and competes last for the same aggregate limits.
+When the limit binds, a carry gives up the oldest ancestry first and never an item the previous
+submission captured itself, so what is refused is always the material that has been re-carried
+longest and describes the oldest tree. The first refusal ends the carry for that kind, whether a
+count or a byte cap produced it: admitting a smaller item behind one that did not fit would carry
+a few more bytes by taking the older of the two, which is the ordering inverted.
+
+Those limits are not a policy this path could relax. The immutable context snapshot caps its
+frozen image and artifact arrays at the same counts, so a carry that ignored them would fail the
+entire capture as a stale capture and lose every item rather than the few at the margin. The
+image count is stricter still: `WORKFLOW_IMAGE_LIMITS.maxCount` is `LLM_IMAGE_LIMITS.maxCount`,
+the number of images a single model call accepts, and `validateLlmImages` refuses a call that
+exceeds it. A submission carrying a ninth image could not be sent to the Persona that has to read
+it. When a limit does refuse part of a carry the run records `evidence_carry_truncated` naming
+how many images, artifacts, and claims it refused, so a shortened carry is inspectable rather
+than silent.
+
+Every carried claim is retained even when a limit refused some of the evidence it cited; only
+the link pointing at the absent item is dropped, because citing evidence that is not there
+invents a gap rather than finding one.
+
+Every frozen coverage claim of the previous submission is retained whole, with its own claim id,
+proof class, repository scope, and link set, marked with the submission it came from. The one
+bound is the frozen-coverage limit: a submission's coverage is read through a schema capped at
+`maxClaims`, so a carry that ignored it would make that coverage unreadable rather than larger.
+It binds only when a parent already at the cap meets a child that declared claims of its own, and
+reaching it is recorded as `evidence_carry_truncated` alongside the evidence counts. A claim
+re-declared under the same id is the same claim, and the author's current wording wins; a
+different id for the same criterion is a different claim and is retained beside it.
+
+Readiness distinguishes the two. Where a canonical criterion has a claim the author declared on
+this submission, that claim answers for it and the retained ancestry behind it is not read as a
+competing declaration. Two claims the author wrote here for one criterion is still
+`ambiguous_mapping` and still reports, because that is a real question about what they are
+asserting. Where a criterion has no claim of its own, the carried claims answer for it and are
+judged among themselves exactly as before, which is the case inheritance exists for: without it
+a mapping repair regresses a criterion its parent had already proven to `missing_coverage`.
+
+A refinement child repairs a coverage mapping inside one round, so its tree is its parent's
+tree and the carry is unverified. A new repair round's tree has moved, so each carried item is
+re-read where its source still resolves and dropped when that source now says something
+different; a source that has been deleted keeps its carried bytes, because a gitignored capture
+the agent has since removed is exactly what carrying forward exists to preserve. Carried
+evidence appears in the Persona manifests with the round it was captured in and the repository
+fingerprint it was captured against, which follow the original capture through any number of
+carries. Staleness is a Persona judgement, not a daemon one. Carrying does not weaken the
+unchanged-evidence refusal: that comparison reads evidence by digest, caption, and scope rather
+than by frozen row id.
 
 Coverage is reserved in the same transaction as its linked evidence and copied to an immutable
 submission table. After evidence bytes are safely captured, the source compaction semantically maps
@@ -858,8 +928,8 @@ original immutable submission inspectable. Newly staged evidence resumes as a ch
 same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
 It reuses the run's constraints, acceptance criteria, canonical ids/text, materiality, and
 proof-class suggestions without creating a `context_compaction` call, exactly as every other
-submission of the run does. It still freezes its own replacement evidence and coverage, remaps
-the current claim ids, and reruns readiness. Author claim ids are per-submission, so the remap
+submission of the run does. It freezes its own replacement evidence and coverage, carries
+forward its parent's, remaps the current claim ids, and reruns readiness. Author claim ids are per-submission, so the remap
 reads this submission's claims through the previous submission's claims and mappings; a rephrased
 claim for an unchanged criterion therefore still matches. A changed human decision does NOT buy a
 fresh compaction - the run's intent was frozen at creation - so the criteria stay identical across
@@ -872,6 +942,14 @@ deterministic reuse.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
 gap result remain visible after activation and restart.
+
+One round may spend at most two consecutive `evidence_preflight` refinements. A third, whether the
+session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
+the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
+submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
+alone. The waiting submission stays waiting, so the run detail keeps showing the evidence-readiness
+decision panel and the operator can still continue despite gaps from the block; the retry control is
+withdrawn with the loop it would restart. Resubmitting the run opens an ordinary new round instead.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another
@@ -918,6 +996,17 @@ upstream Check evidence is the separate server-observed form. An artifact citati
 outside the submission manifest are rejected. These Persona inputs exist before any optional
 pull-request or Inspector stage. A Persona must judge the submission evidence it received, not
 require PR checks, remote CI, or Inspector evidence that can only exist later in the workflow.
+
+Criterion coverage declarations are not among those inputs and are not rendered into the prompt.
+The evidence-availability contract says so and scopes them out of Persona judgment: the preflight
+validates coverage before the review runs, so a Persona must never fail a submission for missing,
+incomplete, or undeclared coverage. When a Persona fails a submission whose readiness evaluation
+answered `ready`, the run records a `readiness_review_disagreement` event naming the submission, the
+reviewer, the evaluator version, and the readiness policy in force, so the run's own timeline shows
+the two readings disagreeing while the round is still open. An advisory `ready` gated nothing and so
+means less than an enforced one, but it is the same contradiction and is recorded the same way; the
+policy in the payload is what tells them apart. The event is a signal, never a verdict rewrite: a
+Persona is entitled to fail structurally complete evidence on its merits.
 
 Every completed built-in Test Evidence Auditor attempt also appends a bounded
 `test_evidence_audit` workflow event. It records first-submission status, pass or fail, rejection

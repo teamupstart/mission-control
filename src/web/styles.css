@@ -2011,6 +2011,264 @@ button.wf-run-version:focus-visible {
   gap: 10px;
 }
 
+/* ---- the run record: one tab bar, one pane at a time ----
+
+   Measured on one real run, the four sections that used to stack below the round scrubber came
+   to 7,997px, of which the Review worklist - already a bounded rail-plus-detail at 220px - was
+   the only one behaving. So the worklist keeps its place as the first and default pane and the
+   others become siblings on `.workflow-tabs`, which the Runs page already ships. Nothing here
+   restyles that bar; these rules are the panes under it and the ledger shapes inside them.
+
+   The pane has NO height cap of its own. `.wf-run-reader` owns the page's only vertical scroll,
+   and the whole point of a tab is that only one pane's content exists at a time - a second
+   scrollport here would put a reader inside two of them for no gain. The worklist's own rail
+   keeps its cap, because that cap is what makes the worklist the section this design copied. */
+/* Scoped to this bar rather than added to `.workflow-tabs`: the Runs page's own kind tab has
+   two entries and will never need it, and a shared component should not grow a rule for one
+   caller. This bar takes a fifth pane in a later phase, and a run reader narrowed by an open
+   session rail is where five would run out of room. */
+.wf-run-record .workflow-tabs {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.wf-run-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--panel-2);
+}
+
+.workflow-tabs button.active .wf-run-tab-count {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--working) 30%, var(--panel));
+}
+
+.wf-run-pane {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.wf-run-pane > * {
+  min-width: 0;
+}
+
+/* The worklist, as a pane rather than as a section: the container above supplies the panel,
+   the border and the padding, so this supplies nothing but the grid its children expect. */
+.wf-run-worklist-pane {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* One pane's headline numbers, above whatever ledger it holds. Auto-fit rather than a fixed
+   column count so a pane may carry four stats or six without a second rule. */
+.wf-run-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 9px;
+}
+
+.wf-run-stat {
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.wf-run-stat-key {
+  display: block;
+  color: var(--dim);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.wf-run-stat-value {
+  display: block;
+  margin-top: 3px;
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.wf-run-stat-value.is-ok { color: var(--idle); }
+/* Amber, never red: a refused packet is something to act on, not a failed run. */
+.wf-run-stat-value.is-alert { color: var(--attention); }
+
+/* The ledger. Four 560px delivery cards became four rows, and the fields that filled those
+   cards moved behind each row's own disclosure rather than being dropped. */
+.wf-run-ledger table {
+  font-size: 12px;
+}
+
+.wf-run-ledger td {
+  vertical-align: middle;
+}
+
+.wf-run-ledger code {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wf-run-ledger-toggle {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+/* Open on first paint, and that is the point: a refused or uncertain packet is why the run is
+   standing still, so its sentence, its durable error and its recovery buttons are never behind
+   a disclosure. Only the payload is. */
+.wf-run-ledger-alert > td {
+  padding-top: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 2px solid var(--danger);
+  background: color-mix(in oklab, var(--danger) 7%, transparent);
+}
+
+.wf-run-ledger-detail > td {
+  padding-top: 0;
+  background: var(--panel-2);
+}
+
+.wf-run-ledger-detail pre {
+  max-height: 340px;
+  margin: 8px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11.5px;
+}
+
+/* A disclosure whose CLOSED state carries the size of what opening it costs. Nine human
+   decision bodies measured 2,996px of flowing prose; as rows they are nine lines, and the
+   summary says the bodies behind them are 21,775 characters before anyone commits to reading
+   them. */
+.wf-run-disclosure {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.wf-run-disclosure > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 12px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.wf-run-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.wf-run-disclosure > summary::before {
+  content: "▸";
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.wf-run-disclosure[open] > summary::before {
+  content: "▾";
+}
+
+.wf-run-disclosure-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.wf-run-disclosure-meta {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wf-run-disclosure-body {
+  padding: 11px 12px 12px;
+  font-size: 12.5px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* A body opened out of a 12.5px row reads at 12.5px. Left to inherit, an expanded decision
+   printed larger than the row that summarised it, which reads as a different kind of thing. */
+.wf-run-disclosure-body p,
+.wf-run-disclosure-body li {
+  font-size: 12.5px;
+}
+
+.wf-run-disclosure-body small {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.wf-run-disclosure-body > * + * {
+  margin-top: 8px;
+}
+
+.wf-run-disclosure-body pre {
+  max-height: 340px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11.5px;
+}
+
+/* One decision inside the decisions disclosure. Its title is clamped to a single line so nine
+   rows stay nine rows however long the first sentence is; the body under it is never clipped. */
+.wf-run-decision {
+  background: var(--panel);
+}
+
+.wf-run-decision + .wf-run-decision {
+  margin-top: 6px;
+}
+
+.wf-run-decision > summary .wf-run-disclosure-title {
+  overflow: hidden;
+  font-weight: 400;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wf-run-decision .wf-run-disclosure-body p {
+  white-space: pre-wrap;
+}
+
+/* The one thing the Intent pane leads with: what this round was for, in a sentence. */
+.wf-run-lead {
+  padding: 11px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.wf-run-lead-text {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+.wf-run-chiprow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
 /* ---- the Blocker Worklist (the agenda on the left, one item in full on the right) ----
 
    The split is BOUNDED rather than full-height, and that is the one decision this block is
@@ -17071,6 +17329,24 @@ td.wf-command-rule-action {
   overflow-x: auto;
   overflow-y: hidden;
 }
+/* `overflow-x: auto` alone gets macOS's overlay scrollbar, which reserves no space and fades
+   out at rest, so an overflowing strip looked like a cropped card rather than a scroller.
+   Declaring `::-webkit-scrollbar` opts out of the overlay and reserves a track.
+
+   The bottom padding above is deliberately NOT reduced to offset that 10px: the track is only
+   reserved when the content overflows, so trimming the padding would silently shorten every
+   pipeline that fits. An overflowing strip grows by the track; one that fits is untouched. */
+.wf-pipeline-strip::-webkit-scrollbar { height: 10px; }
+/* Declared rather than inherited: Chromium's default track is platform-themed, and on this
+   dark surface only a transparent one is right. It already measures transparent on macOS. */
+.wf-pipeline-strip::-webkit-scrollbar-track { background: transparent; }
+.wf-pipeline-strip::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--fg) 24%, transparent);
+  border-radius: 5px;
+}
+.wf-pipeline-strip::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--fg) 38%, transparent);
+}
 .wf-pipeline-slot { display: flex; align-items: stretch; }
 .wf-pipeline-seam-slot { display: flex; align-items: stretch; }
 .wf-pipeline-repair {
@@ -19385,11 +19661,58 @@ button.wf-carried.is-link:focus-visible {
 .ts-defaults {
   margin-top: 14px;
 }
+/* ---- the write-back block ----
+   Set apart from the sweep settings above it with a rule rather than only with a heading,
+   because the boundary it marks is the one that matters on this card: everything above
+   reads the upstream and everything below writes to it. */
+.ts-writeback {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.ts-writeback-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* The resolve switch is a consequence of the completion switch above it, so it is indented
+   under it rather than presented as a third peer. */
+.ts-writeback-nested {
+  padding-left: 22px;
+}
+/* An unavailable switch keeps its card and loses its affordance: it still says what it
+   would do, which is the whole reason it is disabled rather than hidden. */
+.settings-toggle.is-unavailable {
+  cursor: default;
+  opacity: 0.62;
+}
+.settings-toggle.is-unavailable:hover {
+  border-color: var(--border-soft);
+}
+.ts-no-transition,
+.ts-writeback-unknown {
+  grid-column: 1 / -1;
+  margin: 8px 0 0;
+  font-size: 11.5px;
+}
+/* Prose, not a form: the confirm asks one question and the paragraphs answering it should
+   not run the width of the page. */
+.ts-discard-modal {
+  max-width: 520px;
+}
 .ts-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+/* The card's own row, below the write-back block. Ruled off so the two do not read as one
+   strip - see the comment beside it in TaskSourcesPanel.tsx. */
+.ts-card-actions {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
 }
 .ts-empty,
 .ts-unknown {

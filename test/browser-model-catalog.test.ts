@@ -383,6 +383,7 @@ test("recurring dispatch retains and offers the same live provider-qualified Pi 
       {
         store: storeAt(snapshot(catalogs())),
         children: createElement(ScheduleEditor, {
+          workflowSummaries: [],
           schedule: mkSchedule({
             template: mkScheduleTemplate({ agent: "pi", model: selected }),
           }),

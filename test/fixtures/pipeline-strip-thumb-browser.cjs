@@ -31,7 +31,8 @@ app.whenReady().then(async () => {
       webPreferences: { offscreen: true },
     });
     let frame = null;
-    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; });
+    let painted = 0;
+    window.webContents.on("paint", (_event, _dirty, image) => { frame = image; painted += 1; });
 
     const card = '<section class="wf-pipeline-stage" style="flex:none;width:200px">'
       + '<header class="wf-pipeline-stage-head"><span class="wf-pipeline-stage-name">S</span>'
@@ -48,6 +49,7 @@ app.whenReady().then(async () => {
 
     // Resolve each rule's own declared value through the engine, and paint the two swatches
     // with it so a captured frame can be compared against them.
+    const beforeSwatches = painted;
     const resolved = await window.webContents.executeJavaScript(`(() => {
       const declared = (selector, property) => {
         for (const sheet of document.styleSheets) {
@@ -97,6 +99,10 @@ app.whenReady().then(async () => {
       };
     })()`);
 
+    // The swatches are styled by the script above, which runs after the first frame. Sampling
+    // without waiting for a later one reads them unpainted - that is what made CI report a
+    // thumb of rgb(70, 72, 84) against a "declared" colour of rgb(20, 20, 32), which was just
+    // the page showing through.
     const usable = () => {
       if (!frame) return null;
       const size = frame.getSize();
@@ -104,7 +110,10 @@ app.whenReady().then(async () => {
       if (!size.width || !size.height || bitmap.length < size.width * size.height * 4) return null;
       return { size, bitmap };
     };
-    for (let attempt = 0; attempt < 25 && !usable(); attempt += 1) await wait(100);
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      if (painted > beforeSwatches && usable()) break;
+      await wait(100);
+    }
 
     const read = () => {
       const current = usable();
@@ -135,13 +144,19 @@ app.whenReady().then(async () => {
         }
       });
       if (best.from < 0) return null;
+      const swatchRest = at(geometry.rest.x, geometry.rest.y);
+      // A swatch that still reads as the surface behind it means this frame predates the
+      // styling above, so the sample is not comparable and the caller should skip the
+      // painted half rather than fail on a stale frame.
+      if (Math.abs(swatchRest[0] - track[0]) + Math.abs(swatchRest[1] - track[1])
+        + Math.abs(swatchRest[2] - track[2]) < 12) return null;
       return {
         track,
         thumbWidth: best.to - best.from + 1,
         thumb: at(geometry.left + Math.round((best.from + best.to) / 2), geometry.band),
         // A corner of a rounded thumb is not the thumb's own colour.
         thumbCorner: at(geometry.left + best.from, geometry.band - Math.round(geometry.track / 2) + 1),
-        swatchRest: at(geometry.rest.x, geometry.rest.y),
+        swatchRest,
         swatchHover: at(geometry.hover.x, geometry.hover.y),
       };
     };

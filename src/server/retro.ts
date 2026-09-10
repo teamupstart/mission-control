@@ -7,7 +7,12 @@ import type { AgentType, Session, Task } from "@shared/types.ts";
 import { BUILTIN_SESSION_ACTIONS, RETRO_SESSION_ACTION_ID } from "./workflows/builtin-session-actions.ts";
 import { renderSessionAction } from "./workflows/feedback.ts";
 import { requiredSkillCommand, skillInvocationForAgent } from "./skills/invoke.ts";
-import { recordInjection } from "./injections.ts";
+import {
+  confirmReservedInjection,
+  recordInjection,
+  releaseInjection,
+  reserveInjection,
+} from "./injections.ts";
 import { injectPromptForRuntime } from "./sdk/deliver.ts";
 import { resolveTaskRepoRoot } from "./repos.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
@@ -88,6 +93,9 @@ export interface RetroDeps {
   skillForAgent?: typeof skillInvocationForAgent;
   inject?: typeof injectPromptForRuntime;
   remember?: typeof recordInjection;
+  reserve?: typeof reserveInjection;
+  confirm?: typeof confirmReservedInjection;
+  release?: typeof releaseInjection;
   /** Injected so a route test never shells out to git. Returns the task's main checkout. */
   resolveRepoRoot?: typeof resolveTaskRepoRoot;
   /** Durable seams for focused routing tests; production always reads the database. */
@@ -171,6 +179,10 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
   }
 
   const inject = deps.inject ?? injectPromptForRuntime;
+  // Claimed BEFORE the write, because the agent's prompt hook can report this packet back
+  // while the send is still unresolved. An echo with no authorship on file is captured as the
+  // human's Goal, and `/retro` is a long packet a session would then be reviewed against.
+  (deps.reserve ?? reserveInjection)(session.id, rendered.payload, "harness");
   const result = await inject(
     deps.sdkSessions,
     session,
@@ -184,6 +196,10 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
     () => deps.promptBlocker(session.id) ?? staleSkill(session, rendered.payload, action.requiredSkillId, requireSkill),
   );
   if (!result.ok) {
+    // `pasted === false` is positive evidence that nothing reached the pane, so no echo is
+    // coming and the claim goes back. A `pasted: true` failure means the text IS in the pane
+    // with only the submit refused, which is an echo that may still arrive - it keeps its claim.
+    if (result.pasted === false) (deps.release ?? releaseInjection)(session.id, rendered.payload);
     return {
       kind: "refused",
       status: 503,
@@ -201,7 +217,7 @@ export async function runRetro(session: Session, deps: RetroDeps): Promise<Retro
   // and the transcript reader's three origins are about WHO drove the session: this is the
   // daemon acting on a human's click, which is the same authorship as the `/reload-skills`
   // broadcast that already uses it.
-  (deps.remember ?? recordInjection)(session.id, rendered.payload, "harness");
+  (deps.confirm ?? confirmReservedInjection)(session.id, rendered.payload, "harness");
   return {
     kind: "delivered",
     sessionId: session.id,

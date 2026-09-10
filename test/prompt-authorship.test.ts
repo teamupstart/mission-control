@@ -19,7 +19,7 @@
  */
 import { after, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -350,5 +350,34 @@ test("every harness answers null for an event that carries no prompt", () => {
     } as HookIngest;
     assert.equal(spec.promptText(evt), null);
     assert.equal(spec.submittedPromptText(evt), null);
+  }
+});
+
+test("every sender that writes into a pane reserves before it writes", () => {
+  // The ordering is the property, and it is only correct if EVERY sender has it: a single
+  // module that records after its own send resolves reopens the race for its own packets,
+  // and the workflow manager's are the repair packets that caused two of the seven measured
+  // contaminated runs. Asserted over the source because the alternative is five separate
+  // integration tests for one rule, and because the failure mode is a sender that was added
+  // later and simply never joined in.
+  const senders = [
+    "src/server/routes.ts",
+    "src/server/workflows/manager.ts",
+    "src/server/retro.ts",
+    "src/server/skills/reload.ts",
+    "src/server/sdk/supervisor.ts",
+  ];
+  for (const sender of senders) {
+    const source = readFileSync(new URL(`../${sender}`, import.meta.url), "utf8");
+    // Word boundaries, not `name(`: two of these senders take their authorship calls as
+    // injected deps and reach the real one through `(deps.reserve ?? reserveInjection)(...)`.
+    assert.ok(
+      /\breserveInjection\b/.test(source),
+      `${sender} writes into a pane and must reserve authorship before it does`,
+    );
+    assert.ok(
+      /\bconfirmReservedInjection\b/.test(source),
+      `${sender} must settle its reservation rather than record a second claim`,
+    );
   }
 });

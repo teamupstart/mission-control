@@ -110,9 +110,16 @@ let observer: InjectionObserver | null = null;
  * restart continuation's own record is pinned in `test/sdk-supervisor.test.ts`.
  *
  * Wired once by the daemon. It is deliberately not an injected dependency of this module's
- * callers: `workflows/manager.ts` and `retro.ts` already take `recordInjection` itself as a
- * dep, so threading a second one through them would let a caller wire the label without the
+ * callers: `workflows/manager.ts` and `retro.ts` take their authorship calls as deps already,
+ * so threading a second one through them would let a caller wire the label without the
  * journal - the exact pair that must not come apart.
+ *
+ * EVERY sender reserves before it writes and settles afterwards. `recordInjection` on its own
+ * is for a delivery whose write has already completed by the time authorship is known; a
+ * sender that is about to write wants `reserveInjection`, because the prompt hook can report
+ * the text back before its own send resolves. The five that write are the `/inject` route,
+ * the workflow manager's delivery, the retro packet, the skills broadcast and the SDK restart
+ * continuation.
  */
 export function observeInjections(fn: InjectionObserver | null): void {
   observer = fn;

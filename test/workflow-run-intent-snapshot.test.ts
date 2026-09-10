@@ -150,9 +150,17 @@ test("a run reviews the ask it froze, and no later prompt can reach it", async (
     "the packet must still be visible as transcript context",
   );
 
-  // Snapshot-less legacy capture also reads the durable objective, but still reads it live.
+  // Snapshot-less legacy runs keep the prior live-prompt contract, even when the
+  // durable objective differs. Only a newly frozen run opts into objective-based intent.
   const live = await readWorkflowContextRaw(registry, binding);
-  assert.equal(live.raw.primaryGoal.rawPrompt, HUMAN_ASK);
+  assert.deepEqual(live.raw.primaryGoal, {
+    rawPrompt: REPAIR_PACKET,
+    refined: registry.getGoal(session.id)!.text,
+    sourceNoteKey: binding.noteKey,
+  });
+  const newlyFrozen = readWorkflowIntentSnapshot(registry, binding);
+  assert.equal(newlyFrozen?.rawGoal, HUMAN_ASK);
+  assert.equal(newlyFrozen?.openingAsk, HUMAN_ASK);
   assert.equal(
     live.raw.humanDecisions.some((decision) => decision.decision.includes("preflight")),
     true,

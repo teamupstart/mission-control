@@ -748,7 +748,8 @@ The session Goal stays live and keeps being displayed as the conversation's curr
 Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent
 is frozen. Later human input does not amend the frozen ask; an ask that genuinely changed needs
 a new run. Existing frozen runs keep their original snapshots and criteria unchanged. Runs from
-before snapshots existed still read intent live and now consult the durable objective too.
+before snapshots existed keep their prior live prompt (falling back to the compact goal),
+without adopting the durable objective or its new provenance fields mid-run.
 
 A deterministic intent fingerprint covers only the raw/refined goal and deduplicated genuine
 human decision content, and on a snapshot-bearing run it is the frozen one on every submission. A

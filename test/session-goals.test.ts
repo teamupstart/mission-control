@@ -415,7 +415,7 @@ test("an empty live-key set means liveness unknown, not nothing is live", () => 
 test("the first accepted opening prompt survives steering, amendments, replacement, and restart", () => {
   const { r, s } = withSession("opening-provenance", "%50");
   const key = s.agentSessionId ?? s.id;
-  const opening = "Fix the spinner\nKeep keyboard access.";
+  const opening = "\n  Fix the spinner\n" + "Keep keyboard access.\n".repeat(300) + "  \n";
   r.captureAcceptedPrompt(s.id, opening, key);
   assert.equal(r.getGoal(s.id)?.openingPrompt, opening);
   for (const relationship of ["steer", "amend", "replace"] as const) {

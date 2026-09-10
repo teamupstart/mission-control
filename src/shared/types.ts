@@ -1121,7 +1121,7 @@ export interface SessionGoal {
   source: GoalSource | null;
   /** The completion contract Foreman verifies before it offers or performs wrap-up. */
   objective: string | null;
-  /** First accepted prompt, clamped by the Goal pipeline; null for legacy sessions. Write-once. */
+  /** First accepted prompt verbatim; null for legacy sessions. Write-once. */
   openingPrompt: string | null;
   /**
    * The latest filtered human prompt awaiting or represented by `relationship`.

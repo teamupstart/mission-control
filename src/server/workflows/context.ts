@@ -1056,7 +1056,7 @@ export function readWorkflowIntentSnapshot(
     rawGoal: goal?.objective != null ? clip(goal.objective, MAX_GOAL) : intent.primaryGoal.rawPrompt,
     refinedGoal: intent.primaryGoal.refined,
     sourceNoteKey: intent.primaryGoal.sourceNoteKey,
-    openingAsk: goal?.objective && goal.openingPrompt ? clip(goal.openingPrompt, MAX_GOAL) : null,
+    openingAsk: goal?.objective ? goal.openingPrompt : null,
     intentSource: goal?.objective ? {
       objectiveVersion: goal.objectiveVersion,
       promptRevision: goal.promptRevision,

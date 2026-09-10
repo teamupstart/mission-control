@@ -7611,7 +7611,7 @@ export class Registry extends EventEmitter {
         ? {
             objective: raw,
             // A pre-feature row cannot recover its opening ask from a later prompt.
-            ...(!prev?.promptRevision && !prev?.prompt ? { openingPrompt: raw } : {}),
+            ...(!prev?.promptRevision && !prev?.prompt ? { openingPrompt: prompt } : {}),
             text: goalLine(raw),
             source: "heuristic" as const,
             objectiveVersion: Math.max(1, prev?.objectiveVersion ?? 0),

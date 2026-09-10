@@ -5309,7 +5309,7 @@ const WorkflowIntentSourceSchema = z.object({
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
-    openingAsk: z.string().max(16_000).nullable().optional(),
+    openingAsk: z.string().nullable().optional(),
     intentSource: WorkflowIntentSourceSchema.nullable().optional(),
     refined: z.string().max(16_000).nullable(),
     sourceNoteKey: z.string().min(1).max(1_000),
@@ -5444,7 +5444,7 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
  */
 export const WorkflowRunIntentSnapshotSchema = z.object({
   rawGoal: z.string().max(16_000),
-  openingAsk: z.string().max(16_000).nullable().optional(),
+  openingAsk: z.string().nullable().optional(),
   intentSource: WorkflowIntentSourceSchema.nullable().optional(),
   refinedGoal: z.string().max(16_000).nullable(),
   sourceNoteKey: z.string().min(1).max(1_000),

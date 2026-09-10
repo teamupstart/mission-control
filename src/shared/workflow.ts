@@ -3583,7 +3583,7 @@ export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
 export interface WorkflowRunIntentSnapshot {
   /** Durable objective at run creation; historical snapshots retain their captured prompt. */
   rawGoal: string;
-  /** Clamped opening request, absent on older snapshots and null when unknown. */
+  /** Verbatim opening request, absent on older snapshots and null when unknown. */
   openingAsk?: string | null;
   /** Objective provenance at capture, excluded from the intent fingerprint. */
   intentSource?: {

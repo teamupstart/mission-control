@@ -739,10 +739,12 @@ replace that contract or become the goal used to distil acceptance criteria.
 
 The run also keeps the opening human request as recorded by the Goal pipeline, plus the objective
 version, prompt revision, resolved revision and latest relationship at capture. The opening request
-is write-once, survives amendments and replacements, and uses the same 4,000-character middle
-elision as other captured prompts. Older sessions have no recoverable opening request. Personas
-see a differing opening request as provenance beside the review contract; the Intent tab exposes
-both and the captured revision metadata. These additions do not affect the intent fingerprint.
+is write-once and survives amendments and replacements verbatim, including whitespace. Older
+sessions have no recoverable opening request; previously elided requests remain as recorded.
+The Intent tab exposes the full opening text and the captured revision metadata. Personas see
+a differing opening request as provenance beside the review contract, bounded by the existing
+240,000-character section limit with an explicit truncation marker. That prompt-only bound
+does not alter stored opening requests. These additions do not affect the intent fingerprint.
 
 The session Goal stays live and keeps being displayed as the conversation's current objective.
 Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent

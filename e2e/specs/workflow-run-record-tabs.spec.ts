@@ -181,6 +181,7 @@ function seedRecord(
   runId: string,
   sessionId: string,
   relationship: "steer" | null = "steer",
+  openingAsk = "Please make the run easier to read.",
 ): void {
   withDaemonDb(daemon, (db) => {
     const submission = db.prepare(
@@ -221,7 +222,7 @@ function seedRecord(
       JSON.stringify({
         primaryGoal: {
           rawPrompt: "DURABLE OBJECTIVE BODY, frozen before review.",
-          openingAsk: "Please make the run easier to read.",
+          openingAsk,
           intentSource: {
             objectiveVersion: 2,
             promptRevision: relationship === null ? 4 : 3,
@@ -511,4 +512,22 @@ test("the Intent pane labels a pending relationship as unresolved", async ({ das
   );
   await expect(provenance).toBeVisible();
   await shoot(dashboard, dashboard.getByRole("tabpanel", { name: /^Intent/ }), "05-unresolved-relationship");
+});
+
+
+test("the Intent pane retains a long opening request verbatim", async ({ dashboard, daemon }) => {
+  const { runId, sessionId } = await seedRun(dashboard, daemon);
+  const openingAsk = "\n  Opening request before clamp\n"
+    + "Preserve every detail.\n".repeat(1_000) + "\nFINAL VERBATIM REQUIREMENT  \n";
+  seedRecord(daemon, runId, sessionId, "steer", openingAsk);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  await tab(dashboard, /^Intent/).click();
+  const intent = dashboard.getByRole("tabpanel", { name: /^Intent/ });
+  const opening = intent.locator("details.wf-run-disclosure").filter({ hasText: "Opening request" });
+  await opening.locator("> summary").click();
+  await expect(opening.locator("pre")).toHaveJSProperty("textContent", openingAsk);
+  await expect(opening.locator("> summary")).toContainText(`${openingAsk.length.toLocaleString()} characters`);
+  const contract = intent.locator("details.wf-run-disclosure").filter({ hasText: "Review contract" });
+  await contract.locator("> summary").click();
+  await shoot(dashboard, dashboard.locator("section.wf-run-record"), "06-verbatim-long-opening");
 });

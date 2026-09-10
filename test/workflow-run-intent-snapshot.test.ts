@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REVIEW_LIMITS, REVIEW_TRUNCATION_MARKER } from "../src/shared/review.ts";
 import { clampPrompt } from "../src/server/util/prompt-text.ts";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -1185,18 +1186,30 @@ test("a session without an objective falls back to its prompt without inventing 
   assert.equal(frozen.intentSource, null);
 });
 
-test("the opening request is frozen in the Goal pipeline's clamped form", () => {
+test("the opening request stays verbatim through capture while Persona input stays bounded", async () => {
   const registry = new Registry();
   registry.applyDiscovery([discovered("long-opening")]);
   const { session, binding } = bindingFor(registry, "long-opening");
-  const prompt = "Opening\n" + "long request ".repeat(1000) + "\nFinal requirement";
+  const prompt = "\n  Opening\n" + "long request 🦊\t".repeat(20_000) + "\nFinal requirement  \n";
+  assert.ok(prompt.length > REVIEW_LIMITS.section);
   const captured = registry.captureAcceptedPrompt(session.id, prompt, binding.noteKey)!;
-  assert.equal(captured.openingPrompt, clampPrompt(prompt));
-  assert.ok(captured.openingPrompt!.length < prompt.length);
-  assert.ok(captured.openingPrompt!.endsWith("Final requirement"));
-  const frozen = readWorkflowIntentSnapshot(registry, binding)!;
-  assert.equal(frozen.openingAsk, captured.openingPrompt);
-  assert.equal(frozen.rawGoal, captured.openingPrompt);
+  assert.equal(captured.openingPrompt?.length, prompt.length, "capture must retain the entire request");
+  assert.equal(captured.openingPrompt, prompt);
+  const frozen = WorkflowRunIntentSnapshotSchema.parse(readWorkflowIntentSnapshot(registry, binding));
+  assert.equal(frozen.openingAsk, prompt);
+  assert.equal(frozen.rawGoal, clampPrompt(prompt.trim()), "the objective keeps its existing bound");
+  const read = await readWorkflowContextRaw(registry, binding, [], [], frozen);
+  const context = WorkflowContextSnapshotSchema.parse(fallbackWorkflowContext(read.raw, null));
+  assert.equal(context.primaryGoal.openingAsk, prompt);
+  const personaPrompt = buildPersonaPrompt({
+    sourcePersonaId: "reviewer", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null,
+  }, context);
+  const openingSection = personaPrompt.split(
+    "Opening request this contract was derived from (as recorded by the Goal pipeline):\n",
+  )[1]!.split("\nCaptured objective version")[0];
+  assert.equal(openingSection, `${prompt.slice(0, REVIEW_LIMITS.section)}\n${REVIEW_TRUNCATION_MARKER}`);
+  assert.equal(context.primaryGoal.openingAsk, prompt, "bounding the Persona never mutates stored context");
 });
 
 test("opening provenance does not change the fingerprint or legacy frozen rows", () => {

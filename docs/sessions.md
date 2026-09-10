@@ -1282,9 +1282,10 @@ window. Rapid prompts are never coalesced, so an objective change cannot disappe
 steering.
 
 The Goal also retains the first accepted human request, unchanged by later amendments or
-replacements. It is stored in the same clamped form as other prompts: requests over 4,000
-characters have their middle elided. Sessions created before this field existed have no opening
-request recorded. A new Workflow run freezes the durable objective as its review contract and
+replacements. This opening request is stored verbatim, including whitespace; the objective
+and the refiner's prompt still use their existing 4,000-character middle elision. Sessions
+created before this field existed have no opening request recorded, and previously stored
+elided requests cannot be reconstructed. A new Workflow run freezes the durable objective as its review contract and
 keeps this opening request and the captured intent revisions beside it. Later steering leaves
 that frozen review contract unchanged; the Goal shown on the session remains live.
 

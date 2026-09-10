@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phased implementation: say why a workflow run is blocked</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013;
+    --surface-1: #16181c;
+    --surface-2: #1d2026;
+    --surface-3: #262a31;
+    --line:      #2f343c;
+    --line-soft: #23272e;
+    --text-primary:   #f2f3f5;
+    --text-secondary: #b6bcc6;
+    --text-muted:     #868e99;
+    --series-1: #4f95e8;
+    --series-2: #e2703c;
+    --good:     #2eb188;
+    --warn:     #d59a1e;
+    --critical: #ea7a7a;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:where(:not([data-theme="dark"])) {
+      color-scheme: light;
+      --surface-0: #f4f4f2;
+      --surface-1: #fcfcfb;
+      --surface-2: #f0f0ed;
+      --surface-3: #e6e6e2;
+      --line:      #d5d5d0;
+      --line-soft: #e4e4e0;
+      --text-primary:   #101114;
+      --text-secondary: #45484e;
+      --text-muted:     #63666c;
+      --series-1: #2367bd;
+      --series-2: #b8501f;
+      --good:     #14795a;
+      --warn:     #8a6200;
+      --critical: #b32e2d;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--surface-0); color: var(--text-primary);
+    font-family: var(--sans); font-size: 15px; line-height: 1.65; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 28px 110px; }
+  header.mast { padding: 58px 0 34px; border-bottom: 1px solid var(--line); margin-bottom: 38px; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px; }
+  h1 { font-size: 36px; line-height: 1.14; letter-spacing: -0.022em; margin: 0 0 18px; font-weight: 620; }
+  .standfirst { font-size: 17.5px; line-height: 1.6; color: var(--text-secondary); max-width: 70ch; margin: 0; }
+  .standfirst strong { color: var(--text-primary); font-weight: 600; }
+  h2 { font-size: 23px; letter-spacing: -0.015em; margin: 56px 0 8px; padding-top: 24px; border-top: 1px solid var(--line); font-weight: 620; }
+  h2:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+  h3 { font-size: 16.5px; margin: 32px 0 10px; font-weight: 620; letter-spacing: -0.006em; }
+  p { margin: 0 0 14px; max-width: 78ch; }
+  ul, ol { max-width: 78ch; padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  blockquote {
+    margin: 18px 0 20px; padding: 14px 18px; border-left: 3px solid var(--good);
+    background: var(--surface-1); border-radius: 0 8px 8px 0; color: var(--text-primary);
+    max-width: 78ch; font-size: 14.5px;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+  code { font-family: var(--mono); font-size: .875em; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px; color: var(--text-primary); white-space: nowrap; }
+  pre { background: var(--surface-1); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; color: var(--text-primary); margin: 18px 0 24px; }
+  pre code { background: none; border: none; padding: 0; white-space: pre; font-size: inherit; }
+  a { color: var(--series-1); }
+  .tw { overflow-x: auto; margin: 22px 0 28px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; background: var(--surface-2); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  td code, th code { background: transparent; border: none; padding: 0; }
+  .call { border-left: 3px solid var(--series-1); background: var(--surface-1); border-radius: 0 8px 8px 0; padding: 15px 18px; margin: 22px 0; max-width: 82ch; }
+  .call.crit { border-left-color: var(--critical); }
+  .call.warn { border-left-color: var(--warn); }
+  .call p:last-child { margin-bottom: 0; }
+  .call .h { font-weight: 620; margin: 0 0 6px; }
+  figure { margin: 30px 0 34px; background: var(--surface-1); border: 1px solid var(--line); border-radius: 10px; padding: 22px 22px 18px; }
+  figcaption { font-size: 12.5px; color: var(--text-secondary); margin-top: 16px; padding-top: 13px; border-top: 1px solid var(--line-soft); line-height: 1.5; }
+  .fig-title { font-size: 15px; font-weight: 620; margin: 0 0 3px; }
+  .fig-sub { font-size: 12.5px; color: var(--text-muted); margin: 0 0 18px; }
+  .figscroll { overflow-x: auto; }
+  svg { display: block; }
+  .steps { counter-reset: step; list-style: none; padding-left: 0; }
+  .steps > li { counter-increment: step; position: relative; padding-left: 44px; margin-bottom: 26px; }
+  .steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: 1px;
+    width: 28px; height: 28px; border-radius: 8px; background: var(--surface-3);
+    border: 1px solid var(--line); color: var(--text-primary);
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps > li > h3 { margin-top: 0; }
+  footer.end { margin-top: 64px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text-muted); }
+</style></head>
+<body>
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Mission Control &middot; phased implementation &middot; 10 September 2026</p>
+  <h1>Phased implementation: say why a workflow run is blocked</h1>
+  <p class="standfirst">
+    Two phases that can run at the same time and merge in either order. <strong>Phase 1 closes the
+    reported incident</strong> &ndash; a capture failure explains itself on run detail, names the
+    evidence item that moved, and says resubmit rather than resume. <strong>Phase 2 closes the
+    class</strong> &ndash; twelve blocked phases currently print their own identifier, and after this
+    a thirteenth cannot ship that way.
+  </p>
+  <p class="standfirst" style="margin-top:14px">
+    Source plan: <a href="plan.html">plan.html</a> (<a href="plan.md">plan.md</a> is authoritative).
+    The blocked-run investigation behind it was delivered in the planning session; report artifacts are
+    not committed, so its findings are restated here rather than linked.
+  </p>
+</header>
+
+<h2 id="decisions">Incorporated decisions</h2>
+<p>
+  Submitted in the Mission Control dashboard on 10 September 2026. All five are requirements below,
+  not open questions.
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Decision</th><th>Adopted</th><th>Owned by</th></tr></thead>
+  <tbody>
+    <tr><td>Which surfaces carry the reason</td><td>All four, including the alert; <code>BLOCKED_PHASE_CLAUSES</code> moves into <code>src/shared/</code></td><td>Phase 2</td></tr>
+    <tr><td>Name the failing evidence item</td><td>Yes; <code>inspectReservedSource</code> attaches <code>displayName</code> and <code>clientItemId</code></td><td>Phase 1</td></tr>
+    <tr><td>Phase coverage</td><td>The whole capture family, plus an exhaustiveness test over <code>WORKFLOW_RUN_PHASES</code></td><td>Phase 2</td></tr>
+    <tr><td>The swallowed second completion</td><td>Show it, do not fix it here</td><td>Phase 1</td></tr>
+    <tr><td>After this plan</td><td>Create phased implementation plan and schedule the tasks</td><td>this document</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="findings">What the repository investigation changed</h2>
+<p>Three findings moved work between the source plan's steps. Recorded here rather than silently applied.</p>
+
+<div class="call crit">
+  <p class="h">1. Twelve blocked phases are unnamed, not four.</p>
+  <p>
+    The source plan treats the missing clause as a capture-family problem. Diffing
+    <code>BLOCKED_PHASE_CLAUSES</code> (17 keys) against the 27 phases whose declared statuses in
+    <code>WORKFLOW_RUN_PHASE_STATUSES</code> include <code>blocked</code> leaves <strong>12 with no
+    entry</strong>. The second blocked run sitting in the operator's state database right now
+    (<code>06438d27</code>, <code>preflight_refinement_exhausted</code>) is one of them. This is a
+    vocabulary gap across the product, not a capture bug, and it is why the naming work is its own
+    phase rather than three lines inside the capture fix.
+  </p>
+</div>
+<pre><code>capture_interrupted            delivery_recovery_error       preflight_refinement_exhausted
+check_cleanup_unresolved       external_artifact_mismatch    session_action_blocked
+conversation_changed           image_evidence_capture        unchanged_repository
+delivery_prepare_error         pr_handoff_prepare_error      inspector_pr_switch_refused</code></pre>
+
+<div class="call warn">
+  <p class="h">2. The exhaustiveness test must be one-directional.</p>
+  <p>
+    <code>BLOCKED_PHASE_CLAUSES</code> legitimately holds two keys that are <em>not</em>
+    blocked-capable &ndash; <code>unchanged_evidence</code> and
+    <code>reattached_resubmit_required</code> &ndash; because the triage column also renders parked
+    runs. The guard asserts every blocked-capable phase has an entry; it must not assert the converse.
+  </p>
+</div>
+
+<div class="call">
+  <p class="h">3. Step 7 needs no new data path.</p>
+  <p>
+    <code>WorkflowRuns.tsx:2684</code> already derives <code>completionClaims</code> from
+    <code>workflow_completion_claimed</code> events <em>including</em> their <code>state</code>, and
+    renders them at line 3444 under <em>Foreman completion claim</em>. The swallowed claim is already
+    on the page &ndash; as the bare word &ldquo;blocked&rdquo; in a card head, with nothing saying it
+    means the claim produced no submission. The work is wording and promotion, not plumbing, which is
+    why step 7 stays inside Phase 1 rather than earning its own.
+  </p>
+</div>
+
+<h2 id="sizing">Sizing and phase count</h2>
+<p>
+  Estimated <strong>300 to 340 gross non-test implementation lines</strong>, at this repository's
+  comment density (the <code>check_cleanup</code> decoder precedent is 8 lines of logic under 12 lines
+  of prose, and every map entry here carries a justification comment). Assumptions: no route,
+  wire-format or migration work (<code>WorkflowRun.gateState</code> already reaches the browser);
+  roughly 60 of those lines are relocation rather than new logic; the twelve clause entries are ~2
+  lines each plus the judgement to write them.
+</p>
+<p>
+  That is above the 200-line one-phase threshold, so the default is still one phase and a second has
+  to earn itself. <strong>Two phases</strong>, and the case for the split:
+</p>
+<blockquote>
+  <p>
+    Phase 2 is not a layer of Phase 1 and does not consume anything Phase 1 produces. It is twelve
+    independent wording decisions across delivery, Inspector, session-action and preflight
+    subsystems &ndash; each needing its author to understand a phase that has nothing to do with
+    evidence capture &ndash; plus a shared-module relocation that changes notification behavior.
+    Combining them would hold the reported bug's fix behind eleven unrelated research questions, and
+    would put a persisted server payload change, a <code>src/shared/</code> move, twelve copy
+    decisions, two browser specs and five unit test files into one review. Split, each phase is one
+    reviewable claim with its own spec.
+  </p>
+</blockquote>
+<p>
+  Nothing smaller was carved out. There is no preparation, test-only or documentation phase: the
+  decoder arm ships with its first consumer, and each phase's tests and docs are its own.
+</p>
+
+<h2 id="phases">Phases</h2>
+<div class="tw">
+<table>
+  <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Depends on</th><th>Repository</th></tr></thead>
+  <tbody>
+    <tr><td class="num">1</td><td>Capture failure explains itself</td>
+        <td><a href="phase-1-capture-failure-visible.md"><code>phase-1-capture-failure-visible.md</code></a></td>
+        <td>planning session only</td><td>mission-control</td></tr>
+    <tr><td class="num">2</td><td>No blocked phase goes unnamed</td>
+        <td><a href="phase-2-blocked-phase-vocabulary.md"><code>phase-2-blocked-phase-vocabulary.md</code></a></td>
+        <td>planning session only</td><td>mission-control</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  Both phases live wholly in the source-plan repository, so neither task sets <code>repository</code>
+  or <code>additionalRepositories</code>.
+</p>
+
+<h2 id="graph">Dependency graph</h2>
+
+<figure>
+  <p class="fig-title">Two concurrent phases behind one publication gate</p>
+  <p class="fig-sub">Neither phase consumes anything the other owns; both wait only on the plan reaching the default branch</p>
+  <div class="figscroll">
+  <svg viewBox="0 0 820 260" width="820" height="260" role="img"
+       aria-label="Diagram: the planning session pull request publishes the artifacts, and releases two independent phases. Phase 1 makes the capture failure explain itself. Phase 2 names every blocked phase. Neither depends on the other.">
+    <rect x="0" y="0" width="820" height="260" fill="var(--surface-1)"/>
+
+    <rect x="18" y="94" width="250" height="72" rx="8" fill="var(--surface-2)" stroke="var(--series-2)"/>
+    <text x="36" y="120" font-family="var(--sans)" font-size="13" font-weight="600" fill="var(--text-primary)">Planning session PR</text>
+    <text x="36" y="139" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">publishes plan, index, phase files</text>
+    <text x="36" y="156" font-family="var(--mono)" font-size="10.5" fill="var(--text-muted)">dependsOnCurrentSession: true</text>
+
+    <path d="M268 130 H 322 V 62  H 372" stroke="var(--series-1)" stroke-width="1.8" fill="none" marker-end="url(#p1)"/>
+    <path d="M268 130 H 322 V 198 H 372" stroke="var(--series-1)" stroke-width="1.8" fill="none" marker-end="url(#p1)"/>
+
+    <rect x="382" y="28" width="420" height="68" rx="8" fill="var(--surface-2)" stroke="var(--good)"/>
+    <text x="402" y="52" font-family="var(--sans)" font-size="13" font-weight="600" fill="var(--text-primary)">Phase 1 &#183; Capture failure explains itself</text>
+    <text x="402" y="71" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">decoder arm &#183; run detail sentence &#183; names the evidence item</text>
+    <text x="402" y="88" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">&#183; shows the refused completion claim</text>
+
+    <rect x="382" y="164" width="420" height="68" rx="8" fill="var(--surface-2)" stroke="var(--good)"/>
+    <text x="402" y="188" font-family="var(--sans)" font-size="13" font-weight="600" fill="var(--text-primary)">Phase 2 &#183; No blocked phase goes unnamed</text>
+    <text x="402" y="207" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">clause map into src/shared/ &#183; alert body &#183; twelve clauses</text>
+    <text x="402" y="224" font-family="var(--sans)" font-size="11.5" fill="var(--text-secondary)">&#183; exhaustiveness guard</text>
+
+    <text x="592" y="134" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="var(--text-muted)">no edge between them &#183; either merge order</text>
+
+    <defs>
+      <marker id="p1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="var(--series-1)"/></marker>
+    </defs>
+  </svg>
+  </div>
+  <figcaption>
+    Both phases edit <code>src/web/workflows/run-model.ts</code>, but in different functions roughly
+    550 lines apart &ndash; Phase 1 in <code>runRefusedSentence</code>, Phase 2 in
+    <code>BLOCKED_PHASE_CLAUSES</code>. The overlap is a textual merge, not a semantic one; whichever
+    lands second rebases.
+  </figcaption>
+</figure>
+
+<p>Either merge order leaves a coherent product:</p>
+<ul>
+  <li><strong>Phase 1 first:</strong> run detail explains the capture failure; the Line strip still prints the phase code.</li>
+  <li><strong>Phase 2 first:</strong> every surface names the phase; run detail still does not say what to do about it.</li>
+</ul>
+
+<h2 id="contracts">Cross-phase contracts</h2>
+<p>These are the only things one phase promises the other, and neither may change them unilaterally.</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Contract</th><th>Owner</th><th>What the other phase may rely on</th></tr></thead>
+  <tbody>
+    <tr><td><code>WorkflowGateDetail</code> gains a <code>capture_failure</code> arm and a <code>workflowCaptureFailure</code> accessor in <code>src/shared/workflow-lifecycle.ts</code></td><td>Phase 1</td><td>Phase 2 does not read it. If Phase 2 lands first it must not restructure the union.</td></tr>
+    <tr><td><code>blockedPhaseClause</code> keeps its name, its <code>(phase: string) =&gt; string</code> signature, and its unmapped fallback</td><td>Phase 2</td><td>Phase 1 does not call it, but <code>run-actions.ts:981</code> does. Moving it must not change what an unmapped code renders as.</td></tr>
+    <tr><td><code>WORKFLOW_RUN_PHASE_DETAIL_KEYS.image_evidence_capture</code> gains two optional keys</td><td>Phase 1</td><td>Phase 2 does not read phase detail.</td></tr>
+    <tr><td>Run detail's <code>.wf-run-refused</code> slot renders the capture sentence</td><td>Phase 1</td><td>Phase 2 adds nothing to run detail's header.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="final">Final verification</h2>
+<p>After both phases merge:</p>
+<ul>
+  <li><code>npm run typecheck</code> and <code>npm run lint</code>.</li>
+  <li><code>npm test</code> &ndash; the decoder arm, the sentence selectors, the clause map exhaustiveness guard, the alert body, and the Line strip grouping.</li>
+  <li><code>npm run build &amp;&amp; npm run test:e2e</code> &ndash; both phases' specs, since each changes a UI surface.</li>
+  <li>A blocked <code>image_evidence_capture</code> run reads, without opening any disclosure: what failed, which evidence item, that no repair round was spent, and that resubmit rather than resume is the move.</li>
+  <li>No phase whose declared statuses include <code>blocked</code> renders its own code in the Line strip, the Review drawer, the Runs rail, or a notification.</li>
+</ul>
+
+<footer class="end">
+  Source of truth: <code>docs/plans/blocked-run-reason-visible/phased-plan.md</code>. This page is a
+  rendering of it. Phase detail lives in the two phase Markdown files linked above.
+</footer>
+
+</div>
+</body>
+</html>

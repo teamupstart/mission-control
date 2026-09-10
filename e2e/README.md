@@ -1400,6 +1400,35 @@ env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
   --workers=1 --reporter=list
 ```
 
+### The run record, offered rather than stacked
+
+`e2e/.artifacts/workflow-run-record-tabs/` carries four frames from
+`specs/workflow-run-record-tabs.spec.ts`, and they exist because the change is a MEASUREMENT.
+Below the round scrubber the four sections of one real No-Mistakes run came to 7,997px - 8.9
+screens at a 900px viewport - to carry three sentences of verdict. Assertions can say the tab is
+selected and the row is one row; only a picture shows that four 560px delivery cards are now
+four lines, and that nine human decision bodies close down to nine.
+
+`01-deliveries-blocking.png` is the load-bearing one: a run whose worklist is clean and whose
+packets are not, opening on Deliveries with no click, the refused packet's sentence, its durable
+error and its recovery buttons already on screen. An amber badge alone would leave every one of
+those a click away, which is why the container resolves an initial pane at all.
+`02-intent-collapsed.png` and `03-intent-decision-open.png` are the decision rows closed and one
+of them open - closed being the state that matters, since the claim is that the prose costs a
+reader nothing until they ask for it. `04-clean-run.png` is the ordinary run, which is most of
+them: two tabs, no amber, and no `Deliveries 0` for a run that sent nothing.
+
+Regenerate the frames with:
+
+```sh
+env -u NO_COLOR FORCE_COLOR=0 MC_E2E_EVIDENCE=1 npx playwright test \
+  --config e2e/playwright.config.ts \
+  e2e/specs/workflow-run-record-tabs.spec.ts \
+  --workers=1 --reporter=list
+```
+
+Attach the generated frames to the pull request; they are never committed.
+
 ### The run header, decluttered
 
 `e2e/.artifacts/workflow-run-audit/` carries three frames

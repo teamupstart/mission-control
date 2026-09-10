@@ -169,8 +169,7 @@ test("a completed run lists its reviewers, and its tiles select their worklist d
   await chip.click();
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}$`));
 
-  const section = dashboard.locator("section.wf-run-section")
-    .filter({ has: dashboard.getByRole("heading", { name: "Review worklist" }) });
+  const section = dashboard.getByRole("region", { name: "Review worklist" });
   // The widget, not the section: the join packet under it prints the runtime's raw JSON, stage
   // name and all, so a negative assertion made against the section would be answered by that.
   const worklist = section.locator(".wf-run-worklist");

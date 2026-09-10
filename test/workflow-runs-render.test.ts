@@ -379,6 +379,30 @@ function runningDetail(): WorkflowRunDetail {
   } as WorkflowRunDetail;
 }
 
+/** One packet on the delivery ledger, for the tab-bar and ledger cases below. */
+const deliveryRow = (
+  id: string,
+  submissionId: string,
+  state: WorkflowRunDetail["deliveries"][number]["state"],
+  overrides: Partial<WorkflowRunDetail["deliveries"][number]> = {},
+): WorkflowRunDetail["deliveries"][number] => ({
+  id,
+  runId: "run",
+  submissionId,
+  kind: "persona_feedback",
+  nodeAttemptId: null,
+  sessionId: "session",
+  noteKey: "note",
+  payload: "PACKET",
+  payloadSha256: "a".repeat(64),
+  state,
+  error: null,
+  createdAt: 2,
+  updatedAt: 3,
+  deliveredAt: null,
+  ...overrides,
+});
+
 const render = (
   detail: WorkflowRunDetail,
   props: Record<string, unknown> = {},
@@ -577,14 +601,22 @@ test("a waiting run offers ONE primary move, the context controls, and cancel", 
   }
   assert.match(html, /Workflow-owned model calls/);
   assert.match(html, /harness\/runs-monitor/);
-  // The captured evidence sections, with the compaction fallback named.
-  assert.match(html, /RAW GOAL/);
-  assert.match(html, /Keep compatibility/);
-  assert.match(html, /Deterministic fallback/);
-  assert.match(html, /Compaction fallback: timeout/);
-  assert.match(html, /Diff<\/dt><dd>truncated/);
-  assert.match(html, /status truncated/);
+  // The worklist is the default pane, and the join and gate packets came with it.
   assert.match(html, /Join and gate packet/);
+  // The captured evidence, which is now the Intent pane rather than a section of its own.
+  // Every field it used to print still prints; it is one tab away instead of nine screens down.
+  const intent = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_session" },
+    run: { ...base.run, status: "waiting_for_session" },
+  }, { pane: "intent" });
+  assert.match(intent, /RAW GOAL/);
+  assert.match(intent, /Keep compatibility/);
+  assert.match(intent, /Deterministic fallback/);
+  assert.match(intent, /Compaction fallback: timeout/);
+  assert.match(intent, /Diff<\/dt><dd>truncated/);
+  assert.match(intent, /status truncated/);
+  assertNoGraphIds(intent);
   assertNoGraphIds(html);
 });
 
@@ -985,17 +1017,31 @@ test("a live delivery keeps every recovery control and says what each state mean
         state: "resubmitted",
       },
     }],
-  } as WorkflowRunDetail);
-  assert.match(html, /EXACT REPAIR PACKET/);
+  } as WorkflowRunDetail, { pane: "deliveries" });
+  // The tab reports without being opened: two blocking packets, in amber. This fixture's
+  // worklist is blocking too and wins the initial selection - it is the primary object, and a
+  // run with both an open change and a refused packet must not bury the change - so the pane
+  // is named here rather than relied on.
+  assert.match(
+    html,
+    /id="run-record-tab-deliveries"[^>]*>Deliveries<span class="workflow-tab-badge">2<\/span>/,
+  );
   assert.match(html, /Mark delivered/);
   assert.match(html, /Discard and send new round/);
   assert.match(html, /Retry refused delivery/);
-  // The state is a sentence and the durable code survives beside it, never instead of it.
+  // The state is a sentence and the durable code survives beside it, never instead of it - and
+  // neither is behind the row's disclosure, because this is why the run is standing still.
   assert.match(html, /Delivery uncertain/);
   assert.match(html, /may have landed/);
   assert.match(html, /outcome_unknown/);
   assert.match(html, /pane could not take the write/);
-  assert.match(html, /Payload pruned/);
+  // The pruned packet says so in its Size cell without being opened; the sentence naming when
+  // it was pruned travels with the payload, behind the row's own disclosure.
+  assert.match(html, /<td>pruned<\/td>/);
+  // The payload itself IS behind the disclosure now - that is the 560px card becoming a row -
+  // and the control that opens it is on every row.
+  assert.doesNotMatch(html, /EXACT REPAIR PACKET/);
+  assert.match(html, /Show packet/);
   assert.match(html, /drain completion/);
   assert.match(html, /Foreman proved the queue complete/);
   assertNoGraphIds(html);
@@ -1043,13 +1089,13 @@ test("an orphaned binding refuses the send-side recoveries instead of failing at
     ...base,
     binding: { ...base.binding, sessionId: null },
     deliveries,
-  } as WorkflowRunDetail);
+  } as WorkflowRunDetail, { pane: "deliveries" });
   assert.match(orphaned, /<button[^>]*disabled[^>]*>Retry refused delivery/);
   assert.match(orphaned, /<button[^>]*disabled[^>]*>Discard and send new round/);
   assert.doesNotMatch(orphaned, /<button[^>]*disabled[^>]*>Mark delivered/);
   assert.match(orphaned, /The bound session is gone/);
 
-  const bound = render({ ...base, deliveries } as WorkflowRunDetail);
+  const bound = render({ ...base, deliveries } as WorkflowRunDetail, { pane: "deliveries" });
   assert.doesNotMatch(bound, /<button[^>]*disabled[^>]*>Retry refused delivery/);
   assert.doesNotMatch(bound, /<button[^>]*disabled[^>]*>Discard and send new round/);
 });
@@ -1079,15 +1125,17 @@ test("each delivery card names its packet kind in words rather than as a machine
     updatedAt: 3,
     deliveredAt: 3,
   });
+  // Named explicitly: every packet here is delivered, so nothing blocks and the record opens
+  // on the worklist. The Kind column is where the card header's words went.
   const html = render({
     ...base,
     deliveries: [
       packet("d-persona", "persona_feedback"),
       packet("d-nudge", "unchanged_evidence_nudge"),
     ],
-  } as WorkflowRunDetail);
-  assert.match(html, /<span>Review feedback<\/span>/);
-  assert.match(html, /<span>Nothing changed<\/span>/);
+  } as WorkflowRunDetail, { pane: "deliveries" });
+  assert.match(html, /<td>Review feedback<\/td>/);
+  assert.match(html, /<td>Nothing changed<\/td>/);
   assert.doesNotMatch(html, /unchanged evidence nudge/, "no raw machine string reaches a reader");
 });
 
@@ -1530,19 +1578,28 @@ test("a missing immutable version blocks the strip without hiding the run", () =
 
 test("run detail renders not-captured and corrupt context states safely", () => {
   const base = runningDetail();
+  // Named, because neither arm BLOCKS: a round that stopped before its snapshot was written is
+  // a fact the pane states, and a corrupt one raises its own badge and is asserted below.
   const notCaptured = render({
     ...base,
     contextState: "not_captured",
     submissions: [{ ...base.submissions[0]!, context: {}, status: "cancelled" }],
-  } as WorkflowRunDetail);
+  } as WorkflowRunDetail, { pane: "intent" });
   assert.match(notCaptured, /Intent and evidence not captured/);
-  assert.doesNotMatch(notCaptured, /Captured intent and evidence<\/h4>/);
+  assert.doesNotMatch(notCaptured, /Captured intent and evidence<\/h5>/);
 
+  // A durable context this build cannot audit stops a reader dead, so the Intent tab carries
+  // the amber badge without being opened. This fixture's worklist is blocking too and wins the
+  // initial selection, so the pane is named rather than relied on.
   const corrupt = render({
     ...base,
     contextState: "corrupt",
     submissions: [{ ...base.submissions[0]!, context: { compaction: {} } }],
-  } as WorkflowRunDetail);
+  } as WorkflowRunDetail, { pane: "intent" });
+  assert.match(
+    corrupt,
+    /id="run-record-tab-intent"[^>]*>Intent<span class="workflow-tab-badge">/,
+  );
   assert.match(corrupt, /Captured intent and evidence are corrupt/);
   assert.match(corrupt, /restore it from backup/);
 });
@@ -1560,16 +1617,23 @@ test("a round whose captured context this build cannot read says so instead of t
       base.submissions[1]!,
     ],
   } as WorkflowRunDetail;
-  const earlier = render(detail, { roundId: "submission-1" });
+  // Unreadable BLOCKS, and the badge says so from the bar. This fixture's worklist blocks too
+  // and wins the initial selection, so the pane is named rather than relied on.
+  const earlier = render(detail, { roundId: "submission-1", pane: "intent" });
+  assert.match(
+    earlier,
+    /id="run-record-tab-intent"[^>]*>Intent<span class="workflow-tab-badge">/,
+  );
   // The apostrophe reaches the markup escaped, so the assertion starts after it.
   assert.match(earlier, /s captured context is not readable by this build/);
   assert.doesNotMatch(earlier, /Original goal/);
   // The round is otherwise intact: its verdicts and the run's own actions are still there.
-  assert.match(earlier, /Fix the race/);
+  // The verdicts are a pane away rather than a scroll away, which is the whole change.
+  assert.match(render(detail, { roundId: "submission-1" }), /Fix the race/);
   assert.match(headerOf(earlier), /Copy feedback/);
   // And a readable round is unaffected.
   assert.doesNotMatch(
-    render(base, { roundId: "submission-1" }),
+    render(base, { roundId: "submission-1", pane: "intent" }),
     /not readable by this build/,
   );
 });
@@ -2862,4 +2926,242 @@ test("a busy session is still reported beside a refusal", () => {
   const header = headerOf(html);
   assert.match(header, /so that round was refused before it could be opened/);
   assert.match(header, /The session is still working/);
+});
+
+/**
+ * The tab bar reports the run WITHOUT being opened, which is what makes hiding three panes
+ * behind clicks honest.
+ *
+ * A stack of nine screens is merely long. A bar whose labels are wrong is the surface lying to
+ * a reader who has no reason to check, and that is the failure this consolidation introduces -
+ * so the labels, their counts and the amber badge are pinned against the same fixture the
+ * panes are.
+ */
+test("the run record offers its panes with the counts and the badge on their labels", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    deliveries: [
+      deliveryRow("d-one", "submission-1", "delivered"),
+      deliveryRow("d-two", "submission-2", "delivered", {
+        payloadSha256: "e".repeat(64),
+        deliveredAt: 44,
+      }),
+    ],
+  } as WorkflowRunDetail);
+  assert.match(html, /<div class="workflow-tabs" role="tablist" aria-label="Run record">/);
+  // One open change on this fixture, so the worklist is amber - and it is selected, because a
+  // blocking worklist beats every other blocking pane.
+  assert.match(
+    html,
+    /id="run-record-tab-worklist" aria-selected="true"[^>]*>Review worklist<span class="workflow-tab-badge">1<\/span>/,
+  );
+  // Two packets, neither of them blocking, so the count is plain rather than amber. How many
+  // packets exist is not an attention fact.
+  assert.match(
+    html,
+    /id="run-record-tab-deliveries" aria-selected="false"[^>]*>Deliveries<span class="wf-run-tab-count">2<\/span>/,
+  );
+  // One captured decision on the fixture's snapshot.
+  assert.match(
+    html,
+    /id="run-record-tab-intent" aria-selected="false"[^>]*>Intent<span class="wf-run-tab-count">1<\/span>/,
+  );
+  // A real tablist: `aria-controls` names the panel, the panel names the tab back, and the
+  // roving tabindex leaves exactly one stop for the whole bar.
+  assert.match(
+    html,
+    /<div class="wf-run-pane" role="tabpanel" id="run-record-pane-worklist" aria-labelledby="run-record-tab-worklist">/,
+  );
+  assert.equal((html.match(/role="tab" /g) ?? []).length, 3);
+  assert.equal((html.match(/role="tabpanel"/g) ?? []).length, 1);
+  // A roving tabindex: one stop for the whole bar, so Tab reaches the tabs once and the arrows
+  // move within them. Scoped to the bar, because the panel below has its own focusables.
+  const bar = html.slice(html.indexOf('aria-label="Run record"'), html.indexOf("wf-run-pane"));
+  assert.equal((bar.match(/tabindex="0"/g) ?? []).length, 1);
+  assert.equal((bar.match(/tabindex="-1"/g) ?? []).length, 2);
+  // ONE pane's content exists at a time. That is where the 5,100px went: the deliveries and the
+  // captured intent are a click away rather than eight screens down.
+  assert.doesNotMatch(html, /RAW GOAL/);
+  assert.doesNotMatch(html, /Show packet/);
+  // And the sections two later phases still own are below the container, untouched.
+  assert.match(html, /Workflow-owned model calls/);
+  assertNoGraphIds(html);
+});
+
+test("a run that sent nothing is offered no Deliveries tab at all", () => {
+  // A pane whose `render` returns null is not in the bar. "Deliveries 0" would be a control
+  // answering a question nobody asked, and Phase 3's Completion pane depends on this rule.
+  const html = render(runningDetail());
+  assert.doesNotMatch(html, /run-record-tab-deliveries/);
+  assert.equal((html.match(/role="tab" /g) ?? []).length, 2);
+  assert.match(html, /run-record-tab-worklist/);
+  assert.match(html, /run-record-tab-intent/);
+});
+
+test("the delivery ledger is one row per packet, with every field behind its own disclosure", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    deliveries: [
+      deliveryRow("d-one", "submission-1", "delivered", {
+        payload: "FIRST PACKET BODY",
+        deliveredAt: 3,
+      }),
+      deliveryRow("d-two", "submission-2", "delivered", {
+        kind: "session_action",
+        payloadSha256: "f".repeat(64),
+        payload: "SECOND",
+        deliveredAt: 44,
+      }),
+    ],
+  } as WorkflowRunDetail, { pane: "deliveries" });
+  // The stat strip answers "did the packets reach the session" before any row is read.
+  assert.match(html, /Delivered<\/span><strong class="wf-run-stat-value is-ok">2<\/strong>/);
+  assert.match(html, /Refused<\/span><strong class="wf-run-stat-value">0<\/strong>/);
+  assert.match(html, /Uncertain<\/span><strong class="wf-run-stat-value">0<\/strong>/);
+  // One row each, carrying the round it belongs to and the kind it is - the two facts the old
+  // heading tried to carry for the whole section at once.
+  assert.match(html, /<td>Round 1<\/td><td>Review feedback<\/td>/);
+  assert.match(html, /<td>Round 2<\/td><td>Session action<\/td>/);
+  assert.match(html, /<td>17 ch<\/td>/);
+  assert.equal((html.match(/wf-run-ledger-row/g) ?? []).length, 2);
+  // Nothing is dropped: the payload is behind the row's own control rather than printed into
+  // 560px of card, and no row is blocking so none of them forces itself open.
+  assert.equal((html.match(/Show packet/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /FIRST PACKET BODY/);
+  assert.doesNotMatch(html, /wf-run-ledger-alert/);
+  // The ledger is the WHOLE ledger. A packet is the live run's state whatever round is being
+  // read, so the reader is offered the narrowing rather than started inside it.
+  assert.match(html, /Showing all 2 packets, every round\./);
+  assert.match(html, /Show round 2 only/);
+});
+
+test("a blocking packet keeps its sentence, its error and its recovery open on first paint", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    binding: { ...base.binding, deliveryMode: "live" },
+    deliveries: [
+      deliveryRow("d-clean", "submission-1", "delivered", { deliveredAt: 3 }),
+      deliveryRow("d-refused", "submission-2", "refused", {
+        payloadSha256: "c".repeat(64),
+        error: "pane_blocked",
+      }),
+    ],
+  } as WorkflowRunDetail, { pane: "deliveries" });
+  // The row that stopped the run is open; the one that did not is a single line.
+  assert.equal((html.match(/wf-run-ledger-alert/g) ?? []).length, 1);
+  assert.match(html, /pane refused before a single character was typed/);
+  assert.match(html, /pane could not take the write/);
+  assert.match(html, /Retry refused delivery/);
+  // And a filter cannot hide it: a blocking ledger stays whole, and says why.
+  assert.match(html, /A refused or uncertain packet keeps the whole ledger open\./);
+  assert.doesNotMatch(html, /Show round \d+ only/);
+});
+
+test("captured intent leads with the refined goal and collapses each decision to a row", () => {
+  const base = runningDetail();
+  const decisions = [
+    {
+      decision: "Keep compatibility\nand say so in the release note",
+      rationale: "Customers rely on it",
+      source: { kind: "review", id: "d944b3b2" },
+    },
+    {
+      decision: "Ship phase 3 before phase 4",
+      rationale: null,
+      source: { kind: "foreman_episode", id: "17" },
+    },
+  ];
+  const html = render({
+    ...base,
+    submissions: [
+      base.submissions[0]!,
+      {
+        ...base.submissions[1]!,
+        context: { ...capturedContext, humanDecisions: decisions },
+      },
+    ],
+  } as WorkflowRunDetail, { pane: "intent" });
+  // The lead: one sentence answering what this round was for, above every disclosure.
+  assert.match(html, /<p class="wf-run-meta">Refined goal<\/p><p class="wf-run-lead-text">Refined goal<\/p>/);
+  // The closed summary states what opening it costs, which is the point of collapsing it.
+  assert.match(html, /Human decisions and rationale<\/span><span class="wf-run-disclosure-meta">2 recorded, 96 characters in total/);
+  // One row per decision, each carrying its source, its size and its FIRST LINE - and the full
+  // body underneath, never truncated.
+  assert.equal((html.match(/wf-run-decision/g) ?? []).length, 2);
+  // The ROW carries the first line only; the newline and everything after it belong to the
+  // body underneath, which is never truncated.
+  assert.match(
+    html,
+    /<span class="wf-run-disclosure-title">Keep compatibility<\/span>/,
+  );
+  assert.doesNotMatch(
+    html,
+    /<span class="wf-run-disclosure-title">Keep compatibility\nand say so/,
+  );
+  assert.match(html, /review:d944b3b2<\/code> · 69 characters · has rationale/);
+  assert.match(html, /foreman_episode:17<\/code> · 27 characters<\/span>/);
+  assert.match(html, /and say so in the release note/);
+  assert.match(html, /Rationale: Customers rely on it/);
+  // The snapshot facts, as a chip row rather than as a header aside.
+  assert.match(html, /HEAD abcdef01/);
+  assert.match(html, /tree dirty/);
+  assert.match(html, /diff truncated/);
+  assert.match(html, /transcript complete/);
+  // And every field the section printed before is still printed.
+  assert.match(html, /RAW GOAL/);
+  assert.match(html, /Fingerprint<\/dt><dd><code>fingerprint/);
+  assert.match(html, /PATCH/);
+  assertNoGraphIds(html);
+});
+
+test("a detail update that turns a pane blocking raises its badge without moving the reader", () => {
+  // The initial selection is computed ONCE per run. `detail` is refreshed in place from the
+  // run's SSE summary, so a packet can be refused while somebody is reading Intent - and the
+  // whole of the response to that is the badge appearing. Re-deriving the selection here would
+  // yank them out of the pane they chose, which is the one thing a live update may not do.
+  const base = runningDetail();
+  const calm = {
+    ...base,
+    deliveries: [deliveryRow("d-one", "submission-1", "delivered", { deliveredAt: 3 })],
+  } as WorkflowRunDetail;
+  const host = withOverlayHost(createElement(WorkflowRunView, {
+    detail: calm,
+    pane: "intent" as const,
+    onCancel: async () => {},
+  }));
+  const before = renderToStaticMarkup(host);
+  assert.match(before, /id="run-record-tab-intent" aria-selected="true"/);
+  assert.match(
+    before,
+    /id="run-record-tab-deliveries"[^>]*>Deliveries<span class="wf-run-tab-count">1<\/span>/,
+  );
+
+  const refused = renderToStaticMarkup(withOverlayHost(createElement(WorkflowRunView, {
+    detail: {
+      ...calm,
+      deliveries: [deliveryRow("d-one", "submission-1", "refused", { error: "pane_blocked" })],
+    } as WorkflowRunDetail,
+    pane: "intent" as const,
+    onCancel: async () => {},
+  })));
+  // The badge is there; the reader is still on Intent.
+  assert.match(
+    refused,
+    /id="run-record-tab-deliveries"[^>]*>Deliveries<span class="workflow-tab-badge">1<\/span>/,
+  );
+  assert.match(refused, /id="run-record-tab-intent" aria-selected="true"/);
+  assert.doesNotMatch(refused, /id="run-record-tab-deliveries" aria-selected="true"/);
+});
+
+test("a route naming a pane this run does not offer lands on a real one", () => {
+  // A stale bookmark, or a hand-typed name, must not select a tab that is not in the bar and
+  // leave the container drawing nothing. It falls through to the initial-selection order, and
+  // the address bar is NOT rewritten - the reader who has just arrived keeps their back button.
+  const html = render(runningDetail(), { pane: "deliveries" });
+  assert.doesNotMatch(html, /run-record-tab-deliveries/);
+  assert.match(html, /id="run-record-tab-worklist" aria-selected="true"/);
+  assert.match(html, /class="wf-run-worklist"/);
 });

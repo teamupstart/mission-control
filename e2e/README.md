@@ -2048,3 +2048,14 @@ depend on running before the spec that dispatches a second.
 Playwright drives web contents. Native Electron shell behaviour - drag regions, traffic
 lights, window chrome, vibrancy - is invisible to CDP and to synthetic clicks, and stays a
 manual check.
+
+## Pi installation and terminal dispatch
+
+`specs/pi-extension-setup.spec.ts` exercises the first-install action and report-only warning
+row. Its terminal proof enables discovery but addresses only its own dispatched task and tmux
+home. `fixtures/fake-pi-plan.mjs` retains the catalog fake, then runs the pinned Pi CLI against
+a local deterministic provider for the dispatched turn. The provider records the actual model
+tool list, including the planning tools; no external provider or account is used. The test maps
+Pi's isolated extensions directory to the installer's isolated directory, proves automatic
+symlink discovery, and tears down only that task's tmux session. Screenshots are written to
+`e2e/.artifacts/pi-extension-setup/` and remain uncommitted.

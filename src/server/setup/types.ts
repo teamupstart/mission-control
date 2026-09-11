@@ -35,6 +35,7 @@ export interface SetupSkillsRead {
 
 /** Read-only seams used by the uncached Setup snapshot. */
 export interface SetupDeps {
+  canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
   refreshPath?(): Promise<void>;
   executableDiagnostic?(id: ExecutableId): Promise<{ path: string; source: string } | null>;

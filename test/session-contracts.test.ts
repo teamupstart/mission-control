@@ -325,7 +325,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
  * resolve against the config that declared them, which would send `@shared/*`
  * back to the real `src` and typecheck the unpatched tree - every probe would
  * pass vacuously. Re-declaring both re-roots resolution at the copy. `include`
- * narrows to `src` because the copy has no `hooks`/`test`/`vite.config.ts`.
+ * narrows to `src` because the copy has no `test`/`vite.config.ts`.
  */
 const PROBE_TSCONFIG = {
   extends: path.join(REPO, "tsconfig.json"),
@@ -347,6 +347,8 @@ function typecheckWithPatch(patch: ((dir: string) => void) | null): string {
   const dir = mkdtempSync(path.join(tmpdir(), "session-contract-probe-"));
   try {
     cpSync(path.join(REPO, "src"), path.join(dir, "src"), { recursive: true });
+    // Setup reuses the standalone installer's durable-checkout preflight.
+    cpSync(path.join(REPO, "hooks"), path.join(dir, "hooks"), { recursive: true });
     // App code also imports plain-Node installer policy from scripts/.
     cpSync(path.join(REPO, "scripts"), path.join(dir, "scripts"), { recursive: true });
     symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"));

@@ -8,15 +8,17 @@ import { piExtensionPath } from "../src/server/config.ts";
 
 test("Pi availability degrades invalid and non-file paths to a clean refusal", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-availability-"));
-  const prior = process.env.MISSION_PI_EXTENSION;
+  const prior = { ...process.env };
   try {
+    process.env.PI_EXTENSIONS_DIR = join(dir, "extensions");
+    process.env.MISSION_HOME = join(dir, "state");
     mkdirSync(join(dir, "directory.js"));
     writeFileSync(join(dir, "index.js"), "export default () => {};\n");
     symlinkSync(join(dir, "missing.js"), join(dir, "broken.js"));
     symlinkSync(join(dir, "index.js"), join(dir, "linked.js"));
     for (const name of ["invalid.mjs", "missing.js", "directory.js", "broken.js"]) {
       process.env.MISSION_PI_EXTENSION = join(dir, name);
-      assert.equal(piExtensionInstalled(), false, name);
+      assert.equal(await piExtensionInstalled(), false, name);
       const availability = await missionToolsAvailability("pi");
       assert.equal(availability.available, false, name);
       assert.ok(availability.reason);
@@ -25,11 +27,11 @@ test("Pi availability degrades invalid and non-file paths to a clean refusal", a
     assert.throws(() => piExtensionPath(), /must end in \.js/, "build-path validation stays strict");
     for (const name of ["index.js", "linked.js"]) {
       process.env.MISSION_PI_EXTENSION = join(dir, name);
-      assert.equal(piExtensionInstalled(), true, name);
-      assert.deepEqual(await missionToolsAvailability("pi"), { available: true, reason: null });
+      assert.equal(await piExtensionInstalled(), false, name);
+      assert.equal((await missionToolsAvailability("pi")).available, false, "an uninstalled artifact does not grant availability");
     }
   } finally {
-    if (prior === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = prior;
+    process.env = prior;
     rmSync(dir, { recursive: true, force: true });
   }
 });

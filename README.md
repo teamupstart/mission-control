@@ -296,8 +296,8 @@ tradeoffs.
 ## Pi session integration
 
 The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
-attributed usage for hand-run Pi sessions. Until the Setup control ships, enable it from a
-built checkout:
+attributed usage for hand-run Pi sessions. For a first installation, open **Settings > Setup >
+Agent extensions > Install Pi integration**. You can also enable it from a durable built checkout:
 
 ```sh
 npm run build
@@ -309,6 +309,12 @@ the integration enabled. Start a fresh Pi session normally; it loads the extensi
 being launched through Mission Control or passing `-e`. Building alone installs nothing.
 Keep the built checkout available because the installed link points to its extension artifact.
 The standalone installer also works when the running app predates the configuration API.
+
+Setup reports dangling or deleted links, load failures, stale extension builds, and stale MCP
+tools. Pi itself says nothing about a dangling link; a bundle that throws while loading can
+prevent every Pi session from starting. The warning is report-only and offers a copyable manual
+installer command. Rebuild and run it from a durable clone, then press **Re-check**. Setup
+never repairs an existing integration.
 
 To disable the integration and remove its managed link durably:
 

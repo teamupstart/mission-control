@@ -2850,12 +2850,17 @@ export type PipelineInstallerLaunchBody = z.infer<typeof PipelineInstallerLaunch
  * The daemon resolves any provider checkout and owns argv, shell text, cwd, environment, and
  * the window title.
  */
-export const SetupInstallerLaunchSchema = z
+export const SetupTerminalInstallerLaunchSchema = z
   .object({
     id: z.enum(SETUP_DEPENDENCY_IDS),
     backend: z.enum(TERMINAL_BACKEND_IDS),
   })
   .strict();
+export type SetupTerminalInstallerLaunchBody = z.infer<typeof SetupTerminalInstallerLaunchSchema>;
+export const SetupInstallerLaunchSchema = z.union([
+  SetupTerminalInstallerLaunchSchema,
+  z.object({ id: z.literal("pi-integration") }).strict(),
+]);
 export type SetupInstallerLaunchBody = z.infer<typeof SetupInstallerLaunchSchema>;
 
 /**

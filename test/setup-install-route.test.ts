@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -150,10 +150,35 @@ test("the setup install schema refuses malformed shape and unknown ids before la
     { id: "ai-conductor", backend: "cmux", checkout: "" },
     { id: "ai-conductor", backend: "cmux", checkout: "/browser/path" },
     { id: "wezterm", backend: "cmux", argv: ["brew", "install", "wezterm"] },
+    { id: "pi-integration", backend: "cmux" },
+    { id: "pi-integration", checkout: "/browser/path" },
   ]) {
     assert.equal((await post(app, body)).status, 400, JSON.stringify(body));
   }
   assert.deepEqual(calls, []);
+});
+
+test("Pi first-install route refuses an existing extension without repair or terminal launch", async () => {
+  const previous = process.env.PI_EXTENSIONS_DIR;
+  const extensions = mkdtempSync(join(home, "pi-route-"));
+  const entry = join(extensions, "mission-control.js");
+  writeFileSync(entry, "existing operator extension");
+  process.env.PI_EXTENSIONS_DIR = extensions;
+  try {
+    const calls: LaunchCall[] = [];
+    const response = await post(appFor({ calls }), { id: "pi-integration" });
+    assert.equal(response.status, 409);
+    const body = await response.json() as { ok: boolean; id: string; detail: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.id, "pi-integration");
+    assert.match(body.detail, /manual installer instructions/);
+    assert.equal(readFileSync(entry, "utf8"), "existing operator extension");
+    assert.deepEqual(calls, []);
+  } finally {
+    if (previous === undefined) delete process.env.PI_EXTENSIONS_DIR;
+    else process.env.PI_EXTENSIONS_DIR = previous;
+    rmSync(extensions, { recursive: true, force: true });
+  }
 });
 
 test("the route refuses inert remedies before launch", async () => {
@@ -381,4 +406,44 @@ test("terminal outcomes preserve status and the launcher's exact sentence", asyn
     assert.equal(body.detail, sentence);
     assert.equal(calls.length, 1);
   }
+});
+
+
+test("Pi Setup uses the injected installer and preserves conflict versus operational status", async () => {
+  for (const result of [
+    { ok: true, detail: "Installed" },
+    { ok: false, status: 409, detail: "Already enabled" },
+    { ok: false, status: 500, detail: "Bundle could not load" },
+  ] as const) {
+    let installs = 0;
+    const calls: LaunchCall[] = [];
+    const app = appFor({ calls, install: { installPiExtension: async () => { installs++; return result; } } });
+    const response = await post(app, { id: "pi-integration" });
+    assert.equal(response.status, result.ok ? 200 : result.status);
+    assert.deepEqual(await response.json(), { ...result, id: "pi-integration" });
+    assert.equal(installs, 1);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("Pi Setup rejects cross-site simple requests and foreign origins before installation", async () => {
+  let installs = 0;
+  const app = appFor({ calls: [], install: { installPiExtension: async () => { installs++; return { ok: true, detail: "Installed" }; } } });
+  for (const headers of [
+    { ...LOOPBACK, "content-type": "text/plain" },
+    { ...LOOPBACK, origin: "https://attacker.example" },
+    { ...LOOPBACK, origin: "null" },
+    { ...LOOPBACK, origin: "http://localhost.attacker.example" },
+    { ...LOOPBACK, origin: "http://localhost:7317/extra" },
+    { ...LOOPBACK, host: "attacker.example", origin: "http://localhost:7317" },
+  ]) {
+    const response = await app.request("http://127.0.0.1:7317/api/setup/install", { method: "POST", headers, body: JSON.stringify({ id: "pi-integration" }) });
+    assert.equal(response.status, 403, JSON.stringify(headers));
+  }
+  assert.equal(installs, 0);
+  for (const origin of ["http://127.0.0.1:7317", "http://localhost:5173", "http://[::1]:7317"]) {
+    const response = await app.request("http://127.0.0.1:7317/api/setup/install", { method: "POST", headers: { ...LOOPBACK, origin }, body: JSON.stringify({ id: "pi-integration" }) });
+    assert.equal(response.status, 200, origin);
+  }
+  assert.equal(installs, 3);
 });

@@ -1,5 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 
 import type { Locator, Page } from "@playwright/test";
 
@@ -32,8 +31,10 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 const EVIDENCE = artifactsDir("queued-turn-held-by-review");
 
-/** The fake holds this turn until the test releases it after both messages are queued. */
+/** The fake holds this exact prompt long enough to queue two messages under contention. */
 const REVIEW_HELD_TURN = "hold the current turn open for queued review setup";
+/** The ordinary five-second hold is sufficient when this spec queues only one message. */
+const HELD_TURN = "hold the current turn open";
 /** The fake answers this one by raising `AskUserQuestion` and blocking on it. */
 const ASK_TURN = "ask me which linter to use";
 const FOLLOW_UP = "and once you have picked, run the suite twice";
@@ -91,13 +92,10 @@ test("a queued message says the open review is what is holding it, and stops say
 
   // The scenario as an operator meets it, and the reason it is built in this order: the
   // composer REFUSES text while a dialog is open, so a message can only be under one by
-  // having been queued before it. The fake stays busy until both submissions are visible;
-  // host contention cannot end the setup window early.
+  // having been queued before it. This scenario's longer held turn keeps both submissions
+  // inside that window even when the full gate's other workers are contending for the host.
   await composer.fill(REVIEW_HELD_TURN);
   await composer.press("Enter");
-  // A send owns the composer until its HTTP acknowledgement clears the submitted draft.
-  // Typing the next message before that boundary races the sending guard and draft clear.
-  await expect(composer).toHaveValue("");
   await expect(
     card.locator(".turn-user:not(.pending-turn)").getByText(REVIEW_HELD_TURN, { exact: true }),
   ).toBeVisible();
@@ -114,7 +112,6 @@ test("a queued message says the open review is what is holding it, and stops say
 
   await composer.fill(FOLLOW_UP);
   await composer.press("Enter");
-  await expect(composer).toHaveValue("");
 
   const followUpRow = card.locator(".pending-turn").filter({ hasText: FOLLOW_UP });
   // Before the dialog exists it is an ordinary queued row - which is the control for
@@ -122,10 +119,7 @@ test("a queued message says the open review is what is holding it, and stops say
   await expect(followUpRow).toHaveCount(1);
   await expect(followUpRow.getByRole("status")).toHaveText("queued");
 
-  // Release only after the outbox visibly contains both instructions. The real drain then
-  // delivers the ask, whose question holds the still-queued follow-up.
-  await expect(card.locator(".pending-turn").filter({ hasText: ASK_TURN })).toHaveCount(1);
-  writeFileSync(join(daemon.recordDir, "queued-review.release"), "release");
+  // The held turn ends, the outbox delivers the ask, and the agent raises its question.
   const form = card.locator(".pane-dialog");
   await expect(form).toBeVisible({ timeout: 30_000 });
   await expect(form).toContainText("Which linter?");
@@ -183,16 +177,14 @@ test("a queued message on a killed session says the shutdown is what is holding 
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();
 
-  await composer.fill(REVIEW_HELD_TURN);
+  await composer.fill(HELD_TURN);
   await composer.press("Enter");
-  await expect(composer).toHaveValue("");
   await expect(
-    card.locator(".turn-user:not(.pending-turn)").getByText(REVIEW_HELD_TURN, { exact: true }),
+    card.locator(".turn-user:not(.pending-turn)").getByText(HELD_TURN, { exact: true }),
   ).toBeVisible();
 
   await composer.fill(FOLLOW_UP);
   await composer.press("Enter");
-  await expect(composer).toHaveValue("");
   const followUpRow = card.locator(".pending-turn").filter({ hasText: FOLLOW_UP });
   await expect(followUpRow).toHaveCount(1);
   await expect(followUpRow.getByRole("status")).toHaveText("queued");

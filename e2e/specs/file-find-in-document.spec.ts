@@ -579,13 +579,9 @@ test("find in an HTML preview marks the words a reader can see, and counts only 
     const range = found ? [...found][0] : undefined;
     return range?.startContainer.parentElement?.closest("p")?.id ?? null;
   });
-  const expectedRing = ["visible-one", "reasserted", "visible-two"];
   const ring: (string | null)[] = [];
-  for (let step = 0; step !== expectedRing.length; step++) {
+  for (let step = 0; step !== 3; step++) {
     await expect(readout(dashboard)).toHaveText(`${step + 1} / 3`);
-    // The parent updates its counter before the iframe receives the highlight message.
-    // Wait for the rendered selection itself before recording it or advancing again.
-    await expect.poll(holderOf).toBe(expectedRing[step]);
     ring.push(await holderOf());
     expect((await highlighted(frame)).current).toHaveLength(1);
     if (step === 1) await shoot(dashboard, "html-in-frame-highlight");

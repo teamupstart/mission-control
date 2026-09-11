@@ -15,6 +15,7 @@ import type {
   WorkflowRunCriteria,
   WorkflowRunIntentSnapshot,
   WorkflowStandardsDocument,
+  WorkflowSteeringContext,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
@@ -115,10 +116,8 @@ export interface WorkflowCompactionDeps {
   onReconciliationExecution?: (execution: JobExecution) => void;
 }
 
-export interface RawWorkflowContext {
+export type RawWorkflowContext = WorkflowSteeringContext & {
   primaryGoal: WorkflowContextSnapshot["primaryGoal"];
-  steering?: WorkflowContextSnapshot["steering"];
-  steeringResolvedRevision?: number;
   humanDecisions: WorkflowHumanDecision[];
   priorPersonaFeedback: PersonaFeedbackSummary[];
   session: WorkflowContextSnapshot["session"];
@@ -133,7 +132,7 @@ export interface RawWorkflowContext {
     repositoryScope: string;
     exitCode: number | null;
   }>;
-}
+};
 
 export interface WorkflowCaptureRead {
   context: WorkflowContextSnapshot;
@@ -563,8 +562,8 @@ async function reconcileSourceWorkflowCriteria(
 
 function contextFields(raw: RawWorkflowContext): Omit<
   RawWorkflowContext,
-  "coverage" | "evidenceMetadata"
-> {
+  "coverage" | "evidenceMetadata" | keyof WorkflowSteeringContext
+> & WorkflowSteeringContext {
   const { coverage: _coverage, evidenceMetadata: _evidenceMetadata, ...context } = raw;
   return context;
 }
@@ -995,7 +994,7 @@ function readLiveWorkflowIntent(
   contextTranscript: TranscriptMessage[],
   goal = registry.getGoal(session.id),
   excludeSteering = false,
-): Pick<RawWorkflowContext, "primaryGoal" | "humanDecisions" | "steering" | "steeringResolvedRevision"> {
+): WorkflowSteeringContext & Pick<RawWorkflowContext, "primaryGoal" | "humanDecisions"> {
   return {
     primaryGoal: {
       rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
@@ -1154,7 +1153,11 @@ export async function readWorkflowContextRaw(
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
   // intent is the thing the review is judged AGAINST rather than a fact about the work.
-  const intent = frozenIntent
+  const steering: WorkflowSteeringContext = frozenIntent?.steering ? {
+    steering: frozenIntent.steering,
+    steeringResolvedRevision: frozenIntent.steeringResolvedRevision,
+  } : {};
+  const intent: ReturnType<typeof readLiveWorkflowIntent> = frozenIntent
     ? {
         primaryGoal: {
           rawPrompt: frozenIntent.rawGoal,
@@ -1164,17 +1167,14 @@ export async function readWorkflowContextRaw(
           sourceNoteKey: frozenIntent.sourceNoteKey,
         },
         humanDecisions: frozenIntent.decisions,
-        steering: frozenIntent.steering,
-        steeringResolvedRevision: frozenIntent.steeringResolvedRevision,
+        ...steering,
       }
     : readLiveWorkflowIntent(registry, binding, session, contextTranscript);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
   const boundedTranscript = boundedWorkflowTranscript(contextTranscript);
   const transcript = boundedTranscript.transcript;
   const raw: RawWorkflowContext = {
-    primaryGoal: intent.primaryGoal,
-    ...(intent.steering ? { steering: intent.steering, steeringResolvedRevision: intent.steeringResolvedRevision } : {}),
-    humanDecisions: intent.humanDecisions,
+    ...intent,
     priorPersonaFeedback: boundedFeedback(priorPersonaFeedback),
     session: {
       agent: session.agent,

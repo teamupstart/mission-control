@@ -752,7 +752,9 @@ or narrow acceptance criteria. A reviewer can use it to recognize legitimately s
 deferred steps. It never enters criteria compaction or the intent fingerprint, including through
 a matching transcript decision. Capture keeps the newest 50 revisions within 32,000 UTF-8 bytes,
 then drops oldest notes until the entire intent fits its remaining storage budget. Its recorded
-resolved-revision cutoff excludes later classifications. Existing runs gain no steering retroactively.
+resolved-revision cutoff excludes later classifications. Steering and its cutoff are one optional
+state: both must be present, or both absent for historical snapshots. A present empty list still
+records its cutoff. Existing runs gain no steering retroactively.
 
 The steering log consumes accepted revisions from the Goal pipeline, whose authorship guard
 suppresses daemon-delivered prompt echoes before they enter the pending queue. A later human

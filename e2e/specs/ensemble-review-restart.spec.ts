@@ -114,20 +114,12 @@ async function launchTwoCandidates(
   expect(created.status, `create should launch the run: ${await created.clone().text()}`).toBe(201);
   const runId = ((await created.json()) as { run: { id: string } }).run.id;
 
-  try {
-    await expect
-      .poll(
-        async () => (await detail(daemon, runId)).members.filter((m) => m.status === "active").length,
-        { message: "both members should reach a live worktree", timeout: 60_000 },
-      )
-      .toBe(2);
-  } catch (error) {
-    // Fixture cleanup removes the daemon home; retain the launch failure, not just a count.
-    // eslint-disable-next-line no-console
-    console.log("ENSEMBLE LAUNCH FAILURE", JSON.stringify((await detail(daemon, runId)).members),
-      await (await fetch(`${daemon.baseURL}/api/tasks`)).text(), daemon.readLog());
-    throw error;
-  }
+  await expect
+    .poll(
+      async () => (await detail(daemon, runId)).members.filter((m) => m.status === "active").length,
+      { message: "both members should reach a live worktree", timeout: 60_000 },
+    )
+    .toBe(2);
   for (const member of (await detail(daemon, runId)).members) {
     const submitted = await fetch(
       `${daemon.baseURL}/api/ensembles/${runId}/members/${member.id}/submit`,
@@ -187,7 +179,6 @@ test("a restart mid-comparison costs the review none of its attempts", async ({
   await expect(review).not.toContainText("attempt 2 of 2");
   // Still working, not drawn as a dead stage: a retry is coming.
   await expect(review).toHaveAttribute("aria-current", "step");
-  await shootPipeline(dashboard, "restarted-unspent");
 });
 
 test("a dead provider parks the review for the operator instead of ending the run", async ({

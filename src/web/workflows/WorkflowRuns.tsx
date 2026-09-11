@@ -2358,7 +2358,7 @@ function IntentPane({
           tooltip="Show frozen method, sequence and priority changes that do not move the acceptance contract"
         >
           <p>Steering does not add, remove or narrow acceptance criteria.</p>
-          <p className="wf-run-meta">Frozen through resolved prompt revision {context.steeringResolvedRevision ?? "unknown"}.</p>
+          <p className="wf-run-meta">Frozen through resolved prompt revision {context.steeringResolvedRevision}.</p>
           {context.steering.map((note) => (
             <div key={note.revision}>
               <p className="wf-run-meta">Revision {note.revision} · <time dateTime={new Date(note.timestamp).toISOString()}>{when(note.timestamp)}</time></p>

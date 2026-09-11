@@ -103,7 +103,7 @@ export function buildPersonaPrompt(
     ...(context.steering?.length ? [
       "# Human steering context (does not move the acceptance contract)",
       "These are method, sequence and priority changes the human asked for after the contract was set. They do not add, remove or narrow acceptance criteria. Use them when judging whether an expected step was legitimately skipped or deferred; an explicitly deferred step is not by itself missing evidence. The acceptance contract above remains unchanged.",
-      `Frozen through resolved prompt revision ${context.steeringResolvedRevision ?? "unknown"}.`,
+      `Frozen through resolved prompt revision ${context.steeringResolvedRevision}.`,
       boundedSection(context.steering.map((note) => [
         `Revision ${note.revision} (${new Date(note.timestamp).toISOString()}):`,
         note.instruction,

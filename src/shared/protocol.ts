@@ -5315,13 +5315,15 @@ export const WorkflowSteeringNoteSchema = z.object({
   timestamp: z.number().int().nonnegative(),
 });
 
-const WorkflowSteeringFields = {
-  steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count).optional(),
-  steeringResolvedRevision: z.number().int().nonnegative().optional(),
-};
+const WorkflowSteeringContextSchema = z.union([
+  z.object({ steering: z.undefined().optional(), steeringResolvedRevision: z.undefined().optional() }),
+  z.object({
+    steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count),
+    steeringResolvedRevision: z.number().int().nonnegative(),
+  }),
+]);
 
 const WorkflowContextSnapshotInputSchema = z.object({
-  ...WorkflowSteeringFields,
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
     openingAsk: z.string().nullable().optional(),
@@ -5417,7 +5419,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
     error: z.string().max(8_000).nullable(),
     reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
   }),
-});
+}).and(WorkflowSteeringContextSchema);
 
 export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.transform((value) => {
   const legacyMappings = value.canonicalCriteria.flatMap((criterion) =>
@@ -5458,7 +5460,6 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
  * would be a row that freezes fine and then fails every capture that reads it.
  */
 export const WorkflowRunIntentSnapshotSchema = z.object({
-  ...WorkflowSteeringFields,
   rawGoal: z.string().max(16_000),
   openingAsk: z.string().nullable().optional(),
   intentSource: WorkflowIntentSourceSchema.nullable().optional(),
@@ -5467,7 +5468,7 @@ export const WorkflowRunIntentSnapshotSchema = z.object({
   decisions: z.array(WorkflowHumanDecisionSchema).max(200),
   fingerprint: z.string().length(64),
   frozenAt: z.number().int().nonnegative(),
-});
+}).and(WorkflowSteeringContextSchema);
 
 /**
  * One run's stable acceptance criteria. Per-submission mappings are deliberately absent.

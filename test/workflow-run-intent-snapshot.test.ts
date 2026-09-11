@@ -26,6 +26,7 @@ import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
+import type { WorkflowRunIntentInput } from "../src/server/workflows/intent-fingerprint.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-run-intent-"));
 process.env.MISSION_HOME = home;
@@ -1222,6 +1223,38 @@ test("opening provenance does not change the fingerprint or legacy frozen rows",
   assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(augmented), augmented);
 });
 
+test("intent and context schemas accept steering only together with its resolved cutoff", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("atomic-steering-context")]);
+  const { binding } = bindingFor(registry, "atomic-steering-context");
+  const legacyIntent = freezeWorkflowRunIntent({ ...FIXTURE_RUN_INTENT, sourceNoteKey: binding.noteKey });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], legacyIntent);
+  const legacyContext = WorkflowContextSnapshotSchema.parse(fallbackWorkflowContext(captured.raw, null));
+  const note = { revision: 2, instruction: "do the smaller one first", relationship: "steer" as const,
+    rationale: "Change the sequence", timestamp: 100 };
+  // @ts-expect-error The constructor input must preserve the atomic steering state too.
+  const partialInput: WorkflowRunIntentInput = { ...FIXTURE_RUN_INTENT, steering: [note], steeringResolvedRevision: undefined };
+  assert.equal(WorkflowRunIntentSnapshotSchema.safeParse({ ...partialInput, fingerprint: legacyIntent.fingerprint }).success, false);
+  for (const [schema, legacy] of [
+    [WorkflowRunIntentSnapshotSchema, legacyIntent],
+    [WorkflowContextSnapshotSchema, legacyContext],
+  ] as const) {
+    assert.ok(!("steering" in legacy));
+    assert.ok(!("steeringResolvedRevision" in legacy));
+    assert.deepEqual(schema.parse(legacy), legacy, "historical snapshots retain their shape");
+    for (const steering of [[], [note]]) {
+      const complete: Record<string, unknown> = { ...legacy, steering, steeringResolvedRevision: 2 };
+      assert.deepEqual(schema.parse(complete), complete, "empty and populated steering retain their cutoff");
+      assert.equal(schema.safeParse({ ...legacy, steering }).success, false,
+        "steering without a cutoff must be rejected, including an empty list");
+    }
+    for (const steeringResolvedRevision of [0, 2]) {
+      assert.equal(schema.safeParse({ ...legacy, steeringResolvedRevision }).success, false,
+        "a cutoff without steering must be rejected, including revision zero");
+    }
+  }
+});
+
 test("steering freezes by resolved revision, reaches Personas, and stays out of decisions and compaction", async () => {
   const instruction = "skip the E2E for now, the harness is broken";
   const transcriptPath = join(home, "steering-context.jsonl");
@@ -1240,7 +1273,8 @@ test("steering freezes by resolved revision, reaches Personas, and stays out of 
   assert.equal(snapshot.steeringResolvedRevision, 2);
   assert.deepEqual(snapshot.steering?.map((note) => note.instruction), [instruction]);
   assert.ok(!snapshot.decisions.some((decision) => decision.decision.includes(instruction)));
-  assert.equal(snapshot.fingerprint, workflowRunIntentFingerprint({ ...snapshot, steering: undefined } as typeof snapshot));
+  const { steering: _steering, steeringResolvedRevision: _cutoff, ...withoutSteering } = snapshot;
+  assert.equal(snapshot.fingerprint, workflowRunIntentFingerprint(withoutSteering));
   assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(snapshot).steering, snapshot.steering);
   registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: 3, pendingPrompts: [] }, "do the smaller one first", 100);
   const capture = await readWorkflowContextRaw(registry, binding, [], [], snapshot);
@@ -1265,7 +1299,7 @@ test("steering freezes by resolved revision, reaches Personas, and stays out of 
   assert.match(section, /do not add, remove or narrow acceptance criteria/);
   assert.match(section, /legitimately skipped or deferred/);
   assert.match(section, /Frozen through resolved prompt revision 2/);
-  assert.ok(!buildPersonaPrompt(persona, { ...context, steering: [] }).split("# Published Persona guidance")[0]!.includes("# Human steering context"));
+  assert.ok(!buildPersonaPrompt(persona, { ...context, steering: [], steeringResolvedRevision: 2 }).split("# Published Persona guidance")[0]!.includes("# Human steering context"));
 });
 
 test("steering is bounded by count, UTF-8 bytes and the snapshot's remaining serialized budget", async () => {

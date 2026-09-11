@@ -75,6 +75,7 @@ import {
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
+  withExecutionOverride,
   personasForDisplay,
   sessionActionSnapshotOf,
   sessionActionsForDisplay,
@@ -4418,6 +4419,13 @@ export class WorkflowStore {
             kind: "persona" as const,
             position: node.position,
             persona: personaSnapshotOf(persona),
+            // Copied BESIDE the snapshot, from the draft node rather than from the Persona
+            // row, and only when the draft had one. That separation is what a published
+            // version needs to keep answering: the snapshot says what the Persona
+            // recommended when this version was cut, this says what the workflow chose, and
+            // a version that merged them could never tell an operator which of the two they
+            // are looking at.
+            ...withExecutionOverride(node.executionOverride),
           };
         }),
         edges: workflow.draft.edges,

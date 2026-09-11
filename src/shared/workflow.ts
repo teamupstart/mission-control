@@ -1759,9 +1759,40 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
 export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
+/**
+ * The provider and model ONE Persona occurrence runs under, chosen by the workflow.
+ *
+ * A PAIR rather than two independently inherited fields, and that is the whole point of the
+ * type existing at all. A workflow that overrode only the model would keep resolving its
+ * provider from the Persona, so the day someone repointed that Persona at another provider
+ * the node would spawn a model id that provider has never heard of - a failure the author
+ * of the workflow neither made nor can see. Both halves travel together or neither does.
+ *
+ * `model` is free text under `ModelIdSchema`'s vocabulary, exactly like every other model id
+ * this app persists: the CLIs accept ids this repository has no business enumerating, so
+ * absence from the browser's suggestion catalog is not a validation failure. `runner` is the
+ * headless `LlmRunnerId` registry and not the interactive harness catalog - a Persona is run
+ * by an LLM runner, and naming a harness here would offer providers nothing can spawn.
+ *
+ * OPTIONAL on the node, and omission is the persisted spelling of "inherit". A graph written
+ * before this field existed carries no key and must keep resolving exactly as it did; nothing
+ * may backfill one onto an old graph merely by reading it.
+ */
+export interface WorkflowNodeExecutionOverride {
+  runner: LlmRunnerId;
+  /** Never empty. An empty box is an INCOMPLETE override, never a silent fallback. */
+  model: string;
+}
+
 export type WorkflowDraftNode =
   | { id: string; kind: "session"; position: Point }
-  | { id: string; kind: "persona"; personaId: PersonaId; position: Point }
+  | {
+      id: string;
+      kind: "persona";
+      personaId: PersonaId;
+      position: Point;
+      executionOverride?: WorkflowNodeExecutionOverride;
+    }
   | { id: string; kind: "all_pass"; position: Point }
   | { id: string; kind: "check"; slot: WorkflowCheckSlot; position: Point }
   // A draft names the LIVE action; Publish resolves it to a snapshot. Same split as
@@ -1830,7 +1861,19 @@ export function personaSnapshotIsOutdated(
  */
 export type PublishedWorkflowNode =
   | Exclude<WorkflowDraftNode, { kind: "persona" | "session_action" }>
-  | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point }
+  | {
+      id: string;
+      kind: "persona";
+      persona: PersonaSnapshot;
+      position: Point;
+      /**
+       * Frozen SEPARATELY from the snapshot beside it, never folded into it. The snapshot is
+       * what the Persona recommended at publish time; this is what this workflow chose. A
+       * version that flattened the two could never answer "did the author pick this, or did
+       * the Persona?" again, and the published detail has to.
+       */
+      executionOverride?: WorkflowNodeExecutionOverride;
+    }
   | { id: string; kind: "session_action"; action: SessionActionSnapshot; position: Point };
 
 /**
@@ -1842,6 +1885,52 @@ export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "person
 
 export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
   return node.kind === "persona" || node.kind === "check";
+}
+
+/**
+ * The execution pair a Persona node carries, or null when it inherits the Persona's own.
+ *
+ * One reader for the draft arm and the published arm, because the field is deliberately
+ * spelled the same on both: the projections between them - stage members, the canvas, the
+ * publisher - would otherwise each have to know which shape they were holding to ask the
+ * same question of it.
+ */
+export function nodeExecutionOverride(
+  node: { executionOverride?: WorkflowNodeExecutionOverride },
+): WorkflowNodeExecutionOverride | null {
+  return node.executionOverride ?? null;
+}
+
+/**
+ * The override as a SPREAD, for every place that rebuilds a Persona node from parts.
+ *
+ * Absent stays absent. Written this way rather than as `executionOverride: override ?? undefined`
+ * because those two are not the same object: the second plants an own property whose value is
+ * `undefined`, which survives `deepEqual` comparisons as a difference, changes what
+ * `JSON.stringify` emits for the surrounding graph in some shapes, and turns "this graph was
+ * written before the field existed" into "this graph declined the field". The stage compiler's
+ * round-trip equality and the draft fingerprint autosave diffs against both read that
+ * distinction.
+ */
+export function withExecutionOverride(
+  override: WorkflowNodeExecutionOverride | null | undefined,
+): { executionOverride?: WorkflowNodeExecutionOverride } {
+  return override ? { executionOverride: override } : {};
+}
+
+/**
+ * The same node with a different choice, or with none.
+ *
+ * A spread cannot do this job on its own: `{ ...node, ...withExecutionOverride(null) }` leaves
+ * whatever the node already carried, so clearing a choice through a spread is a no-op that
+ * looks correct at the call site. Every caller that can CLEAR one - the Graph rail's routing
+ * control, and Persona replacement, which resets a node to inheritance - goes through here.
+ */
+export function withNodeExecutionOverride<
+  T extends { executionOverride?: WorkflowNodeExecutionOverride },
+>(node: T, override: WorkflowNodeExecutionOverride | null): T {
+  const { executionOverride: _cleared, ...rest } = node;
+  return { ...rest, ...withExecutionOverride(override) } as T;
 }
 
 export function verdictAuthor(node: WorkflowVerdictNode): string {

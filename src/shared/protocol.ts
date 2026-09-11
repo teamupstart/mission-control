@@ -4527,6 +4527,25 @@ export const PersonaSnapshotSchema = z.object({
   model: ModelIdSchema.nullable(),
 });
 
+/**
+ * A workflow node's own provider/model choice, validated as ONE pair.
+ *
+ * `runner` is the headless runner registry, so an id this build cannot spawn is refused at
+ * the boundary rather than discovered at attempt time. `model` reuses the persisted model-id
+ * vocabulary every other stored id goes through, plus `.min(1)`: `ModelIdSchema`'s pattern
+ * already rejects an empty string, and saying it here as well is what makes the refusal
+ * legible when the message is read rather than the regex.
+ *
+ * Both keys are REQUIRED, which is the whole point of the pair being one object: a body
+ * carrying only one half is refused here rather than completed from the Persona, the app
+ * config or the environment. The optionality lives one level up, on the node, where absence
+ * means inheritance.
+ */
+export const WorkflowNodeExecutionOverrideSchema = z.object({
+  runner: z.enum(LLM_RUNNER_IDS),
+  model: ModelIdSchema.min(1),
+});
+
 export const WorkflowPersonaDirectiveFeedbackSchema = z.string().trim().min(1)
   .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.personaDirectiveBytes), {
     message: `Persona feedback exceeds ${WORKFLOW_LIMITS.personaDirectiveBytes} UTF-8 bytes`,
@@ -4749,6 +4768,10 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     personaId: WorkflowIdSchema,
     position: WorkflowPointSchema,
+    // `.optional()` and deliberately NOT `.default(...)`: absence is the persisted spelling of
+    // "inherit the Persona's own routing", and a default would write the field onto every
+    // legacy graph the moment one was read back.
+    executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
@@ -4778,6 +4801,8 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     persona: PersonaSnapshotSchema,
     position: WorkflowPointSchema,
+    // Beside the snapshot, never inside it. See `PublishedWorkflowNode`.
+    executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   // Identical to the draft arm: a Check snapshots nothing, because its command is

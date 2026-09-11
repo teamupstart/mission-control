@@ -17280,6 +17280,11 @@ td.wf-command-rule-action {
 .workflow-version-detail dt { color: var(--dim); }
 .workflow-version-detail dd { margin: 0; }
 .workflow-version-persona summary { cursor: pointer; font-size: 11px; color: var(--attention); }
+/* The frozen Persona default and the workflow's own choice, as one block: they are two
+   halves of one answer, and a reader comparing them should not have to decide whether two
+   loose paragraphs are related. */
+.workflow-version-routing { display: grid; gap: 2px; margin: 4px 0; }
+.workflow-version-routing p { margin: 0; font-size: 10.5px; color: var(--dim); }
 .workflow-version-persona pre { max-height: 220px; overflow: auto; padding: 8px; white-space: pre-wrap; font: 10px/1.45 var(--mono); background: var(--bg); border-radius: 6px; }
 
 /* ---- pipeline editor (Pipeline view of a workflow) ----
@@ -17596,6 +17601,32 @@ td.wf-command-rule-action {
 }
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
+
+/* One reviewer occurrence's provider and model, drawn under its row in the Pipeline view and
+   inside the selected-node rail in the Graph view. `grid-column: 1 / -1` because the row is a
+   two-column grid whose second column is its trailing actions: a form left in column one
+   would be squeezed to the label's width beside a button. The rail is an ordinary block, so
+   the span is inert there and the two mounts stay one component. */
+.wf-node-execution {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.wf-node-execution-field { display: grid; gap: 3px; font-size: 10.5px; color: var(--dim); }
+.wf-node-execution-field select { font-size: 11px; }
+.wf-node-execution-effective { margin: 0; font-size: 10px; color: var(--dim); }
+/* Attention, not danger: an unfinished override is a sentence the operator is still writing,
+   and nothing is broken until they leave it that way. */
+.wf-node-execution-incomplete {
+  margin: 0;
+  font-size: 10px;
+  color: var(--attention);
+}
 .wf-pipeline-item-menu { position: relative; }
 .wf-pipeline-item-menu > summary {
   min-width: 28px;

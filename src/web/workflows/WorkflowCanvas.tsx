@@ -41,6 +41,7 @@ import { connectionAllowed } from "@shared/workflow-graph.ts";
 import { checkLabel } from "@shared/workflow-stages.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
+import { nodeRoutingLabel, snapshotRoutingLabel } from "./node-execution.ts";
 import { WORKFLOW_NODE_TYPES, type WorkflowCanvasNode } from "./WorkflowNode.tsx";
 import { NEW_NODE_MIME, parseDroppedNode, type NewWorkflowNode } from "./new-node.ts";
 
@@ -199,9 +200,16 @@ function canvasNodes(
       const snapshot = isPublishedPersona(node) ? node.persona : null;
       const live = snapshot ? null : personaMap.get((node as Extract<WorkflowDraftNode, { kind: "persona" }>).personaId);
       fallbackLabel = snapshot?.name ?? live?.name ?? "Missing Persona";
+      // The routing line now has to say WHOSE choice it is: this node may be routed by the
+      // workflow rather than by the reviewer, and two nodes naming one Persona may disagree.
+      const override = node.executionOverride ?? null;
       subtitle = snapshot
-        ? `Snapshot revision ${snapshot.sourceRevision}`
-        : live ? personaRoutingLabel(live) : "Select an active Persona";
+        ? `Snapshot revision ${snapshot.sourceRevision} · ${nodeRoutingLabel(override, snapshotRoutingLabel(snapshot))}`
+        : live
+          ? nodeRoutingLabel(override, personaRoutingLabel(live))
+          : override
+            ? `${nodeRoutingLabel(override, null)} · select an active Persona`
+            : "Select an active Persona";
     } else if (node.kind === "all_pass") {
       fallbackLabel = "All pass";
       subtitle = `${incoming.get(node.id)?.size ?? 0} predecessor${incoming.get(node.id)?.size === 1 ? "" : "s"}`;

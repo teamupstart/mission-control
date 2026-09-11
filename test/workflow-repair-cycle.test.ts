@@ -140,6 +140,7 @@ const failingRunner: LlmRunner = {
       verdict: "fail",
       summary: "One issue",
       requestedChanges: [{
+        basis: "substantive",
         title: "Rename the misleading helper",
         rationale: "The evidence requires it.",
         evidence: [{ kind: "diff", quote: "bad line" }],

@@ -1,9 +1,46 @@
 # Pi's Mission Control extension
 
-`npm run build` produces `dist/pi-extension/index.js`. To exercise it before the Setup installer
-ships, start Pi with `pi -e /absolute/path/to/dist/pi-extension/index.js`. This build step does
-not install anything in `~/.pi/agent`. Hand-run sessions use the same extension as dispatched
-sessions and report their Pi session ID and transcript path through authenticated hook ingest.
+`npm run build` produces `dist/pi-extension/index.js`. The daemon installs it as a single
+machine-wide symlink, `~/.pi/agent/extensions/mission-control.js`, when explicitly enabled.
+Fresh hand-run Pi sessions discover it without `-e` and report their Pi session ID and transcript
+path through authenticated hook ingest. Building alone installs nothing.
+
+Installation commands, API usage, disabling, and custom Pi homes are documented in the
+[README's Pi session integration section](../README.md#pi-session-integration).
+
+The resolver is the skills resolver: `PI_EXTENSIONS_DIR` first, then `pi-extensions` under an
+explicit `MISSION_HOME` (including supported legacy aliases), then the real home above. An
+isolated daemon therefore never reconciles the machine-wide install against its empty config.
+
+`getPiExtensionConfig()` is the single persisted-intent reader for Phase 6. Intent lives in the
+`pi-extension.json` file under the resolved Mission Control state home, defaults off when absent,
+and is independent of skills. Writes publish atomically; malformed intent is refused. The writer
+shares `src/server/state/isolation.ts` with the database, without importing the database module. This
+machine-local installation state is excluded from portable settings backups:
+restoring another installation must not opt this machine into loading executable code. A blocked
+write returns HTTP 409 with the persisted intent and reconciliation problems; off remains durable
+even if a foreign file prevents removal. Startup reconciles that same intent and logs problems.
+
+Real files and directories are never replaced or removed. A symlink is recognized only if its
+target is the configured artifact or contains the extension's `missionControlBuild` marker.
+This permits repointing a previous checkout's built extension while preserving unrelated links.
+Repointing stages a replacement symlink on the same filesystem and publishes it by atomic rename;
+a creation or publication failure preserves the prior working link.
+An unknown dangling link is refused because its ownership cannot be established. Uninstall of
+this checkout's own dangling link still works. No extension or Pi settings file is rewritten.
+
+Hook teardown also calls the extension reconciler, even if no Claude hooks remain. Like skill
+teardown, it does not change persisted intent. Plain hook installation never opts Pi in.
+
+Implementation choices for Phase 5: a separate machine-local intent file replaces the proposed
+reuse of the skills blob, because skills and executable integration are independently enabled.
+The file also permits a standalone install while an older daemon owns SQLite, without replacing
+the running app or bypassing database ownership. The CLI and backend configuration API supply
+the actionable switch before Phase 6 adds Setup. Ownership
+recognition is stricter than the skill name-prefix rule, so an arbitrary symlink at the reserved
+name is preserved. Unknown dangling links are reported rather than guessed to be ours. Phase 6
+must use `capabilitiesFor("pi").extensions`, `extensionsDirFor`, `linkName`, and the exported intent
+reader; it must report staleness without repairing the link.
 
 The extension starts one Node MCP child per active Pi session. It discovers every published tool
 from `dist/mcp/server.mjs`, passes its JSON Schema directly to Pi, and forwards execution over
@@ -53,7 +90,7 @@ The Phase 3 availability seam currently requires a regular `.js` artifact (follo
 Invalid paths, directories, and filesystem errors report unavailable; build validation stays strict.
 Phase 6 replaces this temporary
 probe with the authoritative installed-extension reading; it must remain the single availability
-decider. This phase adds no Setup control or installation remedy.
+decider. Setup controls and staleness reporting remain in Phase 6.
 
 ## Verification
 

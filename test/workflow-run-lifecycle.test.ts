@@ -13,6 +13,8 @@ import {
   WORKFLOW_RUN_PHASES,
   WORKFLOW_RUN_PHASE_MAX,
   WORKFLOW_RUN_PHASE_STATUSES,
+  blockedPhaseClause,
+  blockedPhaseClauseGaps,
   decodeWorkflowRunLifecycle,
   withInspectorGate,
   workflowCheckCleanupBlock,
@@ -992,4 +994,56 @@ test("an unknown inspector_ phase is an unknown phase like any other", () => {
   //   store.setRunState(id, "blocked", "inspector_inspector_disabled", ...)
   //     -> TS2345: not assignable to parameter of type WorkflowRunPhase
   assert.equal(workflowRunPhaseRecognized("inspector_inspector_disabled"), false);
+});
+
+/*
+ * The vocabulary guard: no phase a run can block in may render as its own identifier.
+ *
+ * This is not a style rule. `blockedPhaseClause` falls back to `phase.replaceAll("_", " ")`
+ * for a code nobody mapped, and that fallback is silent and plausible-looking - so the DEFAULT
+ * for a phase added to the registry above is to ship unnamed and print
+ * "preflight refinement exhausted" at an operator in the Line strip, the Review drawer, the
+ * Runs rail and the notification that fires the moment the run blocks. Twelve of the
+ * twenty-seven blocked-capable phases were in exactly that state, including the one a real
+ * No-Mistakes run stopped on.
+ *
+ * The assertion is over `blockedPhaseClauseGaps` rather than spelled here, so the rule has one
+ * definition and the failure can say what to do about it. Adding a phase to
+ * `WORKFLOW_RUN_PHASES` with `blocked` among its statuses is what makes this fail; writing the
+ * clause is what makes it pass.
+ */
+test("every blocked-capable phase has a clause that beats the fallback", () => {
+  const gaps = blockedPhaseClauseGaps();
+  assert.deepEqual(
+    gaps,
+    [],
+    gaps.map((gap) => `${gap.phase} ${gap.problem}`).join("\n"),
+  );
+
+  // Both halves of the rule are live, demonstrated on the registry itself rather than asserted
+  // about the helper in the abstract. `delivery_refused` is the one the weaker guard missed:
+  // it HAD a key for a release, whose value was character-for-character the fallback.
+  assert.equal(blockedPhaseClause("delivery_refused"), "pane refused the write");
+  assert.notEqual(blockedPhaseClause("delivery_refused"), "delivery refused");
+
+  // Every blocked-capable phase is covered, and the count is stated so that deleting a phase
+  // from the registry cannot quietly shrink what this test walks.
+  const blockedCapable = WORKFLOW_RUN_PHASES
+    .filter((phase) => WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked"));
+  assert.equal(blockedCapable.length, 28);
+
+  // One-directional, and deliberately so. The map also serves the triage column's PARKED rows,
+  // which are `waiting_for_session`, so it legitimately holds keys that are not blocked-capable.
+  // A guard asserting the converse would demand those entries be deleted and put the phase code
+  // back on the rows they exist for.
+  assert.equal(blockedPhaseClause("reattached_resubmit_required"), "reattached");
+  assert.equal(
+    WORKFLOW_RUN_PHASE_STATUSES.reattached_resubmit_required.includes("blocked"),
+    false,
+  );
+
+  // And the contract every other surface leans on: an unmapped code still degrades to readable
+  // text rather than to `undefined`. `alerts.ts` and `run-actions.ts` read the same function
+  // now, so this is the one spelling of the fallback rather than two that must agree.
+  assert.equal(blockedPhaseClause("some_future_reason"), "some future reason");
 });

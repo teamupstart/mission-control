@@ -1,6 +1,8 @@
 import { z } from "zod";
 
+import { capabilitiesFor, supportsSdkSkillInvocation } from "./harness-capabilities.ts";
 import type { LlmSpendRole } from "./llm-spend.ts";
+import type { AgentType } from "./types.ts";
 import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
 
 // Pipelines: what Mission Control knows about a gated SDLC engine it does not own.
@@ -1212,6 +1214,34 @@ export type PipelineRepo = z.infer<typeof PipelineRepoSchema>;
 /** The explicit host Mission Control starts for Conductor's interactive Engineer intake. */
 export const PIPELINE_LAUNCH_RUNTIMES = ["agent-sdk", "terminal"] as const;
 export type PipelineLaunchRuntime = (typeof PIPELINE_LAUNCH_RUNTIMES)[number];
+
+/** The skill a managed Pipeline dispatch types as turn one. Spelled once. */
+export const PIPELINE_ENGINEER_SKILL = "engineer";
+
+/**
+ * Whether a managed Pipeline run can be hosted on this harness.
+ *
+ * THREE capabilities, not one, and the third is what this predicate exists for. A managed
+ * Pipeline host has to be reachable over the SDK runtime, has to have a typed way to
+ * invoke the Engineer skill, AND has to have an MCP client - because the whole managed
+ * path hands the host a `MissionMcpDescriptor` and refuses to start until Mission
+ * Control's own `adopt_pipeline_run` and `report_pipeline_workspace` tools are published
+ * to it. Without them the run has no way to report the workspace it adopted, which is the
+ * only thing that makes the projection Mission Control's rather than a guess.
+ *
+ * Split out from `supportsSdkSkillInvocation` when Pi gained a driver. Pi satisfies the
+ * first two - it has an SDK runtime and a `/skill:<name>` grammar - and has no MCP client
+ * at all (`mcp: null`, its extensions are in-process TypeScript rather than side
+ * processes), so the two-part predicate would have offered a Pipeline host that fails at
+ * launch. It is here rather than in `harness-capabilities.ts` because the MCP requirement
+ * is Conductor's, not the harness axis's.
+ */
+export function supportsManagedPipelineHost(agent: AgentType): boolean {
+  return (
+    supportsSdkSkillInvocation(agent, PIPELINE_ENGINEER_SKILL) &&
+    capabilitiesFor(agent).mcp !== null
+  );
+}
 
 /** Canonical runtimes plus the persisted spelling accepted only while decoding old config. */
 const PipelineLaunchRuntimeInputSchema = z

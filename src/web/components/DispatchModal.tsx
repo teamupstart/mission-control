@@ -17,7 +17,7 @@ import {
   taskKindEffort,
   taskKindModel,
 } from "@shared/kind-defaults.ts";
-import { capabilitiesFor, supportsSdkSkillInvocation } from "@shared/harness-capabilities.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import {
   SEE_WORK_TOUR_DEMO_INTENT,
   type HarnessesConfig,
@@ -116,7 +116,7 @@ import {
 import { freshEnsembleDraft, type EnsembleDispatchDraft } from "../ensembles/dispatch/config.ts";
 import { StandingInstructionsNote } from "./StandingInstructionsNote.tsx";
 import type { EnsembleStrategyId } from "@shared/ensemble.ts";
-import type { PipelineLaunchRuntime } from "@shared/pipeline.ts";
+import { supportsManagedPipelineHost, type PipelineLaunchRuntime } from "@shared/pipeline.ts";
 
 /** The runtime-specific provider contract shown where a pipeline launch is chosen. */
 export function pipelineDispatchConstraint(runtime: PipelineLaunchRuntime | null): string {
@@ -146,7 +146,7 @@ export function pipelineAgentForKindTransition(
 ): AgentType {
   if (kind !== "pipeline") return agent;
   if (runtime === "terminal") return "claude";
-  if (runtime === "agent-sdk" && !supportsSdkSkillInvocation(agent, "engineer")) {
+  if (runtime === "agent-sdk" && !supportsManagedPipelineHost(agent)) {
     return EMPTY_DISPATCH_DRAFT.agent;
   }
   return agent;
@@ -1172,7 +1172,7 @@ function DispatchModal({
   const usesHarness = kindBehavior.launch === "harness";
   const managedPipeline = draft.kind === "pipeline" && pipelineLaunchRuntime === "agent-sdk";
   const selectableAgents = managedPipeline
-    ? AGENT_TYPES.filter((agent) => supportsSdkSkillInvocation(agent, "engineer"))
+    ? AGENT_TYPES.filter(supportsManagedPipelineHost)
     : AGENT_TYPES;
   const kindAvailable = (kind: TaskKind): boolean => {
     const behavior = TASK_KIND_BEHAVIOR[kind];

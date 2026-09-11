@@ -44,13 +44,22 @@ test("every agent declares a resume slot, and the two halves agree", () => {
 });
 
 test("resume is independent of having an embedded driver", () => {
-  // The whole reason this capability moved. Pi has no driver and can still reopen its
-  // conversation; if these two ever have to agree again, the split has been undone.
-  // Codex supports both capabilities; that is valid and does not weaken Pi's counterexample.
-  assert.notEqual(HARNESSES.codex.sdk, null);
-  assert.notEqual(HARNESSES.codex.resume, null);
-  assert.equal(HARNESSES.pi.sdk, null);
-  assert.notEqual(HARNESSES.pi.resume, null);
+  // The whole reason this capability moved off `SdkSpec`. Pi was the counterexample - a
+  // harness that could reopen its conversation with no driver at all - and now that it has
+  // one, the SHAPE is what has to be pinned instead: the two slots are read separately, and
+  // nothing composes one from the other.
+  for (const agent of AGENT_TYPES) {
+    const resume = HARNESSES[agent].resume;
+    assert.notEqual(resume, null, `${agent}: every shipped harness can reopen a conversation`);
+    // `resumeFor` reads the record's own slot rather than reaching through `sdk`, which is
+    // the arrangement that let Pi answer this question while `sdk` was null.
+    assert.equal(resumeFor(agent), resume);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(HARNESSES[agent].sdk ?? {}, "argv"),
+      false,
+      `${agent}: an SdkSpec must not carry a resume argv - that is what the split undid`,
+    );
+  }
 });
 
 // Each of these was read off `--help` on a real install, not off release notes. They are

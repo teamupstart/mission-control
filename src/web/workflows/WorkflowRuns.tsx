@@ -28,7 +28,10 @@ import {
   sessionActionSkillLabel,
   workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
-import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
+import {
+  WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
+  blockedPhaseClause,
+} from "@shared/workflow-lifecycle.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -98,12 +101,14 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  runIsParked,
   runRefusedSentence,
   runRecordSummary,
   runRoundGroups,
   runRounds,
   runStalemates,
   runStatusLabel,
+  runTriageSentence,
   segmentProvenanceSentence,
   selectedSubmission,
   submissionRoundLabel,
@@ -2364,6 +2369,23 @@ function IntentPane({
           {` · ${context.primaryGoal.intentSource.relationship ?? "unresolved"}`}
         </p>
       )}
+      {!!context.steering?.length && (
+        <RunDisclosure
+          title="Human steering context"
+          meta={`${context.steering.length} instruction${context.steering.length === 1 ? "" : "s"}`}
+          tooltip="Show frozen method, sequence and priority changes that do not move the acceptance contract"
+        >
+          <p>Steering does not add, remove or narrow acceptance criteria.</p>
+          <p className="wf-run-meta">Frozen through resolved prompt revision {context.steeringResolvedRevision}.</p>
+          {context.steering.map((note) => (
+            <div key={note.revision}>
+              <p className="wf-run-meta">Revision {note.revision} · <time dateTime={new Date(note.timestamp).toISOString()}>{when(note.timestamp)}</time></p>
+              <pre>{note.instruction}</pre>
+              <p>{note.rationale}</p>
+            </div>
+          ))}
+        </RunDisclosure>
+      )}
       <RunDisclosure
         title="Human decisions and rationale"
         meta={humanDecisionsSummary(intent)}
@@ -4328,7 +4350,7 @@ export function WorkflowRuns({
         <div className="wf-run-list" role="list" aria-label="Workflow runs">
           {ordered.map((run) => (
             <div role="listitem" key={run.id}>
-              <Tooltip label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
+              <Tooltip label={`Open this ${run.workflowName} run - ${runTriageSentence(run)}`}>
                 <button
                   ref={(node) => {
                     if (node) runRows.current.set(run.id, node);
@@ -4345,6 +4367,16 @@ export function WorkflowRuns({
                   <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
                     {runStatusLabel(run.status)}
                   </span>
+                  {/* WHY it stopped, beside the chip that says THAT it stopped.
+                      The chip has always been able to say "Blocked", which is true of every
+                      stopped run at once and actionable on none of them - so a rail of them
+                      was a column of one word and a reader who had to open each in turn to
+                      find out which was theirs. `runIsParked` rather than `status ===
+                      "blocked"`, and `blockedPhaseClause` rather than a second lookup, so
+                      this row and the Review drawer's cannot disagree about one field. */}
+                  {runIsParked(run) && (
+                    <span className="wf-run-row-why">{blockedPhaseClause(run.phase)}</span>
+                  )}
                   <span className="wf-run-row-session">{run.noteKey}</span>
                   {run.repoRoot && (
                     <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>

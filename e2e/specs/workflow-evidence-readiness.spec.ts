@@ -851,6 +851,7 @@ for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as 
     if (reviewCase === "exhausted") {
       await expect(dashboard.getByText(/Persona review contract error/).first()).toBeVisible();
       await expect(dashboard.getByText("Rejected review responses", { exact: true })).toBeVisible();
+      await capture(dashboard, "13-review-contract-recovery", dashboard.locator("article.wf-run-attempt").first());
     }
     await capture(dashboard, `11-contract-${reviewCase}`, timeline);
     return;
@@ -887,6 +888,7 @@ for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as 
   await expect(timeline.getByRole("listitem").filter({ hasText: "Persona verdict" }))
     .toContainText("verdict fail");
   await expect(dashboard.getByText(/Structural readiness at review: ready/)).toBeVisible();
+  await capture(dashboard, "14-structural-and-substantive-review", dashboard.locator("article.wf-run-change").first());
   await disagreement.scrollIntoViewIfNeeded();
   await capture(dashboard, "09-readiness-review-disagreement", timeline);
 });

@@ -42,6 +42,7 @@ const { canInterruptSession } = await import("../src/shared/session.ts");
 const { interruptUnsupportedWhy, canInterrupt } = await import(
   "../src/shared/harness-capabilities.ts"
 );
+const { AGENT_TYPES, SESSION_RUNTIMES } = await import("../src/shared/types.ts");
 const { stateDisplay } = await import("../src/web/lib/format.ts");
 const { mkSession } = await import("./helpers/session-fixture.ts");
 
@@ -171,11 +172,11 @@ test("the offer needs both a mechanism and a turn to stop", () => {
   const embedded = mkSession({ runtime: "sdk", agent: "claude" });
   assert.equal(canInterruptSession(embedded), true);
   assert.equal(canInterruptSession({ ...embedded, agent: "codex" }), true);
-  // pi has no driver at all, so the pane keystroke is not one of two mechanisms for it -
-  // it is the only one, and it is the reason pi can be interrupted here despite `sdk: null`.
+  // Pi answers on both runtimes now: `Escape` into the pane, and `AgentSession.abort()` on
+  // the managed one - which WAITS for the agent to be idle, so the control reports a
+  // session that has genuinely stopped rather than one that has been asked to.
   assert.equal(canInterruptSession({ ...embedded, agent: "pi", runtime: "terminal" }), true);
-  // And the runtime pi does NOT have stays refused, rather than inheriting the pane answer.
-  assert.equal(canInterruptSession({ ...embedded, agent: "pi", runtime: "sdk" }), false);
+  assert.equal(canInterruptSession({ ...embedded, agent: "pi", runtime: "sdk" }), true);
   // A mechanism, but no turn: interrupting an idle agent is a key that does nothing.
   assert.equal(canInterruptSession({ ...embedded, state: "idle" }), false);
   assert.equal(canInterruptSession({ ...embedded, state: "exited" }), false);
@@ -187,23 +188,18 @@ test("the offer needs both a mechanism and a turn to stop", () => {
   assert.equal(canInterruptSession({ ...embedded, stateConfirmed: false }), true);
 });
 
-test("both runtimes are interruptible, and a runtime a harness lacks is still refused", () => {
-  // The gesture now resolves to a mechanism on every shipped harness/runtime pair that
-  // exists: the driver primitive for an embedded session, `Escape` into the pane for a
-  // terminal one. Pi is terminal-only because it has no driver, not because it is behind.
-  assert.equal(canInterrupt("claude", "sdk"), true);
-  assert.equal(canInterrupt("claude", "terminal"), true);
-  assert.equal(canInterrupt("codex", "terminal"), true);
-  assert.equal(canInterrupt("pi", "terminal"), true);
-  assert.equal(interruptUnsupportedWhy("claude", "sdk"), null);
-  assert.equal(interruptUnsupportedWhy("claude", "terminal"), null);
-  assert.equal(interruptUnsupportedWhy("pi", "terminal"), null);
-  // The per-runtime refusal is still reachable and still names the runtime - pi declares no
-  // `sdk`, so asking for one is the case that sentence exists for.
-  assert.match(
-    interruptUnsupportedWhy("pi", "sdk") ?? "",
-    /can't yet stop a Pi turn running in the Agent SDK/,
-  );
+test("every shipped harness and runtime pair resolves to an interrupt mechanism", () => {
+  // The gesture resolves on every pair that exists: the driver primitive for an embedded
+  // session, `Escape` into the pane for a terminal one. Pi was the harness that made the
+  // per-runtime refusal reachable, and its managed driver closed that gap - so what is
+  // pinned now is the completeness, and `harness-sdk.test.ts` is what stops a declaration
+  // from outrunning the driver behind it.
+  for (const agent of AGENT_TYPES) {
+    for (const runtime of SESSION_RUNTIMES) {
+      assert.equal(canInterrupt(agent, runtime), true, `${agent} · ${runtime}`);
+      assert.equal(interruptUnsupportedWhy(agent, runtime), null, `${agent} · ${runtime}`);
+    }
+  }
 });
 
 // ---- the control ------------------------------------------------------------------

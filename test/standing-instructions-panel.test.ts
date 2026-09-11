@@ -151,19 +151,21 @@ test("the counter names the daemon's own ceiling rather than a number typed here
 // rows are asserted against the DERIVATION the card renders from. That is the stronger
 // assertion anyway: it pins the five pairs and their exact mechanisms, where a markup match
 // would only pin that some rows drew.
-test("the reach block states all five harness and runtime pairs with their mechanisms", async () => {
+test("the reach block states every harness and runtime pair with its mechanism", async () => {
   const { reachPairs } = await import("../src/web/lib/standing-instructions-view.ts");
   const rows = reachPairs();
   const labels = rows.map((r) => r.label);
 
   // Derived from the harness registry rather than typed out, so this asserts the DERIVATION
-  // produces exactly the five pairs the plan promises - and would fail loudly on the day a
-  // harness ships without the reach block being reconsidered.
+  // produces exactly the pairs that exist - and would fail loudly on the day a harness ships
+  // without the reach block being reconsidered. It went from five to six when Pi gained a
+  // managed runtime, which is the edit this assertion exists to force someone to make.
   assert.deepEqual(labels.sort(), [
     "claude · sdk",
     "claude · terminal",
     "codex · sdk",
     "codex · terminal",
+    "pi · sdk",
     "pi · terminal",
   ]);
 
@@ -177,6 +179,9 @@ test("the reach block states all five harness and runtime pairs with their mecha
   assert.equal(by("codex · terminal").prose.channel, "prompt text");
   assert.equal(by("codex · terminal").prose.detail, "composed above turn one");
   assert.equal(by("pi · terminal").prose.channel, "system prompt");
+  // The managed runtime reaches the SAME channel by the same name - `--append-system-prompt`
+  // is the CLI spelling of the resource-loader option the driver passes directly.
+  assert.equal(by("pi · sdk").prose.channel, "system prompt");
 });
 
 test("the mechanism prose says which channels never enter the transcript", async () => {

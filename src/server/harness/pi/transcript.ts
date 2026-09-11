@@ -18,15 +18,28 @@ import { readRange } from "../../util/file-tail.ts";
 // assembles them into the `transcript` capability. Because that capability is non-null with
 // `messages`, `GOAL_UNSUPPORTED.pi` is null (paired, `harness-transcript.test.ts`).
 
-/** Root of pi's per-project session store. */
-const SESSIONS_DIR = join(homedir(), ".pi", "agent", "sessions");
+/**
+ * Root of pi's per-project session store, resolved the way pi resolves it.
+ *
+ * A FUNCTION rather than a module-load constant, and it reads `PI_CODING_AGENT_DIR` -
+ * pi's own `getAgentDir()` honours that variable before falling back to `~/.pi/agent`, so a
+ * constant computed from `homedir()` alone reports the wrong directory for every operator
+ * who has set it, on both runtimes. The managed driver made that visible: it reports the
+ * exact file pi is writing, and the search below was looking somewhere else entirely.
+ */
+function piSessionsDir(): string {
+  const configured = process.env.PI_CODING_AGENT_DIR;
+  return configured
+    ? join(configured.replace(/^~(?=$|[/\\])/, homedir()), "sessions")
+    : join(homedir(), ".pi", "agent", "sessions");
+}
 
 /**
  * pi's cwd -> project-dir encoding, taken verbatim from its `session-manager.js`:
  * strip a leading slash, replace `/ \ :` with `-`, wrap in `--`. Note dots are NOT replaced,
  * unlike Claude's `[/.]` - a `.treehouse` worktree keeps its dot.
  */
-export function piProjectDir(cwd: string, sessionsDir = SESSIONS_DIR): string {
+export function piProjectDir(cwd: string, sessionsDir = piSessionsDir()): string {
   const safe = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
   return join(sessionsDir, safe);
 }
@@ -74,12 +87,12 @@ function exactSessionFile(files: SessionFile[], agentSessionId: string): Session
 export function piSessionFileForIdentity(
   cwd: string,
   agentSessionId: string,
-  sessionsDir = SESSIONS_DIR,
+  sessionsDir = piSessionsDir(),
 ): string | null {
   return exactSessionFile(sessionFiles(piProjectDir(cwd, sessionsDir)), agentSessionId)?.path ?? null;
 }
 
-export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
+export function locatePiTranscript(s: Session, sessionsDir = piSessionsDir()): string | null {
   if (!s.cwd || !s.agentSessionId) return null;
 
   // An extension reports the exact path, including custom Pi homes. Validate its header

@@ -437,6 +437,90 @@ test("a blocked run needs a person even with no action wait", () => {
   assert.doesNotMatch(stage.sentence, /needs you/);
 });
 
+test("the strip says WHY runs stalled, and refuses to name a cause it cannot claim", () => {
+  /*
+   * "12 stalled" is the complaint this answers, not the answer. It is true of twelve
+   * unrelated failures at once, so the number alone cannot tell a reader whether the drawer
+   * beneath holds one dismissal or an afternoon.
+   */
+  const oneCause = fold(
+    {
+      workflowRuns: [
+        mkRun({ id: "r1", status: "blocked", phase: "image_evidence_capture" }),
+        mkRun({ id: "r2", status: "blocked", phase: "image_evidence_capture" }),
+      ],
+    },
+    "review",
+  );
+  // FIRST in the sentence, not last. `.ls-sub` is one clipped line about twenty-three
+  // characters wide at six stages, so a clause on the end is one no reader of the strip ever
+  // sees - "2 stalled" itself has been falling off that end for as long as it has been there.
+  assert.match(oneCause.sentence, /^registered evidence refused · /);
+  assert.match(oneCause.sentence, /2 stalled/);
+  // The clause, never the phase code: this stage is one of the four surfaces the vocabulary
+  // exists for, and the daemon words it - which is only possible because the map lives in
+  // `@shared/`.
+  assert.doesNotMatch(oneCause.sentence, /image evidence capture/);
+
+  /*
+   * Several causes are COUNTED rather than reduced to the commonest, and this is the one
+   * place the fold differs from the workflow name beside it. A plurality workflow is honest
+   * about a mixed pile - every run really is running some workflow. A plurality cause is not:
+   * "3 stalled · session gone" would be a false statement about two of them, and the move it
+   * invites - dismiss the pile - is exactly the wrong one.
+   */
+  const several = fold(
+    {
+      workflowRuns: [
+        mkRun({ id: "r1", status: "blocked", phase: "session_disappeared" }),
+        mkRun({ id: "r2", status: "blocked", phase: "round_limit" }),
+        mkRun({ id: "r3", status: "blocked", phase: "image_evidence_capture" }),
+      ],
+    },
+    "review",
+  );
+  assert.match(several.sentence, /^3 causes · /);
+  assert.match(several.sentence, /3 stalled/);
+
+  /*
+   * Two DIFFERENT phase codes that say the same thing to a reader are ONE cause, not two.
+   *
+   * Round 1 review caught this: counting raw phase codes would answer "2 causes" for a drawer
+   * showing the same sentence twice, which is the plurality this whole rule exists to refuse.
+   * It is reachable without touching the map, because `phase` is a free string that
+   * `cancelRun` and every `setRunState` caller mint their own values for - these two spellings
+   * of one unmapped code render one identical clause through the fallback.
+   *
+   * No two entries in `BLOCKED_PHASE_CLAUSES` share a value today, so this is the property
+   * held structurally rather than by luck - which is the point, since nothing stops a later
+   * pair of phases from deserving the same three words.
+   */
+  const sameWords = fold(
+    {
+      workflowRuns: [
+        mkRun({ id: "r1", status: "blocked", phase: "a_reason" }),
+        mkRun({ id: "r2", status: "blocked", phase: "a reason" }),
+      ],
+    },
+    "review",
+  );
+  assert.notEqual("a_reason", "a reason");
+  assert.match(sameWords.sentence, /^a reason · /);
+  assert.doesNotMatch(sameWords.sentence, /causes/);
+
+  // A phase from a newer daemon still degrades to readable text here, through the same
+  // fallback the notification and the triage column use.
+  const unmapped = fold(
+    { workflowRuns: [mkRun({ status: "blocked", phase: "a_phase_from_a_newer_daemon" })] },
+    "review",
+  );
+  assert.match(unmapped.sentence, /^a phase from a newer daemon · /);
+
+  // And a healthy strip is untouched: nothing blocked, nothing to explain.
+  const running = fold({ workflowRuns: [mkRun({ id: "r1" })] }, "review");
+  assert.equal(running.sentence, "No-Mistakes Review v8");
+});
+
 test("the split counts a run once, even when it is both blocked and asking you something", () => {
   // `workflowRunWaitsOnOperator` is a UNION, and a run can satisfy both arms: `orphanBinding`
   // blocks a run whose session action was already parked on `needs_operator`. Two independent
@@ -465,15 +549,21 @@ test("the split counts a run once, even when it is both blocked and asking you s
 
 test("the split's parts go through the separator the accessible name rewrites", () => {
   // `LineStrip.stageLabel` turns exactly " · " into ", " to build the aria-label, so a part
-  // concatenated by hand would ship a middle dot into an accessible name. Both halves and the
-  // workflow clause have to be joined by `sentence()`.
+  // concatenated by hand would ship a middle dot into an accessible name. Both halves, the
+  // workflow clause and the blocked cause have to be joined by `sentence()`.
   const stage = fold({
     workflowRuns: [
-      mkRun({ id: "r1", status: "blocked" }),
+      // A real blocked phase rather than the fixture's default, which is `review` - an
+      // unmapped code that the cause clause would print back verbatim and leave this
+      // assertion reading as though nothing had been added.
+      mkRun({ id: "r1", status: "blocked", phase: "session_disappeared" }),
       mkRun({ id: "r2", status: "waiting_for_action", actionWait: "needs_operator" }),
     ],
   }, "review");
-  assert.equal(stage.sentence, "No-Mistakes Review v8 ×2 · 1 needs you · 1 stalled");
+  assert.equal(
+    stage.sentence,
+    "session gone · No-Mistakes Review v8 ×2 · 1 needs you · 1 stalled",
+  );
 });
 
 test("more than one of either half is counted in the fleet's own plural", () => {

@@ -26,6 +26,7 @@ import type { LlmRunner } from "../src/shared/llm.ts";
 import type { Session } from "../src/shared/types.ts";
 import type { InjectDeps, PromptWriteGuard } from "../src/server/actions.ts";
 import type { WorkflowBinding } from "../src/shared/workflow.ts";
+import type { WorkflowRunIntentInput } from "../src/server/workflows/intent-fingerprint.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflow-run-intent-"));
 process.env.MISSION_HOME = home;
@@ -197,6 +198,7 @@ const failingRunner: LlmRunner = {
       verdict: "fail",
       summary: "Not yet",
       requestedChanges: [{
+        basis: "substantive",
         title: "Show the rendered result",
         rationale: "The spinner is still visible in the diff.",
         evidence: [{ kind: "diff", quote: "patch" }],
@@ -1220,4 +1222,163 @@ test("opening provenance does not change the fingerprint or legacy frozen rows",
   assert.equal(workflowRunIntentFingerprint(augmented), old.fingerprint);
   assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(old), old);
   assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(augmented), augmented);
+});
+
+test("intent and context schemas accept steering only together with its resolved cutoff", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("atomic-steering-context")]);
+  const { binding } = bindingFor(registry, "atomic-steering-context");
+  const legacyIntent = freezeWorkflowRunIntent({ ...FIXTURE_RUN_INTENT, sourceNoteKey: binding.noteKey });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], legacyIntent);
+  const legacyContext = WorkflowContextSnapshotSchema.parse(fallbackWorkflowContext(captured.raw, null));
+  const note = { revision: 2, instruction: "do the smaller one first", relationship: "steer" as const,
+    rationale: "Change the sequence", timestamp: 100 };
+  // @ts-expect-error The constructor input must preserve the atomic steering state too.
+  const partialInput: WorkflowRunIntentInput = { ...FIXTURE_RUN_INTENT, steering: [note], steeringResolvedRevision: undefined };
+  assert.equal(WorkflowRunIntentSnapshotSchema.safeParse({ ...partialInput, fingerprint: legacyIntent.fingerprint }).success, false);
+  for (const [schema, legacy] of [
+    [WorkflowRunIntentSnapshotSchema, legacyIntent],
+    [WorkflowContextSnapshotSchema, legacyContext],
+  ] as const) {
+    assert.ok(!("steering" in legacy));
+    assert.ok(!("steeringResolvedRevision" in legacy));
+    assert.deepEqual(schema.parse(legacy), legacy, "historical snapshots retain their shape");
+    for (const steering of [[], [note]]) {
+      const complete: Record<string, unknown> = { ...legacy, steering, steeringResolvedRevision: 2 };
+      assert.deepEqual(schema.parse(complete), complete, "empty and populated steering retain their cutoff");
+      assert.equal(schema.safeParse({ ...legacy, steering }).success, false,
+        "steering without a cutoff must be rejected, including an empty list");
+    }
+    for (const steeringResolvedRevision of [0, 2]) {
+      assert.equal(schema.safeParse({ ...legacy, steeringResolvedRevision }).success, false,
+        "a cutoff without steering must be rejected, including revision zero");
+    }
+  }
+});
+
+test("intent and context schemas enforce the aggregate steering UTF-8 byte budget", async () => {
+  const { WORKFLOW_STEERING_LIMITS } = await import("../src/shared/workflow.ts");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("steering-schema-budget")]);
+  const { binding } = bindingFor(registry, "steering-schema-budget");
+  const intent = freezeWorkflowRunIntent({ ...FIXTURE_RUN_INTENT, sourceNoteKey: binding.noteKey });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], intent);
+  const context = WorkflowContextSnapshotSchema.parse(fallbackWorkflowContext(captured.raw, null));
+  const note = { revision: 1, instruction: "a".repeat(3_100), relationship: "steer" as const,
+    rationale: "", timestamp: 100 };
+  const atLimit = Array.from({ length: 10 }, (_, index) => ({ ...note, revision: index + 1 }));
+  atLimit[0]!.instruction += "a".repeat(WORKFLOW_STEERING_LIMITS.bytes - Buffer.byteLength(JSON.stringify(atLimit)));
+  assert.ok(atLimit[0]!.instruction.length <= WORKFLOW_STEERING_LIMITS.instruction);
+  assert.equal(Buffer.byteLength(JSON.stringify(atLimit)), WORKFLOW_STEERING_LIMITS.bytes);
+  const overLimit = atLimit.map((item, index) => index === 1 ? { ...item, instruction: item.instruction + "a" } : item);
+  const unicode = Array.from({ length: 4 }, (_, index) => ({ ...note, revision: index + 1,
+    instruction: "界".repeat(3_000) }));
+  assert.ok(JSON.stringify(unicode).length < WORKFLOW_STEERING_LIMITS.bytes);
+  assert.ok(Buffer.byteLength(JSON.stringify(unicode)) > WORKFLOW_STEERING_LIMITS.bytes);
+  for (const [schema, snapshot] of [
+    [WorkflowRunIntentSnapshotSchema, intent],
+    [WorkflowContextSnapshotSchema, context],
+  ] as const) {
+    assert.equal(schema.safeParse({ ...snapshot, steering: atLimit, steeringResolvedRevision: 10 }).success, true);
+    for (const steering of [overLimit, unicode]) {
+      const result = schema.safeParse({ ...snapshot, steering, steeringResolvedRevision: 10 });
+      assert.equal(result.success, false, "oversized steering must be rejected by both snapshot boundaries");
+      if (!result.success) assert.match(result.error.message, /Workflow steering exceeds 32000 UTF-8 bytes/);
+    }
+  }
+});
+
+test("steering freezes by resolved revision, reaches Personas, and stays out of decisions and compaction", async () => {
+  const instruction = "skip the E2E for now, the harness is broken";
+  const transcriptPath = join(home, "steering-context.jsonl");
+  writeFileSync(transcriptPath, JSON.stringify({ type: "user", uuid: "steering-turn", timestamp: new Date().toISOString(),
+    message: { role: "user", content: instruction } }) + "\n");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("steering-capture", transcriptPath)]);
+  const { session, binding } = bindingFor(registry, "steering-capture");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
+  registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
+  registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: 2, pendingPrompts: [],
+    rationale: "The harness is temporarily unavailable" }, ` \t${instruction}\r\n`, 100);
+  registry.captureAcceptedPrompt(session.id, "do the smaller one first", binding.noteKey);
+  const snapshot = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(snapshot.steeringResolvedRevision, 2);
+  assert.deepEqual(snapshot.steering?.map((note) => note.instruction), [instruction]);
+  assert.ok(!snapshot.decisions.some((decision) => decision.decision.includes(instruction)));
+  const { steering: _steering, steeringResolvedRevision: _cutoff, ...withoutSteering } = snapshot;
+  assert.equal(snapshot.fingerprint, workflowRunIntentFingerprint(withoutSteering));
+  assert.deepEqual(WorkflowRunIntentSnapshotSchema.parse(snapshot).steering, snapshot.steering);
+  registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: 3, pendingPrompts: [] }, "do the smaller one first", 100);
+  const capture = await readWorkflowContextRaw(registry, binding, [], [], snapshot);
+  assert.deepEqual(capture.raw.steering, snapshot.steering);
+  assert.equal(capture.raw.steeringResolvedRevision, 2);
+  assert.equal(readWorkflowIntentSnapshot(registry, binding)!.steering!.length, 2);
+  let compactionPrompt = "";
+  const context = await compactWorkflowContext(capture.raw, {
+    execute: async (prompt) => { compactionPrompt = prompt; return { kind: "ok", value: criteriaFor([HUMAN_ASK]) }; },
+    reconcile: async () => ({ kind: "ok", value: { criterionMappings: [] } }),
+  });
+  assert.ok(!compactionPrompt.includes(instruction));
+  assert.deepEqual(context.steering, snapshot.steering);
+  const persona = { sourcePersonaId: "steering-persona", sourceRevision: 1, name: "Reviewer", description: "",
+    guidanceMarkdown: "Review the contract", runner: null, model: null };
+  const prompt = buildPersonaPrompt(persona, context);
+  const steeringIndex = prompt.indexOf("# Human steering context");
+  assert.ok(steeringIndex > prompt.indexOf("Acceptance criteria:"));
+  assert.ok(steeringIndex < prompt.indexOf("# Published Persona guidance"));
+  const section = prompt.slice(steeringIndex, prompt.indexOf("# Published Persona guidance"));
+  assert.ok(section.includes(instruction));
+  assert.match(section, /do not add, remove or narrow acceptance criteria/);
+  assert.match(section, /legitimately skipped or deferred/);
+  assert.match(section, /Frozen through resolved prompt revision 2/);
+  assert.ok(!buildPersonaPrompt(persona, { ...context, steering: [], steeringResolvedRevision: 2 }).split("# Published Persona guidance")[0]!.includes("# Human steering context"));
+});
+
+test("steering is bounded by count, UTF-8 bytes and the snapshot's remaining serialized budget", async () => {
+  const { withWorkflowSteering } = await import("../src/server/workflows/context.ts");
+  const { WORKFLOW_EXECUTION_LIMITS, WORKFLOW_STEERING_LIMITS } = await import("../src/shared/workflow.ts");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("bounded-steering")]);
+  const { session, binding } = bindingFor(registry, "bounded-steering");
+  registry.captureAcceptedPrompt(session.id, HUMAN_ASK, binding.noteKey);
+  registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
+  for (let i = 0; i < 60; i++) {
+    const instruction = `Method ${i}`;
+    registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
+    registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: i + 2, pendingPrompts: [] }, instruction, 100);
+  }
+  const snapshot = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.equal(snapshot.steering!.length, WORKFLOW_STEERING_LIMITS.count);
+  assert.equal(snapshot.steering![0]!.revision, 12);
+  const instruction = "界".repeat(4_000);
+  for (let i = 62; i < 70; i++) {
+    registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
+    registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: registry.getGoal(session.id)!.promptRevision,
+      pendingPrompts: [] }, instruction, 100);
+  }
+  const bounded = readWorkflowIntentSnapshot(registry, binding)!;
+  assert.ok(bounded.steering!.length < 50);
+  assert.ok(Buffer.byteLength(JSON.stringify(bounded.steering)) <= WORKFLOW_STEERING_LIMITS.bytes);
+  const base = freezeWorkflowRunIntent({ ...FIXTURE_RUN_INTENT, openingAsk: "", steering: [], steeringResolvedRevision: 61 });
+  const remaining = WORKFLOW_EXECUTION_LIMITS.contextJsonBytes - Buffer.byteLength(JSON.stringify(base));
+  const full = { ...base, openingAsk: "a".repeat(remaining) };
+  const dropped = withWorkflowSteering(full, snapshot.steering!, 61);
+  assert.deepEqual(dropped.steering, []);
+  assert.equal(Buffer.byteLength(JSON.stringify(dropped)), WORKFLOW_EXECUTION_LIMITS.contextJsonBytes);
+  assert.doesNotThrow(() => WorkflowRunIntentSnapshotSchema.parse(dropped));
+  const store = new WorkflowStore();
+  const storedBinding = store.insertBinding({ id: "budget-binding", workflowVersionId: "budget-version",
+    noteKey: binding.noteKey, sessionId: session.id, sessionAgent: "claude", sessionName: "Budget",
+    sessionCwd: repositoryRoot, sessionRepoRoot: repositoryRoot, triggerMode: "manual", deliveryMode: "preview",
+    maxRepairRounds: 3, now: 100 });
+  const created = store.createInitialSubmission({ id: "budget-run", binding: storedBinding,
+    triggerSource: "manual", triggerKey: "budget-trigger", now: 100, intent: dropped },
+  { id: "budget-submission", triggerSource: "manual", triggerKey: "budget-trigger", context: {}, evidence: {}, now: 100 });
+  assert.deepEqual(created.run.intent?.steering, []);
+  assert.equal(store.getRun("budget-run")?.intentState, "frozen");
+  // The additive metadata itself also yields when the pre-feature snapshot has no room.
+  const { steering: _notes, steeringResolvedRevision: _revision, ...oldShape } = full;
+  oldShape.openingAsk += "a".repeat(WORKFLOW_EXECUTION_LIMITS.contextJsonBytes - Buffer.byteLength(JSON.stringify(oldShape)));
+  assert.deepEqual(withWorkflowSteering(oldShape, snapshot.steering!, 61), oldShape);
 });

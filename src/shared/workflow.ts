@@ -3595,6 +3595,27 @@ export interface WorkflowBindingSummary {
  */
 export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
 
+/** Classified human method, sequence or priority context, never acceptance criteria. */
+export interface WorkflowSteeringNote {
+  revision: number;
+  instruction: string;
+  relationship: "steer";
+  rationale: string;
+  timestamp: number;
+}
+
+/** Frozen steering is absent on historical snapshots, or present with its revision cutoff. */
+export type WorkflowSteeringContext =
+  | { steering?: never; steeringResolvedRevision?: never }
+  | {
+      steering: WorkflowSteeringNote[];
+      /** Goal revision read alongside the objective; later classifications belong to a new run. */
+      steeringResolvedRevision: number;
+    };
+
+// Goal capture keeps 4,000 prompt characters plus the five-character " […] " marker.
+export const WORKFLOW_STEERING_LIMITS = { count: 50, bytes: 32_000, instruction: 4_005, rationale: 2_000 } as const;
+
 /**
  * The human's ask, frozen onto a run the moment the run exists.
  *
@@ -3614,7 +3635,7 @@ export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
  * Repository state, evidence, coverage and Persona feedback stay out, exactly as the intent
  * fingerprint documents - those are live per-submission reads, and only intent is frozen.
  */
-export interface WorkflowRunIntentSnapshot {
+export type WorkflowRunIntentSnapshot = WorkflowSteeringContext & {
   /** Durable objective at run creation; historical snapshots retain their captured prompt. */
   rawGoal: string;
   /** Verbatim opening request, absent on older snapshots and null when unknown. */
@@ -3641,7 +3662,7 @@ export interface WorkflowRunIntentSnapshot {
    */
   fingerprint: string;
   frozenAt: number;
-}
+};
 
 /**
  * One run's canonical acceptance criteria, compacted once from its frozen intent.
@@ -4045,7 +4066,7 @@ export interface WorkflowCheckEvidence {
   note: string;
 }
 
-export interface WorkflowContextSnapshot {
+export type WorkflowContextSnapshot = WorkflowSteeringContext & {
   primaryGoal: {
     rawPrompt: string;
     openingAsk?: string | null;
@@ -4122,7 +4143,7 @@ export interface WorkflowContextSnapshot {
     /** Original submission whose stable criterion extraction this snapshot reused. */
     reusedFromSubmissionId?: WorkflowSubmissionId | null;
   };
-}
+};
 
 /**
  * Where a claim in a verdict came from, so a human can trace it to its source.

@@ -1,7 +1,7 @@
 import type { WorkflowRunSummary } from "@shared/workflow.ts";
 import { workflowRunIsOpen, workflowRunWaitsOnOperator } from "@shared/workflow.ts";
+import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
 import {
-  blockedPhaseClause,
   runRemedy,
   runRowIdentity,
   type RunRemedy,

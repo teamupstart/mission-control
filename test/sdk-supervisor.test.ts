@@ -129,6 +129,7 @@ function withFakeDriver(
   const calls: LaunchOptions[] = [];
   const real = HARNESSES.claude.sdk;
   HARNESSES.claude.sdk = {
+    answersRequests: true,
     launch: (opts) => {
       calls.push(opts);
       return launch(opts);
@@ -143,6 +144,7 @@ function withFakeCodexDriver(
   const calls: LaunchOptions[] = [];
   const real = HARNESSES.codex.sdk;
   HARNESSES.codex.sdk = {
+    answersRequests: true,
     launch: (opts) => {
       calls.push(opts);
       return launch(opts);

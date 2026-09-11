@@ -376,6 +376,7 @@ import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
+import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards, readStandardsFromGitTree } from "./standards.ts";
@@ -5814,6 +5815,14 @@ export function buildApp(
       problems: [...catalog.problems, ...skillDrift(cfg, catalog)],
     };
   };
+
+  app.get("/api/extensions/pi/config", (c) => c.json(getPiExtensionConfig()));
+  app.put("/api/extensions/pi/config", async (c) => {
+    const parsed = await parseBody(c, PiExtensionConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = applyPiExtensionConfig(parsed.data);
+    return c.json(result, result.blocked.length ? 409 : 200);
+  });
 
   app.get("/api/skills", (c) => c.json(skillsView()));
 

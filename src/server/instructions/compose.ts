@@ -76,12 +76,13 @@ export function composeStandingInstructions(
     }
   }
 
-  const heading = contributing.length === 1
+  // A rule's scope is relative to the whole launch, including checkouts with no text.
+  const heading = resolved.length === 1
     ? STANDING_INSTRUCTIONS_HEADING
     : STANDING_INSTRUCTIONS_MULTI_HEADING;
   const parts: string[] = [heading];
   for (const group of groups) {
-    const coversAll = group.repoPaths.length === contributing.length;
+    const coversAll = group.repoPaths.length === resolved.length;
     parts.push(coversAll ? group.text : `### ${group.repoPaths.join(", ")}\n\n${group.text}`);
   }
   const text = parts.join("\n\n");

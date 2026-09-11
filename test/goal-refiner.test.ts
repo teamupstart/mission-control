@@ -1,6 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -91,8 +91,13 @@ const setMode = (
     | "rapid"
     | "replace"
     | "model-unclear",
-): void =>
-  writeFileSync(modeFile, m);
+): void => {
+  // A run logs its prompt before reading the mode. Publish atomically so switching modes
+  // after observing that log cannot expose a truncated file and select the good fallback.
+  const pending = join(bin, "mode.next");
+  writeFileSync(pending, m);
+  renameSync(pending, modeFile);
+};
 setMode("good");
 
 process.env.MISSION_CLAUDE_BIN = fake;

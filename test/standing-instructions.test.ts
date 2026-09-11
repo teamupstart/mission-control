@@ -442,7 +442,10 @@ test("a two-repo launch where only the SECOND repository has rules still sends t
     "claude",
     "terminal",
   );
-  assert.match(delivery.text, /this repo is read-only/);
+  assert.equal(
+    delivery.text,
+    `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n### /ws/secondary\n\nthis repo is read-only`,
+  );
   assert.deepEqual(delivery.sources, [
     { repoPath: "/ws/secondary", matchedKey: "/ws/secondary" },
   ]);

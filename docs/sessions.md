@@ -466,11 +466,11 @@ looking up, and everything below follows from that or from what Pi itself has.
   vocabulary is not Mission Control's, so no mode chip is drawn and none can be set. Pi's
   structured extension prompts (`select`, `confirm`, `input`, `editor`) are not projected
   onto the card yet either: a session that reaches one is waiting on a surface that does not
-  exist. Foreman *can* hold a queue on a managed Pi session, because the driver is a real
-  pickup-and-completion channel - but until those prompts are projected, an extension that
-  asks something mid-turn will stall it with nothing to answer from. Project-local
-  extensions are excluded by default (below), so this needs a globally installed one to
-  bite.
+  exist. Foreman is therefore withheld from a managed Pi session entirely rather than being
+  allowed to queue work it could not unblock: the driver declares `answersRequests: false`,
+  which is the same gate the Claude and Codex drivers pass, and it flips once those prompts
+  reach the card. Project-local extensions are excluded by default (below), so a session
+  reaches one of these prompts only through a globally installed extension.
 - **No Mission Control MCP tools.** Pi has no MCP client at all, so a managed Pi session
   cannot call `report_status`, `request_input` or their siblings - exactly as a terminal Pi
   session cannot. A dispatch that *requires* those tools is refused before it starts.

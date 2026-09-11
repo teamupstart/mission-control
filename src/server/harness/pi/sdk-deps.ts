@@ -338,8 +338,14 @@ function projectRuntime(runtime: AgentSessionRuntime, models: () => ModelRuntime
   };
 }
 
-/** Build one managed Pi runtime for one Mission Control session. */
-async function createRuntime(
+/**
+ * Build one managed Pi runtime for one Mission Control session.
+ *
+ * Exported for `test/pi-sdk-adapter.test.ts`, which drives it with a stand-in vendor to pin
+ * the ordering below: the real one cannot be made to fail a SECOND factory invocation
+ * without failing the first.
+ */
+export async function createRuntime(
   pi: typeof import("@earendil-works/pi-coding-agent"),
   options: PiRuntimeOptions,
 ): Promise<PiRuntime> {
@@ -365,7 +371,6 @@ async function createRuntime(
           : {}),
       },
     });
-    services = created;
     const model = options.model ? await requireModel(created.modelRuntime, options.model) : undefined;
     const session = await pi.createAgentSessionFromServices({
       services: created,
@@ -392,6 +397,16 @@ async function createRuntime(
         }) as unknown as NonNullable<CreateAgentSessionFromServicesOptions["customTools"]>[number],
       ],
     });
+    // Published only now that this invocation has a session to show for it. A clear
+    // re-enters this factory while the OLD session is still live, and `requireModel` above
+    // throws for a model that went away between turns - so assigning on the way in would
+    // leave `models()` resolving the still-running session against services it never used.
+    // Nothing is leaked by dropping `created` on that path: measured against 0.85.1,
+    // `AgentSessionServices` is a plain record of `cwd`, `agentDir`, `modelRuntime`,
+    // `settingsManager`, `resourceLoader` and `diagnostics`, with no dispose, close or
+    // destroy on it or on any of its members, and no timer or watcher outliving its
+    // construction.
+    services = created;
     return { ...session, services: created, diagnostics: created.diagnostics };
   };
   const sessionManager = openSessionManager(pi.SessionManager, options);

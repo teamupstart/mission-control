@@ -558,3 +558,111 @@ test("a session that never binds a file still reports an honest transcript path"
   await settle();
   assert.equal(eventOfKind(events[0], "bound").transcriptPath, null);
 });
+
+// `createRuntime` against a stand-in vendor.
+//
+// Everything above drives `piSdkSpec`, which is the right level for behaviour an operator
+// can see. The ordering below is not visible from there: it only shows up when a SECOND
+// factory invocation - the one a clear performs, while the previous session is still live
+// and still answering - fails partway. The real vendor cannot be steered into that, because
+// the model lookup that fails on the second invocation would already have failed on the
+// first.
+const { createRuntime } = await import("../src/server/harness/pi/sdk-deps.ts");
+
+/** A `ModelRuntime` stand-in offering exactly the ids it was built with, and no others. */
+function modelRuntime(name: string, offered: string[]) {
+  return {
+    name,
+    getModel: (provider: string, id: string) =>
+      offered.includes(id) ? { provider, id, name } : undefined,
+    hasConfiguredAuth: () => true,
+    checkAuth: async () => ({}),
+  };
+}
+
+/**
+ * A vendor stand-in whose services differ per factory invocation, so which one the runtime
+ * ended up holding is observable. `newSession` re-enters the factory exactly as Pi's does.
+ */
+function standInVendor(runtimes: Array<ReturnType<typeof modelRuntime>>) {
+  let call = 0;
+  let factory: (target: unknown) => Promise<unknown>;
+  const target = {
+    cwd: "/tmp/stand-in",
+    agentDir: "/tmp/stand-in/agent",
+    sessionManager: {},
+  };
+  const vendor = {
+    getAgentDir: () => target.agentDir,
+    createAgentSessionServices: async () => ({
+      cwd: target.cwd,
+      agentDir: target.agentDir,
+      modelRuntime: runtimes[Math.min(call++, runtimes.length - 1)],
+      settingsManager: {},
+      resourceLoader: {},
+      diagnostics: [],
+    }),
+    createAgentSessionFromServices: async () => ({ session: {}, events: [] }),
+    createBashToolDefinition: () => ({ name: "bash" }),
+    SessionManager: { open: () => ({}), create: () => ({}) },
+    createAgentSessionRuntime: async (f: (t: unknown) => Promise<unknown>) => {
+      factory = f;
+      await factory(target);
+      return {
+        session: { on: () => {}, off: () => {}, setModel: async () => {} },
+        setRebindSession: () => {},
+        newSession: async () => {
+          await factory(target);
+          return { cancelled: false };
+        },
+        dispose: async () => {},
+      };
+    },
+  };
+  return vendor as unknown as typeof import("@earendil-works/pi-coding-agent");
+}
+
+function runtimeOptions() {
+  return {
+    cwd: "/tmp/stand-in",
+    sessionPath: null,
+    model: { provider: "amazon-bedrock", id: "deepseek.v3.2" },
+    thinkingLevel: null,
+    trusted: false,
+    appendSystemPrompt: [],
+    toolEnv: {},
+  };
+}
+
+test("a clear that fails partway leaves the live session resolving against its OWN services", async () => {
+  // First invocation offers the model, second does not: the credential lapsed or the model
+  // was withdrawn between turns, which is the case the vendor itself surfaces as a throw.
+  const live = modelRuntime("live", ["deepseek.v3.2"]);
+  const runtime = await createRuntime(
+    standInVendor([live, modelRuntime("half-built", [])]),
+    runtimeOptions(),
+  );
+
+  await assert.rejects(
+    () => runtime.newSession(),
+    (err: unknown) => (err as PiFailure).kind === "model-unavailable",
+  );
+
+  // The old session is still the live one, so the model runtime it reaches has to be the
+  // one it is actually running on - not the services the failed clear half-built.
+  await assert.rejects(
+    () => runtime.session.setModel({ provider: "amazon-bedrock", id: "nope" }),
+    (err: unknown) => /amazon-bedrock\/nope/.test((err as PiFailure).message),
+  );
+  await runtime.session.setModel({ provider: "amazon-bedrock", id: "deepseek.v3.2" });
+});
+
+test("a clear that succeeds does move the live session onto the replacement services", async () => {
+  const runtime = await createRuntime(
+    standInVendor([modelRuntime("first", []), modelRuntime("second", ["deepseek.v3.2"])]),
+    { ...runtimeOptions(), model: null },
+  );
+  await runtime.newSession();
+  // `second` offers the model and `first` does not, so this resolving at all is the proof.
+  await runtime.session.setModel({ provider: "amazon-bedrock", id: "deepseek.v3.2" });
+});

@@ -156,18 +156,12 @@ test("each built-in derives its identity from its document and declares itself b
   assert.equal(coverage.name, "Test Coverage Judge");
   assert.equal(
     coverage.description,
-    "Judges whether the submitted tests genuinely exercise at least 80% of the changed executable "
-    + "code, including its happy paths, boundaries, and exception behavior.",
+    "Judges whether the submitted tests appropriately cover the changed material executable behavior, "
+    + "including its happy paths, boundaries, and exception behavior.",
   );
-  assert.match(coverage.guidanceMarkdown, /At least 80% of the changed executable lines/);
-  assert.match(
-    coverage.guidanceMarkdown,
-    /If the inventory contains zero changed executable lines/,
-  );
-  assert.match(
-    coverage.guidanceMarkdown,
-    /Pass this review and state that\s+the denominator is zero/,
-  );
+  assert.doesNotMatch(coverage.guidanceMarkdown, /\b80%\b|percentage|quantitative floor/i);
+  assert.doesNotMatch(coverage.guidanceMarkdown, /## The 80% floor/);
+  assert.match(coverage.guidanceMarkdown, /appropriately cover the material changed behavior/);
   assert.match(
     coverage.guidanceMarkdown,
     /whether the test really tests what its name and description say it tests/,

@@ -74,11 +74,10 @@ export {
  * single-version catalog would strand those bindings the first time this shipped graph
  * changed.
  *
- * Persona snapshots are taken from `BUILTIN_PERSONAS` at module load, so a shipped version
- * always carries the guidance THIS build was made from and `personaSnapshotIsOutdated` never
- * reports the shipped workflow as stale against the shipped Personas. The other half of that
- * rule lives in the plan: a change to a `personas/*.md` document a shipped built-in
- * references appends a new built-in workflow version in the same commit.
+ * Persona snapshots are taken from `BUILTIN_PERSONAS` at module load unless a version freezes
+ * the historical text it originally shipped. A change to a `personas/*.md` document a shipped
+ * built-in references appends a new built-in workflow version in the same commit, retaining the
+ * prior snapshot so an existing binding keeps the reviewer policy it was bound to.
  */
 export interface BuiltinWorkflow {
   /** `builtin: true`, and `currentVersionId` names the NEWEST entry in `versions`. */
@@ -143,9 +142,16 @@ interface BuiltinPersonaExecution {
   model: string;
 }
 
+/** Text that a historical built-in version must keep after its source Persona changes. */
+interface BuiltinPersonaSnapshotOverride {
+  description: string;
+  guidanceMarkdown: string;
+}
+
 interface BuiltinPersonaExecutionRouting {
   default: BuiltinPersonaExecution;
   overrides?: Readonly<Partial<Record<PersonaId, BuiltinPersonaExecution>>>;
+  snapshotOverrides?: Readonly<Partial<Record<PersonaId, BuiltinPersonaSnapshotOverride>>>;
 }
 
 function builtinPersonaSnapshot(
@@ -158,7 +164,11 @@ function builtinPersonaSnapshot(
   }
   const snapshot = personaSnapshotOf(persona);
   if (routing === null) return snapshot;
-  return { ...snapshot, ...(routing.overrides?.[personaId] ?? routing.default) };
+  return {
+    ...snapshot,
+    ...routing.snapshotOverrides?.[personaId],
+    ...(routing.overrides?.[personaId] ?? routing.default),
+  };
 }
 
 /** The same draft-to-published projection `publishWorkflow` performs, over the shipped graph. */
@@ -728,6 +738,135 @@ const NO_MISTAKES_REVIEW_V15: StagePipeline = {
   ],
 };
 
+
+/**
+ * Version 15's immutable Test Coverage Judge snapshot.
+ *
+ * Version 16 revises the source Persona to use only qualitative test adequacy. This record is
+ * deliberately the exact version 15 policy rather than a reconstruction from the current source:
+ * a binding pinned to version 15 must keep the percentage requirement it was published with.
+ */
+const TEST_COVERAGE_JUDGE_V15_SNAPSHOT: BuiltinPersonaSnapshotOverride = {
+  description:
+    "Judges whether the submitted tests genuinely exercise at least 80% of the changed executable "
+    + "code, including its happy paths, boundaries, and exception behavior.",
+  guidanceMarkdown: `# Test Coverage Judge
+
+Judges whether the submitted tests genuinely exercise at least 80% of the changed executable
+code, including its happy paths, boundaries, and exception behavior.
+
+## What you judge
+
+Compare the code being delivered with the tests and test evidence in the submission. Your subject
+is test adequacy, not whether the implementation generally looks correct and not whether the
+product behavior has been demonstrated end to end. Code Risk Reviewer and Test Evidence Auditor
+own those separate questions.
+
+Treat a test name, a green suite, and a coverage percentage as claims to verify. Read the test's
+setup, the code path it actually reaches, and the assertion that observes the outcome. The most
+important question is whether the test really tests what its name and description say it tests.
+
+## Review method
+
+1. Inventory the new and materially changed executable behavior in the submitted change. Exclude
+   generated output, comments, documentation, types with no runtime effect, and test code from the
+   coverage denominator.
+2. Map each claimed behavior to the tests that exercise it. Trace setup through the real subject
+   under test to the asserted consequence.
+3. Check whether each test would fail for a plausible wrong implementation of the behavior it
+   claims to protect. A useful check is to imagine the branch reversed, the boundary moved by one,
+   the error swallowed, or the return value hard-coded.
+4. Evaluate the quantitative floor and the qualitative cases below. The 80% floor is necessary,
+   not sufficient.
+
+## The 80% floor
+
+At least 80% of the changed executable lines in the submitted code must be exercised by tests.
+Prefer a changed-line coverage report tied to the submitted code and a completed test command. A
+repository-wide percentage does not establish this floor when unchanged code can hide uncovered
+changed lines.
+
+If the inventory contains zero changed executable lines after the exclusions above, treat the 80%
+floor and the behavioral coverage requirements as not applicable. Pass this review and state that
+the denominator is zero; do not require tests or coverage for non-executable changes.
+
+When no changed-line report is supplied, use the diff and tests only if they let you trace the
+executed changed lines directly. Be conservative and never invent a percentage. If the evidence
+cannot establish at least 80%, fail and request the smallest focused coverage run or missing tests
+that would establish it.
+
+Coverage output is never proof by itself. Confirm that the measured files are the delivered files,
+that relevant files were not excluded, and that the tests behind the number make meaningful
+assertions about the changed behavior.
+
+## Required behavioral coverage
+
+### Happy path
+
+Require a test of the ordinary successful use of each material behavior. The assertion must observe
+the behavior's result or externally meaningful effect, not merely that the code ran.
+
+### Boundaries and branches
+
+Require tests at every material boundary introduced or changed by the work. Check the value on the
+boundary and the nearest meaningful value on each side when their outcomes differ. Relevant
+boundaries include empty and non-empty input, zero and one, minimum and maximum values, omitted and
+present fields, first and last items, and state transitions. Do not manufacture boundary cases for
+code with no such distinction.
+
+### Exceptions and failures
+
+Require tests for each materially distinct reachable exception or failure outcome introduced or
+changed by the work. Verify the asserted error, status, persisted state, cleanup, retry behavior, or
+user-visible result. Merely expecting that "something throws" is insufficient when the contract
+distinguishes the error or its consequences.
+
+## Tests that do not count
+
+- A test whose name describes one branch while its setup reaches another.
+- An assertion about fixture construction, mock configuration, or a constant instead of the
+  subject's result.
+- A test that mocks out the behavior it claims to verify and then asserts the mock's arranged
+  response.
+- A test that passes when the relevant production branch is deleted, inverted, or hard-coded.
+- A snapshot or broad output assertion that never isolates the changed behavior.
+- A happy-path test presented as boundary or exception coverage without driving that condition.
+- A command reported as passing without retained output showing what ran, or coverage output from
+  code other than the submitted change.
+
+Mock interaction tests may count when the interaction itself is the contract and the assertions
+distinguish correct arguments, order, count, and failure behavior from a plausible defect.
+
+## Pass when
+
+- The inventory contains no changed executable lines, or the evidence establishes at least 80%
+  coverage of them.
+- Every material behavior has a meaningful happy-path test.
+- Every changed boundary and materially distinct exception outcome is exercised.
+- The tests' setup and assertions match what their names claim, and each would fail for a plausible
+  defect in the behavior it protects.
+
+State the coverage evidence and the happy-path, boundary, and exception cases you traced. If one of
+those categories is not relevant, say why.
+
+## Fail when
+
+When executable code changed, fail when the 80% floor is missed or cannot be established, a material
+happy path, boundary, or exception case is absent, or a claimed test does not actually exercise and
+verify the behavior it describes.
+
+## Requested-change discipline
+
+- Name the changed behavior or lines that lack coverage and the exact case that is missing.
+- For a misleading test, quote its name, identify the path its setup actually reaches, and explain
+  what its assertion really proves.
+- Ask for an observable assertion and the smallest focused test or coverage command that closes the
+  gap. Do not request a broad suite when a focused run is sufficient.
+- Do not prescribe implementation details, demand tests for unchanged code, or raise style and
+  documentation findings owned by other reviewers.
+`,
+};
+
 /**
  * The binding posture shipped before Foreman Complete became the application default.
  *
@@ -995,12 +1134,31 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           overrides: {
             "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
           },
+          snapshotOverrides: {
+            "builtin:test-coverage-judge": TEST_COVERAGE_JUDGE_V15_SNAPSHOT,
+          },
         },
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "criterion_mapped_v1",
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 14,
+      },
+      {
+        // Version 16: Test Coverage Judge keeps version 15's graph and routing, but its guidance
+        // now judges qualitative test adequacy without a coverage-percentage threshold.
+        pipeline: NO_MISTAKES_REVIEW_V15,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 15,
       },
     ],
   }),

@@ -253,7 +253,8 @@ scenario written for Claude does not stall a Codex run.
 JSON `message` record per line under `~/.pi/agent/sessions/--<encoded cwd>--/`, exactly the
 path and record shape `src/server/harness/pi/transcript.ts` reads back (verified directly
 against that module's own `piToMessage` and `computePiSessionActivity`, not assumed). pi has
-no control wire at all (`hooks: null`, `sdk: null`), so there is nothing to speak on stdio -
+no control wire the demo player can speak (`hooks: null`, and its managed driver imports Pi's
+SDK in-process rather than talking to a fake binary over stdio), so there is nothing to speak -
 the transcript file is the *entire* channel, and this player writes real turns, real tool
 calls, and real file edits into it, the same scenario schema as its Claude and Codex siblings.
 An `ask` step degrades to narration for the same reason it does on Codex: pi has no
@@ -263,11 +264,12 @@ An `ask` step degrades to narration for the same reason it does on Codex: pi has
 onto the dashboard.** This is a hard architectural floor, confirmed against the actual code
 rather than assumed, and it is orthogonal to whether the player itself works (it does):
 
-1. `pi`'s harness registry entry sets `sdk: null` (`src/server/harness/index.ts`), whose own
-   comment says plainly: "Phase 6 fills this with pi's `--mode rpc` adapter." That adapter
-   does not exist yet, for `pi` in any mode, real dispatch or demo - building one belongs
-   under `src/server/harness/pi/`, an unrelated, unscoped harness-roadmap feature this task's
-   "do not modify `src/`" rule puts out of reach.
+1. `pi` now HAS a managed driver (`src/server/harness/pi/sdk.ts`), but it is not one this
+   player can stand in for: it imports `@earendil-works/pi-coding-agent` into the daemon
+   rather than spawning a binary, so `MISSION_PI_BIN` - the redirection this whole fixture
+   rests on - never reaches it. The browser suite closes the same gap with a second
+   override, `MISSION_PI_SDK_MODULE` (see `e2e/fixtures/fake-pi-sdk.mjs`); wiring demo mode
+   to it is a separate, unscoped change under `src/`.
 2. `pi`'s only real path is a terminal pane a person types into. But `Dispatcher`'s terminal
    branch (`src/server/dispatcher.ts`) waits for a dispatched pane via
    `registry.waitForSessionAtCwd`, fed by the same passive discovery sweep this plan calls a

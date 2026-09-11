@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { MISSION_SESSION_ID_ENV } from "@shared/harness-runtime.mjs";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type {
   AgentType,
   PermissionMode,
@@ -1015,11 +1016,20 @@ export class SdkSupervisor {
     const stateHome = createDisposableAgentStateHome();
     let mcp: MissionMcpDescriptor | null = null;
     let callerCredential: string | null = null;
+    // Only for a harness with an MCP client to register it with - the same capability read
+    // `dispatchEmbedded` makes before it composes one. Pi has none, and its driver refuses a
+    // descriptor rather than dropping it, so composing one here would fail every restart of
+    // a session that launched perfectly well. A managed Pipeline cannot be on such a harness
+    // in the first place (`supportsManagedPipelineHost`), so the branch below is unreachable
+    // for one rather than weakened by this.
+    const harnessMcp = row.agent ? capabilitiesFor(row.agent).mcp : null;
     try {
-      mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
-        row.cwd,
-        stateHome,
-      );
+      if (harnessMcp) {
+        mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
+          row.cwd,
+          stateHome,
+        );
+      }
     } catch (err) {
       if (task?.kind === "pipeline") {
         const why = err instanceof Error ? err.message : String(err);

@@ -662,6 +662,27 @@ export interface SdkSpec {
    * because the alternative is a card that looks dispatched and is running something else.
    */
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
+  /**
+   * Whether a session this driver runs can SURFACE the asks a human or Foreman must answer.
+   *
+   * The SDK arm of `foremanAutomationAuthorized` used to be an unconditional `true`, on the
+   * reasoning that an embedded session is instrumented by construction - its pickup and
+   * completion are `state` and `turn_done` events, and its delivery is an acked `send()`.
+   * That reasoning is sound and still holds; it is just not the whole requirement. Foreman
+   * also has to be able to UNBLOCK a session, and a driver that cannot project its harness's
+   * questions gives it a session that can stop somewhere nobody can answer from - which is
+   * the one failure a queue must not be able to reach, because the work simply stops with
+   * no one told.
+   *
+   * `false` is therefore a real answer rather than a stub, exactly like a null capability:
+   * Pi's driver has no `ExtensionUIContext` bridge yet, so its `answer()` refuses and its
+   * extension prompts render nowhere. It becomes `true` when that bridge lands.
+   *
+   * Not derivable from anything else here: `SdkSessionHandle.answer` exists on every handle
+   * (the interface requires it), so the fact that one of them throws is not visible from the
+   * type. It has to be declared.
+   */
+  answersRequests: boolean;
 }
 
 /**

@@ -161,10 +161,16 @@ function modelChoice(
   ) {
     return null;
   }
-  const segment = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+  // The PROVIDER half and the MODEL half have different alphabets, and the difference is
+  // load-bearing rather than tidy. A provider is an identifier Pi coins (`amazon-bedrock`,
+  // `openrouter`); a model id is a string the provider itself owns, and Amazon Bedrock's
+  // carry a `:` version suffix - `anthropic.claude-sonnet-4-5-20250929-v1:0`. One shared
+  // alphabet meant the stricter half silently dropped 41 of the 121 Bedrock rows Pi lists.
+  const providerSegment = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+  const modelSegment = /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/;
   if (
-    !segment.test(raw.provider) ||
-    !raw.id.split("/").every((part) => segment.test(part))
+    !providerSegment.test(raw.provider) ||
+    !raw.id.split("/").every((part) => modelSegment.test(part))
   ) {
     return null;
   }

@@ -56,14 +56,20 @@ test("Pi pickers share its provider catalog and retain selection through discove
   await openHarnesses(dashboard, daemon.baseURL);
   const settingsModel = dashboard.getByRole("combobox", { name: PI_DEFAULT });
   await expect(settingsModel).toBeEnabled();
-  await expect(settingsModel.locator("optgroup")).toHaveCount(3);
+  await expect(settingsModel.locator("optgroup")).toHaveCount(4);
+  // First-seen provider order, straight off Pi's own answer. `amazon-bedrock` is last
+  // because that is where the fake reports it - the picker never sorts or promotes a
+  // provider, which is what keeps a live catalog readable as the operator's own.
   await expect
     .poll(() =>
       settingsModel
         .locator("optgroup")
         .evaluateAll((groups) => groups.map((group) => group.getAttribute("label"))),
     )
-    .toEqual(["openai", "anthropic", "openrouter"]);
+    .toEqual(["openai", "anthropic", "openrouter", "amazon-bedrock"]);
+  await expect(
+    settingsModel.locator('option[value="amazon-bedrock/deepseek.v3.2"]'),
+  ).toHaveText("DeepSeek V3.2");
   await expect(settingsModel.locator(`option[value="${SAVED_MODEL}"]`)).toHaveText(
     "Claude Sonnet 5",
   );
@@ -148,7 +154,12 @@ test("a signed-out Pi is named as signed out and told how to sign in", async ({
   await expect(notice).toBeVisible();
   await expect(notice).toContainText("not signed in to a model provider");
   await expect(notice).toContainText("/login");
-  await expect(notice).toContainText("Anthropic or Claude account");
+  // Provider-NEUTRAL: Pi lists whatever provider the operator configured, so the remedy
+  // names the command rather than one vendor's account, and spells out the Bedrock login
+  // it was rewritten for.
+  await expect(notice).toContainText("/login <provider>");
+  await expect(notice).toContainText("/login amazon-bedrock");
+  await expect(notice).toContainText("Mission Control never stores it");
   await shoot(dashboard, "signed-out-sign-in-guidance");
 
   // The picker stays usable while signed out: the guidance is advice, never a block.
@@ -166,7 +177,12 @@ test("a signed-out Pi is named as signed out and told how to sign in", async ({
     })
     .toBe(probesBefore + 1);
   // Still signed out, so the same guidance stands rather than degrading to a bare failure.
-  await expect(notice).toContainText("Anthropic or Claude account");
+  // Provider-NEUTRAL: Pi lists whatever provider the operator configured, so the remedy
+  // names the command rather than one vendor's account, and spells out the Bedrock login
+  // it was rewritten for.
+  await expect(notice).toContainText("/login <provider>");
+  await expect(notice).toContainText("/login amazon-bedrock");
+  await expect(notice).toContainText("Mission Control never stores it");
   await expect(retry).toBeEnabled();
 });
 
@@ -190,7 +206,7 @@ test.describe("login-shell Pi installation", () => {
           .locator("optgroup")
           .evaluateAll((groups) => groups.map((group) => group.getAttribute("label"))),
       )
-      .toEqual(["openai", "anthropic", "openrouter"]);
+      .toEqual(["openai", "anthropic", "openrouter", "amazon-bedrock"]);
     await expect(page.getByText(/Showing built-in Pi models/)).not.toBeVisible();
 
     const records = recordsIn<PiProbeRecord>(join(daemon.recordDir, "pi"));
@@ -222,7 +238,7 @@ test.describe("version-manager Pi installation", () => {
           .locator("optgroup")
           .evaluateAll((groups) => groups.map((group) => group.getAttribute("label"))),
       )
-      .toEqual(["openai", "anthropic", "openrouter"]);
+      .toEqual(["openai", "anthropic", "openrouter", "amazon-bedrock"]);
     await expect(page.getByText(/Showing built-in Pi models/)).not.toBeVisible();
 
     const records = recordsIn<PiProbeRecord>(join(daemon.recordDir, "pi"));

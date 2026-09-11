@@ -607,6 +607,7 @@ test("the snapshot records the channel the DRIVER used, not the one the launch a
   const real = HARNESSES.codex.sdk;
   const launched: unknown[] = [];
   HARNESSES.codex.sdk = {
+    answersRequests: true,
     async launch(opts) {
       launched.push(opts);
       // A driver that found its channel unusable and fell back, exactly as the Codex adapter
@@ -683,6 +684,7 @@ test("a RESUME that falls back to prose corrects the snapshot, so the next assig
   const real = HARNESSES.codex.sdk;
   const launched: { standingInstructions: string; standingInstructionsPrompt: string }[] = [];
   HARNESSES.codex.sdk = {
+    answersRequests: true,
     async launch(opts) {
       launched.push(opts as never);
       // A driver that found the channel unusable on THIS connection and sent the block as

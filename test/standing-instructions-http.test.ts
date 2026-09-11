@@ -20,6 +20,8 @@ const { openDb } = await import("../src/server/db.ts");
 const { resolveRepoPath } = await import("../src/server/repos.ts");
 const { STANDING_INSTRUCTIONS_HEADING } = await import("../src/server/instructions/compose.ts");
 const { STANDING_INSTRUCTIONS_CONFLICT_CODE } = await import("../src/shared/protocol.ts");
+const { HARNESS_CAPABILITIES } = await import("../src/shared/harness-capabilities.ts");
+type SessionRuntime = import("../src/shared/types.ts").SessionRuntime;
 const { STANDING_INSTRUCTIONS_MAX_LENGTH } = await import(
   "../src/shared/standing-instructions.ts"
 );
@@ -200,6 +202,20 @@ test("the resolved route previews what a launch would send, for this exact pair"
     { headers: HEADERS },
   );
   assert.equal(((await pi.json()) as { mechanism: string }).mechanism, "pi-append-system-prompt");
+
+  // Pi's managed runtime answers with the SAME mechanism, because it is the same one: the
+  // driver hands `appendSystemPrompt` to the resource loader that `--append-system-prompt`
+  // feeds on the terminal side. One operator instruction cannot be delivered two different
+  // ways depending on which runtime a toggle happens to select.
+  const piSdk = await app.request(
+    `/api/instructions/resolved?repoPath=${encodeURIComponent(CHECKOUT)}&agent=pi&runtime=sdk`,
+    { headers: HEADERS },
+  );
+  assert.equal(piSdk.status, 200);
+  assert.equal(
+    ((await piSdk.json()) as { mechanism: string }).mechanism,
+    "pi-append-system-prompt",
+  );
 });
 
 test("the resolved route refuses a missing repoPath, an unknown agent and an unoffered runtime", async () => {
@@ -211,12 +227,29 @@ test("the resolved route refuses a missing repoPath, an unknown agent and an uno
     (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=gpt&runtime=terminal`)).status,
     400,
   );
-  // Pi declares no embedded driver. Answering with a default here would invent the one thing
-  // `resolveSessionRuntime` already owns.
+  // A runtime string this build has no word for at all. Named as the SCHEMA refusal it is:
+  // the route rejects it before it ever asks whether the harness offers that runtime, so
+  // this covers the parse and not the acceptance check.
   assert.equal(
-    (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=pi&runtime=sdk`)).status,
+    (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=claude&runtime=rpc`)).status,
     400,
   );
+  // The ACCEPTANCE check, which needs a runtime this build knows and a harness that does not
+  // offer it - a pair no shipped harness can supply any more, since all three now declare
+  // both. Driven by narrowing the capability for the length of the request, which is the
+  // shape a build that dropped a driver would really have. Restored in `finally`, so a
+  // failure here cannot leak a half-capable harness into the rest of the file.
+  const capabilities = HARNESS_CAPABILITIES.pi as { runtimes: readonly SessionRuntime[] };
+  const declared = capabilities.runtimes;
+  try {
+    capabilities.runtimes = ["terminal"];
+    assert.equal(
+      (await ask(`repoPath=${encodeURIComponent(CHECKOUT)}&agent=pi&runtime=sdk`)).status,
+      400,
+    );
+  } finally {
+    capabilities.runtimes = declared;
+  }
   assert.equal(
     (await ask(`repoPath=/definitely/not/a/repo&agent=claude&runtime=terminal`)).status,
     400,

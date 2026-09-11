@@ -175,6 +175,14 @@ model provider. The browser preserves Pi's order and groups every returned row b
 provider. The selected value remains one exact provider-qualified string such as
 `anthropic/claude-sonnet-5`; no separate provider field is stored.
 
+**Amazon Bedrock is one of those providers, not a Mission Control feature.** Sign in to it from a
+Pi session with `/login amazon-bedrock`, and Pi's next catalog answer lists whatever models that
+account offers - `amazon-bedrock/deepseek.v3.2`, `amazon-bedrock/anthropic.claude-sonnet-4-5`, and
+so on - grouped under `amazon-bedrock` like any other provider. Mission Control keeps no allowlist
+of Bedrock models, no region, no profile name, and no AWS credential of any kind: the id is passed
+through to Pi unchanged on both runtimes, and Pi makes the call. Refreshing an expired AWS session
+is a Pi login, not a Mission Control setting.
+
 Codex's rows come from the configured local Codex installation and account, resolved the same way
 a Codex launch resolves it, including `MISSION_CODEX_BIN`. The daemon runs `codex app-server`,
 completes the handshake, asks `model/list`, and exits. **It starts no thread and no turn**, so the
@@ -199,9 +207,11 @@ too old to know `model/list` reports the same fallback as any other failure rath
 One degraded state is not a failure at all and is named separately: both harnesses answer with the
 models the account they are **signed in to** offers, so a signed-out installation replies
 successfully with an empty list. The notice says the harness reported no available models and that
-it is probably not signed in, and then names the step - open a Pi session and run `/login` to
-connect an Anthropic or Claude account (or set that provider's API key), or run `codex login` in a
-terminal. Retry alone cannot resolve it, which is why the notice no longer offers only that.
+it is probably not signed in, and then names the step - open a Pi session and run
+`/login <provider>` (`/login amazon-bedrock` for Amazon Bedrock), or set that provider's API key,
+or run `codex login` in a terminal. Pi's sentence names the command rather than one vendor's
+account, because Pi's catalog is whatever provider the operator configured. Retry alone cannot
+resolve it, which is why the notice no longer offers only that.
 
 A saved model absent from the current response is appended once as **not currently reported**. It
 remains selected and submit-safe in Harnesses Settings, ordinary and guided dispatch, recurring

@@ -926,12 +926,22 @@ const TaskDependenciesSchema = z
 export const ModelIdSchema = z
   .string()
   .max(80)
-  // `/` is allowed only in the INTERIOR, never as the first character, so a provider-qualified
-  // id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the provider) passes while
-  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class.
+  // `/` and `:` are allowed only in the INTERIOR, never as the first character, so a
+  // provider-qualified id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the
+  // provider) passes while a path such as `../../etc/passwd` or a bare `-rf` still fails on
+  // the leading-char class.
+  //
+  // `:` is here because Amazon Bedrock's own ids carry a version suffix - measured against
+  // Pi 0.85.1, 41 of the 121 models it lists for `amazon-bedrock` are of the shape
+  // `anthropic.claude-sonnet-4-5-20250929-v1:0`. Excluding it did not reject those ids at
+  // the edge, it dropped a third of that provider's catalog silently: the row never reached
+  // the picker, so the model simply did not exist as far as an operator could tell. It is
+  // no weaker than the rest of the class - not whitespace, not a control character, not a
+  // path separator, and not able to start the string.
+  //
   // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
   // Test: `dispatch-model.test.ts`.
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$/, "model id must be alphanumeric with . _ - / : only");
 
 /** Bounds for the aggregate harness model catalog carried over HTTP. */
 export const HARNESS_MODEL_CATALOG_LIMITS = {
@@ -2327,10 +2337,16 @@ const StoredTerminalBackendSchema = z.string().nullable();
 const TerminalBackendSchema = z.enum(TERMINAL_BACKEND_IDS);
 
 /**
- * The runtime an untouched installation uses for each harness. Only harnesses with a
- * declared embedded driver start on the Agent SDK; Pi remains terminal-backed until it
- * has one. Kept beside the schema so the server's first read and the browser's pre-load
- * state cannot disagree.
+ * The runtime an untouched installation uses for each harness.
+ *
+ * Pi stays TERMINAL, and that is now a choice rather than an absence: it has a managed
+ * driver, and flipping the default would move every existing Pi dispatch onto a runtime
+ * whose provider credentials, project-trust posture and in-process shell isolation the
+ * operator has not looked at yet. It is offered in the Harnesses panel and taken on
+ * purpose. Claude and Codex keep the Agent SDK they shipped on.
+ *
+ * Kept beside the schema so the server's first read and the browser's pre-load state
+ * cannot disagree.
  */
 export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
   claude: "sdk",
@@ -2463,10 +2479,11 @@ export const HarnessesConfigSchema = z.object({
    * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
    * embedded through the harness's own programmatic interface.
    *
-   * New installations use the Agent SDK for Claude and Codex, the two harnesses with
-   * embedded drivers. Pi stays terminal-backed because it has no SDK driver. Scoped to
-   * dispatch like every other key in this blob: a session an operator started themselves
-   * is pane-backed whatever this says, because we do not own their pty.
+   * New installations use the Agent SDK for Claude and Codex. Pi has one too and still
+   * ships terminal-backed - see `DEFAULT_HARNESSES_SESSION_RUNTIMES` for why that is a
+   * decision rather than a gap. Scoped to dispatch like every other key in this blob: a
+   * session an operator started themselves is pane-backed whatever this says, because we
+   * do not own their pty.
    *
    * A stored value this build cannot read, or one naming a runtime the harness does not
    * offer, falls back to `"terminal"` and says so - see `resolveDispatchRuntime`. Read at

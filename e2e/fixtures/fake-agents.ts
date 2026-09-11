@@ -61,6 +61,30 @@ export function writePiCatalogMode(home: string, mode: FakePiCatalogMode): void 
   writeFileSync(piCatalogControlPath(home), `${mode}\n`);
 }
 
+/**
+ * Where the managed Pi runtime's stand-in SDK lives, and the models it will accept.
+ *
+ * Pi is the only harness whose managed runtime has no subprocess, so `MISSION_PI_BIN`
+ * cannot reach it: its SDK is imported into the daemon. `MISSION_PI_SDK_MODULE` is the same
+ * redirection at the only seam that exists, and it is set for EVERY daemon this suite
+ * starts - a run that forgot it would import the real package and could reach a provider.
+ */
+export function fakePiSdkModulePath(): string {
+  return fileURLToPath(new URL("./fake-pi-sdk.mjs", import.meta.url));
+}
+
+/** The model ids the fake SDK will launch. Anything else fails the way an absent one does. */
+export const FAKE_PI_SDK_MODELS = [
+  "amazon-bedrock/deepseek.v3.2",
+  "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "openai/gpt-5.6-sol",
+  "anthropic/claude-sonnet-5",
+] as const;
+
+export function piSdkModelsPath(home: string): string {
+  return join(home, "fake-pi-sdk-models.json");
+}
+
 /** The two outcomes the Codex catalog probe drives, from its own control file. */
 export type FakeCodexCatalogMode = "success" | "failure";
 
@@ -771,6 +795,9 @@ export function writeFakeAgents(home: string): FakeAgents {
   copyFileSync(fileURLToPath(new URL("./fake-pi.mjs", import.meta.url)), pi);
   chmodSync(pi, 0o755);
   writePiCatalogMode(home, "success");
+  // The managed runtime's half of the same dam. Written rather than passed as an env list
+  // so a spec can widen it without restarting the daemon.
+  writeFileSync(piSdkModelsPath(home), JSON.stringify(FAKE_PI_SDK_MODELS, null, 2));
 
   const cmux = join(binDir, "fake-cmux");
   writeFileSync(cmux, FAKE_CMUX);

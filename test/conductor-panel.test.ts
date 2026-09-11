@@ -232,6 +232,9 @@ test("pipeline kind transitions keep only agents the effective host can launch",
   assert.equal(pipelineAgentForKindTransition("pipeline", "terminal", "pi"), "claude");
   assert.equal(pipelineAgentForKindTransition("pipeline", "terminal", "claude"), "claude");
 
+  // Pi has a managed runtime and a typed `/skill:engineer` and is still not a host: it has
+  // no MCP client, so `adopt_pipeline_run` has nowhere to be published. See
+  // `supportsManagedPipelineHost`.
   assert.equal(pipelineAgentForKindTransition("pipeline", "agent-sdk", "pi"), "claude");
   assert.equal(pipelineAgentForKindTransition("pipeline", "agent-sdk", "codex"), "codex");
   assert.equal(pipelineAgentForKindTransition("pipeline", "agent-sdk", "claude"), "claude");

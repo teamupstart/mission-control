@@ -6,7 +6,7 @@
 <p>Use the existing <code>ForemanConfig.trackCiFailures</code> preference as the single source of truth. This is a conditional instruction change, not a new CI gate or scheduler.</p>
 <h2>Scope and the incident boundary</h2>
 <p>The accepted scope is one implementation in this checkout: runtime prompt policy, the built-in action&#39;s stopping language, the existing setting&#39;s explanation, documentation, and focused tests.</p>
-<p>The <a href="../../reports/phase-2-foreman-followthrough/report.html">Phase 2 investigation</a> established a separate failure: CI was already passing, while a post-review rebase caused <code>published_content_changed</code>. The blocked workflow retained session ownership and sent no recovery instruction, so Foreman suppressed Inspector follow-through.</p>
+<p>The Phase 2 investigation established a separate failure: CI was already passing, while a post-review rebase caused <code>published_content_changed</code>. The blocked workflow retained session ownership and sent no recovery instruction, so Foreman suppressed Inspector follow-through.</p>
 <p><strong>This CI instruction change alone will not recover that blocked run or resolve its Inspector finding.</strong> CI repairs can also change the reviewed content tree and encounter the same existing guard after the agent finishes. Automatically routing changed published content through a fresh review is a separate workflow lifecycle change. The accepted scope keeps that recovery work separate.</p>
 <h2>Expected behavior</h2>
 <div class="scroll"><table>

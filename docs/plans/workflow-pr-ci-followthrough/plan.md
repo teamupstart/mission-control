@@ -12,7 +12,7 @@ Use the existing `ForemanConfig.trackCiFailures` preference as the single source
 
 The accepted scope is one implementation in this checkout: runtime prompt policy, the built-in action's stopping language, the existing setting's explanation, documentation, and focused tests.
 
-The [Phase 2 investigation](../../reports/phase-2-foreman-followthrough/report.html) established a separate failure: CI was already passing, while a post-review rebase caused `published_content_changed`. The blocked workflow retained session ownership and sent no recovery instruction, so Foreman suppressed Inspector follow-through.
+The Phase 2 investigation established a separate failure: CI was already passing, while a post-review rebase caused `published_content_changed`. The blocked workflow retained session ownership and sent no recovery instruction, so Foreman suppressed Inspector follow-through.
 
 **This CI instruction change alone will not recover that blocked run or resolve its Inspector finding.** CI repairs can also change the reviewed content tree and encounter the same existing guard after the agent finishes. Automatically routing changed published content through a fresh review is a separate workflow lifecycle change. The accepted scope keeps that recovery work separate.
 

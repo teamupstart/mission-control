@@ -281,7 +281,12 @@ test("an empty live catalog is reported as a signed-out harness, with the sign-i
   assert.match(content?.message ?? "", /Pi reported no available models/);
   assert.match(content?.message ?? "", /not signed in to a model provider/);
   assert.match(content?.remedy ?? "", /\/login/);
-  assert.match(content?.remedy ?? "", /Anthropic or Claude account/);
+  // Provider-NEUTRAL, and named: Pi's catalog is whatever provider the operator configured,
+  // so a sentence that only offered Anthropic told a Bedrock operator their own provider did
+  // not count. The Bedrock spelling is pinned because that is the one it was rewritten for.
+  assert.match(content?.remedy ?? "", /\/login <provider>/);
+  assert.match(content?.remedy ?? "", /\/login amazon-bedrock/);
+  assert.doesNotMatch(content?.remedy ?? "", /Anthropic or Claude account/);
   assert.equal(content?.remedy, HARNESS_CAPABILITIES.pi.modelProviderSignIn);
 
   // The remedy is the harness's own sentence, not one shared string wearing a label.
@@ -308,7 +313,8 @@ test("an empty live catalog is reported as a signed-out harness, with the sign-i
     ),
   );
   assert.match(html, /not signed in to a model provider/);
-  assert.match(html, /Anthropic or Claude account/);
+  assert.match(html, /\/login amazon-bedrock/);
+  assert.match(html, /Mission Control never stores it/);
   assert.match(html, /Retry Pi models/);
 });
 

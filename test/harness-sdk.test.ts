@@ -24,7 +24,11 @@ const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { HARNESS_CAPABILITIES, capabilitiesFor } = await import(
   "../src/shared/harness-capabilities.ts"
 );
-const { HARNESSES, sdkFor } = await import("../src/server/harness/index.ts");
+const { HARNESSES, sdkFor, foremanAutomationAuthorized } = await import(
+  "../src/server/harness/index.ts"
+);
+type AgentType = import("../src/shared/types.ts").AgentType;
+type Session = import("../src/shared/types.ts").Session;
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -51,8 +55,9 @@ test("declaring the sdk runtime and having a driver are the same fact", () => {
 test("sdkFor is the accessor, and reports the same absence the capability does", () => {
   for (const agent of AGENT_TYPES) {
     assert.equal(sdkFor(agent), HARNESSES[agent].sdk);
-    // Phase 1 ships the seam and no driver, so this is the state of the world today. When a
-    // phase lands one, this assertion is what forces the capability to move with it.
+    // Every shipped harness has a driver today, so this arm has nothing left to catch here
+    // - and it stays, because it is the assertion that forces the capability to move with
+    // the driver the day one is REMOVED as well as the day one lands.
     if (sdkFor(agent) === null) {
       assert.equal(capabilitiesFor(agent).runtimes.includes("sdk"), false);
     }
@@ -81,16 +86,17 @@ test("an interruptible sdk runtime is the same fact as the driver that performs 
 
 test("a harness with no driver is interruptible only in its pane", () => {
   // The complement of the test above, and the pair is what keeps the two mechanisms from
-  // being confused for one. A driverless harness has no `query.interrupt()` to reach, so if
-  // it declares an interrupt at all the runtime list must be pane-only - an `"sdk"` here
-  // would be a capability the fan-out routes to a supervisor that will never have a handle.
+  // being confused for one. A driverless harness has no driver primitive to reach, so if it
+  // declares an interrupt at all the runtime list must be pane-only - an `"sdk"` here would
+  // be a capability the fan-out routes to a supervisor that will never have a handle.
   //
-  // This is also where `interrupt` left `harness-capabilities.test.ts`'s `BY_FIXTURE` list:
-  // pi used to exercise the slot's null for real, and `escape` gave it the one mechanism it
-  // can ever have.
-  const driverless = AGENT_TYPES.filter((agent) => sdkFor(agent) === null);
-  assert.ok(driverless.length > 0, "no harness exercises the driverless path any more");
-  for (const agent of driverless) {
+  // NO shipped harness is driverless any more: pi was the last one, and its managed driver
+  // gave it the second mechanism this rule used to forbid it. The rule is therefore stated
+  // as an INVARIANT over the record rather than over a fixture that no longer exists - the
+  // next harness to land driverless is caught by it on the day it lands, which is the only
+  // day it matters.
+  for (const agent of AGENT_TYPES) {
+    if (sdkFor(agent) !== null) continue;
     const spec = capabilitiesFor(agent).interrupt;
     if (spec === null) continue; // A harness with no mechanism at all is still legal.
     assert.deepEqual(
@@ -99,6 +105,49 @@ test("a harness with no driver is interruptible only in its pane", () => {
       `${agent}: has no driver, so a pane keystroke is the only interrupt it can offer`,
     );
   }
+});
+
+test("a driver and the sdk interrupt that reaches it land together", () => {
+  // The other direction of the pair above, and the one with a fixture: every harness that
+  // declares an sdk interrupt must have a handle whose `interrupt` is a real method. This is
+  // what caught pi's declaration when it was written before the adapter existed.
+  for (const agent of AGENT_TYPES) {
+    const spec = capabilitiesFor(agent).interrupt;
+    if (!spec?.runtimes.includes("sdk")) continue;
+    assert.notEqual(sdkFor(agent), null, `${agent}: declares an sdk interrupt with no driver`);
+    assert.equal(
+      typeof sdkFor(agent)!.launch,
+      "function",
+      `${agent}: its driver must be able to produce the handle that performs the interrupt`,
+    );
+  }
+});
+
+test("Foreman may only automate an embedded session its driver can unblock", () => {
+  // An embedded session is instrumented by construction, which is why this arm exists - but
+  // being able to SEE a session is not the same as being able to answer it. A driver with no
+  // way to surface its harness's questions hands Foreman a session that can stop somewhere
+  // nobody can reach, and the queue then waits for ever with nobody told.
+  //
+  // Pi is the live fixture: its extension-UI bridge is Phase 2, so its driver declares
+  // `answersRequests: false` and its managed sessions stay out of the queue even though its
+  // harness now carries a `workQueue` spec.
+  const sdkSession = (agent: AgentType) =>
+    ({ agent, runtime: "sdk", hooksSeen: false }) as unknown as Session;
+
+  for (const agent of AGENT_TYPES) {
+    const driver = sdkFor(agent);
+    if (!driver) continue;
+    assert.equal(
+      foremanAutomationAuthorized(sdkSession(agent)),
+      driver.answersRequests && capabilitiesFor(agent).workQueue !== null,
+      `${agent}: automation must follow the driver's own answer, not the runtime alone`,
+    );
+  }
+
+  assert.equal(sdkFor("pi")!.answersRequests, false, "pi cannot surface its asks yet");
+  assert.equal(foremanAutomationAuthorized(sdkSession("pi")), false);
+  assert.equal(foremanAutomationAuthorized(sdkSession("claude")), true);
 });
 
 test("the capability record cannot have a hole in it", () => {

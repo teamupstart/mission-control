@@ -157,6 +157,7 @@ function withFakeClaudeDriver(
 ): () => void {
   const real = HARNESSES.claude.sdk;
   HARNESSES.claude.sdk = {
+    answersRequests: true,
     launch: async (opts) => {
       const handle = await launch(opts);
       (handle as { launchedWith?: SdkLaunchOptions }).launchedWith = opts;

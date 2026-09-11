@@ -39,11 +39,14 @@ import {
   pipelineStepInfo,
   pipelineStepOrder,
   sortPipelineSteps,
+  supportsManagedPipelineHost,
+  PIPELINE_ENGINEER_SKILL,
   type PipelinePhase,
 } from "../src/shared/pipeline.ts";
 import { LLM_SPEND_ROLES } from "../src/shared/llm-spend.ts";
 import { AGENT_TYPES } from "../src/shared/types.ts";
 import {
+  capabilitiesFor,
   skillCommand,
   supportsSdkSkillInvocation,
 } from "../src/shared/harness-capabilities.ts";
@@ -246,8 +249,8 @@ test("managed Pipeline hosts are capability-derived and preserve native Engineer
   const intent = "Build this; keep $HOME and `pwd` literal\nThen ask me.";
   assert.deepEqual(
     AGENT_TYPES.map((agent) => {
-      const eligible = supportsSdkSkillInvocation(agent, "engineer");
-      const command = skillCommand(agent, "engineer");
+      const eligible = supportsManagedPipelineHost(agent);
+      const command = skillCommand(agent, PIPELINE_ENGINEER_SKILL);
       return {
         agent,
         eligible,
@@ -261,9 +264,16 @@ test("managed Pipeline hosts are capability-derived and preserve native Engineer
         eligible: true,
         prompt: `$engineer - run this skill now. ${intent}`,
       },
+      // Pi has BOTH halves of `supportsSdkSkillInvocation` now - a managed runtime and a
+      // typed `/skill:engineer` - and is still not a Pipeline host, because it has no MCP
+      // client to publish `adopt_pipeline_run` and `report_pipeline_workspace` to. That is
+      // the third capability `supportsManagedPipelineHost` adds, and this row is what
+      // fails if a future change drops it back to the two-part predicate.
       { agent: "pi", eligible: false, prompt: null },
     ],
   );
+  assert.equal(supportsSdkSkillInvocation("pi", PIPELINE_ENGINEER_SKILL), true);
+  assert.equal(capabilitiesFor("pi").mcp, null);
 });
 
 test("conductor idea slugs match its lowercase ASCII, separator, trim, and cap contract", () => {

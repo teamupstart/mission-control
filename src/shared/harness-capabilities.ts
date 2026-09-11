@@ -390,7 +390,8 @@ export interface InterruptSpec {
  * composer needs is not "yes" but "which channel", and the channel differs by RUNTIME
  * within a single harness. Claude carries it as a system-prompt append on both of its
  * runtimes, by two different spellings; Codex has a channel on its embedded driver and
- * none in a terminal; Pi has none at all.
+ * none in a terminal; Pi has one system-prompt append that both of its runtimes reach, by
+ * a flag in a terminal and by the same resource-loader option in its driver.
  *
  * A runtime ABSENT from the record has no such channel, and the text is composed into turn
  * one instead. That is not a degradation - it is the other half of the same contract, and
@@ -773,8 +774,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
   },
   pi: {
     id: "pi",
-    // Phase 6 adds `"sdk"` here, with the `--mode rpc` adapter.
-    runtimes: ["terminal"],
+    // Both, since Pi's own SDK landed behind `HARNESSES.pi.sdk`. ONE fact in two files
+    // (`harness-sdk.test.ts`), and the driver is the package's `AgentSessionRuntime` rather
+    // than the `--mode rpc` transport an older phase proposed - see the note on that slot.
+    runtimes: ["terminal", "sdk"],
     // `pi --session <id>`. Measured against `pi --help`: "--session <path|id>  Use specific
     // session file or partial UUID". Deliberately NOT `--resume`, which on pi opens an
     // interactive PICKER rather than taking an id, and not `--fork`, which would branch the
@@ -782,8 +785,15 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     resumes: true,
     // `get_available_models` over pi's RPC mode, behind `HARNESSES.pi.models.discover`.
     discoversModels: true,
+    // Provider-NEUTRAL, because Pi's catalog is: it lists whatever provider the operator
+    // has configured, and naming only Anthropic told an operator signed in to Bedrock,
+    // OpenAI or a local endpoint that their own provider did not count. `/login
+    // amazon-bedrock` is spelled out because it is the one this sentence was rewritten
+    // for and because Bedrock's own console gives no hint that Pi is where the credential
+    // goes. Mission Control never asks for the secret itself - there is no form here to
+    // paste one into, by design.
     modelProviderSignIn:
-      "Pi only lists models a signed-in provider offers. If you are signed out, open a Pi session and run /login to sign in to your Anthropic or Claude account, or set that provider's API key, and try again.",
+      "Pi only lists models a signed-in provider offers. If you are signed out, open a Pi session and run /login <provider> - /login amazon-bedrock for Amazon Bedrock - or set that provider's API key, and try again. Pi keeps the credential; Mission Control never stores it.",
     // FINDING (see `todo/pi-harness.md`): pi HAS an approval mode - `manual`/`auto`/`readonly`,
     // with a `cycleMode` - so this is not quite "no such concept at all". But the app's
     // `PermissionMode` is a CLOSED union of Claude's own mode strings, and pi's vocabulary does
@@ -834,9 +844,12 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       levels: THINKING_LEVELS,
       levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--thinking", level],
-      // Null because pi has no embedded driver effort control to describe - its
-      // `SdkSessionHandle.setEffort` is null and the supervisor refuses the call.
-      driverApplies: null,
+      // `AgentSession.setThinkingLevel` writes the agent's state, and Pi clamps it to what
+      // the model supports - but the request that is already in flight was built with the
+      // old level, so the change is observable from the next one. Same answer as Codex,
+      // for the same reason, and the card says the selection is pending rather than
+      // claiming the running turn moved.
+      driverApplies: "next-turn",
       // Pi's Shift+Tab walks one direction through seven values, including `off` and
       // `minimal`, so neither existing live-picker shape can drive it faithfully.
       sessionPicker: null,
@@ -844,23 +857,42 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     multiRepoDispatch: {
       kind: "no-boundary",
       why: "Pi has no sandbox or directory write boundary: measured against 0.85.1, its write tool wrote an absolute path in a sibling directory without a flag, grant or refusal.",
+      // `false` even though the managed runtime uses those same unbounded tools, because
+      // the measurement above was taken against the TERMINAL one and this axis does not
+      // accept an inherited answer. The driver refuses `extraDirs` to match, so the two
+      // cannot disagree; measuring the managed path is a one-line change with its own
+      // evidence, exactly as this slot's previous null said.
       sdk: false,
     },
-    // Terminal-only, which is the whole list pi has: it has no embedded driver
-    // (`HARNESSES.pi.sdk` is null), so the pane keystroke is not one of two mechanisms here,
-    // it is the only possible one.
+    // Both interrupt mechanisms, and each was measured on its own runtime rather than
+    // inherited.
     //
-    // Measured rather than inherited from the other two, because nothing in pi's docs says
-    // which key aborts a turn. Escape into a running pi turn prints "Operation aborted" and
-    // writes `stopReason: "aborted"` into the transcript - the exact record `pi/meta.ts`
-    // already reads - and the session then answers a follow-up prompt normally.
+    // TERMINAL: nothing in pi's docs says which key aborts a turn. Escape into a running pi
+    // turn prints "Operation aborted" and writes `stopReason: "aborted"` into the transcript
+    // - the exact record `pi/meta.ts` already reads - and the session then answers a
+    // follow-up prompt normally.
+    //
+    // SDK: `AgentSession.abort()` stops the run and WAITS for the agent to be idle, so the
+    // driver's `interrupt` returns on a session that has genuinely stopped rather than one
+    // that has been asked to. `harness-sdk.test.ts` fails if this outruns the driver.
     //
     // This is the declaration that took `interrupt` off `harness-capabilities.test.ts`'s
     // real-null-declarer list; the slot's null path is a named fixture there now.
-    interrupt: { runtimes: ["terminal"] },
-    // Pi terminal carries a repeatable system-prompt append. Codex terminal remains
-    // the live prover for the prompt-prefix fallback; Pi has no SDK runtime.
-    standingInstructions: { outOfBand: { terminal: "pi-append-system-prompt" } },
+    interrupt: { runtimes: ["terminal", "sdk"] },
+    // BOTH runtimes, by the same mechanism, because it is the same mechanism: `pi
+    // --append-system-prompt <value>` is the CLI spelling of the resource loader's
+    // `appendSystemPrompt`, which the managed driver hands to `createAgentSessionServices`
+    // directly. Verified against the pinned 0.85.1 - `main.js` routes the flag into exactly
+    // that option.
+    //
+    // Declaring only `terminal` would be worse than declaring neither: the composer reads
+    // this to decide whether to prefix, so a managed Pi session would have taken its rules
+    // as turn-one prose while a terminal one took them out of band - the same operator
+    // instruction delivered two different ways depending on a toggle. Codex terminal remains
+    // the live prover for the prompt-prefix fallback.
+    standingInstructions: {
+      outOfBand: { terminal: "pi-append-system-prompt", sdk: "pi-append-system-prompt" },
+    },
   },
 };
 

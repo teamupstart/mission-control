@@ -1255,6 +1255,38 @@ test("intent and context schemas accept steering only together with its resolved
   }
 });
 
+test("intent and context schemas enforce the aggregate steering UTF-8 byte budget", async () => {
+  const { WORKFLOW_STEERING_LIMITS } = await import("../src/shared/workflow.ts");
+  const registry = new Registry();
+  registry.applyDiscovery([discovered("steering-schema-budget")]);
+  const { binding } = bindingFor(registry, "steering-schema-budget");
+  const intent = freezeWorkflowRunIntent({ ...FIXTURE_RUN_INTENT, sourceNoteKey: binding.noteKey });
+  const captured = await readWorkflowContextRaw(registry, binding, [], [], intent);
+  const context = WorkflowContextSnapshotSchema.parse(fallbackWorkflowContext(captured.raw, null));
+  const note = { revision: 1, instruction: "a".repeat(3_100), relationship: "steer" as const,
+    rationale: "", timestamp: 100 };
+  const atLimit = Array.from({ length: 10 }, (_, index) => ({ ...note, revision: index + 1 }));
+  atLimit[0]!.instruction += "a".repeat(WORKFLOW_STEERING_LIMITS.bytes - Buffer.byteLength(JSON.stringify(atLimit)));
+  assert.ok(atLimit[0]!.instruction.length <= WORKFLOW_STEERING_LIMITS.instruction);
+  assert.equal(Buffer.byteLength(JSON.stringify(atLimit)), WORKFLOW_STEERING_LIMITS.bytes);
+  const overLimit = atLimit.map((item, index) => index === 1 ? { ...item, instruction: item.instruction + "a" } : item);
+  const unicode = Array.from({ length: 4 }, (_, index) => ({ ...note, revision: index + 1,
+    instruction: "界".repeat(3_000) }));
+  assert.ok(JSON.stringify(unicode).length < WORKFLOW_STEERING_LIMITS.bytes);
+  assert.ok(Buffer.byteLength(JSON.stringify(unicode)) > WORKFLOW_STEERING_LIMITS.bytes);
+  for (const [schema, snapshot] of [
+    [WorkflowRunIntentSnapshotSchema, intent],
+    [WorkflowContextSnapshotSchema, context],
+  ] as const) {
+    assert.equal(schema.safeParse({ ...snapshot, steering: atLimit, steeringResolvedRevision: 10 }).success, true);
+    for (const steering of [overLimit, unicode]) {
+      const result = schema.safeParse({ ...snapshot, steering, steeringResolvedRevision: 10 });
+      assert.equal(result.success, false, "oversized steering must be rejected by both snapshot boundaries");
+      if (!result.success) assert.match(result.error.message, /Workflow steering exceeds 32000 UTF-8 bytes/);
+    }
+  }
+});
+
 test("steering freezes by resolved revision, reaches Personas, and stays out of decisions and compaction", async () => {
   const instruction = "skip the E2E for now, the harness is broken";
   const transcriptPath = join(home, "steering-context.jsonl");
@@ -1267,7 +1299,7 @@ test("steering freezes by resolved revision, reaches Personas, and stays out of 
   registry.upsertGoal(session.id, { relationship: "initial", resolvedPromptRevision: 1, pendingPrompts: [] });
   registry.captureAcceptedPrompt(session.id, instruction, binding.noteKey);
   registry.resolveGoal(session.id, { relationship: "steer", resolvedPromptRevision: 2, pendingPrompts: [],
-    rationale: "The harness is temporarily unavailable" }, instruction, 100);
+    rationale: "The harness is temporarily unavailable" }, ` \t${instruction}\r\n`, 100);
   registry.captureAcceptedPrompt(session.id, "do the smaller one first", binding.noteKey);
   const snapshot = readWorkflowIntentSnapshot(registry, binding)!;
   assert.equal(snapshot.steeringResolvedRevision, 2);

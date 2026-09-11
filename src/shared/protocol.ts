@@ -5318,7 +5318,10 @@ export const WorkflowSteeringNoteSchema = z.object({
 const WorkflowSteeringContextSchema = z.union([
   z.object({ steering: z.undefined().optional(), steeringResolvedRevision: z.undefined().optional() }),
   z.object({
-    steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count),
+    steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count)
+      .refine((steering) => jsonAtMost(steering, WORKFLOW_STEERING_LIMITS.bytes), {
+        message: `Workflow steering exceeds ${WORKFLOW_STEERING_LIMITS.bytes} UTF-8 bytes`,
+      }),
     steeringResolvedRevision: z.number().int().nonnegative(),
   }),
 ]);

@@ -7763,7 +7763,7 @@ export class Registry extends EventEmitter {
     // A permanent transcript label would wrongly suppress a later human retype here.
     const steering: WorkflowSteeringNote | undefined = patch.relationship === "steer"
       && revision !== undefined
-      ? { revision, instruction: clampPrompt(instruction), relationship: "steer",
+      ? { revision, instruction: clampPrompt(instruction.trim()), relationship: "steer",
           rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
       : undefined;
     return this.mergeGoal(id, patch, now, steering);

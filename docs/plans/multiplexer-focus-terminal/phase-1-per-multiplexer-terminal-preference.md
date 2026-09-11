@@ -71,9 +71,11 @@ and `:328` (the explicit launch route showing a freshly spawned detached session
 sites already hold the multiplexer.
 
 **A correction to the source plan.** `plan.md` says focus step 4 can call
-`binUnavailableReason`. It cannot as written: `TerminalDeps`
-(`src/server/terminal/registry.ts:118-121`) carries only `multiplexers` and `emulators`, with no
-availability dependency. `TerminalTargetDeps` already solves this by extending
+`binUnavailableReason`. It cannot *yet*, and the missing piece is the third argument rather
+than the function: `binUnavailableReason(spec, label, deps)` requires a `BinAvailabilityDeps`,
+and `TerminalDeps` (`src/server/terminal/registry.ts:118-121`) carries only `multiplexers` and
+`emulators`. Once `TerminalDeps` extends `BinAvailabilityDeps` the call is not merely allowed,
+it is the idiom to use - it is exactly what `raiser` already does. `TerminalTargetDeps` already solves this by extending
 `BinAvailabilityDeps` (`src/server/terminal/targets.ts:42-46`) and supplying
 `installed: binPresent` / `unsupported: binUnsupportedReason` in `defaultTerminalTargetDeps`
 (`:48-54`).
@@ -197,8 +199,10 @@ is keyed per multiplexer.
 - `multiplexerView` sets `needsTerminalApp: Boolean(sessions.attachArgv)` on every multiplexer
   row, including the early-return branches, so the field is never absent for a multiplexer.
 - `raiser(deps, mux: Multiplexer)` consults `resolveFocusEmulator(mux.id).backend` first: if that emulator
-  exists in `deps.emulators`, has a `spawn`, and has no `binUnavailableReason`, return it.
-  Otherwise fall back to the existing `EMULATOR_IDS` walk, unchanged.
+  exists in `deps.emulators`, has a `spawn`, and returns null from
+  `binUnavailableReason(emulator.bin, emulator.label, deps)`, return it. Otherwise fall back to
+  the existing `EMULATOR_IDS` walk, unchanged. This is the condition `raiser` already applies
+  at `src/server/terminal/targets.ts:75-78`; reuse it rather than restating its parts.
 - `raiser` takes the **adapter** rather than the id, because that is what both call sites
   already hold: `:113` sits inside `multiplexerView(mux: Multiplexer, ...)` (`:83-86`) and
   `:328` sits after `const mux = deps.multiplexers[backend]` (`:310`). Neither call site has a
@@ -220,9 +224,20 @@ seams require it - `TerminalTargetDeps` is the established place for that.
   removed, so no backend is tried twice. `mux` here is `raiseOutward`'s own parameter, typed
   `Multiplexer | null` (`src/server/actions.ts:2162-2165`), so `.id` is the same adapter-to-id
   step `raiser` makes internally - the rule from step 4, not an exception to it.
-- Skip any candidate with no `spawn` **or** with a non-null `binUnavailableReason` before
-  attempting a spawn. A terminal that is present but fails anyway still falls through to the
-  next candidate, so a missing or broken terminal both end with a window rather than an error.
+- Skip any candidate with no `spawn`, or with a non-null
+  `binUnavailableReason(emulator.bin, emulator.label, deps)`, before attempting a spawn. That
+  is a **function call** taking `deps` as its third argument, not a field on `deps` - and it
+  typechecks here only because the bullet above gave `TerminalDeps` the `BinAvailabilityDeps`
+  members it needs. It is the same condition `raiser` uses
+  (`src/server/terminal/targets.ts:75-78`).
+
+  Do not open-code this as `deps.installed(...)` / `deps.unsupported(...)` at the call site.
+  `binUnavailableReason` encapsulates the precedence - host support first, then installation
+  (`src/server/terminal/bin.ts:99-107`) - and inlining it would put a second copy of that order
+  in `actions.ts` for the two call sites to drift apart.
+- A terminal that is present but fails to spawn anyway still falls through to the next
+  candidate, so a missing terminal and a broken one both end with a window rather than an
+  error.
 - Leave the step 5 error text and the `attached` short-circuit alone.
 
 ### 8. Browser - `src/web/lib/api.ts`, new `src/web/useTerminalsConfig.ts`
@@ -381,3 +396,12 @@ and the things not to quietly change:
   calling `resolveFocusEmulator`, which is server-only and reads server config. The panel now
   runs the shared `resolveEmulatorBackend` over the config its hook fetched. Found while
   addressing this finding, not reported by it.
+- **Review round 4 (Inspector, valid finding, remedy declined).** Steps 6 and 7 named
+  `binUnavailableReason` as a bare term, which read as contradicting the findings section's
+  "it cannot call `binUnavailableReason`". Both are now precise: the findings say the missing
+  piece is the third argument rather than the function, and both steps spell out the call
+  `binUnavailableReason(emulator.bin, emulator.label, deps)`.
+  The suggested remedy - naming `deps.installed` / `deps.unsupported` at the call site - was
+  **not** taken, and step 7 now says why. Those are the helper's inputs, not a replacement for
+  it; open-coding them would duplicate the host-support-then-installed precedence
+  (`bin.ts:99-107`) and diverge from `raiser`, which calls the helper at `targets.ts:75-78`.

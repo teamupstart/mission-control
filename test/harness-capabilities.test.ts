@@ -62,7 +62,7 @@ const { MODEL_PICKER_XHIGH } = await import("./fixtures/claude-panes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt" | "missionTools";
+type SplitCap = "extensions" | "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt" | "missionTools";
 
 /** An agent whose harness declares the capability, and one that declares it null. */
 function split<K extends SplitCap>(cap: K) {
@@ -171,6 +171,7 @@ test("every capability's null path is exercised, by a real harness or a named fi
   // slot lost its last null declarer, and this test went red until `interrupt` moved here.
   const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt", "workQueue", "missionTools"];
   for (const cap of [
+    "extensions",
     "permissionModes",
     "skills",
     "workQueue",
@@ -519,7 +520,8 @@ test("Pi declares machine instrumentation and explains a session with no lifecyc
   assert.equal(foremanAutomationAuthorized(session), true);
   assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
   assert.match(queue.uninstrumentedWhy, /has not loaded.*lifecycle hooks/);
-  assert.doesNotMatch(queue.uninstrumentedWhy, /Install|Setup/);
+  assert.match(queue.uninstrumentedWhy, /PUT \/api\/extensions\/pi\/config/);
+  assert.doesNotMatch(queue.uninstrumentedWhy, /Setup/);
 });
 
 // ---- clearing context: the defect this item fixes ----
@@ -608,4 +610,10 @@ test("Mission tools declare a route independently of a vendor MCP client", async
     });
     assert.match(missionToolsUnavailableWhy("codex")!, /Codex has no integration/);
   });
+});
+
+test("extensions fold skips a harness whose capability is null", async () => {
+  const { extensionsDirs } = await import("../src/server/skills/reconcile.ts");
+  assert.equal(extensionsDirs().length, 1);
+  await withCapabilityNull("pi", "extensions", () => assert.deepEqual(extensionsDirs(), []));
 });

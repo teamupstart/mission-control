@@ -41,7 +41,7 @@ import { stateDir } from "../src/shared/harness-runtime.mjs";
 // TypeScript, and reachable because this script's entry point is `tsx hooks/install.mjs`
 // (see package.json) - unlike harness-hook.mjs, which bare `node` runs at hook time and
 // which is why the runtime module above is .mjs at all.
-import { skillsDirs, uninstallSkillLinks } from "../src/server/skills/reconcile.ts";
+import { skillsDirs, uninstallSkillLinks, extensionsDirs, uninstallExtensionLink } from "../src/server/skills/reconcile.ts";
 // One definition of the OTel env block, shared with the packaged app's installer and the
 // dashboard's Cost panel - three writers of the same six keys is exactly how half a block
 // gets left behind that nothing owns. See src/shared/claude-settings.ts.
@@ -276,8 +276,13 @@ if (!existed && !text.endsWith(formattingOptions.eol)) text += formattingOptions
 // here to end. Never on install: the daemon reconciles from the config, and creating
 // links from here would enable skills nobody switched on.
 const skills = uninstall ? uninstallSkillLinks() : null;
+const extensions = uninstall ? uninstallExtensionLink() : null;
 
 function reportSkills() {
+  if (extensions) {
+    if (extensions.unlinked.length) console.log(`  removed extension link(s) from ${extensionsDirs().join(", ")}: ${extensions.unlinked.join(", ")}`);
+    for (const problem of extensions.problems) console.log(`  ${problem}`);
+  }
   if (!skills) return;
   if (skills.unlinked.length > 0) {
     const names = skills.unlinked.sort().join(", ");

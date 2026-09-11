@@ -2,9 +2,13 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readlinkSync,
+  readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -14,9 +18,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
 import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
-import type { SkillsSpec } from "@shared/harness-capabilities.ts";
+import type { SkillsSpec, ExtensionsSpec } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
+import { piExtensionPath } from "../config.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
@@ -58,7 +63,7 @@ import type { Catalog } from "./catalog.ts";
  * The spec's `dirEnvVar` still wins over both, so a test (or an operator) that genuinely
  * wants a specific directory names it and gets it.
  */
-export function skillsDirFor(spec: SkillsSpec): string {
+export function skillsDirFor(spec: Pick<SkillsSpec, "dirEnvVar" | "homeDir" | "isolatedDirName">): string {
   const named = process.env[spec.dirEnvVar];
   if (named) return named;
   const home = envVar("HOME");
@@ -119,6 +124,8 @@ function operatorSkillsDirs(): string[] {
   for (const agent of AGENT_TYPES) {
     const spec = HARNESS_CAPABILITIES[agent].skills;
     if (spec) out.push(join(homedir(), ...spec.homeDir));
+    const extension = HARNESS_CAPABILITIES[agent].extensions;
+    if (extension) out.push(join(homedir(), ...extension.homeDir));
   }
   return out;
 }
@@ -244,7 +251,7 @@ function assertTestSkillIsolation(dir: string): void {
   // reconciles the operator's real directory on every start, which is the point.
   if (!process.env.NODE_TEST_CONTEXT) return;
   if (!operatorSkillsDirs().some((real) => sameDirectory(real, dir))) return;
-  const pins = AGENT_TYPES.map((agent) => HARNESS_CAPABILITIES[agent].skills?.dirEnvVar)
+  const pins = AGENT_TYPES.flatMap((agent) => [HARNESS_CAPABILITIES[agent].skills?.dirEnvVar, HARNESS_CAPABILITIES[agent].extensions?.dirEnvVar])
     .filter((name): name is string => name !== undefined);
   throw new Error(
     `refusing to reconcile ${dir} under the test runner: this is the machine's real skills `
@@ -677,4 +684,98 @@ export function uninstallSkillLinks(dirs: string[] = skillsDirs()): ReconcileRes
     { readable: true, skills: [], present: new Set(), problems: [] },
     dirs,
   );
+}
+
+/** Same resolver and isolation guard as skills, including explicit state-home scoping. */
+export const extensionsDirFor = skillsDirFor;
+
+function extensionLocations(): Array<{ dir: string; spec: ExtensionsSpec }> {
+  const seen = new Set<string>();
+  return AGENT_TYPES.flatMap((agent) => {
+    const spec = HARNESS_CAPABILITIES[agent].extensions;
+    if (!spec) return [];
+    const dir = extensionsDirFor(spec);
+    const key = join(dir, spec.linkName);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ dir, spec }];
+  });
+}
+
+export function extensionsDirs(): string[] {
+  return [...new Set(extensionLocations().map(({ dir }) => dir))];
+}
+
+/**
+ * Recognize our target, or a previous checkout's marked build. The reserved link name
+ * alone never licenses replacing another extension. An unknown dangling link is refused.
+ * Reading the marker establishes ownership only; this is not a health/staleness probe.
+ */
+function ownsExtensionTarget(target: string, desired: string): boolean {
+  if (target === desired) return true;
+  try {
+    return statSync(target).isFile() && readFileSync(target, "utf8").includes("missionControlBuild");
+  } catch {
+    return false;
+  }
+}
+
+/** Reconcile the single declared extension link. Never edits settings.json or real files. */
+export function reconcileExtensionLink(desired: boolean): ReconcileResult {
+  const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
+  for (const { dir, spec } of extensionLocations()) {
+    assertTestSkillIsolation(dir);
+    const path = join(dir, spec.linkName);
+    try {
+      const target = resolve(piExtensionPath());
+      const entry = lstatSync(path, { throwIfNoEntry: false });
+      if (entry && (!entry.isSymbolicLink() || !ownsExtensionTarget(resolve(dir, readlinkSync(path)), target))) {
+        out.blocked.push(spec.linkName);
+        out.problems.push(`${path} isn't ours to replace or remove; left unchanged.`);
+        continue;
+      }
+      // Do not replace a working install with a missing build. Off and teardown do not
+      // need a readable target, including when our current checkout's link is dangling.
+      if (desired && !statSync(target, { throwIfNoEntry: false })?.isFile()) {
+        out.blocked.push(spec.linkName);
+        out.problems.push(`${target} is not a built extension. Run npm run build first.`);
+        continue;
+      }
+      if (desired && entry && resolve(dir, readlinkSync(path)) === target) continue;
+      if (desired) {
+        mkdirSync(dir, { recursive: true });
+        if (entry) {
+          // Publish on the same filesystem, keeping the working link until replacement
+          // succeeds. A creation or rename failure leaves the old link intact.
+          const stage = mkdtempSync(join(dir, ".mission-extension-"));
+          try {
+            const staged = join(stage, spec.linkName);
+            symlinkSync(target, staged, "file");
+            renameSync(staged, path);
+            out.changed = true;
+            out.unlinked.push(spec.linkName);
+            out.linked.push(spec.linkName);
+          } finally { rmSync(stage, { recursive: true, force: true }); }
+        } else {
+          // Creating directly refuses an intervening file instead of overwriting it.
+          symlinkSync(target, path, "file");
+          out.changed = true;
+          out.linked.push(spec.linkName);
+        }
+      } else if (entry) {
+        unlinkSync(path);
+        out.changed = true;
+        out.unlinked.push(spec.linkName);
+      }
+    } catch (err) {
+      out.blocked.push(spec.linkName);
+      out.problems.push(`${path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return out;
+}
+
+/** Teardown only. Durable off is applyPiExtensionConfig({ enabled: false }). */
+export function uninstallExtensionLink(): ReconcileResult {
+  return reconcileExtensionLink(false);
 }

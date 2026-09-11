@@ -1428,6 +1428,18 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   overflow-wrap: anywhere;
 }
 
+/* Why a parked run stopped, under its status chip.
+   Carries the row's own alarm colour rather than `--muted`, for the reason the Review
+   drawer's state column does: this is the line a reader is scanning the rail FOR, and a
+   reason set in the same grey as the note key beneath it is a reason nobody's eye stops on.
+   `anywhere` rather than `nowrap`, because the rail is a fixed-width column and a clause
+   clipped mid-word says less than the same clause on two lines. */
+.wf-run-row-why {
+  color: color-mix(in srgb, var(--danger) 82%, var(--fg));
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
 /* One run is one repository. On the run page it sits beside the session for the same reason
    the row shows it under the note key: a multi-repo task's two runs share a conversation, a
    workflow and a version, and this is the only fact that tells them apart. */

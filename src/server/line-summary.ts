@@ -13,6 +13,7 @@ import {
   workflowRunAttentionSplit,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
+import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
 import { costPerPrToday, fmtUsd } from "@shared/cost.ts";
 import {
   pipelineCommissionAttentionEntries,
@@ -261,6 +262,47 @@ function foldWorking(input: LineFoldInput): LineStageSummary {
  * Amber for either, and there is no third tone to give the stalled half: `LineTone` has no
  * red, and inventing one for the strip would be a colour six stages have to learn.
  */
+/**
+ * The one reason every stopped run stopped, or how many reasons there are.
+ *
+ * The strip has room for a handful of words and the drawer beneath it has room for a row per
+ * cause, so this says the thing only the strip can say: whether the stalled number is ONE
+ * problem or several. A fleet reading "12 stalled · session gone" is one dead conversation
+ * and a single dismissal; "12 stalled · 5 causes" is an afternoon, and the difference decides
+ * whether the drawer is worth opening at all.
+ *
+ * It refuses to name a dominant cause when there are several, which is deliberate and is the
+ * one place this differs from the workflow name above it. A plurality workflow is still an
+ * honest label for a mixed pile - every run really is running SOME workflow, and the count
+ * beside it is the fleet's. A plurality CAUSE is not: "12 stalled · session gone" would be a
+ * false statement about seven of them, and the reader's next move - dismiss the pile - is
+ * exactly the one that wrong statement invites.
+ *
+ * `status === "blocked"` and not `workflowRunWaitsOnOperator`, so this counts the same runs
+ * `workflowRunAttentionSplit` calls stalled. The clause explains the number it is printed
+ * beside or it explains nothing.
+ *
+ * Counted over the RENDERED CLAUSES rather than over the raw phase codes, which is the only
+ * version of this that holds the honest-plural promise structurally instead of by luck. The
+ * two differ whenever two phases say the same thing to a reader, and `phase` is a free string
+ * - `cancelRun` and every `setRunState` caller mint their own - so two spellings of one
+ * unmapped code (`a_b` and `a b`) already render one identical clause through the fallback.
+ * Counting codes would answer "2 causes" for a drawer showing the same sentence twice, which
+ * is the plurality this function exists to refuse.
+ *
+ * The alternative - forbidding two map keys from sharing a clause - was rejected. Two phases
+ * may legitimately deserve the same three words, and a guard against it would be a rule about
+ * the vocabulary defending a property that belongs to this count.
+ */
+function blockedCause(live: readonly WorkflowRunSummary[]): string | null {
+  const causes = new Set(
+    live.filter((run) => run.status === "blocked").map((run) => blockedPhaseClause(run.phase)),
+  );
+  if (causes.size === 0) return null;
+  const only = [...causes];
+  return only.length === 1 ? only[0]! : `${only.length} causes`;
+}
+
 function foldReview(input: LineFoldInput): LineStageSummary {
   const live = input.workflowRuns.filter((r) => workflowRunIsOpen(r.status));
   const pipelineEntries = pipelineCommissionAttentionEntries({
@@ -279,6 +321,8 @@ function foldReview(input: LineFoldInput): LineStageSummary {
 
   const attention = workflowRunAttentionParts(workflowRunAttentionSplit(live));
   if (pipelineAttention > 0) attention.push(`${pipelineAttention} Pipeline ${plural(pipelineAttention, "needs", "need")} you`);
+  // Null when nothing is blocked, which is what leaves a healthy strip untouched.
+  const cause = blockedCause(live);
   if (live.length === 0) {
     return {
       stage: "review",
@@ -304,11 +348,25 @@ function foldReview(input: LineFoldInput): LineStageSummary {
   return {
     stage: "review",
     count,
-    // Spread through `sentence()` rather than pre-joined: it is the helper that owns the
-    // " · " separator, and `LineStrip.stageLabel` rewrites exactly that separator into the
-    // commas an accessible name reads with. A part concatenated by hand would ship a middle
-    // dot into an `aria-label`.
+    /*
+     * Spread through `sentence()` rather than pre-joined: it is the helper that owns the
+     * " · " separator, and `LineStrip.stageLabel` rewrites exactly that separator into the
+     * commas an accessible name reads with. A part concatenated by hand would ship a middle
+     * dot into an `aria-label`.
+     *
+     * The CAUSE LEADS when there is one, and that is a placement decision rather than a
+     * preference. `.ls-sub` is one clipped line about twenty-three characters wide at six
+     * stages, so whatever is last is not read by anyone looking at the strip - "4 stalled"
+     * has been falling off the end of this sentence for as long as it has been in it. The
+     * stage already carries a count and an amber tone saying THAT something stopped, so the
+     * one fact the line can add is WHY, and it can only add it from the front.
+     *
+     * The workflow name keeps the lede on every healthy fleet, which is every fleet with
+     * nothing blocked. Nothing is lost when it does not: the full sentence is the tooltip and
+     * the accessible name, both of which exist precisely because this line ellipsizes.
+     */
     sentence: sentence(
+      ...(cause ? [cause] : []),
       `${top.name} v${top.version}${top.runs > 1 ? ` ×${top.runs}` : ""}`,
       ...attention,
     ),

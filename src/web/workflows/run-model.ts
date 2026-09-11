@@ -34,6 +34,7 @@ import {
   workflowRunGaveUp,
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
+import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -59,6 +60,13 @@ import { WorkflowApiError } from "./workflowApi.ts";
  * fails typecheck until someone says what it means to a human. The machine code is kept
  * beside the sentence as a detail affordance rather than thrown away: it is what an
  * operator quotes into a bug report.
+ *
+ * One axis is deliberately NOT here. `BLOCKED_PHASE_CLAUSES` and `blockedPhaseClause` live in
+ * `@shared/workflow-lifecycle.ts`, beside the phase registry they have to stay exhaustive
+ * over - and, more to the point, somewhere the DAEMON can read. `alerts.ts` fires the
+ * notification at the moment a run blocks and runs in both processes; while the map was here
+ * that notification printed the raw phase through its own copy of the fallback, so the two
+ * surfaces disagreed about one field by construction.
  */
 
 export function workflowRunLoadError(caught: unknown): string {
@@ -1063,57 +1071,6 @@ const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
 
 export function runStatusLabel(status: WorkflowRunStatus): string {
   return RUN_STATUS_LABELS[status];
-}
-
-/**
- * Why a stopped run stopped, as a short clause to hang off its status word.
- *
- * The sibling of `GATE_WAIT_SENTENCES` below, and deliberately a different grain: those are
- * whole sentences for a run's own page, these are three or four words for a triage column
- * that is 240px of 10px mono. "Blocked" alone is the complaint this map answers - it is true
- * of thirty rows at once and actionable on none of them.
- *
- * `phase` is a free `string` and NOT a union: `orphanBinding` and every `setRunState` caller
- * write their own reason code into it, and new ones appear without this map hearing about
- * it. So the lookup FALLS BACK to `phase.replaceAll("_", " ")`, which is the same fallback
- * `alerts.ts` already prints reasons with - two surfaces reading one field must not disagree
- * about what an unmapped code looks like, and an unmapped code has to degrade to readable
- * text rather than to `undefined`.
- */
-const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
-  session_disappeared: "session gone",
-  round_limit: "out of rounds",
-  // Written by the gate as an EVENT kind today rather than as a phase (the phase it sets is
-  // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
-  // it means a later code change cannot silently produce "inspector round limit" prose.
-  inspector_round_limit: "out of GitHub Inspector rounds",
-  infrastructure_error: "provider call failed",
-  inspector_findings: "GitHub Inspector findings",
-  inspector_disabled: "GitHub Inspector off",
-  inspector_pr_closed: "PR closed",
-  inspector_head_mismatch: "head moved",
-  inspector_gate_context_invalid: "gate context lost",
-  delivery_uncertain: "delivery unconfirmed",
-  delivery_refused: "delivery refused",
-  delivery_blocked: "delivery blocked",
-  stale_capture: "evidence went stale",
-  capture_error: "capture failed",
-  // The manager's two refusals for an evidence snapshot that did not move between rounds. Both
-  // were missing, so a run parked on either printed the raw phase code through the fallback
-  // below - "unchanged evidence exhausted" - in the one column whose whole job is being read.
-  unchanged_evidence: "evidence unchanged",
-  unchanged_evidence_exhausted: "evidence never changed",
-  // Not a block at all: the binding was reattached to a live session and the run is parked
-  // until somebody opens the next round. The clause says what HAPPENED; the remedy button
-  // beside it says what to do about it, which is why this is not "reattached, needs
-  // resubmit" - the second half would be the button repeating itself into a column that
-  // cannot hold it.
-  reattached_resubmit_required: "reattached",
-};
-
-/** The short cause for `phase`, or the phase code made readable when it is unmapped. */
-export function blockedPhaseClause(phase: string): string {
-  return BLOCKED_PHASE_CLAUSES[phase] ?? phase.replaceAll("_", " ");
 }
 
 const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
@@ -2761,7 +2718,7 @@ export function runTriageRound(summary: WorkflowRunSummary): string {
  * a reviewer, Inspector's next sweep, a pushed head - and calling those parked would put a
  * cause and a control on rows that need neither.
  */
-function runIsParked(summary: Pick<WorkflowRunSummary, "status" | "phase">): boolean {
+export function runIsParked(summary: Pick<WorkflowRunSummary, "status" | "phase">): boolean {
   return summary.status === "blocked"
     || (summary.status === "waiting_for_session"
       && summary.phase === "reattached_resubmit_required");

@@ -165,12 +165,20 @@ Mirror `src/server/harnesses.ts` closely, minus the legacy-upgrade handling it c
 - `getTerminalsConfig()` - `getAppConfig(CONFIG_ENTRY)` then `TerminalsConfigSchema.parse(stored ?? {})`.
 - `setTerminalsConfig(patch)` - merge `multiplexerTerminal` per key over the current value,
   persist, return the result.
-- `resolveFocusEmulator(mux: MultiplexerId): { backend: EmulatorId | null; unknown: string | null }` -
-  the one function the policy and panel layers call, running the stored value through
-  `resolveEmulatorBackend`. It returns the **pair**, not a bare id: a resolver that collapses to
-  `EmulatorId | null` throws away the unknown value the Setup row needs in order to report that
-  it ignored a preference, which is the same reason `resolveTerminalBackend` returns a pair
-  today. Policy callers read `.backend`; the row reads `.unknown`.
+- `resolveFocusEmulator(id: MultiplexerId): { backend: EmulatorId | null; unknown: string | null }` -
+  the server-side convenience wrapper the policy layer calls, running the stored value through
+  the shared `resolveEmulatorBackend`.
+- It takes the **id**, not the `Multiplexer` adapter. The config map is keyed by id, and this
+  module must not import the server-side adapter type to answer a question about a key. Every
+  caller therefore passes `<adapter>.id`; `Multiplexer.id` is declared at
+  `src/server/terminal/types.ts:398-399`. Do not add a second overload taking the adapter.
+- It returns the **pair**, not a bare id: a resolver that collapses to `EmulatorId | null`
+  throws away the unknown value the Setup row needs in order to report that it ignored a
+  preference, which is the same reason `resolveTerminalBackend` returns a pair today. Policy
+  callers read `.backend`; the row reads `.unknown`.
+- This wrapper is server-only, because it reads server config. The **browser** never calls it:
+  the panel runs the shared `resolveEmulatorBackend` over the config its hook already fetched
+  (step 9).
 
 Read at call time, never cached at module scope: a change must reach the next Focus without a
 daemon restart.
@@ -188,12 +196,16 @@ is keyed per multiplexer.
 
 - `multiplexerView` sets `needsTerminalApp: Boolean(sessions.attachArgv)` on every multiplexer
   row, including the early-return branches, so the field is never absent for a multiplexer.
-- `raiser(deps, mux: MultiplexerId)` consults `resolveFocusEmulator(mux).backend` first: if that emulator
+- `raiser(deps, mux: Multiplexer)` consults `resolveFocusEmulator(mux.id).backend` first: if that emulator
   exists in `deps.emulators`, has a `spawn`, and has no `binUnavailableReason`, return it.
   Otherwise fall back to the existing `EMULATOR_IDS` walk, unchanged.
-- Update both call sites (`:113`, `:328`) to pass the multiplexer they already hold. The blurb at
-  `:124` then names the operator's chosen terminal rather than the registry's first, which is
-  the visible half of this change outside Focus.
+- `raiser` takes the **adapter** rather than the id, because that is what both call sites
+  already hold: `:113` sits inside `multiplexerView(mux: Multiplexer, ...)` (`:83-86`) and
+  `:328` sits after `const mux = deps.multiplexers[backend]` (`:310`). Neither call site has a
+  bare id to pass, so `raiser` does the one `.id` lookup internally.
+- Update both call sites to pass the multiplexer they already hold. The blurb at `:124` then
+  names the operator's chosen terminal rather than the registry's first, which is the visible
+  half of this change outside Focus.
 
 Keep `resolveFocusEmulator` injectable rather than imported statically if the existing test
 seams require it - `TerminalTargetDeps` is the established place for that.
@@ -205,8 +217,9 @@ seams require it - `TerminalTargetDeps` is the established place for that.
   `defaultTerminalTargetDeps` does.
 - In step 4, build the attempt order as the preferred emulator (when
   `resolveFocusEmulator(mux.id).backend` names one) followed by `EMULATOR_IDS` with that id
-  removed, so
-  no backend is tried twice.
+  removed, so no backend is tried twice. `mux` here is `raiseOutward`'s own parameter, typed
+  `Multiplexer | null` (`src/server/actions.ts:2162-2165`), so `.id` is the same adapter-to-id
+  step `raiser` makes internally - the rule from step 4, not an exception to it.
 - Skip any candidate with no `spawn` **or** with a non-null `binUnavailableReason` before
   attempting a spawn. A terminal that is present but fails anyway still falls through to the
   next candidate, so a missing or broken terminal both end with a window rather than an error.
@@ -234,10 +247,13 @@ seams require it - `TerminalTargetDeps` is the established place for that.
     control, disabled, reading Automatic. There is nothing to set a preference for yet.
   - target reports `needsTerminalApp === false`: the text "Needs no terminal" instead. Derived
     from the field, never from the id.
-  - when `resolveFocusEmulator(mux).unknown` is non-null, the row says it is ignoring a stored
-    preference this build does not recognize, rather than presenting Automatic as the
-    operator's own choice. `TerminalPreferencePicker` already renders this case for the
-    Harnesses card (`resolved.unknown`); follow its wording.
+  - when the stored value does not resolve, the row says it is ignoring a preference this
+    build does not recognize, rather than presenting Automatic as the operator's own choice.
+    Compute this in the browser with the shared
+    `resolveEmulatorBackend(config.multiplexerTerminal[rowId])` and read `.unknown` - **not**
+    `resolveFocusEmulator`, which is server-only and reads server config.
+    `TerminalPreferencePicker` already renders this case for the Harnesses card
+    (`resolved.unknown`); follow its wording.
 - CSS for the row split and the aside. The mockup in `plan.html` uses `.setup-row-split`,
   `.setup-row-aside` and `.pref-inert`; match the existing `.setup-row` vocabulary and keep the
   rows readable at narrow widths.
@@ -353,3 +369,15 @@ and the things not to quietly change:
   edits - `app_config` already exists and the entry needs no migration. That row now names
   `settings-backup-domains.ts` instead and says so explicitly. Editorial only; no approved
   decision changed.
+- **Review round 3 (Inspector, valid).** `resolveFocusEmulator` was called with two argument
+  shapes: a bare `MultiplexerId` in step 6 and `mux.id` in step 7. Checking the call sites
+  showed the declaration was the wrong half - `raiseOutward` holds `mux: Multiplexer | null`
+  (`actions.ts:2162-2165`), `multiplexerView` holds `mux: Multiplexer` (`targets.ts:83-86`),
+  and `launchTerminal` holds `const mux = deps.multiplexers[backend]` (`:310`), so no call site
+  has a bare id to pass. Settled on one rule: the resolver takes the id because the config map
+  is keyed by it, `raiser` takes the adapter because that is what its callers hold, and every
+  caller passes `<adapter>.id`.
+  Auditing the other call sites for the same defect found a worse one: step 9 had the **browser**
+  calling `resolveFocusEmulator`, which is server-only and reads server config. The panel now
+  runs the shared `resolveEmulatorBackend` over the config its hook fetched. Found while
+  addressing this finding, not reported by it.

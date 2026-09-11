@@ -1692,8 +1692,8 @@ Unknown model variants remain unpriced until their official rates are verified.
 On daemon startup, previously unpriced rollout and automation rows are valued when the
 installed snapshot now recognizes their model. Already-priced history keeps its original
 snapshot and amount, and token counts and ingestion cursors do not change. Recovery failures
-are logged and retried after one minute without blocking live usage ingestion. Each harness's
-recovery pass is synchronous and atomic: a large historical backlog can delay HTTP, SSE, and
+are logged and retried after one minute; live usage ingestion continues after the failed pass.
+Each harness's recovery pass is synchronous and atomic: a large historical backlog can delay HTTP, SSE, and
 live ingestion until that pass finishes. Batching is not implemented; introducing it would
 require a resumable partial-commit contract in place of whole-pass rollback. Models without
 a published cache rate remain unpriced when either cache reads or cache writes are reported.

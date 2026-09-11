@@ -10481,7 +10481,14 @@ export interface DurableUsageEvent {
   pricingVersion: string;
 }
 
-/** Fill previously unknown estimates without changing tokens, cursors, or priced history. */
+/**
+ * Fill previously unknown estimates without changing tokens, cursors, or priced history.
+ * This deliberately scans and prices a harness's backlog synchronously in one transaction:
+ * an estimator failure must roll back every update in that pass. A large unpriced backlog
+ * can therefore delay HTTP, SSE, and live ingestion on the daemon's event loop. If recovery
+ * volume warrants batching, use resumable bounded passes with an explicit partial-commit
+ * contract rather than yielding while this transaction holds the shared connection.
+ */
 export function priceUnpricedUsage(
   agent: string,
   estimate: import("./harness/types.ts").UsageSpec["estimate"],

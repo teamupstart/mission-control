@@ -1138,8 +1138,15 @@ test("a gap against a matched criterion is stated on the claim row, not in the b
       : entry),
   } as WorkflowRunDetail);
 
-  // The claim row carries it, spelled the way every other surface spells these codes.
-  assert.match(html, /missing execution/);
+  /*
+   * On the CLAIM ROW's own note, not merely somewhere in the document.
+   *
+   * The canonical reconciliation disclosure below renders `Gaps: missing execution` for the same
+   * criterion whether it is open or closed, so a search of the whole markup would still pass for
+   * a row that had dropped the code entirely - which is the half of this the pane has to get
+   * right. The note element is the thing a reader sees beside the claim.
+   */
+  assert.match(html, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
   // The block names only the criterion that has no claim row at all.
   const block = html.slice(
     html.indexOf("Unmatched canonical criteria"),
@@ -1166,7 +1173,8 @@ test("a gap against a matched criterion is stated on the claim row, not in the b
       : entry),
   } as WorkflowRunDetail);
   assert.doesNotMatch(allMatched, /Unmatched canonical criteria/);
-  assert.match(allMatched, /missing execution/);
+  // And the finding is still on the row, which is the whole reason dropping the block is safe.
+  assert.match(allMatched, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
 });
 
 /**

@@ -1110,10 +1110,14 @@ resolve same-name shadows and identify one action stage exactly; the browser nev
 workflow to reconstruct either answer.
 
 Each submission in run detail has its own evidence record, and the run record's **Evidence** tab
-is where it reads. A stat strip carries the readiness verdict, the frozen author claims, the
-canonical criteria the reconciliation could not match, its warnings and the image count. Frozen
-images are a thumbnail strip above the claims, and a claim row that cites one carries a small copy
-of it, so a screenshot sits beside the claim it proves. Clicking a thumbnail opens it full size,
+is where it reads. A stat strip carries the readiness verdict, the frozen author claims, every
+canonical criterion left with an unresolved gap, its warnings and the image count. A gap is
+reported once, in the place that can act on it: against a criterion the reconciliation matched to
+an author claim it prints on that claim's row, and against a criterion it matched to nothing it
+gets a named block of its own, because there is no row for it to sit under. The **Gaps** figure
+counts both, so it is not the length of that block. Frozen images are a thumbnail strip above the
+claims, and a claim row that cites one carries a small copy of it, so a screenshot sits beside the
+claim it proves. Clicking a thumbnail opens it full size,
 with its caption, item id, repository scope, MIME type, byte size, availability and full sha256
 digest, plus **Use in next review**, which stages a fresh immutable copy in the binding's composer.
 Image bodies load lazily through the authenticated dashboard route - one request per image whatever

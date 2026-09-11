@@ -385,10 +385,25 @@ const releaseEngineerLock = (lockPath) => {
   } catch { /* no owner file: a broken-in lock, or already gone. Fall through and clean up. */ }
   rmSync(lockPath, { recursive: true, force: true });
 };
-/** True when the lock looks abandoned rather than held by a live, working process. */
+/** A path's mtime, or null when it is not there. Never throws, so callers can be total. */
+const lockMtimeMs = (path) => {
+  try { return statSync(path).mtimeMs; }
+  catch { return null; }
+};
+/**
+ * True when the lock looks abandoned rather than held by a live, working process.
+ *
+ * TOTAL by construction, and that is the whole point. Releasing a lock is one recursive
+ * remove of the directory, so both the owner file and the directory itself can vanish
+ * between this check's two reads. The old fallback stat sat outside any catch, so that
+ * ENOENT escaped the acquire loop's EEXIST handler and killed the run with a stack no
+ * operator could act on. A lock that is GONE is not stale: there is nothing to break, and
+ * the next mkdir is what should decide. The window is microseconds on an idle machine and
+ * wide under load - which is exactly when this fake arbitrates concurrent reservations.
+ */
 const lockIsStale = (lockPath) => {
-  try { return Date.now() - statSync(lockOwnerPath(lockPath)).mtimeMs > LOCK_STALE_MS; }
-  catch { return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS; }
+  const at = lockMtimeMs(lockOwnerPath(lockPath)) ?? lockMtimeMs(lockPath);
+  return at !== null && Date.now() - at > LOCK_STALE_MS;
 };
 /** Whose lock this is right now, or null when it has no readable owner. */
 const lockOwnerOf = (lockPath) => {

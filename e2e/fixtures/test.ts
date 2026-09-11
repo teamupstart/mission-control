@@ -1,5 +1,6 @@
 import { test as base, expect, type Page } from "@playwright/test";
 
+import { startBrowserCoverage } from "./coverage.ts";
 import { startDaemon, type DaemonHandle } from "./daemon.ts";
 
 /**
@@ -111,33 +112,49 @@ export const test = base.extend<{
    * fetch has landed - and the first paint is early enough for a modal to be opened in it.
    */
   dashboard: async ({ page, daemon }, use) => {
-    const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        guidedDispatch: false,
-        guidedTour: false,
-        conversationView: "chat",
-        lineDensity: "expanded",
-      }),
-    });
-    expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
-    await page.goto(`${daemon.baseURL}/#/fleet`);
-    await page.evaluate(() => window.localStorage.clear());
-    await page.evaluate(() =>
-      window.localStorage.setItem(
-        "mission-control.ui",
-        JSON.stringify({
+    // Off by default, so an ordinary suite pays nothing for it, and started before the first
+    // navigation because V8 counts calls only in functions it compiled with counters in them.
+    const stopCoverage = process.env.MC_COVERAGE ? await startBrowserCoverage(page) : null;
+    /*
+     * Everything after the collector starts is inside the `try`, not only the test body.
+     *
+     * `use` runs the test, so an assertion that throws would otherwise skip the final drain and
+     * the write, and the coverage file would silently be missing every handler that test pressed
+     * - a lower number with no error to explain it. The SETUP below belongs in here for the same
+     * reason and one more: a preference pin or a navigation that throws leaves the sampling timer
+     * and the CDP session running with nothing to stop them.
+     */
+    try {
+      const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
           guidedDispatch: false,
           guidedTour: false,
           conversationView: "chat",
           lineDensity: "expanded",
         }),
-      ),
-    );
-    await page.reload();
-    await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
-    await use(page);
+      });
+      expect(pinned.ok, "the daemon should accept the dashboard preference pins").toBe(true);
+      await page.goto(`${daemon.baseURL}/#/fleet`);
+      await page.evaluate(() => window.localStorage.clear());
+      await page.evaluate(() =>
+        window.localStorage.setItem(
+          "mission-control.ui",
+          JSON.stringify({
+            guidedDispatch: false,
+            guidedTour: false,
+            conversationView: "chat",
+            lineDensity: "expanded",
+          }),
+        ),
+      );
+      await page.reload();
+      await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
+      await use(page);
+    } finally {
+      if (stopCoverage) await stopCoverage();
+    }
   },
 });
 

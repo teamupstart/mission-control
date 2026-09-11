@@ -16,6 +16,7 @@ import { createElement } from "react";
 import type {
   PersonaSnapshot,
   WorkflowBinding,
+  WorkflowEvidenceImage,
   WorkflowNodeAttempt,
   WorkflowJson,
   WorkflowRunDetail,
@@ -28,10 +29,16 @@ import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEdi
 import type { ChangeWorklistRow } from "../src/web/workflows/run-model.ts";
 import type { WorklistItem, WorklistSegment } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
+  FrozenImageFrame,
+  FrozenImagePreview,
   WorkflowRunView,
   WorkflowRunsEmpty,
   followSelection,
   worklistSelectionForNode,
+} from "../src/web/workflows/WorkflowRuns.tsx";
+import type {
+  FrozenImageBody,
+  RestageControl,
 } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
@@ -621,59 +628,715 @@ test("a waiting run offers ONE primary move, the context controls, and cancel", 
   assertNoGraphIds(html);
 });
 
-test("image evidence is an auditable per-submission ledger with retained and pruned states", () => {
+/**
+ * The Evidence pane: the readiness verdict, the pictures, and the claims they prove.
+ *
+ * Two sections became one and nothing was dropped, which is the only claim markup can settle.
+ * The picture itself is a browser fact - the fetch, the lazy load, the preview, the focus
+ * return - and lives in `e2e/specs/workflow-evidence-pane.spec.ts`. What is pinned here is the
+ * inventory: every field the two old sections printed still reaches the markup, and the counts
+ * on the strip are the ones `runRecordSummary` derived rather than something the view recounted.
+ */
+const IMAGES: WorkflowRunDetail["evidenceImages"] = [{
+  submissionId: "submission-2",
+  images: [
+    {
+      id: "image-retained",
+      ordinal: 0,
+      displayName: "dashboard.png",
+      caption: "Composer with caption and repository scope",
+      repositoryScope: "repo-01",
+      mimeType: "image/png",
+      bytes: 2048,
+      sha256: "a".repeat(64),
+      availability: "retained",
+      prunedAt: null,
+      createdAt: 8,
+    },
+    {
+      id: "image-pruned",
+      ordinal: 1,
+      displayName: "old-dashboard.webp",
+      caption: "Historical evidence whose body aged out",
+      repositoryScope: "all",
+      mimeType: "image/webp",
+      bytes: 4096,
+      sha256: "b".repeat(64),
+      availability: "pruned",
+      prunedAt: 9,
+      createdAt: 7,
+    },
+  ],
+}];
+
+const SCOPES = [
+  { value: "all", label: "All repositories" },
+  { value: "repo-01", label: "app (primary)" },
+];
+
+/** A coverage claim citing the retained image by its public item id. */
+const CLAIM = {
+  clientCriterionId: "claim-visual",
+  criterion: "The composer renders its caption and scope fields",
+  proofClass: "rendered_artifact",
+  repositoryScope: "repo-01",
+  links: [{ clientItemId: "item-dashboard", role: "rendered_output" }],
+} as NonNullable<WorkflowRunDetail["evidenceCoverage"]>[number]["coverage"][number];
+
+/**
+ * A readiness result with one matched criterion and one the reconciliation could not match.
+ *
+ * The matched criterion's link is also the ONE bridge the browser has between a claim's public
+ * `clientItemId` and a frozen image's row id, which is what lets a claim row carry a copy of
+ * the picture it cites.
+ */
+const READINESS = {
+  evaluatorVersion: "criterion_mapped_v1",
+  status: "gaps",
+  criteria: [
+    {
+      criterionId: "canon-visual",
+      criterion: "The composer renders its caption and scope fields",
+      material: true,
+      matchedClientCriterionId: "claim-visual",
+      authorProofClass: "rendered_artifact",
+      suggestedProofClass: "rendered_artifact",
+      links: [{
+        clientItemId: "item-dashboard",
+        evidenceId: "image-retained",
+        role: "rendered_output",
+      }],
+      gaps: [],
+      warnings: ["model_proof_class_disagreement"],
+    },
+    {
+      criterionId: "canon-e2e",
+      criterion: "A Playwright spec covers the composer end to end",
+      material: true,
+      matchedClientCriterionId: null,
+      authorProofClass: null,
+      suggestedProofClass: null,
+      links: [],
+      gaps: ["missing_coverage"],
+      warnings: [],
+    },
+  ],
+  gapCodes: ["missing_coverage"],
+  warningCodes: ["model_proof_class_disagreement"],
+  unavailableReason: null,
+} as NonNullable<WorkflowSubmission["readiness"]>;
+
+function evidenceDetail(): WorkflowRunDetail {
   const base = runningDetail();
-  const html = render({
+  return {
     ...base,
+    submissions: base.submissions.map((entry) =>
+      entry.id === "submission-2" ? { ...entry, readiness: READINESS } : entry),
+    evidenceImages: IMAGES,
+    evidenceCoverage: [{ submissionId: "submission-2", coverage: [CLAIM] }],
+  } as WorkflowRunDetail;
+}
+
+const evidencePane = (detail: WorkflowRunDetail, props: Record<string, unknown> = {}): string =>
+  render(detail, {
+    pane: "evidence",
+    evidenceScopeOptions: SCOPES,
+    onRestageImage: async () => {},
+    ...props,
+  });
+
+test("the Evidence pane merges the image ledger and the readiness result without dropping a field", () => {
+  const html = evidencePane(evidenceDetail());
+
+  // The strip's numbers come from `runRecordSummary`, so a wrong one is a failing unit case
+  // there rather than a digit nobody checked here. What this pins is that they are PRINTED.
+  assert.match(html, /Readiness<\/span><strong class="wf-run-stat-value is-alert">gaps/);
+  assert.match(html, /Author claims<\/span><strong[^>]*>1</);
+  assert.match(html, /Gaps<\/span><strong class="wf-run-stat-value is-alert">1</);
+  assert.match(html, /Warnings<\/span><strong[^>]*>1</);
+  assert.match(html, /Images<\/span><strong class="wf-run-stat-value is-ok">2</);
+
+  // The image cards: display name, the item id the record bridged, the scope in the operator's
+  // own words, the size, and who cites it - instead of a bare id a reader had to match by eye.
+  assert.match(html, /dashboard\.png/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /item-dashboard/);
+  assert.match(html, /app \(primary\)/);
+  assert.match(html, /Cited by 1 claim as rendered output/);
+  // A pruned record keeps its card, its every audit field, and says what happened to the bytes
+  // rather than rendering as a broken image.
+  assert.match(html, /Historical evidence whose body aged out/);
+  assert.match(html, /old-dashboard\.webp body pruned/);
+  assert.match(html, /class="wf-evidence-card is-pruned"/);
+  // The whole card is the control that opens the preview, and it has an accessible name.
+  assert.match(html, /aria-label="Preview dashboard\.png"/);
+  assert.match(html, /aria-label="Preview old-dashboard\.webp"/);
+
+  // The claim row, with the small copy of the picture it cites beside it. The reconciliation
+  // said `model_proof_class_disagreement`, so the row says warning rather than linked.
+  assert.match(html, /The composer renders its caption and scope fields/);
+  assert.match(html, /rendered artifact/);
+  assert.match(html, /model proof class disagreement/);
+  assert.match(html, /class="workflow-chip workflow-waiting">warning<\/span>/);
+  assert.equal((html.match(/class="wf-evidence-mini"/g) ?? []).length, 1);
+
+  // The gap block, named as what it is: a CANONICAL criterion with no author claim to sit under.
+  assert.match(html, /aria-label="Unmatched canonical criteria"/);
+  assert.match(html, /A Playwright spec covers the composer end to end/);
+  assert.match(html, /These are canonical criteria, not author claims/);
+  assert.match(html, /class="workflow-chip workflow-failed">missing coverage<\/span>/);
+
+  // The reconciliation keeps a block of its own rather than being folded into the rows.
+  assert.match(html, /Canonical reconciliation/);
+  assert.match(html, /2 criteria · criterion_mapped_v1/);
+
+  // Static rendering never fetches bodies: the authenticated route is reached lazily in view,
+  // and the preview is closed until a thumbnail is clicked.
+  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
+  assert.doesNotMatch(html, /modal-backdrop/);
+  assertNoGraphIds(html);
+});
+
+test("a submission that froze no images says so instead of drawing an empty strip", () => {
+  const base = runningDetail();
+  const html = evidencePane({
+    ...base,
+    evidenceImages: [{ submissionId: "submission-2", images: [] }],
+  } as WorkflowRunDetail);
+  assert.match(html, /No image evidence was attached to this submission/);
+  assert.match(html, /No acceptance criterion coverage was frozen for this submission/);
+  assert.doesNotMatch(html, /class="wf-evidence-strip"/);
+  // Advisory rather than structural: this fixture's version does not enforce the preflight.
+  assert.match(html, /Advisory only\. This result did not block workflow execution/);
+});
+
+/**
+ * The block, and the two controls it does and does not withdraw.
+ *
+ * A parked run is the one case the plan's "a blocking state cannot hide" is about, and the pane
+ * says `blocking` only here - not on any submission that merely has gaps. The refinement cap
+ * withdraws the button that asks for another refinement and keeps the one that records the
+ * operator's decision, because that decision is exactly what the block exists to ask for.
+ */
+test("a run parked on readiness opens the Evidence pane with its override in reach", () => {
+  const base = runningDetail();
+  const parked = (phase: string | null): WorkflowRunDetail => ({
+    ...base,
+    // No reviewer has run yet, so the worklist is clean - which is the fixture this case needs.
+    // A run with BOTH an open change and a readiness block opens on the worklist, correctly,
+    // and would prove nothing about whether the block can hide.
+    attempts: [],
+    receipts: [],
+    run: {
+      ...base.run,
+      status: phase === null ? "waiting_for_evidence_readiness" : "blocked",
+      currentPhase: phase ?? "evidence_readiness",
+    },
+    submissions: base.submissions.map((entry) =>
+      entry.id === "submission-2"
+        ? { ...entry, status: "waiting_for_evidence_readiness", readiness: READINESS }
+        : entry),
+    evidenceCoverage: [{ submissionId: "submission-2", coverage: [CLAIM] }],
+  } as WorkflowRunDetail);
+
+  // No `pane` prop: the container has to select this itself, through Phase 1's order.
+  const waiting = render(parked(null), { evidenceScopeOptions: SCOPES });
+  assert.match(
+    waiting,
+    /id="run-record-tab-evidence" aria-selected="true"[^>]*>Evidence<span class="workflow-tab-badge">1<\/span>/,
+  );
+  assert.match(waiting, /aria-label="Evidence readiness override"/);
+  assert.match(waiting, /Retry evidence preflight/);
+  assert.match(waiting, /Continue despite gaps/);
+  assert.doesNotMatch(waiting, /has spent its evidence preflight refinements/);
+
+  const exhausted = render(parked("preflight_refinement_exhausted"), {
+    evidenceScopeOptions: SCOPES,
+  });
+  assert.match(exhausted, /has spent its evidence preflight refinements/);
+  assert.doesNotMatch(exhausted, /Retry evidence preflight/);
+  assert.match(exhausted, /Continue despite gaps/);
+});
+
+
+/**
+ * The preview and the frame, rendered directly.
+ *
+ * Both are reachable through `WorkflowRunView` only from a browser: the preview needs state a
+ * click sets, and the frame's loaded and failed arms need a fetch to have resolved. So the
+ * merge criterion this phase is held to - every field the image ledger printed today is present
+ * in the preview footer - had no assertion at this layer at all, and the four frame arms were
+ * pinned only where a spec happened to produce them. Rendering the two components against their
+ * own props is what makes each arm a case rather than a coincidence.
+ */
+const PREVIEW_IMAGE: WorkflowEvidenceImage = {
+  id: "img_dd49eefd31a09e3a4dddb06dff610e12",
+  ordinal: 0,
+  displayName: "pane-alpha.png",
+  caption: "The Evidence pane strip renders a frozen thumbnail above the claims",
+  repositoryScope: "repo-01",
+  mimeType: "image/png",
+  bytes: 73,
+  sha256: "3a9dcaaec7dc4095f04276eec0610f95dd13ffb244e092b164454a95909bba33",
+  availability: "retained",
+  prunedAt: null,
+  createdAt: 12,
+};
+
+const restageControl = (over: Partial<RestageControl> = {}): RestageControl => ({
+  offered: () => true,
+  busy: new Set<string>(),
+  settled: new Set<string>(),
+  run: () => {},
+  failures: new Map<string, string>(),
+  ...over,
+});
+
+const previewMarkup = (
+  image: WorkflowEvidenceImage,
+  over: {
+    body?: FrozenImageBody;
+    clientItemId?: string | null;
+    citation?: string | null;
+    restage?: RestageControl;
+  } = {},
+): string => renderToStaticMarkup(withOverlayHost(createElement(FrozenImagePreview, {
+  image,
+  // `in`, not `??`: "no body yet" is a state of its own here, and a default that swallowed an
+  // explicit `undefined` would make the waiting arm untestable.
+  body: "body" in over ? over.body : { url: "blob:pane-alpha", error: null },
+  scopeLabel: "demo-repo (primary)",
+  clientItemId: over.clientItemId === undefined ? "item-alpha" : over.clientItemId,
+  citation: over.citation === undefined ? "Cited by 1 claim as rendered output" : over.citation,
+  restage: over.restage ?? restageControl(),
+  onClose: () => {},
+})));
+
+test("the preview footer carries every field the image ledger printed", () => {
+  const html = previewMarkup(PREVIEW_IMAGE);
+
+  // The dispatch modal's own shape, which is what the plan asked the preview to be modelled on.
+  assert.match(html, /class="modal attach-preview wf-image-preview"/);
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /aria-modal="true"/);
+  assert.match(html, /aria-label="Preview of pane-alpha\.png"/);
+  assert.match(html, /<header class="modal-head">/);
+  assert.match(html, /class="attach-preview-name">pane-alpha\.png/);
+  assert.match(html, /aria-label="Close"/);
+  // Named, not decorative: in the strip the picture sits beside a caption that reads it out,
+  // and here it IS the content of the dialog.
+  assert.match(html, /class="modal-body attach-preview-body"/);
+  assert.match(
+    html,
+    /<img class="attach-preview-image" src="blob:pane-alpha" alt="The Evidence pane strip renders a frozen thumbnail above the claims"\/>/,
+  );
+
+  // EVERY FIELD. This is the criterion the merge is held to, and each one is named rather than
+  // asserted as a substring of the whole dialog, so a footer that dropped one fails here.
+  assert.match(html, /<dt>Item<\/dt><dd><code>item-alpha<\/code><\/dd>/);
+  assert.match(html, /<dt>Evidence id<\/dt><dd><code>img_dd49eefd31a09e3a4dddb06dff610e12<\/code>/);
+  assert.match(html, /<dt>Scope<\/dt><dd>demo-repo \(primary\)<\/dd>/);
+  assert.match(html, /<dt>Type<\/dt><dd>image\/png<\/dd>/);
+  assert.match(html, /<dt>Size<\/dt><dd>73 B<\/dd>/);
+  assert.match(html, /<dt>Availability<\/dt><dd>retained<\/dd>/);
+  assert.match(html, new RegExp(`<dt>Digest</dt><dd><code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.match(html, /The Evidence pane strip renders a frozen thumbnail above the claims/);
+  assert.match(html, /Use in next review/);
+  assert.match(html, /Cited by 1 claim as rendered output\./);
+  // The footer is a `.modal-foot`, so it inherits the shell's inset rather than declaring one.
+  assert.match(html, /<footer class="modal-foot">/);
+  assert.doesNotMatch(html, /padding-inline/);
+
+  // An image the reconciliation could not bridge to a claim says so rather than printing a
+  // blank id, and offers no citation sentence at all - "cited by 0 claims" is a much stronger
+  // statement than "this build cannot tell".
+  const unbridged = previewMarkup(PREVIEW_IMAGE, { clientItemId: null, citation: null });
+  assert.match(unbridged, /<dt>Item<\/dt><dd>not resolved to a claim<\/dd>/);
+  assert.doesNotMatch(unbridged, /Cited by/);
+});
+
+test("a pruned or carried image keeps its audit record and loses only the reuse action", () => {
+  const pruned = previewMarkup(
+    { ...PREVIEW_IMAGE, availability: "pruned", prunedAt: 1_700_000_000_000 },
+    { body: undefined, restage: restageControl({ offered: () => false }) },
+  );
+  // The frame says why there is no picture; the footer says what survives pruning.
+  assert.match(pruned, /class="wf-image-pruned" role="status">Body pruned/);
+  assert.match(pruned, /Raw body pruned/);
+  assert.match(pruned, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
+  assert.match(pruned, /<dt>Availability<\/dt><dd>pruned<\/dd>/);
+  assert.match(pruned, new RegExp(`<code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.doesNotMatch(pruned, /Use in next review/);
+
+  // A carried record offers no restage of its own: the same digest is already offered by the
+  // submission that captured it, and a second button would imply this one captured it too.
+  const carried = previewMarkup(
+    {
+      ...PREVIEW_IMAGE,
+      inheritedFrom: { submissionId: "s1", round: 1, repositoryFingerprint: null },
+    },
+    { restage: restageControl({ offered: (image) => !image.inheritedFrom }) },
+  );
+  assert.match(carried, /Carried forward from round 1/);
+  assert.doesNotMatch(carried, /Use in next review/);
+
+  // Settled, which is a claim about the daemon rather than about the click.
+  const settled = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({ settled: new Set([PREVIEW_IMAGE.id]) }),
+  });
+  assert.match(settled, /Ready for next review/);
+  assert.match(settled, /disabled=""/);
+  // And in flight, which must not read as settled.
+  const busy = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({ busy: new Set([PREVIEW_IMAGE.id]) }),
+  });
+  assert.match(busy, /Use in next review/);
+  assert.match(busy, /disabled=""/);
+});
+
+test("the image frame draws one of four arms and never a broken picture", () => {
+  const frame = (
+    image: WorkflowEvidenceImage,
+    body: FrozenImageBody | undefined,
+    alt = "",
+  ): string => renderToStaticMarkup(createElement(FrozenImageFrame, {
+    image,
+    body,
+    className: "wf-image-frame",
+    alt,
+  }));
+
+  // Loaded. `alt=""` where the picture sits beside a caption that already reads it out.
+  assert.match(
+    frame(PREVIEW_IMAGE, { url: "blob:alpha", error: null }),
+    /<span class="wf-image-frame"><img src="blob:alpha" alt=""\/><\/span>/,
+  );
+  // Refused. The daemon's own reason, announced, rather than the browser's broken-image glyph -
+  // which would read as "the page is broken" beside a record whose every field is intact.
+  const failed = frame(PREVIEW_IMAGE, { url: null, error: "Image body could not be read" });
+  assert.match(failed, /class="wf-image-error" role="alert">Image body could not be read/);
+  assert.doesNotMatch(failed, /<img/);
+  // Not answered yet.
+  assert.match(frame(PREVIEW_IMAGE, undefined), /class="wf-image-loading">Loading image…/);
+  // Pruned, which is not a failure and asks the daemon for nothing.
+  const pruned = frame({ ...PREVIEW_IMAGE, availability: "pruned" }, undefined);
+  assert.match(pruned, /aria-label="pane-alpha\.png body pruned">Body pruned/);
+  assert.doesNotMatch(pruned, /<img/);
+  assert.doesNotMatch(pruned, /Loading image/);
+});
+
+/**
+ * A refused re-stage, said where the operator is standing.
+ *
+ * The button that stages retained bytes exists only in this dialog, and this dialog draws a
+ * backdrop over the pane. An explanation painted onto the pane behind it is one the operator
+ * cannot read without first closing the thing they were acting in, so the reason belongs in the
+ * footer beside the button, and the button stays pressable because the daemon refused.
+ */
+test("a refused re-stage explains itself inside the dialog that asked for it", () => {
+  const refused = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({
+      failures: new Map([[PREVIEW_IMAGE.id, "Retained bytes could not be staged"]]),
+    }),
+  });
+
+  assert.match(
+    refused,
+    /<p class="wf-run-error" role="alert">Retained bytes could not be staged<\/p>/,
+  );
+  // Inside the footer, which is inside the dialog, and before the action it explains.
+  const footer = refused.slice(refused.indexOf("<footer"));
+  assert.match(footer, /Retained bytes could not be staged/);
+  assert.ok(
+    footer.indexOf("Retained bytes could not be staged") < footer.indexOf("Use in next review"),
+    "the reason reads before the button it is about",
+  );
+  // NOT settled: "Ready for next review" is a claim about the daemon, and the daemon refused.
+  assert.match(refused, /Use in next review/);
+  assert.doesNotMatch(refused, /Ready for next review/);
+
+  // And nothing is announced when nothing failed.
+  assert.doesNotMatch(previewMarkup(PREVIEW_IMAGE), /role="alert"/);
+});
+
+/**
+ * The preview opened before its body arrived, which is the ordinary case rather than an edge.
+ *
+ * A thumbnail is clickable the moment the record renders, and the body is a second request. So
+ * the dialog opens on a record with no picture in it more often than not, and it has to be
+ * readable in that state: every audit field came with the record and is on screen already, and
+ * the space the picture will fill says which of "not yet" and "not ever" it is.
+ */
+test("the preview reads without a body, whether the body is late or refused", () => {
+  const waiting = previewMarkup(PREVIEW_IMAGE, { body: undefined });
+  assert.match(waiting, /class="wf-image-loading">Loading image…/);
+  assert.doesNotMatch(waiting, /<img class="attach-preview-image"/);
+  // The record's own fields do not wait on the body, because they never came from it.
+  assert.match(waiting, new RegExp(`<dt>Digest</dt><dd><code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.match(waiting, /<dt>Size<\/dt><dd>73 B<\/dd>/);
+  assert.match(waiting, /Use in next review/);
+
+  // Refused, which is a different sentence from "not yet" and is announced rather than drawn as
+  // the browser's broken-image glyph.
+  const refused = previewMarkup(PREVIEW_IMAGE, {
+    body: { url: null, error: "Image body could not be read" },
+  });
+  assert.match(refused, /class="wf-image-error" role="alert">Image body could not be read/);
+  assert.doesNotMatch(refused, /<img class="attach-preview-image"/);
+  assert.doesNotMatch(refused, /Loading image/);
+});
+
+/**
+ * The pane's alternate arms, each one a state a person can actually land on.
+ *
+ * A conditional has two outcomes and a suite that only ever renders one of them has tested half
+ * the code. These are the halves the common fixture never reaches: an enforcing policy, a
+ * reconciliation that came back unavailable with no reason to give, a criterion that is
+ * supporting rather than material, a claim that linked nothing, a carried image, and a pruned
+ * body whose prune time was never recorded.
+ */
+test("the Evidence pane draws the other side of each of its conditionals", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    version: { ...version, evidenceReadinessPolicy: "criterion_mapped_v1" },
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          status: "unavailable",
+          // No reason given, which is the arm the `??` fallback exists for.
+          unavailableReason: null,
+          criteria: [
+            { ...READINESS.criteria[0]!, material: false },
+            READINESS.criteria[1]!,
+          ],
+        },
+      }
+      : entry),
+    evidenceCoverage: [{
+      submissionId: "submission-2",
+      // A claim that linked nothing at all, which the row states rather than leaving blank.
+      coverage: [{ ...CLAIM, links: [] }],
+    }],
     evidenceImages: [{
       submissionId: "submission-2",
       images: [
         {
-          id: "image-retained",
-          ordinal: 0,
-          displayName: "dashboard.png",
-          caption: "Composer with caption and repository scope",
-          repositoryScope: "repo-01",
-          mimeType: "image/png",
-          bytes: 2048,
-          sha256: "a".repeat(64),
-          availability: "retained",
-          prunedAt: null,
-          createdAt: 8,
+          ...IMAGES[0]!.images[0]!,
+          inheritedFrom: { submissionId: "submission-1", round: 1, repositoryFingerprint: null },
         },
+        // Pruned, with no prune time recorded: the sentence still has to read.
+        { ...IMAGES[0]!.images[1]!, prunedAt: null },
+      ],
+    }],
+  } as WorkflowRunDetail);
+
+  // The enforcing arm of the policy sentence, not the advisory one the other cases render.
+  assert.match(html, /Structural only\. Test Evidence Auditor still judges/);
+  assert.doesNotMatch(html, /Advisory only/);
+  // An unavailable reconciliation with nothing to say still says why it is unavailable.
+  assert.match(html, /Unavailable: Context compaction did not return canonical criteria\./);
+  // Supporting rather than material.
+  assert.match(html, /<span>supporting<\/span>/);
+  // A claim with no links says so on the row.
+  assert.match(html, /no evidence linked/);
+  // A carried image names the round it came from rather than offering to stage it again.
+  assert.match(html, /from round 1/);
+});
+
+/**
+ * A gap the reconciliation recorded against a criterion it DID match to a claim.
+ *
+ * This reads as two findings if the pane is careless: the criterion is gapped, so the block of
+ * unmatched criteria would list it, and the claim it matched is gapped too, so the claim row
+ * prints it as well. The block's own sentence says these criteria have no row below to sit
+ * under, and for this one that is false. The row is the right place, because the gap is
+ * something the author's claim failed to satisfy rather than something nobody claimed.
+ */
+test("a gap against a matched criterion is stated on the claim row, not in the block", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [
+            // Matched to the author's claim AND gapped: the proof class did not satisfy it.
+            { ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] },
+            READINESS.criteria[1]!,
+          ],
+        },
+      }
+      : entry),
+  } as WorkflowRunDetail);
+
+  /*
+   * On the CLAIM ROW's own note, not merely somewhere in the document.
+   *
+   * The canonical reconciliation disclosure below renders `Gaps: missing execution` for the same
+   * criterion whether it is open or closed, so a search of the whole markup would still pass for
+   * a row that had dropped the code entirely - which is the half of this the pane has to get
+   * right. The note element is the thing a reader sees beside the claim.
+   */
+  assert.match(html, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
+  // The block names only the criterion that has no claim row at all.
+  const block = html.slice(
+    html.indexOf("Unmatched canonical criteria"),
+    html.indexOf("wf-evidence-head"),
+  );
+  assert.match(block, /A Playwright spec covers the composer end to end/);
+  assert.doesNotMatch(block, /The composer renders its caption and scope fields/);
+  assert.doesNotMatch(block, /missing execution/);
+  // The count is unchanged: the finding is real, only its place on the page is decided.
+  assert.match(html, /Gaps<\/span><strong class="wf-run-stat-value is-alert">2</);
+
+  // And when every gapped criterion is matched, the block is not drawn at all rather than
+  // drawn empty under a heading that would then describe nothing.
+  const allMatched = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [{ ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] }],
+        },
+      }
+      : entry),
+  } as WorkflowRunDetail);
+  assert.doesNotMatch(allMatched, /Unmatched canonical criteria/);
+  // And the finding is still on the row, which is the whole reason dropping the block is safe.
+  assert.match(allMatched, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
+});
+
+/**
+ * A round with no submission, where the Evidence tab is not offered at all.
+ *
+ * The pane reports on ONE submission - its claims, its frozen pictures, its reconciliation - so
+ * a round that has none has no evidence record rather than an empty one. `render` returning null
+ * is what withholds the tab, and the tab bar has to come back without it rather than with a tab
+ * that opens on nothing.
+ */
+test("a round with no submission is offered no Evidence tab", () => {
+  const html = render({ ...evidenceDetail(), submissions: [] } as WorkflowRunDetail, {
+    evidenceScopeOptions: SCOPES,
+    onRestageImage: async () => {},
+  });
+
+  assert.doesNotMatch(html, /id="run-record-tab-evidence"/);
+  assert.doesNotMatch(html, /Frozen images/);
+  // The bar itself is intact and lands the reader on a pane that does have something to say.
+  assert.match(html, /role="tablist" aria-label="Run record"/);
+  assert.match(html, /id="run-record-tab-worklist"[^>]*aria-selected="true"/);
+});
+
+/**
+ * A record no session can stage from, which is most of the history in the runs list.
+ *
+ * The re-stage action belongs to a live binding: it copies retained bytes into the composer of
+ * the session that would submit them. Opened on a run whose session is gone, every audit field
+ * still has to read, and the one control that would act on a session must not be offered.
+ */
+test("the Evidence pane drops only the re-stage action when no session can act", () => {
+  const html = evidencePane(evidenceDetail(), { onRestageImage: undefined });
+
+  // The strip's hint names the fields the dialog carries, and stops there: no control is
+  // promised that the dialog will not offer.
+  assert.match(html, /availability and SHA-256 are in that dialog\./);
+  assert.doesNotMatch(html, /Use in next review/);
+  // Everything else is intact: the strip, the cards and the claim rows are a record, not an
+  // interface to a session.
+  assert.match(html, /dashboard\.png/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /Images<\/span><strong class="wf-run-stat-value is-ok">2</);
+
+  // And with a session behind it, the same sentence names the action the dialog does offer.
+  const live = evidencePane(evidenceDetail());
+  assert.match(live, /availability and SHA-256 are in that dialog, with Use in next review\./);
+});
+
+/**
+ * The remaining alternates, each one a record the daemon can really send.
+ *
+ * A reconciliation that came back unavailable usually says why, and printing the fallback
+ * sentence over a reason it was given would hide the only useful thing in the record. A frozen
+ * image can also arrive scoped to a repository this binding no longer offers - a scope removed
+ * between rounds - and cited by nothing at all, and neither may collapse the card that carries
+ * every other audit field.
+ */
+test("the Evidence pane keeps a reason it was given, and a card no claim and no scope names", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          status: "unavailable",
+          unavailableReason: "The transcript was compacted before the criteria were read",
+        },
+      }
+      : entry),
+    evidenceImages: [{
+      submissionId: "submission-2",
+      images: [
+        ...IMAGES[0]!.images,
         {
-          id: "image-pruned",
-          ordinal: 1,
-          displayName: "old-dashboard.webp",
-          caption: "Historical evidence whose body aged out",
-          repositoryScope: "all",
-          mimeType: "image/webp",
-          bytes: 4096,
-          sha256: "b".repeat(64),
-          availability: "pruned",
-          prunedAt: 9,
-          createdAt: 7,
+          ...IMAGES[0]!.images[0]!,
+          id: "image-orphan",
+          ordinal: 2,
+          displayName: "orphan.png",
+          caption: "Frozen against a scope this binding no longer offers",
+          repositoryScope: "repo-retired",
         },
       ],
     }],
-  }, {
-    evidenceScopeOptions: [
-      { value: "all", label: "All repositories" },
-      { value: "repo-01", label: "app (primary)" },
-    ],
-    onRestageImage: async () => {},
+  } as WorkflowRunDetail);
+
+  // The daemon's own reason, not the sentence that stands in for one.
+  assert.match(html, /Unavailable: The transcript was compacted before the criteria were read/);
+  assert.doesNotMatch(html, /Context compaction did not return canonical criteria/);
+  // A scope the options no longer name prints the raw scope rather than nothing.
+  assert.match(html, /repo-retired/);
+  // And the card is whole: an image nothing cites keeps its name, caption and size, and carries
+  // neither an item id it never had nor a "cited by" line that would be a guess.
+  assert.match(html, /orphan\.png/);
+  assert.match(html, /Frozen against a scope this binding no longer offers/);
+  const orphan = html.slice(html.indexOf("orphan.png"));
+  assert.doesNotMatch(orphan.slice(0, 400), /wf-evidence-card-cite/);
+});
+
+test("a pruned image with no recorded prune time still reads", () => {
+  const image = {
+    ...PREVIEW_IMAGE,
+    availability: "pruned" as const,
+    prunedAt: null,
+  };
+  const html = previewMarkup(image, {
+    body: undefined,
+    restage: restageControl({ offered: () => false }),
   });
-  assert.match(html, /2 images frozen for this submission/);
-  assert.match(html, /Composer with caption and repository scope/);
-  assert.match(html, /app \(primary\)/);
-  assert.match(html, new RegExp("a{64}"));
-  assert.match(html, /Use in next review/);
-  assert.match(html, /Historical evidence whose body aged out/);
-  assert.match(html, /Raw body pruned/);
+  // The `prunedAt ? when(prunedAt) : "by retention policy"` fallback, which the dated case hides.
+  assert.match(html, /Raw body pruned by retention policy\./);
   assert.match(html, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
-  assert.equal((html.match(/Use in next review/g) ?? []).length, 1);
-  // Static rendering never fetches bodies: the authenticated route is reached lazily in view.
-  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
+});
+
+test("the preview says why there is no picture when the body was refused", () => {
+  // The preview's own error arm. The strip frame's is covered elsewhere; this is the dialog's,
+  // and it is what a reader sees after clicking a thumbnail whose body the route refused.
+  const html = previewMarkup(PREVIEW_IMAGE, {
+    body: { url: null, error: "Image body could not be read" },
+  });
+  assert.match(html, /class="wf-image-error" role="alert">Image body could not be read/);
+  assert.doesNotMatch(html, /class="attach-preview-image"/);
+  // Every audit field survives a refused body: the dialog is still the record.
+  assert.match(html, new RegExp(`<code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.match(html, /<dt>Availability<\/dt><dd>retained<\/dd>/);
 });
 
 /**
@@ -2963,6 +3626,9 @@ test("the run record offers its panes with the counts and the badge on their lab
     html,
     /id="run-record-tab-deliveries" aria-selected="false"[^>]*>Deliveries<span class="wf-run-tab-count">2<\/span>/,
   );
+  // The Evidence pane's count is its frozen author claims, and this fixture froze none - so the
+  // label carries no count rather than reading "Evidence 0" over a pane that has plenty to say.
+  assert.match(html, /id="run-record-tab-evidence" aria-selected="false"[^>]*>Evidence<\/button>/);
   // One captured decision on the fixture's snapshot.
   assert.match(
     html,
@@ -2974,13 +3640,13 @@ test("the run record offers its panes with the counts and the badge on their lab
     html,
     /<div class="wf-run-pane" role="tabpanel" id="run-record-pane-worklist" aria-labelledby="run-record-tab-worklist">/,
   );
-  assert.equal((html.match(/role="tab" /g) ?? []).length, 3);
+  assert.equal((html.match(/role="tab" /g) ?? []).length, 4);
   assert.equal((html.match(/role="tabpanel"/g) ?? []).length, 1);
   // A roving tabindex: one stop for the whole bar, so Tab reaches the tabs once and the arrows
   // move within them. Scoped to the bar, because the panel below has its own focusables.
   const bar = html.slice(html.indexOf('aria-label="Run record"'), html.indexOf("wf-run-pane"));
   assert.equal((bar.match(/tabindex="0"/g) ?? []).length, 1);
-  assert.equal((bar.match(/tabindex="-1"/g) ?? []).length, 2);
+  assert.equal((bar.match(/tabindex="-1"/g) ?? []).length, 3);
   // ONE pane's content exists at a time. That is where the 5,100px went: the deliveries and the
   // captured intent are a click away rather than eight screens down.
   assert.doesNotMatch(html, /RAW GOAL/);
@@ -2995,8 +3661,9 @@ test("a run that sent nothing is offered no Deliveries tab at all", () => {
   // answering a question nobody asked, and Phase 3's Completion pane depends on this rule.
   const html = render(runningDetail());
   assert.doesNotMatch(html, /run-record-tab-deliveries/);
-  assert.equal((html.match(/role="tab" /g) ?? []).length, 2);
+  assert.equal((html.match(/role="tab" /g) ?? []).length, 3);
   assert.match(html, /run-record-tab-worklist/);
+  assert.match(html, /run-record-tab-evidence/);
   assert.match(html, /run-record-tab-intent/);
 });
 

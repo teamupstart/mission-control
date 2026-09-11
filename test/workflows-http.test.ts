@@ -578,6 +578,93 @@ test("the shipped workflow duplicates through the same create boundary as the da
   assert.deepEqual(copied.workflow.bindingDefaults, source.bindingDefaults);
 });
 
+// A node's provider/model choice has to survive every boundary an author's work crosses -
+// PATCH, reload, Publish, export, and the create route Duplicate posts through - because each
+// of those is a separate parse and any one of them silently stripping an unknown key would
+// erase a decision without an error to notice.
+test("a node execution override survives save, reload, duplicate, publish and export", async () => {
+  const { request } = fixture();
+  const valid = await seedValid(request);
+  const detail = await request(`/api/workflows/${valid.workflow.id}`);
+  const loaded = (await detail.json() as { workflow: { draft: { nodes: Array<Record<string, unknown>>; edges: unknown[] } } }).workflow;
+  const routed = {
+    ...loaded.draft,
+    nodes: loaded.draft.nodes.map((node) => node.kind === "persona"
+      ? { ...node, executionOverride: { runner: "codex", model: "gpt-5.6-sol" } }
+      : node),
+  };
+
+  const patched = await request(`/api/workflows/${valid.workflow.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ expectedDraftRevision: 1, draft: routed }),
+  });
+  assert.equal(patched.status, 200, await patched.clone().text());
+  const saved = (await patched.json() as { workflow: { draft: { nodes: Array<Record<string, unknown>> } } }).workflow;
+  assert.deepEqual(
+    saved.draft.nodes.find((node) => node.kind === "persona")?.executionOverride,
+    { runner: "codex", model: "gpt-5.6-sol" },
+  );
+
+  // Reload: the route reads the stored JSON back through the same schema that wrote it.
+  const reloaded = (await (await request(`/api/workflows/${valid.workflow.id}`)).json() as {
+    workflow: { draft: { nodes: Array<Record<string, unknown>> } };
+  }).workflow;
+  assert.deepEqual(reloaded.draft.nodes, saved.draft.nodes);
+
+  // Duplicate is the ordinary create route with the current draft, exactly as the dashboard
+  // posts it. No duplicate-specific endpoint exists and none is needed.
+  const copy = await request("/api/workflows", {
+    method: "POST",
+    body: JSON.stringify({ name: "Review copy", draft: reloaded.draft }),
+  });
+  assert.equal(copy.status, 201, await copy.clone().text());
+  const copied = (await copy.json() as { workflow: { id: string; draft: { nodes: Array<Record<string, unknown>> } } }).workflow;
+  assert.deepEqual(copied.draft.nodes, reloaded.draft.nodes);
+
+  const published = await request(`/api/workflows/${valid.workflow.id}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ expectedDraftRevision: 2 }),
+  });
+  assert.ok(published.ok, await published.clone().text());
+
+  const exported = await request(`/api/workflows/${valid.workflow.id}/versions/1/export`);
+  const envelope = await exported.json() as {
+    data: { graph: { nodes: Array<Record<string, unknown>> } };
+  };
+  const node = envelope.data.graph.nodes.find((candidate) => candidate.kind === "persona")!;
+  assert.deepEqual(node.executionOverride, { runner: "codex", model: "gpt-5.6-sol" });
+  // Frozen beside the snapshot, not inside it: the Persona still recommends nothing.
+  const snapshot = node.persona as { runner: string | null; model: string | null };
+  assert.equal(snapshot.runner, null);
+  assert.equal(snapshot.model, null);
+});
+
+test("a malformed node execution override is refused by the draft route", async () => {
+  const { request } = fixture();
+  const valid = await seedValid(request);
+  const loaded = (await (await request(`/api/workflows/${valid.workflow.id}`)).json() as {
+    workflow: { draft: { nodes: Array<Record<string, unknown>>; edges: unknown[] } };
+  }).workflow;
+  const withOverride = (executionOverride: unknown) => ({
+    ...loaded.draft,
+    nodes: loaded.draft.nodes.map((node) => node.kind === "persona"
+      ? { ...node, executionOverride }
+      : node),
+  });
+  for (const bad of [
+    { runner: "codex" },
+    { model: "gpt-5.6-sol" },
+    { runner: "codex", model: "" },
+    { runner: "ollama", model: "llama-3" },
+  ]) {
+    const response = await request(`/api/workflows/${valid.workflow.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ expectedDraftRevision: 1, draft: withOverride(bad) }),
+    });
+    assert.equal(response.status, 400, `${JSON.stringify(bad)} should be refused`);
+  }
+});
+
 test("every mutating workflow route 409s on the shipped workflow and names Duplicate", async () => {
   const { request } = fixture();
   const revision = JSON.stringify({ expectedDraftRevision: 1 });

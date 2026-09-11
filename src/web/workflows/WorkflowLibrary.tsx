@@ -18,6 +18,7 @@ import {
   type WorkflowTargetPort,
   type WorkflowVersion,
 } from "@shared/workflow.ts";
+import type { LlmProviderView } from "@shared/types.ts";
 import {
   WORKFLOW_NODE_SOURCE_PORTS,
   WORKFLOW_NODE_TARGET_PORTS,
@@ -209,6 +210,7 @@ export function WorkflowStateNotice({
 export function WorkflowLibrary({
   summaries,
   personas,
+  providers = [],
   sessionActions = [],
   workflowCommands = [],
   hasSnapshot,
@@ -223,6 +225,11 @@ export function WorkflowLibrary({
 }: {
   summaries: WorkflowSummary[];
   personas: PersonaView[];
+  /**
+   * The headless LLM providers a Persona node may be routed to, from the daemon's own
+   * registry. Empty until it answers, which offers no override rather than guessing a list.
+   */
+  providers?: readonly LlmProviderView[];
   /**
    * The whole SessionAction catalog, archived rows included: it names whatever a draft
    * already points at, and the add controls narrow it to what is addressable and runnable
@@ -1212,6 +1219,7 @@ export function WorkflowLibrary({
                 key={workflow.id}
                 graph={workflow.draft}
                 personas={personas}
+                providers={providers}
                 sessionActions={sessionActions}
                 availableCompletions={capabilities.available}
                 completionPolicy={workflow.completionPolicy}
@@ -1257,6 +1265,7 @@ export function WorkflowLibrary({
             <WorkflowProperties
               workflow={workflow}
               personas={personas}
+              providers={providers}
               sessionActions={sessionActions}
               availableCompletions={capabilities.available}
               diagnostics={validation.diagnostics}

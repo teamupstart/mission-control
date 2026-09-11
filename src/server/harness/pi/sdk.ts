@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import type { SdkSendDisposition, ThinkingLevel } from "@shared/types.ts";
-import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
   SdkEvent,
@@ -40,11 +39,17 @@ import type {
 //
 // ## What it deliberately does NOT do (Phase 1)
 //
-// No Mission MCP (Pi has no MCP client), no multi-repository write grant (Pi declares
-// `multiRepoDispatch: null`, so nothing may claim one), no permission modes, and no
-// structured extension questions - Pi's `ExtensionUIContext` bridge is Phase 2. Each of
-// those is REFUSED rather than silently dropped, because a launch that quietly ignores
-// what it was handed is the card that looks dispatched and is running something else.
+// No Mission MCP (Pi has no MCP client), no multi-repository write grant, no permission
+// modes, and no structured extension questions - Pi's `ExtensionUIContext` bridge is Phase
+// 2. Each of those is REFUSED rather than silently dropped, because a launch that quietly
+// ignores what it was handed is the card that looks dispatched and is running something
+// else.
+//
+// No PULL-REQUEST PROVENANCE either, and that one is an absence rather than a refusal: this
+// driver never emits `pr_created`. Claude's and Codex's drivers do, by watching their tool
+// streams for `gh pr create`, and the same reading is available here - which is exactly why
+// the boundary is written down. Adoption attributes a pull request to a session under the
+// operator's GitHub identity, so it is a claim this phase deliberately does not make yet.
 // See `docs/plans/pi-bedrock-models/phase-1-managed-pi-bedrock-runtime.md`.
 
 /** What a card shows while Pi is between an LLM response and its next request. */
@@ -159,8 +164,6 @@ class PiSdkSession implements SdkSessionHandle {
   private activity: string | null = null;
   /** `agent_settled` count, so a delivery can tell whether ITS run produced a completion. */
   private settled = 0;
-  /** Bash-shaped commands by tool call, kept until their result can be read for a PR url. */
-  private readonly commands = new Map<string, string>();
   private modelId: string | null;
 
   constructor(
@@ -193,7 +196,6 @@ class PiSdkSession implements SdkSessionHandle {
       this.lastAssistant = null;
       this.activity = null;
       this.published = null;
-      this.commands.clear();
       this.bind(this.clearing);
       this.clearing = false;
     });
@@ -449,7 +451,6 @@ class PiSdkSession implements SdkSessionHandle {
         this.publish("working");
         return;
       case "tool_execution_start":
-        if (event.command) this.commands.set(event.toolCallId, event.command);
         this.activity = toolActivity(event.toolName, event.command);
         this.publish("working");
         return;
@@ -457,8 +458,6 @@ class PiSdkSession implements SdkSessionHandle {
         this.publish("working");
         return;
       case "tool_execution_end":
-        this.notePullRequests(event.toolCallId, event.output);
-        this.commands.delete(event.toolCallId);
         this.activity = null;
         this.publish("working");
         return;
@@ -532,19 +531,6 @@ class PiSdkSession implements SdkSessionHandle {
     this.publish(this.session.idle ? "idle" : "working");
   }
 
-  /**
-   * `gh pr create` observed on the tool stream - authorship evidence, not a url sniff.
-   *
-   * Both halves are required, exactly as they are for the other two drivers: the COMMAND
-   * says the agent opened a pull request, and the OUTPUT says which ones. Prose that quotes
-   * the command carries no url, and a `gh pr view` that prints one was never a create.
-   */
-  private notePullRequests(toolCallId: string, output: string | null): void {
-    const command = this.commands.get(toolCallId);
-    if (!command || !output || !opensPullRequest(command)) return;
-    const urls = pullRequestUrlsIn(output);
-    if (urls.length > 0) this.out.emit({ kind: "pr_created", urls });
-  }
 
   /** The provider a diagnostic should name, from the id this session is actually running. */
   private providerOfRecord(): string | null {

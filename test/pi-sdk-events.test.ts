@@ -150,7 +150,7 @@ test("a tool's whole lifecycle is one activity and one release", async () => {
     { type: "tool_execution_start", toolCallId: "t1", toolName: "bash", command: "git status" },
     { type: "tool_execution_update", toolCallId: "t1", toolName: "bash" },
     { type: "tool_execution_update", toolCallId: "t1", toolName: "bash" },
-    { type: "tool_execution_end", toolCallId: "t1", toolName: "bash", isError: false, output: "clean" },
+    { type: "tool_execution_end", toolCallId: "t1", toolName: "bash", isError: false },
   );
   assert.deepEqual(pi.since(mark), [
     { kind: "state", state: "working", activity: "bash: git status" },
@@ -225,9 +225,15 @@ test("a turn that ran nothing still retires its reservation", async () => {
   assert.equal(pi.since(mark).filter((event) => event.kind === "turn_done").length, 1);
 });
 
-// ---- pull-request provenance ---------------------------------------------------------------
+// ---- the Phase 1 boundary ----------------------------------------------------------------
 
-test("a pull request is announced only when the COMMAND and the output agree", async () => {
+test("the driver never announces a pull request, which Phase 1 excludes on purpose", async () => {
+  // Claude's and Codex's drivers watch their tool streams for `gh pr create` and emit
+  // `pr_created`, and the same reading is plainly available here - the command and its
+  // output both pass through this driver. It is deliberately not taken: adoption attributes
+  // a pull request to a session under the operator's GitHub identity, which is a claim this
+  // phase does not make. Asserted rather than left to a comment, because the next person to
+  // read the tool events will see the same opportunity.
   const pi = await running();
   const mark = pi.events.length;
   await pi.play(
@@ -237,66 +243,13 @@ test("a pull request is announced only when the COMMAND and the output agree", a
       toolName: "bash",
       command: "gh pr create --fill",
     },
-    {
-      type: "tool_execution_end",
-      toolCallId: "pr",
-      toolName: "bash",
-      isError: false,
-      output: "https://github.com/acme/demo-repo/pull/42\n",
-    },
+    { type: "tool_execution_end", toolCallId: "pr", toolName: "bash", isError: false },
   );
   assert.deepEqual(
     pi.since(mark).filter((event) => event.kind === "pr_created"),
-    [{ kind: "pr_created", urls: ["https://github.com/acme/demo-repo/pull/42"] }],
+    [],
+    "a managed Pi session must announce no pull request in Phase 1",
   );
-});
-
-test("a url with no create command, and a create command with no url, announce nothing", async () => {
-  const pi = await running();
-  const mark = pi.events.length;
-  await pi.play(
-    { type: "tool_execution_start", toolCallId: "a", toolName: "bash", command: "gh pr view 42" },
-    {
-      type: "tool_execution_end",
-      toolCallId: "a",
-      toolName: "bash",
-      isError: false,
-      output: "https://github.com/acme/demo-repo/pull/42",
-    },
-    {
-      type: "tool_execution_start",
-      toolCallId: "b",
-      toolName: "bash",
-      command: "gh pr create --fill",
-    },
-    { type: "tool_execution_end", toolCallId: "b", toolName: "bash", isError: false, output: "failed" },
-  );
-  assert.deepEqual(pi.since(mark).filter((event) => event.kind === "pr_created"), []);
-});
-
-test("one command can open a pull request per repository, and each is announced", async () => {
-  const pi = await running();
-  const mark = pi.events.length;
-  await pi.play(
-    {
-      type: "tool_execution_start",
-      toolCallId: "multi",
-      toolName: "bash",
-      command: "cd a && gh pr create --fill && cd ../b && gh pr create --fill",
-    },
-    {
-      type: "tool_execution_end",
-      toolCallId: "multi",
-      toolName: "bash",
-      isError: false,
-      output:
-        "https://github.com/acme/one/pull/7\nhttps://github.com/acme/two/pull/9\n",
-    },
-  );
-  assert.deepEqual(pi.since(mark).find((event) => event.kind === "pr_created")!.urls, [
-    "https://github.com/acme/one/pull/7",
-    "https://github.com/acme/two/pull/9",
-  ]);
 });
 
 // ---- the vendor seam -----------------------------------------------------------------------
@@ -365,21 +318,21 @@ test("a provider error is redacted at the vendor seam, before it can be stored a
   assert.equal((message ?? "").split(REDACTED).length - 1, 2);
 });
 
-test("a tool result's text is read and clipped, and a non-text result reads as nothing", () => {
-  const withText = narrowPiEvent({
+test("the vendor seam carries no tool OUTPUT, because nothing here reads one", () => {
+  // The projection used to lift a tool's text out for `gh pr create` evidence. That reader
+  // is gone with the provenance it served, so the field is gone too rather than left as an
+  // unread payload crossing the seam every tool call.
+  const end = narrowPiEvent({
     type: "tool_execution_end",
     toolCallId: "t",
     toolName: "bash",
     isError: false,
-    result: { content: [{ type: "text", text: "hello" }, { type: "image", data: "..." }] },
+    result: { content: [{ type: "text", text: "hello" }] },
   } as never);
-  assert.equal(withText?.type === "tool_execution_end" ? withText.output : null, "hello");
-  const imageOnly = narrowPiEvent({
+  assert.deepEqual(end, {
     type: "tool_execution_end",
     toolCallId: "t",
-    toolName: "read",
+    toolName: "bash",
     isError: false,
-    result: { content: [{ type: "image", data: "..." }] },
-  } as never);
-  assert.equal(imageOnly?.type === "tool_execution_end" ? imageOnly.output : "x", null);
+  });
 });

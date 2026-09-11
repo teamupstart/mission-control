@@ -73,14 +73,7 @@ export type PiSessionEvent =
   | { type: "message_end"; assistant: PiAssistantSummary | null }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; command: string | null }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string }
-  | {
-      type: "tool_execution_end";
-      toolCallId: string;
-      toolName: string;
-      isError: boolean;
-      /** Text the tool returned, already clipped. Read only for `gh pr create` evidence. */
-      output: string | null;
-    }
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; isError: boolean }
   | { type: "compaction_start"; reason: string }
   | { type: "compaction_end"; aborted: boolean; willRetry: boolean; errorMessage: string | null }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; errorMessage: string }

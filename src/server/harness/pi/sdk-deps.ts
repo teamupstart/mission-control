@@ -9,6 +9,7 @@ import type {
   AgentSession as VendorSession,
   SessionManager as VendorSessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import { PiSdkError, redact } from "./sdk-errors.ts";
@@ -50,8 +51,8 @@ type PiVendorImage = NonNullable<PromptOptions["images"]>[number];
 // stdio to script, which is why the seam has to be the module import rather than the
 // executable - and why `toolEnv` exists at all (see below).
 
-/** How much of a tool's text output is read for `gh pr create` evidence. */
-const TOOL_OUTPUT_CAP = 4096;
+/** How much of a tool's argument crosses this seam. A display bound; see `toolCommand`. */
+const TOOL_COMMAND_CAP = 4096;
 
 /**
  * Redirect the Pi SDK at another module, the way `MISSION_PI_BIN` redirects the CLI.
@@ -151,33 +152,18 @@ function vendorImage(image: { data: string; mimeType: string }): PiVendorImage {
 /**
  * A bash-shaped tool call's command line, when that is what this tool takes.
  *
- * NOT clipped, deliberately, and it is the one string here that is not. This value feeds
- * `opensPullRequest`, which reads the whole command - a `cd a && … && gh pr create` on a
- * multi-repo task runs long, and a cap that cut the `gh pr create` off the end would drop a
- * pull request the agent really opened, silently and unrecoverably. What reaches a CARD is
- * clipped separately by `toolActivity`, which is where a display bound belongs. The value
- * lives only until its own `tool_execution_end`.
+ * Bounded, because the only thing downstream of it is the card's activity line - which
+ * `toolActivity` clips to eighty characters anyway. It briefly carried the WHOLE command so
+ * that `opensPullRequest` could not miss a `gh pr create` at the end of a long chain; that
+ * reader is gone with the pull-request provenance it served (Phase 1 excludes it), and with
+ * it the reason to let an arbitrary vendor string cross this seam unbounded.
  */
 function toolCommand(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
   const command = (args as { command?: unknown }).command;
-  return typeof command === "string" ? command : null;
+  return typeof command === "string" ? command.slice(0, TOOL_COMMAND_CAP) : null;
 }
 
-/** The text a tool returned, concatenated and clipped. Images and details are dropped. */
-function toolOutput(result: unknown): string | null {
-  if (!result || typeof result !== "object") return null;
-  const content = (result as { content?: unknown }).content;
-  if (!Array.isArray(content)) return null;
-  let text = "";
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const block = part as { type?: unknown; text?: unknown };
-    if (block.type === "text" && typeof block.text === "string") text += block.text;
-    if (text.length >= TOOL_OUTPUT_CAP) break;
-  }
-  return text ? text.slice(0, TOOL_OUTPUT_CAP) : null;
-}
 
 /**
  * Project one vendor event into the closed union the adapter switches on, or drop it.
@@ -223,7 +209,6 @@ export function narrowPiEvent(event: AgentSessionEvent): PiSessionEvent | null {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         isError: event.isError,
-        output: toolOutput(event.result),
       };
     case "compaction_start":
       return { type: "compaction_start", reason: event.reason };
@@ -436,6 +421,19 @@ function openSessionManager(
   options: PiRuntimeOptions,
 ): VendorSessionManager {
   if (!options.sessionPath) return manager.create(options.cwd);
+  // Checked BEFORE the vendor is asked, because the vendor does not check: measured against
+  // 0.85.1, `SessionManager.open` on a path that does not exist returns a manager for a NEW
+  // conversation rather than throwing. Relying on the catch below would therefore have
+  // turned a session whose file vanished into a fresh conversation wearing the old Mission
+  // Control id - the note, the goal and the work episode all still pointing at it - which is
+  // the single outcome `resumeTarget` exists to prevent. The catch stays as the backstop for
+  // a file that exists and cannot be parsed.
+  if (!existsSync(options.sessionPath)) {
+    throw new PiSdkError(
+      "resume-unavailable",
+      `Pi's session file ${options.sessionPath} is gone, so there is no conversation to continue`,
+    );
+  }
   try {
     return manager.open(options.sessionPath, undefined, options.cwd);
   } catch (err) {

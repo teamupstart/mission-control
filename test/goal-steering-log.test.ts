@@ -127,10 +127,41 @@ test("revision controls ordering and cutoff even when timestamps tie; pruning pr
   }
   assert.deepEqual(readSessionGoalSteering(id, 3).map((note) => [note.revision, note.timestamp]), [[2, 100], [3, 100]]);
   assert.deepEqual(readSessionGoalSteering(id, 2).map((note) => note.revision), [2]);
-  assert.equal(pruneSessionGoalSteering([], 101), 0);
   pruneSessionGoalSteering([id], 101);
   assert.equal(readSessionGoalSteering(id, 3).length, 2);
   assert.equal(pruneSessionGoalSteering(["another-live-key"], 101), 2);
+});
+
+test("steering pruning with no live keys deletes expired rows but retains cutoff and newer rows", () => {
+  const id = "empty-key-steering-prune";
+  const registry = session(id);
+  for (const timestamp of [1, 2, 3]) {
+    registry.captureAcceptedPrompt(id, `Method at ${timestamp}`, id);
+    registry.resolveGoal(id, { relationship: "steer", resolvedPromptRevision: registry.getGoal(id)!.promptRevision,
+      pendingPrompts: [] }, `Method at ${timestamp}`, timestamp);
+  }
+  assert.equal(pruneSessionGoalSteering([], 2), 1);
+  assert.deepEqual(readSessionGoalSteering(id, 4).map((note) => note.timestamp), [2, 3]);
+  assert.equal(pruneSessionGoalSteering([], 2), 0, "repeated pruning is idempotent");
+});
+
+test("Registry prunes stranded steering after an empty session sweep, never before discovery", () => {
+  const id = "swept-steering-prune";
+  const registry = session(id);
+  registry.captureAcceptedPrompt(id, "change the sequence", id);
+  registry.resolveGoal(id, { relationship: "steer", resolvedPromptRevision: 2,
+    pendingPrompts: [] }, "change the sequence", 100);
+  const notes = readSessionGoalSteering(id, 2);
+  assert.equal(notes.length, 1);
+  registry.pruneGoals(101);
+  assert.deepEqual(readSessionGoalSteering(id, 2), notes, "an observed live session keeps its steering");
+
+  const recovered = new Registry();
+  recovered.pruneGoals(101);
+  assert.deepEqual(readSessionGoalSteering(id, 2), notes, "an unswept registry does not know liveness yet");
+  recovered.applyDiscovery([]);
+  recovered.pruneGoals(101);
+  assert.deepEqual(readSessionGoalSteering(id, 2), [], "an observed empty session set permits cleanup");
 });
 
 test("daemon echoes never reach steering, while a later human retype does", async () => {

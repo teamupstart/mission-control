@@ -10204,11 +10204,12 @@ export function isSessionGoalSteering(noteKey: string, revision: number, instruc
     .get(noteKey, revision, instruction);
 }
 
+/** The caller must have observed sessions; an empty live-key set then means none remain. */
 export function pruneSessionGoalSteering(liveKeys: Iterable<string>, olderThan: number): number {
   const keys = [...new Set(liveKeys)];
-  if (!keys.length) return 0;
+  const protectLiveKeys = keys.length ? ` AND note_key NOT IN (${keys.map(() => "?").join(",")})` : "";
   return Number(openDb().prepare(`DELETE FROM session_goal_steering
-    WHERE timestamp < ? AND note_key NOT IN (${keys.map(() => "?").join(",")})`)
+    WHERE timestamp < ?${protectLiveKeys}`)
     .run(olderThan, ...keys).changes);
 }
 

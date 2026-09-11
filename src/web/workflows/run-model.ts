@@ -31,6 +31,7 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
+import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "@shared/types.ts";
 import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
@@ -1426,11 +1427,243 @@ export interface RunRecordEvidenceSummary {
   refinementsExhausted: boolean;
 }
 
+/**
+ * One Foreman completion claim, validated off the durable event rather than cast.
+ *
+ * Derived here rather than in the view because the pane's counting sentence is the thing a
+ * reader trusts without expanding five near-identical rows: on the run this was measured
+ * against, four of the five claims were `already_claimed` restating the same completion, and
+ * "4 already claimed, 1 started" is the whole of what those five paragraphs said.
+ */
+export interface RunCompletionClaim {
+  id: number;
+  completionKind: string;
+  marker: string;
+  summary: string;
+  state: string;
+}
+
+export function runCompletionClaims(detail: WorkflowRunDetail): RunCompletionClaim[] {
+  return detail.events.flatMap((event) => {
+    if (
+      event.kind !== "workflow_completion_claimed"
+      || !event.payload
+      || Array.isArray(event.payload)
+      || typeof event.payload !== "object"
+    ) return [];
+    const { completionKind, marker, summary, state } = event.payload;
+    if (
+      typeof completionKind !== "string"
+      || typeof marker !== "string"
+      || typeof summary !== "string"
+      || typeof state !== "string"
+    ) return [];
+    return [{ id: event.id, completionKind, marker, summary, state }];
+  });
+}
+
+/**
+ * What the Completion pane is, before a finding row or a claim row is drawn.
+ *
+ * `present` is what decides whether the tab exists AT ALL, and it is the only conditional pane
+ * in the bar: a run with no Inspector gate and no Foreman completion claim has no record of how
+ * it finishes, so it is offered no tab rather than an empty one.
+ *
+ * `blocking` is NARROWER than the phase document's "the gate has not passed", and the
+ * repository is why. `summary.gate` is `none` for most of a gated run's life - the run has not
+ * reached the gate yet - so "has not passed" would raise the badge, and with it the initial
+ * selection, on every gated run from its first round. That would drag a reader off the worklist
+ * on a run that is working perfectly well, which is exactly what the registry's `blocking`
+ * contract forbids. So it means what it says everywhere else in this bar: the run is STANDING
+ * STILL and the gate is why - open findings, a failed gate summary, one of the three gate
+ * waits, or a spent gate whose reconciliation is the decision left to make.
+ */
+export interface RunRecordCompletionSummary {
+  /** The run has an Inspector gate or at least one completion claim. No tab without it. */
+  present: boolean;
+  hasGate: boolean;
+  /** The gate chip, spent-gate reconciliation included, or null when there is no gate. */
+  gate: PipelineStatus | null;
+  /**
+   * Findings counted from the ROWS the table draws, never from `inspection.openFindings`.
+   * The Inspector's own tallies are a separate fact and keep their place in the ledger
+   * disclosure; a strip that disagreed with the table under it would be the collapsed summary
+   * telling the one lie this consolidation exists to prevent.
+   */
+  findingCount: number;
+  openFindings: number;
+  resolvedFindings: number;
+  /** The adopted pull request as the strip states it, or null when none was resolved. */
+  pullRequest: { number: number | null; url: string | null; state: string | null } | null;
+  /** The Inspector's review round, or null when nothing has been adopted. */
+  inspectorRound: number | null;
+  claimCount: number;
+  /** One sentence counting the claim states, or null when no claim was recorded. */
+  claimSentence: string | null;
+  blocking: boolean;
+}
+
 export interface RunRecordSummary {
   deliveries: RunRecordDeliverySummary;
   evidence: RunRecordEvidenceSummary;
   intent: RunRecordIntentSummary;
+  completion: RunRecordCompletionSummary;
 }
+
+/**
+ * A finding's severity as a chip, on the tone mapping the finding CARD already used.
+ *
+ * The card split blocker and major (a danger edge) from minor and nit (an attention one). The
+ * table keeps exactly that split rather than inventing a four-tone scale: the severity word
+ * itself is on the chip, so the colour only has to say which half it is in.
+ */
+export function inspectorFindingSeverityStatus(severity: InspectorSeverity): PipelineStatus {
+  return severity === "blocker" || severity === "major"
+    ? { tone: "failed", label: severity }
+    : { tone: "waiting", label: severity };
+}
+
+/** A finding's status as a chip. Only `resolved` is a finished fact. */
+export function inspectorFindingStatusStatus(status: InspectorCommentStatus): PipelineStatus {
+  if (status === "resolved") return { tone: "passed", label: status };
+  return status === "posting"
+    ? { tone: "waiting", label: status }
+    : { tone: "failed", label: status };
+}
+
+/** Where a finding is, as the table prints it. `general` for a finding with no path. */
+export function inspectorFindingLocation(finding: InspectorComment): string {
+  if (!finding.path) return "general";
+  return finding.line ? `${finding.path}:${finding.line}` : finding.path;
+}
+
+/**
+ * A finding whose detail predates body persistence, said once.
+ *
+ * The card printed this sentence in place of the body; the row keeps it rather than drawing an
+ * empty panel, because "this build has no body for this row" and "this finding had nothing to
+ * say" are different claims and only one of them is true.
+ */
+export const LEGACY_FINDING_SENTENCE =
+  "Legacy finding: detail was not persisted by the GitHub Inspector version that created this row.";
+
+/**
+ * A Foreman completion claim's outcome, as a chip.
+ *
+ * The WORDS come from `completionClaimOutcome`, which is the one place this page says what a
+ * claim state means; only the tone is added here, so the chip and the sentence under the rows
+ * cannot drift into two vocabularies for one record.
+ *
+ * The state is an unvalidated string off a durable event, so this is a switch with a NEUTRAL
+ * default rather than a `Record` over a union: a state a later daemon writes must not fall
+ * through to green. `already_claimed` is amber rather than red - a second claim of one
+ * completion is the ordinary, correct answer, not a failure - and `blocked` IS red, because the
+ * run turned that claim away and the session was told it had completed anyway.
+ */
+export function completionClaimStatus(state: string): PipelineStatus {
+  const label = completionClaimOutcome(state).label;
+  switch (state) {
+    case "started":
+    case "resubmitted":
+      return { tone: "passed", label };
+    case "already_claimed":
+      return { tone: "waiting", label };
+    case "blocked":
+      return { tone: "failed", label };
+    default:
+      return { tone: "stopped", label };
+  }
+}
+
+/** What a finding's row prints as its body, legacy arm included. */
+export function inspectorFindingBody(finding: InspectorComment): string {
+  return finding.body ?? LEGACY_FINDING_SENTENCE;
+}
+
+/** The three statuses in which the run itself is halted on the gate rather than moving. */
+const GATE_WAIT_STATUSES: readonly WorkflowRunStatus[] = [
+  "waiting_for_pr",
+  "waiting_for_inspector",
+  "waiting_for_new_head",
+];
+
+/**
+ * Five claims that say the same thing, as one sentence.
+ *
+ * Ordered by count and then by first appearance rather than alphabetically, so the state that
+ * dominates the record leads the sentence - which is the fact a reader is after when a run
+ * recorded the same completion five times.
+ */
+function completionClaimSentence(claims: readonly RunCompletionClaim[]): string | null {
+  if (claims.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const claim of claims) counts.set(claim.state, (counts.get(claim.state) ?? 0) + 1);
+  const parts = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([state, count]) => `${count} ${completionClaimOutcome(state).label}`);
+  return `${claims.length} claim${claims.length === 1 ? "" : "s"} on this run: ${parts.join(", ")}.`;
+}
+
+/**
+ * What each state PRESENT on this run means, once each, in the order the sentence counts them.
+ *
+ * `completionClaimOutcome` gives every claim a sentence, and the card printed it per claim.
+ * That is the thing this pane exists to stop: on the run this was measured against four claims
+ * shared one state, so the card printed one identical sentence four times. The sentence is a
+ * fact about the STATE rather than about the claim, so it is stated once and the rows carry the
+ * chip that points at it. Nothing is dropped - every sentence a card could have shown is here.
+ */
+export function completionClaimOutcomeSentences(
+  claims: readonly RunCompletionClaim[],
+): string[] {
+  const counts = new Map<string, number>();
+  for (const claim of claims) counts.set(claim.state, (counts.get(claim.state) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .flatMap(([state]) => {
+      const outcome = completionClaimOutcome(state);
+      return outcome.sentence ? [`${outcome.label}: ${outcome.sentence}`] : [];
+    });
+}
+
+function runRecordCompletionSummary(detail: WorkflowRunDetail): RunRecordCompletionSummary {
+  const gate = detail.inspectorGate;
+  const claims = runCompletionClaims(detail);
+  const findings = gate?.findings ?? [];
+  const openFindings = findings.filter((finding) => finding.status !== "resolved").length;
+  const number = gate?.inspection?.number ?? detail.summary.gatePrNumber ?? null;
+  const blocking = Boolean(gate) && (
+    openFindings > 0
+    || detail.summary.gate === "findings"
+    || detail.summary.gate === "blocked"
+    || GATE_WAIT_STATUSES.includes(detail.run.status)
+    // A spent gate is a stopped run whose only remaining move is a decision about the gate,
+    // and the two ledgers under it are the evidence for that decision.
+    || spentInspectorGateCondition(detail) !== null
+  );
+  return {
+    present: Boolean(gate) || claims.length > 0,
+    hasGate: Boolean(gate),
+    gate: gate
+      ? spentInspectorGateStatus(detail) ?? gateSummaryStatus(detail.summary.gate)
+      : null,
+    findingCount: findings.length,
+    openFindings,
+    resolvedFindings: findings.length - openFindings,
+    pullRequest: gate && (number !== null || gate.state.prUrl)
+      ? {
+          number,
+          url: gate.state.prUrl,
+          state: gate.inspection?.observedState ?? gate.inspection?.state ?? null,
+        }
+      : null,
+    inspectorRound: gate?.inspection?.round ?? null,
+    claimCount: claims.length,
+    claimSentence: completionClaimSentence(claims),
+    blocking,
+  };
+}
+
 
 /**
  * Whether the run is standing still on THIS submission's readiness result.
@@ -1567,6 +1800,7 @@ export function runRecordSummary(
       // cannot audit, which is the thing that stops a reader dead.
       blocking: state === "corrupt" || state === "unreadable",
     },
+    completion: runRecordCompletionSummary(detail),
   };
 }
 

@@ -457,6 +457,22 @@ test("a clean current Inspector head is adopted through the audited grant evalua
   await dashboard.setViewportSize({ width: 1280, height: 1_000 });
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
   const header = dashboard.locator("header.wf-run-head");
+  /*
+   * The gate is a PANE now, and its two ledgers are inside one disclosure within it.
+   *
+   * Both regions survive with the accessible names this spec already reached them by; what
+   * changed is the route to them. A spent gate is blocking, so the container opens on
+   * Completion by itself - the tab is clicked anyway rather than relied on, because a spec
+   * about the adoption path should fail on the adoption path rather than on a selection rule
+   * that has its own coverage in `workflow-completion-pane.spec.ts`.
+   */
+  const completion = dashboard.getByRole("tab", { name: /^Completion/ });
+  await expect(completion).toBeVisible({ timeout: 40_000 });
+  await completion.click();
+  const pane = dashboard.getByRole("tabpanel", { name: /^Completion/ });
+  await pane.locator("details.wf-run-disclosure").filter({ hasText: "Gate ledgers" }).first()
+    .locator("> summary")
+    .click();
   const historical = dashboard.getByRole("region", { name: "Last workflow observation" });
   const current = dashboard.getByRole("region", { name: "Current Inspector", exact: true });
   await expect(historical).toBeVisible({ timeout: 40_000 });
@@ -475,7 +491,7 @@ test("a clean current Inspector head is adopted through the audited grant evalua
   await expect(adopt).toBeEnabled();
   await dashboard.mouse.move(0, 0);
   await shoot(header, "06-clean-head-offers-audited-adoption");
-  await shoot(dashboard.locator("section.wf-run-gate"), "07-history-and-current-ledger");
+  await shoot(pane, "07-history-and-current-ledger");
 
   await adopt.click();
   const confirm = dashboard.getByRole("dialog", { name: "Adopt the clean Inspector head" });

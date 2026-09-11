@@ -1532,10 +1532,10 @@ chip never folds its stage to **Failed**; the stage counts it with the not-run g
 
 Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
 requested changes with evidence references, and the runner, model, duration and cost that
-actually ran. GitHub Inspector gate state, Foreman completion claims and repair deliveries are the
-same card with a different accent. Durable failures read as sentences - "The write may or may
-not have landed" - with the machine code kept beside them for a bug report, never instead of
-them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
+actually ran. GitHub Inspector gate state, Foreman completion claims and repair deliveries are
+ledgers rather than cards, each in its own tab of the run record. Durable failures read as
+sentences - "The write may or may not have landed" - with the machine code kept beside them for
+a bug report, never instead of them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
 the complete durable JSON records sit beside it under **Audit and bug reports**, collapsed,
 because they answer a bug report rather than a reader.
 
@@ -1572,8 +1572,10 @@ is the same unexplained click the grant used to produce.
   It replays the snapshot already taken, so it names the images frozen into it.
 
 When there is no move, the header says so **in a sentence** and names where the decision
-actually lives: "Confirm or discard it in Deliveries below", "they are listed under GitHub Inspector
-final gate below". A control that cannot run is never left standing in place of an explanation.
+actually lives: "Confirm or discard it in the run record's Deliveries tab", "they are listed in
+the run record's Completion tab". It names a tab rather than a direction, because the records it
+points at are offered rather than stacked. A control that cannot run is never left standing in
+place of an explanation.
 That covers the states nothing argument-free revives - the bound session is gone, the run is
 externally sourced - and the states blocked on a judgement the page carries the material for
 further down.
@@ -2024,6 +2026,27 @@ push after pinning requires a fresh full submission. A stale ledger timestamp or
 alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
 GitHub Inspector observation must first prove which head is current.
 
+**The gate reads in the run record's Completion tab**, which is present only on a run that has
+an Inspector gate or a Foreman completion claim - most runs have neither and are offered no such
+tab. A stat strip carries the gate state, the open and resolved finding counts, the adopted pull
+request with its observed state, and the Inspector's review round; the counts are the ledger rows
+the table under them draws, not the Inspector's own tallies, which keep their own fields in the
+ledger disclosure. Findings are a table - severity, title, `path:line`, round and status - with
+one row each. A finding that is not resolved is why the gate has not passed, so its body is on
+screen rather than behind its row's control; a resolved one opens its body and the fingerprint the
+gate tracks it by on request. The label carries the open-finding count in amber. Findings never
+appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
+so this is the one place they are listed. The findings policy, the missing-PR policy and
+**Open GitHub Inspector settings** sit at the foot of the same tab.
+
+Foreman completion claims share that tab, one row each: the outcome chip, the completion kind,
+the once-only guard and the claim summary's first line, with the whole summary as the row's
+accessible description. A sentence under them counts the outcomes, so a run that recorded the
+same completion five times reads as "5 claims on this run: 4 already counted, 1 started the run"
+rather than as five near-identical paragraphs. Each outcome's own sentence - what a claim in that
+state did, or why it was refused - is stated **once** under that count rather than repeated on
+every row sharing it.
+
 Once the matching head is pinned, the durable GitHub Inspector ledger decides the state:
 
 - A pending, failed, or backed-off review remains waiting and shows its current posture and retry.
@@ -2032,12 +2055,13 @@ Once the matching head is pinned, the durable GitHub Inspector ledger decides th
 - A completed current-head review with zero findings completes the workflow.
 - Closing or switching the PR blocks instead of accepting old approval.
 
-When an Inspector-only run has already spent its repair budget, run detail keeps two records
-visible. **Last workflow observation** is the immutable reason that run stopped: its failed
-head, observed head, wait reason, observation time, and historical finding fingerprints.
+When an Inspector-only run has already spent its repair budget, the gate keeps two records.
+**Last workflow observation** is the immutable reason that run stopped: its failed head,
+observed head, wait reason, observation time, and historical finding fingerprints.
 **Current Inspector** is the mutable ledger the Inspector owns now: its open pull-request
 state, observed and reviewed heads, review posture, current mode, finding tallies, backoff, and
-error. Resolving a finding or reviewing a later head updates only the second record; it never
+error. Both sit inside the Completion tab's **Gate ledgers** disclosure, which is also where a
+live gate's own nine facts read. Resolving a finding or reviewing a later head updates only the second record; it never
 rewrites the failed observation into a historical pass.
 
 A clean current record is actionable only when the pull request is open, the observed and

@@ -410,12 +410,12 @@ test("the run record is one tab bar, and a blocking pane opens itself", async ({
   await expect(tab(dashboard, /^Review worklist/)).toHaveAttribute("aria-selected", "true");
   await expect(dashboard.getByRole("region", { name: "Review worklist" })).toBeVisible();
 
-  // And a name this build does not offer lands on a real pane rather than an empty container:
+  // A spelling this build does not know lands on a real pane rather than an empty container:
   // the selection falls through to the initial order, which puts the reader back on the pane
   // holding the refused packet. The router drops the unknown value from the address bar the
   // same way it already drops an unknown `status`, through `replaceState` - so no history
   // entry is spent and the back button still works, which is the constraint that matters.
-  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=completion`);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=verdicts`);
   await expect(bar).toBeVisible();
   await expect(tab(dashboard, /^Deliveries 3$/)).toHaveAttribute("aria-selected", "true");
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}$`));
@@ -423,6 +423,20 @@ test("the run record is one tab bar, and a blocking pane opens itself", async ({
   await expect(dashboard).toHaveURL(new RegExp(`#/runs/${runId}\\?pane=worklist$`));
   await expect(tab(dashboard, /^Review worklist/)).toHaveAttribute("aria-selected", "true");
   await dashboard.goForward();
+
+  /*
+   * And a KNOWN pane this RUN does not offer: `completion` is a real spelling, so the router
+   * keeps it, but this run has no Inspector gate and no Foreman completion claim, so the tab
+   * does not exist. The container ignores it for selection and falls through to the blocking
+   * pane rather than drawing an empty panel - which is the case Phase 3 is what makes reachable
+   * at all, and the reason the selection rule guards presence rather than trusting the hash.
+   */
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=completion`);
+  await expect(bar).toBeVisible();
+  await expect(tab(dashboard, /^Completion/)).toHaveCount(0);
+  await expect(tab(dashboard, /^Deliveries 3$/)).toHaveAttribute("aria-selected", "true");
+  await expect(dashboard.getByRole("tabpanel", { name: /^Deliveries/ })).toBeVisible();
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}?pane=deliveries`);
 
   // EVERY ACTION STILL REACHES ITS ROUTE from its new home, confirm dialog included. This is
   // the one thing the ledger rewrite was not allowed to cost, so it is driven all the way to
@@ -466,6 +480,8 @@ test("a run with nothing blocking opens on the worklist, and offers no empty tab
   // missing tab.
   await expect(bar.getByRole("tab")).toHaveCount(3);
   await expect(tab(dashboard, /^Deliveries/)).toHaveCount(0);
+  // Completion is the one CONDITIONAL pane, and this run has neither a gate nor a claim.
+  await expect(tab(dashboard, /^Completion/)).toHaveCount(0);
   await expect(tab(dashboard, /^Evidence$/)).toBeVisible();
   // No count on a clean worklist either: this label answers "is anything still being asked
   // for", and a bare `0` on it reads as "no reviewers".

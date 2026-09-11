@@ -76,8 +76,20 @@ export function isLibrarySurface(value: string): value is LibrarySurface {
  * rather than being carried into the hash - the same rule an unknown run status and an unknown
  * Command slot already take, and for the same reason: a parameter naming a surface that does
  * not exist is a link to nowhere.
+ *
+ * `completion` is the first id here that names a CONDITIONAL pane: a run with no Inspector gate
+ * and no Foreman completion claim does not offer it. Being in this list is what makes the
+ * spelling durable, not what makes the tab exist - the container decides that, and a link
+ * naming it against a run that has neither is ignored for selection and falls through to the
+ * blocking-or-worklist order rather than selecting a tab that is not in the bar.
  */
-export const RUN_RECORD_PANES = ["worklist", "deliveries", "evidence", "intent"] as const;
+export const RUN_RECORD_PANES = [
+  "worklist",
+  "deliveries",
+  "evidence",
+  "intent",
+  "completion",
+] as const;
 export type RunRecordPane = (typeof RUN_RECORD_PANES)[number];
 
 export function isRunRecordPane(value: string): value is RunRecordPane {

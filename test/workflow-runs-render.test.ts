@@ -442,6 +442,23 @@ const headerOf = (html: string): string => {
   return html.slice(0, end);
 };
 
+/**
+ * The OPEN pane alone, for a claim about where something now lives.
+ *
+ * The Timeline draws every durable event, so "the Foreman claim left the deliveries surface"
+ * cannot be asserted against the whole markup: the claim's own event line is still down there
+ * and always was. Scoping to the tab panel is what makes the move provable rather than
+ * approximate, the same call `headerOf` makes about the action rows.
+ */
+const paneOf = (html: string): string => {
+  const start = html.indexOf('<div class="wf-run-pane" role="tabpanel"');
+  assert.notEqual(start, -1, "the run view rendered no run-record pane");
+  // The model calls section is the next sibling of the tab container, so it bounds the pane
+  // without this having to balance nested divs.
+  const end = html.indexOf("Workflow-owned model calls", start);
+  return html.slice(start, end === -1 ? undefined : end);
+};
+
 /** Every identity the published graph carries. None of them may reach the screen. */
 const GRAPH_IDS = [...Object.values(NODE), ...Object.values(EDGE)];
 
@@ -1545,7 +1562,7 @@ test("a blocked run out of repair rounds offers the grant in the header", () => 
  *
  * An uncertain delivery has two mutually exclusive resolutions and choosing between them needs
  * the operator's eyes on the session's pane. So the header does not hoist a fake primary; it
- * names the section that owns the choice, which is the same closing move `runRemedy` makes for
+ * names the tab that owns the choice, which is the same closing move `runRemedy` makes for
  * the triage row.
  */
 test("a run blocked on a delivery decision points at the section that owns it", () => {
@@ -1557,7 +1574,7 @@ test("a run blocked on a delivery decision points at the section that owns it", 
   });
   const header = headerOf(html);
   assert.match(header, /<b>A repair packet may or may not have reached the session\.<\/b>/);
-  assert.match(header, /Confirm or discard it in Deliveries below/);
+  assert.match(header, /Confirm or discard it in the run record.{0,8}s Deliveries tab/);
   assert.doesNotMatch(header, /btn-primary/);
   assert.match(header, /Cancel run/);
 });
@@ -1567,7 +1584,7 @@ test("a run blocked on a delivery decision points at the section that owns it", 
  *
  * `inspector_disabled` is the state that tempts a "Turn Inspector on" primary. Inspector
  * settings open through a callback prop, so a POST descriptor could not express one - and the
- * gate section below already renders the button. If somebody reintroduces it as a primary, this
+ * Completion pane already renders the button. If somebody reintroduces it as a primary, this
  * fails.
  */
 test("an Inspector-disabled block has no primary and names the gate section instead", () => {
@@ -1579,7 +1596,10 @@ test("an Inspector-disabled block has no primary and names the gate section inst
   });
   const header = headerOf(html);
   assert.match(header, /<b>GitHub Inspector is switched off, so the gate cannot be evaluated\.<\/b>/);
-  assert.match(header, /Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below/);
+  assert.match(
+    header,
+    /Turn it back on from Open GitHub Inspector settings, in the run record.{0,8}s Completion tab/,
+  );
   assert.doesNotMatch(header, /btn-primary/);
   assert.doesNotMatch(header, /Turn Inspector on/);
 });
@@ -1641,7 +1661,7 @@ test("a finished run whose binding was orphaned explains itself instead", () => 
 
 test("a live delivery keeps every recovery control and says what each state means", () => {
   const base = runningDetail();
-  const html = render({
+  const detail = {
     ...base,
     binding: { ...base.binding, deliveryMode: "live" },
     deliveries: [
@@ -1689,7 +1709,8 @@ test("a live delivery keeps every recovery control and says what each state mean
         state: "resubmitted",
       },
     }],
-  } as WorkflowRunDetail, { pane: "deliveries" });
+  } as WorkflowRunDetail;
+  const html = render(detail, { pane: "deliveries" });
   // The tab reports without being opened: two blocking packets, in amber. This fixture's
   // worklist is blocking too and wins the initial selection - it is the primary object, and a
   // run with both an open change and a refused packet must not bury the change - so the pane
@@ -1714,9 +1735,24 @@ test("a live delivery keeps every recovery control and says what each state mean
   // and the control that opens it is on every row.
   assert.doesNotMatch(html, /EXACT REPAIR PACKET/);
   assert.match(html, /Show packet/);
-  assert.match(html, /drain completion/);
-  assert.match(html, /Foreman proved the queue complete/);
   assertNoGraphIds(html);
+
+  // The Foreman claim on this same run is a Completion row, not a Deliveries one. Both panes
+  // are asserted from one detail so the split is visible rather than implied: the claim left
+  // the deliveries surface entirely, and it is intact on the pane that owns it.
+  assert.doesNotMatch(paneOf(html), /Foreman proved the queue complete/);
+  const completion = paneOf(render(detail, { pane: "completion" }));
+  assert.match(completion, /Foreman completion claims/);
+  assert.match(completion, /Foreman proved the queue complete/);
+  assert.match(completion, /once-only guard/);
+  // The chip, the counting sentence and the state's own sentence all say the SAME words,
+  // because all three read them from `completionClaimOutcome`.
+  assert.match(completion, /<span class="workflow-chip workflow-passed">opened the next round<\/span>/);
+  assert.match(completion, /1 claim on this run: 1 opened the next round\./);
+  assert.match(
+    completion,
+    /opened the next round: This claim opened the next repair round against freshly captured evidence\./,
+  );
 });
 
 test("an orphaned binding refuses the send-side recoveries instead of failing at the daemon", () => {
@@ -1877,7 +1913,7 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
     status: "completed" as const,
     completedAt: 8,
   };
-  const html = render({
+  const gated = {
     ...base,
     summary: {
       ...base.summary,
@@ -1959,18 +1995,40 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
         updatedAt: 9,
       }],
     },
-  } as WorkflowRunDetail);
-  assert.match(html, /GitHub Inspector final gate/);
-  assert.match(html, /GitHub Inspector left findings that have to be resolved/);
-  assert.match(html, /#91/);
-  assert.match(html, /legacy import/);
-  assert.match(html, /Target head/);
-  assert.match(html, /Observed head/);
-  assert.match(html, /Reviewed head/);
-  assert.match(html, /inspector only/);
-  assert.match(html, /offer prepare pr/);
-  assert.match(html, /Preserve provenance/);
-  assert.match(html, /Legacy finding: detail was not persisted/);
+  } as WorkflowRunDetail;
+  // The gate is a PANE now, so the tab is named rather than relied on: this run's Completion
+  // pane blocks on an open finding, which is exactly the initial selection the container makes,
+  // but a test that depends on that is testing the selector rather than the gate.
+  const html = render(gated, { pane: "completion" });
+  const pane = paneOf(html);
+  // The gate's own heading is gone with the section; the tab carries the name, and it carries
+  // the one open finding as an amber badge without anybody opening it.
+  assert.match(
+    html,
+    /id="run-record-tab-completion"[^>]*>Completion<span class="workflow-tab-badge">1<\/span>/,
+  );
+  assert.doesNotMatch(html, /<h4>GitHub Inspector final gate<\/h4>/);
+  assert.match(pane, /GitHub Inspector left findings that have to be resolved/);
+  assert.match(pane, /#91/);
+  assert.match(pane, /legacy import/);
+  assert.match(pane, /Target head/);
+  assert.match(pane, /Observed head/);
+  assert.match(pane, /Reviewed head/);
+  assert.match(pane, /inspector only/);
+  assert.match(pane, /offer prepare pr/);
+  // The findings TABLE: one row carrying severity, title, path:line, round and status, in
+  // place of the card that carried the same five facts over 200px.
+  assert.match(pane, /<th>Severity<\/th><th>Finding<\/th><th>Where<\/th><th>Round<\/th><th>Status<\/th>/);
+  assert.match(pane, /wf-run-finding-row is-major/);
+  assert.match(pane, /<span class="workflow-chip workflow-failed">major<\/span>/);
+  assert.match(pane, /<td>Preserve provenance<\/td>/);
+  assert.match(pane, /<code>src\/gate\.ts:42<\/code>/);
+  assert.match(pane, /<span class="workflow-chip workflow-failed">open<\/span>/);
+  // The LEGACY arm, and it is not behind the row's disclosure: an unresolved finding is why
+  // the gate has not passed, so its body sits open exactly as a refused packet's does.
+  assert.match(pane, /Legacy finding: detail was not persisted/);
+  assert.match(pane, /wf-run-ledger-alert/);
+  assert.match(pane, /Show finding/);
   assert.match(html, /Persona review bypassed for GitHub Inspector repair/);
   assert.match(html, /moved from oldhead01234 to newhead01234/);
   // The gate's recheck IS this run's next move, so it is the header's primary and wears the
@@ -1989,10 +2047,17 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
    * than on two empty panes. "This Inspector repair round ran no Personas" is scoped to
    * `Passed`, where it is true; it was never true of the agenda, which is exactly why it may
    * not describe the whole section.
+   *
+   * Read from ITS OWN pane, because a finding is not a worklist row and never was:
+   * `runChangeWorklist` is built from Persona verdicts only, so the two lists answer different
+   * questions and only one of them is drawn at a time.
    */
-  assert.match(html, /Blocking 0/);
-  assert.match(html, /Archive 1/);
-  assert.match(html, /Resolved in round 2/);
+  const worklist = paneOf(render(gated, { pane: "worklist" }));
+  assert.match(worklist, /Blocking 0/);
+  assert.match(worklist, /Archive 1/);
+  assert.match(worklist, /Resolved in round 2/);
+  // And the finding stayed out of it, which is the whole reason the Completion pane exists.
+  assert.doesNotMatch(worklist, /Preserve provenance/);
   // A stage this round did not run reads NEUTRAL, never green: the chip speaks for the round
   // on screen, where nothing executed. The pass it is carrying is claimed by the provenance
   // line instead, which names the round that earned it and links straight to the proof.
@@ -2001,6 +2066,92 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.ok(tooltipLabels(html).includes(carriedStatus("Round 2").tooltip!));
   assert.match(html, /Passed in Round 2\. Show that round\./);
   assertNoGraphIds(html);
+});
+
+/**
+ * What the page IS, after three phases of consolidation, in order.
+ *
+ * This is the one claim no other test makes and the one a reader actually experiences: below
+ * the round scrubber the run detail page is the scrubber, the notice band, the session actions
+ * section, the tab container, the workflow-owned model calls and the Timeline - and nothing
+ * else. Seven stacked sections became one bar with five panes, so the failure this guards
+ * against is a later change quietly reintroducing a sibling section instead of extending the
+ * registry.
+ *
+ * Asserted as INDICES rather than as a list of strings that all happen to be present: "the
+ * Timeline is somewhere in the markup" was already true when the gate sat between it and the
+ * tabs, and it is precisely the between-ness that changed.
+ */
+test("below the round scrubber the page is the scrubber, the bands, the tabs, the calls and the Timeline", () => {
+  const base = runningDetail();
+  const action = attempt(
+    "session-action",
+    base.submissions[1]!.id,
+    NODE.quality,
+    snapshot("p-action", "Pull Request"),
+    {
+      persona: null,
+      sessionAction: {
+        sourceSessionActionId: "action-1",
+        sourceRevision: 1,
+        name: "Pull Request",
+        description: "",
+        promptMarkdown: "# Pull Request\n\nOpen one.\n",
+        requiredSkillId: "pull-request",
+        completion: { kind: "pull_request" },
+      },
+    },
+  );
+  const html = render({
+    ...base,
+    attempts: [...base.attempts, action],
+    events: [...base.events, {
+      id: 11,
+      runId: "run",
+      timestamp: 11,
+      kind: "workflow_completion_claimed",
+      payload: {
+        completionKind: "prompted",
+        marker: "abcdef0123456789",
+        summary: "Foreman claimed this run finished.",
+        state: "started",
+      },
+    }],
+  } as WorkflowRunDetail);
+
+  const at = (needle: string): number => {
+    const index = html.indexOf(needle);
+    assert.notEqual(index, -1, `the run view rendered nothing matching ${needle}`);
+    return index;
+  };
+  const order = [
+    at('<section class="wf-run-rounds" aria-label="Rounds">'),
+    at("<h4>Session actions</h4>"),
+    at('class="wf-run-section wf-run-record"'),
+    at("<h4>Workflow-owned model calls</h4>"),
+    at("<h4>Timeline</h4>"),
+  ];
+  assert.deepEqual(
+    [...order].sort((left, right) => left - right),
+    order,
+    "the sections below the round scrubber are out of order",
+  );
+
+  /*
+   * And the two sections this phase folded in are GONE rather than duplicated. Both records
+   * are still on the page - the run has a completion claim, and the tab bar offers Completion
+   * for it - but neither has a section of its own any more.
+   */
+  assert.doesNotMatch(html, /<h4>GitHub Inspector final gate<\/h4>/);
+  assert.doesNotMatch(html, /<h4>Foreman completion claim<\/h4>/);
+  assert.match(html, /id="run-record-tab-completion"[^>]*>Completion</);
+  // Nothing between the tab container and the model calls, which is what "the page below the
+  // scrubber is exactly these" means: the whole span is one `</section>` closing the tabs.
+  const tabs = at('class="wf-run-section wf-run-record"');
+  const calls = at("<h4>Workflow-owned model calls</h4>");
+  const between = html.slice(html.lastIndexOf("</section>", calls), calls);
+  assert.doesNotMatch(between, /<h4>/, "a section reappeared between the run record and the model calls");
+  assert.ok(tabs < calls);
 });
 
 test("a spent gate separates its historical observation from a clean current Inspector ledger", () => {
@@ -2013,7 +2164,7 @@ test("a spent gate separates its historical observation from a clean current Ins
     status: "completed",
     completedAt: 8,
   });
-  const html = render({
+  const spent = {
     ...base,
     summary: {
       ...base.summary,
@@ -2088,18 +2239,40 @@ test("a spent gate separates its historical observation from a clean current Ins
         updatedAt: 9,
       }],
     },
-  } as WorkflowRunDetail);
+  } as WorkflowRunDetail;
+  const html = render(spent, { pane: "completion" });
+  const pane = paneOf(html);
 
-  assert.match(html, /Last workflow observation/);
-  assert.match(html, /Current Inspector/);
-  assert.match(html, /Failed head/);
-  assert.match(html, /failedhead01/);
-  assert.match(html, /cleanhead012/);
-  assert.match(html, /Historical workflow finding/);
-  assert.match(html, /Historical findings<\/dt><dd>1/);
-  assert.match(html, /Open findings<\/dt><dd>0/);
-  assert.match(html, /Resolved findings<\/dt><dd>1/);
-  assert.match(html, /Clean head ready/);
+  // Both ledgers survive the consolidation INSIDE ONE DISCLOSURE, under the accessible names
+  // the specs already reach them by. A `<details>` renders its body either way, so a markup
+  // test sees the sixteen facts whether or not a person has opened it - which is exactly the
+  // claim worth pinning here: the disclosure moved them, it did not drop them.
+  assert.match(pane, /<details class="wf-run-disclosure">/);
+  assert.match(pane, /last workflow observation and current Inspector, 16 facts/);
+  assert.match(pane, /aria-label="Last workflow observation"/);
+  assert.match(pane, /aria-label="Current Inspector"/);
+  assert.match(pane, /Last workflow observation/);
+  assert.match(pane, /Current Inspector/);
+  assert.match(pane, /Failed head/);
+  assert.match(pane, /failedhead01/);
+  assert.match(pane, /cleanhead012/);
+  assert.match(pane, /aria-label="Historical finding fingerprints"/);
+  assert.match(pane, /Historical workflow finding/);
+  assert.match(pane, /Historical findings<\/dt><dd>1/);
+  assert.match(pane, /Open findings<\/dt><dd>0/);
+  assert.match(pane, /Resolved findings<\/dt><dd>1/);
+  // The strip states the SAME numbers the table under it draws, counted from the rows rather
+  // than from the Inspector's own tallies - a strip that disagreed with its table is the one
+  // lie a collapsed summary exists to prevent. The Inspector's tallies keep their own two
+  // fields in the ledger above.
+  assert.match(pane, /<span class="wf-run-stat-key">Open findings<\/span><strong class="wf-run-stat-value">0<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Resolved<\/span><strong class="wf-run-stat-value is-ok">1<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Inspector round<\/span><strong class="wf-run-stat-value">5<\/strong>/);
+  assert.match(pane, /#91 open/);
+  // A resolved finding's body IS behind its disclosure: nothing about it stops the run.
+  assert.doesNotMatch(pane, /This was the finding that stopped the workflow/);
+  assert.doesNotMatch(pane, /wf-run-ledger-alert/);
+  assert.match(pane, /Clean head ready/);
   assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Adopt clean Inspector head</);
   assert.doesNotMatch(html, /Recheck GitHub Inspector/);
 });

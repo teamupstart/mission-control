@@ -20,6 +20,7 @@ import type {
   WorkflowEvidenceReadinessResult,
   WorkflowLlmCallPage,
   WorkflowUploadEvidenceLocator,
+  WorkflowVersion,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_LIMITS,
@@ -60,6 +61,8 @@ import {
 import type {
   ChangeWorklistRow,
   ChangeWorklistState,
+  RunCompletionClaim,
+  RunRecordCompletionSummary,
   RunRecordDeliverySummary,
   RunRecordEvidenceSummary,
   RunRecordIntentSummary,
@@ -74,6 +77,8 @@ import {
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
+  completionClaimOutcomeSentences,
+  completionClaimStatus,
   continuationSourceAttempt,
   disabledStatusFor,
   endStatus,
@@ -89,10 +94,13 @@ import {
   humanDecisionSummary,
   humanDecisionsSummary,
   initialRunRecordPane,
-  gateSummaryStatus,
   gateWaitSentence,
   inheritedAttempts,
   inheritedPasses,
+  inspectorFindingBody,
+  inspectorFindingLocation,
+  inspectorFindingSeverityStatus,
+  inspectorFindingStatusStatus,
   inspectorGateSentence,
   inspectorFooterStatus,
   latestAttemptsFor,
@@ -107,6 +115,7 @@ import {
   reviewerAttempts,
   reviewerStatus,
   runChangeWorklist,
+  runCompletionClaims,
   runGrantNotice,
   runParkedSentence,
   evidenceChipLabel,
@@ -115,7 +124,6 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
-  completionClaimOutcome,
   runEvidenceCitations,
   runIsParked,
   runRefusedCompletionSentence,
@@ -2901,6 +2909,324 @@ function IntentPane({
   );
 }
 
+/**
+ * How this run finishes: the GitHub Inspector final gate and the Foreman completion claim.
+ *
+ * Two sections became one pane, and both had the same shape of problem as the other three - a
+ * small amount of decisive information wrapped in a large amount of chrome. The gate was a
+ * status sentence, two fact ledgers of sixteen fields between them, a findings-policy line, a
+ * settings button and one CARD per finding; on the run in the mockups that was ten cards across
+ * eight Inspector rounds. The claims were one card each, and four of that run's five were
+ * `already_claimed` restating the same completion - five near-identical paragraphs saying what
+ * one counting sentence says.
+ *
+ * Nothing here re-decides the gate. The Inspector's adoption, its posture, its retry schedule
+ * and its completion policy are untouched; every fact those two ledgers carried is still drawn,
+ * inside one disclosure, under the accessible names the specs already reach them by.
+ *
+ * Findings stay OUT of the Review worklist deliberately. `runChangeWorklist` is built from
+ * Persona attempt verdicts only - it skips an attempt with no persona - so an Inspector finding
+ * has never appeared there, and folding it in would change what that list means and what its
+ * segment counts count. This pane is the one place they appear.
+ */
+function CompletionPane({
+  detail,
+  summary,
+  claims,
+  version,
+  onOpenInspectorSettings,
+}: {
+  detail: WorkflowRunDetail;
+  summary: RunRecordCompletionSummary;
+  claims: readonly RunCompletionClaim[];
+  version: WorkflowVersion | null;
+  onOpenInspectorSettings: () => void;
+}): React.JSX.Element {
+  const [openFinding, setOpenFinding] = useState<string | null>(null);
+  const gate = detail.inspectorGate;
+  const spentGateCondition = spentInspectorGateCondition(detail);
+  return (
+    <>
+      {gate && summary.gate && (
+        <div className="wf-run-strip">
+          <RunStat
+            label="Gate"
+            value={summary.gate.label}
+            tone={summary.gate.tone === "passed" ? "ok" : summary.gate.tone === "failed" ? "alert" : null}
+          />
+          <RunStat
+            label="Open findings"
+            value={summary.openFindings}
+            tone={summary.openFindings > 0 ? "alert" : null}
+          />
+          <RunStat
+            label="Resolved"
+            value={summary.resolvedFindings}
+            tone={summary.resolvedFindings > 0 ? "ok" : null}
+          />
+          <RunStat
+            label="Pull request"
+            value={summary.pullRequest === null
+              ? "not resolved"
+              : `${summary.pullRequest.number === null ? "adopted" : `#${summary.pullRequest.number}`}${
+                summary.pullRequest.state ? ` ${summary.pullRequest.state.toLowerCase()}` : ""}`}
+          />
+          <RunStat
+            label="Inspector round"
+            value={summary.inspectorRound ?? "not adopted"}
+          />
+        </div>
+      )}
+      {gate && (
+        <>
+          <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
+          <h5 className="wf-run-subhead">Findings</h5>
+          {gate.findings.length === 0 ? (
+            <p className="wf-run-empty">No findings are recorded for this adopted pull request.</p>
+          ) : (
+            <div className="wf-run-table wf-run-ledger">
+              <table>
+                <caption className="sr-only">
+                  {spentGateCondition
+                    ? "Current Inspector findings"
+                    : "GitHub Inspector findings on the adopted pull request"}
+                </caption>
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>Finding</th>
+                    <th>Where</th>
+                    <th>Round</th>
+                    <th>Status</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gate.findings.map((finding) => {
+                    const severity = inspectorFindingSeverityStatus(finding.severity);
+                    const status = inspectorFindingStatusStatus(finding.status);
+                    const open = openFinding === finding.id;
+                    // An UNRESOLVED finding is why the gate has not passed, so its body is
+                    // never behind a disclosure - the same rule the delivery ledger applies to
+                    // a refused packet, and for the same reason: a reader should not have to go
+                    // looking for the thing that stopped the run.
+                    const unresolved = finding.status !== "resolved";
+                    return (
+                      <Fragment key={finding.id}>
+                        <tr className={`wf-run-ledger-row wf-run-finding-row is-${finding.severity}`}>
+                          <td>
+                            <span className={`workflow-chip workflow-${severity.tone}`}>
+                              {severity.label}
+                            </span>
+                          </td>
+                          <td>{finding.title}</td>
+                          <td><code>{inspectorFindingLocation(finding)}</code></td>
+                          <td>{finding.round}</td>
+                          <td>
+                            <span className={`workflow-chip workflow-${status.tone}`}>
+                              {status.label}
+                            </span>
+                          </td>
+                          <td>
+                            <Tooltip label={open
+                              ? "Hide this finding's fingerprint and its timestamps"
+                              : "Show the fingerprint the gate tracks this finding by, and when it moved"}>
+                              <button
+                                className="btn btn-ghost wf-run-ledger-toggle"
+                                aria-expanded={open}
+                                aria-controls={`wf-run-finding-${finding.id}`}
+                                onClick={() => setOpenFinding(open ? null : finding.id)}
+                              >
+                                {open ? "Hide finding" : "Show finding"}
+                              </button>
+                            </Tooltip>
+                          </td>
+                        </tr>
+                        {unresolved && (
+                          <tr className="wf-run-ledger-alert">
+                            <td colSpan={6}>
+                              <p className="wf-run-sentence">{inspectorFindingBody(finding)}</p>
+                            </td>
+                          </tr>
+                        )}
+                        {open && (
+                          <tr className="wf-run-ledger-detail" id={`wf-run-finding-${finding.id}`}>
+                            <td colSpan={6}>
+                              {/* A resolved finding's body opens here; an unresolved one is
+                                  already printed above rather than twice. */}
+                              {!unresolved && <p>{inspectorFindingBody(finding)}</p>}
+                              <dl className="wf-run-facts-list">
+                                <div><dt>Fingerprint</dt><dd><code>{finding.fingerprint}</code></dd></div>
+                                <div><dt>Recorded</dt><dd>{when(finding.createdAt)}</dd></div>
+                                <div><dt>Last change</dt><dd>{when(finding.updatedAt)}</dd></div>
+                              </dl>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="wf-run-meta">
+            Findings are not in the Review worklist - that list is built from Persona verdicts
+            only - so this is the one place they appear.
+          </p>
+        </>
+      )}
+      {claims.length > 0 && (
+        <>
+          <h5 className="wf-run-subhead">Foreman completion claims</h5>
+          <div className="wf-run-rowlist" role="list" aria-label="Foreman completion claims">
+            {claims.map((claim) => (
+              <div className="wf-run-rowlist-row" role="listitem" key={claim.id}>
+                <div className="wf-run-rowlist-body">
+                  {/*
+                    * The FIRST LINE on the row, the WHOLE summary in the tooltip - and the
+                    * tooltip is what keeps this from being a field dropped. `Tooltip` renders
+                    * its label into a hidden node the row points `aria-describedby` at, so the
+                    * paragraph is in the document and in the accessible tree whether or not
+                    * anyone hovers. Five claims restating one completion differ in their first
+                    * sentence and nowhere else, which is what makes the first line the right
+                    * thing to print.
+                    */}
+                  <Tooltip label={claim.summary}>
+                    <span className="wf-run-rowlist-title">{firstLineOf(claim.summary)}</span>
+                  </Tooltip>
+                  <span className="wf-run-rowlist-facts">
+                    {claim.completionKind}
+                    {" · once-only guard "}
+                    <code>{claim.marker.slice(0, 12)}</code>
+                  </span>
+                </div>
+                <span className={`workflow-chip workflow-${completionClaimStatus(claim.state).tone}`}>
+                  {completionClaimStatus(claim.state).label}
+                </span>
+              </div>
+            ))}
+          </div>
+          {summary.claimSentence && <p className="wf-run-meta">{summary.claimSentence}</p>}
+          {/* One sentence per STATE present, not per claim. `completionClaimOutcome` gives
+              every claim a sentence and the card printed it on each one, so four claims sharing
+              a state printed one identical sentence four times. It is a fact about the state,
+              so it is said once and the chips point at it. */}
+          {completionClaimOutcomeSentences(claims).map((sentence) => (
+            <p className="wf-run-meta" key={sentence}>{sentence}</p>
+          ))}
+        </>
+      )}
+      {gate && (
+        <RunDisclosure
+          title="Gate ledgers"
+          meta={spentGateCondition
+            ? "last workflow observation and current Inspector, 16 facts"
+            : "the adopted pull request and its review, 9 facts"}
+          tooltip="Show every fact the final gate records about the pull request and the Inspector that reviewed it"
+        >
+          {spentGateCondition ? (
+            <div className="wf-run-gate-ledgers">
+              <section className="wf-run-gate-ledger is-history" aria-label="Last workflow observation">
+                <h5>Last workflow observation</h5>
+                <dl className="wf-run-facts-list">
+                  <div>
+                    <dt>Pull request</dt>
+                    <dd>
+                      {gate.state.prUrl ? (
+                        <Tooltip label="Open the adopted pull request on GitHub">
+                          <a href={gate.state.prUrl} target="_blank" rel="noreferrer">
+                            #{gate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
+                          </a>
+                        </Tooltip>
+                      ) : "not resolved"}
+                    </dd>
+                  </div>
+                  <div><dt>Failed head</dt><dd><code>{shortSha(gate.state.failedHeadSha ?? gate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
+                  <div><dt>Observed head</dt><dd><code>{shortSha(gate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
+                  <div><dt>Stopped on</dt><dd>{gateWaitSentence(gate.state.waitReason)}</dd></div>
+                  <div><dt>Observed</dt><dd>{gate.state.lastObservedAt ? when(gate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
+                  <div><dt>Historical findings</dt><dd>{gate.state.findingFingerprints.length}</dd></div>
+                </dl>
+                {gate.state.findingFingerprints.length > 0 && (
+                  <ul className="wf-run-gate-fingerprints" aria-label="Historical finding fingerprints">
+                    {gate.state.findingFingerprints.map((fingerprint) => {
+                      const finding = gate.findings.find((row) => row.fingerprint === fingerprint);
+                      return (
+                        <li key={fingerprint}>
+                          <span>{finding?.title ?? "Finding not present in current ledger"}</span>
+                          <code>{fingerprint}</code>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+              <section className="wf-run-gate-ledger is-current" aria-label="Current Inspector">
+                <h5>Current Inspector</h5>
+                <dl className="wf-run-facts-list">
+                  <div><dt>Adopted provenance</dt><dd>{gate.inspection?.source === "hook" ? "hook" : gate.inspection?.source === "pipeline" ? "pipeline" : gate.inspection ? "legacy import" : "not adopted"}</dd></div>
+                  <div><dt>Current posture</dt><dd>{gate.inspector.enabled ? gate.inspector.mode : "disabled"} · {gate.inspector.posture ?? "unknown posture"}</dd></div>
+                  <div><dt>Review posture</dt><dd>{gate.inspection?.reviewPosture ?? "not reviewed"}</dd></div>
+                  <div><dt>Review round</dt><dd>{gate.inspection?.round ?? 0}</dd></div>
+                  <div><dt>Observed head</dt><dd><code>{shortSha(gate.inspection?.observedHeadSha) ?? "not observed"}</code></dd></div>
+                  <div><dt>Reviewed head</dt><dd><code>{shortSha(gate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
+                  <div><dt>Pull request state</dt><dd>{gate.inspection?.observedState ?? "not observed"}</dd></div>
+                  <div><dt>Open findings</dt><dd>{gate.inspection?.openFindings ?? "unknown"}</dd></div>
+                  <div><dt>Resolved findings</dt><dd>{gate.inspection?.resolvedFindings ?? "unknown"}</dd></div>
+                  <div><dt>Backoff</dt><dd>{gate.inspection?.nextAttemptAt ? when(gate.inspection.nextAttemptAt) : "none"}</dd></div>
+                </dl>
+                <ErrorLine raw={gate.inspection?.lastError} alert />
+              </section>
+            </div>
+          ) : (
+            <>
+              <dl className="wf-run-facts-list">
+                <div>
+                  <dt>Pull request</dt>
+                  <dd>
+                    {gate.state.prUrl ? (
+                      <Tooltip label="Open the adopted pull request on GitHub">
+                        <a href={gate.state.prUrl} target="_blank" rel="noreferrer">
+                          #{gate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
+                        </a>
+                      </Tooltip>
+                    ) : "not resolved"}
+                  </dd>
+                </div>
+                <div><dt>Adopted provenance</dt><dd>{gate.inspection?.source === "hook" ? "hook" : gate.inspection?.source === "pipeline" ? "pipeline" : gate.inspection ? "legacy import" : "not adopted"}</dd></div>
+                <div><dt>GitHub Inspector</dt><dd>{gate.inspector.enabled ? gate.inspector.mode : "disabled"} · {gate.inspector.posture ?? "unknown posture"}</dd></div>
+                <div><dt>Review round</dt><dd>{gate.inspection?.round ?? 0}</dd></div>
+                <div><dt>Target head</dt><dd><code>{shortSha(gate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
+                <div><dt>Observed head</dt><dd><code>{shortSha(gate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
+                <div><dt>Reviewed head</dt><dd><code>{shortSha(gate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
+                <div><dt>Observed</dt><dd>{gate.state.lastObservedAt ? when(gate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
+                <div><dt>Backoff</dt><dd>{gate.inspection?.nextAttemptAt ? when(gate.inspection.nextAttemptAt) : "none"}</dd></div>
+              </dl>
+              <ErrorLine raw={gate.inspection?.lastError} alert />
+            </>
+          )}
+        </RunDisclosure>
+      )}
+      {gate && (
+        <>
+          <p className="wf-run-meta">
+            Findings policy: <strong>{version?.completionPolicy.kind === "inspector"
+              ? version.completionPolicy.onFindings.replaceAll("_", " ")
+              : "none"}</strong>
+            {" · "}Missing PR: <strong>{version?.completionPolicy.kind === "inspector"
+              ? version.completionPolicy.missingPrAction.replaceAll("_", " ")
+              : "wait"}</strong>
+          </p>
+          <Tooltip label="Open GitHub Inspector settings to review its enablement, mode, and allowlist">
+            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open GitHub Inspector settings</button>
+          </Tooltip>
+        </>
+      )}
+    </>
+  );
+}
+
 export function WorkflowRunView({
   detail,
   roundId = null,
@@ -3106,7 +3432,6 @@ export function WorkflowRunView({
     ? detail.evidenceCoverage?.find((group) => group.submissionId === viewed.id)?.coverage ?? []
     : [];
   const inspectorGate = detail.inspectorGate;
-  const spentGateCondition = spentInspectorGateCondition(detail);
   const spentGateStatus = spentInspectorGateStatus(detail);
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
   // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
@@ -3150,22 +3475,7 @@ export function WorkflowRunView({
   const inheritedOutcomes = inheritedAttempts(detail, viewed);
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
-  const completionClaims = detail.events.flatMap((event) => {
-    if (
-      event.kind !== "workflow_completion_claimed"
-      || !event.payload
-      || Array.isArray(event.payload)
-      || typeof event.payload !== "object"
-    ) return [];
-    const { completionKind, marker, summary, state } = event.payload;
-    if (
-      typeof completionKind !== "string"
-      || typeof marker !== "string"
-      || typeof summary !== "string"
-      || typeof state !== "string"
-    ) return [];
-    return [{ id: event.id, completionKind, marker, summary, state }];
-  });
+  const completionClaims = runCompletionClaims(detail);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
   /**
    * The one thing to do about this run, and the sentence for when there is nothing.
@@ -3682,9 +3992,8 @@ export function WorkflowRunView({
         * from a stack of cards into a ledger.
         *
         * The bar is `.workflow-tabs`, which the Runs page already ships; nothing here is a
-        * second tab family. Image evidence, Evidence readiness, the Inspector gate and the
-        * Foreman completion claim are still their own sections below this container and are
-        * unchanged - two later phases move them in.
+        * second tab family. Below this container the page is now only the workflow-owned model
+        * calls and the Timeline, both deliberately unchanged.
         */}
       <RunRecordTabs
         routePane={pane}
@@ -3840,152 +4149,36 @@ export function WorkflowRunView({
               />
             ),
           },
+          {
+            id: "completion",
+            label: "Completion",
+            hint: "The GitHub Inspector final gate, and what Foreman claimed about finishing",
+            /*
+             * OPEN FINDINGS, withheld at zero - not the claim count, and not the finding count.
+             *
+             * This pane answers "did this run finish", and an open finding is the only countable
+             * thing that answers "no". The claims are the wrong number to print: on the run this
+             * was measured against five of them restated ONE completion, so "Completion 5" would
+             * report a single finish five times. A blocking pane with nothing to count still
+             * earns its badge - the container prints `!` for exactly that.
+             */
+            count: record.completion.openFindings > 0 ? record.completion.openFindings : null,
+            blocking: record.completion.blocking,
+            // The ONE conditional pane in the bar. A run with no Inspector gate and no Foreman
+            // claim has no record of how it finishes, so it is offered no tab rather than an
+            // empty one - which is Phase 1's null-render rule rather than a flag of its own.
+            render: () => !record.completion.present ? null : (
+              <CompletionPane
+                detail={detail}
+                summary={record.completion}
+                claims={completionClaims}
+                version={version}
+                onOpenInspectorSettings={onOpenInspectorSettings}
+              />
+            ),
+          },
         ]}
       />
-
-      {inspectorGate && (
-        <section className={`wf-run-section wf-run-gate is-${detail.summary.gate}`}>
-          <header className="wf-run-section-head">
-            <h4>GitHub Inspector final gate</h4>
-            <span className={`workflow-chip workflow-${(spentGateStatus ?? gateSummaryStatus(detail.summary.gate)).tone}`}>
-              {(spentGateStatus ?? gateSummaryStatus(detail.summary.gate)).label}
-            </span>
-          </header>
-          <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
-          {spentGateCondition ? (
-            <div className="wf-run-gate-ledgers">
-              <section className="wf-run-gate-ledger is-history" aria-label="Last workflow observation">
-                <h5>Last workflow observation</h5>
-                <dl className="wf-run-facts-list">
-                  <div>
-                    <dt>Pull request</dt>
-                    <dd>
-                      {inspectorGate.state.prUrl ? (
-                        <Tooltip label="Open the adopted pull request on GitHub">
-                          <a href={inspectorGate.state.prUrl} target="_blank" rel="noreferrer">
-                            #{inspectorGate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
-                          </a>
-                        </Tooltip>
-                      ) : "not resolved"}
-                    </dd>
-                  </div>
-                  <div><dt>Failed head</dt><dd><code>{shortSha(inspectorGate.state.failedHeadSha ?? inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
-                  <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
-                  <div><dt>Stopped on</dt><dd>{gateWaitSentence(inspectorGate.state.waitReason)}</dd></div>
-                  <div><dt>Observed</dt><dd>{inspectorGate.state.lastObservedAt ? when(inspectorGate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
-                  <div><dt>Historical findings</dt><dd>{inspectorGate.state.findingFingerprints.length}</dd></div>
-                </dl>
-                {inspectorGate.state.findingFingerprints.length > 0 && (
-                  <ul className="wf-run-gate-fingerprints" aria-label="Historical finding fingerprints">
-                    {inspectorGate.state.findingFingerprints.map((fingerprint) => {
-                      const finding = inspectorGate.findings.find((row) => row.fingerprint === fingerprint);
-                      return (
-                        <li key={fingerprint}>
-                          <span>{finding?.title ?? "Finding not present in current ledger"}</span>
-                          <code>{fingerprint}</code>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-              <section className="wf-run-gate-ledger is-current" aria-label="Current Inspector">
-                <h5>Current Inspector</h5>
-                <dl className="wf-run-facts-list">
-                  <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection?.source === "pipeline" ? "pipeline" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
-                  <div><dt>Current posture</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
-                  <div><dt>Review posture</dt><dd>{inspectorGate.inspection?.reviewPosture ?? "not reviewed"}</dd></div>
-                  <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
-                  <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.inspection?.observedHeadSha) ?? "not observed"}</code></dd></div>
-                  <div><dt>Reviewed head</dt><dd><code>{shortSha(inspectorGate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
-                  <div><dt>Pull request state</dt><dd>{inspectorGate.inspection?.observedState ?? "not observed"}</dd></div>
-                  <div><dt>Open findings</dt><dd>{inspectorGate.inspection?.openFindings ?? "unknown"}</dd></div>
-                  <div><dt>Resolved findings</dt><dd>{inspectorGate.inspection?.resolvedFindings ?? "unknown"}</dd></div>
-                  <div><dt>Backoff</dt><dd>{inspectorGate.inspection?.nextAttemptAt ? when(inspectorGate.inspection.nextAttemptAt) : "none"}</dd></div>
-                </dl>
-                <ErrorLine raw={inspectorGate.inspection?.lastError} alert />
-              </section>
-            </div>
-          ) : (
-            <>
-              <dl className="wf-run-facts-list">
-                <div>
-                  <dt>Pull request</dt>
-                  <dd>
-                    {inspectorGate.state.prUrl ? (
-                      <Tooltip label="Open the adopted pull request on GitHub">
-                        <a href={inspectorGate.state.prUrl} target="_blank" rel="noreferrer">
-                          #{inspectorGate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
-                        </a>
-                      </Tooltip>
-                    ) : "not resolved"}
-                  </dd>
-                </div>
-                <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection?.source === "pipeline" ? "pipeline" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
-                <div><dt>GitHub Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
-                <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
-                <div><dt>Target head</dt><dd><code>{shortSha(inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
-                <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
-                <div><dt>Reviewed head</dt><dd><code>{shortSha(inspectorGate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
-                <div><dt>Observed</dt><dd>{inspectorGate.state.lastObservedAt ? when(inspectorGate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
-                <div><dt>Backoff</dt><dd>{inspectorGate.inspection?.nextAttemptAt ? when(inspectorGate.inspection.nextAttemptAt) : "none"}</dd></div>
-              </dl>
-              <ErrorLine raw={inspectorGate.inspection?.lastError} alert />
-            </>
-          )}
-          <p className="wf-run-meta">
-            Findings policy: <strong>{version?.completionPolicy.kind === "inspector"
-              ? version.completionPolicy.onFindings.replaceAll("_", " ")
-              : "none"}</strong>
-            {" · "}Missing PR: <strong>{version?.completionPolicy.kind === "inspector"
-              ? version.completionPolicy.missingPrAction.replaceAll("_", " ")
-              : "wait"}</strong>
-          </p>
-          <Tooltip label="Open GitHub Inspector settings to review its enablement, mode, and allowlist">
-            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open GitHub Inspector settings</button>
-          </Tooltip>
-          <div className="wf-run-findings" aria-label={spentGateCondition ? "Current Inspector findings" : undefined}>
-            {inspectorGate.findings.length === 0 ? (
-              <p className="wf-run-empty">No findings are recorded for this adopted pull request.</p>
-            ) : inspectorGate.findings.map((finding) => (
-              <article key={finding.id} className={`wf-run-card wf-run-finding is-${finding.severity}`}>
-                <header className="wf-run-card-head">
-                  <strong>{finding.severity} · {finding.title}</strong>
-                  <span>{finding.status}</span>
-                </header>
-                <code>{finding.path ?? "general"}{finding.line ? `:${finding.line}` : ""}</code>
-                <p>{finding.body ?? "Legacy finding: detail was not persisted by the GitHub Inspector version that created this row."}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {completionClaims.length > 0 && (
-        <section className="wf-run-section">
-          <h4>Foreman completion claim</h4>
-          <div className="wf-run-cards">
-            {completionClaims.map((claim) => {
-              // What the claim DID. The head used to print `blocked`, which on this page
-              // already means the run stopped rather than that the claim was turned away.
-              const outcome = completionClaimOutcome(claim.state);
-              return (
-                <article className="wf-run-card" key={claim.id}>
-                  <header className="wf-run-card-head">
-                    <strong>{claim.completionKind} completion</strong>
-                    <span>{outcome.label}</span>
-                  </header>
-                  <p>{claim.summary}</p>
-                  {outcome.sentence && <p className="wf-run-meta">{outcome.sentence}</p>}
-                  <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-
 
       <section className="wf-run-section">
         <header className="wf-run-section-head">

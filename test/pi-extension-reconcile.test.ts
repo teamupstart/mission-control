@@ -353,12 +353,13 @@ test("real operator paths stay unchanged through a scratch symlink and dot-dot s
   }) : null;
   const before = snapshot();
   const alias = join(home, "real-pi-alias");
-  symlinkSync(join(homedir(), ".pi"), alias, "dir");
+  // Alias an existing ancestor: fresh CI homes have no .pi directory yet.
+  symlinkSync(homedir(), alias, "dir");
   // Inert even if the guard regresses: an absent desired build prevents every write.
   // Never exercise destructive off/teardown against real data; the fake-home test does.
   process.env.MISSION_PI_EXTENSION = join(home, "not-built.js");
   try {
-    for (const path of [real, real + "/../extensions", join(alias, "agent", "extensions")]) {
+    for (const path of [real, real + "/../extensions", join(alias, ...spec.homeDir)]) {
       process.env.PI_EXTENSIONS_DIR = path;
       assert.throws(() => reconcileExtensionLink(true), /refusing to reconcile/);
       assert.deepEqual(snapshot(), before);

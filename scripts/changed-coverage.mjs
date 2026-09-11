@@ -23,7 +23,7 @@ import { Session } from "node:inspector/promises";
 import { run } from "node:test";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { TraceMap, allGeneratedPositionsFor } from "@jridgewell/trace-mapping";
 import ts from "typescript";
@@ -41,6 +41,19 @@ const testFiles = rest.slice(1).filter((a) => a.startsWith("test/"));
 const targets = rest.slice(1).filter((a) => !a.startsWith("test/"));
 
 /**
+ * The source map entry for one target file, matched on its repository-relative PATH.
+ *
+ * By path and not by basename, which is the difference between measuring this file and measuring
+ * one that happens to share its name. `src/web/workflows/run-model.ts` and a `run-model.ts`
+ * anywhere else both end with the same basename, and a bundle carries hundreds of sources - the
+ * first `endsWith` hit is not the file that was asked for, and nothing downstream can tell.
+ * Returns null rather than guessing, so the caller reports the file as unmeasurable.
+ */
+function sourceEntryFor(tracer, file) {
+  return tracer.sources.find((src) => src && (src === file || src.endsWith(`/${file}`))) ?? null;
+}
+
+/**
  * Lines a BROWSER executed, mapped back through the built bundle's source map.
  *
  * A JSX event handler and a dependency-injection adapter run nowhere else, so a node-only
@@ -51,8 +64,19 @@ const targets = rest.slice(1).filter((a) => !a.startsWith("test/"));
  */
 async function browserCovered(dir, targetFiles) {
   const { readdirSync, existsSync } = await import("node:fs");
-  const covered = new Map(targetFiles.map((f) => [f, new Set()]));
-  if (!dir || !existsSync(dir)) return covered;
+  // Keyed by unit, valued by whether the browser RAN it. A unit the browser measured and did not
+  // run is `false`, which is a different answer from absent: absent means this half could not
+  // see it at all, and only absent may be dropped from the denominator.
+  const covered = new Map(targetFiles.map((f) => [f, new Map()]));
+  if (!dir) return covered;
+  // Told to read a directory and finding none is a mistake, not an absence. Returning empty here
+  // would measure the node half alone and print it against the same floor.
+  if (!existsSync(dir)) {
+    throw new Error(
+      `--browser ${dir} does not exist. Run the Playwright specs with MC_COVERAGE=1 and`
+      + ` MC_COVERAGE_DIR set to that path first.`,
+    );
+  }
   const bundles = new Map();
   const missingMaps = new Set();
   for (const name of readdirSync(dir)) {
@@ -107,9 +131,8 @@ async function browserCovered(dir, targetFiles) {
       return best === null ? null : best.count;
     };
     for (const file of targetFiles) {
-      const suffix = file.split("/").pop();
-      const sourceName = bundle.tracer.sources.find((src) => src && src.endsWith(suffix));
-      if (!sourceName) continue;
+      const sourceName = sourceEntryFor(bundle.tracer, file);
+      if (sourceName === null) continue;
       // The highest count across candidate mappings: a position can map to several places in a
       // bundle, and the construct ran if any of them did.
       const count = (pos) => {
@@ -128,17 +151,24 @@ async function browserCovered(dir, targetFiles) {
         return best;
       };
       const changed = changedLines(file);
+      const answers = covered.get(file);
       for (const unit of executableUnits(file)) {
         if (!changed.has(unit.at.line)) continue;
-        if (resolveUnit(unit, count) === true) covered.get(file).add(unit.key);
+        const answer = resolveUnit(unit, count);
+        if (answer === null) continue;
+        // Several bundles can each carry the file; running in any one of them is running.
+        answers.set(unit.key, answers.get(unit.key) === true || answer);
       }
     }
   }
-  if (bundles.size === 0 && missingMaps.size > 0) {
+  // ANY missing map, not only all of them: one asset without a map silently drops whatever the
+  // browser ran inside it, and the run would still print a number computed from the rest.
+  if (missingMaps.size > 0) {
     throw new Error(
       `The browser coverage in ${dir} names ${[...missingMaps].join(", ")}, and dist/web/assets`
-      + ` holds no source map for any of them. Rebuild with \`npx vite build --sourcemap\` before`
-      + ` measuring, or the browser half is dropped and the number is wrong.`,
+      + ` holds no source map for ${missingMaps.size === 1 ? "it" : "them"}. Rebuild with`
+      + ` \`npx vite build --sourcemap\` before measuring, or the browser half is dropped and`
+      + ` the number is wrong.`,
     );
   }
   return covered;
@@ -297,25 +327,58 @@ for (const file of targets) {
   const url = pathToFileURL(file).href;
   const entry = result.find((e) => e.url === url);
   const scriptId = scripts.get(url);
-  if (!entry || !scriptId) {
-    rows.push(`${file}\n  never loaded by these tests`);
-    continue;
-  }
-  const { scriptSource } = await session.post("Debugger.getScriptSource", { scriptId });
-  const mapComment = /\/\/# sourceMappingURL=data:application\/json[^,]*,([A-Za-z0-9+/=]+)/
-    .exec(scriptSource);
-  if (!mapComment) {
-    rows.push(`${file}\n  the compiled text carries no inline source map`);
-    continue;
-  }
-  const tracer = new TraceMap(JSON.parse(Buffer.from(mapComment[1], "base64").toString("utf8")));
-  const lineStarts = [0];
-  for (let i = 0; i < scriptSource.length; i++) {
-    if (scriptSource[i] === "\n") lineStarts.push(i + 1);
-  }
+  const browserNodes = fromBrowser.get(file) ?? new Map();
   const changed = changedLines(file);
-  const sourceName = tracer.sources.find((s) => s && s.endsWith(fileURLToPath(url).split("/").pop()))
-    ?? tracer.sources[0];
+  /*
+   * The node half, or nothing - and nothing is survivable.
+   *
+   * A file the in-process tests never loaded is not unmeasured: the browser may have run all of
+   * it, which is the whole reason the browser half exists. So this resolves to a counting
+   * function when node can measure the file and to null when it cannot, and the merge below
+   * reads whichever halves answered rather than giving up on the first that did not.
+   */
+  const nodeCount = await (async () => {
+    if (!entry || !scriptId) return { count: null, why: "the in-process tests never loaded it" };
+    const { scriptSource } = await session.post("Debugger.getScriptSource", { scriptId });
+    const mapComment = /\/\/# sourceMappingURL=data:application\/json[^,]*,([A-Za-z0-9+/=]+)/
+      .exec(scriptSource);
+    if (!mapComment) {
+      return { count: null, why: "the compiled text carries no inline source map" };
+    }
+    const tracer = new TraceMap(JSON.parse(Buffer.from(mapComment[1], "base64").toString("utf8")));
+    // No `?? sources[0]` fallback: the first source in a loader's map is whatever it happened to
+    // compile, and measuring it while printing this file's name is worse than measuring nothing.
+    const sourceName = sourceEntryFor(tracer, file);
+    if (sourceName === null) {
+      return { count: null, why: "its source map names no entry for this path" };
+    }
+    const lineStarts = [0];
+    for (let i = 0; i < scriptSource.length; i++) {
+      if (scriptSource[i] === "\n") lineStarts.push(i + 1);
+    }
+    return {
+      why: null,
+      count: (pos) => {
+        const generated = allGeneratedPositionsFor(tracer, {
+          source: sourceName,
+          line: pos.line,
+          column: pos.column,
+        });
+        let best = null;
+        for (const g of generated) {
+          if (g.line === null) continue;
+          const seen = countAt(entry, (lineStarts[g.line - 1] ?? 0) + g.column);
+          if (seen === null) continue;
+          best = best === null ? seen : Math.max(best, seen);
+        }
+        return best;
+      },
+    };
+  })();
+  if (nodeCount.count === null && browserNodes.size === 0) {
+    rows.push(`${file}\n  not measurable: ${nodeCount.why}, and no browser run covers it`);
+    continue;
+  }
   /*
    * KEYED BY NODE, never by line.
    *
@@ -326,31 +389,22 @@ for (const file of targets) {
    * that never ran cannot hide behind a sibling that did.
    */
   const perNode = new Map();
-  const browserNodes = fromBrowser.get(file) ?? new Set();
-  const count = (pos) => {
-    const generated = allGeneratedPositionsFor(tracer, {
-      source: sourceName,
-      line: pos.line,
-      column: pos.column,
-    });
-    let best = null;
-    for (const g of generated) {
-      if (g.line === null) continue;
-      const seen = countAt(entry, (lineStarts[g.line - 1] ?? 0) + g.column);
-      if (seen === null) continue;
-      best = best === null ? seen : Math.max(best, seen);
-    }
-    return best;
-  };
   for (const unit of executableUnits(file)) {
     if (!changed.has(unit.at.line)) continue;
     const key = unit.key;
-    const covered = resolveUnit(unit, count);
-    if (covered === null) continue;
-    // Merged, not replaced: a node either half saw run is exercised by the test suite, which is
-    // the question. The two halves reach different code by construction - one renders the
-    // module, the other clicks it.
-    perNode.set(key, covered || browserNodes.has(key));
+    const fromNode = nodeCount.count === null ? null : resolveUnit(unit, nodeCount.count);
+    const ranInBrowser = browserNodes.get(key);
+    /*
+     * Merged, not replaced, and consulted before anything is dropped.
+     *
+     * A unit either half saw run is exercised by the test suite, which is the question; the two
+     * halves reach different code by construction, one rendering the module and the other
+     * clicking it. Only a unit NEITHER half could resolve leaves the denominator - an earlier
+     * revision skipped on the node half's `null` alone, which deleted every JSX handler the
+     * browser proved from both the numerator and the denominator.
+     */
+    if (fromNode === null && ranInBrowser === undefined) continue;
+    perNode.set(key, fromNode === true || ranInBrowser === true);
   }
   const covered = [...perNode.values()].filter(Boolean).length;
   total += perNode.size;

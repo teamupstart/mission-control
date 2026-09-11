@@ -536,13 +536,29 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient.",
   );
   await expect(readiness).toContainText("The dashboard result is visually correct");
-  // A canonical criterion the reconciliation could not satisfy is named in a block of its own,
-  // and it says which of the two lists it belongs to: a gap belongs to a canonical criterion,
-  // which on another submission may have no author claim at all to sit a row under.
-  const gaps = readiness.getByRole("region", { name: "Unmatched canonical criteria" });
-  await expect(gaps).toBeVisible();
-  await expect(gaps).toContainText("These are canonical criteria, not author claims");
-  await expect(gaps).toContainText("missing rendered output");
+  /*
+   * The gap is reported ONCE, on the row of the claim it was recorded against.
+   *
+   * The reconciliation matched this author claim to a canonical criterion and still recorded
+   * `missing_rendered_output` against it, because a focused command does not satisfy a visual
+   * requirement. That criterion therefore HAS a row below, so it is not named in the block of
+   * unmatched criteria - whose own sentence tells the reader those have no row to sit under.
+   * The canonical wording is still a disclosure away, under Canonical reconciliation.
+   */
+  // Exactly the claim row's own note: the disclosure below carries the same code prefixed with
+  // "Gaps:", and matching both would not prove which of them the reader actually sees.
+  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
+  await expect(readiness.getByRole("region", { name: "Unmatched canonical criteria" }))
+    .toHaveCount(0);
+  // By its title text: the control is a `<summary>`, which carries no implicit ARIA role for
+  // `getByRole` to select on.
+  const reconciliation = readiness.getByText("Canonical reconciliation", { exact: true });
+  await reconciliation.click();
+  await expect(readiness).toContainText(
+    "Keep focused execution green and retain inspectable acceptance evidence",
+  );
+  await expect(readiness).toContainText("Gaps: missing rendered output");
+  await reconciliation.click();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   await expect(readiness.getByRole("button", { name: "Continue despite gaps" })).toBeDisabled();
   await readiness.scrollIntoViewIfNeeded();

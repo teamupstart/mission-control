@@ -1509,14 +1509,47 @@ test("a claim row matches its canonical criterion by id, never by the criterion 
   assert.equal(evidenceClaimStatus(claim("c2"), null).label, "no evidence linked");
   assert.equal(evidenceClaimStatus(claim("c2"), matched).label, "no evidence linked");
 
-  // The gap block is the criteria the reconciliation could not satisfy - including the ones
-  // with no author claim at all, which have no claim row to sit under.
+  // The gap block is the gapped criteria with no author claim at all, which are the ones with
+  // no claim row to sit under.
   assert.deepEqual(
     readinessGapCriteria(unmatched).map((entry) => entry.criterionId),
     ["canon-1"],
   );
   assert.deepEqual(readinessGapCriteria(matched), []);
   assert.deepEqual(readinessGapCriteria(null), []);
+
+  /*
+   * MATCHED AND GAPPED, which is the case the block must not claim.
+   *
+   * The reconciliation can accept a claim for a criterion and still record a gap against it -
+   * a proof class that does not satisfy the requirement does exactly that. The claim's own row
+   * already prints the gap, so naming the criterion in a block headed "a criterion with no
+   * claim at all has no row below to sit under" would state it twice, the second time with a
+   * rationale that is false for it. The run's gap COUNT still counts it: the finding is real,
+   * only its place on the page is decided here.
+   */
+  assert.deepEqual(evidenceClaimStatus(linked, withGaps), {
+    label: "gaps",
+    tone: "failed",
+    notes: ["missing execution"],
+  });
+  assert.deepEqual(readinessGapCriteria(withGaps), []);
+  const mixed = readinessOf([
+    criterion("canon-1", { matchedClientCriterionId: "c1", gaps: ["missing_execution"] }),
+    criterion("canon-2", { matchedClientCriterionId: null, gaps: ["missing_coverage"] }),
+  ]);
+  assert.deepEqual(
+    readinessGapCriteria(mixed).map((entry) => entry.criterionId),
+    ["canon-2"],
+  );
+  const mixedDetail = detail([submission("s1", 1, { readiness: mixed })], [], {
+    evidenceCoverage: [{ submissionId: "s1", coverage: [claim("c1")] }],
+  });
+  assert.equal(
+    runRecordSummary(mixedDetail, mixedDetail.submissions[0]!).evidence.gapCount,
+    2,
+    "both gapped criteria are still counted; only the unmatched one gets a named block",
+  );
 });
 
 test("frozen images and the claims citing them are matched through the readiness links", () => {

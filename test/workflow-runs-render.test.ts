@@ -1111,6 +1111,65 @@ test("the Evidence pane draws the other side of each of its conditionals", () =>
 });
 
 /**
+ * A gap the reconciliation recorded against a criterion it DID match to a claim.
+ *
+ * This reads as two findings if the pane is careless: the criterion is gapped, so the block of
+ * unmatched criteria would list it, and the claim it matched is gapped too, so the claim row
+ * prints it as well. The block's own sentence says these criteria have no row below to sit
+ * under, and for this one that is false. The row is the right place, because the gap is
+ * something the author's claim failed to satisfy rather than something nobody claimed.
+ */
+test("a gap against a matched criterion is stated on the claim row, not in the block", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [
+            // Matched to the author's claim AND gapped: the proof class did not satisfy it.
+            { ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] },
+            READINESS.criteria[1]!,
+          ],
+        },
+      }
+      : entry),
+  } as WorkflowRunDetail);
+
+  // The claim row carries it, spelled the way every other surface spells these codes.
+  assert.match(html, /missing execution/);
+  // The block names only the criterion that has no claim row at all.
+  const block = html.slice(
+    html.indexOf("Unmatched canonical criteria"),
+    html.indexOf("wf-evidence-head"),
+  );
+  assert.match(block, /A Playwright spec covers the composer end to end/);
+  assert.doesNotMatch(block, /The composer renders its caption and scope fields/);
+  assert.doesNotMatch(block, /missing execution/);
+  // The count is unchanged: the finding is real, only its place on the page is decided.
+  assert.match(html, /Gaps<\/span><strong class="wf-run-stat-value is-alert">2</);
+
+  // And when every gapped criterion is matched, the block is not drawn at all rather than
+  // drawn empty under a heading that would then describe nothing.
+  const allMatched = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [{ ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] }],
+        },
+      }
+      : entry),
+  } as WorkflowRunDetail);
+  assert.doesNotMatch(allMatched, /Unmatched canonical criteria/);
+  assert.match(allMatched, /missing execution/);
+});
+
+/**
  * A round with no submission, where the Evidence tab is not offered at all.
  *
  * The pane reports on ONE submission - its claims, its frozen pictures, its reconciliation - so

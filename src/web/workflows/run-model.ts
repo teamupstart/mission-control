@@ -1564,18 +1564,25 @@ export function evidenceCodeLabel(code: string): string {
 }
 
 /**
- * The canonical criteria the reconciliation could not satisfy, in the record's own order.
+ * The gapped canonical criteria with NO author claim to sit a row under, in the record's order.
  *
  * These get a block of their own rather than being folded into the claim rows, and that is the
  * whole reason the reconciliation survives this consolidation. A gap belongs to a CANONICAL
  * criterion, and on the submission this was measured against five of the six had
  * `matchedClientCriterionId: null` - no author claim at all to sit a row under. Merging the two
  * lists would have deleted exactly the finding a reader came for.
+ *
+ * Matched-AND-gapped is the case the filter exists for, and it is not rare: the reconciliation
+ * accepts a claim for a criterion and still records a gap against it, which is what happens when
+ * the proof class does not satisfy the requirement. `evidenceClaimStatus` already prints that
+ * gap on the claim's own row. Listing it here as well would say it twice, the second time under
+ * a heading that tells the reader it has no row below - which is false for exactly these.
  */
 export function readinessGapCriteria(
   readiness: WorkflowEvidenceReadinessResult | null | undefined,
 ): WorkflowEvidenceReadinessCriterion[] {
-  return (readiness?.criteria ?? []).filter((criterion) => criterion.gaps.length > 0);
+  return (readiness?.criteria ?? [])
+    .filter((criterion) => criterion.gaps.length > 0 && criterion.matchedClientCriterionId === null);
 }
 
 /** What a frozen author claim's row says about itself, once the reconciliation has spoken. */

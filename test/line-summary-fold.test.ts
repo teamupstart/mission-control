@@ -482,6 +482,32 @@ test("the strip says WHY runs stalled, and refuses to name a cause it cannot cla
   assert.match(several.sentence, /^3 causes · /);
   assert.match(several.sentence, /3 stalled/);
 
+  /*
+   * Two DIFFERENT phase codes that say the same thing to a reader are ONE cause, not two.
+   *
+   * Round 1 review caught this: counting raw phase codes would answer "2 causes" for a drawer
+   * showing the same sentence twice, which is the plurality this whole rule exists to refuse.
+   * It is reachable without touching the map, because `phase` is a free string that
+   * `cancelRun` and every `setRunState` caller mint their own values for - these two spellings
+   * of one unmapped code render one identical clause through the fallback.
+   *
+   * No two entries in `BLOCKED_PHASE_CLAUSES` share a value today, so this is the property
+   * held structurally rather than by luck - which is the point, since nothing stops a later
+   * pair of phases from deserving the same three words.
+   */
+  const sameWords = fold(
+    {
+      workflowRuns: [
+        mkRun({ id: "r1", status: "blocked", phase: "a_reason" }),
+        mkRun({ id: "r2", status: "blocked", phase: "a reason" }),
+      ],
+    },
+    "review",
+  );
+  assert.notEqual("a_reason", "a reason");
+  assert.match(sameWords.sentence, /^a reason · /);
+  assert.doesNotMatch(sameWords.sentence, /causes/);
+
   // A phase from a newer daemon still degrades to readable text here, through the same
   // fallback the notification and the triage column use.
   const unmapped = fold(

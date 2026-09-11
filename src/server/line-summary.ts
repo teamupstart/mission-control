@@ -281,14 +281,26 @@ function foldWorking(input: LineFoldInput): LineStageSummary {
  * `status === "blocked"` and not `workflowRunWaitsOnOperator`, so this counts the same runs
  * `workflowRunAttentionSplit` calls stalled. The clause explains the number it is printed
  * beside or it explains nothing.
+ *
+ * Counted over the RENDERED CLAUSES rather than over the raw phase codes, which is the only
+ * version of this that holds the honest-plural promise structurally instead of by luck. The
+ * two differ whenever two phases say the same thing to a reader, and `phase` is a free string
+ * - `cancelRun` and every `setRunState` caller mint their own - so two spellings of one
+ * unmapped code (`a_b` and `a b`) already render one identical clause through the fallback.
+ * Counting codes would answer "2 causes" for a drawer showing the same sentence twice, which
+ * is the plurality this function exists to refuse.
+ *
+ * The alternative - forbidding two map keys from sharing a clause - was rejected. Two phases
+ * may legitimately deserve the same three words, and a guard against it would be a rule about
+ * the vocabulary defending a property that belongs to this count.
  */
 function blockedCause(live: readonly WorkflowRunSummary[]): string | null {
-  const phases = new Set(
-    live.filter((run) => run.status === "blocked").map((run) => run.phase),
+  const causes = new Set(
+    live.filter((run) => run.status === "blocked").map((run) => blockedPhaseClause(run.phase)),
   );
-  if (phases.size === 0) return null;
-  const only = [...phases];
-  return only.length === 1 ? blockedPhaseClause(only[0]!) : `${only.length} causes`;
+  if (causes.size === 0) return null;
+  const only = [...causes];
+  return only.length === 1 ? only[0]! : `${only.length} causes`;
 }
 
 function foldReview(input: LineFoldInput): LineStageSummary {

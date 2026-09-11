@@ -1,8 +1,13 @@
+import { statSync } from "node:fs";
+import { piExtensionPath } from "./config.ts";
 import { capabilitiesFor, missionToolsUnavailableWhy } from "@shared/harness-capabilities.ts";
 import type { AgentType } from "@shared/types.ts";
 
-/** Phase 4 supplies the install probe; Phase 6 replaces it with the environment reading. */
-export const piExtensionInstalled = (): boolean => false;
+/** Temporary artifact probe. Phase 6 replaces this with the authoritative install reading. */
+export const piExtensionInstalled = (): boolean => {
+  try { return statSync(piExtensionPath()).isFile(); }
+  catch { return false; }
+};
 
 /**
  * Resolve machine availability once before provisioning. Launch-scoped tools still need

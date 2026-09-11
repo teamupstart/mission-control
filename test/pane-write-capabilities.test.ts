@@ -10,7 +10,7 @@ import {
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
 import { bindSession } from "../src/server/terminal/registry.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
-import type { Key, TerminalResult } from "../src/server/terminal/types.ts";
+import type { Key, PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session } from "@shared/types.ts";
 import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
@@ -57,6 +57,8 @@ const nestedSession = (): Session =>
   }) as Session;
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
+/** A paste from a backend that holds the composer, which every fake here stands in for. */
+const held = (): PasteResult => ({ ok: true, outcomeUnknown: false, submitted: false });
 
 /**
  * A pane assembled by hand, one capability at a time, recording what was asked of it.
@@ -82,7 +84,7 @@ function fakePane(opts: {
     paste:
       opts.canPaste === false
         ? null
-        : async (text: string) => (did.push(`paste:${text}`), ok()),
+        : async (text: string) => (did.push(`paste:${text}`), held()),
   };
   return {
     did,

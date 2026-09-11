@@ -7,6 +7,8 @@ import test from "node:test";
 import type { PipelineProbe } from "../src/shared/pipeline.ts";
 import type { TerminalTargetView } from "../src/shared/terminal.ts";
 import {
+  CMUX_APP_REMEDY,
+  CMUX_SOCKET_CONTROL_REMEDY,
   HERDR_SERVER_REMEDY,
   SETUP_DEPENDENCY_IDS,
   SETUP_DEPENDENCY_INFO,
@@ -42,6 +44,7 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
     agentBin: (agent) => `/tools/${agent}`,
     installedBackend: async (id) => `/tools/${id}`,
     herdrServer: async () => ({ state: "ready", socket: "/run/herdr.sock", version: "0.9.0" }),
+    cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/tools/gh",
     resolveBinPath: async (bin) => bin === "node" ? "/tools/node" : bin.startsWith("/tools/") ? bin : null,
     runCommand: async (bin) => stubRun({ stdout: bin === "/tools/node" ? "24.0.0" : "Logged in to github.com account operator", stderr: "", code: 0 }),
@@ -222,6 +225,61 @@ test("an incompatible Herdr server is not offered a start it cannot be repaired 
     herdrServer: async () => ({ state: "failed", error: "Herdr server status did not finish.", retryable: true }),
   });
   assert.deepEqual(unreadable.remedy, HERDR_SERVER_REMEDY);
+});
+
+test("an installed cmux that is closed or refusing is needs-setup, with the matching repair", async () => {
+  // The reading this row used to give: cmux on PATH, so "satisfied", while every dispatch to
+  // it was answered by an empty pane list. Both faults below produce exactly that, and they
+  // are told apart because opening a running app and reconfiguring a closed one each repair
+  // a fault the operator does not have.
+  const closed = await probed("cmux", { cmuxControl: async () => ({ state: "stopped" }) });
+  assert.deepEqual(closed.status, {
+    state: "needs-setup",
+    why: "cmux is installed but not running. Its control socket exists only while the app is open, so Mission Control cannot list, create, or type into cmux workspaces until it is.",
+    evidence: "/tools/cmux",
+  });
+  assert.deepEqual(closed.remedy, CMUX_APP_REMEDY);
+
+  const refused = await probed("cmux", { cmuxControl: async () => ({ state: "refused" }) });
+  assert.deepEqual(refused.status, {
+    state: "needs-setup",
+    why: "cmux is running but its control socket only admits processes started inside cmux. Mission Control's daemon is not one, so every call it makes is denied until automation.socketControlMode is allowAll.",
+    evidence: "/tools/cmux",
+  });
+  assert.deepEqual(refused.remedy, CMUX_SOCKET_CONTROL_REMEDY);
+
+  const ready = await probed("cmux");
+  assert.deepEqual(ready.status, {
+    state: "satisfied",
+    evidence: "/tools/cmux (socket control allowAll)",
+  });
+  assert.equal(ready.remedy, undefined);
+});
+
+test("a missing cmux keeps the catalog install remedy and never probes its socket", async () => {
+  let controlProbes = 0;
+  const missing = await probed("cmux", {
+    installedBackend: async () => null,
+    cmuxControl: async () => {
+      controlProbes += 1;
+      return { state: "stopped" };
+    },
+  });
+  assert.deepEqual(missing.status, { state: "missing" });
+  assert.equal(missing.remedy, undefined);
+  assert.equal(controlProbes, 0);
+});
+
+test("a cmux socket that failed some other way is not offered a repair for a fault it does not have", async () => {
+  const other = await probed("cmux", {
+    cmuxControl: async () => ({ state: "failed", error: "cmux capabilities failed" }),
+  });
+  assert.deepEqual(other.status, {
+    state: "needs-setup",
+    why: "cmux capabilities failed",
+    evidence: "/tools/cmux",
+  });
+  assert.equal(other.remedy, undefined);
 });
 
 test("a probe remedy overrides the catalog remedy on the row it repairs", async () => {

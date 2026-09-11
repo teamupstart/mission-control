@@ -23,6 +23,7 @@ import {
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 import type { WorkflowRunRepeatOffender, WorkflowRunSummary } from "./workflow.ts";
+import { blockedPhaseClause } from "./workflow-lifecycle.ts";
 import { ensembleIsTerminal, type EnsembleSummary } from "./ensemble.ts";
 import {
   pipelineCommissionAttentionEntries,
@@ -406,7 +407,13 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       transition = {
         className: run.status,
         title: `${run.workflowName} ${run.status}`,
-        body: run.phase.replaceAll("_", " "),
+        // The CAUSE, not the phase code. This is the only surface that fires at the moment a
+        // run blocks, and it printed `image_evidence_capture` as "image evidence capture" at
+        // an operator whose run had stopped 1.27 seconds after it started. `blockedPhaseClause`
+        // keeps the same `replaceAll` fallback for a phase no map entry names, so nothing
+        // here degrades to `undefined` and this body and the triage column cannot disagree
+        // about one field - which they did for as long as the map lived in `src/web/`.
+        body: blockedPhaseClause(run.phase),
         severity: "attention",
       };
     // NOTE: there is deliberately no arm here for entering `waiting_for_session`.
@@ -448,7 +455,16 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
       transition = {
         className: "resumed",
         title: `${run.workflowName} resumed`,
-        body: run.phase.replaceAll("_", " "),
+        /*
+         * The same lookup on the way OUT of a block, and it is not merely symmetry.
+         *
+         * Most phases reachable here are running ones the map has no entry for, so the
+         * clause and the old `replaceAll` produce identical text. The one that differs is
+         * `inspector_head_mismatch`, which declares `waiting_for_inspector` alongside
+         * `blocked`: a run that leaves the block still parked on that phase said "inspector
+         * head mismatch" here while every other surface said "head moved".
+         */
+        body: blockedPhaseClause(run.phase),
         severity: "info",
       };
     }

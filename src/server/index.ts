@@ -62,6 +62,7 @@ import { ArchiveManager } from "./archives/manager.ts";
 import { RegistryArchiveTaskGateway } from "./archives/task-gateway.ts";
 import { KeepAwakeManager } from "./keep-awake.ts";
 import { reconcileCostTelemetry, warnIfSessionAttributionDisabled } from "./cost.ts";
+import { reconcilePiExtension } from "./extensions/config.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
@@ -131,6 +132,13 @@ try {
   reconcileSkills();
 } catch (err) {
   console.error("[skills] could not reconcile ~/.claude/skills:", err);
+}
+try {
+  const result = reconcilePiExtension();
+  if (result.changed) console.log("[extensions]", { linked: result.linked, unlinked: result.unlinked });
+  for (const problem of result.problems) console.error("[extensions]", problem);
+} catch (err) {
+  console.error("[extensions] could not reconcile:", err);
 }
 try {
   reconcileCostTelemetry();

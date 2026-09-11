@@ -18,6 +18,7 @@ import {
 import {
   BASE_URL,
   MISSION_SESSION_ID_ENV,
+  MISSION_AGENT_SESSION_ID_ENV,
   SCOUT_SUBMISSION_CREDENTIAL_HEADER,
   captureTerminalEnv,
   readClientToken,
@@ -40,11 +41,12 @@ import { submitWorkflowEvidenceToDaemon } from "./workflow-evidence.ts";
 // This runs as a stdio MCP server in one of two provenance modes. An SDK launch carries
 // Mission Control's exact session id and must not also claim an inherited terminal pane,
 // because the Registry intentionally resolves pane identity first. A terminal launch has
-// no Mission id, so it keeps the pane join key and legacy Claude session id it always used.
+// no Mission id, so it keeps the pane join key and uses the extension's native session id
+// when supplied, falling back to the legacy Claude session id.
 
 const MISSION_SESSION_ID = process.env[MISSION_SESSION_ID_ENV];
 const ENV = MISSION_SESSION_ID === undefined ? captureTerminalEnv() : {};
-const SESSION_ID = MISSION_SESSION_ID ?? process.env.CLAUDE_SESSION_ID ?? null;
+const SESSION_ID = MISSION_SESSION_ID ?? process.env[MISSION_AGENT_SESSION_ID_ENV] ?? process.env.CLAUDE_SESSION_ID ?? null;
 const PIPELINE_CALLER_CREDENTIAL = readPipelineCallerCredential();
 const PRODUCT_ISSUE_CLIENT = productIssueClientFromEnvironment(
   process.env[PRODUCT_ISSUE_CLIENT_ENV],

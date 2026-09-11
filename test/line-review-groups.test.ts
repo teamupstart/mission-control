@@ -77,6 +77,38 @@ test("an unmapped reason still groups, and still says something readable", () =>
   assert.equal(groups(rows)[0]!.clause, "some future reason");
 });
 
+test("a newly named phase groups under its cause rather than its own identifier", () => {
+  /*
+   * The regression this phase exists for, said at the layer the drawer reads.
+   *
+   * Twelve of the twenty-seven blocked-capable phases had no clause, so a pile of them read
+   * "3 · image evidence capture" - a bar whose whole job is to say the reason once, printing
+   * the pipeline stage instead. The fallback made that look deliberate: it is grammatical,
+   * lower-case and the right length, so nothing about the rendered bar said a clause was
+   * missing.
+   *
+   * Both of these are real states. `image_evidence_capture` is the phase the reported run
+   * stopped on; `preflight_refinement_exhausted` is the one a second run in the same operator's
+   * state database is parked on right now.
+   */
+  const rows = fold([
+    ...Array.from({ length: 3 }, (_, i) =>
+      stopped(`img-${i}`, "image_evidence_capture", { updatedAt: 900 - i })),
+    ...Array.from({ length: 3 }, (_, i) =>
+      stopped(`pre-${i}`, "preflight_refinement_exhausted", { updatedAt: 500 - i })),
+  ]);
+  assert.deepEqual(
+    groups(rows).map((g) => g.clause),
+    ["registered evidence refused", "out of evidence refinements"],
+  );
+  // Stated as a negative too, because the fallback is what a reader would have seen and it is
+  // the thing that must be gone rather than merely improved upon.
+  assert.deepEqual(
+    groups(rows).map((g) => g.phase.replaceAll("_", " ")),
+    ["image evidence capture", "preflight refinement exhausted"],
+  );
+});
+
 test("only blocked runs fold - a live run and your turn are never hidden behind a caret", () => {
   // The row a person came to this drawer for is the one parked on their answer, and a run
   // that is still moving is the one whose chips are the point. Folding either would bury the

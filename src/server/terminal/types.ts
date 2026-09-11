@@ -241,6 +241,29 @@ export interface HostProcessSpec {
 }
 
 /**
+ * The outcome of one bracketed paste, and whether delivering it also SUBMITTED it.
+ *
+ * `submitted` is not a status field. It is the one thing that decides whether the Enter
+ * `injectPrompt` sends next is the keystroke that submits this prompt or a spare one aimed
+ * at whatever the agent's turn has already put on screen - and the reason it is a per-call
+ * answer rather than a per-backend flag is that the backend that forced it reports it per
+ * call.
+ *
+ * cmux is that backend. Its typing method writes a leading ESC in a pty write of its OWN,
+ * so an app reading raw sees a bare Escape press followed by the literal text `[200~`; a
+ * paste composed from markers and typing therefore cannot work there at all, whatever the
+ * bytes look like once they have landed. Its one verb that delivers a paste the way ⌘V
+ * does, `terminal.paste`, appends a CR. See `terminal/cmux.ts`.
+ *
+ * Every other backend here holds the composer and answers `false`. Saying so costs one
+ * word and is what stops "this one submits" from being a fact the caller discovers from a
+ * stray keystroke.
+ */
+export interface PasteResult extends TerminalResult {
+  submitted: boolean;
+}
+
+/**
  * Writing to a pane. The three verbs are not interchangeable and callers must not
  * substitute one for another:
  *
@@ -250,7 +273,8 @@ export interface HostProcessSpec {
  *   - `paste` delivers one bracketed paste, which agent TUIs treat as a single block. It
  *     is the only way to put a multi-line prompt in a composer without submitting it at
  *     every newline, so a backend that lacks it declares null and its callers refuse
- *     multi-line delivery rather than shredding it into submissions.
+ *     multi-line delivery rather than shredding it into submissions. It reports whether
+ *     the delivery also submitted - see `PasteResult`.
  *
  * Policy lives above this: the copy-mode refusal, the pane lock, the post-paste settle and
  * the submit read-back are decisions about WHEN to write, and they compose these verbs.
@@ -259,7 +283,7 @@ export interface HostProcessSpec {
 export interface PaneWrite<T> {
   text(target: T, text: string): Promise<TerminalResult>;
   keys(target: T, keys: readonly Key[]): Promise<TerminalResult>;
-  paste: ((target: T, text: string) => Promise<TerminalResult>) | null;
+  paste: ((target: T, text: string) => Promise<PasteResult>) | null;
 }
 
 /**

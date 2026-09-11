@@ -1,6 +1,6 @@
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
-import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { plainName, plainValidate } from "./names.ts";
 import { shellCommand } from "./shell.ts";
 import type {
@@ -420,8 +420,10 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
           "tmux send-keys failed",
         ),
       // -p: bracketed paste, so embedded newlines do not submit. That flag and `text`'s `-r`
-      // are the entire difference between the two verbs now.
-      paste: (t, text) => viaBuffer(t, text, ["-p"], "tmux paste-buffer failed"),
+      // are the entire difference between the two verbs now. `-p` carries no Enter, so the
+      // block sits in the composer and `injectPrompt` owns the submit - `heldInComposer`.
+      paste: async (t, text) =>
+        heldInComposer(await viaBuffer(t, text, ["-p"], "tmux paste-buffer failed")),
     },
 
     capture: async (t) => {

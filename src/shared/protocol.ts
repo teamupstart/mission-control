@@ -101,6 +101,7 @@ import {
   WORKFLOW_EVIDENCE_READINESS_WARNING_CODES,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_STEERING_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RESUMPTION_POLICIES,
@@ -291,7 +292,9 @@ export const StatusLineIngestSchema = z.object({
       tokens: z.number().optional(),
     })
     .optional(),
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  effort: EffortLevelSchema.optional(),
+  /** A harness-native effort with no equivalent in the shared picker vocabulary. */
+  nativeEffort: z.string().min(1).max(40).optional(),
   thinkingEnabled: z.boolean().optional(),
   /**
    * The subscription's rate-limit windows, lifted from `payload.rate_limits`.
@@ -921,12 +924,22 @@ const TaskDependenciesSchema = z
 export const ModelIdSchema = z
   .string()
   .max(80)
-  // `/` is allowed only in the INTERIOR, never as the first character, so a provider-qualified
-  // id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the provider) passes while
-  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class.
+  // `/` and `:` are allowed only in the INTERIOR, never as the first character, so a
+  // provider-qualified id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the
+  // provider) passes while a path such as `../../etc/passwd` or a bare `-rf` still fails on
+  // the leading-char class.
+  //
+  // `:` is here because Amazon Bedrock's own ids carry a version suffix - measured against
+  // Pi 0.85.1, 41 of the 121 models it lists for `amazon-bedrock` are of the shape
+  // `anthropic.claude-sonnet-4-5-20250929-v1:0`. Excluding it did not reject those ids at
+  // the edge, it dropped a third of that provider's catalog silently: the row never reached
+  // the picker, so the model simply did not exist as far as an operator could tell. It is
+  // no weaker than the rest of the class - not whitespace, not a control character, not a
+  // path separator, and not able to start the string.
+  //
   // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
   // Test: `dispatch-model.test.ts`.
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$/, "model id must be alphanumeric with . _ - / : only");
 
 /** Bounds for the aggregate harness model catalog carried over HTTP. */
 export const HARNESS_MODEL_CATALOG_LIMITS = {
@@ -2322,10 +2335,16 @@ const StoredTerminalBackendSchema = z.string().nullable();
 const TerminalBackendSchema = z.enum(TERMINAL_BACKEND_IDS);
 
 /**
- * The runtime an untouched installation uses for each harness. Only harnesses with a
- * declared embedded driver start on the Agent SDK; Pi remains terminal-backed until it
- * has one. Kept beside the schema so the server's first read and the browser's pre-load
- * state cannot disagree.
+ * The runtime an untouched installation uses for each harness.
+ *
+ * Pi stays TERMINAL, and that is now a choice rather than an absence: it has a managed
+ * driver, and flipping the default would move every existing Pi dispatch onto a runtime
+ * whose provider credentials, project-trust posture and in-process shell isolation the
+ * operator has not looked at yet. It is offered in the Harnesses panel and taken on
+ * purpose. Claude and Codex keep the Agent SDK they shipped on.
+ *
+ * Kept beside the schema so the server's first read and the browser's pre-load state
+ * cannot disagree.
  */
 export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
   claude: "sdk",
@@ -2458,10 +2477,11 @@ export const HarnessesConfigSchema = z.object({
    * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
    * embedded through the harness's own programmatic interface.
    *
-   * New installations use the Agent SDK for Claude and Codex, the two harnesses with
-   * embedded drivers. Pi stays terminal-backed because it has no SDK driver. Scoped to
-   * dispatch like every other key in this blob: a session an operator started themselves
-   * is pane-backed whatever this says, because we do not own their pty.
+   * New installations use the Agent SDK for Claude and Codex. Pi has one too and still
+   * ships terminal-backed - see `DEFAULT_HARNESSES_SESSION_RUNTIMES` for why that is a
+   * decision rather than a gap. Scoped to dispatch like every other key in this blob: a
+   * session an operator started themselves is pane-backed whatever this says, because we
+   * do not own their pty.
    *
    * A stored value this build cannot read, or one naming a runtime the harness does not
    * offer, falls back to `"terminal"` and says so - see `resolveDispatchRuntime`. Read at
@@ -5306,6 +5326,25 @@ const WorkflowIntentSourceSchema = z.object({
   relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable(),
 });
 
+export const WorkflowSteeringNoteSchema = z.object({
+  revision: z.number().int().positive(),
+  instruction: z.string().max(WORKFLOW_STEERING_LIMITS.instruction),
+  relationship: z.literal("steer"),
+  rationale: z.string().max(WORKFLOW_STEERING_LIMITS.rationale),
+  timestamp: z.number().int().nonnegative(),
+});
+
+const WorkflowSteeringContextSchema = z.union([
+  z.object({ steering: z.undefined().optional(), steeringResolvedRevision: z.undefined().optional() }),
+  z.object({
+    steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count)
+      .refine((steering) => jsonAtMost(steering, WORKFLOW_STEERING_LIMITS.bytes), {
+        message: `Workflow steering exceeds ${WORKFLOW_STEERING_LIMITS.bytes} UTF-8 bytes`,
+      }),
+    steeringResolvedRevision: z.number().int().nonnegative(),
+  }),
+]);
+
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
@@ -5402,7 +5441,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
     error: z.string().max(8_000).nullable(),
     reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
   }),
-});
+}).and(WorkflowSteeringContextSchema);
 
 export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.transform((value) => {
   const legacyMappings = value.canonicalCriteria.flatMap((criterion) =>
@@ -5451,7 +5490,7 @@ export const WorkflowRunIntentSnapshotSchema = z.object({
   decisions: z.array(WorkflowHumanDecisionSchema).max(200),
   fingerprint: z.string().length(64),
   frozenAt: z.number().int().nonnegative(),
-});
+}).and(WorkflowSteeringContextSchema);
 
 /**
  * One run's stable acceptance criteria. Per-submission mappings are deliberately absent.
@@ -5778,6 +5817,7 @@ export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
  * the same shape.
  */
 export const WorkflowPolicySchema = z.object({
+  skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
   defaultWorkflowId: z.string().min(1).max(500).nullable()

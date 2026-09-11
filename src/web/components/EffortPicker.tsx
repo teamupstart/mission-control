@@ -115,6 +115,13 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
     };
   }, [open, place]);
 
+  if (!shown && session.meta?.nativeEffort) return (
+    <Tooltip label={`Reasoning effort: ${session.meta.nativeEffort}`}>
+      <span className="rt-pill rt-think" aria-label={`Reasoning effort: ${session.meta.nativeEffort}`}>
+        {session.meta.nativeEffort}
+      </span>
+    </Tooltip>
+  );
   if (!shown) return null;
   if (!canPick || levels.length === 0) return <EffortChip level={shown} pending={pending !== null} />;
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { mkEmuHandle, mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
 import { terminalResourceId } from "../src/shared/pane.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
-import type { TerminalResult } from "../src/server/terminal/types.ts";
+import type { PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-prompt-resource-barrier-"));
@@ -17,6 +17,8 @@ const { injectPrompt, sendText } = await import("../src/server/actions.ts");
 after(() => rmSync(home, { recursive: true, force: true }));
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
+/** A paste from a backend that holds the composer, which every fake here stands in for. */
+const held = (): PasteResult => ({ ok: true, outcomeUnknown: false, submitted: false });
 
 function setup(over: {
   cwd?: string | null;
@@ -69,7 +71,7 @@ function setup(over: {
     write: {
       text: async (text) => (writes.push(`text:${text}`), ok()),
       keys: async () => (writes.push("keys"), ok()),
-      paste: async (text) => (writes.push(`paste:${text}`), ok()),
+      paste: async (text) => (writes.push(`paste:${text}`), held()),
     },
   };
   return {

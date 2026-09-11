@@ -492,6 +492,16 @@ reached only two of them.
   switched off. Entry phases come from `WORKFLOW_INSPECTOR_ENTRY_PHASE`, keyed on the registry
   and typed `WorkflowRunPhase`, so the doubled name is a compile error - earlier and more
   complete than the runtime string check that replaced it.
+- **Every phase a run can block in owes a human clause**, in `BLOCKED_PHASE_CLAUSES` beside the
+  registry, and `blockedPhaseClauseGaps` fails the contract test until it has one. Three or four
+  words naming the CAUSE, grounded in the code that writes the phase - and never a restatement
+  of the phase code, which the guard rejects as well as an absent key. `blockedPhaseClause` is
+  the single reader: the Line strip, the Review drawer, the Runs rail, run detail's fallback
+  sentence and the notification fired at the moment of the block all go through it, so an
+  unmapped phase degrades to one spelling of readable text rather than to two that can disagree.
+  The default without this rule is to ship unnamed, because the fallback is silent: twelve of
+  the twenty-seven blocked-capable phases printed their own identifier at operators, and nothing
+  about a rendered `preflight refinement exhausted` said a clause was missing.
 
 ## A run reviews the intent it froze
 

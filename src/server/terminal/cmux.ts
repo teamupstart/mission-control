@@ -1,3 +1,4 @@
+import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
@@ -8,7 +9,6 @@ import type {
   DetachedSessionSpec,
   Key,
   MuxPane,
-  MuxTarget,
   Multiplexer,
   TerminalResult,
 } from "./types.ts";
@@ -116,18 +116,6 @@ const KEY_NAMES: Record<Key, string> = {
 const CAPTURE_TIMEOUT_MS = 1000;
 /** Workspace creation and teardown are user-visible actions, not poll work. */
 const SESSION_TIMEOUT_MS = 10000;
-
-/**
- * Bracketed paste, written out here because cmux has no verb for it.
- *
- * `terminal.paste` looks like the one and is not: it answers `{"submitted": true}` and
- * delivers the text followed by a CR, which is paste-AND-send. `PaneWrite.paste` must leave
- * the composer holding a multi-line block, so this wraps the markers itself and lets
- * `send_text` carry them - verified byte-for-byte against a recorder on the far side of a
- * real cmux surface.
- */
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
 
 /** One surface, as `system.tree` reports it. Browser surfaces are in here too. */
 interface TreeSurface {
@@ -412,21 +400,40 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       },
 
       /**
-       * Bracketed paste, composed from `send_text` and the markers.
+       * `rpc terminal.paste` - and the ONE backend here whose paste also submits.
        *
-       * cmux has no paste verb that leaves the composer unsubmitted - `terminal.paste` sends
-       * a trailing CR and reports `submitted` - so the markers are written here. One call, so
-       * unlike tmux's buffer-load-then-paste sequence there is no window in which half of it has
-       * happened: either the whole block reached the pane or none of it did.
+       * Markers cannot be written by hand on this backend, which is what the first attempt
+       * did. `send_text` synthesizes keystrokes rather than writing bytes, and it puts a
+       * leading ESC in a pty write of its own: a recorder on the far side of a real cmux
+       * surface reads `\x1b` alone, then `[200~<body>`, then `\x1b` alone, then `[201~`.
+       * An app reading raw therefore sees a bare Escape PRESS followed by the literal text
+       * `[200~`, which is exactly what Claude Code showed - two Escapes opened its Rewind
+       * overlay, and the prompt reached the composer carrying `[200~` and a trailing
+       * `[201~`. Recording the bytes as they land is not enough to catch this; the write
+       * boundaries are the defect, and the old comment here was written from the bytes.
+       *
+       * `terminal.paste` is the real paste path - the one cmux's own ⌘V takes. The same
+       * recorder reads `\x1b[200~`, `<body>`, `\x1b[201~`, `\r`: markers intact in single
+       * writes, and mode-aware, since an app WITHOUT bracketed paste on gets the bare body
+       * instead. That trailing CR cannot be suppressed - `submit`, `auto_submit`,
+       * `press_enter`, `send_enter`, `enter` and `newline` are all ignored, and cmux answers
+       * `{"submitted": true}` either way - so this reports `submitted` and `injectPrompt`
+       * skips the Enter it would otherwise spend. See `PasteResult`.
+       *
+       * One call, so unlike tmux's buffer-load-then-paste sequence there is no window in
+       * which half of it has happened: either the whole block reached the pane or none of
+       * it did.
        */
-      paste: async (t, text) =>
-        toResult(
-          await rpc("surface.send_text", {
-            surface_id: t.paneId,
-            text: `${PASTE_START}${text}${PASTE_END}`,
-          }),
-          "cmux bracketed paste failed",
-        ),
+      paste: async (t, text) => {
+        const res = toResult(
+          await rpc("terminal.paste", { surface_id: t.paneId, text }),
+          "cmux terminal.paste failed",
+        );
+        // Asserted from the CR being unconditional, not read back from the response: a
+        // refused call delivered nothing at all, and claiming a submit there would strand
+        // the prompt by telling the caller its Enter had already been spent.
+        return { ...res, submitted: res.ok };
+      },
     },
 
     capture: async (t) => {
@@ -609,4 +616,115 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       },
     },
   };
+}
+
+
+/**
+ * The cmux app's control socket, and opening the app - the two operations Setup needs and
+ * the `Multiplexer` interface has no place for.
+ *
+ * Here rather than in `server/setup`, for the reason `herdrServerProbe` is in `herdr.ts`:
+ * both are cmux's own transport talking to cmux. `list` already degrades to `[]` on exactly
+ * these two readings and logs nothing, so this is where they get said out loud.
+ */
+export type CmuxControl =
+  /** The socket answered. `accessMode` is cmux's own `capabilities.access_mode`. */
+  | { state: "ready"; accessMode: string }
+  /** No socket at the path the CLI looked at, which on this backend means the app is closed. */
+  | { state: "stopped" }
+  /** The socket is there and will not admit us: `automation.socketControlMode` is `cmuxOnly`. */
+  | { state: "refused" }
+  | { state: "failed"; error: string };
+
+/**
+ * `cmux capabilities`, whose three answers are the three states above.
+ *
+ * Measured against 0.64.20 rather than assumed, because the CLI reports all of this on
+ * STDERR as prose and there is no structured error to key on:
+ *
+ *   - running and admitting us: exit 0, and a JSON body carrying `access_mode`.
+ *   - app closed: exit 1, `Error: Socket not found at <path>`. Matched on the CLI's own
+ *     sentence instead of stat-ing a socket path here, because the CLI "auto-discovers
+ *     tagged/debug sockets" (its `--help`) and a second implementation of that discovery
+ *     would answer "closed" for an app that is running on a socket we did not think of.
+ *   - control refused: exit 1, `Error: ERROR: Access denied - only processes started inside
+ *     cmux can connect`.
+ *
+ * `capabilities` and not `ping` deliberately: they fail identically, and only this one comes
+ * back with the access mode when it succeeds.
+ *
+ * **The refusal is total, and that is what shapes the remedy.** Under `cmuxOnly` EVERY
+ * method is denied - `ping`, `tree`, and `reload-config` included - so nothing here can talk
+ * cmux into admitting us. The repair is the config file, and cmux picks that up by watching
+ * it (verified: the file was edited with the socket refusing every call, and the next
+ * `capabilities` answered `allowAll` without any reload being asked for).
+ */
+export async function cmuxControlProbe(exec: TerminalExec = defaultExec): Promise<CmuxControl> {
+  const r = await exec(resolveBin(CMUX_BIN), ["capabilities"], {
+    timeoutMs: CAPTURE_TIMEOUT_MS,
+    env: { ...binEnv(CMUX_BIN), CMUX_QUIET: "1" },
+  });
+  if (r.code === 0) {
+    const parsed = parseJson<{ access_mode?: string }>(r.stdout);
+    return { state: "ready", accessMode: parsed?.access_mode ?? "unknown" };
+  }
+  const said = `${r.stderr} ${r.stdout}`;
+  if (said.includes("Socket not found")) return { state: "stopped" };
+  if (said.includes("Access denied")) return { state: "refused" };
+  return { state: "failed", error: r.stderr.trim() || "cmux capabilities failed" };
+}
+
+/**
+ * How long to wait for a just-opened cmux to publish its control socket. A cold launch of a
+ * native app is seconds, not milliseconds, and this runs from a button an operator pressed.
+ */
+const APP_START_TIMEOUT_MS = 20000;
+const APP_START_POLL_MS = 500;
+
+/** cmux's application bundle, for the one operation its CLI cannot do while the app is closed. */
+const BUNDLE_ID = "com.cmuxterm.app";
+
+/**
+ * Open cmux and wait for its control socket to answer.
+ *
+ * AppleScript rather than `open`, which is the same mechanism `ghostty.ts` uses to reach a
+ * GUI terminal and the reason no `.app` path is guessed at here: `tell application id …`
+ * resolves the bundle through Launch Services and launches it if it is not running.
+ *
+ * It waits rather than returning on the activation, because "cmux is open" is not the claim
+ * a Setup row needs - the socket answering is. A launch that never publishes one comes back
+ * as a failure with `outcomeUnknown`, since the app may well be starting anyway.
+ */
+export async function cmuxAppStart(exec: TerminalExec = defaultExec): Promise<TerminalResult> {
+  const activated = await exec(
+    FIXED_OS_EXECUTABLES.osascript,
+    ["-e", `tell application id "${BUNDLE_ID}" to activate`],
+    { timeoutMs: SESSION_TIMEOUT_MS },
+  );
+  if (activated.code !== 0) {
+    return toResult(activated, "cmux could not be opened");
+  }
+  const deadline = Date.now() + APP_START_TIMEOUT_MS;
+  for (;;) {
+    const probe = await cmuxControlProbe(exec);
+    if (probe.state === "ready") return { ok: true, outcomeUnknown: false };
+    // A socket that is answering and refusing is a CONFIGURATION problem, and one more
+    // second of waiting cannot change it. Say so now rather than at the deadline.
+    if (probe.state === "refused") {
+      return {
+        ok: false,
+        error: "cmux is running, but its control socket will not admit Mission Control.",
+        outcomeUnknown: false,
+      };
+    }
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        error: "cmux was opened but its control socket did not answer in time.",
+        // It may yet finish starting, so this is not a refusal.
+        outcomeUnknown: true,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, APP_START_POLL_MS));
+  }
 }

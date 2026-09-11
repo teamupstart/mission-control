@@ -170,6 +170,8 @@ Workflows turn a team's definition of done into reusable, inspectable automation
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
 again. Published definitions are frozen, so a later edit cannot rewrite what an earlier run meant.
+By default, judges that have passed are skipped on later repair rounds of that run. Turn off
+**Skip judges that already passed** in Settings > Workflows to require fresh reviews each round.
 
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
@@ -286,6 +288,55 @@ setting in the app or use the environment variable as a process-level fallback:
 
 See [Configuration](docs/configuration.md) for the complete precedence rules and transport
 tradeoffs.
+
+## Pi session integration
+
+The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
+attributed usage for hand-run Pi sessions. Until the Setup control ships, enable it from a
+built checkout:
+
+```sh
+npm run build
+npm run install-pi-extension
+```
+
+This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.js` and leaves
+the integration enabled. Start a fresh Pi session normally; it loads the extension without
+being launched through Mission Control or passing `-e`. Building alone installs nothing.
+Keep the built checkout available because the installed link points to its extension artifact.
+The standalone installer also works when the running app predates the configuration API.
+
+To disable the integration and remove its managed link durably:
+
+```sh
+npm run install-pi-extension -- --uninstall
+```
+
+A daemon with Pi extension configuration support also accepts HTTP requests:
+
+```sh
+curl --fail-with-body -sS -X PUT http://127.0.0.1:7317/api/extensions/pi/config \
+  -H 'Content-Type: application/json' -d '{"enabled":true}'
+curl -fsS http://127.0.0.1:7317/api/extensions/pi/config
+```
+
+Send `{"enabled":false}` with the same PUT request to disable it; GET returns the persisted
+intent. Use the daemon's configured port if different from 7317. Start a fresh Pi after either
+change; an already loaded extension stays in that process until it exits. A conflict returns
+HTTP 409 with the saved intent and reconciliation problems; unrelated files are left untouched.
+
+An explicit `MISSION_HOME` (or supported legacy alias) scopes installation to that state's
+`pi-extensions` directory instead of the machine-wide location. `PI_EXTENSIONS_DIR` overrides
+the destination directory. For a custom Pi home, point it at the `extensions` directory of the
+home Pi actually uses: Pi's `PI_CODING_AGENT_DIR` must agree. `PI_EXTENSIONS_DIR` controls the
+Mission Control installer, not Pi's loader.
+
+`npm run install-hooks -- --uninstall` also removes the managed extension link, but leaves its
+saved intent unchanged. Disable Pi integration first if the daemon may start again. Installing
+Claude hooks never enables Pi integration.
+
+See the [Pi extension reference](docs/pi-extension.md) for reconciliation, isolation, lifecycle,
+and build contracts.
 
 ## Community participation
 

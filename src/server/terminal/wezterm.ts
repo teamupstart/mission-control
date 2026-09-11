@@ -1,6 +1,6 @@
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
-import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import type {
   EmulatorPane,
@@ -191,7 +191,10 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       text: (t, text) => sendText(t, text, true, "wezterm send-text failed"),
       keys: (t, keys) =>
         sendText(t, keys.map((k) => KEY_SEQS[k]).join(""), true, "wezterm send-text failed"),
-      paste: (t, text) => sendText(t, text, false, "wezterm send-text failed"),
+      // `--no-paste` omitted, so wezterm brackets the payload itself and the composer keeps
+      // it - no Enter rides along, which is what `heldInComposer` states.
+      paste: async (t, text) =>
+        heldInComposer(await sendText(t, text, false, "wezterm send-text failed")),
     },
 
     capture: async (t) => {

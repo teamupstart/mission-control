@@ -23,8 +23,8 @@ import {
   type LineDrawerStage,
 } from "../src/web/lib/line-drawer.ts";
 import { LINE_STAGE_TARGETS, lineStageHasDrawer } from "../src/web/lib/line-targets.ts";
+import { blockedPhaseClause } from "../src/shared/workflow-lifecycle.ts";
 import {
-  blockedPhaseClause,
   runRemedy,
   runRowIdentity,
   runTriageRound,

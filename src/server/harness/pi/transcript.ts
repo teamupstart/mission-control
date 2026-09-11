@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
@@ -6,6 +6,7 @@ import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
 import { piPassiveRead } from "./meta.ts";
+import { readRange } from "../../util/file-tail.ts";
 
 // Pi's session transcript: where it lives, and what one of its records means.
 //
@@ -17,15 +18,28 @@ import { piPassiveRead } from "./meta.ts";
 // assembles them into the `transcript` capability. Because that capability is non-null with
 // `messages`, `GOAL_UNSUPPORTED.pi` is null (paired, `harness-transcript.test.ts`).
 
-/** Root of pi's per-project session store. */
-const SESSIONS_DIR = join(homedir(), ".pi", "agent", "sessions");
+/**
+ * Root of pi's per-project session store, resolved the way pi resolves it.
+ *
+ * A FUNCTION rather than a module-load constant, and it reads `PI_CODING_AGENT_DIR` -
+ * pi's own `getAgentDir()` honours that variable before falling back to `~/.pi/agent`, so a
+ * constant computed from `homedir()` alone reports the wrong directory for every operator
+ * who has set it, on both runtimes. The managed driver made that visible: it reports the
+ * exact file pi is writing, and the search below was looking somewhere else entirely.
+ */
+function piSessionsDir(): string {
+  const configured = process.env.PI_CODING_AGENT_DIR;
+  return configured
+    ? join(configured.replace(/^~(?=$|[/\\])/, homedir()), "sessions")
+    : join(homedir(), ".pi", "agent", "sessions");
+}
 
 /**
  * pi's cwd -> project-dir encoding, taken verbatim from its `session-manager.js`:
  * strip a leading slash, replace `/ \ :` with `-`, wrap in `--`. Note dots are NOT replaced,
  * unlike Claude's `[/.]` - a `.treehouse` worktree keeps its dot.
  */
-export function piProjectDir(cwd: string, sessionsDir = SESSIONS_DIR): string {
+export function piProjectDir(cwd: string, sessionsDir = piSessionsDir()): string {
   const safe = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
   return join(sessionsDir, safe);
 }
@@ -73,14 +87,27 @@ function exactSessionFile(files: SessionFile[], agentSessionId: string): Session
 export function piSessionFileForIdentity(
   cwd: string,
   agentSessionId: string,
-  sessionsDir = SESSIONS_DIR,
+  sessionsDir = piSessionsDir(),
 ): string | null {
   return exactSessionFile(sessionFiles(piProjectDir(cwd, sessionsDir)), agentSessionId)?.path ?? null;
 }
 
-export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
+export function locatePiTranscript(s: Session, sessionsDir = piSessionsDir()): string | null {
   if (!s.cwd || !s.agentSessionId) return null;
 
+  // An extension reports the exact path, including custom Pi homes. Validate its header
+  // before accepting it; a stale/mismatched hint must not attribute another session's cost.
+  if (s.transcriptPath) {
+    try {
+      const head = readRange(s.transcriptPath, 0, 16 * 1024).toString("utf8");
+      const newline = head.indexOf("\n");
+      if (newline < 0) return null;
+      const header = JSON.parse(head.slice(0, newline));
+      return header.type === "session" && header.id === s.agentSessionId &&
+        typeof header.cwd === "string" && realpathSync(header.cwd) === realpathSync(s.cwd)
+        ? s.transcriptPath : null;
+    } catch { return null; }
+  }
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
   const match = exactSessionFile(files, s.agentSessionId);
   return match && !files.some((file) => file.createdAt > match.createdAt) ? match.path : null;

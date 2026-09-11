@@ -13,6 +13,7 @@ const {
   discoverConfiguredPiModels,
   discoverPiModels,
 } = await import("../src/server/harness/pi/model-catalog.ts");
+const { ModelIdSchema } = await import("../src/shared/protocol.ts");
 import type {
   PiCatalogChild,
   PiCatalogExit,
@@ -291,6 +292,65 @@ test("Pi discovery preserves first-seen order, deduplicates full ids, and drops 
     "openrouter/anthropic/claude-sonnet-5",
   ]);
   assert.deepEqual(result.choices[1]!.inputModes, ["text"]);
+});
+
+test("an Amazon Bedrock row survives discovery with its exact id and provider group", async () => {
+  // Bedrock is a Pi PROVIDER, not a Mission Control harness: nothing here translates the id,
+  // allowlists a model, or knows what an AWS region is. Its ids carry dots and hyphens that
+  // no other provider's do, and the nested form is the one that makes the split rule visible
+  // (`splitPiModelId` cuts at the FIRST slash, so the model half keeps its own).
+  const child = new FakeChild([
+    response([
+      model({
+        provider: "amazon-bedrock",
+        id: "deepseek.v3.2",
+        name: "DeepSeek V3.2",
+        input: ["text"],
+        contextWindow: 163_840,
+      }),
+      // A colon-bearing id, verbatim. Measured against pi 0.85.1: 41 of the 121 models it
+      // lists for `amazon-bedrock` carry the provider's own `-v1:0` version suffix, so an
+      // alphabet that excluded `:` did not reject these at the edge - it dropped a third of
+      // the provider's catalog before it ever reached the picker.
+      model({
+        provider: "amazon-bedrock",
+        id: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        name: "Claude Sonnet 4.5",
+        input: ["text", "image"],
+      }),
+      model({
+        provider: "amazon-bedrock",
+        id: "us/meta.llama4-maverick-17b",
+        name: "Llama 4 Maverick",
+        input: ["text"],
+      }),
+    ]),
+  ]);
+
+  const result = await discoverPiModels("/fake/pi", depsFor(child));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.choices.map((choice) => choice.id), [
+    "amazon-bedrock/deepseek.v3.2",
+    "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "amazon-bedrock/us/meta.llama4-maverick-17b",
+  ]);
+  // The persisted vocabulary has to admit what discovery produces, or the id survives the
+  // probe and dies at the edge of the first route that stores it.
+  for (const choice of result.choices) {
+    assert.equal(ModelIdSchema.safeParse(choice.id).success, true, choice.id);
+  }
+  // The provider half keeps the stricter alphabet: it is an identifier pi coins, not a
+  // string a provider owns.
+  assert.equal(ModelIdSchema.safeParse("amazon-bedrock/x:0").success, true);
+  assert.equal(ModelIdSchema.safeParse(":leading-colon").success, false);
+  assert.equal(ModelIdSchema.safeParse("-rf").success, false);
+  assert.equal(ModelIdSchema.safeParse("../../etc/passwd").success, false);
+  // Every row groups under the provider the picker shows, so a signed-in Bedrock account
+  // gets its own section rather than being scattered through the flat list.
+  assert.deepEqual(new Set(result.choices.map((choice) => choice.provider)), new Set(["amazon-bedrock"]));
+  assert.equal(result.choices[0]!.contextWindow, 163_840);
+  assert.deepEqual(result.choices[1]!.inputModes, ["text", "image"]);
 });
 
 test("Pi discovery preserves safe identities when optional presentation metadata is unknown", async () => {

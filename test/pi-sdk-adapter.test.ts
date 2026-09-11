@@ -453,6 +453,43 @@ test("clearing context rebinds to the replacement conversation and says it was a
   assert.equal(sdk.runtime.session.listenerCount, 1);
 });
 
+test("a clear that arrives MID-TURN aborts the old run and does not settle the new one", async () => {
+  // The gap this closes: `clearContext` replaces the conversation while a turn may still be
+  // in flight, and `deliver`'s continuation reads instance state - `this.settled`,
+  // `completeTurn`, `note` - that the rebind has already moved onto the replacement. If the
+  // OLD turn's completion were observed after that swap, its turn_done and its idle would be
+  // published against a conversation that never ran it.
+  const { sdk, handle, events } = await launch();
+  const first = sdk.runtime.session;
+
+  await handle.send({ text: "a turn that will not finish before the clear" });
+  await settle();
+  assert.equal(first.streaming, true, "the old conversation is mid-turn");
+
+  await handle.clearContext!();
+  await settle();
+
+  assert.equal(first.aborts, 1, "Pi aborts the running turn as part of the replacement");
+  assert.equal(first.streaming, false);
+  const replacement = sdk.runtime.session;
+  assert.notEqual(replacement, first);
+
+  // Now let the abandoned turn's prompt settle LATE, which is the race itself.
+  const turnDoneBefore = events.filter((event) => event.kind === "turn_done").length;
+  first.finish();
+  await settle();
+
+  assert.equal(
+    events.filter((event) => event.kind === "turn_done").length,
+    turnDoneBefore,
+    "the abandoned turn must not retire a reservation against the replacement",
+  );
+  // And the replacement is still the live conversation, still subscribed, still idle.
+  assert.equal(sdk.runtime.session, replacement);
+  assert.equal(replacement.listenerCount, 1);
+  assert.equal(first.listenerCount, 0);
+});
+
 test("events from the replacement conversation reach the stream", async () => {
   const { sdk, handle, events } = await launch();
   await handle.clearContext!();

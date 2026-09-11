@@ -309,6 +309,13 @@ class PiSdkSession implements SdkSessionHandle {
             // nothing - Pi dispatches a registered extension command and returns - and the
             // supervisor is holding a completion reservation for it. Retire that here rather
             // than leaving the card working for ever over a command that already finished.
+            //
+            // `this.session === session` because a clear can land MID-TURN: it aborts this
+            // run and rebinds onto a replacement, and this continuation may only be reached
+            // afterwards. `this.settled` is still what it was, so without the identity check
+            // an abandoned turn would retire a reservation the REPLACEMENT never made and
+            // publish idle over a conversation that never ran it.
+            if (this.session !== session) return;
             if (accepted && !steered && this.settled === before) this.completeTurn();
           },
           (err) => {
@@ -327,7 +334,10 @@ class PiSdkSession implements SdkSessionHandle {
               return;
             }
             // Accepted and then failed: the turn is Pi's now, and its own `agent_settled`
-            // has already retired the reservation. Surface it where an operator can see it.
+            // has already retired the reservation. Surface it where an operator can see it -
+            // unless a clear has since replaced the conversation, in which case this is the
+            // abort that clear performed and the note belongs to nobody.
+            if (this.session !== session) return;
             this.note(classifyPiFailure(err, this.providerOfRecord()).message);
           },
         );

@@ -220,53 +220,54 @@ test("a newer session file invalidates an exact binding without replacing it", (
   }
 });
 
-test("a driver-reported path is preferred, and ONLY for the runtime that has a driver", () => {
-  // The managed driver is handed the exact file pi is about to write, so a directory search
-  // can only agree with it or be wrong. But the staleness rule the search applies is not
-  // redundant for a TERMINAL session: its `transcriptPath` was observed from outside, and a
-  // newer file in the project dir is the evidence the binding has been outrun. So the fast
-  // path is gated on the runtime rather than on the field merely being set - otherwise a
-  // stale terminal binding would start resolving to a conversation pi has already left.
+test("a managed session's driver-reported transcript is accepted on its header, not its runtime", () => {
+  // This branch originally gated the driver-reported path on `runtime === "sdk"`, because a
+  // terminal session's `transcriptPath` is observed from outside and the search's
+  // newer-file rule was the only thing that could catch a stale one. #1003 replaced that
+  // with a stronger check available to BOTH runtimes: read the file's own header and
+  // require it to name this conversation and this checkout. A path that validates that way
+  // cannot belong to another session, so the runtime it came from stopped mattering and the
+  // gate is gone. What this test still owns is the managed half - that the exact file the
+  // driver was handed resolves, and that one naming a different conversation does not.
   const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
-  const cwd = "/repo";
+  const cwd = mkdtempSync(join(tmpdir(), "pi-managed-cwd-"));
   const dir = piProjectDir(cwd, root);
   mkdirSync(dir, { recursive: true });
   const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
-  const newerId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const otherId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const write = (id: string, headerId = id, headerCwd = cwd) => {
+    const path = join(dir, `2026-07-20T10-00-00-000Z_${id}.jsonl`);
+    writeFileSync(path, `${JSON.stringify({ type: "session", version: 3, id: headerId, cwd: headerCwd })}\n`);
+    return path;
+  };
   try {
-    const path = writeSession(dir, sessionId, Date.parse("2026-07-20T10:00:00.000Z"));
-    writeSession(dir, newerId, Date.parse("2026-07-20T10:01:00.000Z"));
-
+    const path = write(sessionId);
     const managed = {
       ...locateSession("pi-managed", cwd, sessionId),
       runtime: "sdk",
       transcriptPath: path,
     } as Session;
-    assert.equal(
-      locatePiTranscript(managed, root),
-      path,
-      "a driver cannot be outrun by a newer file - it is the thing writing this one",
-    );
+    assert.equal(locatePiTranscript(managed, root), path, "the driver's own file resolves");
 
-    // The same stale binding on a terminal session keeps the answer it has always had.
-    const terminal = {
-      ...locateSession("pi-terminal", cwd, sessionId),
-      runtime: "terminal",
-      transcriptPath: path,
-    } as Session;
-    assert.equal(locatePiTranscript(terminal, root), null);
-
-    // And a driver path naming a DIFFERENT conversation is not trusted either: it falls
-    // through to the search, which then applies its own rules.
+    // A driver path naming a DIFFERENT conversation is refused rather than attributed here.
     const mismatched = {
       ...locateSession("pi-mismatch", cwd, sessionId),
       runtime: "sdk",
-      transcriptPath: join(dir, `2026-07-20T10-02-00-000Z_${newerId}.jsonl`),
+      transcriptPath: write(otherId),
     } as Session;
     assert.equal(locatePiTranscript(mismatched, root), null);
+
+    // And one whose header names another checkout, which is the cost-attribution case.
+    const elsewhere = {
+      ...locateSession("pi-elsewhere", cwd, sessionId),
+      runtime: "sdk",
+      transcriptPath: write(sessionId, sessionId, join(cwd, "nope")),
+    } as Session;
+    assert.equal(locatePiTranscript(elsewhere, root), null);
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
   }
 });
 

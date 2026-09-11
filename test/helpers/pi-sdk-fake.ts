@@ -141,8 +141,17 @@ export class FakePiSession implements PiSession {
     open.at(-1)?.settle();
   }
 
+  /**
+   * Stop the run the way Pi does: the session is no longer streaming and reads idle.
+   *
+   * The counter alone was not enough. `clearContext` documents that "Pi aborts the running
+   * turn itself as part of the replacement", and a fake whose abort left the old session
+   * still streaming could not put the driver through a clear that arrives MID-TURN.
+   */
   async abort(): Promise<void> {
     this.aborts += 1;
+    this.streaming = false;
+    this.idle = true;
   }
 
   async setModel(model: PiModelRef): Promise<void> {
@@ -178,6 +187,10 @@ export class FakePiRuntime implements PiRuntime {
 
   async newSession(): Promise<void> {
     if (this.newSessionError) throw this.newSessionError;
+    // Abort BEFORE replacing, which is what Pi does and what `e2e/fixtures/fake-pi-sdk.mjs`
+    // already modelled. Without it no unit test could reach a clear that arrives mid-turn,
+    // because the old session stayed streaming across its own replacement.
+    await this.session.abort();
     this.newSessions += 1;
     this.session = new FakePiSession(`replacement-${this.newSessions}`, {
       modelId: this.session.modelId,

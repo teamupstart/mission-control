@@ -249,6 +249,8 @@ export function seedRepo(workspace: string, name: string): string {
  * anyway - there is no version of this suite that does not require a build first. That is
  * also why this suite lives outside `test/`: everything in `test/` must pass on a fresh
  * checkout without one, and `scripts/smoke-bundles.mjs` already draws that same line.
+ * The terminal-boundary opt-in builds this same entry with scripted OS/terminal I/O;
+ * dispatch, discovery correlation, Registry, routes and SSE stay production code.
  */
 export async function startDaemon(extraEnv: Record<string, string> = {}): Promise<DaemonHandle> {
   // `realpathSync` because macOS resolves /var -> /private/var, and the daemon reports the
@@ -575,11 +577,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
 
   let log = "";
   let exited: { code: number | null; signal: string | null } | null = null;
+  const daemonBundle = extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1"
+    ? await (await import("./terminal-boundary-build.ts")).buildTerminalBoundaryDaemon(
+        REPO_ROOT, `${process.pid}-${Date.now()}`,
+      )
+    : join(REPO_ROOT, "dist/server/index.mjs");
 
   /** Spawn the daemon bundle and wire its log and exit tracking to the shared state. */
   const spawnDaemon = (): ChildProcess => {
     exited = null;
-    const spawned = spawn(process.execPath, [join(REPO_ROOT, "dist/server/index.mjs")], {
+    const spawned = spawn(process.execPath, [daemonBundle], {
       cwd: REPO_ROOT,
       env: isolatedEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -654,6 +661,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       await new Promise((r) => setTimeout(r, 200));
       if (!exited) child.kill("SIGKILL");
     }
+    if (extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1") rmSync(daemonBundle, { force: true });
     /*
      * Retried, because the daemon is not the only writer under `home`.
      *

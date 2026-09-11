@@ -352,11 +352,8 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
           return { ...toResult(r, "ghostty could not open a window"), target: null };
         }
         const [paneId, tabId] = r.stdout.trim().split(US);
-        // `spec.title` is dropped, and this is the one place that absence is felt rather
-        // than merely declared: every other backend stamps the new tab on the way out, and
-        // Ghostty's `name` is read-only on window, tab and terminal alike, so a tab it opens
-        // carries whatever the shell reports. `retitle: null` is the same fact, said where a
-        // caller can branch on it; there is no third state to invent here.
+        // Ghostty's names are read-only, so this tab carries whatever the shell reports.
+        // The registry retains the task's launch name on a dispatched card independently.
         // Exit 0 with an unreadable id is `SpawnResult`'s split doing its job - the human
         // got their window and nothing may be typed into it.
         if (!paneId) return { ok: true, outcomeUnknown: false, target: null };

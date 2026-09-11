@@ -185,31 +185,15 @@ export function messageBlockReason(s: Messageable): "pipeline" | "no-pane" | nul
 }
 
 /**
- * True when this session has somewhere a NAME can live that Mission Control can move.
+ * SDK names live on the supervisor's row. Terminal Rename needs the innermost
+ * backend's capability, which the daemon projects from its adapters. The pane-only
+ * fallback preserves compatibility with snapshots from older daemons.
  *
- * The third question that used to be spelled `canWriteTo`, and the one that was wrong for
- * longest. Rename reads as a pane mechanic because of HOW it is implemented on the terminal
- * axis - there is no name field on a session, so moving a name means moving the multiplexer
- * session's name (or an emulator tab's title) and letting the next discovery sweep read it
- * back onto the card. That makes a pane genuinely necessary THERE. It is not what the
- * question is:
- *
- *  - a terminal session's name is its home's name, so no handle means no name to move; but
- *  - an SDK session's name is a column on the row the supervisor already keeps for it, and
- *    that row outlives the process. Nothing about it needs a pane.
- *
- * Left on `canWriteTo`, the title on every dispatched card silently stopped being a click
- * target the moment dispatch started producing SDK sessions - the affordance was still
- * built, still styled and still tested, and simply never rendered. So this is its own
- * predicate rather than a widened `canWriteTo`: focus and Shift+Tab still mean the pane.
- *
- * Deliberately NOT `canMessage`, which today has the same body. They agree by coincidence
- * of the two runtimes that exist, not by construction - naming a session and delivering a
- * turn to it are different capabilities, and a third runtime is free to have one without
- * the other. Sharing the predicate would make the next author's rename gate a guess.
+ * A writable pane is not enough: Ghostty accepts input but its tab title is read-only.
+ * A dispatched card may keep its launch name even when its tab cannot be retitled.
  */
-export function canRename(s: PaneHandles & { runtime: SessionRuntime }): boolean {
-  return canWriteTo(s) || s.runtime === "sdk";
+export function canRename(s: PaneHandles & { runtime: SessionRuntime; renameable?: boolean }): boolean {
+  return s.runtime === "sdk" || (s.renameable ?? canWriteTo(s));
 }
 
 /**

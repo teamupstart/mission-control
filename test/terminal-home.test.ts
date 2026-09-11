@@ -368,6 +368,27 @@ test("an emulator home is named by its TAB TITLE, which is what discovery reads 
   assert.equal(await homeAlive("", emuOnly), false);
 });
 
+test("emulator liveness follows its saved pane identity through duplicate and empty tab titles", async () => {
+  let panes = [emulatorPane({ paneId: "owned", tabTitle: "shell title" })];
+  const machine = deps(fakeMultiplexer(), fakeEmulator({ list: async () => panes }), emulatorOnly);
+  const alive = (): Promise<boolean | null> =>
+    homeAlive("Dispatched task", machine, "wezterm", "emulator:wezterm:owned");
+  assert.equal(await alive(), true);
+  panes = [...panes, emulatorPane({ paneId: "other", tabTitle: "shell title" })];
+  assert.equal(await alive(), true, "duplicate titles must not hide the owned pane");
+  panes = [emulatorPane({ paneId: "owned", tabTitle: "" })];
+  assert.equal(await alive(), true, "an empty title does not mean the pane closed");
+  panes = [emulatorPane({ paneId: "other", tabTitle: "Dispatched task" })];
+  assert.equal(await alive(), false, "another pane with the launch title cannot stand in for it");
+  assert.equal(await homeAlive("Dispatched task", machine, "ghostty", "emulator:wezterm:owned"), null);
+  assert.equal(await homeAlive("Dispatched task", machine, null, "emulator:future:owned"), null);
+  machine.emulators.wezterm.list = null;
+  assert.equal(await alive(), null, "an unavailable observation is not evidence of closure");
+  machine.emulators.wezterm.list = async () => [];
+  machine.installed = () => false;
+  assert.equal(await alive(), null);
+});
+
 test("a backend that cannot be enumerated answers null, and null is not 'gone'", async () => {
   // Ghostty: it opens tabs perfectly well and can list nothing. The distinction decides
   // whether `reconcileOnStartup` runs `git worktree remove --force` on a live agent's

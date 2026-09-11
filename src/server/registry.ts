@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import { canRenameTerminal } from "./terminal/registry.ts";
 import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
 import type {
@@ -87,7 +89,7 @@ import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
-import { canWriteTo, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import type {
   PersonaView,
@@ -2268,6 +2270,7 @@ export class Registry extends EventEmitter {
       foremanInvite: null,
       name: d.name,
       nameSource: d.nameSource,
+      renameable: canRenameTerminal(d),
       state: "working",
       cwd: d.cwd,
       workspaceRoot: d.cwd,
@@ -2454,6 +2457,7 @@ export class Registry extends EventEmitter {
     );
     base.pipeline = this.pipelineLinkFor(base.cwd);
     base.task = this.taskSummaryFor(base.id, base.cwd, base.pipeline);
+    base.name = this.emulatorDisplayName(base);
     return base;
   }
 
@@ -7007,14 +7011,43 @@ export class Registry extends EventEmitter {
     if (!s) return;
     const summary = this.taskSummaryFor(id, s.cwd);
     const workspace = this.workspaceFor(id, s.cwd, s.runtime);
+    const name = this.emulatorDisplayName(s);
     if (
+      s.name === name &&
       JSON.stringify(s.task) === JSON.stringify(summary) &&
       s.workspaceRoot === workspace.root &&
       JSON.stringify(s.workspace ?? null) === JSON.stringify(workspace.view)
     ) return;
-    const next = { ...s, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
+    const next = { ...s, name, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
     this.sessions.set(id, next);
     this.emitSession(next);
+  }
+
+  /** A launch name belongs only to the task's bound session on its exact emulator resource. */
+  private dispatchedEmulatorTask(s: Session): Task | undefined {
+    const pane = innermostPane(s);
+    if (s.runtime !== "terminal" || pane?.kind !== "emulator") return undefined;
+    const resource = terminalResourceId(pane);
+    return this.listTasks().find((task) =>
+      task.sessionId === s.id && task.homeName && task.terminalResourceId === resource,
+    );
+  }
+
+  private emulatorDisplayName(s: Session): string {
+    const pane = innermostPane(s);
+    if (s.runtime !== "terminal" || pane?.kind !== "emulator") return s.name;
+    return this.dispatchedEmulatorTask(s)?.homeName ??
+      (pane.tabTitle || (s.cwd ? basename(s.cwd) : "") || `${s.agent} ${s.pid}`);
+  }
+
+  /** Update a launched card when its backend cannot retitle. Handles stay observed facts. */
+  nameDispatchedEmulatorSession(sessionId: string, name: string): boolean {
+    const session = this.sessions.get(sessionId);
+    const task = session && this.dispatchedEmulatorTask(session);
+    if (!task) return false;
+    this.upsertTask({ ...task, homeName: name, updatedAt: Date.now() });
+    refreshScoutPromptTitle(sessionId, sessionWorkEpisodeFor(sessionId)?.episodeId ?? null, name);
+    return true;
   }
 
   // ---- Foreman notes (auto-responder) ----
@@ -9124,6 +9157,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   foremanInvite: byValue,
   name: byValue,
   nameSource: byValue,
+  renameable: byValue,
   state: byValue,
   cwd: byValue,
   workspaceRoot: byValue,

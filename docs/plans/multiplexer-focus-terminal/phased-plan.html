@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multiplexer focus terminal - implementation index</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  --dim: #7c8798;
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --radius: 13px;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --bg-2: #eef0f4;
+    --panel: #ffffff;
+    --panel-2: #f4f6f9;
+    --border: #d5dae2;
+    --border-soft: #e3e7ed;
+    --fg: #1a1f27;
+    --muted: #5b6675;
+    --dim: #6e7889;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+  padding: 40px 24px 96px;
+}
+main { margin: 0 auto; max-width: 940px; }
+h1 { font-size: 26px; letter-spacing: -0.015em; margin: 0 0 6px; }
+h2 {
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 18px;
+  letter-spacing: -0.01em;
+  margin: 44px 0 14px;
+  padding-bottom: 8px;
+}
+h3 { font-size: 14.5px; margin: 26px 0 8px; }
+p { margin: 0 0 12px; }
+.lede { color: var(--muted); font-size: 15px; margin-bottom: 26px; }
+code {
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 1px 5px;
+}
+pre {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  font-size: 12px;
+  margin: 0 0 16px;
+  overflow-x: auto;
+  padding: 13px 15px;
+}
+pre code { background: none; border: 0; font-size: 12px; padding: 0; }
+.scroll { overflow-x: auto; }
+table {
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 620px;
+  width: 100%;
+}
+th, td {
+  border-bottom: 1px solid var(--border-soft);
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th { color: var(--dim); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+ul { margin: 0 0 12px; padding-left: 20px; }
+li { margin-bottom: 5px; }
+.note {
+  background: color-mix(in oklab, var(--attention) 7%, transparent);
+  border-left: 3px solid var(--attention);
+  border-radius: 0 8px 8px 0;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+}
+
+/* ---- the mockup frame: Mission Control's own Setup panel ---- */
+.mock {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 0 0 10px;
+  padding: 18px 20px;
+}
+.mock-caption {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .05em;
+  margin: 0 0 28px;
+  text-transform: uppercase;
+}
+.setup-split { display: grid; gap: 22px; grid-template-columns: 176px minmax(0, 1fr); }
+.setup-rail {
+  align-content: start;
+  border-right: 1px solid var(--border-soft);
+  display: grid;
+  gap: 2px;
+  padding-right: 12px;
+}
+.setup-rail-item {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  gap: 9px;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+.setup-rail-item.is-active {
+  background: color-mix(in oklab, var(--working) 12%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+  color: var(--fg);
+}
+.setup-rail-label { flex: 1; font-size: 11.5px; font-weight: 560; }
+.setup-rail-count { color: var(--dim); font-family: var(--mono); font-size: 10px; }
+.setup-dot { border-radius: 50%; flex: none; height: 7px; width: 7px; }
+.setup-dot-ready { background: var(--idle); }
+.setup-dot-gap { background: var(--attention); }
+.setup-pane-head { border-bottom: 1px solid var(--border-soft); padding-bottom: 9px; }
+.setup-pane-head h4 { font-size: 13px; margin: 0 0 3px; }
+.setup-pane-head p { color: var(--dim); font-size: 11.5px; margin: 0; }
+.setup-rows { border-bottom: 1px solid var(--border-soft); }
+.setup-row { border-top: 1px solid var(--border-soft); padding: 12px 3px; }
+.setup-rows .setup-row:first-child { border-top: 0; }
+.setup-row-missing { background: color-mix(in oklab, var(--attention) 4%, transparent); }
+.setup-row-title { align-items: center; display: flex; gap: 8px; }
+.setup-row-title strong { font-size: 12.5px; font-weight: 620; }
+.setup-impact, .setup-evidence {
+  color: var(--dim);
+  font-size: 11.5px;
+  margin: 3px 0 0;
+  padding-left: 16px;
+}
+.setup-evidence { font-family: var(--mono); font-size: 11px; }
+.setup-status, .setup-requirement {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: .025em;
+  line-height: 1;
+  padding: 3px 6px;
+  text-transform: uppercase;
+}
+.setup-status-missing {
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+  color: var(--attention);
+}
+.setup-requirement { color: var(--dim); }
+
+/* the new preference surface, shared bits */
+.pref-band {
+  background: color-mix(in oklab, var(--working) 5%, var(--panel-2));
+  border: 1px solid color-mix(in oklab, var(--working) 22%, var(--border-soft));
+  border-radius: 10px;
+  margin: 14px 0 6px;
+  padding: 13px 14px;
+}
+.pref-band-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+.pref-band-head strong { font-size: 12.5px; font-weight: 620; }
+.pref-hint { color: var(--dim); font-size: 11.5px; margin: 7px 0 0; }
+.pref-hint b { color: var(--muted); font-weight: 600; }
+
+/* A: the existing TerminalPreferencePicker trigger */
+.terminal-pref-trigger {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  display: inline-flex;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  gap: 8px;
+  padding: 6px 10px;
+}
+.terminal-pref-caret { color: var(--dim); font-size: 9px; }
+.terminal-pref-pop {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+  display: grid;
+  gap: 1px;
+  margin: 8px 0 0 auto;
+  max-width: 340px;
+  padding: 6px;
+}
+.launch-head {
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: .06em;
+  padding: 6px 8px 3px;
+  text-transform: uppercase;
+}
+.launch-row {
+  align-items: flex-start;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--fg);
+  display: flex;
+  gap: 9px;
+  padding: 7px 8px;
+  text-align: left;
+  width: 100%;
+}
+.launch-row[aria-checked="true"] {
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  border-color: color-mix(in oklab, var(--working) 34%, var(--border));
+}
+.launch-row.is-disabled { opacity: .48; }
+.launch-glyph { color: var(--muted); flex: none; font-size: 13px; line-height: 1.3; width: 15px; }
+.launch-text { display: grid; gap: 1px; min-width: 0; }
+.launch-label { font-size: 12px; font-weight: 580; }
+.launch-note { color: var(--dim); font-size: 11px; line-height: 1.45; }
+.launch-note.is-error { color: var(--attention); }
+.terminal-pref-check { color: var(--working); font-size: 11px; margin-left: auto; }
+.terminal-pref-auto-glyph { color: var(--purple); }
+
+/* B: inline rows, always open */
+.pref-rows { display: grid; gap: 2px; margin-top: 10px; }
+.pref-rows .launch-row { background: var(--panel); border-color: var(--border-soft); }
+.pref-rows .launch-row[aria-checked="true"] {
+  background: color-mix(in oklab, var(--working) 12%, var(--panel));
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.pref-group-head { margin-top: 6px; }
+
+/* C: per-row trailing control */
+.setup-row-split { align-items: flex-start; display: flex; gap: 14px; justify-content: space-between; }
+.setup-row-aside { flex: none; padding-top: 2px; text-align: right; }
+.setup-row-aside .launch-head { padding: 0 0 3px; }
+.pref-inert { color: var(--dim); font-size: 11px; font-style: italic; padding-top: 4px; }
+
+.decided {
+  background: color-mix(in oklab, var(--idle) 7%, transparent);
+  border-left: 3px solid var(--idle);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  margin: 0 0 26px;
+  padding: 12px 16px;
+}
+.decided ul { margin: 8px 0 0; }
+.decided li { color: var(--muted); }
+.decided li b { color: var(--fg); font-weight: 620; }
+.decided-note { color: var(--dim); font-size: 12px; margin: 9px 0 0; }
+.terminal-pref-trigger.is-off { opacity: .48; }
+h1 .sub {
+  color: var(--dim);
+  display: block;
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0;
+  margin-top: 2px;
+}
+a { color: var(--working); }
+.sizer {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 0 0 16px;
+  padding: 14px 16px;
+}
+.sizer-figure {
+  border-right: 1px solid var(--border-soft);
+  flex: none;
+  padding-right: 18px;
+  text-align: center;
+}
+.sizer-figure strong { color: var(--working); display: block; font-size: 26px; letter-spacing: -.02em; }
+.sizer-figure span { color: var(--dim); display: block; font-size: 10.5px; max-width: 130px; }
+.sizer-body { flex: 1; min-width: 240px; }
+.sizer-body p { color: var(--muted); font-size: 12.5px; margin: 0; }
+@media (max-width: 560px) {
+  .sizer-figure { border-right: 0; border-bottom: 1px solid var(--border-soft); padding: 0 0 10px; text-align: left; }
+  .sizer-figure span { max-width: none; }
+}
+figure { margin: 0 0 22px; }
+figcaption { color: var(--dim); font-size: 11.5px; margin-top: 8px; }
+svg { display: block; height: auto; max-width: 100%; }
+.dia-box { fill: var(--panel-2); stroke: var(--border); }
+.dia-box-hot { fill: color-mix(in oklab, var(--working) 10%, var(--panel-2)); stroke: var(--working); }
+.dia-line { stroke: var(--dim); stroke-width: 1.4; fill: none; }
+.dia-line-hot { stroke: var(--working); stroke-width: 1.6; fill: none; }
+.dia-fg { fill: var(--fg); }
+.dia-dim { fill: var(--dim); }
+.dia-hot { fill: var(--working); }
+.dia-warn { fill: var(--attention); }
+.dia-rule { stroke: var(--border-soft); }
+.dia-eyebrow { fill: var(--dim); font-size: 10.5px; letter-spacing: 1.2px; }
+.dia-mono { font-family: var(--mono); }
+.verdict {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+.verdict b { color: var(--fg); }
+@media (max-width: 640px) {
+  .setup-split { grid-template-columns: minmax(0, 1fr); }
+  .setup-rail { border-right: 0; border-bottom: 1px solid var(--border-soft); padding: 0 0 10px; }
+  .setup-row-split { flex-wrap: wrap; }
+  .setup-row-aside { text-align: left; }
+}
+</style>
+</head>
+<body>
+<main>
+
+<h1>Multiplexer focus terminal <span class="sub">implementation index</span></h1>
+<p class="lede">Source plan: <a href="./plan.md"><code>plan.md</code></a> (rendered: <a href="./plan.html">plan.html</a>). One phase, one task, one pull request.</p>
+
+<h2>Incorporated decisions</h2>
+<p>Submitted by the operator in the Mission Control dashboard review of <code>plan.md</code>, and already resolved into that file.</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Decision</th><th>Selected</th><th>Consequence for this decomposition</th></tr></thead>
+<tbody>
+<tr><td>Which mockup should this be built as?</td><td><strong>C - per-multiplexer chooser on each row</strong></td><td>The stored value is a map keyed by multiplexer, not a single id. <code>raiser</code> and the focus walk take the multiplexer as an argument. The panel needs a daemon-reported signal for "does this multiplexer need a terminal app".</td></tr>
+<tr><td>Should the focus walk also skip terminals whose binary is absent?</td><td><strong>Yes</strong></td><td><code>TerminalDeps</code> gains the availability dependency <code>TerminalTargetDeps</code> already has, and focus step 4 checks before spawning.</td></tr>
+<tr><td>What should happen after this plan is finalized?</td><td><strong>Create phased implementation plan</strong></td><td>This document.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The rejected alternatives - a single machine-wide preference band, and an always-open radio list - are gone from <code>plan.md</code> and are not carried here.</p>
+
+<h2>Repository findings</h2>
+<p>Verified against the checkout before phasing. These either confirm or correct the source plan.</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Finding</th><th>Evidence</th><th>Effect on the plan</th></tr></thead>
+<tbody>
+<tr><td>Focus step 4 loops <code>EMULATOR_IDS</code> and takes the first emulator that spawns, consulting no preference.</td><td><code>src/server/actions.ts:2219-2227</code></td><td>Confirms the problem statement. This is the primary edit site.</td></tr>
+<tr><td><code>TerminalDeps</code> carries only the two registries - no availability dependency.</td><td><code>src/server/terminal/registry.ts:118-121</code></td><td><strong>Corrects the plan.</strong> The availability check cannot just call <code>binUnavailableReason</code>; <code>TerminalDeps</code> must extend <code>BinAvailabilityDeps</code>, and <code>defaultTerminalDeps</code> must supply <code>installed</code> / <code>unsupported</code>, mirroring <code>defaultTerminalTargetDeps</code> (<code>targets.ts:48-54</code>).</td></tr>
+<tr><td><code>raiser(deps)</code> takes no multiplexer and is called from two places.</td><td><code>src/server/terminal/targets.ts:72-81</code>, called at <code>:113</code> and <code>:328</code></td><td>Both call sites already hold the multiplexer, so adding the argument is mechanical.</td></tr>
+<tr><td>cmux declares <code>attachArgv: null</code>; herdr and tmux declare one.</td><td><code>cmux.ts:566</code>, <code>herdr.ts:297</code>, <code>tmux.ts:479</code></td><td>Confirms that "which multiplexers get a control" is an adapter fact, and must be reported to the browser rather than restated there.</td></tr>
+<tr><td><code>multiplexerView</code> already branches on <code>sessions.attachArgv</code>.</td><td><code>src/server/terminal/targets.ts:102-111</code></td><td><code>needsTerminalApp</code> costs one field in an existing branch.</td></tr>
+<tr><td>A new <code>app_config</code> entry needs a <code>SETTINGS_BACKUP_DOMAINS</code> id, which is <strong>append-only</strong>.</td><td><code>src/shared/settings-backup-domains.ts:1-7</code></td><td>Append <code>terminals</code>; never reorder. One of the repository's controlled append-only ID contracts.</td></tr>
+<tr><td>Settings backup and restore are driven by <code>APP_CONFIG_ENTRY_LIST</code>, with no second inclusion list.</td><td><code>settings-backups/config-registry.ts:24-26</code>, generic branch at <code>:38-45</code></td><td>A <code>fieldsEntry</code> with the default <code>capture: "generic"</code> is backed up and restored with <strong>no</strong> edit to the backup switch.</td></tr>
+<tr><td><code>setHarnessesConfig</code> merges per agent key so one panel edit cannot blank a sibling.</td><td><code>src/server/harnesses.ts:105</code></td><td>The terminals config merges per multiplexer key the same way.</td></tr>
+<tr><td>Herdr reports no clients, so focus step 1 can never find a host tab for a Herdr session.</td><td><code>src/server/terminal/herdr.ts:203-207</code></td><td>Every Herdr Focus reaches step 4, making its preference the most exercised. A verification risk, not a code change.</td></tr>
+<tr><td><code>SETUP_DEPENDENCY_IDS</code> multiplexer values share their spelling with <code>MULTIPLEXER_IDS</code>.</td><td><code>setup-catalog.ts:19-34</code>, <code>terminal.ts:31</code></td><td>The panel can correlate a setup row to a terminal target without a new mapping table.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Sizing and phase count</h2>
+
+<div class="sizer">
+  <div class="sizer-figure"><strong>320-380</strong><span>gross non-test implementation lines</span></div>
+  <div class="sizer-body">
+    <p>Assumptions: a new ~40-line server config module mirroring <code>harnesses.ts</code>; ~30 lines of Zod schema and patch schema; ~20 lines of route; ~60 lines of policy across <code>targets.ts</code>, <code>actions.ts</code> and <code>registry.ts</code>; ~55 lines of new browser hook and API client; ~70 lines in <code>SetupPanel.tsx</code>; ~25 lines of change in <code>TerminalPreferencePicker.tsx</code>; ~35 lines of CSS. Comment density in this repository is high and is included in the count.</p>
+  </div>
+</div>
+
+<p><strong>Phase count: one.</strong> Above the 200-line threshold the rubric still defaults to a single phase, and nothing here argues for more:</p>
+<ul>
+<li>The work is one vertical slice - schema, persistence, route, policy, UI - for a single setting. Splitting it at an application-layer boundary is the split the rubric names as invalid, and it would produce a dead surface in either direction: a stored preference nothing reads, or a chooser with nowhere to write.</li>
+<li>No sub-part is independently testable in a way that reduces risk. The policy change is only observable once something can set the preference; the UI is only assertable once the route answers.</li>
+<li>The availability check is roughly 25 lines inside the very function the preference ordering edits. Separating it would mean two pull requests touching the same loop.</li>
+</ul>
+
+<h2>Phases</h2>
+<div class="scroll">
+<table>
+<thead><tr><th>Phase</th><th>File</th><th>Outcome</th><th>Depends on</th><th>Repository</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="./phase-1-per-multiplexer-terminal-preference.md"><code>phase-1-per-multiplexer-terminal-preference.md</code></a></td><td>Each multiplexer that needs a window carries its own terminal-app preference, set on its Setup row and honoured by Focus.</td><td>Planning session only</td><td><code>mission-control</code> (source repository)</td></tr>
+</tbody>
+</table>
+</div>
+
+<figure>
+<svg viewBox="0 0 640 84" role="img" aria-label="The planning session pull request publishes the plan artifacts, which releases the single Phase 1 task.">
+  <defs>
+    <marker id="g1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="dia-dim"/>
+    </marker>
+  </defs>
+  <g font-family="system-ui, sans-serif" font-size="11.5">
+    <rect x="0" y="14" width="248" height="52" rx="8" class="dia-box"/>
+    <text x="124" y="36" class="dia-fg" text-anchor="middle">Planning session pull request</text>
+    <text x="124" y="52" class="dia-dim" text-anchor="middle" font-size="10.5">publishes the plan artifacts</text>
+    <line x1="250" y1="40" x2="330" y2="40" class="dia-line" marker-end="url(#g1)"/>
+    <text x="290" y="32" class="dia-dim" text-anchor="middle" font-size="9.5">merge releases</text>
+    <rect x="332" y="14" width="308" height="52" rx="8" class="dia-box-hot"/>
+    <text x="486" y="36" class="dia-fg" text-anchor="middle">Phase 1: per-multiplexer terminal preference</text>
+    <text x="486" y="52" class="dia-dim" text-anchor="middle" font-size="10.5">one task, one pull request</text>
+  </g>
+</svg>
+<figcaption>One phase, so no concurrency groups and no inter-phase merge order. Phase 1's only prerequisite is this planning session.</figcaption>
+</figure>
+
+<h2>Cross-phase contracts</h2>
+<p>With one phase there is nothing to hand between phases. These are the contracts Phase 1 establishes for <em>future</em> work, and it must not leave them implicit:</p>
+<ul>
+<li><code>multiplexerTerminal</code> is an exhaustive <code>Record&lt;MultiplexerId, EmulatorId | null&gt;</code>. Adding a multiplexer must fail typecheck here rather than silently produce a backend with no preference.</li>
+<li><code>needsTerminalApp</code> on <code>TerminalTargetView</code> is derived from the adapter's <code>attachArgv</code>, never from a backend id. No consumer may name cmux.</li>
+<li><code>terminals</code> is appended to <code>SETTINGS_BACKUP_DOMAINS</code> and never reordered.</li>
+<li>The preference is read at focus time, not captured at dispatch.</li>
+</ul>
+
+<h2>Final verification strategy</h2>
+<p>Owned by Phase 1 and run before its pull request. There is no later phase to defer any of it to.</p>
+<ul>
+<li><code>npm run typecheck</code> and <code>npm run lint</code>.</li>
+<li>Focused <code>node --test --import ./test/setup-state.mjs --import tsx</code> runs over the new and touched test files.</li>
+<li><code>npm run build</code> then <code>npm run test:e2e</code> for the spec covering the new control, since a UI surface changed.</li>
+</ul>
+
+</main>
+</body>
+</html>

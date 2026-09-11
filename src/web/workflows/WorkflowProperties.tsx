@@ -16,7 +16,11 @@ import {
   sessionActionChoiceLabel,
   sessionActionChoicesForDisplay,
   sessionActionCompletionLabel,
+  withNodeExecutionOverride,
 } from "@shared/workflow.ts";
+import type { LlmProviderView } from "@shared/types.ts";
+import { NodeExecutionEditor } from "./NodeExecutionEditor.tsx";
+import { personaNodeRouting } from "./node-execution.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { missionRouteHash } from "./useWorkflowRoute.ts";
 
@@ -52,6 +56,7 @@ import type { WorkflowSelection } from "./WorkflowCanvas.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { DeleteButton } from "../components/DeleteButton.tsx";
+import { personaRoutingLabel } from "../library/library-model.ts";
 
 type WorkflowPatch = Partial<Pick<
   WorkflowDefinition,
@@ -227,6 +232,7 @@ export function WorkflowPipelineProperties({
 export function WorkflowProperties({
   workflow,
   personas,
+  providers = [],
   sessionActions = [],
   availableCompletions = EMPTY_COMPLETIONS,
   diagnostics,
@@ -237,6 +243,8 @@ export function WorkflowProperties({
 }: {
   workflow: WorkflowDefinition;
   personas: PersonaView[];
+  /** Headless providers a node override may name. Empty until the daemon has answered. */
+  providers?: readonly LlmProviderView[];
   /** Names a selected action node and populates its picker, archived rows included. */
   sessionActions?: SessionAction[];
   /** Adapters this daemon can run. Narrows the picker; never narrows what can be NAMED. */
@@ -317,6 +325,10 @@ export function WorkflowProperties({
   );
   const selectedPersonaAvailable = selectedPersonaId === null
     || personaChoices.some(({ persona }) => persona.id === selectedPersonaId);
+  const selectedPersona = selectedPersonaId === null
+    ? undefined
+    : personas.find((persona) => persona.id === selectedPersonaId);
+  const selectedPersonaRouting = selectedPersona ? personaRoutingLabel(selectedPersona) : null;
   const selectedActionId = selectedNode?.kind === "session_action"
     ? selectedNode.sessionActionId
     : null;
@@ -335,20 +347,49 @@ export function WorkflowProperties({
           <p className="workflow-eyebrow">Selected node</p>
           <h3>{nodeLabel(workflow.draft, selectedNode, personas, sessionActions)}</h3>
           {selectedNode.kind === "persona" && (
-            <label>Persona
-              <Tooltip label="Which reviewer Persona this node runs">
-                <select disabled={readOnly} value={selectedNode.personaId} onChange={(event) => replaceNode({ ...selectedNode, personaId: event.target.value })}>
-                  {!selectedPersonaAvailable && (
-                    <option value={selectedNode.personaId}>Unavailable: {selectedNode.personaId}</option>
-                  )}
-                  {personaChoices.map(({ persona, retained }) => (
-                    <option key={persona.id} value={persona.id}>
-                      {personaChoiceLabel(persona, retained)}
-                    </option>
-                  ))}
-                </select>
-              </Tooltip>
-            </label>
+            <>
+              <label>Persona
+                <Tooltip label="Which reviewer Persona this node runs">
+                  <select
+                    disabled={readOnly}
+                    value={selectedNode.personaId}
+                    onChange={(event) => replaceNode(withNodeExecutionOverride(
+                      { ...selectedNode, personaId: event.target.value },
+                      // Pointing a node at a different reviewer RESETS its routing. A model
+                      // chosen for one Persona is not a choice about another one, and
+                      // carrying it across is how a node ends up running a provider the new
+                      // reviewer was never evaluated on.
+                      null,
+                    ))}
+                  >
+                    {!selectedPersonaAvailable && (
+                      <option value={selectedNode.personaId}>Unavailable: {selectedNode.personaId}</option>
+                    )}
+                    {personaChoices.map(({ persona, retained }) => (
+                      <option key={persona.id} value={persona.id}>
+                        {personaChoiceLabel(persona, retained)}
+                      </option>
+                    ))}
+                  </select>
+                </Tooltip>
+              </label>
+              <NodeExecutionEditor
+                // The rail is ONE mount that the selection re-points, so the form resyncs
+                // from these rather than from a `key`: selecting another node, swapping this
+                // node's Persona, and a reload replacing the stored pair all have to reopen
+                // it on what is actually saved.
+                subject={{ nodeId: selectedNode.id, personaId: selectedNode.personaId }}
+                name={nodeLabel(workflow.draft, selectedNode, personas, sessionActions)}
+                override={selectedNode.executionOverride ?? null}
+                seed={personaNodeRouting(selectedPersona)}
+                inherited={selectedPersonaRouting}
+                providers={providers}
+                readOnly={readOnly}
+                onChange={(override) => replaceNode(
+                  withNodeExecutionOverride(selectedNode, override),
+                )}
+              />
+            </>
           )}
           {selectedNode.kind === "end" && (
             <label>Outcome

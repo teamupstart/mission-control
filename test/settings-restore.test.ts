@@ -557,6 +557,75 @@ test("restore advances catalogs, preserves immutable history and every excluded 
     ?.currentVersionId, "version-one");
 });
 
+// The backup format reuses the shared graph schemas rather than describing workflows a second
+// time, so a node's provider/model choice should ride along for free. "Should" is the word
+// this test exists to remove: capture, canonical JSON, digest signing, staging and the merge
+// are five separate passes over the same object, and a strip in any one of them would lose a
+// published routing decision on the one day an operator most needs it back.
+test("a node execution override survives capture, signing and restore in draft and version", async () => {
+  const routed = () => {
+    const base = draft("persona-one");
+    return {
+      ...base,
+      nodes: base.nodes.map((node) => node.kind === "persona"
+        ? { ...node, executionOverride: { runner: "codex" as const, model: "gpt-5.6-sol" } }
+        : node),
+    };
+  };
+  assert.equal(workflowStore.insertPersona({
+    id: "persona-one",
+    name: "Persona One",
+    normalizedName: normalizePersonaName("Persona One"),
+    description: "Original Persona",
+    guidanceMarkdown: "# Judge\n",
+    runner: null,
+    model: null,
+    createdAt: 10,
+    updatedAt: 10,
+  }).ok, true);
+  assert.equal(workflowStore.insertWorkflow({
+    id: "workflow-one",
+    name: "Workflow One",
+    normalizedName: normalizeWorkflowName("Workflow One"),
+    description: "Original workflow",
+    draft: routed(),
+    ...defaults,
+    createdAt: 12,
+    updatedAt: 12,
+  }).ok, true);
+  assert.equal(workflowStore.publishWorkflow("workflow-one", 1, "version-one", 13).ok, true);
+
+  const root = join(home, "override-restore");
+  const store = new SettingsBackupStore(root);
+  const original = snapshot();
+  store.write(original);
+
+  // Take the choice away, both in the draft and in a newer published version.
+  assert.equal(workflowStore.updateWorkflowCas("workflow-one", 1, {
+    draft: draft("persona-one"),
+  }, 100).ok, true);
+  assert.equal(workflowStore.publishWorkflow("workflow-one", 2, "version-two", 101).ok, true);
+  const strippedDraft = workflowStore.getWorkflow("workflow-one")!.draft.nodes
+    .find((node) => node.kind === "persona")!;
+  assert.equal(Object.hasOwn(strippedDraft, "executionOverride"), false);
+
+  const result = await service(root, {}, store).restore(original.id, original.digest);
+  assert.equal(result.status, "restored");
+
+  const restoredDraft = workflowStore.getWorkflow("workflow-one")!.draft.nodes
+    .find((node) => node.kind === "persona")!;
+  assert.deepEqual(
+    (restoredDraft as { executionOverride?: unknown }).executionOverride,
+    { runner: "codex", model: "gpt-5.6-sol" },
+  );
+  const restoredVersion = workflowStore.getWorkflowVersion("workflow-one", 1)!.graph.nodes
+    .find((node) => node.kind === "persona")!;
+  assert.deepEqual(
+    (restoredVersion as { executionOverride?: unknown }).executionOverride,
+    { runner: "codex", model: "gpt-5.6-sol" },
+  );
+});
+
 test("restore preview and mutation preserve installed built-in catalog rows", async () => {
   seedBaseline();
   const root = join(home, "builtins");

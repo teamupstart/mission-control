@@ -22,7 +22,7 @@ A Persona is one reviewer's standards in Markdown. The rail groups them as Syste
 
 A Persona has 3 components:
 
-- **Model:** The provider + model a persona runs as
+- **Model:** The provider + model a persona runs as by default. A workflow can override that pair for one reviewer node without changing the Persona.
 - **Markdown:** The prompt a persona gets
 
 

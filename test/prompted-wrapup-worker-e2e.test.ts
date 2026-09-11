@@ -266,6 +266,15 @@ const goalRecord = {
   updatedAt: 0,
 };
 
+/** The worker's own first log line, from `worker.ts`. Its stdout, never stderr. */
+const WORKER_READY = "Foreman worker started";
+
+/** How long the worker may take to announce itself before the action budget starts. */
+const BOOT_MS = 30_000;
+
+/** The multiple of an action budget a run may reach once starvation is credited back. */
+const STARVATION_ALLOWANCE = 6;
+
 /**
  * Boot the real worker against a stub daemon, let it run, then stop it.
  *
@@ -309,11 +318,45 @@ async function runWorker(
   );
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
-  child.stdout?.on("data", (d: string) => (out += d));
-  child.stderr?.on("data", (d: string) => (out += d));
-  const deadline = Date.now() + opts.ms;
+  /**
+   * The worker announcing itself on stdout. It is the boundary between BOOTING and WORKING,
+   * and the two need separate budgets: spawning `node --import tsx` over this repository
+   * compiles the worker's whole import graph, and on a loaded machine that alone can outlast
+   * the action budget a caller passed. Counting boot against that budget is what turns "the
+   * machine was busy" into "the worker never acted".
+   */
+  let stdout = "";
+  child.stdout?.on("data", (d: string) => { stdout += d; out += d; });
+  // Stderr is RECORDED but never counts as booted. Node prints `ExperimentalWarning` and
+  // friends to stderr before a line of the worker's own output exists, so treating any
+  // stderr byte as the start signal hands the action budget away to a warning and quietly
+  // reinstates the defect this split exists to fix.
+  child.stderr?.on("data", (d: string) => { out += d; });
+  // Matched against the ACCUMULATED stdout rather than one chunk: a pipe may split the line.
+  const booted = (): boolean => stdout.includes(WORKER_READY);
+  const bootDeadline = Date.now() + BOOT_MS;
+  while (!booted() && Date.now() < bootDeadline && !opts.until?.()) await sleep(25);
+
+  /**
+   * `opts.ms` as an OPPORTUNITY budget rather than a wall-clock one.
+   *
+   * A starved event loop returns from `sleep(50)` after seconds, so a plain wall-clock
+   * deadline is spent by the very contention the worker is also suffering - the loop exits
+   * having given the child almost no polls, and the assertion below reports a worker that
+   * "never acted" when nothing was ever asked of it. Each oversleep is credited back, so the
+   * budget means what its callers read it as: this much time for the worker to do the thing.
+   *
+   * `ceiling` keeps that honest. A worker that is genuinely wedged still fails, within a
+   * bounded multiple of the budget, rather than extending itself forever.
+   */
+  let deadline = Date.now() + opts.ms;
+  const ceiling = Date.now() + opts.ms * STARVATION_ALLOWANCE;
   do {
-    await sleep(Math.min(50, Math.max(1, deadline - Date.now())));
+    const asked = Math.min(50, Math.max(1, deadline - Date.now()));
+    const before = Date.now();
+    await sleep(asked);
+    const overslept = Date.now() - before - asked;
+    if (overslept > asked) deadline = Math.min(deadline + overslept, ceiling);
   } while (Date.now() < deadline && !opts.until?.());
   child.kill("SIGTERM");
   await new Promise<void>((resolve) => {

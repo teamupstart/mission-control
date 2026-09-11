@@ -397,12 +397,22 @@ test("historical pricing failures do not block live usage and retries are thrott
     }
     return originalEstimate(event);
   });
+  let laterHarnessAttempts = 0;
+  t.mock.method(HARNESSES.pi.usage!, "estimate", () => {
+    laterHarnessAttempts++;
+    return { costUsd: 0.02, pricingModel: "test-pi", pricingVersion: "test-recovery" };
+  });
   const errors = t.mock.method(console, "error", () => {});
   let now = Date.now();
   t.mock.method(Date, "now", () => now);
   commitUsageRead({ sourceKey: "recovery-failure-source", noteKey: "recovery-failure-history", sessionId: null,
     agent: "codex", cursor: { offset: 50, modelId: "gpt-6-astra", fileId: null, discardPartial: false },
     updatedAt: now, events: [{ identity: "recovery-failure-request", ts: now, modelId: "gpt-6-astra",
+      querySource: "main", input: 1_000, output: 0, reasoningOutput: 0, cacheRead: 0,
+      cacheWrite: 0, costUsd: null, pricingVersion: "" }] });
+  commitUsageRead({ sourceKey: "later-harness-source", noteKey: "later-harness-history", sessionId: null,
+    agent: "pi", cursor: { offset: 50, modelId: "test-pi", fileId: null, discardPartial: false },
+    updatedAt: now, events: [{ identity: "later-harness-request", ts: now, modelId: "test-pi",
       querySource: "main", input: 1_000, output: 0, reasoningOutput: 0, cacheRead: 0,
       cacheWrite: 0, costUsd: null, pricingVersion: "" }] });
   const path = join(home, "recovery-failure-live.jsonl");
@@ -420,6 +430,9 @@ test("historical pricing failures do not block live usage and retries are thrott
   const stop = startUsagePoller(registry);
   try {
     assert.equal(attempts, 1);
+    assert.equal(sessionCostFor("later-harness-history")?.costUsd, 0.02,
+      "a failing harness must not prevent later harness recovery");
+    assert.equal(laterHarnessAttempts, 1);
     assert.equal(registry.getSession("recovery-live-card")?.cost?.input, 700);
     appendFileSync(path, token("2026-09-11T12:01:00.000Z") + "\n");
     await eventually(() => registry.getSession("recovery-live-card")?.cost?.input === 1_400);
@@ -434,6 +447,7 @@ test("historical pricing failures do not block live usage and retries are thrott
     now += 60_000;
     await eventually(() => sessionCostFor("recovery-failure-history")?.costUsd === 0.01);
     assert.equal(attempts, 3);
+    assert.equal(laterHarnessAttempts, 1, "successful harnesses are not recovered again");
     assert.equal(usageCursorFor("recovery-failure-source").offset, 50);
   } finally {
     stop();

@@ -39,25 +39,25 @@ export function startUsagePoller(registry: Registry): () => void {
   // append-only source. Keep that exact conversation/path quarantined for this daemon
   // lifetime; changing either value produces a new key and is the only safe reset signal.
   const rejected = new Set<string>();
-  let pricesRecovered = false;
+  const pricesRecovered = new Set<string>();
   let nextPriceRecoveryAt = 0;
 
   const tick = (): void => {
     if (stopped) return;
     const now = Date.now();
     let more = false;
-    if (!pricesRecovered && now >= nextPriceRecoveryAt) {
-      try {
-        for (const harness of allHarnesses()) {
-          if (!harness.usage) continue;
+    if (now >= nextPriceRecoveryAt) {
+      nextPriceRecoveryAt = now + PRICE_RECOVERY_RETRY_MS;
+      for (const harness of allHarnesses()) {
+        if (!harness.usage || pricesRecovered.has(harness.id)) continue;
+        try {
           for (const key of priceUnpricedUsage(harness.id, harness.usage.estimate)) {
             registry.applyDurableUsage(key);
           }
+          pricesRecovered.add(harness.id);
+        } catch (err) {
+          console.error(`[usage] historical pricing recovery failed for ${harness.id}:`, err);
         }
-        pricesRecovered = true;
-      } catch (err) {
-        nextPriceRecoveryAt = now + PRICE_RECOVERY_RETRY_MS;
-        console.error("[usage] historical pricing recovery failed:", err);
       }
     }
     try {

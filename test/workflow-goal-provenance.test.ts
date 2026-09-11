@@ -396,7 +396,18 @@ test("steering that never was a contract reads as implausible, and a terse real 
     const verdict = classify(steering);
     assert.equal(verdict.verdict, "implausible", `${steering} must classify as implausible`);
     assert.deepEqual(verdict.signals, ["implausible"]);
-    assert.match(verdict.reason, new RegExp(`${steering.length} character`));
+    // The WHOLE sentence, not a leading substring. This reason is shown verbatim as the
+    // badge's accessible name and written into `run_intent_classified`, and nothing ever
+    // rewrites it - so a reason that does not parse is permanent on every run that recorded
+    // it. A prefix match let exactly that ship: the clause read "under the 24 a completion
+    // contract needs to name..." with no noun after the floor, and every assertion here
+    // stopped before reaching the gap.
+    assert.equal(
+      verdict.reason,
+      `The frozen ask is ${steering.length} characters long, under the`
+        + ` ${WORKFLOW_GOAL_OBJECTIVE_FLOOR} characters a completion contract needs to name a`
+        + " subject and a state of doneness.",
+    );
   }
 
   // Exactly at the floor, and a complete ask: a subject and a state of doneness. The floor is
@@ -552,6 +563,75 @@ test("overlapping checks resolve by precedence and report every match", () => {
   // Precedence never reorders: the verdict is always the first signal reported.
   for (const verdict of [both, automatedAndUnreconciled, retired]) {
     assert.equal(verdict.verdict, verdict.signals[0] ?? "objective");
+  }
+});
+
+/**
+ * Every reason sentence this can produce, in full, as English.
+ *
+ * The reason is not diagnostic scratch text: run detail shows it verbatim as the badge's
+ * accessible name, and `run_intent_classified` records it on the run for good - this phase
+ * deliberately never reclassifies or rewrites an existing verdict. A sentence that does not
+ * parse is therefore permanent wherever it was recorded.
+ *
+ * Asserted whole rather than by substring, which is the hole a real defect went through: the
+ * implausible clause read "under the 24 a completion contract needs to name a subject" - no
+ * noun after the floor - and every assertion in this file stopped short of the gap.
+ */
+test("every reason sentence reads as English, whole", () => {
+  const reasonFor = (rawGoal: string, intentSource: Parameters<typeof classifyWorkflowGoalProvenance>[0]["intentSource"] = null) =>
+    classifyWorkflowGoalProvenance({ rawGoal, intentSource, now: NOW }).reason;
+
+  assert.equal(
+    reasonFor("Give the pipeline strip a visible scrollbar on every platform"),
+    "The frozen ask is the session's durable objective and tripped no provenance check.",
+  );
+  assert.equal(
+    reasonFor(RESTART_CONTINUATION_PROMPT),
+    "The frozen ask matches an SDK restart continuation, which Mission Control types itself.",
+  );
+  // The singular boundary, which a naive pluralisation gets wrong and no other case reaches.
+  assert.equal(
+    reasonFor("x"),
+    "The frozen ask is 1 character long, under the 24 characters a completion contract needs"
+      + " to name a subject and a state of doneness.",
+  );
+  assert.equal(
+    reasonFor(
+      "Give the pipeline strip a visible scrollbar on every platform",
+      { objectiveVersion: 1, promptRevision: 4, resolvedPromptRevision: 2, relationship: null },
+    ),
+    "The frozen ask was frozen at prompt revision 4 while the goal refiner had reconciled only"
+      + " up to revision 2, so an instruction the session has already accepted may still turn"
+      + " out to replace this objective.",
+  );
+  // Two clauses joined. The join is part of the sentence and has to read as one.
+  assert.equal(
+    reasonFor(
+      "create pr",
+      { objectiveVersion: 1, promptRevision: 3, resolvedPromptRevision: 1, relationship: null },
+    ),
+    "The frozen ask is 9 characters long, under the 24 characters a completion contract needs"
+      + " to name a subject and a state of doneness; and was frozen at prompt revision 3 while"
+      + " the goal refiner had reconciled only up to revision 1, so an instruction the session"
+      + " has already accepted may still turn out to replace this objective.",
+  );
+
+  // No sentence may contain a number immediately followed by a word that is not its unit -
+  // the shape the defect had. Cheap, and it covers clauses nobody has written yet.
+  for (const reason of [
+    reasonFor("x"),
+    reasonFor("create pr"),
+    reasonFor("Give the pipeline strip a visible scrollbar on every platform", {
+      objectiveVersion: 1, promptRevision: 4, resolvedPromptRevision: 2, relationship: null,
+    }),
+  ]) {
+    assert.match(reason, /\.$/, `"${reason}" must end in a full stop`);
+    assert.doesNotMatch(
+      reason,
+      /\b\d+ (?:a|an|the) \b/,
+      `"${reason}" has a bare number where a unit belongs`,
+    );
   }
 });
 

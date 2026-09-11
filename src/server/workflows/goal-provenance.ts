@@ -214,8 +214,8 @@ export function classifyWorkflowGoalProvenance(
     signals.push("implausible");
     clauses.push(
       `is ${ask.length} character${ask.length === 1 ? "" : "s"} long, under the`
-        + ` ${WORKFLOW_GOAL_OBJECTIVE_FLOOR} a completion contract needs to name a subject`
-        + " and a state of doneness",
+        + ` ${WORKFLOW_GOAL_OBJECTIVE_FLOOR} characters a completion contract needs to name a`
+        + " subject and a state of doneness",
     );
   }
   const source = input.intentSource ?? null;

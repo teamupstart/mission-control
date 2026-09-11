@@ -8,6 +8,7 @@ import type {
   WorkflowHumanDecision,
   WorkflowCheckOutcome,
   WorkflowExternalSource,
+  WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowRunPage,
@@ -2246,6 +2247,46 @@ function RunDisclosure({
   );
 }
 
+/** What each provenance verdict is called on screen. `objective` never reaches here. */
+const GOAL_PROVENANCE_LABELS: Record<
+  Exclude<WorkflowGoalProvenanceVerdict, "objective">,
+  string
+> = {
+  automation: "Ask looks machine-authored",
+  implausible: "Ask looks too short to review against",
+  unreconciled: "Ask frozen before the newest instruction was reconciled",
+};
+
+/**
+ * A run that froze something other than a durable objective, said on the screen.
+ *
+ * Draws NOTHING for a healthy run and nothing for a run that predates the verdict. A badge on
+ * the ordinary case is a badge on every run, which is how the defect behind this survived for
+ * months: it was visible to anyone who queried for it and announced by nothing.
+ *
+ * The label is the one-word answer and the accessible name carries the whole reason, because
+ * the reason names every check that matched and a chip that printed all of it would push the
+ * ask it is about off the screen. `role="note"` rather than an alert: this is ancillary
+ * information about a run that is running perfectly well, and it never blocks it.
+ */
+function GoalProvenanceBadge(
+  { intent }: { intent: RunRecordIntentSummary },
+): React.JSX.Element | null {
+  const verdict = intent.provenanceVerdict;
+  if (verdict === null || verdict === "objective") return null;
+  return (
+    <p className="wf-run-chiprow">
+      <span
+        className="workflow-chip workflow-stopped"
+        role="note"
+        aria-label={intent.provenanceReason ?? GOAL_PROVENANCE_LABELS[verdict]}
+      >
+        {GOAL_PROVENANCE_LABELS[verdict]}
+      </span>
+    </p>
+  );
+}
+
 /**
  * What this round was trying to do, and who decided it.
  *
@@ -2327,6 +2368,7 @@ function IntentPane({
           {intent.refinedGoal ?? "No refined goal was recorded for this round."}
         </p>
       </div>
+      <GoalProvenanceBadge intent={intent} />
       <RunDisclosure
         title="Review contract"
         meta={`${intent.rawGoalCharacters.toLocaleString()} characters`}

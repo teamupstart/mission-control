@@ -22,6 +22,7 @@ import type {
   WorkflowSubmission,
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
+import { classifyWorkflowGoalProvenance } from "../src/server/workflows/goal-provenance.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
 import type { ChangeWorklistRow } from "../src/web/workflows/run-model.ts";
@@ -3202,4 +3203,89 @@ test("run detail labels unresolved intent provenance explicitly", () => {
   const html = render(updated, { pane: "intent" });
   const provenance = html.match(/<p class="wf-run-meta">(Objective version[^<]*)<\/p>/)?.[1];
   assert.equal(provenance, "Objective version 2 · prompt revision 4 · resolved revision 3 · unresolved");
+});
+
+/**
+ * The goal-provenance badge, which draws exactly when there is something to say.
+ *
+ * The markup shape is pinned here because the accessible name is the whole reason, and the
+ * chip's own text is only the one-word verdict - a browser assertion on the visible label
+ * would pass with the reason silently missing. `e2e/specs/workflow-run-intent-provenance.spec.ts`
+ * is what proves a real freeze reaches this at all.
+ */
+test("a suspicious frozen ask is badged, and a healthy one draws nothing", () => {
+  const base = runningDetail();
+  const badged = {
+    ...base,
+    run: {
+      ...base.run,
+      intentProvenance: {
+        verdict: "automation" as const,
+        signals: ["automation" as const],
+        reason: "The frozen ask matches a workflow repair packet, which Mission Control types"
+          + " itself.",
+        classifiedAt: 10,
+      },
+    },
+  } as WorkflowRunDetail;
+  const html = render(badged, { pane: "intent" });
+  assert.match(html, /Ask looks machine-authored/);
+  assert.match(
+    html,
+    /role="note" aria-label="The frozen ask matches a workflow repair packet, which Mission Control types itself\."/,
+  );
+
+  // Healthy, and measured: the run says `objective` and the pane still draws no chip, because
+  // a badge on every run is a badge nobody reads.
+  const healthy = {
+    ...base,
+    run: {
+      ...base.run,
+      intentProvenance: {
+        verdict: "objective" as const,
+        signals: [],
+        reason: "The frozen ask is the session's durable objective and tripped no provenance check.",
+        classifiedAt: 10,
+      },
+    },
+  } as WorkflowRunDetail;
+  assert.doesNotMatch(render(healthy, { pane: "intent" }), /role="note"/);
+  // And a run created before there was anything to measure it with says nothing either.
+  assert.doesNotMatch(render(base, { pane: "intent" }), /role="note"/);
+});
+
+/**
+ * The third verdict, wired end to end rather than hand-written.
+ *
+ * The provenance here is what the REAL classifier returns for a real short ask, not a literal
+ * a test author chose - which is the only way this pins the thing it claims to. A label map
+ * that drifted from the verdict it is keyed on, or a reason the pane dropped on the floor,
+ * would both pass against a fixture written to match the pane.
+ *
+ * `implausible` is the one verdict with no browser case: `automation`, `objective` and
+ * `unreconciled` are all reachable by driving a real session, while getting a sub-24-character
+ * ask frozen as a session's durable objective means dispatching a task whose whole stated
+ * intent is "create pr". That is worth asserting and not worth a dispatch, so it is asserted
+ * at the layer that can see the markup exactly.
+ */
+test("a frozen ask too short to be a contract is badged with the classifier's own reason", () => {
+  const base = runningDetail();
+  const provenance = classifyWorkflowGoalProvenance({
+    rawGoal: "create pr",
+    intentSource: null,
+    now: 10,
+  });
+  // The classifier's own answer, restated so a change to either side of the wiring is visible
+  // here rather than only in the markup below.
+  assert.equal(provenance.verdict, "implausible");
+  assert.match(provenance.reason, /9 characters long, under the 24/);
+
+  const html = render(
+    { ...base, run: { ...base.run, intentProvenance: provenance } } as WorkflowRunDetail,
+    { pane: "intent" },
+  );
+  assert.match(html, /Ask looks too short to review against/);
+  // The reason travels as the accessible name, which is the whole point of the split: the chip
+  // shows one phrase and a screen reader gets the sentence explaining it.
+  assert.match(html, new RegExp(`role="note" aria-label="${provenance.reason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
 });

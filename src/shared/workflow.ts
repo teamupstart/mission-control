@@ -3610,6 +3610,57 @@ export interface WorkflowRunIntentSnapshot {
 }
 
 /**
+ * The three ways a frozen ask can look wrong, in the order the classifier resolves them.
+ *
+ * The order IS the contract. The checks overlap - a repair packet frozen at an unreconciled
+ * revision matches two of them - so a classifier that answered whichever check ran first
+ * would report differently on the same input from build to build, which is the one thing an
+ * instrument must not do. `automation` outranks the rest because it is the actionable fact:
+ * text Mission Control typed itself is never a completion contract, whatever else is true of
+ * it. Every check that matched is still reported in `signals`, so precedence discards nothing.
+ */
+export const WORKFLOW_GOAL_PROVENANCE_SIGNALS = [
+  "automation",
+  "implausible",
+  "unreconciled",
+] as const;
+
+export type WorkflowGoalProvenanceSignal = (typeof WORKFLOW_GOAL_PROVENANCE_SIGNALS)[number];
+
+/** A signal, or `objective` for the ask that tripped none of them. */
+export const WORKFLOW_GOAL_PROVENANCE_VERDICTS = [
+  ...WORKFLOW_GOAL_PROVENANCE_SIGNALS,
+  "objective",
+] as const;
+
+export type WorkflowGoalProvenanceVerdict = (typeof WORKFLOW_GOAL_PROVENANCE_VERDICTS)[number];
+
+/**
+ * What KIND of ask a run froze, decided once at the freeze and never revisited.
+ *
+ * This reports; it never blocks. A run whose ask looks wrong still starts, still reviews and
+ * still finishes - the operator decides what to do about it. The defect this exists to make
+ * visible ran for months in the operator's own state, and the only reason nobody caught it is
+ * that finding it meant knowing to query SQLite for it.
+ *
+ * A different axis from `WorkflowRunIntentState` and deliberately not folded into it:
+ * `unreadable` means the row is damaged, this means the row is intact and suspicious.
+ *
+ * Absent on every run frozen before the column existed. That absence reads as "not
+ * classified" rather than as `objective`: nobody measured those runs, and a record that
+ * claimed otherwise would be the same silence wearing a verdict.
+ */
+export interface WorkflowRunIntentProvenance {
+  /** The highest-precedence signal that matched, or `objective` when none did. */
+  verdict: WorkflowGoalProvenanceVerdict;
+  /** EVERY signal that matched, in precedence order. Empty exactly when `objective`. */
+  signals: WorkflowGoalProvenanceSignal[];
+  /** One sentence naming each matched check and the evidence for it. */
+  reason: string;
+  classifiedAt: number;
+}
+
+/**
  * One run's canonical acceptance criteria, compacted once from its frozen intent.
  *
  * Criteria used to be recompacted per submission, which made them drift round to round (4, 3,
@@ -3691,6 +3742,14 @@ export interface WorkflowRun {
    * from the snapshot alone.
    */
   intentState?: WorkflowRunIntentState;
+  /**
+   * What kind of ask this run froze, classified inside the transaction that created it.
+   *
+   * Optional, and absent means NOT CLASSIFIED rather than healthy - a run created before this
+   * column existed was never measured, and no verdict invented now could describe a freeze
+   * that already happened. See `WorkflowRunIntentProvenance`.
+   */
+  intentProvenance?: WorkflowRunIntentProvenance | null;
   /**
    * The canonical criteria compacted once from `intent`, or null until that first compaction
    * succeeds.

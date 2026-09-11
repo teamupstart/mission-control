@@ -28,6 +28,7 @@ import {
   WorkflowPersonaDirectiveSchema,
   WorkflowPersonaDirectiveSnapshotSchema,
   WorkflowRunCriteriaSchema,
+  WorkflowRunIntentProvenanceSchema,
   WorkflowRunIntentSnapshotSchema,
   WorkflowRunStatusSchema,
   WorkflowContextSnapshotSchema,
@@ -155,12 +156,14 @@ import type {
   WorkflowCommandOverride,
   WorkflowCommandView,
   WorkflowAssetReferenceSet,
+  WorkflowRunIntentProvenance,
 } from "@shared/workflow.ts";
 import {
   freezeWorkflowRunIntent,
   workflowRunIntentFingerprint,
   type WorkflowRunIntentInput,
 } from "./intent-fingerprint.ts";
+import { classifyWorkflowGoalProvenance } from "./goal-provenance.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
@@ -599,6 +602,35 @@ function readRunIntent(
 }
 
 /**
+ * Read the freeze-time verdict, or null for a run nobody classified.
+ *
+ * Tolerant like `readRunIntent` above and for its reason, not as a general relaxation of this
+ * row's strictness: every other column here throws through `parseNullableJson`, which `getRun`
+ * turns into a null run, so one damaged byte would take the whole run out of every listing.
+ * Paying that for a diagnostic badge would be absurd - the operator would lose the run in
+ * order to be told something about it - so an unreadable verdict is reported to the log and
+ * read as "not classified", which is what a null column already means.
+ */
+function readRunIntentProvenance(
+  id: string,
+  raw: string | null,
+): WorkflowRunIntentProvenance | null {
+  if (raw === null) return null;
+  try {
+    return parseJson(
+      "workflow_runs",
+      id,
+      "intent_provenance_json",
+      raw,
+      WorkflowRunIntentProvenanceSchema,
+    );
+  } catch (error) {
+    diagnose(error);
+    return null;
+  }
+}
+
+/**
  * Validate the frozen intent on the way IN, not only on the way out.
  *
  * A snapshot that parses on read and not on write would be a run whose review intent silently
@@ -633,6 +665,34 @@ function durableRunJson(id: string, column: string, value: unknown): string {
     );
   }
   return payload;
+}
+
+/**
+ * Serialize the freeze-time verdict, refusing a payload this build could not read back.
+ *
+ * Classified HERE rather than by the caller, from the same snapshot the row is about to hold,
+ * so a verdict and the ask it describes cannot come from two different reads of the Goal. The
+ * two run-creating paths call this beside `frozenIntentJson` inside one transaction: a run
+ * that existed without a verdict would falsify the only thing this instrument claims.
+ */
+function intentProvenanceJson(
+  id: string,
+  intent: WorkflowRunIntentInput,
+  now: number,
+): { json: string; provenance: WorkflowRunIntentProvenance } {
+  const provenance = classifyWorkflowGoalProvenance({
+    rawGoal: intent.rawGoal,
+    intentSource: intent.intentSource,
+    now,
+  });
+  return {
+    json: durableRunJson(
+      id,
+      "intent_provenance_json",
+      WorkflowRunIntentProvenanceSchema.parse(provenance),
+    ),
+    provenance,
+  };
 }
 
 function frozenIntentJson(id: string, intent: WorkflowRunIntentInput): string {
@@ -1186,6 +1246,7 @@ const WorkflowRunRowSchema = z.object({
   check_budget_epoch_round: nullableInteger.optional().default(null),
   intent_json: nullableText.optional().default(null),
   run_criteria_json: nullableText.optional().default(null),
+  intent_provenance_json: nullableText.optional().default(null),
 });
 
 /** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
@@ -1234,6 +1295,7 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
     ) ?? [],
     checkBudgetEpochRound: row.check_budget_epoch_round ?? null,
     ...readRunIntent(row.id, row.intent_json ?? null, row.run_criteria_json ?? null),
+    intentProvenance: readRunIntentProvenance(row.id, row.intent_provenance_json ?? null),
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -6404,12 +6466,14 @@ export class WorkflowStore {
         if (!existingRun) throw new Error(`Workflow run ${existing.runId} is missing`);
         return { run: existingRun, submission: existing, idempotent: true };
       }
+      const provenance = intentProvenanceJson(run.id, run.intent, run.now);
       this.db.prepare(
         `INSERT INTO workflow_runs (
            id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
            trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
-           gate_state_json, started_at, updated_at, completed_at, intent_json
-         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
+           gate_state_json, started_at, updated_at, completed_at, intent_json,
+           intent_provenance_json
+         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?)`,
       ).run(
         run.id,
         run.binding.id,
@@ -6420,7 +6484,9 @@ export class WorkflowStore {
         run.now,
         run.now,
         frozenIntentJson(run.id, run.intent),
+        provenance.json,
       );
+      this.announceIntentProvenance(run.id, provenance.provenance);
       this.insertSubmissionInTransaction({
         ...submission,
         runId: run.id,
@@ -6559,12 +6625,14 @@ export class WorkflowStore {
       let previousFingerprint: string | undefined;
 
       if (!run) {
+        const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
         this.db.prepare(
           `INSERT INTO workflow_runs (
              id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
              trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
-             gate_state_json, started_at, updated_at, completed_at, intent_json
-           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
+             gate_state_json, started_at, updated_at, completed_at, intent_json,
+             intent_provenance_json
+           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?)`,
         ).run(
           input.runId,
           binding.id,
@@ -6575,7 +6643,9 @@ export class WorkflowStore {
           input.now,
           input.now,
           frozenIntentJson(input.runId, input.intent),
+          provenance.json,
         );
+        this.announceIntentProvenance(input.runId, provenance.provenance);
         this.insertSubmissionInTransaction({
           id: input.submissionId,
           runId: input.runId,
@@ -9012,6 +9082,34 @@ export class WorkflowStore {
     const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
     workflowLog("info", { run: runId, event: kind });
     return parseWorkflowEventRow(row);
+  }
+
+  /**
+   * Say out loud that a run froze an ask that looks wrong. Once, at the freeze, and never again.
+   *
+   * `objective` appends nothing. An event on the healthy case would be one row per run for
+   * ever, saying only that the ordinary thing happened, and the events an operator scrolls
+   * for would be buried under it - the same noise the badge avoids by drawing nothing.
+   *
+   * The event id is derived from the run alone rather than from the verdict beside it. A
+   * retried creation replays the same classification, so `appendEvent`'s deduplication answers
+   * it with the row already there; a retry that somehow produced a DIFFERENT verdict for one
+   * run is a contradiction rather than a second event, and the replay conflict it raises is
+   * the honest response to it.
+   *
+   * Called from inside the creating transaction, so a run and its announcement commit
+   * together or not at all.
+   */
+  private announceIntentProvenance(
+    runId: string,
+    provenance: WorkflowRunIntentProvenance,
+  ): void {
+    if (provenance.verdict === "objective") return;
+    this.appendEvent(runId, "run_intent_classified", {
+      verdict: provenance.verdict,
+      signals: provenance.signals,
+      reason: provenance.reason,
+    }, provenance.classifiedAt, `run-intent-classified:${runId}`);
   }
 
   listEvents(runId: string): WorkflowEvent[] {

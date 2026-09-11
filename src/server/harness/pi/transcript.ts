@@ -12,7 +12,7 @@ import { readRange } from "../../util/file-tail.ts";
 //
 // pi writes one JSON record per line to
 // ~/.pi/agent/sessions/--<cwd>--/<filename-safe-ISO-ts>_<uuid>.jsonl - project-keyed like
-// Claude, and read as turns the same way (a per-line `parse`, not Codex's batch). The byte
+// Claude. One aborted record can produce partial content and a separate interrupt marker. The byte
 // windowing over the file is format-agnostic and lives in `transcript.ts`; this module
 // supplies the two things only pi can answer - which file, and what a line says - and
 // assembles them into the `transcript` capability. Because that capability is non-null with
@@ -136,19 +136,19 @@ function piToolCall(block: Record<string, unknown>): ToolCall {
 }
 
 /**
- * Turn one parsed pi JSONL record into a renderable message, or null to drop it. Keeps
+ * Turn one parsed pi JSONL record into renderable messages. Keeps
  * `message` records (user prompts and assistant turns with text and/or tool calls); drops the
  * `session` / `model_change` / `thinking_level_change` bookkeeping records, `thinking` parts
  * (not conversation) and `tool_result` parts (the machine's answer, not a turn).
  */
-export function piToMessage(o: unknown): TranscriptMessage | null {
-  if (!o || typeof o !== "object") return null;
+export function piToMessages(o: unknown): TranscriptMessage[] {
+  if (!o || typeof o !== "object") return [];
   const rec = o as Record<string, unknown>;
-  if (rec.type !== "message") return null;
+  if (rec.type !== "message") return [];
   const m = rec.message as Record<string, unknown> | undefined;
-  if (!m || typeof m !== "object") return null;
+  if (!m || typeof m !== "object") return [];
   const role = m.role;
-  if (role !== "user" && role !== "assistant") return null;
+  if (role !== "user" && role !== "assistant") return [];
 
   let text = "";
   const tools: ToolCall[] = [];
@@ -167,15 +167,24 @@ export function piToMessage(o: unknown): TranscriptMessage | null {
     }
   }
   text = text.trim();
-  if (!text && tools.length === 0) return null;
-
-  const ts = typeof rec.timestamp === "string" ? Date.parse(rec.timestamp) : 0;
+  const ts = typeof rec.timestamp === "string" ? Date.parse(rec.timestamp) || 0 : 0;
   const id = typeof rec.id === "string" ? rec.id : `${role}-${ts}-${text.length}`;
-  return { id, role, text, tools, ts: Number.isNaN(ts) ? 0 : ts };
+  const messages: TranscriptMessage[] = text || tools.length ? [{ id, role, text, tools, ts }] : [];
+  // Pi renders "Operation aborted" from metadata, even when content is empty. Project the
+  // same separate user marker as Claude and Codex, after any partial output. Reading the
+  // recorded outcome covers both runtimes and direct terminal interrupts on every backend;
+  // a successful Escape write alone is not proof that the agent stopped a turn.
+  if (role === "assistant" && m.stopReason === "aborted") {
+    messages.push({ id: `interrupt:${id}`, role: "user", text: "[Request interrupted by user]", tools: [], ts });
+  }
+  return messages;
 }
 
 /** Pi's transcript capability: a located JSONL file, read as messages and as runtime meta. */
-export const piMessages = jsonlMessages({ parse: piToMessage, narration: () => null });
+export const piMessages = jsonlMessages({
+  parseBatch: (records) => records.flatMap(piToMessages),
+  narration: () => null,
+});
 
 export const piTranscript: TranscriptSpec = {
   metaSource: "transcript",

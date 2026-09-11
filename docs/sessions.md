@@ -552,9 +552,12 @@ task; the conversation, and all the context in it, is gone. Interrupt ends only 
 session, its conversation, its checkout and its task are all still there a moment later, and
 the next thing you type continues from everything the agent already knows.
 
-The conversation records the stop as `[Request interrupted by user]`, including in Codex
-Agent SDK sessions whose native rollout stores the interrupt as lifecycle metadata rather
-than as a message of its own.
+The conversation records the stop as `[Request interrupted by user]` in both Chat and
+Terminal views, across Claude Code, Codex and Pi on terminal and Agent SDK runtimes. Codex
+and Pi store the interrupt as metadata; Mission Control reads that recorded outcome and
+adds the marker after any partial response, including when Pi produced no text. The marker
+survives reloading the conversation and also appears for interrupts made directly in a
+terminal, regardless of the multiplexer or terminal integration.
 
 The queue goes with it, and that is not incidental: a stop that left queued messages armed
 would deliver them the moment the agent reported idle, restarting the work you just stopped.

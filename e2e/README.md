@@ -2051,6 +2051,13 @@ manual check.
 
 ## Pi installation and terminal dispatch
 
+`specs/pi-interrupt-conversation.spec.ts` covers empty and partial aborted responses in both
+conversation views on the managed Pi runtime. `specs/pi-interrupt-terminal.spec.ts` runs the
+pinned Pi TUI in a test-owned tmux pane against a deterministic loopback provider, interrupts
+from the dashboard and directly in the pane, and checks that the conversation survives a
+reload and accepts another turn. Both use no external model requests. Successful screenshots
+with `MC_E2E_EVIDENCE=1` land in `e2e/.artifacts/pi-interrupt-conversation/`.
+
 `specs/pi-extension-setup.spec.ts` exercises the first-install action and report-only warning
 row. Its terminal proof enables discovery but addresses only its own dispatched task and tmux
 home. `fixtures/fake-pi-plan.mjs` retains the catalog fake, then runs the pinned Pi CLI against

@@ -9,7 +9,7 @@
 // during the spike, so no tool call could be driven - the adapter's `tool_call` parsing is
 // documented as best-effort in `harness/pi/transcript.ts` and is not pinned here. What IS
 // pinned is what was captured: text parsing, the `thinking` part being dropped, the aborted
-// turn falling out, model/token/effort metadata, and the idle/working read.
+// turn's interrupt marker, model/token/effort metadata, and the idle/working read.
 //
 // One deviation from byte-verbatim, called out because the rule is strict: the opaque
 // `thinkingSignature` / `textSignature` / `encrypted_content` base64 blobs (each ~2KB of

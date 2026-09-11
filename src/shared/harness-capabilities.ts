@@ -181,6 +181,12 @@ export interface SkillsSpec {
   isolatedDirName: string;
 }
 
+/** Machine-wide file extension loader; directory resolution is shared with skills. */
+export interface ExtensionsSpec extends Pick<SkillsSpec, "dirEnvVar" | "homeDir" | "isolatedDirName"> {
+  /** Pi discovers the entry name, so this must end in .js. */
+  linkName: string;
+}
+
 /**
  * Running a Foreman work queue against this harness.
  *
@@ -495,6 +501,7 @@ interface HarnessCapabilitiesBase {
   resumes: boolean;
   permissionModes: PermissionModeSpec | null;
   skills: SkillsSpec | null;
+  extensions: ExtensionsSpec | null;
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
   mcp: McpSpec | null;
@@ -578,6 +585,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // readable, and the dialog just delays the first prompt, not the mode.
       launchArgs: (mode) => ["--permission-mode", mode === "default" ? "manual" : mode],
     },
+    extensions: null,
     skills: CLAUDE_SKILLS,
     workQueue: {
       uninstrumentedWhy:
@@ -687,6 +695,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // watches that directory itself, so the set it offers changes without anything being
     // typed at a running session. `skillsAgents()` therefore excludes it from the pane
     // broadcast.
+    extensions: null,
     skills: {
       reloadCommand: null,
       reloadIdleSource: null,
@@ -824,11 +833,16 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       homeDir: [".pi", "agent", "skills"],
       isolatedDirName: "pi-skills",
     },
-    // Pi can report lifecycle events through the Mission Control extension. Name the
-    // missing instrumentation without promising an installer before it ships.
+    extensions: {
+      dirEnvVar: "PI_EXTENSIONS_DIR",
+      homeDir: [".pi", "agent", "extensions"],
+      isolatedDirName: "pi-extensions",
+      linkName: "mission-control.js",
+    },
+    // Setup gains a control in the next phase; the configuration API exists now.
     workQueue: {
       uninstrumentedWhy:
-        "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes.",
+        "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes. Enable it with PUT /api/extensions/pi/config ({\"enabled\":true}), then start a fresh Pi session.",
     },
     // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which

@@ -291,10 +291,52 @@ tradeoffs.
 
 ## Pi session integration
 
-The [Pi extension](docs/pi-extension.md) bridges Mission Control tools, lifecycle, live model,
-effort, context, and attributed usage for hand-run Pi sessions. Build it with `npm run build`
-and exercise it with `pi -e /absolute/path/to/dist/pi-extension/index.js`. Setup installation
-is a separate phase; building does not change the operator's Pi home.
+The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
+attributed usage for hand-run Pi sessions. Until the Setup control ships, enable it from a
+built checkout:
+
+```sh
+npm run build
+npm run install-pi-extension
+```
+
+This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.js` and leaves
+the integration enabled. Start a fresh Pi session normally; it loads the extension without
+being launched through Mission Control or passing `-e`. Building alone installs nothing.
+Keep the built checkout available because the installed link points to its extension artifact.
+The standalone installer also works when the running app predates the configuration API.
+
+To disable the integration and remove its managed link durably:
+
+```sh
+npm run install-pi-extension -- --uninstall
+```
+
+A daemon with Pi extension configuration support also accepts HTTP requests:
+
+```sh
+curl --fail-with-body -sS -X PUT http://127.0.0.1:7317/api/extensions/pi/config \
+  -H 'Content-Type: application/json' -d '{"enabled":true}'
+curl -fsS http://127.0.0.1:7317/api/extensions/pi/config
+```
+
+Send `{"enabled":false}` with the same PUT request to disable it; GET returns the persisted
+intent. Use the daemon's configured port if different from 7317. Start a fresh Pi after either
+change; an already loaded extension stays in that process until it exits. A conflict returns
+HTTP 409 with the saved intent and reconciliation problems; unrelated files are left untouched.
+
+An explicit `MISSION_HOME` (or supported legacy alias) scopes installation to that state's
+`pi-extensions` directory instead of the machine-wide location. `PI_EXTENSIONS_DIR` overrides
+the destination directory. For a custom Pi home, point it at the `extensions` directory of the
+home Pi actually uses: Pi's `PI_CODING_AGENT_DIR` must agree. `PI_EXTENSIONS_DIR` controls the
+Mission Control installer, not Pi's loader.
+
+`npm run install-hooks -- --uninstall` also removes the managed extension link, but leaves its
+saved intent unchanged. Disable Pi integration first if the daemon may start again. Installing
+Claude hooks never enables Pi integration.
+
+See the [Pi extension reference](docs/pi-extension.md) for reconciliation, isolation, lifecycle,
+and build contracts.
 
 ## Community participation
 

@@ -67,6 +67,7 @@
     "recover:database": "node scripts/recover-database.mjs",
     "worktree-setup": "node scripts/worktree-setup.mjs",
     "setup": "npm install && npm run build && npm run install-hooks",
+    "install-pi-extension": "tsx scripts/install-pi-extension.ts",
     "install-hooks": "tsx hooks/install.mjs",
     "install-statusline": "tsx hooks/install.mjs --statusline",
     "install-telemetry": "tsx hooks/install.mjs --telemetry",

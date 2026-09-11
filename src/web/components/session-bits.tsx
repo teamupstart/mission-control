@@ -1913,7 +1913,7 @@ export function RuntimeMetaRow({
           <EffortPicker session={session} />
         ) : (
           <Tooltip label={`Reasoning effort: ${meta.thinkingLevel ?? meta.nativeEffort}`}>
-            <span className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}>
+            <span className={`rt-pill rt-think rt-think-${meta.thinkingLevel ?? meta.nativeEffort}`}>
               {/* `EffortReading` owns what an effort pill prints, including the level's own
                   element - which the console header's ladder sheds while keeping the mark. It
                   is imported rather than restated so this static spelling and the picker's

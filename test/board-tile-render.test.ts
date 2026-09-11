@@ -191,6 +191,8 @@ for (const nativeEffort of ["minimal", "off"]) test(`Pi's native ${nativeEffort}
   assert.match(tile, new RegExp(`<span[^>]*aria-label="Reasoning effort: ${nativeEffort}"[^>]*>${nativeEffort}</span>`));
   assert.doesNotMatch(tile, /<button[^>]*aria-label="Reasoning effort:/);
   const standalone = renderToStaticMarkup(createElement(RuntimeMetaRow, { meta: reading }));
+  assert.match(standalone, new RegExp(`rt-think-${nativeEffort}`));
+  assert.doesNotMatch(standalone, /rt-think-null/);
   assert.match(standalone, new RegExp(`>${nativeEffort}</span>`));
   assert.doesNotMatch(standalone, /<button/);
 });

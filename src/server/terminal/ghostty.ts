@@ -1,6 +1,6 @@
 import { GHOSTTY_BIN } from "./bin.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
-import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
 import { appleScriptString } from "./applescript.ts";
@@ -302,9 +302,13 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       // `input text` is a real bracketed paste, verified against a pty with paste mode on,
       // so a multi-line prompt reaches the composer as one block instead of being shredded
       // into a submission per line.
-      paste: (t, text) =>
-        cmd(`tell application id "${BUNDLE_ID}" to input text ${asQuote(text)} to ${surface(t)}`,
-          "ghostty input text failed"),
+      paste: async (t, text) =>
+        heldInComposer(
+          await cmd(
+            `tell application id "${BUNDLE_ID}" to input text ${asQuote(text)} to ${surface(t)}`,
+            "ghostty input text failed",
+          ),
+        ),
     },
 
     // No property or command in the dictionary returns screen text. See the header for the

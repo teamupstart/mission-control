@@ -154,6 +154,46 @@ test("the settle is long enough to clear the measured coalescing window", async 
   assert.ok(settle.ms > 200, `settle of ${settle.ms}ms is inside the window that swallowed Enter`);
 });
 
+// ---- the mirror image: a backend whose paste ALREADY submitted ----
+
+const cmuxSession = (): Session =>
+  ({
+    id: "s3",
+    agent: "claude",
+    terminals: [mkMuxHandle({ backend: "cmux", paneId: "SURFACE-1" })],
+  }) as Session;
+
+test("a paste that submitted itself is not followed by an Enter", async () => {
+  // cmux's only working paste verb appends a CR (see `PasteResult`). The Enter this
+  // delivery would otherwise send has already been spent, so a second one is an ungated
+  // keystroke landing on whatever the turn it just started has put on screen - the
+  // permission dialog `awaitPasteSubmitted` refuses to answer on the operator's behalf.
+  const { deps, events } = harness();
+  const r = await injectPrompt(cmuxSession(), "line one\nline two", deps);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.pasted, true, "the text IS in the pane - and in this case already sent");
+  const calls = argvs(events);
+  assert.equal(calls.filter((a) => a.includes("terminal.paste")).length, 1);
+  assert.equal(
+    calls.filter((a) => a.includes("surface.send_key")).length,
+    0,
+    "no Enter, because the paste carried one",
+  );
+  // Nor the settle or the read-back that exist only to place an Enter safely.
+  assert.equal(events.filter((e) => e.kind === "sleep").length, 0);
+  assert.equal(events.filter((e) => e.kind === "capture").length, 0);
+});
+
+test("a submitted paste is reported unverified rather than assumed", async () => {
+  // The backend's word that it wrote a CR is the same class of evidence as `ok`. Nothing
+  // watched the paste leave the composer, so `submitVerified` stays false and the pickup
+  // falls back to hook or passive-state evidence like any other unwitnessed delivery.
+  const { deps } = harness();
+  const r = await injectPrompt(cmuxSession(), "a\nb", deps);
+  assert.equal(r.submitVerified, false);
+});
+
 test("the delivery is verified against the pane, not assumed from tmux's exit code", async () => {
   // tmux reports that bytes were written, never what the TUI did with them - a pty
   // swallows an Enter as happily as it delivers one. The read-back is the only evidence.

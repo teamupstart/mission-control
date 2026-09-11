@@ -241,12 +241,33 @@ export function writeGhWritebackScript(home: string, script: FakeGhWritebackScri
 const FAKE_CMUX = `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
+const argv = process.argv.slice(2);
+
+// Answered BEFORE the record is written, and deliberately not recorded. Setup probes the
+// control socket every time the panel is read, so recording this would turn "how many
+// commands did a click run" - which several specs count - into a function of how often a
+// browser looked at a page. \`MC_E2E_CMUX_CONTROL\` reproduces the two states that stand
+// between an installed cmux and a working one, in cmux's own words.
+if (argv[0] === "capabilities") {
+  const control = process.env.MC_E2E_CMUX_CONTROL;
+  if (control === "stopped") {
+    process.stderr.write("Error: Socket not found at " + join(process.env.MISSION_HOME || "/tmp", "cmux.sock") + "\\n");
+    process.exit(1);
+  }
+  if (control === "refused") {
+    process.stderr.write("Error: ERROR: Access denied - only processes started inside cmux can connect\\n");
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify({ access_mode: "allowAll", methods: [] }) + "\\n");
+  process.exit(0);
+}
+
 const dir = process.env.MC_E2E_RECORD_DIR;
 if (dir) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, \`cmux-\${Date.now()}-\${process.pid}.json\`),
-    JSON.stringify({ argv: process.argv.slice(2) }, null, 2),
+    JSON.stringify({ argv }, null, 2),
   );
 }
 if (process.env.MC_E2E_CMUX_MODE === "unknown") {

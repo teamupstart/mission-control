@@ -185,7 +185,7 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     // because Herdr types it into a login shell and a 3.5 KB paste loses its Enter, and the
     // launch inside it still has to carry the mode this spec exists for.
     expect(delivered.length).toBeLessThan(300);
-    const command = launchedCommand(delivered!);
+    const launch = launchedCommand(delivered!);
     const [workspaceArgv] = recordedWorkspaceArgv(daemon);
     const focusAt = workspaceArgv?.indexOf("--focus") ?? -1;
     expect(focusAt).toBeGreaterThan(-1);
@@ -195,14 +195,14 @@ for (const { agent, chip, launcher, resumeWord, carried } of CASES) {
     const executable = agent === "codex"
       ? join(daemon.home, "daemon-path-bin", "codex")
       : join(daemon.home, "fake-bin", `fake-${agent}`);
-    expect(command).toContain(executable);
-    expect(command).toContain(resumeWord);
-    expect(command).toContain(`'${agentSessionId}'`);
+    expect(launch).toContain(executable);
+    expect(launch).toContain(resumeWord);
+    expect(launch).toContain(`'${agentSessionId}'`);
     // And the mode it was running in, re-asserted in this harness's own spelling. Before
     // the fix the command ended at the conversation id and every one of these was absent.
-    for (const words of carried) expect(command).toContain(words);
+    for (const words of carried) expect(launch).toContain(words);
     if (process.env.MC_E2E_EVIDENCE) {
-      console.log(`OBSERVED the ${agent} terminal command carries the mode: ${command}`);
+      console.log(`OBSERVED the ${agent} terminal command carries the mode: ${launch}`);
       console.log(`OBSERVED the delivered command is ${delivered.length} bytes: ${delivered}`);
     }
   });

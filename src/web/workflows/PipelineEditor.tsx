@@ -876,10 +876,10 @@ export function PipelineEditor({
           // the two things a stage can do to the run are DIFFERENT: a fail spends a repair
           // round and restarts from Session, while an action captures fresh evidence and
           // carries on downstream without spending one.
-          ? "Any fail returns the submission to Session for repair, then the whole pipeline"
-            + " runs again. A session action finishing is not a repair: it captures fresh"
+          ? "Any fail returns the submission to Session for repair, then a new round"
+            + " starts. A session action finishing is not a repair: it captures fresh"
             + " evidence and only the stages after it run again, against the new evidence."
-          : "Any fail returns the submission to Session for repair, then the whole pipeline runs again."}
+          : "Any fail returns the submission to Session for repair, then a new round starts."}
       >
         <TerminusCard
           kind="session"

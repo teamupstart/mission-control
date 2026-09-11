@@ -170,6 +170,8 @@ Workflows turn a team's definition of done into reusable, inspectable automation
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
 again. Published definitions are frozen, so a later edit cannot rewrite what an earlier run meant.
+By default, judges that have passed are skipped on later repair rounds of that run. Turn off
+**Skip judges that already passed** in Settings > Workflows to require fresh reviews each round.
 
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact

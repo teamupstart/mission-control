@@ -695,6 +695,27 @@ export function WorkflowSettingsPanel({
             )}
           </ConsoleCard>
 
+          <ConsoleCard title="Judge passes" anchor="workflows/judge-passes">
+            <Tooltip label="Keep earned judge passes across repair rounds. Turn off to review every judge again.">
+              <label className="wf-judge-passes">
+                <input
+                  type="checkbox"
+                  checked={config?.skipPassedJudges ?? true}
+                  disabled={!config || busy}
+                  onChange={(event) => {
+                    if (config) void save({ ...config, skipPassedJudges: event.target.checked });
+                  }}
+                />
+                Skip judges that already passed
+              </label>
+            </Tooltip>
+            <p className="settings-hint">
+              On by default. Each judge only needs to pass once per workflow run. If another
+              judge fails, later repair rounds keep earlier passes and only run the remaining
+              judges. Turn this off to review every judge again on each repair round.
+            </p>
+          </ConsoleCard>
+
           <ConsoleCard
             title="Live delivery"
             anchor="workflows/live-delivery"
@@ -731,31 +752,6 @@ export function WorkflowSettingsPanel({
             )}
           </ConsoleCard>
 
-          <ConsoleCard title="Allowed repositories" anchor="workflows/allowlist">
-            {/* The editor moved to Trust, and this became the summary the other three
-                grant-consuming panels already show. The comment that used to sit here argued
-                Workflows was not a Trust column and that making it one would MOVE this list
-                rather than summarise it; that is exactly what happened.
-
-                The card stays rather than the anchor disappearing: `workflows/allowlist` is a
-                settings-search target, and a live subsystem's consent scope is worth stating
-                where its switches are even when it is not editable here. */}
-            {/* The scope-of-consent sentence sits with the count, not with the switch: it is
-                about the grant. "I turned Live on and it still previews" reads as a bug
-                without it. */}
-            <p className="settings-hint">
-              Live delivery only sends in the repositories granted the Workflows cell in Trust
-              - their worktrees count too, wherever they live on disk. Revoking one keeps
-              existing bindings visible and refuses their next delivery; nothing is silently
-              downgraded to Preview. The same grant is what lets a Command node run a command.
-            </p>
-            <TrustGrantSummary
-              configured={Boolean(config)}
-              count={allowlist.length}
-              subject="Workflows may act in"
-              onNavigate={onNavigate}
-            />
-          </ConsoleCard>
 
           {/* Authorization, and nothing else. The catalog of argvs this switch governs moved to
               Library › Commands, where a command is authored once and reused - what stays here
@@ -798,6 +794,33 @@ export function WorkflowSettingsPanel({
               granted the Workflows cell in Trust can run one.
             </p>
           </ConsoleCard>
+
+          <ConsoleCard title="Allowed repositories" anchor="workflows/allowlist">
+            {/* The editor moved to Trust, and this became the summary the other three
+                grant-consuming panels already show. The comment that used to sit here argued
+                Workflows was not a Trust column and that making it one would MOVE this list
+                rather than summarise it; that is exactly what happened.
+
+                The card stays rather than the anchor disappearing: `workflows/allowlist` is a
+                settings-search target, and a live subsystem's consent scope is worth stating
+                where its switches are even when it is not editable here. */}
+            {/* The scope-of-consent sentence sits with the count, not with the switch: it is
+                about the grant. "I turned Live on and it still previews" reads as a bug
+                without it. */}
+            <p className="settings-hint">
+              Live delivery only sends in the repositories granted the Workflows cell in Trust
+              - their worktrees count too, wherever they live on disk. Revoking one keeps
+              existing bindings visible and refuses their next delivery; nothing is silently
+              downgraded to Preview. The same grant is what lets a Command node run a command.
+            </p>
+            <TrustGrantSummary
+              configured={Boolean(config)}
+              count={allowlist.length}
+              subject="Workflows may act in"
+              onNavigate={onNavigate}
+            />
+          </ConsoleCard>
+
 
           {/* Where the commands went, said in the place an operator who remembers the old table
               will look for it. A link rather than a smaller copy of the editor: two surfaces

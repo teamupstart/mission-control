@@ -5778,6 +5778,7 @@ export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
  * the same shape.
  */
 export const WorkflowPolicySchema = z.object({
+  skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
   defaultWorkflowId: z.string().min(1).max(500).nullable()

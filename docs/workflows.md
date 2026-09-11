@@ -665,6 +665,23 @@ design, edit the mutable draft and publish a new version. Opening a workflow fet
 bounded version metadata; selecting one history entry fetches that immutable graph and its
 exact Persona Markdown from the version route.
 
+**Settings > Workflows > Judge passes** offers **Skip judges that already passed**, enabled
+by default, including for saved settings that predate the option. Each Persona judge node needs
+to pass once within a workflow run: if one passes and another fails, subsequent repair rounds
+reuse the earned pass and run the remaining judges. Runs shows **Not re-run** with a link to the
+round that earned the pass. Disabled nodes and cancelled or unsuccessful attempts do not earn
+passes. Separate runs and separate nodes using the same Persona earn their own passes.
+Adding, editing, or removing critical feedback requires that judge to review again. Once it
+passes under the current feedback, later rounds can reuse that pass.
+
+Turn the checkbox off to run judges again on later repair rounds. If a recheck fails, that
+newer verdict replaces the older pass; turning reuse back on still requires the judge to pass
+again. Changes apply when the next judge is about to start; already running calls keep their
+outcome. Commands retain their own execution budgets, and Session actions and completion
+gates still follow the workflow graph.
+The checkbox appears above the consent controls. **Allowed repositories**, including its Trust
+link, sits below the **Workflow Commands** toggle.
+
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
 new workflows. The optional GitHub Inspector final gate and its missing-PR and findings policies are

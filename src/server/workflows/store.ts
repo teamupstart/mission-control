@@ -9818,6 +9818,18 @@ export class WorkflowStore {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
     const claim = payload as { [key: string]: unknown };
     if (claim.state !== "blocked") return null;
+    /*
+     * Scoped to the block this claim bounced off, not merely to the run being blocked now.
+     *
+     * A refused claim records no submission of its own - the branch that logs
+     * `workflow_completion_blocked` creates none - so the run's own history is what dates it.
+     * A submission opened at or after the claim means the run was resumed and has since
+     * blocked again, possibly for an unrelated reason, and the older refusal is answered
+     * history. Without this a capture failure in round three would be captioned with a
+     * completion claim from round one.
+     */
+    const latest = this.latestSubmission(runId);
+    if (latest && latest.createdAt >= Number(row.ts)) return null;
     return {
       at: Number(row.ts),
       completionKind: typeof claim.completionKind === "string" ? claim.completionKind : null,

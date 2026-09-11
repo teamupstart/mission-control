@@ -11,6 +11,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
+if (process.argv[2] === "--mission-extension-test" && process.env.MC_E2E_PI_SESSION_FIXTURE) {
+  const { runExtensionSession } = await import(process.env.MC_E2E_PI_SESSION_FIXTURE);
+  await runExtensionSession();
+  // Keep the catalog-only parser out of this deliberately selected session fixture.
+  await new Promise(() => {});
+}
+
 const EXPECTED_ARGS = [
   "--mode",
   "rpc",

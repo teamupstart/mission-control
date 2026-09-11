@@ -495,7 +495,7 @@ export function SessionTile({
           {session.meta && (
             <RuntimeMetaRow meta={session.meta} session={session} omit={omitRuntime} />
           )}
-          {shown("effort") && session.meta?.thinkingLevel && <EffortPicker session={session} />}
+          {shown("effort") && (session.meta?.thinkingLevel || session.meta?.nativeEffort) && <EffortPicker session={session} />}
           {/* On this row rather than in `.tile-foot`: a
               tile's foot is branch-and-timestamp, while mode is the same kind of thing as
               the effort chip beside it - what this session is allowed to do right now, and

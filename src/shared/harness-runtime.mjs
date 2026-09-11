@@ -179,6 +179,9 @@ export const SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV = "MISSION_SCOUT_SUBMISSION_CR
 /** Daemon-issued identity that binds a launch-scoped MCP process to its SDK session. */
 export const MISSION_SESSION_ID_ENV = "MISSION_SESSION_ID";
 
+/** Native conversation identity reported by an in-process terminal extension. */
+export const MISSION_AGENT_SESSION_ID_ENV = "MISSION_AGENT_SESSION_ID";
+
 /**
  * Where the daemon leaves the opaque credential for the one checkout an MCP process is in.
  *

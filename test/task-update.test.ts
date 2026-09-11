@@ -8,6 +8,7 @@ import { mkTask } from "./helpers/session-fixture.ts";
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
 const home = mkdtempSync(join(tmpdir(), "mission-retriage-"));
 process.env.HARNESS_HOME = home;
+process.env.MISSION_PI_EXTENSION = join(home, "missing-extension.js");
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
 

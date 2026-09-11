@@ -413,6 +413,8 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_CLAUDE_BIN: bins.claude,
     MISSION_CODEX_BIN: codexOnDaemonPathOnly ? "codex" : bins.codex,
     MISSION_PI_BIN: bins.pi,
+    // Catalog-only fake has no installed extension unless a spec explicitly supplies one.
+    MISSION_PI_EXTENSION: join(home, "missing-pi-extension.js"),
     // The one terminal backend this suite installs, so continue-in-terminal is drivable on
     // a machine with no terminal: cmux resolves through this env override, needs no
     // emulator to raise its workspaces, and the fake records the `new-workspace --command`

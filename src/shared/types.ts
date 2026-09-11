@@ -251,6 +251,8 @@ export interface SessionMeta {
   longContext: boolean;
   /** Live reasoning effort; null when unknown or the model has no effort parameter. */
   thinkingLevel: ThinkingLevel | null;
+  /** Observed native effort outside the shared picker vocabulary; display only. */
+  nativeEffort?: string | null;
   /** Whether extended thinking is on (Claude statusLine only; null otherwise). */
   thinkingEnabled: boolean | null;
   /** Share of the context window used, 0-100 (rounded to an int), or null. */

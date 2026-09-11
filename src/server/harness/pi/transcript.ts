@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ToolCall, TranscriptMessage } from "@shared/types.ts";
@@ -6,6 +6,7 @@ import type { TranscriptSpec } from "../types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
 import { piPassiveRead } from "./meta.ts";
+import { readRange } from "../../util/file-tail.ts";
 
 // Pi's session transcript: where it lives, and what one of its records means.
 //
@@ -81,6 +82,19 @@ export function piSessionFileForIdentity(
 export function locatePiTranscript(s: Session, sessionsDir = SESSIONS_DIR): string | null {
   if (!s.cwd || !s.agentSessionId) return null;
 
+  // An extension reports the exact path, including custom Pi homes. Validate its header
+  // before accepting it; a stale/mismatched hint must not attribute another session's cost.
+  if (s.transcriptPath) {
+    try {
+      const head = readRange(s.transcriptPath, 0, 16 * 1024).toString("utf8");
+      const newline = head.indexOf("\n");
+      if (newline < 0) return null;
+      const header = JSON.parse(head.slice(0, newline));
+      return header.type === "session" && header.id === s.agentSessionId &&
+        typeof header.cwd === "string" && realpathSync(header.cwd) === realpathSync(s.cwd)
+        ? s.transcriptPath : null;
+    } catch { return null; }
+  }
   const files = sessionFiles(piProjectDir(s.cwd, sessionsDir));
   const match = exactSessionFile(files, s.agentSessionId);
   return match && !files.some((file) => file.createdAt > match.createdAt) ? match.path : null;

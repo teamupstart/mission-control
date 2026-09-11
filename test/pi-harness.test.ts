@@ -1,9 +1,5 @@
-// Phase 5 acceptance: the `pi` harness, added only against the `Harness` interface. What is
-// at stake here is that the interface's capability-null design is REAL - that a third harness
-// can declare what it has and honestly disable what it lacks, without a code change - and,
-// specifically, that pi is the MIRROR of Codex on this axis (Codex: hooks non-null, messages
-// null; pi: hooks null, messages non-null). The transcript parsing is pinned against a
-// verbatim capture, `test/fixtures/pi-sessions.ts`.
+// Pi declares machine lifecycle hooks and readable transcripts while keeping unsupported
+// native capabilities null. Transcript parsing uses captured Pi session records.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -31,9 +27,9 @@ import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
 
 // ---- the capability shape: what pi declares vs what it disables ----
 
-test("pi is the mirror of Codex - hooks null, but transcript reads back as messages", () => {
+test("Pi reports machine hooks and readable transcript messages", () => {
   const pi = harnessFor("pi");
-  assert.equal(pi.hooks, null, "pi pushes nothing: its extensions are in-process, not a hook");
+  assert.equal(pi.hooks?.scope, "machine");
   assert.ok(pi.transcript, "pi records a readable transcript");
   assert.ok(
     pi.transcript?.messages,
@@ -46,7 +42,7 @@ test("pi's unsupported capabilities are DECLARED null, not stubbed", () => {
   // Genuinely absent, each with its own reason (see `todo/pi-harness.md`).
   assert.equal(pi.permissionModes, null, "pi's manual/auto/readonly don't fit PermissionMode");
   assert.equal(pi.mcp, null, "pi has no MCP client");
-  assert.equal(pi.hooks, null, "the Mission lifecycle integration has not shipped");
+  assert.equal(pi.hooks?.scope, "machine", "the extension owns lifecycle reporting");
   assert.ok(pi.workQueue, "Pi exposes lifecycle events; the missing integration is per-session");
   assert.ok(pi.usage, "dispatched Pi usage is readable without the extension");
   // Present, and driving real behaviour.
@@ -301,4 +297,17 @@ test("idle only on a clean stop; an aborted tail reads working", () => {
   // The same session without that aborted tail ends on a clean `stop` - idle.
   const clean = computePiSessionActivity(PI_SESSION_LINES.slice(0, 7));
   assert.equal(clean?.state, "idle");
+});
+
+test("a reported custom-home transcript requires the exact session header and cwd", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-reported-transcript-"));
+  const path = join(root, "session.jsonl");
+  const session = { ...locateSession("pi-hand-run", root, "hand-run-id"), transcriptPath: path };
+  const header = (id: string, cwd = root) => writeFileSync(path, JSON.stringify({ type: "session", version: 3, id, cwd }) + "\n");
+  try {
+    header("hand-run-id"); assert.equal(locatePiTranscript(session), path);
+    header("another-id"); assert.equal(locatePiTranscript(session), null);
+    header("hand-run-id", join(root, "wrong")); assert.equal(locatePiTranscript(session), null);
+    writeFileSync(path, '{"type":"session"'); assert.equal(locatePiTranscript(session), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

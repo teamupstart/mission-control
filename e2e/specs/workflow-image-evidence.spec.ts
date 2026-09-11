@@ -350,7 +350,7 @@ test("dashboard evidence reaches both native providers and remains auditable per
 
   // The re-stage action moved into the preview with the rest of the ledger's fields, and it
   // still reaches the same route and settles into the same label.
-  const captured = await openPreview(dashboard, ledger, "replacement-proof");
+  let captured = await openPreview(dashboard, ledger, "replacement-proof");
   await expect(captured).toContainText(newestImage.sha256);
 
   /*
@@ -380,6 +380,21 @@ test("dashboard evidence reaches both native providers and remains auditable per
     .filter({ hasText: "Retained bytes could not be staged" })).toHaveCount(1);
   await expect(captured.getByRole("button", { name: "Use in next review" })).toBeEnabled();
   await expect(captured.getByRole("button", { name: "Ready for next review" })).toHaveCount(0);
+
+  /*
+   * AND STILL SAID AFTER THE DIALOG CLOSES, on the card the press was made for.
+   *
+   * The request outlives the preview it was pressed in. An operator who closes the dialog - on
+   * purpose or out of habit - would otherwise be told nothing at all, and could walk away
+   * believing these bytes are queued for the next review when the daemon refused them.
+   */
+  await captured.getByRole("button", { name: "Close" }).click();
+  await expect(captured).toBeHidden();
+  const failedCard = card(ledger, "replacement-proof");
+  await expect(failedCard).toContainText("Re-stage failed");
+  // On that card only: a refusal belongs to the image it was pressed for.
+  await expect(ledger.getByText("Re-stage failed")).toHaveCount(1);
+  captured = await openPreview(dashboard, ledger, "replacement-proof");
   await dashboard.unroute(reattach);
 
   await captured.getByRole("button", { name: "Use in next review" }).click();

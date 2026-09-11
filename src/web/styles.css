@@ -2452,6 +2452,19 @@ button.wf-run-version:focus-visible {
   color: var(--muted);
 }
 
+/* A re-stage outcome on the card, which is where a reader who closed the preview is looking.
+   Neutral while the request is in flight and alarming once it has been refused: "still going"
+   and "it did not happen" are different facts and only one of them needs acting on. */
+.wf-evidence-card-restage {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.wf-evidence-card-restage.is-alert {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 .wf-evidence-claims {
   display: grid;
   gap: 4px;

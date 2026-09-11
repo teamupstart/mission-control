@@ -887,7 +887,7 @@ const restageControl = (over: Partial<RestageControl> = {}): RestageControl => (
   busy: null,
   settled: new Set<string>(),
   run: () => {},
-  error: null,
+  failure: null,
   ...over,
 });
 
@@ -1034,7 +1034,9 @@ test("the image frame draws one of four arms and never a broken picture", () => 
  */
 test("a refused re-stage explains itself inside the dialog that asked for it", () => {
   const refused = previewMarkup(PREVIEW_IMAGE, {
-    restage: restageControl({ error: "Retained bytes could not be staged" }),
+    restage: restageControl({
+      failure: { imageId: PREVIEW_IMAGE.id, message: "Retained bytes could not be staged" },
+    }),
   });
 
   assert.match(

@@ -2020,8 +2020,14 @@ export interface RestageControl {
   busy: string | null;
   settled: ReadonlySet<string>;
   run: (image: WorkflowEvidenceImage) => void;
-  /** Why the last press failed, to be read beside the button that failed. */
-  error: string | null;
+  /**
+   * The last failed press, with the image it was made for.
+   *
+   * Carried whole rather than pre-resolved to a message, because two surfaces read it for two
+   * different images: the preview for the one it is showing, and the strip card for its own.
+   * `restageErrorFor` is the one place that decides whether a failure is this image's.
+   */
+  failure: RestageFailure | null;
 }
 
 /**
@@ -2129,7 +2135,11 @@ export function FrozenImagePreview({
             can be pressed from, and this dialog draws a backdrop over the pane, so an error
             painted onto the pane behind it is an explanation the operator cannot read without
             first closing the thing they were acting in. */}
-        {restage.error && <p className="wf-run-error" role="alert">{restage.error}</p>}
+        {restageErrorFor(restage.failure, image.id) && (
+          <p className="wf-run-error" role="alert">
+            {restageErrorFor(restage.failure, image.id)}
+          </p>
+        )}
         <div className="wf-image-preview-actions">
           {restage.offered(image) && (
             <Tooltip label="Stage these exact retained bytes, caption, and scope for the next fresh review">
@@ -2235,10 +2245,7 @@ function EvidencePane({
     offered: (image) => restageOffered(image, canRestage, Boolean(onRestage)),
     busy: restageBusy,
     settled: restaged,
-    // Scoped to the image whose preview is open. A staging request outlives the dialog it was
-    // pressed in, so a rejection arriving after the reader moved on would otherwise be read as
-    // this picture's failure - see `restageErrorFor`.
-    error: restageErrorFor(restageError, previewImage?.id ?? null),
+    failure: restageError,
     run: (image) => restagePress({
       image,
       minted: itemIds.current,
@@ -2419,6 +2426,18 @@ function EvidencePane({
                         {image.inheritedFrom ? ` · from round ${image.inheritedFrom.round}` : ""}
                       </span>
                       {sentence && <span className="wf-evidence-card-cite">{sentence}</span>}
+                      {/* On the CARD, because a press outlives the dialog it was made in. An
+                          operator who closes the preview before the request settles would
+                          otherwise be told nothing at all, and walk away believing these bytes
+                          are queued for the next review when the daemon refused them. */}
+                      {restage.busy === image.id && (
+                        <span className="wf-evidence-card-restage">Staging…</span>
+                      )}
+                      {restageErrorFor(restage.failure, image.id) && (
+                        <span className="wf-evidence-card-restage is-alert" role="alert">
+                          Re-stage failed
+                        </span>
+                      )}
                     </span>
                   </button>
                 </Tooltip>

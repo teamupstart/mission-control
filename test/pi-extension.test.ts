@@ -111,7 +111,7 @@ const ctx: PiContext = {
 };
 test("Pi preserves exact submitted prompts while normalizing display prompts", () => {
   for (const prompt of ["  hello\n", "\n\t ", "", undefined]) {
-    const event = { event: "UserPromptSubmit" as const, prompt, sessionId: "pi-id", ts: Date.now() };
+    const event = hookBody({ type: "input", source: "interactive", text: prompt }, ctx)!;
     assert.equal(piHooks.submittedPromptText(event), prompt ?? null);
     assert.equal(piHooks.promptText(event), prompt?.trim() || null);
     assert.equal(piHooks.submittedPromptText({ ...event, event: "Stop" }), null);

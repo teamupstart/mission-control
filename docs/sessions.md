@@ -211,9 +211,15 @@ wrong match would raise someone else's tab and type your next prompt into it.
 
 A matched Ghostty session is discovered, named, **typed into** and **focused** - replies,
 queued prompts, the send chord and Focus all reach the surface. Two things it cannot do, and
-both are Ghostty's own limits rather than missing plumbing. **Rename** refuses, saying so
-("Ghostty can't retitle a tab"): its titles are read-only on every window, tab and surface,
-so a tab it opens carries whatever the shell reports. And its **screen cannot be read**, so
+both are Ghostty's own limits rather than missing plumbing. **Rename** is not offered on a
+Ghostty-only session because its titles are read-only on every window, tab and surface.
+A dispatched card retains the task's launch name, including a later generated task title,
+while the actual tab carries whatever the shell reports. Dispatched WezTerm and iTerm2
+cards also retain their launch names across terminal-title changes and daemon restarts;
+startup checks the recorded emulator pane identity instead of looking for the launch name
+among tab titles. Successful dashboard renames update that retained name. Sessions Mission Control merely
+discovers continue to follow the terminal title. A multiplexer inside Ghostty keeps its
+own Rename capability. Ghostty's **screen cannot be read**, so
 anything built on reading a pane back is unavailable on a Ghostty session rather than quietly
 wrong: the permission-mode chip, dialog detection, and the read-back that confirms a pasted
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere

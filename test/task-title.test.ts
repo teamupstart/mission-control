@@ -6,6 +6,8 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkEmuHandle } from "./helpers/session-fixture.ts";
+import { terminalResourceId } from "../src/shared/pane.ts";
 
 // Drives the REAL create path against a fake `claude`: a real spawn, a real envelope, the
 // real parse ladder, the real registry write. Everything is pinned before importing the
@@ -300,6 +302,30 @@ test("a launch whose model never answers keeps its heuristic name and still runs
   await new Promise((r) => setTimeout(r, 300));
   assert.match(tasks.get(t.id)?.title ?? "", /^Add a Dark Mode/);
   setMode("good");
+});
+
+test("a late model title reaches a dispatched Ghostty card without retitling its tab", async () => {
+  setMode("good");
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  const tab = mkEmuHandle({ backend: "ghostty", paneId: "title-ghostty", tabTitle: "shell title" });
+  inner.dispatcher.dispatch = async (id) => {
+    registry.applyDiscovery([{
+      syntheticId: "title-ghostty", agent: "claude", name: tab.tabTitle, nameSource: "ghostty",
+      cwd: "/repo", gitBranch: "main", gitRoot: "/repo", repoRoot: "/repo", pid: 777,
+      tty: "ttys777", terminals: [tab], startedAt: 0,
+    }]);
+    const task = registry.getTask(id)!;
+    registry.upsertTask({ ...task, sessionId: "title-ghostty", status: "running",
+      homeName: task.title, homeBackend: "ghostty", terminalResourceId: terminalResourceId(tab) });
+  };
+  const task = tasks.create({ repoRoot: "/repo", intent: "fix a cleanup problem", kind: "ship",
+    agent: "claude", backlog: false });
+  await until(() => registry.getSession("title-ghostty")?.name === "Fix flaky worktree cleanup", "the Ghostty card's model title");
+  assert.equal(registry.getTask(task.id)?.homeName, "Fix flaky worktree cleanup");
+  assert.equal(registry.getSession("title-ghostty")?.terminals[0]?.kind, "emulator");
+  assert.deepEqual(registry.getSession("title-ghostty")?.terminals, [tab]);
 });
 
 test("dispatching a task removed during titling is refused rather than resurrecting it", async () => {

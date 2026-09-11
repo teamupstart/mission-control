@@ -1,4 +1,5 @@
 import { EMULATOR_IDS, MULTIPLEXER_IDS } from "@shared/terminal.ts";
+import { terminalResourceId } from "@shared/pane.ts";
 import {
   binPresent,
   binUnavailableReason,
@@ -175,8 +176,8 @@ export function homeBackends(
       label: backend.label,
       axis: "emulator",
       names: backend.names,
-      // A tab's TITLE is its name here: it is what `spawn` stamps and what discovery reads
-      // back as the card name, so it is the same string a multiplexer's session name is. Its
+      // These are observed tab titles. A dispatched card may retain its launch name
+      // separately, so a title rewritten by the shell need not match that card. The
       // address is the pane id - unused today, since no emulator declares a `kill`, and
       // carried anyway so the shape does not have to change when one does.
       held: list
@@ -302,14 +303,24 @@ export async function launchHome(
 }
 
 /**
- * Is a home still open under this name? `null` means nobody could tell - see the note at the
- * top of this file for why that is not `false`.
+ * Is the recorded home still open? An emulator's saved pane identity takes precedence
+ * over its mutable tab title. `null` means nobody could tell, not that the home is gone.
  */
 export async function homeAlive(
   name: string,
   deps: HomeDeps = defaultHomeDeps,
   preferredBackend: string | null = null,
+  resourceId: string | null = null,
 ): Promise<boolean | null> {
+  if (resourceId?.startsWith("emulator:")) {
+    const id = EMULATOR_IDS.find((candidate) => resourceId.startsWith(`emulator:${candidate}:`));
+    if (!id || (preferredBackend !== null && preferredBackend !== id)) return null;
+    const backend = deps.emulators[id];
+    if (!backend.list || binUnavailableReason(backend.bin, backend.label, deps)) return null;
+    return (await backend.list()).some((pane) =>
+      terminalResourceId({ ...pane, kind: "emulator", backend: id }) === resourceId,
+    );
+  }
   const held = await heldHomeNames(deps, preferredBackend);
   return held === null ? null : held.has(name);
 }

@@ -883,7 +883,7 @@ export class Dispatcher {
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
       const alive = embedded ?? (
-        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null) : false
+        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null, cur.terminalResourceId) : false
       );
       if (alive !== false) {
         this.patch(taskId, {

@@ -88,6 +88,28 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Dispatched Ghostty names
+
+`terminal-session-name.spec.ts` selects Ghostty and submits a dispatch through the dashboard.
+The task cuts a real worktree, opens a scripted terminal, passes through the real discovery
+correlator and Registry, and reaches the browser through the real SSE connection. The spec
+changes the terminal's reported title, waits until discovery observes it, and restarts the
+daemon before checking the retained name on the Board. It also checks that Rename is absent.
+
+This spec opts into `MC_E2E_TERMINAL_BOUNDARY=1`. `terminal-boundary-build.ts` builds the
+production daemon entry into a private, gitignored sibling of `dist/server/index.mjs`,
+replacing only process/cwd observations and terminal I/O. The fixture preserves Ghostty's
+real name rules, host-process correlation and capability nulls. Its spawn records the title
+it was asked for but reports a different shell title; it never creates a Session or writes
+the name to the Registry, task store or SSE snapshot. All other terminal adapters are made
+unavailable, and discovery reads only the fixture's process table, so this spec cannot adopt
+or manipulate the operator's terminals. Other specs keep the ordinary daemon bundle.
+
+Run it after `npm run build` with
+`MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/terminal-session-name.spec.ts --workers=1`.
+The successful Board screenshot is `e2e/.artifacts/terminal-session-name/ghostty-dispatch.png`.
+The Console screenshot beside it is `ghostty-dispatch-console.png`.
+
 ### Dispatch over a large comment index
 
 `file-comment-dispatch-performance.spec.ts` keeps its CPU assertion opt-in because a browser

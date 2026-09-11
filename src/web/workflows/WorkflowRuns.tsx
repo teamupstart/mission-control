@@ -2879,7 +2879,7 @@ export function WorkflowRunView({
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
   onRetryEvidenceReadiness = async () => {},
-  onRecoverEvidence = async () => {},
+  onRecoverEvidence,
   onOverrideEvidenceReadiness = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},

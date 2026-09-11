@@ -218,6 +218,9 @@ export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
  */
 export const EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT = 2;
 
+/** Explicit recovery has a separate durable run budget, independent of author repairs. */
+export const EVIDENCE_RECOVERY_LIMIT = 3;
+
 type RunCursor = { updatedAt: number; id: string };
 
 /**
@@ -8846,6 +8849,11 @@ export class WorkflowStore {
     return row?.state === "failed";
   }
 
+  evidenceRecoveryCount(runId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_submissions
+      WHERE run_id = ? AND refinement_reason = 'evidence_recovery'`).get(runId) as { n: number }).n;
+  }
+
   reserveEvidenceRecovery(input: {
     id: string; runId: string; parentId: string; requestId: string; reason: string; now: number;
   }): { submission: WorkflowSubmission; idempotent: boolean } | null {
@@ -8854,6 +8862,8 @@ export class WorkflowStore {
       const existing = this.submissionByTrigger(key);
       if (existing) return existing.parentSubmissionId === input.parentId
         ? { submission: existing, idempotent: true } : null;
+      // Count and reserve under the same transaction; unique request ids cannot reset it.
+      if (this.evidenceRecoveryCount(input.runId) >= EVIDENCE_RECOVERY_LIMIT) return null;
       const run = this.getRun(input.runId);
       const parent = this.getSubmission(input.parentId);
       if (!run || !parent || parent.runId !== run.id || this.latestSubmission(run.id)?.id !== parent.id

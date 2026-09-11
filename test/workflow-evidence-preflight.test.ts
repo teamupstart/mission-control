@@ -1210,6 +1210,54 @@ test("failed mapping is infrastructure and explicit recovery freezes a same-roun
   assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 1);
 });
 
+test("unique recovery requests share a durable per-run budget without spending author repairs", async (t) => {
+  let calls = 0;
+  const h = await harness(t, "mapping-recovery-budget", undefined, {
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true, execute: async () => ({ kind: "ok", value: { constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"], canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }] } }),
+    }),
+    reconcileContext: async () => {
+      calls++;
+      return { kind: "failed", cause: "transport", reason: "mapping timeout" };
+    },
+  });
+  await stageRecoveryProof(h, "mapping-recovery-budget", "The user can inspect the rendered result");
+  const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  const { run } = created.value;
+  let parentId = created.value.submission.id;
+  let lastParentId = parentId;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    lastParentId = parentId;
+    const result = await h.manager.recoverEvidence(run.id, parentId, `retry-${attempt}`);
+    assert.equal(result.ok, true); if (!result.ok) return;
+    parentId = result.value.submission.id;
+    assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
+  }
+  const replay = await h.manager.recoverEvidence(run.id, lastParentId, "retry-3");
+  assert.equal(replay.ok, true);
+  if (replay.ok) assert.equal(replay.idempotent, true);
+  const refused = await h.manager.recoverEvidence(run.id, parentId, "retry-4");
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.match(refused.message, /recovery limit reached/i);
+  // A fresh store sees the same bound, including callers bypassing the manager projection.
+  const reopened = new WorkflowStore(openDb());
+  const storedReplay = reopened.reserveEvidenceRecovery({ id: "unused-replay", runId: run.id,
+    parentId: lastParentId, requestId: "retry-3", reason: "mapping", now: Date.now() });
+  assert.equal(storedReplay?.idempotent, true);
+  assert.equal(storedReplay?.submission.id, parentId);
+  assert.equal(reopened.reserveEvidenceRecovery({ id: "over-budget", runId: run.id, parentId,
+    requestId: "direct-retry", reason: "mapping", now: Date.now() }), null);
+  assert.equal(reopened.listSubmissions(run.id).length, 4);
+  assert.equal(calls, 8, "two executions for the source and each of three recoveries");
+  assert.equal(reopened.consecutiveEvidencePreflightRefinements(parentId), 0);
+  assert.equal(reopened.getRun(run.id)?.status, "blocked");
+  assert.equal(reopened.listDeliveries(run.id).length, 0);
+  const detail = h.manager.run(run.id);
+  assert.equal(detail.kind, "found");
+  if (detail.kind === "found") assert.equal(detail.detail.evidenceRecovery, null);
+});
+
 for (const scenario of ["registration", "mixed", "parse"] as const) test(`Persona ${scenario} correction has one durable budget and emits no false repair`, async (t) => {
   let calls = 0;
   const h = await harness(t, `contract-${scenario}`, undefined, { runner: { ...passingRunner, async run(prompt) {

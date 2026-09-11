@@ -954,7 +954,7 @@ for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as 
   await capture(dashboard, "09-readiness-review-disagreement", timeline);
 });
 
-test("mapping infrastructure recovery reuses frozen evidence in a new same-round segment", async ({ dashboard, daemon }) => {
+test("mapping infrastructure recovery reuses frozen evidence and stops at its run budget", async ({ dashboard, daemon }) => {
   test.setTimeout(180_000);
   const sessionId = await dispatch(dashboard, daemon);
   const versionId = await createWorkflow(daemon);
@@ -972,16 +972,17 @@ test("mapping infrastructure recovery reuses frozen evidence in a new same-round
   await expect.poll(async () => (await api<{ run: { status: string } }>(daemon,
     `/api/workflow-runs/${created.run.id}`)).run.status).toBe("waiting_for_evidence_readiness");
   // Reproduce a persisted failed mapping operation without launching a real model.
-  withDaemonDb(daemon, (db) => {
-    const row = db.prepare("SELECT context_json FROM workflow_submissions WHERE id = ?").get(created.submission.id) as { context_json: string };
+  const failMapping = (submissionId: string): void => withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT context_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { context_json: string };
     const context = JSON.parse(row.context_json);
     context.criterionMappings = [];
     context.reconciliation = { version: 1, fingerprint: "a".repeat(64), status: "failed", method: "semantic", attempts: 2, error: "mapping timeout", cause: "transport" };
     delete context.coverageSelection;
-    db.prepare("UPDATE workflow_submissions SET context_json = ?, status = 'failed' WHERE id = ?").run(JSON.stringify(context), created.submission.id);
+    db.prepare("UPDATE workflow_submissions SET context_json = ?, status = 'failed' WHERE id = ?").run(JSON.stringify(context), submissionId);
     db.prepare("UPDATE workflow_runs SET status = 'blocked', current_phase = 'evidence_reconciliation_error', gate_state_json = ? WHERE id = ?")
-      .run(JSON.stringify({ submissionId: created.submission.id, error: "mapping timeout" }), created.run.id);
+      .run(JSON.stringify({ submissionId, error: "mapping timeout" }), created.run.id);
   });
+  failMapping(created.submission.id);
   await dashboard.goto(`${daemon.baseURL}/#/runs/${created.run.id}`);
   await evidencePane(dashboard);
   const recovery = dashboard.getByRole("region", { name: "Evidence recovery", exact: true });
@@ -1009,4 +1010,30 @@ test("mapping infrastructure recovery reuses frozen evidence in a new same-round
     };
   };
   expect(frozenContent(detail.submissions[1]!)).toEqual(frozenContent(detail.submissions[0]!));
+  let latest = detail.submissions[1]!;
+  for (let recoveryNumber = 2; recoveryNumber <= 3; recoveryNumber++) {
+    failMapping(latest.id);
+    await dashboard.reload();
+    await evidencePane(dashboard);
+    await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
+    await expect.poll(async () => {
+      const next = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
+      latest = next.submissions.at(-1)!;
+      return next.submissions.length === recoveryNumber + 1 && latest.status !== "capturing";
+    }).toBe(true);
+  }
+  failMapping(latest.id);
+  await dashboard.reload();
+  const pane = await evidencePane(dashboard);
+  await expect(recovery).toHaveCount(0);
+  await expect(dashboard.getByRole("button", { name: "Retry criterion mapping" })).toHaveCount(0);
+  await capture(dashboard, "15-recovery-budget-exhausted", pane);
+  const refused = await fetch(`${daemon.baseURL}/api/workflow-runs/${created.run.id}/submissions/${latest.id}/evidence-recovery`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: "over-budget" }),
+  });
+  expect(refused.status).toBe(409);
+  expect(await refused.text()).toContain("Evidence recovery limit reached");
+  const blocked = await api<{ run: { status: string }; submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
+  expect(blocked.run.status).toBe("blocked");
+  expect(blocked.submissions).toHaveLength(4);
 });

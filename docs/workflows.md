@@ -1051,6 +1051,10 @@ recapture, new staged proof, or an author refinement charge. It also repairs pro
 selection regressions and permits inspected legacy reviews to be re-reviewed. Old snapshots and
 verdicts stay intact, pending repair deliveries are retired, and in-flight or uncertain deliveries
 prevent recovery. Completed, cancelled, detached, superseded and pruned snapshots cannot recover.
+Each run can reserve at most three recovery segments across all rounds. The store checks that
+durable count atomically with reservation; replaying a request remains idempotent, while a new
+request after exhaustion is refused without provider work. Exhaustion keeps the failed run
+blocked and withdraws its recovery action. This budget is separate from author refinements.
 No historical runs are resumed in bulk.
 
 Links resolve only against evidence frozen for that submission. Historical snapshots with embedded

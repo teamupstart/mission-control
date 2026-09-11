@@ -2018,6 +2018,8 @@ export interface RestageControl {
   busy: string | null;
   settled: ReadonlySet<string>;
   run: (image: WorkflowEvidenceImage) => void;
+  /** Why the last press failed, to be read beside the button that failed. */
+  error: string | null;
 }
 
 /**
@@ -2121,6 +2123,11 @@ export function FrozenImagePreview({
             them is where they can be staged again.
           </p>
         )}
+        {/* IN THE DIALOG, beside the button that produced it. This is the only place a re-stage
+            can be pressed from, and this dialog draws a backdrop over the pane, so an error
+            painted onto the pane behind it is an explanation the operator cannot read without
+            first closing the thing they were acting in. */}
+        {restage.error && <p className="wf-run-error" role="alert">{restage.error}</p>}
         <div className="wf-image-preview-actions">
           {restage.offered(image) && (
             <Tooltip label="Stage these exact retained bytes, caption, and scope for the next fresh review">
@@ -2206,12 +2213,17 @@ function EvidencePane({
   // Whatever had focus when the preview was asked for, so closing puts it back - in practice
   // the card itself, which both routes focus before they fire. The round trip is
   // `openPreview`/`closePreview`, which have their own cases.
-  const open = (image: WorkflowEvidenceImage): void => openPreview({
-    imageId: image.id,
-    bookmark: returnFocus,
-    capture: () => captureFocusBookmark(document.activeElement),
-    show: (imageId) => setPreview(imageId),
-  });
+  const open = (image: WorkflowEvidenceImage): void => {
+    // A fresh dialog never inherits the last one's failure: the message lives in the dialog now,
+    // so a stale one would reappear on the next image the reader opened.
+    setRestageError(null);
+    openPreview({
+      imageId: image.id,
+      bookmark: returnFocus,
+      capture: () => captureFocusBookmark(document.activeElement),
+      show: (imageId) => setPreview(imageId),
+    });
+  };
   const close = (): void => void closePreview({
     bookmark: returnFocus,
     hide: () => setPreview(null),
@@ -2226,6 +2238,7 @@ function EvidencePane({
     offered: (image) => restageOffered(image, canRestage, Boolean(onRestage)),
     busy: restageBusy,
     settled: restaged,
+    error: restageError,
     run: (image) => restagePress({
       image,
       minted: itemIds.current,
@@ -2423,7 +2436,6 @@ function EvidencePane({
           </p>
         </>
       )}
-      {restageError && <p className="wf-run-error" role="alert">{restageError}</p>}
       <h5 className="wf-evidence-head">Frozen author claims</h5>
       {coverage.length === 0 ? (
         <p className="wf-run-empty">

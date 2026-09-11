@@ -368,8 +368,16 @@ test("dashboard evidence reaches both native providers and remains auditable per
     body: JSON.stringify({ error: "Retained bytes could not be staged" }),
   }));
   await captured.getByRole("button", { name: "Use in next review" }).click();
-  await expect(ledger.getByRole("alert").filter({ hasText: "Retained bytes could not be staged" }))
-    .toBeVisible();
+  // INSIDE the dialog, which is the only place the press can be made from. This dialog draws a
+  // backdrop over the pane, so the same sentence on the pane behind it would be an explanation
+  // the operator has to close the dialog to read.
+  const refusal = captured.getByRole("alert")
+    .filter({ hasText: "Retained bytes could not be staged" });
+  await expect(refusal).toBeVisible();
+  // Once in the whole pane subtree, which the dialog is part of: the reason belongs beside the
+  // button, and printing it here AND on the pane would be the same sentence twice.
+  await expect(ledger.getByRole("alert")
+    .filter({ hasText: "Retained bytes could not be staged" })).toHaveCount(1);
   await expect(captured.getByRole("button", { name: "Use in next review" })).toBeEnabled();
   await expect(captured.getByRole("button", { name: "Ready for next review" })).toHaveCount(0);
   await dashboard.unroute(reattach);

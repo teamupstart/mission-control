@@ -887,6 +887,7 @@ const restageControl = (over: Partial<RestageControl> = {}): RestageControl => (
   busy: null,
   settled: new Set<string>(),
   run: () => {},
+  error: null,
   ...over,
 });
 
@@ -1021,6 +1022,38 @@ test("the image frame draws one of four arms and never a broken picture", () => 
   assert.match(pruned, /aria-label="pane-alpha\.png body pruned">Body pruned/);
   assert.doesNotMatch(pruned, /<img/);
   assert.doesNotMatch(pruned, /Loading image/);
+});
+
+/**
+ * A refused re-stage, said where the operator is standing.
+ *
+ * The button that stages retained bytes exists only in this dialog, and this dialog draws a
+ * backdrop over the pane. An explanation painted onto the pane behind it is one the operator
+ * cannot read without first closing the thing they were acting in, so the reason belongs in the
+ * footer beside the button, and the button stays pressable because the daemon refused.
+ */
+test("a refused re-stage explains itself inside the dialog that asked for it", () => {
+  const refused = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({ error: "Retained bytes could not be staged" }),
+  });
+
+  assert.match(
+    refused,
+    /<p class="wf-run-error" role="alert">Retained bytes could not be staged<\/p>/,
+  );
+  // Inside the footer, which is inside the dialog, and before the action it explains.
+  const footer = refused.slice(refused.indexOf("<footer"));
+  assert.match(footer, /Retained bytes could not be staged/);
+  assert.ok(
+    footer.indexOf("Retained bytes could not be staged") < footer.indexOf("Use in next review"),
+    "the reason reads before the button it is about",
+  );
+  // NOT settled: "Ready for next review" is a claim about the daemon, and the daemon refused.
+  assert.match(refused, /Use in next review/);
+  assert.doesNotMatch(refused, /Ready for next review/);
+
+  // And nothing is announced when nothing failed.
+  assert.doesNotMatch(previewMarkup(PREVIEW_IMAGE), /role="alert"/);
 });
 
 /**

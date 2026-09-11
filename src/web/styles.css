@@ -19727,7 +19727,9 @@ button.wf-carried.is-link:focus-visible {
 /* The harness-default pickers. Matches `.alert-row select` - the app's existing inline
    select - but without its `margin-left: auto`, since `.kb-row-controls` already
    parks it at the end of the row. Sized to fit the longest catalog entry so swapping
-   models can't jog the row width. */
+   models can't jog the row width - which holds only because the harness card renders bare
+   model labels. Never let a hint into this select: they are free text from each harness's
+   own model list, so no cap chosen here can survive the next catalog. */
 .harnesses-select {
   font: inherit;
   font-size: 12px;

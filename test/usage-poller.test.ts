@@ -16,6 +16,7 @@ const {
   openDb,
   recordAutomationUsage,
   reportedUsageLedgerHasRows,
+  sessionCostFor,
   usageCursorFor,
 } = await import("../src/server/db.ts");
 
@@ -33,8 +34,8 @@ function token(ts: string): string {
 }
 
 async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const until = Date.now() + timeoutMs;
-  while (Date.now() < until) {
+  const until = performance.now() + timeoutMs;
+  while (performance.now() < until) {
     if (check()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -363,5 +364,92 @@ test("Pi's dispatched identity reaches the card and ledger once; hand-run Pi sta
   } finally {
     stop();
     HARNESSES.pi.transcript = original;
+  }
+});
+
+
+test("starting the poller recovers Astra history even without an active rollout", () => {
+  commitUsageRead({ sourceKey: "old-astra-source", noteKey: "old-astra-session", sessionId: null,
+    agent: "codex", cursor: { offset: 50, modelId: "gpt-6-astra", fileId: "old:astra", discardPartial: false },
+    updatedAt: Date.now(), events: [{ identity: "old-astra-request", ts: Date.now(), modelId: "gpt-6-astra",
+      querySource: "main", input: 1_000, output: 400, reasoningOutput: 100, cacheRead: 2_000,
+      cacheWrite: 3_000, costUsd: null, pricingVersion: "" }] });
+  const registry = new Registry();
+  const stop = startUsagePoller(registry);
+  try {
+    assert.equal(sessionCostFor("old-astra-session")?.costUsd, 0.0695);
+    assert.equal(usageCursorFor("old-astra-source").offset, 50);
+  } finally {
+    stop();
+  }
+});
+
+
+test("historical pricing failures do not block live usage and retries are throttled", async (t) => {
+  const { HARNESSES } = await import("../src/server/harness/index.ts");
+  const originalEstimate = HARNESSES.codex.usage!.estimate;
+  let attempts = 0;
+  let failRecovery = true;
+  t.mock.method(HARNESSES.codex.usage!, "estimate", (event: Parameters<typeof originalEstimate>[0]) => {
+    if (event.identity === "recovery-failure-request") {
+      attempts++;
+      if (failRecovery) throw new Error("historical estimator failure");
+    }
+    return originalEstimate(event);
+  });
+  let laterHarnessAttempts = 0;
+  t.mock.method(HARNESSES.pi.usage!, "estimate", () => {
+    laterHarnessAttempts++;
+    return { costUsd: 0.02, pricingModel: "test-pi", pricingVersion: "test-recovery" };
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  commitUsageRead({ sourceKey: "recovery-failure-source", noteKey: "recovery-failure-history", sessionId: null,
+    agent: "codex", cursor: { offset: 50, modelId: "gpt-6-astra", fileId: null, discardPartial: false },
+    updatedAt: now, events: [{ identity: "recovery-failure-request", ts: now, modelId: "gpt-6-astra",
+      querySource: "main", input: 1_000, output: 0, reasoningOutput: 0, cacheRead: 0,
+      cacheWrite: 0, costUsd: null, pricingVersion: "" }] });
+  commitUsageRead({ sourceKey: "later-harness-source", noteKey: "later-harness-history", sessionId: null,
+    agent: "pi", cursor: { offset: 50, modelId: "test-pi", fileId: null, discardPartial: false },
+    updatedAt: now, events: [{ identity: "later-harness-request", ts: now, modelId: "test-pi",
+      querySource: "main", input: 1_000, output: 0, reasoningOutput: 0, cacheRead: 0,
+      cacheWrite: 0, costUsd: null, pricingVersion: "" }] });
+  const path = join(home, "recovery-failure-live.jsonl");
+  writeFileSync(path, [
+    JSON.stringify({ type: "session_meta", payload: { id: "recovery-live", cwd: "/repo" } }),
+    JSON.stringify({ type: "turn_context", payload: { model: "gpt-6-astra" } }),
+    token("2026-09-11T12:00:00.000Z"),
+  ].join("\n") + "\n");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "recovery-live-card", agent: "codex", name: "codex", nameSource: "process", cwd: "/repo",
+    gitBranch: "main", gitRoot: null, repoRoot: null, pid: 46, tty: "ttys46", terminals: [], startedAt: 0,
+    agentSessionId: "recovery-live", transcriptPath: path,
+  }]);
+  const stop = startUsagePoller(registry);
+  try {
+    assert.equal(attempts, 1);
+    assert.equal(sessionCostFor("later-harness-history")?.costUsd, 0.02,
+      "a failing harness must not prevent later harness recovery");
+    assert.equal(laterHarnessAttempts, 1);
+    assert.equal(registry.getSession("recovery-live-card")?.cost?.input, 700);
+    appendFileSync(path, token("2026-09-11T12:01:00.000Z") + "\n");
+    await eventually(() => registry.getSession("recovery-live-card")?.cost?.input === 1_400);
+    assert.equal(attempts, 1, "ordinary live polls must not retry recovery");
+    now += 60_000;
+    appendFileSync(path, token("2026-09-11T12:02:00.000Z") + "\n");
+    await eventually(() => registry.getSession("recovery-live-card")?.cost?.input === 2_100);
+    assert.equal(attempts, 2, "persistent recovery failure must still allow live ingestion");
+    assert.equal(errors.mock.callCount(), 2);
+    assert.equal(sessionCostFor("recovery-failure-history")?.basis, "unpriced");
+    failRecovery = false;
+    now += 60_000;
+    await eventually(() => sessionCostFor("recovery-failure-history")?.costUsd === 0.01);
+    assert.equal(attempts, 3);
+    assert.equal(laterHarnessAttempts, 1, "successful harnesses are not recovered again");
+    assert.equal(usageCursorFor("recovery-failure-source").offset, 50);
+  } finally {
+    stop();
   }
 });

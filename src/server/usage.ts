@@ -1,6 +1,6 @@
 import { envVar } from "./config.ts";
-import { commitUsageRead, touchUsageSource, usageCursorFor } from "./db.ts";
-import { transcriptFor, usageFor } from "./harness/index.ts";
+import { commitUsageRead, priceUnpricedUsage, touchUsageSource, usageCursorFor } from "./db.ts";
+import { allHarnesses, transcriptFor, usageFor } from "./harness/index.ts";
 import type { Session } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
@@ -8,6 +8,7 @@ import { unref } from "./util/timers.ts";
 const USAGE_POLL_MS = Number(envVar("USAGE_POLL_MS") ?? 4000);
 const USAGE_READ_BYTES = 1024 * 1024;
 const FINAL_DRAIN_MS = 30_000;
+const PRICE_RECOVERY_RETRY_MS = 60_000;
 const SOURCE_TOUCH_MS = 24 * 60 * 60 * 1000;
 
 interface HeldSource {
@@ -38,11 +39,27 @@ export function startUsagePoller(registry: Registry): () => void {
   // append-only source. Keep that exact conversation/path quarantined for this daemon
   // lifetime; changing either value produces a new key and is the only safe reset signal.
   const rejected = new Set<string>();
+  const pricesRecovered = new Set<string>();
+  let nextPriceRecoveryAt = 0;
 
   const tick = (): void => {
     if (stopped) return;
     const now = Date.now();
     let more = false;
+    if (now >= nextPriceRecoveryAt) {
+      nextPriceRecoveryAt = now + PRICE_RECOVERY_RETRY_MS;
+      for (const harness of allHarnesses()) {
+        if (!harness.usage || pricesRecovered.has(harness.id)) continue;
+        try {
+          for (const key of priceUnpricedUsage(harness.id, harness.usage.estimate)) {
+            registry.applyDurableUsage(key);
+          }
+          pricesRecovered.add(harness.id);
+        } catch (err) {
+          console.error(`[usage] historical pricing recovery failed for ${harness.id}:`, err);
+        }
+      }
+    }
     try {
       for (const session of registry.liveSessions()) {
         const usage = usageFor(session);

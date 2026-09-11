@@ -10497,6 +10497,48 @@ export interface DurableUsageEvent {
   pricingVersion: string;
 }
 
+/**
+ * Fill previously unknown estimates without changing tokens, cursors, or priced history.
+ * This deliberately scans and prices a harness's backlog synchronously in one transaction:
+ * an estimator failure must roll back every update in that pass. A large unpriced backlog
+ * can therefore delay HTTP, SSE, and live ingestion on the daemon's event loop. If recovery
+ * volume warrants batching, use resumable bounded passes with an explicit partial-commit
+ * contract rather than yielding while this transaction holds the shared connection.
+ */
+export function priceUnpricedUsage(
+  agent: string,
+  estimate: import("./harness/types.ts").UsageSpec["estimate"],
+): string[] {
+  const d = openDb();
+  const changed = new Set<string>();
+  const rows = d.prepare(`SELECT rowid AS rowId, note_key AS noteKey,
+      model_id AS modelId, window_end_ns AS identity, ts, query_source AS querySource,
+      input, output, reasoning_output AS reasoningOutput,
+      cache_read AS cacheRead, cache_write AS cacheWrite
+    FROM usage_ledger WHERE agent = ? AND cost_known = 0 AND cost_basis = 'unpriced'
+      AND writer IN ('rollout', 'report')`).all(agent) as unknown as Array<
+        import("./harness/types.ts").HarnessUsageEvent & { rowId: number; noteKey: string }
+      >;
+  const update = d.prepare(`UPDATE usage_ledger SET cost_usd = ?, cost_known = 1,
+    cost_basis = 'api-equivalent', pricing_version = ?
+    WHERE rowid = ? AND cost_known = 0 AND cost_basis = 'unpriced'`);
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    for (const row of rows) {
+      const priced = estimate({ ...row, vendorCostUsd: null });
+      if (!priced) continue;
+      if (update.run(priced.costUsd, priced.pricingVersion, row.rowId).changes > 0) {
+        changed.add(row.noteKey);
+      }
+    }
+    d.exec("COMMIT;");
+  } catch (err) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw err;
+  }
+  return [...changed];
+}
+
 /** Last committed byte position for a harness-owned usage stream. */
 export function usageCursorFor(sourceKey: string): UsageSourceCursor {
   const row = openDb()

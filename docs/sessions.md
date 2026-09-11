@@ -1687,8 +1687,25 @@ is exactly when the record starts being interesting.
 
 Codex ingestion covers the main rollout only. Separate subagent rollouts are not assigned
 to a parent by cwd or timing because that relationship is not proven. The standard-price
-snapshot currently recognizes `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
-`gpt-5.5`; a new model intentionally stays unpriced until its official rate is added.
+snapshot includes `gpt-6-astra`, all shipped Codex choices, and older OpenAI text/code
+models (GPT-5, GPT-4.1, GPT-4o, and o-series). The exact supported ids and rates live in
+`src/server/harness/codex/pricing.ts`, verified against [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
+and the linked model reference pages on September 11, 2026. Astra includes cached input,
+cache writes, and the surcharge above 272,000 input tokens. GPT-5.6 rates reflect the current
+published prices, including Sol's promotional rate, available at least through November 21,
+2026. These are Standard rates; Fast, Batch, Flex, and regional uplifts are not applied.
+Unknown model variants remain unpriced until their official rates are verified.
+On daemon startup, previously unpriced rollout and automation rows are valued when the
+installed snapshot now recognizes their model. Already-priced history keeps its original
+snapshot and amount, and token counts and ingestion cursors do not change. Recovery failures
+are logged and retried after one minute; live usage ingestion continues after the failed pass.
+Each harness's recovery pass is synchronous and atomic: a large historical backlog can delay HTTP, SSE, and
+live ingestion until that pass finishes. Batching is not implemented; introducing it would
+require a resumable partial-commit contract in place of whole-pass rollback. Models without
+a published cache rate remain unpriced when either cache reads or cache writes are reported.
+Claude models,
+including dated ids and long-context variants, use Claude Code's reported cost without a
+model allowlist; a missing reported cost is never guessed.
 Claude's estimate can include provider-priced server tools such as web search; Codex
 rollouts do not currently expose every separately billed hosted-tool fee.
 

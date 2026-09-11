@@ -224,10 +224,10 @@ test("a report is priced by its own runner before it is written", () => {
   });
   assert.equal(written.kind, "recorded", "the report was recorded");
   const triage = automationSpendSince(T0 + 199).find((r) => r.role === "foreman:triage");
-  // gpt-5.6-luna is $1/M input, doubled past the 272k long-context threshold - so 1M input
-  // tokens is $2, not $1. Asserting the doubled figure is the point: it proves the real
+  // gpt-5.6-luna is $0.20/M input, doubled past the 272k long-context threshold - so 1M input
+  // tokens is $0.40, not $0.20. Asserting the doubled figure is the point: it proves the real
   // snapshot's rules are being applied rather than a flat rate reimplemented here.
-  assert.equal(triage?.costUsd, 2);
+  assert.equal(triage?.costUsd, 0.4);
 });
 
 test("a claude report keeps the cost the provider itself calculated", () => {

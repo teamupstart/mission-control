@@ -336,3 +336,47 @@ test("a slower earlier dispatch probe cannot overwrite a newer completed health 
   assert.equal((await missionToolsAvailability("pi")).available, true, "the newer healthy reading remains cached");
   assert.equal(readFileSync(probes, "utf8"), "xx", "the final dispatch reused the newer completed probe");
 });
+
+
+test("completed health can serve continued arrivals while a newer probe is pending", async () => {
+  await loadPiExtensionMetadata(realpathSync(installed));
+  const probes = join(root, "overlapping-probes");
+  const firstRelease = join(root, "release-first");
+  const secondRelease = join(root, "release-second");
+  writeFileSync(probes, "");
+  writeFileSync(bridge, `import {createInterface} from 'node:readline';
+    import {existsSync,readFileSync,appendFileSync} from 'node:fs';
+    const ordinal = readFileSync(${JSON.stringify(probes)}, 'utf8').length + 1;
+    appendFileSync(${JSON.stringify(probes)}, 'x');
+    const release = ordinal===1 ? ${JSON.stringify(firstRelease)} : ordinal===2 ? ${JSON.stringify(secondRelease)} : null;
+    createInterface({input:process.stdin}).on('line', async line => {
+      const m=JSON.parse(line); if (!m.id) return;
+      if (m.method==='tools/list' && release) {
+        while (!existsSync(release)) await new Promise(done => setTimeout(done, 10));
+      }
+      console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:m.method==='tools/list'
+        ? {tools:${JSON.stringify(MISSION_MCP_TOOLS.map(name => ({ name })))}}
+        : {protocolVersion:'2025-06-18',capabilities:{},serverInfo:{name:'fixture',version:'1'}}}));
+    });`);
+  symlinkSync(installed, link);
+  const waitForProbes = async (count: number) => {
+    const deadline = Date.now() + 5000;
+    while (readFileSync(probes, "utf8").length < count && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
+    assert.equal(readFileSync(probes, "utf8").length, count);
+  };
+  const first = missionToolsAvailability("pi");
+  let second: ReturnType<typeof missionToolsAvailability> | undefined;
+  try {
+    await waitForProbes(1);
+    second = missionToolsAvailability("pi");
+    await waitForProbes(2);
+    writeFileSync(firstRelease, "released");
+    assert.equal((await first).available, true);
+    const arrivals = await Promise.all(Array.from({ length: 4 }, () => missionToolsAvailability("pi")));
+    assert.ok(arrivals.every(result => result.available));
+    assert.equal(readFileSync(probes, "utf8"), "xx", "continued arrivals reuse the completed result while the newer probe is pending");
+  } finally {
+    writeFileSync(firstRelease, "released"); writeFileSync(secondRelease, "released");
+    await first; await second;
+  }
+});

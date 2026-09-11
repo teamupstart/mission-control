@@ -66,8 +66,9 @@ export async function inspectPiExtension(bundleToInstall?: string): Promise<PiEx
   return inspect(bundleToInstall);
 }
 
-let cached: { key: string; paths: Map<string, string>; healthy: boolean; expires: number } | undefined;
+let cached: { key: string; paths: Map<string, string>; healthy: boolean; expires: number; sequence: number } | undefined;
 let cacheGeneration = 0;
+let probeSequence = 0;
 export function invalidatePiExtensionAvailability(): void { cached = undefined; cacheGeneration += 1; }
 
 function pathIdentity(path: string): string {
@@ -93,13 +94,14 @@ export async function piExtensionHealthyForDispatch(): Promise<boolean> {
   try { key = availabilityKey(); } catch { return (await inspectPiExtension()).healthy; }
   if (cached?.key === key && cached.expires > Date.now()
     && [...cached.paths].every(([path, identity]) => pathIdentity(path) === identity)) return cached.healthy;
-  // Only the newest-started probe may publish, regardless of completion order.
-  const generation = ++cacheGeneration;
+  // Earlier completions may prime the cache, but cannot replace newer published readings.
+  const generation = cacheGeneration;
+  const sequence = ++probeSequence;
   const paths = new Map<string, string>();
   const reading = await inspect(undefined, path => { if (!paths.has(path)) paths.set(path, pathIdentity(path)); });
   try {
-    if (generation === cacheGeneration && key === availabilityKey() && [...paths].every(([path, identity]) => pathIdentity(path) === identity)) {
-      cached = { key, paths, healthy: reading.healthy, expires: Date.now() + 30_000 };
+    if (generation === cacheGeneration && (!cached || sequence > cached.sequence) && key === availabilityKey() && [...paths].every(([path, identity]) => pathIdentity(path) === identity)) {
+      cached = { key, paths, healthy: reading.healthy, expires: Date.now() + 30_000, sequence };
     }
   } catch { invalidatePiExtensionAvailability(); }
   return reading.healthy;

@@ -42,6 +42,7 @@ const {
   skillsAgents,
   supportsSessionEffort,
   workQueueUnsupportedWhy,
+  missionToolsUnavailableWhy,
   workQueueBlockedReason,
 } = await import("../src/shared/harness-capabilities.ts");
 const { HARNESSES, foremanAutomationAuthorized } = await import("../src/server/harness/index.ts");
@@ -61,7 +62,7 @@ const { MODEL_PICKER_XHIGH } = await import("./fixtures/claude-panes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt";
+type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt" | "missionTools";
 
 /** An agent whose harness declares the capability, and one that declares it null. */
 function split<K extends SplitCap>(cap: K) {
@@ -168,13 +169,14 @@ test("every capability's null path is exercised, by a real harness or a named fi
   // there was no interrupt primitive to reach and the pane mechanism did not exist. Adding
   // `escape` to the terminal vocabulary gave pi the only mechanism it can ever have, the
   // slot lost its last null declarer, and this test went red until `interrupt` moved here.
-  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt", "workQueue"];
+  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt", "workQueue", "missionTools"];
   for (const cap of [
     "permissionModes",
     "skills",
     "workQueue",
     "clearContext",
     "mcp",
+    "missionTools",
     "interrupt",
   ] as const) {
     const declared = split(cap).hasnt.length > 0;
@@ -508,15 +510,15 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
   for (const agent of has) assert.equal(workQueueUnsupportedWhy(agent), null);
 });
 
-test("Pi's queue names extension installation as the remedy while lifecycle hooks are absent", () => {
+test("Pi declares machine instrumentation and explains a session with no lifecycle hooks", () => {
   const session = mkSession({ agent: "pi", runtime: "terminal", hooksSeen: false });
   const queue = capabilitiesFor("pi").workQueue;
   assert.ok(queue);
-  assert.equal(HARNESSES.pi.hooks, null);
-  assert.equal(foremanAutomationAuthorized(session), false);
+  assert.equal(HARNESSES.pi.hooks?.scope, "machine");
+  assert.equal(foremanAutomationAuthorized(session), true);
   assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
-  assert.match(queue.uninstrumentedWhy, /Install the Mission Control extension for Pi to enable Foreman's work queue/);
-  assert.match(queue.uninstrumentedWhy, /hasn't reported lifecycle hooks/);
+  assert.match(queue.uninstrumentedWhy, /has not loaded.*lifecycle hooks/);
+  assert.doesNotMatch(queue.uninstrumentedWhy, /Install|Setup/);
 });
 
 // ---- clearing context: the defect this item fixes ----
@@ -587,4 +589,22 @@ test("a harness that DOES declare a clear command still clears - the other half 
     const r = await resetToOrigin(session, true, deps);
     assert.equal(r.cleared, true, `${agent} declares ${command} and must be reported as having run it`);
   }
+});
+
+test("Mission tools declare a route independently of a vendor MCP client", async () => {
+  for (const agent of ["claude", "codex"] as const) {
+    assert.deepEqual(capabilitiesFor(agent).missionTools, { mechanism: "mcp-client", scope: "launch" });
+    assert.equal(missionToolsUnavailableWhy(agent), null);
+  }
+  assert.deepEqual(capabilitiesFor("pi").missionTools, { mechanism: "installed-extension", scope: "machine" });
+  assert.equal(capabilitiesFor("pi").mcp, null);
+  assert.match(missionToolsUnavailableWhy("pi")!, /integration for Pi is not installed/);
+  assert.doesNotMatch(missionToolsUnavailableWhy("pi")!, /npm run build|bundle/);
+  await withCapabilityNull("codex", "missionTools", async () => {
+    const { missionToolsAvailability } = await import("../src/server/mission-tools.ts");
+    assert.deepEqual(await missionToolsAvailability("codex"), {
+      available: false, reason: missionToolsUnavailableWhy("codex"),
+    });
+    assert.match(missionToolsUnavailableWhy("codex")!, /Codex has no integration/);
+  });
 });

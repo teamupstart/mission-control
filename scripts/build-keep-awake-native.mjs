@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
-import { copyFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { arch as processArch, platform as processPlatform } from "node:process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+
+import { publishNativeAddon } from "./native-addon-publish.mjs";
 
 export function nativeBuildTarget(platform, arch) {
   if (platform !== "darwin") return { kind: "skip", platform };
@@ -31,7 +33,10 @@ async function main() {
     { stdio: "inherit" },
   );
   await mkdir(outputDir, { recursive: true });
-  await copyFile(built, output);
+  // Never a copy onto `output`: a developer running `make start` has the previous addon
+  // mapped, and rewriting it in place makes macOS kill every process that loads it
+  // afterwards. `publishNativeAddon` holds the whole account of that.
+  await publishNativeAddon(built, output);
   console.log(`[keep-awake-native] built ${target.arch} ${output}`);
 }
 

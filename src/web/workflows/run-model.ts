@@ -317,6 +317,25 @@ export function inheritedPasses(
     if (kind !== "persona" && kind !== "check") continue;
     if (priorAttemptPassed(kind, inherited.attempt)) passes.set(nodeId, inherited);
   }
+  // A repair round records its own receipt-bearing attempt while naming the earned pass.
+  // Resolve that provenance even when a later action segment inherited the reused attempt.
+  const candidates = new Map([
+    ...[...passes].map(([nodeId, pass]) => [nodeId, pass.attempt] as const),
+    ...latestAttemptsFor(detail, submission?.id ?? ""),
+  ]);
+  for (const [nodeId, candidate] of candidates) {
+    const output = candidate.output;
+    if (candidate.state !== "completed" || !output || typeof output !== "object" || Array.isArray(output)) continue;
+    const source = detail.attempts.find((attempt) => attempt.id === output.reusedPassAttemptId);
+    const sourceSubmission = source && detail.submissions.find((item) => item.id === source.submissionId);
+    if (kinds.get(nodeId) !== "persona" || source?.nodeId !== nodeId || !sourceSubmission
+      || !priorAttemptPassed("persona", source)) continue;
+    passes.set(nodeId, {
+      attempt: source,
+      submission: sourceSubmission,
+      roundLabel: submissionRoundLabel(detail, sourceSubmission),
+    });
+  }
   return passes;
 }
 

@@ -2393,6 +2393,23 @@ function IntentPane({
           {` · ${context.primaryGoal.intentSource.relationship ?? "unresolved"}`}
         </p>
       )}
+      {!!context.steering?.length && (
+        <RunDisclosure
+          title="Human steering context"
+          meta={`${context.steering.length} instruction${context.steering.length === 1 ? "" : "s"}`}
+          tooltip="Show frozen method, sequence and priority changes that do not move the acceptance contract"
+        >
+          <p>Steering does not add, remove or narrow acceptance criteria.</p>
+          <p className="wf-run-meta">Frozen through resolved prompt revision {context.steeringResolvedRevision}.</p>
+          {context.steering.map((note) => (
+            <div key={note.revision}>
+              <p className="wf-run-meta">Revision {note.revision} · <time dateTime={new Date(note.timestamp).toISOString()}>{when(note.timestamp)}</time></p>
+              <pre>{note.instruction}</pre>
+              <p>{note.rationale}</p>
+            </div>
+          ))}
+        </RunDisclosure>
+      )}
       <RunDisclosure
         title="Human decisions and rationale"
         meta={humanDecisionsSummary(intent)}
@@ -3172,7 +3189,7 @@ export function WorkflowRunView({
             ? inspectorGateSentence(detail)
             : null}
           repair={detail.summary.maxRepairRounds > 0
-            ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
+            ? "Any fail returns the submission to Session for repair, then a new round starts."
             : null}
           disabledNodeIds={detail.run.disabledNodeIds ?? []}
           disabledChipFor={(nodeId) =>

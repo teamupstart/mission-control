@@ -20,6 +20,7 @@ export const SCOUT_SUBMISSION_CREDENTIAL_HEADER: string;
 export const SCOUT_SUBMISSION_CREDENTIAL_ENV: string;
 export const SCOUT_SUBMISSION_CREDENTIAL_FILE_ENV: string;
 export const MISSION_SESSION_ID_ENV: string;
+export const MISSION_AGENT_SESSION_ID_ENV: string;
 export function scoutSubmissionCredentialPath(cwd: string): string;
 export function isolatedScoutSubmissionCredentialPath(cwd: string): string;
 export function readScoutSubmissionCredential(cwd: string): string;

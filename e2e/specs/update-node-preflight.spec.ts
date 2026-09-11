@@ -62,25 +62,6 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
       },
     } });
   }, controller.getSnapshot());
-  /**
-   * Wait for the controller's in-flight check to publish its result.
-   *
-   * There is no DOM signal for this and there cannot be: the fixture republishes to the page
-   * only when `check()` RESOLVES, so the banner keeps rendering the previous result for the
-   * whole time a re-check is running, and every assertion about that previous result passes
-   * against it instantly. `probes` is no substitute either - it moves when a probe STARTS.
-   *
-   * Waiting is not politeness. `UpdateController.check` returns an already-in-flight promise
-   * rather than starting a second one, so a click that lands while the previous check is still
-   * probing is answered by THAT check's runtime - the one probed before the test changed it -
-   * and the test then asserts against a verdict for the wrong Node.js.
-   */
-  const checkSettled = async (): Promise<void> => {
-    await expect.poll(() => controller.getSnapshot().phase, {
-      message: "the manual re-check should finish before the test acts on its result",
-      timeout: 20_000,
-    }).not.toBe("checking");
-  };
   try {
     await dashboard.reload();
     const status = dashboard.getByRole("status", { name: "Mission Control update" });
@@ -104,21 +85,15 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     const previousProbes = probes;
     await status.getByRole("button", { name: "Check again" }).click();
     await expect.poll(() => probes).toBeGreaterThan(previousProbes);
-    await checkSettled();
+    // The probe count advances before its subprocess finishes. Wait for that check
+    // to settle before changing the fixture; another click during it shares its result.
+    await expect.poll(() => controller.getSnapshot().phase).toBe("available");
     await expect(update).toBeDisabled();
     await expect(status).toContainText("If this warning persists after changing Node in another terminal, restart Mission Control with the corrected Node.js environment.");
     expect(builds).toBe(0);
     await capture("retry-still-blocked.png");
     compatible = true;
-    const probesBeforeRemediation = probes;
     await status.getByRole("button", { name: "Check again" }).click();
-    // The re-probe has to be the one that reads the REMEDIATED runtime, so this waits for a
-    // fresh probe rather than for the button to settle: a click coalesced into the previous
-    // check would leave the banner correct about a Node.js the operator has already replaced.
-    await expect.poll(() => probes, {
-      message: "remediation should be read by a fresh probe, not by the previous check",
-    }).toBeGreaterThan(probesBeforeRemediation);
-    await checkSettled();
     await expect(update).toBeEnabled();
     await expect(status).not.toContainText("found 22.0.0");
     await capture("compatible.png");

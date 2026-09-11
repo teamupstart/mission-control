@@ -5411,8 +5411,11 @@ body.is-pane-resizing {
 /* The panel's outer spacing is the HOST's padding, never the panel's margin. CodeMirror
    measures a block widget with `offsetHeight`, which excludes margins, so a margin here
    makes the content taller than the gutter thinks it is and every line below the panel
-   drifts out of step with its own line number. */
-.file-comment-host { display: block; padding: 6px 10px 10px; }
+   drifts out of step with its own line number.
+
+   Sticky HORIZONTALLY only: `width` and `left` are measured, and `fitPanelHost` in
+   `FileEditor.tsx` is where both and their reasons live. */
+.file-comment-host { display: block; position: sticky; padding: 6px 10px 10px; }
 .file-comment-panel {
   display: flex;
   flex-direction: column;
@@ -5543,10 +5546,24 @@ body.is-pane-resizing {
   opacity: 0;
   pointer-events: none;
 }
+/*
+ * The control is in the gutter, outside its block's box, so the block's hover cannot be what
+ * reaches it: for all of comment mode it stays hit-testable and reveals itself on its own
+ * hover. Safe only here - that gutter holds no text, and the control paints the moment a
+ * pointer is on it.
+ */
+.file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment { pointer-events: auto; }
 .file-markdown-preview.is-commenting .md-block-anchor:hover:not(:has(.md-block-anchor:hover)) > .md-block-comment,
+.file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment:hover,
 .file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment:focus-visible {
   opacity: 1;
   pointer-events: auto;
+}
+/* The gutter strip, hit-tested as part of the control so the two hover regions touch. */
+.md-block-comment::after {
+  content: "";
+  position: absolute;
+  inset: -4px -7px -4px -4px;
 }
 .md-block-comment:hover { filter: brightness(1.15); }
 .file-image-preview {
@@ -20454,6 +20471,16 @@ select.foreman-model-input {
 .wf-settings-empty {
   color: var(--dim);
 }
+.wf-judge-passes {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wf-judge-passes input {
+  accent-color: var(--working);
+}
 .wf-default-row {
   display: flex;
   align-items: center;
@@ -32162,6 +32189,12 @@ body.foreman-sidecar-open .modal-backdrop {
 .feedback-body {
   display: grid;
   gap: 14px;
+}
+.feedback-footer {
+  flex-wrap: wrap;
+}
+.feedback-authorization-error {
+  flex-basis: 100%;
 }
 /* Prominent, and prominent ONCE. A form where every element wore a danger border would
    teach the eye to skip all of them, including this - so exactly one element carries the

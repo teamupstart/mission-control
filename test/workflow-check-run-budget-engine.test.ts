@@ -248,6 +248,7 @@ const checkPolicy = () => ({
   defaultWorkflowId: null,
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
+  skipPassedJudges: true,
 });
 
 /** The catalog reader the engine injects, over one configured `test` Command. */

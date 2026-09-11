@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
 import type {
   AgentType,
@@ -232,6 +233,10 @@ import {
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
+  upsertSessionGoalWithSteering,
+  readSessionGoalSteering,
+  isSessionGoalSteering,
+  pruneSessionGoalSteering,
   upsertSessionLaunchTurn,
   deleteSessionLaunchTurn,
   moveSessionLaunchTurn,
@@ -7749,11 +7754,37 @@ export class Registry extends EventEmitter {
     return this.mergeGoal(id, patch, now);
   }
 
+  /** The refiner's successful classification, still under its synchronous revision guard. */
+  resolveGoal(id: string, patch: SetGoal, instruction: string, now = Date.now()): SessionGoal | null {
+    const session = this.sessions.get(id);
+    if (!session) return null;
+    const revision = patch.resolvedPromptRevision;
+    // Accepted revisions already passed the Goal pipeline's consuming authorship guard.
+    // A permanent transcript label would wrongly suppress a later human retype here.
+    const steering: WorkflowSteeringNote | undefined = patch.relationship === "steer"
+      && revision !== undefined
+      ? { revision, instruction: clampPrompt(instruction.trim()), relationship: "steer",
+          rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
+      : undefined;
+    return this.mergeGoal(id, patch, now, steering);
+  }
+
+  getGoalSteering(id: string, resolvedRevision: number): WorkflowSteeringNote[] {
+    const session = this.sessions.get(id);
+    return session ? readSessionGoalSteering(noteKeyFor(session), resolvedRevision) : [];
+  }
+
+  isGoalSteering(id: string, resolvedRevision: number, text: string): boolean {
+    const session = this.sessions.get(id);
+    return !!session && isSessionGoalSteering(noteKeyFor(session), resolvedRevision, clampPrompt(text.trim()));
+  }
+
   /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
   private mergeGoal(
     id: string,
     patch: SetGoal & { openingPrompt?: string },
     now: number,
+    steering?: WorkflowSteeringNote,
   ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
@@ -7789,8 +7820,9 @@ export class Registry extends EventEmitter {
           : prev?.pendingPrompts ?? [],
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
+    if (steering) upsertSessionGoalWithSteering(next, steering);
+    else upsertSessionGoal(next);
     this.goals.set(key, next);
-    upsertSessionGoal(next);
     this.syncSessionsForGoal(key);
     return next;
   }
@@ -7818,6 +7850,7 @@ export class Registry extends EventEmitter {
   pruneGoals(olderThan: number): number {
     if (!this.sweptSessions) return 0;
     const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    pruneSessionGoalSteering(liveKeys, olderThan);
     const removed = pruneSessionGoals(liveKeys, olderThan);
     if (!removed) return 0;
     for (const [key, g] of this.goals) {
@@ -9276,6 +9309,7 @@ function metaDisplayEqual(a: SessionMeta | null, b: SessionMeta | null): boolean
     a.modelId === b.modelId &&
     a.longContext === b.longContext &&
     a.thinkingLevel === b.thinkingLevel &&
+    a.nativeEffort === b.nativeEffort &&
     a.thinkingEnabled === b.thinkingEnabled &&
     a.contextPct === b.contextPct
   );
@@ -9319,6 +9353,7 @@ function metaFromStatusLine(ingest: StatusLineIngest, now: number): SessionMeta 
     // so it governs the 1M badge directly (an explicit 200k must not be overridden).
     longContext: isLongContext(window),
     thinkingLevel: ingest.effort ?? null,
+    nativeEffort: ingest.nativeEffort ?? null,
     thinkingEnabled: ingest.thinkingEnabled ?? null,
     contextPct,
     contextTokens: contextPct !== null ? tokens : null,

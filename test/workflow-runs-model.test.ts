@@ -591,10 +591,9 @@ test("a carried stage reads as neutral and names the round its pass came from", 
   assert.equal(carriedStageStatus(["Round 1", "Round 2"]).skipKind, "carried_pass");
 });
 
-test("an ordinary repair round carries nothing, because it re-runs everything", () => {
-  // The guard that matters most. A repair restarts the graph at Session and queues every node
-  // again, so a node with no attempt YET is genuinely not started - borrowing round 1's pass
-  // for it would report a review as done while it is still being re-run.
+test("a repair round claims no inherited pass until the engine records reuse", () => {
+  // A repair queues the graph again. Before claim time it may still run a judge, depending
+  // on policy, so an absent attempt alone is never proof that an earlier pass stands.
   const first = submission("full-1", 1);
   const repair = submission("full-2", 2);
   const run = detail([first, repair], [passed("a", first.id, "persona-node")], PIPELINE);
@@ -1353,4 +1352,22 @@ test("the run record opens on the route's pane, then on a blocking one, then on 
     "deliveries",
     "worklist",
   ), "worklist");
+});
+
+test("a repair's reused judge pass links to the original round, including through continuation", () => {
+  const first = submission("earned-round", 1);
+  const repair = submission("reused-round", 2);
+  const child = submission("reused-child", 2, { segment: 1, parentSubmissionId: repair.id });
+  const earned = passed("earned-attempt", first.id, "persona-node");
+  const reused = passed("reused-attempt", repair.id, "persona-node");
+  reused.output = { outcome: "pass", reusedPassAttemptId: earned.id };
+  const run = detail([first, repair, child], [earned, reused], PIPELINE);
+  for (const current of [repair, child]) {
+    const pass = inheritedPasses(run, current).get("persona-node")!;
+    assert.equal(pass.attempt.id, earned.id);
+    assert.equal(pass.submission.id, first.id);
+    assert.match(pass.roundLabel, /Round 1/);
+  }
+  reused.output = { reusedPassAttemptId: "missing" };
+  assert.equal(inheritedPasses(run, repair).size, 0);
 });

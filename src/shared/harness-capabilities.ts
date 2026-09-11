@@ -240,6 +240,16 @@ export interface McpSpec {
   serverName: string;
 }
 
+/**
+ * How Mission Control's own tools reach the model, distinct from the vendor MCP client.
+ * The mechanism describes the route, not whether it is currently installed. Launch scope
+ * is reported by the argv builder; machine scope needs an installation probe.
+ */
+export interface MissionToolsSpec {
+  mechanism: "mcp-client" | "installed-extension";
+  scope: "launch" | "machine";
+}
+
 /** Selecting and applying reasoning effort at launch and in a live session. */
 export interface EffortSpec {
   /** Values the harness accepts, in increasing order of reasoning spend. */
@@ -487,6 +497,7 @@ interface HarnessCapabilitiesBase {
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
   mcp: McpSpec | null;
+  missionTools: MissionToolsSpec | null;
   /** Null only for a harness with no launch-time reasoning-effort control. */
   effort: EffortSpec | null;
   /** Null for a harness whose write scope could not be widened past cwd at launch. */
@@ -573,6 +584,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     },
     clearContext: { command: "/clear" },
     mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control" },
+    missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
       levels: THINKING_LEVELS,
       levelsFor: () => THINKING_LEVELS,
@@ -702,6 +714,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // real difference - Codex writes one registration and has no `-s user|project` to
     // choose between.
     mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
+    missionTools: { mechanism: "mcp-client", scope: "launch" },
     effort: {
       levels: CODEX_EFFORT_LEVELS,
       levelsFor: (modelId) => {
@@ -802,10 +815,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       isolatedDirName: "pi-skills",
     },
     // Pi can report lifecycle events through the Mission Control extension. Name the
-    // installation remedy here; the extension, installer and HookSpec belong to later phases.
+    // missing instrumentation without promising an installer before it ships.
     workQueue: {
       uninstrumentedWhy:
-        "Install the Mission Control extension for Pi to enable Foreman's work queue. This session hasn't reported lifecycle hooks, so Foreman can't tell when work starts or finishes.",
+        "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes.",
     },
     // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which
@@ -814,6 +827,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // Null: pi has no MCP client at all - it extends via in-process TS extensions, not MCP - so
     // the installer says so rather than shelling out to a registration CLI that does not exist.
     mcp: null,
+    missionTools: { mechanism: "installed-extension", scope: "machine" },
     // pi's `--thinking` accepts `off|minimal|low|medium|high|xhigh|max`; the app's
     // THINKING_LEVELS (`low..max`) are a subset it accepts verbatim.
     effort: {
@@ -1069,6 +1083,17 @@ export function sdkRuntimeUnsupportedWhy(agent: AgentType): string | null {
 export function workQueueUnsupportedWhy(agent: AgentType): string | null {
   if (HARNESS_CAPABILITIES[agent].workQueue) return null;
   return `Foreman doesn't drive ${AGENT_IDENTITY[agent].label} sessions, so anything queued here would never be picked up.`;
+}
+
+/** Shared refusal copy; callers with a machine probe use it only when that probe fails. */
+export function missionToolsUnavailableWhy(agent: AgentType): string | null {
+  const spec = capabilitiesFor(agent).missionTools;
+  const label = AGENT_IDENTITY[agent].label;
+  if (!spec) return `${label} has no integration that can carry Mission Control tools.`;
+  if (spec.mechanism === "installed-extension") {
+    return `The Mission Control integration for ${label} is not installed on this machine, so required Mission MCP tools are unavailable.`;
+  }
+  return null;
 }
 
 /**

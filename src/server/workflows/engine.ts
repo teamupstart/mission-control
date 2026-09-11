@@ -165,7 +165,7 @@ export interface WorkflowEngineOptions {
    * every persona node in every build.
    */
   unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
-  /** Read per attempt, never cached, so a Settings edit lands on the next check. */
+  /** Read per attempt, so a Settings edit lands on the next check or judge. */
   workflowPolicy?: () => WorkflowPolicy;
   /**
    * This machine's Command catalog entry for one slot, read per attempt for the same reason.
@@ -954,7 +954,7 @@ export class WorkflowEngine {
     if (isVerdictNode(node) && disabledNodes(run).includes(node.id)) {
       const verdict = disabledVerdict(node);
       if (verdict) {
-        this.runDisabledAttempt(initial, submission, run, version, node, verdict);
+        this.runSkippedAttempt(initial, submission, run, version, node, verdict);
         return;
       }
     }
@@ -963,6 +963,30 @@ export class WorkflowEngine {
       return;
     }
     if (!isPersona(node)) return;
+    if (this.workflowPolicy().skipPassedJudges) {
+      const prior = this.store.priorPassedJudge(run.id, node.id, submission.round);
+      const parsed = PersonaVerdictSchema.safeParse(prior?.verdict);
+      const directive = initial.operatorDirective
+        ?? run.personaDirectives?.find((item) => item.nodeId === node.id);
+      const previous = prior?.operatorDirective;
+      // New, edited, removed, or recreated feedback must reach a real provider call once.
+      // An unchanged directive can retain the pass that was earned under that instruction.
+      const sameDirective = directive?.revision === previous?.revision
+        && directive?.feedback === previous?.feedback
+        && directive?.createdAt === previous?.createdAt
+        && directive?.updatedAt === previous?.updatedAt;
+      if (prior && parsed.success && parsed.data.verdict === "pass" && sameDirective) {
+        const source = this.store.getSubmission(prior.submissionId)!;
+        const reason = `${node.persona.name} passed in Round ${source.round}. That pass still stands, so this judge was not re-run.`;
+        this.runSkippedAttempt(initial, submission, run, version, node, {
+          verdict: "pass",
+          summary: reason,
+          approvalDetails: { reason, evidence: [] },
+          confidence: parsed.data.confidence,
+        }, prior);
+        return;
+      }
+    }
     const execution = this.resolveExecution(node.persona);
     const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
     if (!claimed) return;
@@ -1143,21 +1167,21 @@ export class WorkflowEngine {
   }
 
   /**
-   * Record the auto-pass for an operator-disabled node without running anything.
+   * Record a disabled node or a previously passed judge without running anything.
    *
    * The same claim -> stopped-submission guard -> atomic verdict-plus-receipts sequence a
    * real attempt follows, so recovery, the round scrubber, and the repair packet read a
-   * disabled gate exactly the way they read every other finished attempt. `output_json`
-   * carries `disabled: true` beside the outcome so run detail can say why this "pass"
-   * exists without parsing the verdict's prose back apart.
+   * skipped gate exactly the way they read every other finished attempt. The output records
+   * either the operator disable or the original earned pass, so history can explain it.
    */
-  private runDisabledAttempt(
+  private runSkippedAttempt(
     initial: WorkflowNodeAttempt,
     submission: WorkflowSubmission,
     run: WorkflowRun,
     version: WorkflowVersion,
     node: WorkflowVerdictNode,
     verdict: PersonaVerdict,
+    priorPass?: WorkflowNodeAttempt,
   ): void {
     // Null runner and model, as a Check records: no provider was ever asked.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
@@ -1181,13 +1205,15 @@ export class WorkflowEngine {
     });
     this.store.finishAttemptWithReceipts(claimed.id, {
       verdict: jsonValue(verdict),
-      output: jsonValue({ outcome: verdict.verdict, disabled: true }),
+      output: jsonValue(priorPass
+        ? { outcome: verdict.verdict, reusedPassAttemptId: priorPass.id }
+        : { outcome: verdict.verdict, disabled: true }),
       receipts: edgesFrom(version.graph, node.id, verdict.verdict).map((edge) => ({
         edgeId: edge.id,
         payload: receiptPayload,
       })),
     }, this.now());
-    this.store.appendEvent(run.id, "disabled_node_auto_passed", {
+    this.store.appendEvent(run.id, priorPass ? "judge_pass_reused" : "disabled_node_auto_passed", {
       nodeId: node.id,
       persona: author,
       submissionId: submission.id,

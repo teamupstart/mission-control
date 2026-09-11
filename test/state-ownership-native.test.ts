@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  clearDarwinProvenance,
-  stateLockBuildTarget,
-} from "../scripts/build-state-lock-native.mjs";
+import { stateLockBuildTarget } from "../scripts/build-state-lock-native.mjs";
+import { clearDarwinProvenance } from "../scripts/native-addon-publish.mjs";
 import {
   nativeStateLockAddonPath,
   validateNativeStateLockBinding,

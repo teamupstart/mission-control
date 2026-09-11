@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { WorkflowHumanDecision, WorkflowRunIntentSnapshot } from "@shared/workflow.ts";
+import type { WorkflowHumanDecision, WorkflowRunIntentSnapshot, WorkflowSteeringContext } from "@shared/workflow.ts";
 
 /**
  * One review's intent identity, in the one place that knows how to compute it.
@@ -55,7 +55,7 @@ export function workflowIntentFingerprint(raw: WorkflowIntentBearing): string {
  * against this fingerprint, so an unverified value there quietly weakens the check that is
  * supposed to catch criteria distilled from another ask.
  */
-export type WorkflowRunIntentInput = Omit<WorkflowRunIntentSnapshot, "fingerprint">;
+export type WorkflowRunIntentInput = Omit<WorkflowRunIntentSnapshot, "fingerprint" | keyof WorkflowSteeringContext> & WorkflowSteeringContext;
 
 /** The same identity over the fields of a run snapshot, derived rather than trusted. */
 export function workflowRunIntentFingerprint(

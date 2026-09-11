@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Page } from "@playwright/test";
@@ -12,6 +12,9 @@ import {
   writeProductAuthorizationScript,
 } from "../fixtures/fake-agents.ts";
 import { recordsIn } from "../fixtures/records.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+import { startDevDashboard } from "../fixtures/dev-dashboard.ts";
+import { observeReactRefresh } from "../fixtures/react-refresh.ts";
 
 /**
  * Public product reporting, driven the way a person actually meets it.
@@ -421,6 +424,107 @@ test("forged and implicit submissions do not bypass the trusted Report control",
   await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
   expect(productCreates(daemon)).toHaveLength(1);
 });
+
+test("hot updates preserve the one-time reporting capability in the browser", async ({
+  dashboard,
+  daemon,
+}) => {
+  const dev = await startDevDashboard(daemon);
+  try {
+    // The page-scoped bridge above claims its capability only once, just like the preload.
+    // Exercise real Vite refresh with that fake on every CI platform; the separate Electron
+    // spec additionally verifies the real context-isolated bridge on macOS.
+    await dashboard.goto(`${dev.origin}/#/fleet`);
+    await openFromTopbar(dashboard);
+    await fill(dashboard, "Bug", "Test", "Test issue, do nothing.");
+    await expectContentClearsBorder(form(dashboard));
+    const refresh = await observeReactRefresh(dashboard);
+    const now = new Date();
+    utimesSync(join(process.cwd(), "src/web/components/ProductIssueModal.tsx"), now, now);
+    await refresh.completed;
+    await expect(titleBox(dashboard)).toHaveValue("Test");
+    await expect(form(dashboard).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("Test issue, do nothing.");
+    await publish(dashboard);
+    await expect(form(dashboard).getByRole("link", { name: "View GitHub issue" })).toBeVisible();
+    await expect.poll(() => productCreates(daemon).length).toBe(1);
+  } finally {
+    dev.stop();
+  }
+});
+
+test("a browser without the desktop bridge explains where reports can be published", async ({
+  dashboard,
+  daemon,
+}) => {
+  // The beforeEach bridge is page-scoped. This new tab is a real browser client with no bridge.
+  const browserPage = await dashboard.context().newPage();
+  try {
+    await browserPage.goto(`${daemon.baseURL}/#/fleet`);
+    await openFromTopbar(browserPage);
+    await fill(browserPage, "Bug", "Test", "Test issue, do nothing.");
+    await publish(browserPage);
+    const alert = form(browserPage).getByRole("alert");
+    await expect(alert).toContainText("This browser cannot authorize reports");
+    await expect(alert).toContainText("Open this report in the Mission Control desktop app");
+    await expect(alert).not.toContainText("Quit and reopen");
+    await expect(titleBox(browserPage)).toHaveValue("Test");
+    await expect(form(browserPage).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("Test issue, do nothing.");
+    await expectContentClearsBorder(form(browserPage));
+    expect(productCreates(daemon)).toHaveLength(0);
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const evidenceDir = join(process.cwd(), "e2e/.artifacts/report-publicly");
+      mkdirSync(evidenceDir, { recursive: true });
+      await browserPage.mouse.move(1, 1);
+      await form(browserPage).screenshot({ path: join(evidenceDir, "browser-authorization-error.png") });
+    }
+  } finally {
+    await browserPage.close();
+  }
+});
+
+for (const failure of ["refused", "throws"] as const) {
+  test(`a desktop authorization bridge that ${failure} explains the failure and retains the draft`, async ({
+    dashboard,
+    daemon,
+  }) => {
+    await openFromTopbar(dashboard);
+    await fill(dashboard, "Bug", "Test", "Test issue, do nothing.");
+    await dashboard.evaluate((mode) => {
+      window.missionDesktop!.authorizeProductIssue = () => {
+        if (mode === "throws") throw new Error("Desktop bridge disconnected");
+        return false;
+      };
+    }, failure);
+    const diagnostic = failure === "throws" ? dashboard.waitForEvent("console", {
+      predicate: (message) => message.type() === "error" &&
+        message.text().includes("Product issue authorization failed"),
+    }) : null;
+    await publish(dashboard);
+    if (diagnostic) {
+      expect((await diagnostic).text()).toContain("Desktop bridge disconnected");
+    }
+    await expect(form(dashboard).getByRole("alert")).toContainText("Nothing was published");
+    await expect(form(dashboard).getByRole("alert")).toContainText("Quit and reopen the desktop app");
+    await expect(titleBox(dashboard)).toHaveValue("Test");
+    await expect(form(dashboard).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("Test issue, do nothing.");
+    await expectContentClearsBorder(form(dashboard));
+    expect(productCreates(daemon)).toHaveLength(0);
+    if (process.env.MC_E2E_EVIDENCE === "1" && failure === "refused") {
+      const evidenceDir = join(process.cwd(), "e2e/.artifacts/report-publicly");
+      mkdirSync(evidenceDir, { recursive: true });
+      await dashboard.mouse.move(1, 1);
+      await form(dashboard).screenshot({ path: join(evidenceDir, "authorization-error.png") });
+    }
+    await form(dashboard).getByRole("button", { name: "Clear" }).click();
+    await expect(form(dashboard).getByRole("alert")).toHaveCount(0);
+    await expect(titleBox(dashboard)).toHaveValue("");
+    await expect(form(dashboard).getByRole("textbox", { name: "Details", exact: true }))
+      .toHaveValue("");
+  });
+}
 
 test("editing before reporting publishes the latest rendered draft in one press", async ({
   dashboard,

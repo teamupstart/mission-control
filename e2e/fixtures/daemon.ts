@@ -413,12 +413,18 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_CLAUDE_BIN: bins.claude,
     MISSION_CODEX_BIN: codexOnDaemonPathOnly ? "codex" : bins.codex,
     MISSION_PI_BIN: bins.pi,
+    // Catalog-only fake has no installed extension unless a spec explicitly supplies one.
+    MISSION_PI_EXTENSION: join(home, "missing-pi-extension.js"),
     // The one terminal backend this suite installs, so continue-in-terminal is drivable on
     // a machine with no terminal: cmux resolves through this env override, needs no
     // emulator to raise its workspaces, and the fake records the `new-workspace --command`
     // it was handed - the exact command line a click asked a terminal to run. See
     // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
     CMUX_BIN: bins.cmux,
+    // cmux's own config file, redirected into the disposable home. The Setup repair button
+    // edits this for real, and without the redirect one browser test would rewrite the
+    // config of whichever cmux the machine running it happens to have installed.
+    MISSION_CMUX_CONFIG_PATH: join(home, "cmux-config", "cmux.json"),
     // Herdr is opt-in because its fake owns a real disposable Unix socket and process tree.
     // Every other spec sees a known missing path, never the operator's installed Herdr.
     HERDR_BIN: herdrEnabled ? bins.herdr : join(home, "missing-herdr"),

@@ -108,11 +108,13 @@ hold a handle from each - a tmux pane lives *inside* a WezTerm pane - and both a
 because writes go to the innermost while raising a window is the outer one's job.
 
 **Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, and WezTerm,
-Ghostty, and iTerm2 on the emulator axis. cmux needs one setting before the daemon can see it - it ships
-refusing socket connections from processes it did not start itself, so set
-`"automation": { "socketControlMode": "allowAll" }` in `~/.config/cmux/cmux.json` and
-restart cmux. Without it your cmux sessions still appear, named `<agent> <pid>` like any
-other unrecognised terminal.
+Ghostty, and iTerm2 on the emulator axis. cmux needs two things beyond installation, and
+**Settings -> Setup** now checks for both and offers to repair each: its app has to be running,
+because the control socket exists only while it is, and `automation.socketControlMode` in
+`~/.config/cmux/cmux.json` has to be `allowAll`. cmux ships `cmuxOnly`, which admits only
+processes it started itself, and the daemon is not one. cmux applies a change to that file
+without a restart. Without both your cmux sessions still appear, named `<agent> <pid>` like any
+other unrecognised terminal. See [Setup](setup.md).
 
 The two axes are separate for that reason. A **multiplexer** has named sessions that
 outlive any window and a copy-mode that can swallow keystrokes; a **terminal emulator**
@@ -261,7 +263,13 @@ Mission Control *talks* to it at all. That is a session's **runtime**, and there
 
 - **Terminal** - what every session you start yourself always is, and the default for Pi.
   It remains an explicit choice for dispatched Claude and Codex sessions. Delivery is a
-  bracketed paste and an Enter; a permission prompt is a menu read off the screen.
+  bracketed paste and an Enter; a permission prompt is a menu read off the screen. cmux is
+  the one backend where the paste carries its own Enter - its typing method writes a leading
+  ESC in a terminal write of its own, so hand-written paste markers arrive as an Escape
+  keypress followed by the literal text `[200~`, and its real paste verb appends a carriage
+  return that cannot be suppressed. Mission Control uses that verb and skips the Enter it
+  would otherwise send, rather than spending a second keystroke on whatever the agent's turn
+  has already put on screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
   `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
   There is no pane. A permission prompt or an approval arrives as data, including what is

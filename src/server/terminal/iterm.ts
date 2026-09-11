@@ -8,7 +8,7 @@ import { normalizeItermSessionId } from "@shared/pane.ts";
 import { ITERM_BIN } from "./bin.ts";
 import { FIXED_OS_EXECUTABLES } from "../executables/catalog.ts";
 import { appleScriptString, appleScriptText } from "./applescript.ts";
-import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { defaultExec, heldInComposer, toResult, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
 import type {
@@ -277,11 +277,13 @@ export function itermEmulator(
       },
       keys: (target, keys) =>
         writeExpressions(target, keys.map((key) => KEY_EXPRESSIONS[key]), "iTerm2 could not send keys to that session"),
-      paste: (target, text) =>
-        writeExpressions(
-          target,
-          [`(character id 27) & "[200~" & ${appleScriptText(text)} & (character id 27) & "[201~"`],
-          "iTerm2 could not paste into that session",
+      paste: async (target, text) =>
+        heldInComposer(
+          await writeExpressions(
+            target,
+            [`(character id 27) & "[200~" & ${appleScriptText(text)} & (character id 27) & "[201~"`],
+            "iTerm2 could not paste into that session",
+          ),
         ),
     },
 

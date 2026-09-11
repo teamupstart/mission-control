@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -183,4 +184,26 @@ test("a plan dispatch with the planning skills off is refused on the form, namin
   // contract is composed at all, so a ship task on the same sentence carries none of it.
   await expect(shipCard).not.toContainText("Mission Control plan");
   await expect(shipCard).not.toContainText("/html-plans");
+});
+
+test("Pi required tools are refused before dispatch with the integration reason", async ({
+  dashboard,
+  daemon,
+}, testInfo) => {
+  await enablePlanningSkills(daemon);
+  const dialog = await openDispatch(dashboard, daemon, "Inspect the Pi integration");
+  await dialog.getByLabel("Agent").selectOption("pi");
+  for (const kind of ["plan", "scout"]) {
+    await kindSelect(dialog).selectOption(kind);
+    await submit(dialog);
+    const refusal = dialog.locator(".dispatch-error");
+    await expect(refusal).toContainText("The Mission Control integration for Pi is not installed on this machine");
+    await expect(refusal).not.toContainText("bundle");
+    await expect(refusal).not.toContainText("npm run build");
+    await expect(dialog).toBeVisible();
+    const tasks = await fetch(`${daemon.baseURL}/api/tasks`);
+    expect(await tasks.json()).toEqual([]);
+  }
+  await expectContentClearsBorder(dialog);
+  await dashboard.screenshot({ path: testInfo.outputPath("pi-tools-refusal.png") });
 });

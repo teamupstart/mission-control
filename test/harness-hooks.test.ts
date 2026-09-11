@@ -39,7 +39,7 @@ process.env.HARNESS_DISPATCH_SETTLE_MS = "10";
 const { HARNESSES, hooksFor } = await import("../src/server/harness/index.ts");
 const { claudeHooks } = await import("../src/server/harness/claude/hooks.ts");
 const { CODEX_HOOK_EVENTS, codexHooks } = await import("../src/server/harness/codex/hooks.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, sessionEqual } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { codexHookOverride, prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -72,17 +72,16 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 
 // ---- the registry, and the shape of a spec -------------------------------------
 
-test("every harness answers the hooks question - claude and codex push, pi does not", () => {
+test("every harness answers the hooks question with its own scope", () => {
   // Not "codex happens to have no hooks" - the `Record<AgentType, Harness>` makes each answer
   // a decision someone had to write down. A new agent id cannot compile without one.
   //
   // Codex's answer used to be a declared null and is now a spec: `harness/codex/launch.ts`
   // gets ten PascalCase events out of Codex by injecting `-c hooks.<Event>=[...]` at launch.
-  // pi (Phase 5) declares `hooks: null` for real - its extensions are in-process TS, not a
-  // shell-out hook - so it is the harness the refusal path below is now driven off.
+  // Pi reports machine-scoped hooks through its in-process extension.
   assert.ok(hooksFor("claude"), "claude installs machine-wide hooks");
   assert.ok(hooksFor("codex"), "codex attaches launch-scoped hooks");
-  assert.equal(hooksFor("pi"), null, "pi pushes nothing");
+  assert.equal(hooksFor("pi")?.scope, "machine", "Pi reports through its extension");
   for (const [id, h] of Object.entries(HARNESSES)) {
     assert.equal(h.hooks, hooksFor(id as keyof typeof HARNESSES), `${id} resolves to its own spec`);
   }
@@ -239,11 +238,9 @@ test("neither installer keeps its own copy of the event vocabulary", () => {
 // ---- a hookless harness is not interpreted -------------------------------------
 
 test("an ingest for a harness that declares no hooks is refused, not guessed at", () => {
-  // pi (Phase 5) declares `hooks: null` for real, so this drives off it directly rather than
-  // temporarily nulling a shipped harness's spec on the shared registry. `applyHook`'s first
-  // act is to ask the harness whose vocabulary the event is written in; a hookless one lands
-  // straight here. Without it a stray ingest reaches a switch that answers `working` for
-  // anything it does not recognize, pinning the card there until something else moves it.
+  const original = HARNESSES.pi.hooks;
+  HARNESSES.pi.hooks = null;
+  try {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "pi-1", agent: "pi" })]);
   const before = registry.getSession("pi-1");
@@ -262,6 +259,7 @@ test("an ingest for a harness that declares no hooks is refused, not guessed at"
   assert.equal(after?.hooksSeen, false);
   assert.equal(after?.activity, before?.activity, "no activity line was invented");
   assert.equal(after?.agentSessionId, before?.agentSessionId, "no binding was written");
+  } finally { HARNESSES.pi.hooks = original; }
 });
 
 test("a Codex ingest IS read now - the other half, and the one that used to be refused", () => {
@@ -561,4 +559,40 @@ test("the dispatcher refuses an exited session instead of targeting its lingered
   registry.applyDiscovery([]);
 
   await assert.rejects(ready, /agent session exited before the initial prompt could be sent/);
+});
+
+test("hand-run Pi binds through a pane or unique cwd and only settled completes its cycle", () => {
+  for (const pane of [true, false]) {
+    const registry = new Registry();
+    const id = `hand-pi-${pane}`;
+    registry.applyDiscovery([mkDiscovered({ syntheticId: id, agent: "pi", agentSessionId: null })]);
+    const base = { agent: "pi" as const, sessionId: `pi-conversation-${pane}`, cwd: "/wt/one", transcriptPath: "/tmp/pi.jsonl", env: pane ? { tmuxPane: PANE } : {} };
+    registry.applyHook({ ...base, event: "SessionStart" });
+    assert.equal(registry.getSession(id)?.agentSessionId, base.sessionId);
+    assert.equal(registry.getSession(id)?.transcriptPath, base.transcriptPath);
+    registry.applyHook({ ...base, event: "UserPromptSubmit", prompt: "work" });
+    assert.equal(registry.getSession(id)?.state, "working");
+    const before = registry.getSession(id)?.workCycle?.generation;
+    registry.applyHook({ ...base, event: "agent_end" });
+    assert.equal(registry.getSession(id)?.workCycle?.generation, before);
+    registry.applyHook({ ...base, event: "Stop" });
+    assert.equal(registry.getSession(id)?.state, "idle");
+    assert.equal(registry.getSession(id)?.workCycle?.generation, (before ?? 0) + 1);
+  }
+});
+
+
+test("native Pi effort changes survive the session SSE comparator", () => {
+  const registry = new Registry();
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "native-effort", agent: "pi" })]);
+  const base = { sessionId: "native-effort-id", cwd: "/wt/one", env: { tmuxPane: PANE } };
+  registry.applyStatusLine({ ...base, nativeEffort: "minimal", ts: 1 });
+  const minimal = registry.getSession("native-effort")!;
+  registry.applyStatusLine({ ...base, nativeEffort: "off", thinkingEnabled: false, ts: 2 });
+  const off = registry.getSession("native-effort")!;
+  assert.equal(minimal.meta?.nativeEffort, "minimal");
+  assert.equal(off.meta?.nativeEffort, "off");
+  assert.equal(sessionEqual(minimal, off), false);
+  registry.applyStatusLine({ ...base, effort: "high", ts: 3 });
+  assert.equal(registry.getSession("native-effort")?.meta?.nativeEffort, null);
 });

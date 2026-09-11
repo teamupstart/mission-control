@@ -1,5 +1,5 @@
 import { run, type RunResult } from "../util/exec.ts";
-import type { TerminalResult } from "./types.ts";
+import type { PasteResult, TerminalResult } from "./types.ts";
 
 /**
  * The subprocess seam the two shipped adapters share, and the reduction from a finished
@@ -59,4 +59,15 @@ export const defaultExec: TerminalExec = run;
 export function toResult(r: RunResult, fallback: string): TerminalResult {
   if (r.code === 0) return { ok: true, outcomeUnknown: false };
   return { ok: false, error: r.stderr.trim() || fallback, outcomeUnknown: r.outcomeUnknown };
+}
+
+/**
+ * A paste from a backend that leaves the composer holding it - every backend but cmux.
+ *
+ * Written as a wrapper rather than defaulted in the interface so that adding a backend
+ * fails typecheck until it has answered the question. `PasteResult.submitted` says why the
+ * answer matters.
+ */
+export function heldInComposer(r: TerminalResult): PasteResult {
+  return { ...r, submitted: false };
 }

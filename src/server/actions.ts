@@ -1039,7 +1039,9 @@ export async function paneAcceptsPrompt(
  * The Enter is NOT sent on the paste's heels, and that is load-bearing: an agent that
  * coalesces input for a window afterwards absorbs an Enter that arrives inside it, which
  * used to leave every multi-line prompt pasted-but-unsubmitted. So the sequence is paste,
- * settle, READ, Enter, read back. The settle outlasts that window (`ControlSpec.settleMs`);
+ * settle, READ, Enter, read back - unless the paste already SUBMITTED (`PasteResult`), in
+ * which case there is no Enter to place and the whole tail is skipped. The settle outlasts
+ * that window (`ControlSpec.settleMs`);
  * the read before the Enter catches the paste while it is still definitively in the
  * composer (`pasteIsCollapsed`), which is the half that makes a confirmation a fact rather
  * than a race with the TUI's redraw; the reads after it watch the paste leave
@@ -1118,6 +1120,15 @@ async function injectPromptLocked(
     return { ...fromTerminal(pasted), pasted: pasted.outcomeUnknown, submitVerified: false };
   }
   // Past this point the text IS in the pane, submitted or not.
+  //
+  // Literally either, on one backend: cmux's only working paste verb appends a CR of its
+  // own (see `PasteResult`), so this delivery's Enter has already been spent. Sending a
+  // second would be the ungated keystroke `awaitPasteSubmitted` warns about, aimed at
+  // whatever the turn it just started has put on screen - a permission dialog answered on
+  // the operator's behalf. Reported unverified because it is: the backend's word that it
+  // wrote a CR is the same class of evidence as `ok`, and nothing here watched the paste
+  // leave the composer.
+  if (pasted.submitted) return { ok: true, pasted: true, submitVerified: false };
   await deps.sleep(settleMs);
   const wasPending = await pasteIsCollapsed(session, text, control, deps);
   // Re-probed per Enter rather than trusting the pre-paste check: the settle window and

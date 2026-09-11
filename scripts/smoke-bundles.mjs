@@ -494,6 +494,7 @@ async function smokeSatellitePaths() {
   const expected = [
     ["MCP server", "dist/mcp/server.mjs"],
     ["Codex hook bridge", "dist/satellites/codex-hook.mjs"],
+    ["Pi extension", "dist/pi-extension/index.js"],
   ];
   for (const [label, built] of expected) {
     const m = new RegExp(String.raw`new URL\d*\("([^"]*${built.replace(/[./]/g, "\\$&")})", *import\.meta\.url\)`)
@@ -565,6 +566,24 @@ async function smokeMermaidRenderer() {
   console.log("[smoke] isolated Mermaid renderer exists and stays outside the dashboard entry");
 }
 
+async function smokePiExtension() {
+  const extension = await import(pathToFileURL(resolve("dist/pi-extension/index.js")).href);
+  if (!/^[a-f0-9]{64}$/.test(extension.missionControlBuild?.version) ||
+      !existsSync(extension.missionControlBuild?.mcpServerPath)) {
+    fail("Pi extension build marker or baked MCP path is invalid");
+    return;
+  }
+  const handlers = new Map();
+  let tools = 0;
+  extension.default({ on: (name, fn) => handlers.set(name, fn), registerTool: () => tools++ });
+  if (tools !== 0 || !handlers.has("agent_settled") || handlers.has("agent_end")) {
+    fail("Pi extension factory or settlement boundary is invalid");
+    return;
+  }
+  console.log("[smoke] Pi .js extension loads with build metadata and settled lifecycle");
+}
+
+await smokePiExtension();
 await smokeNativeKeepAwake();
 await smokeDesktopBackgroundPaths();
 await smokeDaemon();

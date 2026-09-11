@@ -46,6 +46,9 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
+  "src/pi/mcp-client.ts": [
+    { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
+  ],
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },
@@ -238,7 +241,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "bootstrap-login-shell":
       return boundary.command === "shell";
     case "current-runtime":
-      return ["args.node", "descriptor.command", "request.node"].includes(boundary.command);
+      return ["args.node", "descriptor.command", "request.node", "process.execPath"].includes(boundary.command);
     case "locator-result":
       return boundary.command === "executable.path" || boundary.command === "resolved";
     case "operator-command":

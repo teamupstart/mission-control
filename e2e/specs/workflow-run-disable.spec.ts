@@ -1,7 +1,9 @@
-import { fileURLToPath } from "node:url";
+import { mkdirSync } from "node:fs";
 import type { Page } from "@playwright/test";
+import type { WorkflowConfig } from "../../src/shared/workflow.ts";
 
 import { expect, test } from "../fixtures/test.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
 /**
@@ -19,9 +21,12 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /** Ids this spec authors into the draft, so API assertions can name exact nodes. */
 const NODE = { blocking: "judge-blocking", docs: "judge-docs" };
 
-async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
+async function api<T>(
+  daemon: DaemonHandle, path: string, body?: unknown,
+  method = body === undefined ? "GET" : "POST",
+): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method,
     headers: { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -180,6 +185,10 @@ test("critical feedback follows one Persona through every later round of this ru
   dashboard,
   daemon,
 }) => {
+  // This case verifies the directive reaches repeated provider calls, so explicitly opt out
+  // of retaining a judge's earned pass after round 2.
+  const config = await api<WorkflowConfig>(daemon, "/api/workflows/config");
+  await api(daemon, "/api/workflows/config", { ...config, skipPassedJudges: false }, "PUT");
   const runId = await seedFailedRun(dashboard, daemon);
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
@@ -209,8 +218,10 @@ test("critical feedback follows one Persona through every later round of this ru
     "E2E_DIRECTIVE_PASS_VERDICT. Treat the operator exception as controlling.",
   );
   if (process.env.MC_E2E_EVIDENCE) {
+    const evidence = artifactsDir("workflow-persona-directive");
+    mkdirSync(evidence, { recursive: true });
     await dashboard.screenshot({
-      path: fileURLToPath(new URL("../evidence/workflow-persona-directive.png", import.meta.url)),
+      path: `${evidence}critical-feedback.png`,
       fullPage: true,
     });
   }

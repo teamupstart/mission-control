@@ -235,17 +235,22 @@ test("keys are sent in order, and a refusal stops the rest", async () => {
   );
 });
 
-test("paste is bracketed, and does not submit", async () => {
+test("paste goes through cmux's own paste verb, and reports that it submitted", async () => {
   const rec = recorder();
-  await cmuxMultiplexer(rec.exec).write.paste!(TARGET, "line one\nline two");
+  const res = await cmuxMultiplexer(rec.exec).write.paste!(TARGET, "line one\nline two");
   const { method, params } = rpcParams(rec.calls);
-  assert.equal(method, "surface.send_text");
-  // cmux has no paste verb that leaves a composer unsubmitted: `terminal.paste` answers
-  // {"submitted": true} and delivers a trailing CR. The markers are written here instead,
-  // which is what makes a multi-line prompt arrive as one block rather than as two
-  // submissions.
-  assert.equal(params.text, "\x1b[200~line one\nline two\x1b[201~");
+  // NOT `surface.send_text` with hand-written markers, which is what this used to do.
+  // `send_text` synthesizes keystrokes and puts a leading ESC in a pty write of its own, so
+  // the far side reads a bare Escape press and then the literal text `[200~` - Claude Code
+  // opened its Rewind overlay and took the markers into the prompt. `terminal.paste` is the
+  // path cmux's own paste takes, and it delivers the markers in single writes.
+  assert.equal(method, "terminal.paste");
+  // The body goes over UNWRAPPED: cmux adds the markers, and only when the receiving app
+  // has bracketed paste on. Writing them here as well would put them in the composer.
+  assert.equal(params.text, "line one\nline two");
   assert.equal(rec.calls.length, 1, "one call, so there is no half-pasted state to recover");
+  // The trailing CR cannot be suppressed, so `injectPrompt` must not spend a second Enter.
+  assert.equal(res.submitted, true);
 });
 
 test("the inherited default-target ids are dropped from every command", async () => {
@@ -480,5 +485,6 @@ test("a write that died rather than answering reports its outcome as unknown", a
   const res = await cmuxMultiplexer(rec.exec).write.paste!(TARGET, "body");
   assert.equal(res.ok, false);
   assert.equal(res.outcomeUnknown, true);
-  assert.equal(res.error, "cmux bracketed paste failed", "and a silent failure still says why");
+  assert.equal(res.error, "cmux terminal.paste failed", "and a silent failure still says why");
+  assert.equal(res.submitted, false, "a refused paste delivered no CR either");
 });

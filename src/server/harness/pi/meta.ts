@@ -18,10 +18,8 @@ import { readTailLines } from "../../util/file-tail.ts";
 // `usage` (the SessionCost tier counts) is deliberately NOT populated. pi records real
 // per-message token AND dollar cost, but per message, not as a cumulative session total, and
 // the passive read only sees the tail - summing it would understate a long session. pi has no
-// hook/telemetry pipeline (`hooks: null`) to feed the ledger either, so its dollar cost is
-// simply not aggregated, the same neutral absence a Claude session shows before telemetry
-// arrives. `COST_UNSUPPORTED.pi` is null all the same: pi is not an agent that reports no cost
-// telemetry (it reports plenty) - we just don't aggregate it without instrumentation.
+// need to aggregate here: the request-level UsageSpec feeds the ledger once the launch or
+// extension establishes a session identity. The tail remains metadata and activity only.
 
 /** Bytes to scan from the tail for a passive read - the newest record captured whole. */
 export const PASSIVE_TAIL_BYTES = 256 * 1024;

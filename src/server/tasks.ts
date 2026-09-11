@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
+import { missionToolsAvailability } from "./mission-tools.ts";
 import type {
   AgentType,
   AssignRefusalScope,
@@ -98,6 +99,7 @@ import {
 import { readFailureClass, type ActivityFingerprint } from "./git/worktree-activity.ts";
 import { gitInfo } from "./util/git.ts";
 import {
+  kindMissionMcpRequirement,
   missionMcpDescriptor,
   verifyMissionMcpToolsForRunningSession,
 } from "./mission-mcp.ts";
@@ -3508,6 +3510,21 @@ export class TaskManager {
         ok: false,
         error: `${agent} cannot be given write access to more than one repo`,
       };
+    }
+    const missionToolsTask = {
+      kind: patch.kind ?? t.kind,
+      workflowId: patch.workflowId === undefined ? t.workflowId : patch.workflowId,
+    };
+    if (
+      (patch.agent !== undefined || patch.kind !== undefined || patch.workflowId !== undefined) &&
+      kindMissionMcpRequirement(
+        missionToolsTask,
+        null,
+        this.workflowEvidenceEnabledForTask(missionToolsTask),
+      )
+    ) {
+      const tools = await missionToolsAvailability(agent);
+      if (!tools.available) return { ok: false, error: tools.reason! };
     }
     let dependencies = t.dependencies;
     try {

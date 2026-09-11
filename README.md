@@ -170,6 +170,8 @@ Workflows turn a team's definition of done into reusable, inspectable automation
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
 again. Published definitions are frozen, so a later edit cannot rewrite what an earlier run meant.
+By default, judges that have passed are skipped on later repair rounds of that run. Turn off
+**Skip judges that already passed** in Settings > Workflows to require fresh reviews each round.
 
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
@@ -286,6 +288,13 @@ setting in the app or use the environment variable as a process-level fallback:
 
 See [Configuration](docs/configuration.md) for the complete precedence rules and transport
 tradeoffs.
+
+## Pi session integration
+
+The [Pi extension](docs/pi-extension.md) bridges Mission Control tools, lifecycle, live model,
+effort, context, and attributed usage for hand-run Pi sessions. Build it with `npm run build`
+and exercise it with `pi -e /absolute/path/to/dist/pi-extension/index.js`. Setup installation
+is a separate phase; building does not change the operator's Pi home.
 
 ## Community participation
 

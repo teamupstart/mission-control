@@ -117,14 +117,16 @@ guidance is machine-local but global and never reaches a session at all.
 
 A repository is matched by its **longest** configured path, so a rule on
 `~/ws/mono/packages/api` beats one on `~/ws/mono`, and matching is on the path boundary -
-`/repo-backup` never inherits `/repo`'s rule. A repository configured with an **empty** box
-means "send nothing here" and beats the machine-wide default; a repository you have not
-configured at all inherits it.
+`/repo-backup` never inherits `/repo`'s rule. The machine-wide default is always sent first,
+followed by the matching repository's instructions. An **empty** repository box adds nothing
+and keeps the default. Removing an entry can reveal a shorter matching repository key.
+Existing saved entries follow these additive rules for new sessions without a migration;
+running sessions retain their launch snapshots.
 
 A dispatch that attaches several repositories sends **all** of their rules, since it hands the
-agent write access to all of them. Checkouts that resolve to the same words - the machine-wide
-default is the ordinary case - share one block rather than repeating it once per checkout; where
-they differ, each block is labelled with the checkouts it governs.
+agent write access to all of them. The default appears once at the top, followed by repository
+additions. Identical additions share one block; additions that govern only part of the launch
+are labelled with their checkouts. Each saved block retains its own 8,000-character allowance.
 
 How the text reaches the agent depends on the harness and the runtime, and it is delivered
 exactly once either way:

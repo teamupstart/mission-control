@@ -11,8 +11,8 @@ import { join } from "node:path";
 // ships INERT - the stored default is empty and resolution returns nothing for every
 // repository - so a checkout with no standing instructions has to produce exactly the prompt
 // it produced before this existed. Everything else here is about the two ways this feature
-// can lie: reporting that nothing applies when a block will in fact be sent, and reinstating
-// a machine-wide default over a repository whose box the operator deliberately cleared.
+// can lie: reporting that nothing applies when a block will in fact be sent, and dropping
+// the machine-wide default when a repository also has instructions.
 
 const home = mkdtempSync(join(tmpdir(), "mission-standing-instructions-"));
 process.env.HARNESS_HOME = home;
@@ -92,12 +92,18 @@ test("the longest matching key wins, so a package rule beats its monorepo's", ()
     },
   });
   assert.deepEqual(resolveStandingInstructions(config, "/ws/mono/packages/api"), {
-    text: "api rule",
+    parts: [
+      { source: "default", text: "machine default" },
+      { source: "repository", text: "api rule" },
+    ],
     matchedKey: "/ws/mono/packages/api",
     source: "repository",
   });
   // A sibling package the operator said nothing about still gets the monorepo's rule.
-  assert.equal(resolveStandingInstructions(config, "/ws/mono/packages/web").text, "monorepo rule");
+  assert.deepEqual(resolveStandingInstructions(config, "/ws/mono/packages/web").parts, [
+    { source: "default", text: "machine default" },
+    { source: "repository", text: "monorepo rule" },
+  ]);
   // And a file deeper inside the package still matches the package.
   assert.equal(
     resolveStandingInstructions(config, "/ws/mono/packages/api/src").matchedKey,
@@ -110,11 +116,15 @@ test("matching is on the path BOUNDARY, so /repo-backup never inherits /repo's r
     default: "machine default",
     repositories: { "/ws/repo": "repo rule" },
   });
-  assert.equal(resolveStandingInstructions(config, "/ws/repo").text, "repo rule");
-  assert.equal(resolveStandingInstructions(config, "/ws/repo/src").text, "repo rule");
+  for (const path of ["/ws/repo", "/ws/repo/src"]) {
+    assert.deepEqual(resolveStandingInstructions(config, path).parts, [
+      { source: "default", text: "machine default" },
+      { source: "repository", text: "repo rule" },
+    ]);
+  }
   // `startsWith` alone says these match, and they are different projects.
   assert.deepEqual(resolveStandingInstructions(config, "/ws/repo-backup"), {
-    text: "machine default",
+    parts: [{ source: "default", text: "machine default" }],
     matchedKey: null,
     source: "default",
   });
@@ -123,35 +133,60 @@ test("matching is on the path BOUNDARY, so /repo-backup never inherits /repo's r
   assert.equal(resolveStandingInstructions(config, "/ws/repo/").matchedKey, "/ws/repo");
 });
 
-test("an empty override BEATS the default; an absent key inherits it", () => {
-  // The distinction the whole store rests on. Collapse the two and clearing a repository's
-  // box quietly reinstates the machine-wide text the operator had just decided not to send
-  // there - which is the same trap `foreman/instructions.ts` documents for its stored-empty
-  // case.
+test("empty and absent repository instructions both preserve the default", () => {
   const config = StandingInstructionsConfigSchema.parse({
     default: "machine default",
     repositories: { "/ws/quiet": "" },
   });
   assert.deepEqual(resolveStandingInstructions(config, "/ws/quiet"), {
-    text: "",
-    matchedKey: "/ws/quiet",
-    source: "repository",
+    parts: [{ source: "default", text: "machine default" }],
+    matchedKey: null,
+    source: "default",
   });
   assert.deepEqual(resolveStandingInstructions(config, "/ws/other"), {
-    text: "machine default",
+    parts: [{ source: "default", text: "machine default" }],
     matchedKey: null,
     source: "default",
   });
   // With no default either, nothing applies anywhere and the source says so.
   const bare = StandingInstructionsConfigSchema.parse({});
   assert.deepEqual(resolveStandingInstructions(bare, "/ws/other"), {
-    text: "",
+    parts: [],
     matchedKey: null,
     source: "none",
   });
   // A checkout that could not be canonicalized falls through to the default rather than
   // matching on a raw string that could belong to anyone.
   assert.equal(resolveStandingInstructions(config, null).source, "default");
+  assert.deepEqual(resolveStandingInstructions({ default: "", repositories: { "/ws/quiet": "" } }, "/ws/quiet"), {
+    parts: [], matchedKey: null, source: "none",
+  });
+});
+
+test("an empty package entry selects no repository addition while retaining the default", () => {
+  const config = { default: "machine rule", repositories: { "/ws/mono": "parent rule", "/ws/mono/api": "" } };
+  assert.deepEqual(resolveStandingInstructions(config, "/ws/mono/api/src").parts, [
+    { source: "default", text: "machine rule" },
+  ]);
+  delete (config.repositories as Record<string, string>)["/ws/mono/api"];
+  assert.deepEqual(resolveStandingInstructions(config, "/ws/mono/api/src").parts, [
+    { source: "default", text: "machine rule" },
+    { source: "repository", text: "parent rule" },
+  ]);
+});
+
+test("default and repository blocks keep their full per-block character allowance", () => {
+  const config = StandingInstructionsConfigSchema.parse({
+    default: "d".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH),
+    repositories: { "/ws/a": "r".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH) },
+  });
+  const expected = `${config.default}\n\n${config.repositories["/ws/a"]}`;
+  assert.deepEqual(resolveStandingInstructions(config, "/ws/a").parts, [
+    { source: "default", text: config.default },
+    { source: "repository", text: config.repositories["/ws/a"] },
+  ]);
+  assert.equal(composeStandingInstructions(config, [{ repoPath: "/ws/a" }], "claude", "sdk").text,
+    `${STANDING_INSTRUCTIONS_HEADING}\n\n${expected}`);
 });
 
 test("the character cap and the repository cap are enforced by the schema", () => {
@@ -214,7 +249,7 @@ test("a patch touches one key: a string sets, null removes, and empty is a real 
   });
   assert.ok(two.ok);
   assert.deepEqual(two.view.repositories, { "/ws/a": "", "/ws/b": "rule b" });
-  // Empty round-trips as PRESENT, because it means "send nothing here".
+  // Empty round-trips as PRESENT, selecting no repository addition.
   assert.equal("/ws/a" in standingInstructionsView().repositories, true);
 
   // Removal is spelled `null`, and it is the only thing that makes a key absent again.
@@ -248,8 +283,7 @@ test("a snapshot with NO live session left is pruned, which is when it most need
   // The failure this closes: after the registry has swept, an empty live-key set is a FACT -
   // every session has exited - and the neighbouring prune helpers read an empty set as
   // "liveness unknown" and delete nothing. Copying that here would make these rows unprunable
-  // in exactly the state that produces the most of them, and each one is up to 8,000
-  // characters of durable text.
+  // in exactly the state that produces the most of them, and each one contains durable composed text.
   const row = (noteKey: string, text: string, createdAt: number) => ({
     noteKey,
     text,
@@ -302,7 +336,7 @@ test("one repository renders one headed block; several render one labelled part 
 
 test("checkouts that resolve to the SAME text render one block, not one per checkout", () => {
   // The machine-wide default is the ordinary case: a three-repo dispatch where no repository
-  // has an override resolves all three to the same words. One labelled part per checkout
+  // has an addition resolves all three to the same words. One labelled part per checkout
   // would put that rule in front of the agent three times, which is the failure exactly-once
   // delivery exists to prevent - a prohibition repeated invites being read as emphasis about
   // something the operator said once.
@@ -351,9 +385,48 @@ test("checkouts that resolve to the SAME text render one block, not one per chec
   assert.equal(
     parts.text,
     `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n` +
-      `### /ws/a, /ws/b\n\nnever force-push\n\n` +
+      `never force-push\n\n` +
       `### /ws/c\n\nthis repo is read-only`,
   );
+});
+
+test("multi-repository launches send the default once before scoped, deduplicated additions", () => {
+  const config = {
+    default: "shared default",
+    repositories: { "/ws/a": "rule A", "/ws/b": "rule B", "/ws/c": "rule A", "/ws/empty": "" },
+  };
+  const delivery = composeStandingInstructions(config,
+    ["/ws/a", "/ws/b", "/ws/c", "/ws/empty", "/ws/absent"].map((repoPath) => ({ repoPath })),
+    "codex", "terminal");
+  assert.equal(delivery.text, `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\nshared default\n\n` +
+    "### /ws/a, /ws/c\n\nrule A\n\n### /ws/b\n\nrule B");
+  assert.deepEqual(delivery.sources, [
+    { repoPath: "/ws/a", matchedKey: "/ws/a" },
+    { repoPath: "/ws/b", matchedKey: "/ws/b" },
+    { repoPath: "/ws/c", matchedKey: "/ws/c" },
+    { repoPath: "/ws/empty", matchedKey: null },
+    { repoPath: "/ws/absent", matchedKey: null },
+  ]);
+});
+
+test("resolution preserves contribution boundaries and composition keeps their repository scopes", () => {
+  const rule = "Keep this paragraph.\n\nKeep this one too.\n";
+  const config = { default: rule, repositories: { "/ws/a": rule } };
+  assert.deepEqual(resolveStandingInstructions(config, "/ws/a").parts, [
+    { source: "default", text: rule },
+    { source: "repository", text: rule },
+  ]);
+  assert.equal(
+    composeStandingInstructions(config, [{ repoPath: "/ws/a" }], "claude", "sdk").text,
+    `${STANDING_INSTRUCTIONS_HEADING}\n\n${rule}\n\n${rule}`,
+  );
+  assert.equal(
+    composeStandingInstructions(config, [{ repoPath: "/ws/b" }, { repoPath: "/ws/a" }], "claude", "sdk").text,
+    `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n${rule}\n\n### /ws/a\n\n${rule}`,
+  );
+  assert.deepEqual(resolveStandingInstructions({ ...config, default: "" }, "/ws/a").parts, [
+    { source: "repository", text: rule },
+  ]);
 });
 
 test("a two-repo launch where only the SECOND repository has rules still sends them", () => {

@@ -2031,9 +2031,8 @@ export type StandingInstructionsView = z.infer<typeof StandingInstructionsViewSc
  * must not send its whole draft map - doing so would persist every other repository's
  * unsaved text as though the operator had committed to it.
  *
- * The empty string is a real value here and is NOT a removal: it means "send nothing for
- * this repository", which beats the machine-wide default. That is the whole reason the
- * removal spelling is `null` rather than `""`.
+ * The empty string stores an entry with no repository addition. The default still applies.
+ * Removal is `null`, which can reveal a shorter matching repository key.
  */
 export const StandingInstructionsUpdateSchema = z
   .object({

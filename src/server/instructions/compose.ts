@@ -2,6 +2,7 @@ import type { AgentType, SessionRuntime } from "@shared/types.ts";
 import { standingInstructionsChannel } from "@shared/harness-capabilities.ts";
 import {
   resolveStandingInstructions,
+  type ResolvedStandingInstructions,
   type StandingInstructionsConfig,
   type StandingInstructionsDelivery,
 } from "@shared/standing-instructions.ts";
@@ -53,7 +54,7 @@ export function composeStandingInstructions(
     repoPath: candidate.repoPath,
     ...resolveStandingInstructions(config, candidate.repoPath),
   }));
-  const contributing = resolved.filter((entry) => entry.text.length > 0);
+  const contributing = resolved.filter((entry) => entry.parts.length > 0);
   const sources = contributing.map((entry) => ({
     repoPath: entry.repoPath,
     matchedKey: entry.matchedKey,
@@ -63,37 +64,27 @@ export function composeStandingInstructions(
     return { text: "", mechanism: "none", sources: [] };
   }
 
-  // Grouped by the TEXT that was resolved, in manifest order, because several checkouts
-  // very often resolve to the same words - the machine-wide default is the ordinary case,
-  // and so is one key covering a monorepo's packages. Rendering one labelled part per
-  // CHECKOUT would then repeat a rule the operator wrote once, which is the same failure
-  // exactly-once delivery exists to prevent: a prohibition stated three times invites being
-  // read as emphasis about something that was said once. Grouping is on the resolved text
-  // rather than on the matched key, so two different keys that happen to carry identical
-  // words also collapse - the agent reads words, not keys.
-  //
-  // `sources` is deliberately NOT grouped: provenance stays one entry per contributing
-  // repository, so a marker can still say which stored key each checkout inherited.
-  const groups: { text: string; repoPaths: string[] }[] = [];
+  // Resolution owns which contributions apply and their order. Group those parts without
+  // re-reading configuration or rebuilding that policy. Keep default and repository parts
+  // distinct even when their words match, since their scopes can differ.
+  const groups: (ResolvedStandingInstructions["parts"][number] & { repoPaths: string[] })[] = [];
   for (const entry of contributing) {
-    const existing = groups.find((group) => group.text === entry.text);
-    if (existing) existing.repoPaths.push(entry.repoPath);
-    else groups.push({ text: entry.text, repoPaths: [entry.repoPath] });
+    for (const part of entry.parts) {
+      const existing = groups.find((group) => group.source === part.source && group.text === part.text);
+      if (existing) existing.repoPaths.push(entry.repoPath);
+      else groups.push({ ...part, repoPaths: [entry.repoPath] });
+    }
   }
 
-  // One group is ONE rule, however many checkouts it covers, so it carries no labels - a
-  // label would imply a distinction that is not there. The heading still says which case it
-  // is, so a single repository reads "this repository" exactly as it did before this
-  // grouping existed. Several groups keep the labelled parts, and a label names every
-  // checkout its part governs, so an agent holding three worktrees can still tell which
-  // prohibition belongs to which tree.
-  const text =
-    groups.length === 1
-      ? `${contributing.length === 1 ? STANDING_INSTRUCTIONS_HEADING : STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n${groups[0]!.text}`
-      : [
-          STANDING_INSTRUCTIONS_MULTI_HEADING,
-          ...groups.map((group) => `### ${group.repoPaths.join(", ")}\n\n${group.text}`),
-        ].join("\n\n");
+  const heading = contributing.length === 1
+    ? STANDING_INSTRUCTIONS_HEADING
+    : STANDING_INSTRUCTIONS_MULTI_HEADING;
+  const parts: string[] = [heading];
+  for (const group of groups) {
+    const coversAll = group.repoPaths.length === contributing.length;
+    parts.push(coversAll ? group.text : `### ${group.repoPaths.join(", ")}\n\n${group.text}`);
+  }
+  const text = parts.join("\n\n");
 
   return {
     text,

@@ -114,8 +114,9 @@ Some repository rules belong on your machine, not in every teammate's committed 
 those rules once in Mission Control and every new session it launches into that repository receives
 them before work starts.
 
-Instructions can be global or repository-specific, use longest-path matching for monorepos, and
-state exactly how they reach each harness and runtime. Running sessions keep the instructions they
+Global instructions are sent first, with repository instructions appended after them.
+The longest matching path selects a monorepo's repository addition. Settings explains how the
+instructions reach each harness and runtime. Running sessions keep the instructions they
 received at launch, so the UI shows the immutable snapshot rather than pretending a live system
 prompt changed.
 

@@ -12,7 +12,7 @@ import {
   dirtyCards,
   draftValue,
   isDirty,
-  isOverride,
+  hasRepositoryEntry,
   keepMine,
   reconcileRefresh,
   reconcileSaved,
@@ -42,8 +42,8 @@ export interface StandingInstructionsCard {
   value: string;
   /** An unsaved change is pending on this card. */
   dirty: boolean;
-  /** This repository carries its own text rather than inheriting the default. */
-  override: boolean;
+  /** This repository has a saved entry, possibly empty, for additions to the default. */
+  configured: boolean;
   /** The daemon's newer text for this card, while it is in conflict. */
   theirs: string | null;
 }
@@ -58,8 +58,8 @@ export interface StandingInstructionsState {
   save: (card: string) => Promise<boolean>;
   /** Throw this card's unsaved text away and show what is stored. */
   revert: (card: string) => void;
-  /** Remove this repository's override so it inherits the machine-wide default. */
-  useGlobalDefault: (card: string) => Promise<boolean>;
+  /** Remove this repository's entry, allowing any matching parent entry to apply. */
+  removeRepository: (card: string) => Promise<boolean>;
   /** Stage a repository the operator picked, so a card appears for it. */
   addRepository: (path: string) => Promise<string | null>;
   /** Which cards the daemon moved underneath an edit, or null. */
@@ -219,12 +219,11 @@ export function useStandingInstructions(active: boolean): StandingInstructionsSt
     [submit],
   );
 
-  const useGlobalDefault = useCallback(
+  const removeRepository = useCallback(
     async (card: string): Promise<boolean> => {
       if (card === DEFAULT_CARD) return false;
-      // `null` is the removal spelling. `""` is a real value meaning "send nothing for this
-      // repository", which still beats the machine-wide default - so clearing the box and
-      // pressing this button are two different gestures with two different outcomes.
+      // `null` removes the key; an empty string retains it with no repository addition.
+      // Both keep the default, but removal can reveal a shorter matching repository key.
       return submit(card, null);
     },
     [submit],
@@ -260,7 +259,7 @@ export function useStandingInstructions(active: boolean): StandingInstructionsSt
       key,
       value: draftValue(state, key),
       dirty: isDirty(state, key),
-      override: isOverride(state.loaded, key),
+      configured: hasRepositoryEntry(state.loaded, key),
       theirs: state.conflict?.cards.includes(key)
         ? storedValue(state.conflict.view, key)
         : null,
@@ -273,7 +272,7 @@ export function useStandingInstructions(active: boolean): StandingInstructionsSt
     edit,
     save,
     revert,
-    useGlobalDefault,
+    removeRepository,
     addRepository,
     conflictCards: state?.conflict?.cards ?? [],
     keepMine: () => {

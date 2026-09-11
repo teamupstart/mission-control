@@ -103,6 +103,8 @@ import {
   WORKFLOW_EXECUTION_LIMITS,
   WORKFLOW_STEERING_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
+  WORKFLOW_GOAL_PROVENANCE_SIGNALS,
+  WORKFLOW_GOAL_PROVENANCE_VERDICTS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_RUN_STATUSES,
@@ -2031,9 +2033,8 @@ export type StandingInstructionsView = z.infer<typeof StandingInstructionsViewSc
  * must not send its whole draft map - doing so would persist every other repository's
  * unsaved text as though the operator had committed to it.
  *
- * The empty string is a real value here and is NOT a removal: it means "send nothing for
- * this repository", which beats the machine-wide default. That is the whole reason the
- * removal spelling is `null` rather than `""`.
+ * The empty string stores an entry with no repository addition. The default still applies.
+ * Removal is `null`, which can reveal a shorter matching repository key.
  */
 export const StandingInstructionsUpdateSchema = z
   .object({
@@ -4549,6 +4550,25 @@ export const PersonaSnapshotSchema = z.object({
   model: ModelIdSchema.nullable(),
 });
 
+/**
+ * A workflow node's own provider/model choice, validated as ONE pair.
+ *
+ * `runner` is the headless runner registry, so an id this build cannot spawn is refused at
+ * the boundary rather than discovered at attempt time. `model` reuses the persisted model-id
+ * vocabulary every other stored id goes through, plus `.min(1)`: `ModelIdSchema`'s pattern
+ * already rejects an empty string, and saying it here as well is what makes the refusal
+ * legible when the message is read rather than the regex.
+ *
+ * Both keys are REQUIRED, which is the whole point of the pair being one object: a body
+ * carrying only one half is refused here rather than completed from the Persona, the app
+ * config or the environment. The optionality lives one level up, on the node, where absence
+ * means inheritance.
+ */
+export const WorkflowNodeExecutionOverrideSchema = z.object({
+  runner: z.enum(LLM_RUNNER_IDS),
+  model: ModelIdSchema.min(1),
+});
+
 export const WorkflowPersonaDirectiveFeedbackSchema = z.string().trim().min(1)
   .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.personaDirectiveBytes), {
     message: `Persona feedback exceeds ${WORKFLOW_LIMITS.personaDirectiveBytes} UTF-8 bytes`,
@@ -4771,6 +4791,10 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     personaId: WorkflowIdSchema,
     position: WorkflowPointSchema,
+    // `.optional()` and deliberately NOT `.default(...)`: absence is the persisted spelling of
+    // "inherit the Persona's own routing", and a default would write the field onto every
+    // legacy graph the moment one was read back.
+    executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
@@ -4800,6 +4824,8 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     persona: PersonaSnapshotSchema,
     position: WorkflowPointSchema,
+    // Beside the snapshot, never inside it. See `PublishedWorkflowNode`.
+    executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   // Identical to the draft arm: a Check snapshots nothing, because its command is
@@ -5508,6 +5534,55 @@ export const WorkflowRunIntentSnapshotSchema = z.object({
  * boundary, so a future writer cannot reintroduce the state by calling `freezeRunCriteria`
  * directly.
  */
+/**
+ * The freeze-time verdict on a run's ask, bounded so a damaged row cannot hide behind size.
+ *
+ * `reason` is prose the classifier composes from its own clauses, never operator or agent
+ * text, so a small ceiling is a real bound rather than a guess: the widest sentence the three
+ * checks can produce together is a few hundred characters.
+ */
+export const WorkflowRunIntentProvenanceSchema = z.object({
+  verdict: z.enum(WORKFLOW_GOAL_PROVENANCE_VERDICTS),
+  signals: z.array(z.enum(WORKFLOW_GOAL_PROVENANCE_SIGNALS))
+    .max(WORKFLOW_GOAL_PROVENANCE_SIGNALS.length),
+  reason: z.string().min(1).max(2_000),
+  classifiedAt: z.number().int().nonnegative(),
+}).superRefine((value, ctx) => {
+  /*
+   * The whole contract, at the boundary that persists it.
+   *
+   * `signals` is documented as every matched check IN PRECEDENCE ORDER, and `verdict` is
+   * documented as the first of them - so the two fields state the same fact twice and a row
+   * where they disagree is a verdict nobody can act on. Checking only `verdict === signals[0]`
+   * left the rest representable: `["unreconciled", "automation"]` validated, published itself
+   * as authoritative provenance, and left every future reader to decide for itself whether the
+   * list or the order was the lie.
+   *
+   * Ordering is checked by strictly increasing position in the canonical list, which is one
+   * test for two rules: out-of-precedence order fails, and so does a repeat.
+   */
+  const order = value.signals.map(
+    (signal) => (WORKFLOW_GOAL_PROVENANCE_SIGNALS as readonly string[]).indexOf(signal),
+  );
+  if (order.some((position, index) => index > 0 && position <= order[index - 1]!)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["signals"],
+      message: "Workflow goal provenance signals must be unique and in precedence order",
+    });
+    return;
+  }
+  // Empty exactly for `objective` falls out of this: an empty list expects `objective`, and a
+  // non-empty one expects its own first entry, which is never `objective`.
+  const expected = value.signals[0] ?? "objective";
+  if (value.verdict === expected) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["verdict"],
+    message: "Workflow goal provenance verdict must be its highest-precedence matched signal",
+  });
+});
+
 export const WorkflowRunCriteriaSchema = z.object({
   intentFingerprint: z.string().length(64),
   constraints: z.array(z.string().max(4_000)).max(100),

@@ -44,7 +44,7 @@ export interface StandingInstructionsDraftState {
    * Uncommitted text, one entry per card the operator has typed into. An ABSENT entry means
    * "not being edited" and is not the same as an entry holding the stored text - the
    * presence of an entry is what carries intent, which is what makes an explicit empty
-   * override reachable (see `isDirty`).
+   * entry reachable (see `isDirty`).
    */
   drafts: Record<string, string>;
   /** Repositories added through the combobox that have no stored key yet. */
@@ -69,9 +69,9 @@ export function draftValue(state: StandingInstructionsDraftState, card: string):
  * Whether this card has an unsaved change.
  *
  * `stored` is `null` for an absent key and that null never equals a string, which is what
- * makes "send nothing for this repository" reachable: an operator who opens an inherited
+ * makes "no repository addition" reachable: an operator who opens an unconfigured
  * box, types, and then clears it has a draft of `""` against a stored `null`, so the card
- * is dirty and Save writes the empty override that beats the machine-wide default. Compare
+ * is dirty and Save writes an empty entry that keeps the machine-wide default. Compare
  * against `stored ?? ""` instead and that gesture becomes a no-op with no other spelling in
  * the panel - the empty-versus-absent distinction the whole store is built on would have no
  * way to be expressed by the person it exists for.
@@ -82,8 +82,8 @@ export function isDirty(state: StandingInstructionsDraftState, card: string): bo
   return draft !== storedValue(state.loaded, card);
 }
 
-/** Whether this card carries an override, as opposed to inheriting the default. */
-export function isOverride(view: StandingInstructionsView, card: string): boolean {
+/** Whether this card has a saved repository entry, including an empty one. */
+export function hasRepositoryEntry(view: StandingInstructionsView, card: string): boolean {
   return card !== DEFAULT_CARD && storedValue(view, card) !== null;
 }
 

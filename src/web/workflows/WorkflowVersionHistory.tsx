@@ -12,6 +12,7 @@ import {
 } from "@shared/workflow.ts";
 import { WorkflowCanvas } from "./WorkflowCanvas.tsx";
 import { InspectorFooter } from "./pipeline-bits.tsx";
+import { snapshotRoutingLabel } from "./node-execution.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import {
@@ -78,7 +79,19 @@ export function WorkflowVersionDetail({
                 {current !== undefined && current.archivedAt !== null ? " · archived source" : ""}
               </summary>
             </Tooltip>
-            <p>{node.persona.runner ?? "App provider"} · {node.persona.model ?? "Provider default"}</p>
+            {/* Two lines, never one merged answer, and one block rather than two loose
+                paragraphs. The snapshot records what the Persona recommended when this
+                version was cut; the override records what the workflow chose. A version that
+                printed only the winner could not tell an operator whether editing the Persona
+                would change anything - and it would not. */}
+            <div className="workflow-version-routing">
+              <p>Persona default · {snapshotRoutingLabel(node.persona)}</p>
+              <p>
+                {node.executionOverride
+                  ? `Workflow override · ${node.executionOverride.runner} · ${node.executionOverride.model}`
+                  : "No workflow override · this node runs the Persona default above"}
+              </p>
+            </div>
             <pre>{node.persona.guidanceMarkdown}</pre>
           </details>
         );

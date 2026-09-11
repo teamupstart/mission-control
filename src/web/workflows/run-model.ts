@@ -8,8 +8,15 @@ import type {
   WorkflowContextSnapshot,
   WorkflowDeliveryKind,
   WorkflowDeliveryState,
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceImage,
+  WorkflowEvidenceProofRole,
+  WorkflowEvidenceReadinessCriterion,
+  WorkflowEvidenceReadinessResult,
+  WorkflowEvidenceReadinessStatus,
   WorkflowGateSummary,
   WorkflowEvent,
+  WorkflowGoalProvenanceVerdict,
   WorkflowGateWaitReason,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
@@ -24,6 +31,7 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
+import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
@@ -33,7 +41,8 @@ import {
   workflowRunGaveUp,
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
-import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
+import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -41,6 +50,7 @@ import {
   SessionActionCompletedOutputSchema,
   WorkflowCheckOutcomeSchema,
 } from "@shared/protocol.ts";
+import { relativeTime } from "../lib/format.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmDescriptor } from "./run-actions.ts";
 import { WorkflowApiError } from "./workflowApi.ts";
@@ -1362,6 +1372,17 @@ export interface RunRecordIntentSummary {
   rawGoalCharacters: number;
   hasOpeningAsk: boolean;
   openingAskCharacters: number;
+  /**
+   * The freeze-time goal-provenance verdict, or null for a run nobody classified.
+   *
+   * Null and `objective` are different answers and the pane draws neither, so the distinction
+   * only matters to a reader of this model - but it is the distinction the column exists to
+   * keep: `objective` is a run that was measured and found healthy, null is a run created
+   * before there was anything to measure it with.
+   */
+  provenanceVerdict: WorkflowGoalProvenanceVerdict | null;
+  /** The sentence naming every check that matched, shown as the badge's accessible name. */
+  provenanceReason: string | null;
   decisionCount: number;
   /** Total characters across every decision body and rationale - the block this phase bounds. */
   decisionCharacters: number;
@@ -1374,9 +1395,64 @@ export interface RunRecordIntentSummary {
   blocking: boolean;
 }
 
+/**
+ * What the Evidence pane is, before a claim row or a thumbnail is drawn.
+ *
+ * `blocking` is deliberately NARROWER than "this submission has gaps". A gap on a run that is
+ * still moving is a fact the strip counts and the gap block names; it has not stopped anything,
+ * and a pane that seized the initial selection over it would drag every reader off the worklist
+ * on a run that is working perfectly well. `blocking` here means the readiness result has PARKED
+ * the run - the operator's decision is the only thing that moves it - which is the one case the
+ * plan's "a blocking state cannot hide" is about.
+ */
+export interface RunRecordEvidenceSummary {
+  /** The readiness verdict, or null when this submission was never evaluated. */
+  status: WorkflowEvidenceReadinessStatus | null;
+  /** Frozen author claims on the viewed submission. */
+  claimCount: number;
+  /** Canonical criteria the reconciliation could not satisfy. */
+  gapCount: number;
+  /** Canonical criteria carrying an advisory warning. */
+  warningCount: number;
+  /** Frozen images on the viewed submission, carried ones included. */
+  imageCount: number;
+  /** The run is parked on this submission's readiness result and waiting for a decision. */
+  blocking: boolean;
+  /**
+   * The round spent its evidence preflight refinements, so the retry button is withdrawn and
+   * the override is the only way through. A narrower fact than `blocking`, and both are read
+   * from the RUN rather than from the submission.
+   */
+  refinementsExhausted: boolean;
+}
+
 export interface RunRecordSummary {
   deliveries: RunRecordDeliverySummary;
+  evidence: RunRecordEvidenceSummary;
   intent: RunRecordIntentSummary;
+}
+
+/**
+ * Whether the run is standing still on THIS submission's readiness result.
+ *
+ * Three facts have to agree, and each one is load-bearing: the run itself is parked on
+ * readiness (either waiting, or blocked because the refinement cap was spent), the submission
+ * being read is the newest one, and that submission is itself still waiting. Scrubbing back to
+ * round 1 of a parked run must not report round 1 as the thing being decided, and a run that
+ * has since moved on must not keep an old round's block on screen.
+ */
+function readinessParked(
+  detail: WorkflowRunDetail,
+  viewed: WorkflowSubmission | null,
+): { blocking: boolean; refinementsExhausted: boolean } {
+  const refinementsExhausted = detail.run.status === "blocked"
+    && detail.run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE;
+  const runParked = detail.run.status === "waiting_for_evidence_readiness" || refinementsExhausted;
+  const latest = orderedSubmissions(detail).at(-1) ?? null;
+  const onLatest = viewed === null || (latest !== null && viewed.id === latest.id);
+  const submissionWaiting = viewed?.status === "waiting_for_evidence_readiness";
+  const blocking = runParked && onLatest && submissionWaiting;
+  return { blocking, refinementsExhausted: blocking && refinementsExhausted };
 }
 
 /**
@@ -1416,6 +1492,8 @@ export function runRecordSummary(
     detail.submissions.find((submission) => submission.id === submissionId)?.round ?? null;
   const { state, context } = runRecordIntentState(detail, viewed);
   const decisions = context?.humanDecisions ?? [];
+  const readiness = viewed?.readiness ?? null;
+  const parked = readinessParked(detail, viewed);
   return {
     deliveries: {
       total: deliveries.length,
@@ -1438,12 +1516,36 @@ export function runRecordSummary(
         : deliveries.filter((delivery) => roundOf(delivery.submissionId) === viewedRound).length,
       blocking: refused > 0 || uncertain > 0,
     },
+    evidence: {
+      status: readiness?.status ?? null,
+      claimCount: viewed
+        ? detail.evidenceCoverage
+          ?.find((group) => group.submissionId === viewed.id)?.coverage.length ?? 0
+        : 0,
+      // Criteria, not codes. Five criteria each missing coverage is five things a reader has to
+      // answer for; the two distinct codes behind them are not, and "Gaps 2" would understate
+      // the work by more than half on exactly the submission that needs the number.
+      gapCount: readiness?.criteria.filter((criterion) => criterion.gaps.length > 0).length ?? 0,
+      warningCount: readiness?.criteria
+        .filter((criterion) => criterion.warnings.length > 0).length ?? 0,
+      imageCount: viewed
+        ? detail.evidenceImages?.find((group) => group.submissionId === viewed.id)?.images.length
+          ?? 0
+        : 0,
+      blocking: parked.blocking,
+      refinementsExhausted: parked.refinementsExhausted,
+    },
     intent: {
       state,
       refinedGoal: context?.primaryGoal.refined ?? null,
       rawGoalCharacters: context?.primaryGoal.rawPrompt.length ?? 0,
       hasOpeningAsk: Boolean(context?.primaryGoal.openingAsk),
       openingAskCharacters: context?.primaryGoal.openingAsk?.length ?? 0,
+      // Off the RUN, not off the round's captured context. The verdict describes one freeze at
+      // run creation, so every round of the run reports the same one and a scrubbed-to round
+      // does not appear to have been classified separately.
+      provenanceVerdict: detail.run.intentProvenance?.verdict ?? null,
+      provenanceReason: detail.run.intentProvenance?.reason ?? null,
       decisionCount: decisions.length,
       decisionCharacters: decisions.reduce(
         (total, decision) => total + decision.decision.length + (decision.rationale?.length ?? 0),
@@ -1467,6 +1569,282 @@ export function runRecordSummary(
     },
   };
 }
+
+/**
+ * A persisted gap, warning or role code, spelled for a person.
+ *
+ * One place, because these codes reach three surfaces in the Evidence pane - the gap block's
+ * chip, a claim row's inline note and an image card's "cited as" line - and a reader who saw
+ * `missing_rendered_output` on one and "missing rendered output" on another would reasonably
+ * think they were different findings.
+ */
+export function evidenceCodeLabel(code: string): string {
+  return code.replaceAll("_", " ");
+}
+
+/**
+ * The gapped canonical criteria with NO author claim to sit a row under, in the record's order.
+ *
+ * These get a block of their own rather than being folded into the claim rows, and that is the
+ * whole reason the reconciliation survives this consolidation. A gap belongs to a CANONICAL
+ * criterion, and on the submission this was measured against five of the six had
+ * `matchedClientCriterionId: null` - no author claim at all to sit a row under. Merging the two
+ * lists would have deleted exactly the finding a reader came for.
+ *
+ * Matched-AND-gapped is the case the filter exists for, and it is not rare: the reconciliation
+ * accepts a claim for a criterion and still records a gap against it, which is what happens when
+ * the proof class does not satisfy the requirement. `evidenceClaimStatus` already prints that
+ * gap on the claim's own row. Listing it here as well would say it twice, the second time under
+ * a heading that tells the reader it has no row below - which is false for exactly these.
+ */
+export function readinessGapCriteria(
+  readiness: WorkflowEvidenceReadinessResult | null | undefined,
+): WorkflowEvidenceReadinessCriterion[] {
+  return (readiness?.criteria ?? [])
+    .filter((criterion) => criterion.gaps.length > 0 && criterion.matchedClientCriterionId === null);
+}
+
+/** What a frozen author claim's row says about itself, once the reconciliation has spoken. */
+export interface RunEvidenceClaimStatus {
+  label: string;
+  /** The `workflow-` chip tone this maps onto. */
+  tone: "completed" | "waiting" | "failed";
+  /** Gap or warning codes to print inline, already spelled. */
+  notes: string[];
+}
+
+/**
+ * Match a claim to its canonical criterion BY ID, never by the criterion text.
+ *
+ * `matchedClientCriterionId` is the reconciliation's own answer to "which author claim did I
+ * accept for this criterion". Matching on the wording instead works only where the author's
+ * phrasing and the compacted canonical phrasing happen to be identical - which is precisely the
+ * submission that has no gaps to report - and silently reports every real mismatch as unlinked.
+ */
+export function evidenceClaimStatus(
+  claim: WorkflowEvidenceCoverageClaim,
+  readiness: WorkflowEvidenceReadinessResult | null | undefined,
+): RunEvidenceClaimStatus {
+  const criterion = (readiness?.criteria ?? [])
+    .find((entry) => entry.matchedClientCriterionId === claim.clientCriterionId) ?? null;
+  if (criterion?.gaps.length) {
+    return { label: "gaps", tone: "failed", notes: criterion.gaps.map(evidenceCodeLabel) };
+  }
+  if (criterion?.warnings.length) {
+    return { label: "warning", tone: "waiting", notes: criterion.warnings.map(evidenceCodeLabel) };
+  }
+  if (criterion) return { label: "linked", tone: "completed", notes: [] };
+  if (claim.links.length === 0) {
+    return { label: "no evidence linked", tone: "waiting", notes: [] };
+  }
+  // No criterion answers for this claim. When a reconciliation ran, that is a fact about the
+  // claim - the author proved something nobody asked for - and it is stated rather than dressed
+  // up as a pass. When none ran there is nothing to reconcile against and the claim stands.
+  return readiness && readiness.criteria.length > 0
+    ? { label: "not reconciled", tone: "waiting", notes: [] }
+    : { label: "linked", tone: "completed", notes: [] };
+}
+
+/** Who cites one frozen image, and as what. */
+export interface RunEvidenceImageCitation {
+  /**
+   * The public item id the author's claims cite this image by, or null when this build cannot
+   * bridge the two - see `runEvidenceCitations`.
+   */
+  clientItemId: string | null;
+  /** How many frozen author claims cite it. */
+  claims: number;
+  /** The roles it is cited as, deduplicated, in first-seen order. */
+  roles: WorkflowEvidenceProofRole[];
+}
+
+export interface RunEvidenceCitations {
+  /**
+   * The citation for one frozen image, cited or not.
+   *
+   * A function rather than the map it reads, because the answer is TOTAL over the images this
+   * was built from: an uncited image has a citation of no claims, which is a different record
+   * from an absent one. Exposed as a map, every caller wrote `get(id)?.` or `get(id)!` around
+   * an `undefined` no run can produce - a branch that cannot be tested because it cannot happen.
+   */
+  citationFor: (imageId: string) => RunEvidenceImageCitation;
+  /** Keyed by `clientCriterionId`. Only claims that cite at least one image appear. */
+  byClaim: ReadonlyMap<string, WorkflowEvidenceImage[]>;
+}
+
+/** What an id this run froze no image for answers, so the lookup never returns nothing. */
+const UNCITED: RunEvidenceImageCitation = { clientItemId: null, claims: 0, roles: [] };
+
+/**
+ * Which claims cite which frozen images, both ways round.
+ *
+ * The bridge is the readiness result and it has to be, which is worth stating because it is the
+ * one thing here that is a limitation rather than a choice. A coverage claim links evidence by
+ * the author's public `clientItemId`; a frozen image is identified by the daemon's own row id
+ * and `WorkflowEvidenceImage` deliberately carries no client id at all. The one place the two
+ * appear together in anything the browser is sent is `WorkflowEvidenceReadinessLink`, which
+ * pairs `clientItemId` with the `evidenceId` the reconciliation resolved it to.
+ *
+ * So an image whose id never appears in a readiness link cannot be tied to a claim here, and it
+ * renders with no item id and no "cited by" line rather than with a guess. Closing that needs a
+ * client id on the frozen image record, which is a wire-contract change this work explicitly
+ * does not make.
+ */
+export function runEvidenceCitations(input: {
+  images: readonly WorkflowEvidenceImage[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  readiness: WorkflowEvidenceReadinessResult | null | undefined;
+}): RunEvidenceCitations {
+  const itemIdOf = new Map<string, string>();
+  const imageIdOf = new Map<string, string>();
+  const frozen = new Set(input.images.map((image) => image.id));
+  for (const criterion of input.readiness?.criteria ?? []) {
+    for (const link of criterion.links) {
+      if (!frozen.has(link.evidenceId)) continue;
+      itemIdOf.set(link.evidenceId, link.clientItemId);
+      imageIdOf.set(link.clientItemId, link.evidenceId);
+    }
+  }
+  const byImage = new Map<string, RunEvidenceImageCitation>(input.images.map((image) => [
+    image.id,
+    { clientItemId: itemIdOf.get(image.id) ?? null, claims: 0, roles: [] },
+  ]));
+  const byClaim = new Map<string, WorkflowEvidenceImage[]>();
+  for (const claim of input.coverage) {
+    const cited: WorkflowEvidenceImage[] = [];
+    // One count per CLAIM, not per link: a claim citing the same image as two roles cites it
+    // once, and "cited by 2 claims" over a list of one would be the surface lying about how
+    // much of the packet rests on that picture.
+    const seen = new Set<string>();
+    for (const link of claim.links) {
+      const imageId = imageIdOf.get(link.clientItemId);
+      if (!imageId) continue;
+      const citation = byImage.get(imageId);
+      if (!citation) continue;
+      if (!citation.roles.includes(link.role)) citation.roles.push(link.role);
+      if (seen.has(imageId)) continue;
+      seen.add(imageId);
+      citation.claims += 1;
+      const image = input.images.find((entry) => entry.id === imageId);
+      if (image) cited.push(image);
+    }
+    if (cited.length > 0) byClaim.set(claim.clientCriterionId, cited);
+  }
+  return { citationFor: (imageId) => byImage.get(imageId) ?? UNCITED, byClaim };
+}
+
+/**
+ * "cited by 3 claims as rendered output", or nothing at all.
+ *
+ * Nothing at all is the honest answer where the record could not bridge the image to a claim
+ * id: "cited by 0 claims" would read as "the author proved nothing with this", which is a
+ * different and much stronger statement than "this build cannot tell".
+ */
+export function evidenceCitationSentence(citation: RunEvidenceImageCitation): string | null {
+  if (citation.clientItemId === null) return null;
+  if (citation.claims === 0) return "Cited by no frozen claim";
+  const roles = citation.roles.map(evidenceCodeLabel);
+  const as = roles.length === 0
+    ? ""
+    : ` as ${roles.length === 1 ? roles[0] : `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}`}`;
+  return `Cited by ${citation.claims} claim${citation.claims === 1 ? "" : "s"}${as}`;
+}
+
+/**
+ * The Evidence pane's decisions, out of the JSX and into the file that owns decisions.
+ *
+ * These were arrow functions inline in `WorkflowRuns.tsx`, and inline is where a decision goes
+ * to hide: an arrow passed to `onClick` or assigned into a control object is `anonymous_N` in a
+ * coverage report and cannot be told from anyone else's, so nothing could say whether the rule
+ * inside it had ever been exercised. That is this file's stated job - "decision rules live in
+ * `run-model.ts` so they can be checked without rendering" - and the pane's rules had been
+ * written past it.
+ *
+ * Each one is a question with an answer, not a handler: the view still owns the state setters
+ * and the request, and calls these to decide what to show and what to send.
+ */
+
+/**
+ * Whether this image may be staged again for the next fresh review.
+ *
+ * A carried record is deliberately excluded. It is the same digest the capturing submission
+ * already offers, so a second button would stage the same bytes twice over and imply this
+ * submission captured them itself.
+ */
+export function restageOffered(
+  image: Pick<WorkflowEvidenceImage, "availability" | "inheritedFrom">,
+  canRestage: boolean,
+  hasHandler: boolean,
+): boolean {
+  return canRestage
+    && hasHandler
+    && !image.inheritedFrom
+    && image.availability === "retained";
+}
+
+/**
+ * The client item id this image will be re-staged under, minted once and then reused.
+ *
+ * Reused rather than re-minted because a second id for the same bytes is a second staged item:
+ * the daemon deduplicates by digest, but the tray would carry two rows pointing at one picture,
+ * and an operator pressing the button twice has asked for one thing.
+ */
+export function restageClientItemId(
+  minted: Map<string, string>,
+  imageId: string,
+  newId: () => string = () => crypto.randomUUID(),
+): string {
+  const existing = minted.get(imageId);
+  if (existing) return existing;
+  const clientItemId = `history-${newId()}`;
+  minted.set(imageId, clientItemId);
+  return clientItemId;
+}
+
+/** What the re-stage control says, which is a claim about the daemon rather than the click. */
+export function restageLabel(settled: boolean): string {
+  return settled ? "Ready for next review" : "Use in next review";
+}
+
+/** Pressable only while nothing is in flight and the daemon has not already accepted it. */
+export function restageDisabled(inFlight: boolean, settled: boolean): boolean {
+  return inFlight || settled;
+}
+
+/**
+ * Any thrown value as a sentence, for a surface that has to say what went wrong.
+ *
+ * A rejected request carries the daemon's own reason and that is what an operator needs; a
+ * non-Error rejection has nothing to read, so it gets the one sentence that is still true.
+ */
+export function evidenceActionError(caught: unknown, fallback: string): string {
+  return caught instanceof Error ? caught.message : fallback;
+}
+
+/**
+ * Whether "Continue despite gaps" may be pressed.
+ *
+ * Three conditions, and the reason is the one that carries the record: an override with an
+ * empty reason is an unexplained decision in the durable log, which is the thing the field
+ * exists to prevent.
+ */
+export function readinessOverrideDisabled(
+  busy: "retry" | "override" | null,
+  acknowledged: boolean,
+  reason: string,
+): boolean {
+  return busy !== null || !acknowledged || reason.trim().length === 0;
+}
+
+/** The two readiness controls' labels, so an in-flight press cannot read as a settled one. */
+export function readinessActionLabel(
+  action: "retry" | "override",
+  busy: "retry" | "override" | null,
+): string {
+  if (action === "retry") return busy === "retry" ? "Retrying…" : "Retry evidence preflight";
+  return busy === "override" ? "Continuing…" : "Continue despite gaps";
+}
+
 
 /**
  * How many decisions, and how much prose, the collapsed list is standing in for.
@@ -1599,8 +1977,107 @@ export function runRefusedSentence(detail: WorkflowRunDetail): string | null {
       return `The evidence captured for round ${round} is identical to the round before it,`
         + " so the reviewers were not run against it.";
     default:
-      return null;
+      // No `case` per capture phase: the decoder owns that set, and a copy here would drift.
+      return captureRefusedSentence(detail);
   }
+}
+
+/** The failing item, as a reader names it, or null when the row never recorded one. */
+function captureFailureItem(failure: WorkflowCaptureFailure): string | null {
+  // An id with no name is still what a re-registration replaces.
+  if (!failure.itemName) return failure.itemClientId;
+  return failure.itemClientId
+    ? `${failure.itemName} (registered as ${failure.itemClientId})`
+    : failure.itemName;
+}
+
+/**
+ * Why evidence capture refused this round, and which of the two recoveries works.
+ *
+ * The cause is the daemon's own message, not a clause composed from `failure.code`: a dozen
+ * codes reach these phases, so a code map would need the silent fallback being repaired here.
+ */
+function captureRefusedSentence(detail: WorkflowRunDetail): string | null {
+  const failure = workflowCaptureFailure({
+    status: detail.run.status,
+    phase: detail.run.currentPhase,
+    gateState: detail.run.gateState ?? null,
+  });
+  if (!failure) return null;
+  const item = captureFailureItem(failure);
+  const reason = failure.error.replace(/[.\s]+$/, "");
+  /*
+   * `resumeCapture` revives the same submission and therefore the same immutable reservation,
+   * so under `image_evidence_capture` resuming re-checks the very bytes that were refused.
+   * Under the other three the reservation is not what failed, and saying so would be untrue.
+   */
+  const remedy = detail.run.currentPhase === "image_evidence_capture"
+    ? " A re-registered item is picked up by the next round and not by a resume: resuming"
+      + " replays the same frozen reservation, so it re-checks the very bytes that were just"
+      + " refused."
+    : " Starting the next round re-reads the session and captures its evidence again.";
+  return "Evidence capture refused this round, so nothing was reviewed and no repair round was"
+    + " spent."
+    + (item ? ` It stopped on ${item}: ${reason}.` : ` ${reason}.`)
+    + remedy;
+}
+
+/**
+ * What the daemon did with a refused completion claim, and how it is recovered - stated once.
+ *
+ * Two surfaces say both of these: the run header and the *Foreman completion claim* card. They
+ * frame it differently and only one of them has a timestamp, but they must not be able to
+ * disagree about what the refusal COST or what clears it, because that is a property of the
+ * daemon rather than of either view. Owning the clauses here is what makes a change to
+ * `claimForemanCompletion` a one-line edit instead of two that can be made separately.
+ */
+const REFUSED_CLAIM_CONSEQUENCE = "it opened no round and produced no submission";
+const REFUSED_CLAIM_RECOVERY = "Whatever evidence that turn registered is staged and waiting,"
+  + " and starting the next round is what picks it up.";
+
+/** Open rather than closed: these are persisted strings, so an unknown state must not throw. */
+const COMPLETION_CLAIM_OUTCOMES: Record<string, { label: string; sentence: string }> = {
+  started: {
+    label: "started the run",
+    sentence: "This claim created the run and the first submission it reviewed.",
+  },
+  resubmitted: {
+    label: "opened the next round",
+    sentence: "This claim opened the next repair round against freshly captured evidence.",
+  },
+  already_claimed: {
+    label: "already counted",
+    sentence: "A claim for this same turn had already been accepted, so this one opened no"
+      + " round of its own.",
+  },
+  blocked: {
+    label: "refused",
+    sentence: `The run was already blocked when this claim arrived, so ${REFUSED_CLAIM_CONSEQUENCE}`
+      + ` - and the session was told it had completed anyway. ${REFUSED_CLAIM_RECOVERY}`,
+  },
+};
+
+export function completionClaimOutcome(state: string): { label: string; sentence: string | null } {
+  const known = COMPLETION_CLAIM_OUTCOMES[state];
+  return known ?? { label: state.replaceAll("_", " "), sentence: null };
+}
+
+/**
+ * That the session finished again and the daemon would not take it, for a blocked run.
+ *
+ * Display only: the store still refuses the claim and still retires the prompted guard.
+ * Making a blocked run accept a fresh claim is a behavioural fix and a separate plan.
+ */
+export function runRefusedCompletionSentence(
+  detail: WorkflowRunDetail,
+  now = Date.now(),
+): string | null {
+  // Scoped to a run that is still blocked; on one that took another round the claim is history.
+  const refused = detail.refusedCompletion;
+  if (!refused || detail.run.status !== "blocked") return null;
+  return `This session finished again ${relativeTime(refused.at, now)} and the review could not`
+    + ` accept it: the run was already blocked, so ${REFUSED_CLAIM_CONSEQUENCE}.`
+    + ` ${REFUSED_CLAIM_RECOVERY}`;
 }
 
 /**

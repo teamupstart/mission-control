@@ -93,7 +93,7 @@ export function standingInstructionsView(): StandingInstructionsView {
  * `repositories` is a PATCH. An absent key is left alone, a string sets it, and `null`
  * removes it - so a panel saving one repository sends that one key and cannot persist a
  * neighbouring box's unsaved draft. The empty string is a real value and is NOT a removal:
- * it means "send nothing for this repository", which beats the machine-wide default.
+ * it selects no repository addition, while keeping the machine-wide default.
  */
 export function updateStandingInstructions(
   update: StandingInstructionsUpdate,

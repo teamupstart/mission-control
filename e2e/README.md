@@ -1687,14 +1687,14 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### A standing instruction, and the sessions it does and does not reach
 
-`e2e/.artifacts/settings-standing-instructions/` carries five frames from
+`e2e/.artifacts/settings-standing-instructions/` carries frames from
 `specs/settings-standing-instructions.spec.ts`. The feature writes a rule an agent will
 **obey**, so the pictures are of the two claims a person has to be able to check: that the
 rule is where they put it, and that the panel is honest about who gets it.
 
 `empty.png` is the shipped state - nothing configured, and the panel saying so rather than
 looking broken. `rule-saved.png` is a rule stored against one repository, with the
-`override` chip that separates it from a checkout inheriting the machine-wide default.
+`appended` chip that identifies its addition to the machine-wide default.
 `reach-block.png` is the one worth the most: all eight rows at once, the five harness ·
 runtime pairs with the exact mechanism each uses, both deliberate exclusions, and the line
 saying a running session keeps what it launched with. It is a column-aligned claim no DOM
@@ -1713,6 +1713,12 @@ primary would say nothing is coming while the launch sends the block.
 
 No model tokens are spent: every agent binary is redirected at a fake, and the delivery is
 read back from the session's launch snapshot rather than from any model output.
+
+`additive-settings.png` shows both saved blocks and the copy explaining their order.
+`additive-preview.png` and `additive-session.png` show the same default followed by the
+repository addition before and after launch. `empty-repository-keeps-default.png` shows a
+cleared repository entry retaining the default. The spec verifies that removing that entry
+also preserves the default for the next session.
 
 Regenerate them with:
 

@@ -110,6 +110,84 @@ test("Publish snapshots exact Persona bytes, is idempotent per draft, and never 
   }
 });
 
+// A node's own provider/model choice is frozen BESIDE the Persona snapshot, never inside it,
+// and publication has to keep both facts separable forever: the snapshot says what the Persona
+// recommended when the version was cut, and the override says what this workflow chose. What is
+// at stake below is that a published pair cannot move afterwards - not when the Persona is
+// edited, not when the draft is, and not when a newer version is published.
+test("Publish freezes a node override beside the Persona snapshot, and later edits cannot move it", () => {
+  seed();
+  const routed = {
+    ...draft,
+    nodes: draft.nodes.map((node) => node.kind === "persona"
+      ? { ...node, executionOverride: { runner: "codex" as const, model: "gpt-5.6-sol" } }
+      : node),
+  };
+  const withOverride = store.updateWorkflowCas("w1", 1, { draft: routed }, 3);
+  assert.equal(withOverride.ok, true);
+  if (!withOverride.ok) return;
+  // An override-only edit is an ordinary draft edit: it bumps the revision, which is what
+  // Publish keys idempotency on. No second fingerprint is needed and none exists.
+  assert.equal(withOverride.workflow.draftRevision, 2);
+
+  const first = store.publishWorkflow("w1", 2, "v1", 4);
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  const node = first.version.graph.nodes.find((candidate) => candidate.kind === "persona");
+  assert.ok(node?.kind === "persona");
+  if (node?.kind !== "persona") return;
+  assert.deepEqual(node.executionOverride, { runner: "codex", model: "gpt-5.6-sol" });
+  // The snapshot still reports what the PERSONA recommends, which is nothing. Flattening the
+  // override into it would destroy the only record of who decided.
+  assert.equal(node.persona.runner, null);
+  assert.equal(node.persona.model, null);
+
+  // Republishing the same draft revision changes nothing.
+  const repeated = store.publishWorkflow("w1", 2, "ignored", 5);
+  assert.equal(repeated.ok, true);
+  if (!repeated.ok) return;
+  assert.equal(repeated.idempotent, true);
+  assert.equal(store.listWorkflowVersions("w1").length, 1);
+
+  // Change ONLY the override, and a distinct version is minted while version 1 stays put.
+  store.updatePersonaCas("p1", 1, { runner: "claude", model: "claude-opus-4-8" }, 6);
+  const rerouted = store.updateWorkflowCas("w1", 2, {
+    draft: {
+      ...draft,
+      nodes: draft.nodes.map((candidate) => candidate.kind === "persona"
+        ? { ...candidate, executionOverride: { runner: "claude" as const, model: "claude-opus-4-8" } }
+        : candidate),
+    },
+  }, 7);
+  assert.equal(rerouted.ok, true);
+  const second = store.publishWorkflow("w1", 3, "v2", 8);
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  assert.equal(second.version.version, 2);
+  const before = store.getWorkflowVersion("w1", 1)?.graph.nodes.find((c) => c.kind === "persona");
+  const after = store.getWorkflowVersion("w1", 2)?.graph.nodes.find((c) => c.kind === "persona");
+  assert.ok(before?.kind === "persona" && after?.kind === "persona");
+  if (before?.kind !== "persona" || after?.kind !== "persona") return;
+  assert.deepEqual(before.executionOverride, { runner: "codex", model: "gpt-5.6-sol" });
+  assert.deepEqual(after.executionOverride, { runner: "claude", model: "claude-opus-4-8" });
+  // And the Persona edit that landed in between reached the new snapshot only.
+  assert.equal(before.persona.runner, null);
+  assert.equal(after.persona.runner, "claude");
+});
+
+test("Publish leaves an inheriting node with no override key at all", () => {
+  seed();
+  const published = store.publishWorkflow("w1", 1, "v1", 4);
+  assert.equal(published.ok, true);
+  if (!published.ok) return;
+  const node = published.version.graph.nodes.find((candidate) => candidate.kind === "persona")!;
+  // Not "undefined": the version's stored JSON must not gain a key, or every reader that
+  // distinguishes inheritance from a choice would have to start distinguishing two spellings
+  // of inheritance instead.
+  assert.equal(Object.hasOwn(node, "executionOverride"), false);
+  assert.equal(JSON.stringify(published.version.graph).includes("executionOverride"), false);
+});
+
 test("Publish rejects missing or archived live Personas with structured diagnostics", () => {
   seed();
   store.archivePersonaCas("p1", 1, 3);

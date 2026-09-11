@@ -289,6 +289,22 @@ test("a card on each shelf opens the editor that owns it, and the hash names wha
     .toHaveValue("Shelf action");
 });
 
+test("the Test Coverage Judge evaluates test adequacy without a percentage threshold", async ({
+  dashboard,
+  daemon,
+}) => {
+  await dashboard.goto(`${daemon.baseURL}/#/library`);
+  await dashboard.getByRole("button", { name: /Test Coverage Judge/ }).click();
+
+  const fields = dashboard.locator("section.persona-fields");
+  await expect(fields.getByLabel("Name")).toHaveValue("Test Coverage Judge");
+  const guidance = dashboard.getByRole("region", { name: "Persona guidance" });
+  await expect(guidance).toContainText("appropriately cover the changed material executable behavior");
+  await expect(guidance).not.toContainText("80%");
+  await expect(guidance).not.toContainText("percentage");
+  await shoot(dashboard, "test-coverage-judge");
+});
+
 test("the built-in workflow graph fills the full builder canvas", async ({
   dashboard,
   daemon,

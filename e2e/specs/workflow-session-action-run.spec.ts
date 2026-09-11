@@ -23,9 +23,9 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
  *  - PREVIEW prepares the identical packet and types NOTHING, however settled the session
  *    afterwards becomes.
  *
- * The action is a `session_turn` one, because that is the adapter this build can prove. A
- * `pull_request` graph is still refused at Publish, which `workflow-session-action.spec.ts`
- * pins beside its hidden-authoring assertions.
+ * The live action uses `session_turn` to prove continuation without GitHub writes. PR actions
+ * run in preview here to prove that the existing Foreman setting controls their visible
+ * instructions, independently of the worker's nudge settings.
  */
 
 const NODE = { session: "session-node", action: "action-node", end: "end-node" };
@@ -97,6 +97,7 @@ async function seedActionRun(
   page: Page,
   daemon: DaemonHandle,
   deliveryMode: "live" | "preview",
+  completion: "session_turn" | "pull_request" = "session_turn",
 ): Promise<RunHandle> {
   const sessionId = await dispatch(page, daemon);
   const actionName = `Tidy ${deliveryMode}`;
@@ -104,8 +105,7 @@ async function seedActionRun(
     name: actionName,
     description: "Tidy the workspace",
     promptMarkdown: PROMPT,
-    // The only adapter this build can prove. `pull_request` remains unpublishable.
-    completion: { kind: "session_turn" },
+    completion: { kind: completion },
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: `E2E action run ${deliveryMode}`,
@@ -121,8 +121,6 @@ async function seedActionRun(
       ],
     },
   });
-  // The gate this phase opens: a `session_turn` graph publishes where a `pull_request` one
-  // is still refused.
   const published = await api<{ version: { id: string } }>(
     daemon,
     `/api/workflows/${workflow.workflow.id}/publish`,
@@ -132,6 +130,7 @@ async function seedActionRun(
     workflowVersionId: published.version.id,
     sessionId,
     deliveryMode,
+    triggerMode: "manual",
   });
   const submitted = await api<{ run: { id: string } }>(
     daemon,
@@ -159,6 +158,55 @@ interface RunDetail {
 
 const detail = (daemon: DaemonHandle, runId: string): Promise<RunDetail> =>
   api<RunDetail>(daemon, `/api/workflow-runs/${runId}`);
+
+for (const enabled of [true, false]) {
+  test(`Foreman CI setting ${enabled ? "adds" : "omits"} workflow PR instructions`, async ({ dashboard, daemon }) => {
+    await api(daemon, "/api/foreman/config", {
+      enabled: true,
+      mode: "dry-run",
+      trackCiFailures: !enabled,
+      trackReviewFeedback: !enabled,
+    }, "PUT");
+    await dashboard.goto(daemon.baseURL);
+    await dashboard.getByRole("button", { name: /Foreman - the auto-responder/ }).click();
+    const popover = dashboard.getByRole("dialog", { name: "Foreman settings" });
+    const ci = popover.getByRole("checkbox", { name: "Keep sessions on track with CI" });
+    await ci.setChecked(enabled);
+    await expect.poll(async () => (await api<{ trackCiFailures: boolean }>(daemon, "/api/foreman/config")).trackCiFailures).toBe(enabled);
+    await expect(popover).toContainText("New workflow PR instructions also ask the session to follow CI through completion.");
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      const dir = artifactsDir("workflow-pr-ci-followthrough");
+      mkdirSync(dir, { recursive: true });
+      await popover.screenshot({ path: `${dir}setting-${enabled ? "on" : "off"}.png` });
+    }
+    await dashboard.keyboard.press("Escape");
+    // Workflow delivery has its own authorization. The preference still applies when the
+    // independent Foreman worker is disabled, and the review-comment setting is opposite.
+    await api(daemon, "/api/foreman/config", { enabled: false }, "PUT");
+    const { runId } = await seedActionRun(dashboard, daemon, "preview", "pull_request");
+    await expect.poll(async () => (await detail(daemon, runId)).deliveries.length).toBe(1);
+    const before = (await detail(daemon, runId)).deliveries[0]!;
+    expect(before.state).toBe("prepared");
+    expect(before.payload.includes("## Workflow pull request CI follow-through")).toBe(enabled);
+    expect(before.payload.endsWith(PROMPT)).toBe(true);
+
+    await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+    await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+    await dashboard.getByRole("button", { name: "Show packet" }).click();
+    const payload = dashboard.locator("pre").filter({ hasText: "Mission Control session action:" });
+    await expect(payload).toBeVisible();
+    if (enabled) await expect(payload).toContainText("## Workflow pull request CI follow-through");
+    else await expect(payload).not.toContainText("## Workflow pull request CI follow-through");
+    if (process.env.MC_E2E_EVIDENCE === "1") {
+      await payload.screenshot({ path: `${artifactsDir("workflow-pr-ci-followthrough")}packet-${enabled ? "on" : "off"}.png` });
+    }
+    await api(daemon, "/api/foreman/config", { trackCiFailures: !enabled }, "PUT");
+    await dashboard.reload();
+    const after = (await detail(daemon, runId)).deliveries;
+    expect(after).toHaveLength(1);
+    expect(after[0]!.payload).toBe(before.payload);
+  });
+}
 
 /** Attach the daemon's own structured log on a miss: server-side failures are invisible to a trace. */
 async function withDaemonLog<T>(daemon: DaemonHandle, run: () => Promise<T>): Promise<T> {

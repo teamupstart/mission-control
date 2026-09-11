@@ -43,8 +43,9 @@ assumed. A list of changed files is not a description. Neither is a restatement 
 - Do not open a pull request from work that does not build, does not pass its tests, or was
   never run.
 - Do not claim evidence that was not produced. "Should work" is not proof.
-- Do not merge, and do not ask for the pull request to be merged. Opening it is the whole job;
-  this run's final gate reviews it afterwards.
+- Do not merge, and do not ask for the pull request to be merged. Follow any runtime CI
+  follow-through policy supplied with this packet before ending the turn. Without that policy,
+  opening the pull request is the stopping point; this run's final gate reviews it afterwards.
 - Do not fold another repository's changes into this pull request, and do not skip a repository
   because this one is open. Each is reviewed, gated and merged on its own.
 - Do not add an agent as a commit co-author.

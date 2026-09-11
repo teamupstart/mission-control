@@ -114,8 +114,9 @@ Some repository rules belong on your machine, not in every teammate's committed 
 those rules once in Mission Control and every new session it launches into that repository receives
 them before work starts.
 
-Instructions can be global or repository-specific, use longest-path matching for monorepos, and
-state exactly how they reach each harness and runtime. Running sessions keep the instructions they
+Global instructions are sent first, with repository instructions appended after them.
+The longest matching path selects a monorepo's repository addition. Settings explains how the
+instructions reach each harness and runtime. Running sessions keep the instructions they
 received at launch, so the UI shows the immutable snapshot rather than pretending a live system
 prompt changed.
 
@@ -176,6 +177,9 @@ By default, judges that have passed are skipped on later repair rounds of that r
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
+
+When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
+Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
 
 ![Mission Control workflow run](docs/images/workflows.png)
 

@@ -3218,6 +3218,7 @@ export function App(): React.JSX.Element {
         <WorkflowLibrary
           summaries={workflowSummaries}
           personas={personas}
+          providers={llm.status?.runners ?? []}
           sessionActions={sessionActions}
           workflowCommands={workflowCommands}
           hasSnapshot={hasSnapshot}

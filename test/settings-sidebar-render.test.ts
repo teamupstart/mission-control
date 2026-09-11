@@ -128,7 +128,7 @@ const CONDUCTOR_ONLY = /Conductor commissioning progress/; // the Conductor pane
 // The panel's read-only remedy boundary, now stated by the verdict header rather than by
 // a standing intro paragraph above it. Still Setup-only, which is what this marks.
 const SETUP_ONLY = /Package installers open in a visible terminal/;
-const STANDING_INSTRUCTIONS_ONLY = /A rule here beats the default/; // the repositories group's rule
+const STANDING_INSTRUCTIONS_ONLY = /Repository instructions are appended after the default/; // the repositories group's rule
 
 test("the rail lists every category exactly once", () => {
   const html = render("display", { settingsStatus: status() });

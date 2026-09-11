@@ -45,7 +45,7 @@ import {
 } from "../scouts/repos.ts";
 import { resolveImageUpload } from "../uploads.ts";
 import { validateLlmImages } from "../llm/images.ts";
-import { WorkflowImageEvidenceError } from "./evidence-error.ts";
+import { WorkflowImageEvidenceError, withEvidenceItem } from "./evidence-error.ts";
 import { workflowLog } from "./log.ts";
 import { frozenEvidenceId } from "./store.ts";
 import type {
@@ -585,7 +585,26 @@ export function stageRetainedWorkflowEvidence(input: {
   }], input.now, input.episodeKey ?? null);
 }
 
+/**
+ * Re-read one reserved row's source, naming the row when it refuses.
+ *
+ * The identity is attached here because this is the only frame holding both the row and the
+ * refusal - `inspectOpenFile` sees a path, `resolveCheckoutFile` sees a locator. No error code
+ * changes; route handlers and the manager's capture branch switch on those.
+ */
 async function inspectReservedSource(item: WorkflowReservedEvidence): Promise<InspectedImage> {
+  try {
+    return await inspectReservedSourceBytes(item);
+  } catch (error) {
+    if (!(error instanceof WorkflowImageEvidenceError)) throw error;
+    throw withEvidenceItem(error, {
+      displayName: item.displayName,
+      clientItemId: item.clientItemId,
+    });
+  }
+}
+
+async function inspectReservedSourceBytes(item: WorkflowReservedEvidence): Promise<InspectedImage> {
   if (item.evidenceKind === "text" || item.mimeType === "text/plain") {
     throw new WorkflowImageEvidenceError("image_mime", "Reserved evidence is not an image");
   }
@@ -754,6 +773,55 @@ export async function captureSubmissionImages(
   }
 }
 
+/** The text twin of `inspectReservedSource`, wrapped at the same frame for the same reason. */
+async function inspectReservedTextSource(
+  item: WorkflowReservedEvidence,
+): Promise<InspectedTextArtifact> {
+  try {
+    return await inspectReservedTextSourceBytes(item);
+  } catch (error) {
+    if (!(error instanceof WorkflowImageEvidenceError)) throw error;
+    throw withEvidenceItem(error, {
+      displayName: item.displayName,
+      clientItemId: item.clientItemId,
+    });
+  }
+}
+
+async function inspectReservedTextSourceBytes(
+  item: WorkflowReservedEvidence,
+): Promise<InspectedTextArtifact> {
+  if (item.sourceKind === "agent") {
+    const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
+    if (!resolved.ok) {
+      throw new WorkflowImageEvidenceError("artifact_path", `Reserved text evidence path ${resolved.reason}`);
+    }
+    return inspectOpenTextFile(
+      resolved.path,
+      { bytes: item.bytes, sha256: item.sha256 },
+      item.sourceRoot,
+    );
+  }
+  if (item.sourceKind === "command" && item.inlineContent !== null && item.inlineContent !== undefined) {
+    const data = Buffer.from(item.inlineContent, "utf8");
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    if (data.byteLength !== item.bytes || sha256 !== item.sha256) {
+      throw new WorkflowImageEvidenceError(
+        "artifact_changed",
+        "Reserved command evidence no longer matches its registered bytes",
+      );
+    }
+    return {
+      path: item.sourceLocator,
+      bytes: data.byteLength,
+      mimeType: "text/plain",
+      sha256,
+      content: item.inlineContent,
+    };
+  }
+  throw new WorkflowImageEvidenceError("artifact_source", "Reserved text evidence has an invalid source");
+}
+
 /** Freeze every reserved UTF-8 text/log source before context compaction or Persona spend. */
 export async function captureSubmissionTextArtifacts(
   store: WorkflowStore,
@@ -768,36 +836,7 @@ export async function captureSubmissionTextArtifacts(
   const writes: WorkflowSubmissionTextArtifactWrite[] = [];
   let aggregate = 0;
   for (const item of reserved) {
-    let inspected: InspectedTextArtifact;
-    if (item.sourceKind === "agent") {
-      const resolved = await resolveCheckoutFile(item.sourceRoot, item.sourceLocator);
-      if (!resolved.ok) {
-        throw new WorkflowImageEvidenceError("artifact_path", `Reserved text evidence path ${resolved.reason}`);
-      }
-      inspected = inspectOpenTextFile(
-        resolved.path,
-        { bytes: item.bytes, sha256: item.sha256 },
-        item.sourceRoot,
-      );
-    } else if (item.sourceKind === "command" && item.inlineContent !== null && item.inlineContent !== undefined) {
-      const data = Buffer.from(item.inlineContent, "utf8");
-      const sha256 = createHash("sha256").update(data).digest("hex");
-      if (data.byteLength !== item.bytes || sha256 !== item.sha256) {
-        throw new WorkflowImageEvidenceError(
-          "artifact_changed",
-          "Reserved command evidence no longer matches its registered bytes",
-        );
-      }
-      inspected = {
-        path: item.sourceLocator,
-        bytes: data.byteLength,
-        mimeType: "text/plain",
-        sha256,
-        content: item.inlineContent,
-      };
-    } else {
-      throw new WorkflowImageEvidenceError("artifact_source", "Reserved text evidence has an invalid source");
-    }
+    const inspected = await inspectReservedTextSource(item);
     aggregate += inspected.bytes;
     if (aggregate > WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes) {
       throw new WorkflowImageEvidenceError(

@@ -38,6 +38,7 @@ import {
   workflowRunWaitsOnOperator,
 } from "../src/shared/workflow.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 
 // MISSION_HOME *is* the state dir. Set before anything that resolves it is imported, which is
 // why every server import below is dynamic - a static import would be hoisted above this line.
@@ -67,7 +68,8 @@ const { buildApp } = await import("../src/server/routes.ts");
 // Browser-safe and imported here on purpose: the notice is only correct if the field the
 // DAEMON puts on the detail is the field the browser reads, and asserting the two halves in
 // different files is how they drift.
-const { runGrantNotice } = await import("../src/web/workflows/run-model.ts");
+const { runGrantNotice, runRefusedCompletionSentence } =
+  await import("../src/web/workflows/run-model.ts");
 
 const db = openDb();
 
@@ -1195,6 +1197,178 @@ test("the grant survives being pushed off the event page", async () => {
   assert.equal(
     runGrantNotice(detail),
     "Repair budget raised. Round 4 is now the last this run can reach.",
+  );
+  await h.manager.stop();
+});
+
+// Filler written BEFORE the claim: what hides it is the history in front of it.
+test("a refused completion claim reaches run detail from the whole ledger, not the page", async () => {
+  const h = await spentPersonaRun("claim-paged", "v-claim-paged", "manual");
+  assert.equal(h.store.getRun(h.runId)?.status, "blocked", "the fixture never blocked the run");
+  for (let index = 0; index < 201; index += 1) {
+    h.store.appendEvent(h.runId, "resumption_withheld", {
+      submissionId: null,
+      round: null,
+      reason: "session_busy",
+    });
+  }
+
+  const binding = h.store.getBinding(h.bindingId)!;
+  // After the blocked round's own submission: a refusal is dated by the run's history, so a
+  // claim stamped before the round it bounced off would read as already answered.
+  const claimAt = h.store.latestSubmission(h.runId)!.createdAt + 1;
+  const claimed = h.store.claimForemanCompletion({
+    binding,
+    completionKind: "drain",
+    marker: "claim-paged-marker",
+    expectedWorkCycle: null,
+    summary: "Re-registered the screenshot and finished again",
+    evidenceFingerprint: "fingerprint-after-repair",
+    expectedIntent: null,
+    runId: "claim-paged-run",
+    submissionId: "claim-paged-submission",
+    // The boundary is not what is under test, and spending it would need the guard armed.
+    retireGuard: false,
+    intent: FIXTURE_RUN_INTENT,
+    now: claimAt,
+  });
+  assert.equal(claimed.result.claimed, true);
+  assert.equal(claimed.result.claimed && claimed.result.state, "blocked");
+  assert.equal(claimed.result.claimed && claimed.result.submissionId, null);
+  assert.equal(h.store.getRun(h.runId)?.status, "blocked");
+
+  const detail = h.store.runDetail(h.runId)!;
+  assert.equal(
+    detail.events.some((event) => event.kind === "workflow_completion_claimed"),
+    false,
+    "the fixture failed to push the claim off the page, so this proves nothing",
+  );
+  assert.deepEqual(detail.refusedCompletion, {
+    at: claimAt,
+    completionKind: "drain",
+    summary: "Re-registered the screenshot and finished again",
+  });
+  assert.match(
+    runRefusedCompletionSentence(detail, claimAt + 3_600_000) ?? "",
+    /This session finished again 1h ago/,
+  );
+  await h.manager.stop();
+});
+
+/*
+ * A refused claim is dated by the run's own history, not by the run merely being blocked. It
+ * records no submission of its own, so a round opened after it is what proves the run moved on.
+ */
+test("a round opened after a refused claim retires it, with no second claim involved", async () => {
+  const h = await spentPersonaRun("claim-stale", "v-claim-stale", "auto");
+  const binding = h.store.getBinding(h.bindingId)!;
+  const claimAt = h.store.latestSubmission(h.runId)!.createdAt + 1;
+  const refused = h.store.claimForemanCompletion({
+    binding,
+    completionKind: "drain",
+    marker: "claim-stale-1",
+    expectedWorkCycle: null,
+    summary: "the turn the run would not take",
+    evidenceFingerprint: "fingerprint-stale",
+    expectedIntent: null,
+    runId: "claim-stale-unused",
+    submissionId: "claim-stale-submission",
+    retireGuard: false,
+    intent: FIXTURE_RUN_INTENT,
+    now: claimAt,
+  });
+  assert.equal(refused.result.claimed && refused.result.state, "blocked");
+  assert.equal(refused.result.claimed && refused.result.submissionId, null);
+  assert.equal(h.store.runDetail(h.runId)!.refusedCompletion?.at, claimAt);
+
+  // The operator grants and resubmits by hand. No completion claim is involved, so the only
+  // thing that can retire the refusal is the round itself.
+  assert.equal(
+    h.manager.grantRepairRounds(h.runId, { requestId: "grant-stale", rounds: 2 }).ok,
+    true,
+    "the grant was refused",
+  );
+  h.head.sha = "head-stale";
+  reportIdle(h, "claim-stale", h.agentSessionId, h.paneId);
+  const resumed = await h.manager.resubmit(h.runId, { requestId: "stale-round", evidence: [] });
+  assert.equal(resumed.ok, true, "the manual round was refused");
+  assert.ok(h.store.latestSubmission(h.runId)!.createdAt >= claimAt);
+
+  // Whatever the run does next, that claim is no longer the story. Blocking it again for an
+  // unrelated reason must not caption the new block with the old turn.
+  h.store.setRunState(h.runId, "blocked", "image_evidence_capture", {
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+  }, claimAt + 3_000);
+  const detail = h.store.runDetail(h.runId)!;
+  assert.equal(detail.run.status, "blocked");
+  assert.equal(detail.refusedCompletion, null);
+  assert.equal(runRefusedCompletionSentence(detail, claimAt + 3_000), null);
+  // The claim is still in the ledger; what changed is that it no longer dates this block.
+  assert.equal(
+    h.store.listEvents(h.runId).filter((e) => e.kind === "workflow_completion_claimed").length,
+    1,
+  );
+  await h.manager.stop();
+});
+
+test("a newer accepted claim retires the refused one instead of leaving it on the header", async () => {
+  const h = await spentPersonaRun("claim-superseded", "v-claim-superseded", "auto");
+  assert.equal(h.store.getRun(h.runId)?.status, "blocked", "the fixture never blocked the run");
+  const binding = h.store.getBinding(h.bindingId)!;
+  const claimAt = h.store.latestSubmission(h.runId)!.createdAt + 1;
+  const claim = (marker: string, submissionId: string, now: number) =>
+    h.store.claimForemanCompletion({
+      binding,
+      completionKind: "drain",
+      marker,
+      expectedWorkCycle: null,
+      summary: `the session's account of ${marker}`,
+      evidenceFingerprint: `fingerprint-${marker}`,
+      expectedIntent: null,
+      // Only consulted when a claim has to CREATE a run, which neither of these does.
+      runId: `claim-superseded-unused-${marker}`,
+      submissionId,
+      retireGuard: false,
+      intent: FIXTURE_RUN_INTENT,
+      now,
+    });
+
+  const refused = claim("superseded-1", "claim-superseded-submission-1", claimAt);
+  assert.equal(refused.result.claimed && refused.result.state, "blocked");
+  assert.equal(refused.result.claimed && refused.result.submissionId, null);
+  const blockedDetail = h.store.runDetail(h.runId)!;
+  assert.equal(blockedDetail.refusedCompletion?.at, claimAt);
+  assert.match(
+    runRefusedCompletionSentence(blockedDetail, claimAt) ?? "",
+    /This session finished again/,
+    "the refusal must be on the header before the test can prove it leaves",
+  );
+
+  // Hands a self-resuming run back to its observer, so the next claim is not a second refusal.
+  assert.equal(
+    h.manager.grantRepairRounds(h.runId, { requestId: "grant-superseded", rounds: 2 }).ok,
+    true,
+    "the grant was refused",
+  );
+  assert.equal(h.store.getRun(h.runId)?.status, "waiting_for_session");
+
+  const accepted = claim("superseded-2", "claim-superseded-submission-2", claimAt + 1_000);
+  assert.equal(
+    accepted.result.claimed && accepted.result.state,
+    "resubmitted",
+    "the second claim must be ACCEPTED, or this proves nothing about the newest-claim rule",
+  );
+
+  const movedOn = h.store.runDetail(h.runId)!;
+  assert.equal(movedOn.refusedCompletion, null);
+  assert.equal(runRefusedCompletionSentence(movedOn, claimAt + 1_000), null);
+  // Both claims are still on the run, so the null above is the ordering rule.
+  assert.deepEqual(
+    h.store.listEvents(h.runId)
+      .filter((event) => event.kind === "workflow_completion_claimed")
+      .map((event) => (event.payload as { state?: string }).state),
+    ["blocked", "resubmitted"],
   );
   await h.manager.stop();
 });

@@ -319,6 +319,8 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
 }
 
 export interface WorkflowManagerOptions {
+  /** Foreman's CI preference, read only when preparing a new PR action packet. */
+  trackCiFailures?: () => boolean;
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   /**
@@ -5132,6 +5134,8 @@ export class WorkflowManager {
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
       workflowEvidence: versionSupportsWorkflowEvidence(version),
+      pullRequestCi: snapshot.completion.kind === "pull_request"
+        && this.options.trackCiFailures?.() === true,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot
@@ -6753,14 +6757,20 @@ export class WorkflowManager {
         this.store.setSubmissionState(submission.id, "failed", Date.now());
         const imageFailure = error instanceof WorkflowImageEvidenceError;
         const phase = imageFailure ? "image_evidence_capture" : "capture_error";
-        this.store.setRunState(run.id, "blocked", phase, {
+        // Omitted rather than null when there is no item: the decoder reads absent and null
+        // alike, so `capture_error` keeps declaring only the two keys it always did.
+        const failingItem = imageFailure ? error.item : null;
+        const detail = {
           error: message,
           ...(imageFailure ? { code: error.code } : {}),
-        }, Date.now());
+          ...(failingItem
+            ? { itemName: failingItem.displayName, itemClientId: failingItem.clientItemId }
+            : {}),
+        };
+        this.store.setRunState(run.id, "blocked", phase, detail, Date.now());
         this.store.appendEvent(run.id, phase, {
           submissionId: submission.id,
-          error: message,
-          ...(imageFailure ? { code: error.code } : {}),
+          ...detail,
         }, Date.now());
         this.publishRun(run.id);
       } else {

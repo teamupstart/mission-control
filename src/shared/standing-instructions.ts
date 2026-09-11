@@ -47,7 +47,7 @@ export const STANDING_INSTRUCTIONS_MECHANISMS = [
 ] as const;
 export type StandingInstructionsMechanism = (typeof STANDING_INSTRUCTIONS_MECHANISMS)[number];
 
-/** The stored document: a machine-wide default plus per-repository overrides. */
+/** The stored document: a machine-wide default plus per-repository additions. */
 export interface StandingInstructionsConfig {
   default: string;
   repositories: Record<string, string>;
@@ -55,9 +55,9 @@ export interface StandingInstructionsConfig {
 
 /** One repository's effective answer. The pure function's return, not the wire's. */
 export interface ResolvedStandingInstructions {
-  /** Effective text, "" when nothing applies. */
-  text: string;
-  /** Which stored key produced it, or null when the default did. */
+  /** Nonempty contributions in delivery order. Composition owns their formatting. */
+  parts: { source: "default" | "repository"; text: string }[];
+  /** Which key contributed repository text, or null when only the default applies. */
   matchedKey: string | null;
   source: "repository" | "default" | "none";
 }
@@ -112,13 +112,10 @@ function withinKey(repoPath: string, root: string): boolean {
  * only key that can ever match, which makes the longest-match rule below decorative. Every
  * caller gets the argument from `resolveRepoPath(cwd).path`.
  *
- * Longest matching key wins, so a monorepo package's rule beats the monorepo's.
- *
- * The empty-versus-absent distinction is the one to get right. A key present with `""`
- * resolves to `source: "repository"` and empty text - "send nothing here" - and MUST beat
- * the default; a key that is absent falls through to it. Collapse the two and clearing a
- * repository's box quietly reinstates the machine-wide text, which is the same trap
- * `foreman/instructions.ts` documents for its own stored-empty case.
+ * The default always comes first. The longest matching key selects the repository text
+ * to append, so a monorepo package's addition takes the place of its parent's addition.
+ * An empty matching entry adds nothing and still keeps the default. It remains distinct
+ * from an absent key: removing it may reveal a shorter matching repository key.
  */
 export function resolveStandingInstructions(
   config: StandingInstructionsConfig,
@@ -126,8 +123,8 @@ export function resolveStandingInstructions(
 ): ResolvedStandingInstructions {
   const fallback = (): ResolvedStandingInstructions =>
     config.default.length > 0
-      ? { text: config.default, matchedKey: null, source: "default" }
-      : { text: "", matchedKey: null, source: "none" };
+      ? { parts: [{ source: "default", text: config.default }], matchedKey: null, source: "default" }
+      : { parts: [], matchedKey: null, source: "none" };
 
   if (!repoPath) return fallback();
 
@@ -140,6 +137,9 @@ export function resolveStandingInstructions(
   }
   if (best === null) return fallback();
 
-  const text = config.repositories[best] ?? "";
-  return { text, matchedKey: best, source: "repository" };
+  const addition = config.repositories[best] ?? "";
+  if (!addition) return fallback();
+  const { parts } = fallback();
+  parts.push({ source: "repository", text: addition });
+  return { parts, matchedKey: best, source: "repository" };
 }

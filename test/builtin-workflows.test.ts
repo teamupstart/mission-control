@@ -143,7 +143,7 @@ test("every node and route identity is derived, never minted", () => {
   }
 });
 
-test("every Persona node names a shipped Persona and carries this build's guidance", () => {
+test("every Persona node names a shipped Persona and only frozen snapshots may differ from it", () => {
   const shipped = new Map(BUILTIN_PERSONAS.map((persona) => [persona.id, persona]));
   for (const builtin of BUILTIN_WORKFLOWS) {
     for (const node of builtin.definition.draft.nodes) {
@@ -157,9 +157,15 @@ test("every Persona node names a shipped Persona and carries this build's guidan
         if (node.kind !== "persona") continue;
         const current = shipped.get(node.persona.sourcePersonaId);
         assert.ok(current, `${node.persona.sourcePersonaId} is not a shipped Persona`);
+        const frozenV15Coverage = version.id === builtinWorkflowVersionId(
+          NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+          15,
+        ) && node.persona.sourcePersonaId === "builtin:test-coverage-judge";
+        if (frozenV15Coverage) {
+          assert.equal(personaSnapshotIsOutdated(node.persona, current), true);
+          continue;
+        }
         assert.equal(node.persona.guidanceMarkdown, current.guidanceMarkdown);
-        // The point of the line above: a shipped workflow must never open reporting its own
-        // shipped Personas as outdated.
         assert.equal(personaSnapshotIsOutdated(node.persona, current), false);
       }
     }
@@ -227,7 +233,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 15),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 16),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -267,7 +273,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and local completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review");
-  assert.equal(builtin.versions.length, 15);
+  assert.equal(builtin.versions.length, 16);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -393,7 +399,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 15, "one workflow, fifteen versions");
+  assert.equal(builtin.versions.length, 16, "one workflow, sixteen versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -688,7 +694,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 15);
+  assert.equal(builtin.versions.length, 16);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -861,7 +867,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 15);
+  assert.equal(builtin.versions.length, 16);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1086,10 +1092,12 @@ test("version 15 reviews test coverage alongside intent conformance in stage 2",
     (item) => item.id === "builtin:test-coverage-judge",
   )!;
   assert.equal(coverage.persona.sourcePersonaId, shippedCoverage.id);
-  assert.equal(coverage.persona.guidanceMarkdown, shippedCoverage.guidanceMarkdown);
+  assert.match(coverage.persona.guidanceMarkdown, /At least 80% of the changed executable lines/);
+  assert.match(coverage.persona.guidanceMarkdown, /## The 80% floor/);
+  assert.notEqual(coverage.persona.guidanceMarkdown, shippedCoverage.guidanceMarkdown);
   assert.equal(coverage.persona.runner, "codex");
   assert.equal(coverage.persona.model, "gpt-5.6-terra");
-  assert.equal(personaSnapshotIsOutdated(coverage.persona, shippedCoverage), false);
+  assert.equal(personaSnapshotIsOutdated(coverage.persona, shippedCoverage), true);
 
   const route = (source: string, port: string) => version.graph.edges
     .filter((edge) => edge.source === source && edge.sourcePort === port)
@@ -1128,6 +1136,28 @@ test("version 15 reviews test coverage alongside intent conformance in stage 2",
   assert.deepEqual(version.completionPolicy, prior.completionPolicy);
   assert.equal(version.resumptionPolicy, prior.resumptionPolicy);
   assert.deepEqual(version.bindingDefaults, prior.bindingDefaults);
+  assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
+});
+
+test("version 16 keeps the coverage stage but updates its frozen Persona snapshot", () => {
+  const builtin = noMistakesReview();
+  const prior = builtin.versions[14]!;
+  const version = builtin.versions[15]!;
+  assert.equal(version.id, builtinWorkflowVersionId("no-mistakes-review", 16));
+  assert.equal(version.version, 16);
+  assert.equal(version.sourceDraftRevision, 15);
+  assert.deepEqual(asDraft(version.graph), asDraft(prior.graph));
+  assert.deepEqual(version.completionPolicy, prior.completionPolicy);
+  assert.equal(version.resumptionPolicy, prior.resumptionPolicy);
+  assert.equal(version.evidenceReadinessPolicy, prior.evidenceReadinessPolicy);
+  assert.deepEqual(version.bindingDefaults, prior.bindingDefaults);
+  const priorCoverage = prior.graph.nodes.find((node) => node.id === "nmr-test-coverage-judge");
+  assert.ok(priorCoverage && priorCoverage.kind === "persona");
+  const coverage = version.graph.nodes.find((node) => node.id === "nmr-test-coverage-judge");
+  assert.ok(coverage && coverage.kind === "persona");
+  assert.notEqual(coverage.persona.guidanceMarkdown, priorCoverage.persona.guidanceMarkdown);
+  assert.doesNotMatch(coverage.persona.guidanceMarkdown, /\b80%\b|percentage|quantitative floor/i);
+  assert.match(coverage.persona.guidanceMarkdown, /appropriately cover the material changed behavior/);
   assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
 });
 

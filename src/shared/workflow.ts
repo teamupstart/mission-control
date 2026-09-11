@@ -64,13 +64,13 @@ export const WORKFLOW_LIMITS = {
   sessionActionPromptBytes: 58_000,
   /**
    * Headroom for everything the packet wraps the prompt in: the skill invocation, the action
-   * and workflow names, the version and the run id.
+   * and workflow names, the version, the run id, execution authorization and optional CI policy.
    *
-   * Every one of those is separately bounded and their sum is well under a kilobyte, so this
-   * is deliberately generous - it is a guarantee, not a measurement, and the cost of being
-   * generous is prompt bytes nobody was going to use.
+   * The CI policy needs more room than the original 2,000-byte envelope. Increase the packet
+   * budget with it, still below the delivery row's read bound, so the existing 58,000-byte
+   * authored and published prompt ceiling does not shrink.
    */
-  sessionActionEnvelopeBytes: 2_000,
+  sessionActionEnvelopeBytes: 4_000,
   /**
    * What may be STORED, which is looser than what may be authored or published.
    *
@@ -96,7 +96,7 @@ export const WORKFLOW_LIMITS = {
    * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom,
    * and `sessionActionPromptBytes` is derived FROM this so the two cannot drift apart.
    */
-  sessionActionPacketBytes: 60_000,
+  sessionActionPacketBytes: 62_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,

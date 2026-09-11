@@ -467,6 +467,25 @@ change author, message, parent, or commit id without changing reviewed content. 
 tree differs, the action blocks durably with `published_content_changed`; the prior verdict is
 not reused and End is not reached. The content must go through a fresh review before shipping.
 
+**Conditional CI instructions.** Foreman's **Keep sessions on track with CI** preference also
+applies when the daemon prepares a workflow action whose completion is **Pull request**,
+including custom actions and actions frozen in older workflow versions. When selected, the
+runtime envelope tells the session to wait for CI, repair actionable failures on the same
+branch using focused tests, push, and verify the newly pushed head. It extends an older
+instruction that says to stop immediately after opening the PR without rewriting that frozen
+instruction. With the preference off, no CI follow-through policy is added.
+
+The preference is read once per newly prepared packet. Preview, retries, and restart retain
+the recorded payload even if the setting later changes. Foreman's enabled state, mode,
+allowlist, and review-comment preference do not change this instruction choice; the workflow's
+existing delivery authorization still applies. Other completion kinds and on-demand session
+actions receive no CI policy. The existing legacy missing-PR handoff is unchanged.
+
+The instruction is not a new CI completion gate or a replacement for the content-tree proof
+above. Sessions report absent or unavailable checks and concrete external blockers accurately.
+CI repairs and rebases can change the accepted tree and still require a fresh review. Inspector
+comments and merge authority remain with their existing owners.
+
 **Mission Control never polls GitHub for this.** The GitHub Inspector's existing poller is the only
 thing that talks to a provider, and the action reads what it wrote down - which is also why a
 freshly opened pull request can take up to one poll interval to be seen.

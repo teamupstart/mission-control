@@ -140,6 +140,7 @@ interface HarnessOptions {
    * arranging one on GitHub.
    */
   pullRequest?: boolean;
+  trackCiFailures?: () => boolean;
   deliveryMode?: "preview" | "live";
   /** A reviewer AFTER the last action, so downstream activation is observable. */
   downstream?: boolean;
@@ -195,6 +196,7 @@ async function harness(sessionId: string, options: HarnessOptions = {}) {
   const adopted: SessionActionAdoptedPullRequest[] = [];
   let verdictChoice: () => "pass" | "fail" = options.verdict ?? (() => "pass");
   const manager = new WorkflowManager(registry, store, {
+    trackCiFailures: options.trackCiFailures,
     readRepositoryHead: async () => ({
       repositoryId: repository.root,
       root: repository.root,
@@ -585,6 +587,88 @@ function waitingActionAttemptId(h: Harness, runId: string): string {
   assert.ok(attempts.length > 0, "no session action attempt exists on this run");
   return attempts[0]!.id;
 }
+
+test("only PR actions with CI tracking enabled receive the runtime policy", async () => {
+  for (const pullRequest of [false, true]) {
+    for (const trackCiFailures of [false, true]) {
+      const h = await harness(`ci-policy-${pullRequest}-${trackCiFailures}`, {
+        pullRequest,
+        trackCiFailures: () => trackCiFailures,
+        deliveryMode: "preview",
+      });
+      try {
+        const runId = await runToAction(h);
+        await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+        const delivery = h.store.listDeliveries(runId)[0]!;
+        assert.equal(delivery.payload.includes("## Workflow pull request CI follow-through"), pullRequest && trackCiFailures);
+        assert.equal(h.injected.length, 0);
+      } finally {
+        await h.stop();
+      }
+    }
+  }
+});
+
+test("a prepared PR packet keeps its CI policy across setting changes and restart", async () => {
+  let tracking = true;
+  let reads = 0;
+  const h = await harness("ci-policy-durable", {
+    pullRequest: true,
+    trackCiFailures: () => { reads++; return tracking; },
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    const original = h.store.listDeliveries(runId)[0]!;
+    assert.match(original.payload, /Workflow pull request CI follow-through/);
+    tracking = false;
+    await h.manager.stop();
+    h.manager.start();
+    await h.manager.sweepSessionActions(SETTLED());
+    const recovered = h.store.listDeliveries(runId);
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0]!.payload, original.payload);
+    assert.equal(recovered[0]!.payloadSha256, original.payloadSha256);
+    assert.equal(reads, 1, "restart re-read policy for an already prepared packet");
+    assert.equal(h.injected.length, 0, "restart sent a preview packet");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("retrying a refused PR delivery uses its recorded CI instructions", async () => {
+  let tracking = true;
+  let reads = 0;
+  const options: HarnessOptions = {
+    pullRequest: true,
+    trackCiFailures: () => { reads++; return tracking; },
+    refuseInject: true,
+  };
+  const h = await harness("ci-policy-retry", options);
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).some((item) => item.state === "refused"), "no refused packet");
+    const original = h.store.listDeliveries(runId)[0]!;
+    assert.match(original.payload, /Workflow pull request CI follow-through/);
+    tracking = false;
+    options.refuseInject = false;
+    const binding = h.store.getBinding(h.store.getRun(runId)!.bindingId)!;
+    const retried = await h.manager.retryDelivery(original.id, {
+      requestId: "retry-ci-policy",
+      expectedSessionId: binding.sessionId!,
+      expectedNoteKey: binding.noteKey,
+    });
+    assert.equal(retried.ok, true);
+    if (!retried.ok) return;
+    assert.equal(retried.value.state, "delivered");
+    assert.equal(retried.value.payloadSha256, original.payloadSha256);
+    assert.deepEqual(h.injected, [original.payload]);
+    assert.equal(reads, 1, "retry must not re-read the preference");
+  } finally {
+    await h.stop();
+  }
+});
 
 test("an action activates as one waiting attempt, with no evaluator work and no receipt", async () => {
   const h = await harness("activation");

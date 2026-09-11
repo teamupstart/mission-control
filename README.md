@@ -177,6 +177,9 @@ Personas each own one reviewing concern. Session actions can send authored instr
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
 
+When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
+Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
+
 ![Mission Control workflow run](docs/images/workflows.png)
 
 Read more in [Workflows and Personas](docs/workflows.md) and

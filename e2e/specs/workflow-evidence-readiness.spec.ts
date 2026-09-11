@@ -691,18 +691,26 @@ test("a round's spent preflight refinements block the run and hand the decision 
   await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
     .toBe("waiting_for_evidence_readiness");
 
-  // The two refinements the cap leaves room for, taken through the daemon's own route.
+  // The sweep and the explicit retry share one reservation. Either can capture the newly
+  // staged packet first, so await the resulting child instead of requiring this request to win.
   let parentId = created.submission.id;
   for (const ordinal of [1, 2]) {
     stageLaterPacket(daemon, noteKey, session!.cwd, ordinal + 1, `cap-refine-${ordinal}`, false);
-    const refined = await api<{ submission: { id: string } }>(
-      daemon,
-      `/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
-      { requestId: `cap-refine-${ordinal}-${Date.now()}` },
+    const response = await fetch(
+      `${daemon.baseURL}/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
+      {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: `cap-refine-${ordinal}-${Date.now()}` }),
+      },
     );
-    parentId = refined.submission.id;
-    await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
-      .toBe("waiting_for_evidence_readiness");
+    expect([200, 409]).toContain(response.status);
+    await expect.poll(async () => {
+      const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`);
+      return { count: detail.submissions.length, parentId: detail.submissions.at(-1)?.parentSubmissionId,
+        status: detail.submissions.at(-1)?.status };
+    }, { timeout: 60_000 }).toEqual({ count: ordinal + 1, parentId, status: "waiting_for_evidence_readiness" });
+    const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`);
+    parentId = detail.submissions.at(-1)!.id;
   }
 
   // The healthy waiting round first, so the two controls the block changes are known to have
@@ -851,6 +859,8 @@ for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as 
     if (reviewCase === "exhausted") {
       await expect(dashboard.getByText(/Persona review contract error/).first()).toBeVisible();
       await expect(dashboard.getByText("Rejected review responses", { exact: true })).toBeVisible();
+      await expect(dashboard.getByText("Rejected review responses", { exact: true }))
+        .toHaveAccessibleDescription("Show the review responses rejected by the review contract");
       await capture(dashboard, "13-review-contract-recovery", dashboard.locator("article.wf-run-attempt").first());
     }
     await capture(dashboard, `11-contract-${reviewCase}`, timeline);
@@ -925,6 +935,8 @@ test("mapping infrastructure recovery reuses frozen evidence in a new same-round
   const recovery = dashboard.getByRole("region", { name: "Evidence recovery", exact: true });
   await expect(recovery).toContainText("frozen evidence");
   await expect(recovery.getByRole("button", { name: "Retry criterion mapping" })).toBeVisible();
+  await expect(recovery.getByRole("button", { name: "Retry criterion mapping" }))
+    .toHaveAccessibleDescription("Retry with the frozen evidence in a new segment without spending an author repair");
   await capture(dashboard, "10-mapping-recovery", recovery);
   await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
   await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon,

@@ -849,7 +849,12 @@ function AttemptCard({
       </p>
       <PersonaReadinessInput attempt={attempt} />
       {(attempt.reviewRejections?.length ?? 0) > 0 && (
-        <details><summary>Rejected review responses</summary><pre>{JSON.stringify(attempt.reviewRejections, null, 2)}</pre></details>
+        <details>
+          <Tooltip label="Show the review responses rejected by the review contract">
+            <summary>Rejected review responses</summary>
+          </Tooltip>
+          <pre>{JSON.stringify(attempt.reviewRejections, null, 2)}</pre>
+        </details>
       )}
       <ErrorLine raw={attempt.error} />
     </article>
@@ -3511,7 +3516,9 @@ export function WorkflowRunView({
           <h4>Evidence recovery</h4>
           <p>Retry with this submission's frozen evidence and criteria in a new segment of the same round. Earlier reviews remain available.</p>
           {detail.evidenceRecovery.kind === "review" && <p>Inspect the prior finding before re-reviewing. Structural readiness does not establish substantive correctness; legacy finding reasons may be unknown.</p>}
-          <button type="button" className="btn btn-ghost" onClick={() => void onRecoverEvidence(detail.evidenceRecovery!.submissionId)}>{detail.evidenceRecovery.label}</button>
+          <Tooltip label="Retry with the frozen evidence in a new segment without spending an author repair">
+            <button type="button" className="btn btn-ghost" onClick={() => void onRecoverEvidence(detail.evidenceRecovery!.submissionId)}>{detail.evidenceRecovery.label}</button>
+          </Tooltip>
         </section>
       )}
       {viewed && (submissionCoverage.length > 0 || viewed.readiness != null) && (

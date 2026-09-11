@@ -49,7 +49,9 @@ No token is baked; clients read credentials when sending requests. The future st
 must inspect both paths and the marker, without repairing either. The installer must link to the
 artifact without relocating it.
 
-The Phase 3 availability seam currently checks artifact existence. Phase 6 replaces this temporary
+The Phase 3 availability seam currently requires a regular `.js` artifact (following symlinks).
+Invalid paths, directories, and filesystem errors report unavailable; build validation stays strict.
+Phase 6 replaces this temporary
 probe with the authoritative installed-extension reading; it must remain the single availability
 decider. This phase adds no Setup control or installation remedy.
 

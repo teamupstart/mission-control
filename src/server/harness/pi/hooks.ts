@@ -26,7 +26,7 @@ export const piHooks: HookSpec = {
     }
   },
   promptText,
-  submittedPromptText: promptText,
+  submittedPromptText: (evt) => evt.event === "UserPromptSubmit" ? evt.prompt ?? null : null,
 };
 function promptText(evt: HookIngest): string | null {
   return evt.event === "UserPromptSubmit" ? evt.prompt?.trim() || null : null;

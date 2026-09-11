@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { McpClient } from "../src/pi/mcp-client.ts";
 import { adaptTool } from "../src/pi/tool-adapter.ts";
 import { hookBody, PI_EVENTS, statusBody } from "../src/pi/event-map.ts";
@@ -108,6 +109,23 @@ const ctx: PiContext = {
   model: { id: "probe", name: "Probe" }, thinkingLevel: "high",
   getContextUsage: () => ({ tokens: 250, contextWindow: 1000, percent: 25 }),
 };
+test("Pi preserves exact submitted prompts while normalizing display prompts", () => {
+  for (const prompt of ["  hello\n", "\n\t ", "", undefined]) {
+    const event = { event: "UserPromptSubmit" as const, prompt, sessionId: "pi-id", ts: Date.now() };
+    assert.equal(piHooks.submittedPromptText(event), prompt ?? null);
+    assert.equal(piHooks.promptText(event), prompt?.trim() || null);
+    assert.equal(piHooks.submittedPromptText({ ...event, event: "Stop" }), null);
+  }
+});
+test("Pi fixture imports filesystem paths containing URL delimiters", () => {
+  const file = join(root, "session #?.mjs");
+  writeFileSync(file, 'export function runExtensionSession() { console.log("fixture loaded"); process.exit(0); }');
+  const result = spawnSync(process.execPath, ["e2e/fixtures/fake-pi.mjs", "--mission-extension-test"], {
+    env: { ...process.env, MC_E2E_PI_SESSION_FIXTURE: file }, encoding: "utf8", timeout: 5_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "fixture loaded");
+});
 test("every lifecycle event maps to a valid ingest and settled alone completes work", () => {
   for (const [type, mapped] of Object.entries(PI_EVENTS)) {
     const body = hookBody({ type, source: "interactive", text: "hello", toolName: "bash", kind: "select", title: "Pick one" }, ctx)!;

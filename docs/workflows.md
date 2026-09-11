@@ -22,7 +22,7 @@ to a local `.md` Blob, and both imports store the document unchanged after deriv
 name from the first level-one heading or the filename. Download URLs are revoked after the
 click. Duplicate creates a new Persona rather than editing the source.
 
-Each saved Persona shows the provider and model its reviews use. Resolution is:
+Each saved Persona shows the provider and model its reviews use by default. Resolution is:
 the Persona's provider override or the app-wide provider; then the Persona's model override,
 `MISSION_WORKFLOW_PERSONA_MODEL`, or that provider's balanced default. A stored provider id
 unknown to an older build is reported and falls back through the shared provider ladder.
@@ -31,6 +31,9 @@ on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
 Review v15 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
 the other seven on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
+
+A workflow can override that default for one reviewer node, without changing the Persona or
+copying it. See [per-node provider and model](#per-node-provider-and-model).
 
 ### Importing a Persona from a file
 
@@ -364,6 +367,63 @@ no drag handle, no member list, no graph edge and no delete, it is marked `Fixed
 switches are the ones in the settings rail. End is still where the graph succeeds; GitHub Inspector
 claims that success afterwards. A workflow whose final gate is None shows no footer at all.
 
+### Per-node provider and model
+
+A Persona carries a *recommended* provider and model. A workflow can override that pair for
+one reviewer **occurrence**, and the two are separate settings: the Persona keeps its
+recommendation, every other workflow keeps whatever it was doing, and two nodes naming the
+same Persona in one workflow may run on different models.
+
+Each Persona node offers **Use Persona default** and **Override for this workflow**. The
+default is inheritance, and a workflow written before this feature stores nothing at all -
+absence is what "inherit" is spelled as, so no existing draft, version, binding or run
+changes. The control appears in both editing views and shows the same answer in each: in
+Pipeline it is the reviewer row's **Routing** disclosure, and in Graph it is under the
+selected node's Persona picker.
+
+An override is a **pair**: an explicit provider and a nonempty model, chosen together. It is
+not two independently inherited fields, because a workflow that overrode only the model would
+still resolve its provider from the Persona - so the day someone repointed that Persona at
+another provider, the node would spawn a model id that provider has never heard of. Turning
+the override on seeds the pair from what the Persona resolves to right now, so the choice is
+complete from the start. Changing the provider clears the model and asks for a deliberate one;
+until you pick it, nothing is saved and the node keeps running what it was already running.
+Model ids stay free text under the usual conventions - one absent from the suggestion list is
+allowed, and a provider this build cannot spawn is refused when the draft is saved.
+
+Resolution, in one table:
+
+| Node setting | Provider and model used |
+| --- | --- |
+| No override | The existing Persona resolution, unchanged |
+| Explicit override | The node's own provider and model pair |
+| Override removed in a draft | Live Persona defaults again, app and environment fallbacks included |
+| Published version with no override | The frozen Persona snapshot, with the usual fallbacks where its fields are unset |
+
+Publish freezes the override **beside** the Persona snapshot rather than inside it, so a
+published version can still say which of the two decided. Editing the Persona afterwards
+changes the snapshot a *future* publish would take and never an existing version's explicit
+pair. Changing only an override is an ordinary draft edit: it bumps the draft revision and
+publishes a distinct version, and republishing the same revision is idempotent as always.
+**Published versions** in the right rail prints both lines for every reviewer - the frozen
+Persona default, and the workflow override or its absence.
+
+Selecting a different Persona for a node **resets** it to inheritance: a model chosen for one
+reviewer is not a decision about another. Moving, reordering, duplicating a node, switching
+views, saving, reloading, duplicating the whole workflow, exporting a version, and restoring
+a settings backup all preserve it. Built-in workflows stay read-only: their routing is
+readable and none of it is editable, and **Duplicate** is how you get a copy you own - it
+needs no copies of the Personas.
+
+At run time the node's pair wins over the Persona, the app-wide provider and
+`MISSION_WORKFLOW_PERSONA_MODEL`. It is resolved once per attempt, before the attempt is
+claimed, and that one resolution is what the attempt records, what the CLI is launched with,
+and what the call is billed against - retries and daemon restarts included. A node disabled
+for a run still launches nothing. A known provider that is unavailable on this machine fails
+as infrastructure, exactly as it did before; no other model is substituted. Run detail keeps
+reporting the provider and model the **attempt** recorded, so history is never relabelled by
+a later change to a default.
+
 ### Session actions
 
 A **session action** is a reusable instruction a workflow stage sends to the session it is
@@ -466,6 +526,25 @@ The tree comparison is content-semantic rather than commit-semantic. A packaging
 change author, message, parent, or commit id without changing reviewed content. If the published
 tree differs, the action blocks durably with `published_content_changed`; the prior verdict is
 not reused and End is not reached. The content must go through a fresh review before shipping.
+
+**Conditional CI instructions.** Foreman's **Keep sessions on track with CI** preference also
+applies when the daemon prepares a workflow action whose completion is **Pull request**,
+including custom actions and actions frozen in older workflow versions. When selected, the
+runtime envelope tells the session to wait for CI, repair actionable failures on the same
+branch using focused tests, push, and verify the newly pushed head. It extends an older
+instruction that says to stop immediately after opening the PR without rewriting that frozen
+instruction. With the preference off, no CI follow-through policy is added.
+
+The preference is read once per newly prepared packet. Preview, retries, and restart retain
+the recorded payload even if the setting later changes. Foreman's enabled state, mode,
+allowlist, and review-comment preference do not change this instruction choice; the workflow's
+existing delivery authorization still applies. Other completion kinds and on-demand session
+actions receive no CI policy. The existing legacy missing-PR handoff is unchanged.
+
+The instruction is not a new CI completion gate or a replacement for the content-tree proof
+above. Sessions report absent or unavailable checks and concrete external blockers accurately.
+CI repairs and rebases can change the accepted tree and still require a fresh review. Inspector
+comments and merge authority remain with their existing owners.
 
 **Mission Control never polls GitHub for this.** The GitHub Inspector's existing poller is the only
 thing that talks to a provider, and the action reads what it wrote down - which is also why a
@@ -1005,9 +1084,10 @@ One round may spend at most two consecutive `evidence_preflight` refinements. A 
 session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
 the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
 submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
-alone. The waiting submission stays waiting, so the run detail keeps showing the evidence-readiness
-decision panel and the operator can still continue despite gaps from the block; the retry control is
-withdrawn with the loop it would restart. Resubmitting the run opens an ordinary new round instead.
+alone. The waiting submission stays waiting, so the run record opens on its **Evidence** tab with the
+readiness decision on screen, and the operator can still continue despite gaps from the block; the
+retry control is withdrawn with the loop it would restart. Resubmitting the run opens an ordinary
+new round instead.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another
@@ -1143,13 +1223,27 @@ SessionAction ids beside the older human-facing Persona names and Action wait re
 resolve same-name shadows and identify one action stage exactly; the browser never fetches every
 workflow to reconstruct either answer.
 
-Each submission in run detail has its own image-evidence ledger. It records the thumbnail,
-caption, repository scope, full sha256 digest, byte size, MIME type, and whether the retained
-body still exists. Image bodies load lazily through the authenticated dashboard route and the
-browser releases their object URLs when the ledger leaves the page. Retention cleanup changes
-the body to **Pruned** without erasing the metadata or digest that explains what reviewers saw.
-A retained image offers **Use in next review**, which stages a fresh immutable copy in the
-binding's composer. A pruned image keeps its audit record but cannot be reused.
+Each submission in run detail has its own evidence record, and the run record's **Evidence** tab
+is where it reads. A stat strip carries the readiness verdict, the frozen author claims, every
+canonical criterion left with an unresolved gap, its warnings and the image count. A gap is
+reported once, in the place that can act on it: against a criterion the reconciliation matched to
+an author claim it prints on that claim's row, and against a criterion it matched to nothing it
+gets a named block of its own, because there is no row for it to sit under. The **Gaps** figure
+counts both, so it is not the length of that block. Frozen images are a thumbnail strip above the
+claims, and a claim row that cites one carries a small copy of it, so a screenshot sits beside the
+claim it proves. Clicking a thumbnail opens it full size,
+with its caption, item id, repository scope, MIME type, byte size, availability and full sha256
+digest, plus **Use in next review**, which stages a fresh immutable copy in the binding's composer.
+Image bodies load lazily through the authenticated dashboard route - one request per image whatever
+draws it - and the browser releases their object URLs when the pane leaves the page. Retention
+cleanup changes the body to **Pruned** without erasing the metadata or digest that explains what
+reviewers saw; a pruned image keeps its audit record but cannot be reused.
+
+An image is tied to the claim citing it through the reconciliation's own evidence links, which are
+the only place the browser is sent both the author's public item id and the daemon's frozen image
+id. A submission whose reconciliation resolved neither - one that came back `unavailable`, or a
+claim no canonical criterion matched - shows its images without an item id and without a "cited by"
+line rather than guessing at one.
 
 ### Watching a run
 

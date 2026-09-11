@@ -205,6 +205,7 @@ export function ReviewerRow({
   state = "idle",
   actions = null,
   notice = null,
+  panel = null,
   item = {},
   disabled = false,
   hasDirective = false,
@@ -220,6 +221,12 @@ export function ReviewerRow({
   state?: PipelineItemState;
   actions?: ReactNode;
   notice?: ReactNode;
+  /**
+   * An expanded editing surface for this row, drawn under it and OUTSIDE the row's own hit
+   * target. Outside deliberately: the run monitor wraps a row's content in a button, and a
+   * form nested inside one is both invalid markup and unreachable by keyboard.
+   */
+  panel?: ReactNode;
   item?: PipelineItemProps;
   disabled?: boolean;
   hasDirective?: boolean;
@@ -263,6 +270,7 @@ export function ReviewerRow({
         </Tooltip>
       ) : content}
       {actions && <span className="wf-pipeline-reviewer-actions">{actions}</span>}
+      {panel}
     </li>
   );
 }

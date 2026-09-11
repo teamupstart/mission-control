@@ -15,14 +15,18 @@ async function markdownFiles(dir) {
   return files;
 }
 
+// GitHub lowercases a heading, hyphenates its whitespace, and keeps `[\w-]`, so an underscore
+// survives into the anchor. It is the one marker character that is also an ordinary identifier
+// character - `MODULE_NOT_FOUND` and `app_config` reach the slugger intact - so stripping it
+// alongside the emphasis markers produced anchors GitHub never renders.
 function slug(heading) {
   return heading
     .toLowerCase()
     .replace(/<[^>]+>/g, "")
-    .replace(/[`*_~]/g, "")
+    .replace(/[`*~]/g, "")
     .trim()
     .replace(/\s+/g, "-")
-    .replace(/[^\p{L}\p{N}-]/gu, "");
+    .replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
 function anchors(markdown) {

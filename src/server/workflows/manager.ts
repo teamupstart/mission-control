@@ -324,6 +324,8 @@ interface PreparedWorkflowRun extends WorkflowSubmitResult {
 }
 
 export interface WorkflowManagerOptions {
+  /** Foreman's CI preference, read only when preparing a new PR action packet. */
+  trackCiFailures?: () => boolean;
   engine?: WorkflowEngineOptions;
   readContextRaw?: typeof readWorkflowContextRaw;
   /**
@@ -5199,6 +5201,8 @@ export class WorkflowManager {
       promptMarkdown: snapshot.promptMarkdown,
       skillCommand,
       workflowEvidence: versionSupportsWorkflowEvidence(version),
+      pullRequestCi: snapshot.completion.kind === "pull_request"
+        && this.options.trackCiFailures?.() === true,
     });
     // An instruction that cannot be sent WHOLE is not sent at all. `sessionActionPromptBytes`
     // is derived from the packet budget, so an action authored through this build cannot

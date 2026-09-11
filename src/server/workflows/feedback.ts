@@ -16,6 +16,7 @@ import type { InspectorPosture } from "@shared/inspector.ts";
 import type { InspectorFindingsPolicy } from "@shared/workflow.ts";
 import { executionAuthorizationContract } from "../execution-authorization.ts";
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
+import { workflowPullRequestCiContract } from "./agent-contract.ts";
 import {
   isTestEvidenceAuditorPersona,
   testEvidenceRequestCategories,
@@ -139,6 +140,8 @@ export interface SessionActionPacketInput {
   skillCommand: string | null;
   /** The pinned immutable workflow version contains a Persona; false for on-demand actions. */
   workflowEvidence: boolean;
+  /** Enabled only for workflow PR completion actions at packet preparation. */
+  pullRequestCi?: boolean;
 }
 
 export interface UnchangedEvidenceNudgeInput {
@@ -653,7 +656,10 @@ export function renderSessionAction(input: SessionActionPacketInput): RenderedSe
     workflowEvidence: input.workflowEvidence,
     workflowContinuation: input.origin.kind === "run",
   });
-  const payload = `${[...lines, authorization, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
+  const ciPolicy = input.origin.kind === "run" && input.pullRequestCi
+    ? ["", workflowPullRequestCiContract(), ""]
+    : [];
+  const payload = `${[...lines, authorization, ...ciPolicy, ""].join("\n")}${sanitizeWorkflowFeedback(input.promptMarkdown)}`;
   // REFUSED, never truncated. Every other packet in this file clips, because every other
   // packet is prose the daemon composed and a shorter summary is still a true summary. This
   // one is the operator's own instruction, frozen into an immutable version: a prefix of

@@ -2250,3 +2250,165 @@ for (const priorCalls of [1, 2]) test(`restart retains Persona input and counts 
   }
   assert.equal(store.listReceipts(`submission-${id}`).some((receipt) => receipt.edgeId === "fail"), false);
 });
+
+// --- Per-node execution overrides: the workflow's own provider and model ---
+
+/**
+ * ONE Persona, used twice, where only the second node carries a workflow override.
+ *
+ * Both nodes name the same source Persona on purpose: an implementation that resolved routing
+ * by Persona id rather than by node would give these two the same answer and still pass every
+ * single-occurrence test.
+ */
+function overrideGraph(): PublishedWorkflowGraph {
+  const shared = persona("shared", "Shared reviewer", "codex", "PASS_PERSONA");
+  return {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "inherits", kind: "persona", persona: shared, position: { x: 100, y: 0 } },
+      {
+        id: "overrides",
+        kind: "persona",
+        persona: shared,
+        position: { x: 100, y: 170 },
+        executionOverride: { runner: "claude", model: "claude-opus-4-8" },
+      },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 85 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 85 } },
+    ],
+    edges: [
+      { id: "s-a", source: "session", sourcePort: "submitted", target: "inherits", targetPort: "activate" },
+      { id: "s-b", source: "session", sourcePort: "submitted", target: "overrides", targetPort: "activate" },
+      { id: "a-pass", source: "inherits", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "a-fail", source: "inherits", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "b-pass", source: "overrides", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "b-fail", source: "overrides", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+}
+
+/** Every launch the engine actually made, as the provider it asked and the model it named. */
+function capturingRunner(launches: Array<{ runner: LlmRunnerId; model: string | undefined }>) {
+  return (id: LlmRunnerId): LlmRunner => ({
+    ...passingRunner(id),
+    async run(_prompt: string, options?: { model?: string }) {
+      launches.push({ runner: id, model: options?.model });
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  });
+}
+
+test("an overridden node launches, records and bills its own provider and model", async () => {
+  const store = seedSubmission("node-override", overrideGraph());
+  const launches: Array<{ runner: LlmRunnerId; model: string | undefined }> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: capturingRunner(launches),
+    // The Persona resolver the node WITHOUT an override inherits. It deliberately answers a
+    // different provider and model, so a node that ignored its own pair would be visible.
+    resolveExecution: () => ({
+      runner: { id: "codex", source: "config", unknown: null },
+      model: { id: "gpt-5.6-terra", source: "config" },
+    }),
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-node-override");
+  await waitFor(() => store.getRun("run-node-override")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(launches.slice().sort((a, b) => a.runner.localeCompare(b.runner)), [
+    { runner: "claude", model: "claude-opus-4-8" },
+    { runner: "codex", model: "gpt-5.6-terra" },
+  ]);
+
+  const attempts = store.listAttempts("submission-node-override");
+  const inherited = attempts.find((attempt) => attempt.nodeId === "inherits")!;
+  const overridden = attempts.find((attempt) => attempt.nodeId === "overrides")!;
+  assert.deepEqual([inherited.runner, inherited.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([overridden.runner, overridden.model], ["claude", "claude-opus-4-8"]);
+
+  // Accounting reads the same resolution the launch did: a call billed against a provider the
+  // attempt never used would make every per-provider cost report wrong by exactly one review.
+  const calls = store.runExportDetail("run-node-override")!.llmCalls!;
+  const billed = new Map(calls.map((call) => [call.nodeAttemptId, `${call.runner} · ${call.model}`]));
+  assert.equal(billed.get(inherited.id), "codex · gpt-5.6-terra");
+  assert.equal(billed.get(overridden.id), "claude · claude-opus-4-8");
+});
+
+test("a retry re-resolves to the same explicit pair rather than to the live default", async () => {
+  const store = seedSubmission("node-override-retry", overrideGraph());
+  const launches: Array<{ runner: LlmRunnerId; model: string | undefined }> = [];
+  let overriddenAttempts = 0;
+  // The inheriting node's resolver CHANGES between attempts, standing in for an operator
+  // repointing the app default mid-run. The overridden node must not move with it.
+  let inheritedModel = "gpt-5.6-terra";
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: (id: LlmRunnerId): LlmRunner => ({
+      ...passingRunner(id),
+      async run(_prompt: string, options?: { model?: string }) {
+        launches.push({ runner: id, model: options?.model });
+        if (options?.model === "claude-opus-4-8") {
+          overriddenAttempts += 1;
+          inheritedModel = "gpt-5.6-luna";
+          // One structured failure, then a pass. `runStructured` retries in place.
+          if (overriddenAttempts === 1) return "not json at all";
+        }
+        return JSON.stringify({
+          verdict: "pass",
+          summary: "Approved",
+          approvalDetails: { reason: "Intent is met", evidence: [] },
+          confidence: 0.9,
+        });
+      },
+    }),
+    resolveExecution: () => ({
+      runner: { id: "codex", source: "config", unknown: null },
+      model: { id: inheritedModel, source: "config" },
+    }),
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-node-override-retry");
+  await waitFor(() => store.getRun("run-node-override-retry")?.status === "completed");
+  await engine.stop();
+
+  assert.ok(overriddenAttempts >= 2, "the overridden node should have been retried");
+  for (const launch of launches.filter((entry) => entry.runner === "claude")) {
+    assert.deepEqual(launch, { runner: "claude", model: "claude-opus-4-8" });
+  }
+  const overridden = store.listAttempts("submission-node-override-retry")
+    .find((attempt) => attempt.nodeId === "overrides")!;
+  assert.deepEqual([overridden.runner, overridden.model], ["claude", "claude-opus-4-8"]);
+});
+
+test("a disabled node with an override still launches nothing and stamps no provider", async () => {
+  const store = seedSubmission("node-override-disabled", overrideGraph());
+  store.setRunDisabledNodes("run-node-override-disabled", ["overrides"], [], 4);
+  const launches: Array<{ runner: LlmRunnerId; model: string | undefined }> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: capturingRunner(launches),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-node-override-disabled");
+  await waitFor(() => store.getRun("run-node-override-disabled")?.status === "completed");
+  await engine.stop();
+
+  assert.equal(launches.some((launch) => launch.model === "claude-opus-4-8"), false);
+  const skipped = store.listAttempts("submission-node-override-disabled")
+    .find((attempt) => attempt.nodeId === "overrides")!;
+  // A stamped provider here would claim an expensive model ran when nothing did.
+  assert.equal(skipped.runner, null);
+  assert.equal(skipped.model, null);
+});

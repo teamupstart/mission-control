@@ -47,7 +47,7 @@ import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 import { buildPersonaPrompt } from "./prompt.ts";
-import { resolvePersonaExecution } from "./personas.ts";
+import { resolvePersonaExecution, resolveWorkflowNodeExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
 import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
@@ -118,6 +118,16 @@ export interface WorkflowEngineOptions {
   now?: () => number;
   retryBaseMs?: number;
   runnerFor?: (id: LlmRunner["id"]) => LlmRunner;
+  /**
+   * How a Persona SNAPSHOT resolves to a provider and model, for tests that pin a runner.
+   *
+   * Deliberately still takes the snapshot alone rather than the whole node. A node carrying an
+   * explicit `executionOverride` has already answered this question, and routing that answer
+   * back through an injected seam would let a fixture silently overrule the published pair -
+   * which is the one thing an override exists to make impossible. The engine composes the two
+   * through `resolveWorkflowNodeExecution`: the seam owns inheritance, the node owns its own
+   * choice.
+   */
   resolveExecution?: (persona: Extract<PublishedWorkflowNode, { kind: "persona" }>["persona"]) => PersonaExecutionView;
   /** Called after the wait boundary is durable and before any later graph work can advance. */
   onSubmissionWaiting?: (submissionId: string) => void;
@@ -1000,7 +1010,12 @@ export class WorkflowEngine {
         return;
       }
     }
-    const execution = this.resolveExecution(node.persona);
+    // ONE resolution, read before the claim and reused for the claim record, the runner
+    // lookup, the launch and every LLM call this attempt bills. A second call here would be a
+    // second chance for a live default to change between the record and the spawn. It is
+    // reached only once the skip above has declined to reuse an earned pass: a skipped judge
+    // spawns nothing, so it must resolve nothing.
+    const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
     const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
     if (!claimed) return;
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);

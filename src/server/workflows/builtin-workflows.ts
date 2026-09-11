@@ -2,6 +2,7 @@ import {
   DEFAULT_WORKFLOW_BINDING_DEFAULTS,
   normalizeWorkflowName,
   personaSnapshotOf,
+  withExecutionOverride,
   sessionActionSnapshotOf,
   type PersonaId,
   type PersonaSnapshot,
@@ -174,6 +175,11 @@ function publishBuiltinGraph(
           kind: "persona" as const,
           position: node.position,
           persona: builtinPersonaSnapshot(node.personaId, personaExecution),
+          // Total, for the reason stated below about session actions: no shipped graph
+          // authors a node override today, and the projection carries one anyway so the day
+          // one does it is not silently dropped on the way into the version. Because no
+          // shipped draft has the field, every existing built-in version is byte-identical.
+          ...withExecutionOverride(node.executionOverride),
         };
       }
       // No shipped workflow authors one yet - the runtime that would execute it arrives in a

@@ -25,6 +25,7 @@ import {
   stageSummary,
   type EvaluationStage,
   type Stage,
+  type StageMember,
   type StagePipeline,
 } from "../src/shared/workflow-stages.ts";
 
@@ -515,4 +516,122 @@ test("a Check node is labelled by its slot everywhere a name is printed", () => 
   // Never "Missing persona", which is what the persona fall-through returned before the
   // label switch grew a check arm.
   assert.equal(nodeLabel(draft, gate, personas), "Command · build");
+});
+
+// A node's own provider/model choice is the first thing a member carries that is neither its
+// identity nor what it names. The pipeline editor never edits the graph: it projects, edits
+// stages and compiles a whole graph back, so a field the projection or the compiler drops is
+// erased by the next unrelated edit - a reorder, an added reviewer, a switch between views -
+// with nothing on screen to say it happened. These pin both directions of that trip.
+
+const OVERRIDE = { runner: "codex", model: "gpt-5.6-sol" } as const;
+const OTHER_OVERRIDE = { runner: "claude", model: "claude-opus-4-8" } as const;
+
+const routed = (
+  personaId: string,
+  nodeId: string,
+  executionOverride?: { runner: "claude" | "codex"; model: string },
+): StageMember => ({
+  nodeId,
+  kind: "persona",
+  personaId,
+  ...(executionOverride ? { executionOverride } : {}),
+});
+
+test("a node execution override survives the projection and compilation round trip", () => {
+  const expected = pipeline([
+    mixed("gate", [routed("intent", "intent", OVERRIDE), routed("security", "security")]),
+    solo("docs"),
+  ]);
+  const compiled = compileStages(expected, empty);
+  assert.deepEqual(projectStages(compiled), expected);
+
+  const node = compiled.nodes.find((candidate) => candidate.id === "intent")!;
+  assert.deepEqual(node, {
+    id: "intent",
+    kind: "persona",
+    personaId: "intent",
+    position: node.position,
+    executionOverride: { runner: "codex", model: "gpt-5.6-sol" },
+  });
+  // An inheriting sibling stays inheriting, with no key planted on it.
+  const sibling = compiled.nodes.find((candidate) => candidate.id === "security")!;
+  assert.equal(Object.hasOwn(sibling, "executionOverride"), false);
+});
+
+test("two occurrences of one Persona keep separate overrides through an edit", () => {
+  // `stageMemberKey` falls back to the Persona id, so anything that addressed an edit by
+  // Persona rather than by node would give both of these whichever it found first.
+  const before = pipeline([
+    solo("intent", "first"),
+    solo("intent", "second"),
+  ]);
+  const withOverrides = pipeline([
+    { kind: "evaluation", joinId: null, members: [routed("intent", "first", OVERRIDE)] },
+    { kind: "evaluation", joinId: null, members: [routed("intent", "second", OTHER_OVERRIDE)] },
+  ]);
+  const compiled = compileStages(withOverrides, compileStages(before, empty));
+  const projected = projectStages(compiled)!;
+  assert.deepEqual(projected, withOverrides);
+
+  // Reordering the two stages moves the choices with their nodes rather than with their
+  // positions: the ids are reused, so the second stage is still the one running Claude.
+  const swapped = { ...projected, stages: [projected.stages[1]!, projected.stages[0]!] };
+  const after = projectStages(compileStages(swapped, compiled))!;
+  assert.deepEqual(evaluation(after.stages[0]!).members, [routed("intent", "second", OTHER_OVERRIDE)]);
+  assert.deepEqual(evaluation(after.stages[1]!).members, [routed("intent", "first", OVERRIDE)]);
+});
+
+test("an unrelated pipeline edit leaves an override untouched", () => {
+  const start = compileStages(
+    pipeline([{ kind: "evaluation", joinId: null, members: [routed("intent", "intent", OVERRIDE)] }]),
+    empty,
+  );
+  const projected = projectStages(start)!;
+  // Add a second reviewer beside it, which mints a join and rewrites every route in the stage.
+  const grown = {
+    ...projected,
+    stages: [{
+      kind: "evaluation" as const,
+      joinId: null,
+      members: [...evaluation(projected.stages[0]!).members, { nodeId: null, kind: "persona" as const, personaId: "security" }],
+    }],
+  };
+  const compiled = compileStages(grown, start);
+  const members = evaluation(projectStages(compiled)!.stages[0]!).members;
+  assert.deepEqual(members[0], routed("intent", "intent", OVERRIDE));
+  assert.equal(Object.hasOwn(members[1]!, "executionOverride"), false);
+});
+
+test("a published Persona node projects its override the same way a draft node does", () => {
+  const published: PublishedWorkflowGraph = {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      {
+        id: "intent",
+        kind: "persona",
+        persona: {
+          sourcePersonaId: "intent",
+          sourceRevision: 3,
+          name: "Intent Conformance Judge",
+          description: "",
+          guidanceMarkdown: "# Judge",
+          runner: null,
+          model: null,
+        },
+        position: { x: 200, y: 0 },
+        executionOverride: { runner: "codex", model: "gpt-5.6-sol" },
+      },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 400, y: 0 } },
+    ],
+    edges: [
+      { id: "s-i", source: "session", sourcePort: "submitted", target: "intent", targetPort: "activate" },
+      { id: "i-f", source: "intent", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      { id: "i-p", source: "intent", sourcePort: "pass", target: "end", targetPort: "terminal" },
+    ],
+  };
+  assert.deepEqual(
+    evaluation(projectStages(published)!.stages[0]!).members,
+    [routed("intent", "intent", OVERRIDE)],
+  );
 });

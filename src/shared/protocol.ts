@@ -101,6 +101,7 @@ import {
   WORKFLOW_EVIDENCE_READINESS_WARNING_CODES,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_STEERING_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RESUMPTION_POLICIES,
@@ -5308,6 +5309,25 @@ const WorkflowIntentSourceSchema = z.object({
   relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable(),
 });
 
+export const WorkflowSteeringNoteSchema = z.object({
+  revision: z.number().int().positive(),
+  instruction: z.string().max(WORKFLOW_STEERING_LIMITS.instruction),
+  relationship: z.literal("steer"),
+  rationale: z.string().max(WORKFLOW_STEERING_LIMITS.rationale),
+  timestamp: z.number().int().nonnegative(),
+});
+
+const WorkflowSteeringContextSchema = z.union([
+  z.object({ steering: z.undefined().optional(), steeringResolvedRevision: z.undefined().optional() }),
+  z.object({
+    steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count)
+      .refine((steering) => jsonAtMost(steering, WORKFLOW_STEERING_LIMITS.bytes), {
+        message: `Workflow steering exceeds ${WORKFLOW_STEERING_LIMITS.bytes} UTF-8 bytes`,
+      }),
+    steeringResolvedRevision: z.number().int().nonnegative(),
+  }),
+]);
+
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
@@ -5404,7 +5424,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
     error: z.string().max(8_000).nullable(),
     reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
   }),
-});
+}).and(WorkflowSteeringContextSchema);
 
 export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.transform((value) => {
   const legacyMappings = value.canonicalCriteria.flatMap((criterion) =>
@@ -5453,7 +5473,7 @@ export const WorkflowRunIntentSnapshotSchema = z.object({
   decisions: z.array(WorkflowHumanDecisionSchema).max(200),
   fingerprint: z.string().length(64),
   frozenAt: z.number().int().nonnegative(),
-});
+}).and(WorkflowSteeringContextSchema);
 
 /**
  * One run's stable acceptance criteria. Per-submission mappings are deliberately absent.

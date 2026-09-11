@@ -847,6 +847,15 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 `image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
 submission and therefore the same reserved bytes.
 
+The refusal names the registered item it is about - its display name and the client id a
+re-registration replaces - and the run page states the whole refusal without a disclosure: what
+capture found, which item, that no reviewer ran and no repair round was spent, and that the
+recovery is to register the item again and start the next round. Resuming is not that recovery:
+it revives the same submission and therefore the same immutable reservation, so it re-checks
+the bytes that were just refused and cannot see a re-registered item. A blocked run that has
+been claimed complete again says so beside the refusal; the claim opens no round, and the
+evidence that turn registered is picked up by the next round.
+
 An image whose digest is already frozen and retained references that existing body instead of
 copying it again, so registering the same screenshot in five rounds stores it once. That is a
 rule about bodies, not records: a submission may hold two records with byte-identical content

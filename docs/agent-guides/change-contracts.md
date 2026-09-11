@@ -401,6 +401,12 @@ reached only two of them.
   reading, so two subsystems cannot disagree about whether a run is awaiting input, resumable,
   or terminal. Add a lifecycle state by adding a variant here, not by adding a string
   comparison at a call site.
+- **A payload a surface has to EXPLAIN is a decoder arm, not a parse at the call site.** The
+  capture family - `WORKFLOW_CAPTURE_FAILURE_PHASES` - decodes to `capture_failure`, read
+  through `workflowCaptureFailure`. It is phase-first for the reason the cleanup arm is:
+  `capture_error` and `image_evidence_capture` persist the same keys, so only the phase tells
+  them apart. Before it, a blocked run's correct human explanation was `opaque`, and every
+  surface that tried to say why a run was blocked printed the phase code or nothing.
 - **The phase detail and the gate are separate things sharing one column.** The detail is
   phase-scoped - a budget, a cleanup block, a reason. The GitHub Inspector gate is sticky and
   outlives any single phase. A writer with both in hand calls `withInspectorGate`, which parks
@@ -429,8 +435,8 @@ reached only two of them.
   is what a legacy row needs to be diagnosed rather than merely rejected. Adding a phase to
   `WORKFLOW_RUN_PHASES` is how it becomes actionable, and that is meant to be a deliberate edit.
 - **An unrecognised payload is `opaque` and never executable.** Undeclared shapes stay readable
-  under `detail`, and `workflowCheckCleanupBlock` and `workflowRoundLimitBudget` refuse to hand
-  one to a path that would act on it. `workflowInspectorGate` is deliberately outside this
+  under `detail`, and `workflowCheckCleanupBlock`, `workflowRoundLimitBudget` and
+  `workflowCaptureFailure` refuse to hand one to a path that would act on it. `workflowInspectorGate` is deliberately outside this
   boundary: the gate parsed against its own schema or it is null, so a finished or
   unknown-phase run must still be able to name the pull request it was reviewing.
 - **Every declared phase declares the statuses it may be persisted under**, in

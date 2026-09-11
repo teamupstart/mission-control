@@ -9773,6 +9773,32 @@ export class WorkflowStore {
     return { round, from, to };
   }
 
+  /** See `WorkflowRunDetail.refusedCompletion` for why this is a field and not a browser scan. */
+  private runRefusedCompletion(runId: string): WorkflowRunDetail["refusedCompletion"] {
+    // One indexed row off `idx_workflow_events_run`, not a `listEvents` scan: `runDetail`'s
+    // statement count must stay flat as a run's ledger grows.
+    const row = this.db.prepare(
+      `SELECT ts, payload_json FROM workflow_events
+        WHERE run_id = ? AND event_kind = 'workflow_completion_claimed'
+        ORDER BY id DESC LIMIT 1`,
+    ).get(runId) as { ts: number; payload_json: string } | undefined;
+    if (!row) return null;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload_json);
+    } catch {
+      return null;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const claim = payload as { [key: string]: unknown };
+    if (claim.state !== "blocked") return null;
+    return {
+      at: Number(row.ts),
+      completionKind: typeof claim.completionKind === "string" ? claim.completionKind : null,
+      summary: typeof claim.summary === "string" ? claim.summary : null,
+    };
+  }
+
   /**
    * The observer's last word on this run, for the page that has to explain a parked round.
    *
@@ -9857,6 +9883,7 @@ export class WorkflowStore {
       nextLlmCallAfter: llmCalls.nextAfter,
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
       repairGrant: this.runRepairGrant(id),
+      refusedCompletion: this.runRefusedCompletion(id),
       resumption: this.runResumptionState(run, binding, version),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;

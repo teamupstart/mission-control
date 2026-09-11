@@ -98,6 +98,8 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  completionClaimOutcome,
+  runRefusedCompletionSentence,
   runRefusedSentence,
   runRecordSummary,
   runRoundGroups,
@@ -2742,6 +2744,7 @@ export function WorkflowRunView({
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
   const refusedSentence = runRefusedSentence(detail);
+  const refusedClaimSentence = runRefusedCompletionSentence(detail);
   /*
    * Every count and every summary sentence the tab bar and its panes print, derived once.
    *
@@ -2856,6 +2859,9 @@ export function WorkflowRunView({
               In that order, because it is the order the events happened in. */}
           {grantNotice && <p className="wf-run-granted">{grantNotice}</p>}
           {refusedSentence && <p className="wf-run-refused">{refusedSentence}</p>}
+          {/* Under the refusal: that one says what to fix, this one says the session has
+              already done its half. */}
+          {refusedClaimSentence && <p className="wf-run-refused-claim">{refusedClaimSentence}</p>}
           {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
@@ -3445,16 +3451,22 @@ export function WorkflowRunView({
         <section className="wf-run-section">
           <h4>Foreman completion claim</h4>
           <div className="wf-run-cards">
-            {completionClaims.map((claim) => (
-              <article className="wf-run-card" key={claim.id}>
-                <header className="wf-run-card-head">
-                  <strong>{claim.completionKind} completion</strong>
-                  <span>{claim.state.replaceAll("_", " ")}</span>
-                </header>
-                <p>{claim.summary}</p>
-                <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
-              </article>
-            ))}
+            {completionClaims.map((claim) => {
+              // What the claim DID. The head used to print `blocked`, which on this page
+              // already means the run stopped rather than that the claim was turned away.
+              const outcome = completionClaimOutcome(claim.state);
+              return (
+                <article className="wf-run-card" key={claim.id}>
+                  <header className="wf-run-card-head">
+                    <strong>{claim.completionKind} completion</strong>
+                    <span>{outcome.label}</span>
+                  </header>
+                  <p>{claim.summary}</p>
+                  {outcome.sentence && <p className="wf-run-meta">{outcome.sentence}</p>}
+                  <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}

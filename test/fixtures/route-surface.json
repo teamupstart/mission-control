@@ -291,7 +291,7 @@
   "PUT /api/instructions": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"invalid_type\\\",\\n    \\\"expected\\\": \\\"string\\\",\\n    \\\"received\\\": \\\"undefined\\\",\\n    \\\"path\\\": [\\n      \\\"expectedEtag\\\"\\n    ],\\n    \\\"message\\\": \\\"Required\\\"\\n  }\\n]\"}",
   "PUT /api/keep-awake": "503 {\"error\":\"keep-awake manager unavailable\"}",
   "PUT /api/llm/config": "400 {\"error\":\"[\\n  {\\n    \\\"code\\\": \\\"custom\\\",\\n    \\\"message\\\": \\\"empty config update\\\",\\n    \\\"path\\\": []\\n  }\\n]\"}",
-  "PUT /api/pipelines/config": "200 {\"config\":{\"enabled\":false,\"foremanMechanicalTriage\":false,\"launchRuntime\":\"agent-sdk\",\"repos\":[]},\"probes\":[{\"bin\":\"conduct-ts\",\"binPath\":null,\"checkedAt\":\"<epoch>\",\"error\":\"conduct-ts is not on this daemon's PATH\",\"found\":false,\"projects\":[],\"provider\":\"ai-conductor\",\"registryPath\":\"<path>\",\"version\":\"<version>\"}],\"status\":[]}",
+  "PUT /api/pipelines/config": "200 fields{config,probes,status}",
   "PUT /api/queues/:key/items/:itemId/state": "404 {\"error\":\"no such item\"}",
   "PUT /api/repo-index": "409 {\"error\":\"Repository index directories are read-only while MISSION_WORKSPACE_DIRS is set.\"}",
   "PUT /api/sessions/:id/file": "404 {\"error\":\"no such session\"}",

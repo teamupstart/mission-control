@@ -1566,16 +1566,16 @@ export class Dispatcher {
     //
     // Read through the capability rather than by agent name, so a fourth harness answers
     // for itself.
+    // Whether REQUIRED tools can be carried at all is not asked here: `missionToolsAvailability`
+    // owns that, and `dispatch` spends it before a worktree exists. Two answers to one
+    // question is how they drift - and this one would go wrong first, because a harness can
+    // gain Mission tools without gaining an MCP client, which is precisely Pi's route.
+    //
+    // What remains is narrower and still this function's own: whether to compose a
+    // DESCRIPTOR. Only a harness with an MCP client can register one, and Pi's driver refuses
+    // a descriptor rather than dropping it, so handing it one would be a launch option
+    // nothing could honour.
     const harnessMcp = capabilitiesFor(task.agent).mcp;
-    if (missionMcp && !harnessMcp) {
-      // REQUIRED tools on a harness with nowhere to publish them. Refused here rather than
-      // at the driver, because the message an operator needs names the capability that is
-      // missing - not a bundle that is built and fine.
-      throw new Error(
-        `${task.agent} has no MCP client, so this session could not call the Mission Control ` +
-          `tools it requires (${missionMcp.tools.join(", ")}) - dispatch it on a harness that has one`,
-      );
-    }
     const mcp = harnessMcp
       ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
       : null;

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setSessionEffort, type PaneDeps } from "../src/server/actions.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
-import type { Key, TerminalResult } from "../src/server/terminal/types.ts";
+import type { Key, PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import type { ThinkingLevel } from "../src/shared/types.ts";
 import { meta, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 import { MODEL_PICKER_XHIGH } from "./fixtures/claude-panes.ts";
@@ -20,6 +20,8 @@ const pending = (command: string): string => `
 const picker = (level: string): string => MODEL_PICKER_XHIGH.replace("xHigh", level);
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
+/** A paste from a backend that holds the composer, which every fake here stands in for. */
+const held = (): PasteResult => ({ ok: true, outcomeUnknown: false, submitted: false });
 
 function driven(
   start = NORMAL,
@@ -61,7 +63,7 @@ function driven(
         }
         return ok();
       },
-      paste: async () => ok(),
+      paste: async () => held(),
     },
   };
   return {
@@ -175,7 +177,7 @@ function codexDriven(options: CodexDriverOptions = {}): { deps: PaneDeps; did: s
         screen = codexNormal(level);
         return ok();
       },
-      paste: async () => ok(),
+      paste: async () => held(),
     },
   };
   return {

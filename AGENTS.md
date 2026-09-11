@@ -105,9 +105,18 @@ reassigns which files keep each other working, and that is exactly how shard 6 w
 
 Provisioning is therefore concurrent by design, and `scripts/build-state-lock-native.mjs`
 owns that: it stages the addon sources into a private directory instead of letting `node-gyp
-rebuild` delete and recreate `build/` under another builder, and it publishes the result with
-one atomic rename so a daemon starting up never loads a half-written addon.
+rebuild` delete and recreate `build/` under another builder, and it hands the result to
+`scripts/native-addon-publish.mjs` so a daemon starting up never loads a half-written addon.
 `test/native-state-lock-provisioning.test.ts` holds both lines.
+
+Publishing is a rename, never a copy onto the published path, and that rule belongs to every
+native addon rather than to one builder. Rewriting an addon in place while a live process has
+it mapped invalidates macOS's code-signature bookkeeping for that inode, and from then on
+every process that loads it is `SIGKILL`ed with an empty stderr - no exception, no log line.
+`npm run build:native` runs on every `make start`, so one restart with the previous daemon
+still up is enough to make a worktree unable to start a daemon at all. Both builders publish
+through `publishNativeAddon`, and `test/native-addon-publish.test.ts` refuses a builder that
+copies its own artifact into `dist/native` again.
 
 `npm test` runs six files at a time by default. `MISSION_TEST_CONCURRENCY` changes that,
 and CI explicitly pins it to 4 on its ephemeral GitHub-hosted runner. CI therefore does

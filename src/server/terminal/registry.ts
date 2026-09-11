@@ -21,6 +21,7 @@ import type {
   Multiplexer,
   MuxClient,
   MuxTarget,
+  PasteResult,
   TerminalEmulator,
   TerminalResult,
 } from "./types.ts";
@@ -128,7 +129,7 @@ export const defaultTerminalDeps: TerminalDeps = {
 export interface BoundWrite {
   text(text: string): Promise<TerminalResult>;
   keys(keys: readonly Key[]): Promise<TerminalResult>;
-  paste: ((text: string) => Promise<TerminalResult>) | null;
+  paste: ((text: string) => Promise<PasteResult>) | null;
 }
 
 /**

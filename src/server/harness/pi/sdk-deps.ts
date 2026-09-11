@@ -421,11 +421,40 @@ export async function createRuntime(
   });
 }
 
-/** Pi's own `PI_*` session variables, preserved across the environment replacement above. */
-function piVariables(env: NodeJS.ProcessEnv): Record<string, string> {
+/**
+ * Pi's own session variables, by NAME rather than by `PI_` prefix.
+ *
+ * These five are what `resolveSpawnContext` deletes from the inherited environment and then
+ * repopulates from the live session, so they are the vendor's own definition of "session
+ * bookkeeping" rather than a guess of ours. Measured against 0.85.1.
+ */
+export const PI_SESSION_VARIABLES = [
+  "PI_SESSION_ID",
+  "PI_SESSION_FILE",
+  "PI_PROVIDER",
+  "PI_MODEL",
+  "PI_REASONING_LEVEL",
+] as const;
+
+/**
+ * Pi's own session variables, preserved across the environment replacement above.
+ *
+ * An ALLOWLIST, not a `PI_` prefix match, and the difference is the whole isolation
+ * guarantee. The environment this reads is Pi's `getShellEnv()`, which is the DAEMON's
+ * entire `process.env` with `PATH` extended - so a prefix match re-admitted every `PI_*`
+ * variable the operator happened to have exported to the daemon, on top of the isolated
+ * environment `sdkSubprocessEnv` had just finished building. The bash tool's commands are
+ * agent-directed, so that is a wider door than `docs/sessions.md` promises for this driver.
+ * Nothing outside these five names crosses back.
+ *
+ * Fails CLOSED if a later Pi adds a sixth: the new variable is dropped rather than admitted
+ * unexamined, and `pi-sdk-vendor-seam.test.ts` drives the real bash tool to catch the bump.
+ */
+export function piVariables(env: NodeJS.ProcessEnv): Record<string, string> {
   const kept: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) {
-    if (name.startsWith("PI_") && typeof value === "string") kept[name] = value;
+  for (const name of PI_SESSION_VARIABLES) {
+    const value = env[name];
+    if (typeof value === "string") kept[name] = value;
   }
   return kept;
 }

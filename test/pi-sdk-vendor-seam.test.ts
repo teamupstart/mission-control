@@ -30,6 +30,9 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 
 const { defaultPiSdkDeps } = await import("../src/server/harness/pi/sdk-deps.ts");
 const { PiSdkError } = await import("../src/server/harness/pi/sdk-errors.ts");
+const { piVariables, PI_SESSION_VARIABLES } = await import(
+  "../src/server/harness/pi/sdk-deps.ts"
+);
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -232,5 +235,57 @@ test("the module override is honoured, and a module without the factory is refus
   } finally {
     if (before === undefined) delete process.env.MISSION_PI_SDK_MODULE;
     else process.env.MISSION_PI_SDK_MODULE = before;
+  }
+});
+
+/** Pi's tool `execute` demands its live extension context; this seam has no session. */
+type BashExecute = (id: string, params: { command: string }) => Promise<unknown>;
+
+test("the bash tool's environment admits Pi's five session variables and nothing else", async () => {
+  // The isolation boundary, driven through the REAL bash tool rather than asserted about it.
+  //
+  // Pi builds the tool's environment from `getShellEnv()`, which is the DAEMON's whole
+  // `process.env`. The driver replaces that wholesale with `sdkSubprocessEnv` and then
+  // carries Pi's own session variables back across. If that carry-back were a `PI_` prefix
+  // match, every `PI_*` the operator had exported to the daemon would ride back in with
+  // them - so this sets a decoy and proves it does not.
+  const pi = await import("@earendil-works/pi-coding-agent");
+  const cwd = checkout("bash-env");
+  const decoy = "PI_NOT_A_SESSION_VARIABLE";
+  process.env[decoy] = "must-not-reach-the-agent";
+  process.env.PI_SESSION_ID = "daemon-value-that-pi-replaces";
+  try {
+    let captured: NodeJS.ProcessEnv | null = null;
+    const isolated = { PATH: process.env.PATH ?? "", MISSION_ISOLATED: "yes" };
+    const tool = pi.createBashToolDefinition(cwd, {
+      spawnHook: (context) => {
+        // Exactly what `createRuntime` installs, including the helper under test.
+        const env = { ...isolated, ...piVariables(context.env) };
+        captured = env;
+        return { ...context, env };
+      },
+    });
+
+    // `ctx` is Pi's live extension context, which a seam test has no session for. Pi reads it
+    // only to repopulate its own session variables, and reaching the hook is what this test
+    // is about - so it is passed as undefined through the same single cast the adapter uses
+    // for this vendor's tool types.
+    await (tool.execute as unknown as BashExecute)("call-1", { command: "true" });
+    assert.ok(captured, "Pi never invoked the spawn hook, so the driver never got its say");
+
+    const env = captured as NodeJS.ProcessEnv;
+    assert.equal(env.MISSION_ISOLATED, "yes", "the isolated environment survived");
+    assert.equal(env[decoy], undefined, "an unrelated PI_* variable reached the agent's shell");
+    // Every name that DID cross is one Pi itself owns.
+    const crossed = Object.keys(env).filter((name) => name.startsWith("PI_"));
+    for (const name of crossed) {
+      assert.ok(
+        PI_SESSION_VARIABLES.includes(name as (typeof PI_SESSION_VARIABLES)[number]),
+        `${name} crossed the boundary but is not one of Pi's session variables`,
+      );
+    }
+  } finally {
+    delete process.env[decoy];
+    delete process.env.PI_SESSION_ID;
   }
 });

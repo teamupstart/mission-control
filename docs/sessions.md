@@ -488,7 +488,11 @@ looking up, and everything below follows from that or from what Pi itself has.
 - **Its shell tools are isolated anyway.** With no subprocess there is no spawn boundary to
   scrub, so the driver applies the same environment isolation itself: Pi's `bash` tool runs
   with Mission Control's disposable state home and without the daemon's loopback bearer or
-  terminal identity, exactly as a Claude or Codex child does.
+  terminal identity, exactly as a Claude or Codex child does. Five variables cross back on
+  purpose - `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL` and
+  `PI_REASONING_LEVEL` - because Pi populates them per turn and its own tooling reads them.
+  They are carried by name, so nothing else the daemon happens to have exported under a
+  `PI_` prefix reaches the shell your agent is directing.
 - **Your repository standing instructions ride Pi's own system-prompt append**, the same
   channel `pi --append-system-prompt` spends on the terminal runtime - so the rules reach a
   Pi session the same way whichever runtime you dispatch it on, and they survive a Reset.

@@ -13,9 +13,9 @@ import { fileURLToPath, URL } from "node:url";
  * registered route to a RECORDED expectation, so a route whose status or response VALUES
  * change fails here against a fixture written down in the repository.
  *
- * EVERY route asserts its values, with no shape-only exceptions:
- * `{"error":"keep-awake manager unavailable"}` is checked as written, not reduced to its
- * field names. Only genuinely unstable values are replaced,
+ * Every route asserts its values - `{"error":"keep-awake manager unavailable"}` is checked as
+ * written - except the four in HOST_PROBING, whose bodies report what is installed on the
+ * machine and whose status is asserted while their body is reduced to field names. Only genuinely unstable values are replaced,
  * each by a visible token - `<uuid>`, `<timestamp>`, `<path>`, `<epoch>`, and the per-process
  * or per-release keys named in VOLATILE_KEYS.
  *
@@ -54,6 +54,46 @@ const ORACLE = fileURLToPath(new URL("./fixtures/route-surface.json", import.met
 
 
 
+/**
+ * Routes that report WHAT IS INSTALLED on the machine running them.
+ *
+ * Unlike the repo index and the setup rows, these have no injection seam: `openTargetViews`
+ * and `terminalTargetViews` are module-level probes, and `/api/terminal-targets` exists
+ * precisely to answer "which terminals can this HOST open a window in". A laptop with WezTerm
+ * and Chrome installed answers differently from a CI runner, and no amount of normalizing
+ * makes the two agree, because the difference IS the answer.
+ *
+ * Their STATUS is still asserted like every other route; only the body is reduced to its field
+ * names. Adding a production seam purely so a test could pin them would be the test dictating
+ * the shape of the daemon, so this is recorded as the limitation it is.
+ *
+ * Keep this list short, and justify additions.
+ */
+const HOST_PROBING = new Set([
+  "GET /api/open-targets", // enumerates browsers and editors installed here
+  "GET /api/terminal-targets", // enumerates terminal emulators installed here
+  // `savedDirectories` carries the home-relative defaults (~/workspace, ~/code) with a status
+  // that depends on whether they exist, which differs between a laptop and a runner. The
+  // configured directory itself is pinned by MISSION_WORKSPACE_DIRS and does appear.
+  "GET /api/repo-index",
+  "POST /api/repo-index/rescan",
+]);
+
+/** Only the top-level field names, for the host-probing routes above. */
+function fieldNames(text: string): string {
+  if (text === "") return "empty";
+  try {
+    const value: unknown = JSON.parse(text);
+    if (Array.isArray(value)) return "array";
+    if (value && typeof value === "object") {
+      return `fields{${Object.keys(value).sort().join(",")}}`;
+    }
+    return "scalar";
+  } catch {
+    return "text";
+  }
+}
+
 /** Values that differ per run or per host, replaced by a token so the rest can be asserted. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})/;
@@ -83,7 +123,8 @@ function normalize(value: unknown): unknown {
 
 
 /** The asserted body: real values, with only the tokens above standing in. */
-function content(text: string): string {
+function content(key: string, text: string): string {
+  if (HOST_PROBING.has(key)) return fieldNames(text);
   if (text === "") return "empty";
   try {
     return JSON.stringify(normalize(JSON.parse(text)));
@@ -101,7 +142,7 @@ function content(text: string): string {
  * a streaming route that started answering a normal body, or stopped streaming, would show up
  * as a change here rather than being quietly skipped.
  */
-async function bodyContent(res: Response): Promise<string> {
+async function bodyContent(key: string, res: Response): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), 250);
@@ -112,7 +153,7 @@ async function bodyContent(res: Response): Promise<string> {
     await res.body?.cancel().catch(() => undefined);
     return "stream";
   }
-  return content(text);
+  return content(key, text);
 }
 
 /** `/api/tasks/:id` cannot be requested as written; give every parameter a value. */
@@ -173,7 +214,7 @@ async function surveyRouteSurface(): Promise<Record<string, string>> {
     const split = key.indexOf(" ");
     const method = key.slice(0, split);
     const res = await app.request(concrete(key.slice(split + 1)), { method, headers: LOOPBACK });
-    surface[key] = `${res.status} ${await bodyContent(res)}`;
+    surface[key] = `${res.status} ${await bodyContent(key, res)}`;
   }
   return surface;
 }

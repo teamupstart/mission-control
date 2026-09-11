@@ -19,6 +19,7 @@ import {
   frozenImageBodyPath,
   loadFrozenImageBody,
   openPreview,
+  restageErrorFor,
   restagePress,
   runReadinessAction,
   runRestage,
@@ -273,6 +274,27 @@ test("a re-stage sends the minted id, and a refusal records the reason without s
     settle: () => {},
   });
   assert.deepEqual(error, [null, "Could not stage retained image"]);
+});
+
+test("a re-stage failure is shown only under the image it was pressed for", () => {
+  const failure = { imageId: "image-a", message: "Retained bytes could not be staged" };
+
+  // The dialog it was pressed in, which is the one place the message means what it says.
+  assert.equal(restageErrorFor(failure, "image-a"), "Retained bytes could not be staged");
+
+  /*
+   * AND NOWHERE ELSE. Nothing cancels a staging request when the operator closes that preview
+   * and opens another, so the rejection can arrive while a different picture is on screen. Shown
+   * there it would tell a reader that staging THIS picture failed, which is a claim about an
+   * image the daemon was never asked about. The request is deliberately left to finish - it may
+   * still succeed, and its outcome belongs to the image it was made for - so the display is
+   * scoped rather than the request cancelled.
+   */
+  assert.equal(restageErrorFor(failure, "image-b"), null);
+  // No preview open at all, and no failure to report.
+  assert.equal(restageErrorFor(failure, null), null);
+  assert.equal(restageErrorFor(null, "image-a"), null);
+  assert.equal(restageErrorFor(null, null), null);
 });
 
 test("a press with no handler behind it stages nothing and says nothing", async () => {

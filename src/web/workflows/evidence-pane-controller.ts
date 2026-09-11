@@ -197,6 +197,30 @@ export async function runRestage(input: {
   }
 }
 
+/** A re-stage failure, kept with the image it belongs to. */
+export interface RestageFailure {
+  imageId: string;
+  message: string;
+}
+
+/**
+ * Whether a recorded re-stage failure is the open preview's own.
+ *
+ * The reason is rendered inside the preview, and a staging request outlives the dialog it was
+ * pressed in: nothing cancels it when the operator closes that preview and opens another. Without
+ * this the rejection would land on whichever image happened to be open when it arrived, telling a
+ * reader that staging THIS picture failed when it was a different one. The request is deliberately
+ * not cancelled - it may still succeed, and its outcome belongs to the image it was made for -
+ * so the display is scoped instead.
+ */
+export function restageErrorFor(
+  failure: RestageFailure | null,
+  openImageId: string | null,
+): string | null {
+  if (failure === null || openImageId === null) return null;
+  return failure.imageId === openImageId ? failure.message : null;
+}
+
 /**
  * What pressing "Use in next review" does, including deciding that it does nothing.
  *

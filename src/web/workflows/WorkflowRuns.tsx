@@ -144,10 +144,12 @@ import {
   closePreview,
   frozenImageBodiesLifecycle,
   openPreview,
+  restageErrorFor,
   restagePress,
   runReadinessAction,
   startFrozenImageLoads,
 } from "./evidence-pane-controller.ts";
+import type { RestageFailure } from "./evidence-pane-controller.ts";
 import {
   copyFeedbackAction,
   deliveryResolutionActions,
@@ -2200,7 +2202,7 @@ function EvidencePane({
   const [busy, setBusy] = useState<"retry" | "override" | null>(null);
   const [restageBusy, setRestageBusy] = useState<string | null>(null);
   const [restaged, setRestaged] = useState<ReadonlySet<string>>(() => new Set());
-  const [restageError, setRestageError] = useState<string | null>(null);
+  const [restageError, setRestageError] = useState<RestageFailure | null>(null);
   const itemIds = useRef(new Map<string, string>());
   const citations = runEvidenceCitations({ images, coverage, readiness });
   const scopeLabel = (scope: string): string =>
@@ -2213,17 +2215,12 @@ function EvidencePane({
   // Whatever had focus when the preview was asked for, so closing puts it back - in practice
   // the card itself, which both routes focus before they fire. The round trip is
   // `openPreview`/`closePreview`, which have their own cases.
-  const open = (image: WorkflowEvidenceImage): void => {
-    // A fresh dialog never inherits the last one's failure: the message lives in the dialog now,
-    // so a stale one would reappear on the next image the reader opened.
-    setRestageError(null);
-    openPreview({
-      imageId: image.id,
-      bookmark: returnFocus,
-      capture: () => captureFocusBookmark(document.activeElement),
-      show: (imageId) => setPreview(imageId),
-    });
-  };
+  const open = (image: WorkflowEvidenceImage): void => openPreview({
+    imageId: image.id,
+    bookmark: returnFocus,
+    capture: () => captureFocusBookmark(document.activeElement),
+    show: (imageId) => setPreview(imageId),
+  });
   const close = (): void => void closePreview({
     bookmark: returnFocus,
     hide: () => setPreview(null),
@@ -2238,13 +2235,17 @@ function EvidencePane({
     offered: (image) => restageOffered(image, canRestage, Boolean(onRestage)),
     busy: restageBusy,
     settled: restaged,
-    error: restageError,
+    // Scoped to the image whose preview is open. A staging request outlives the dialog it was
+    // pressed in, so a rejection arriving after the reader moved on would otherwise be read as
+    // this picture's failure - see `restageErrorFor`.
+    error: restageErrorFor(restageError, previewImage?.id ?? null),
     run: (image) => restagePress({
       image,
       minted: itemIds.current,
       onRestage,
       setBusy: setRestageBusy,
-      setError: setRestageError,
+      setError: (message) =>
+        setRestageError(message === null ? null : { imageId: image.id, message }),
       settle: (imageId) => setRestaged((current) => new Set(current).add(imageId)),
     }),
   };

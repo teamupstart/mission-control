@@ -141,8 +141,15 @@ export const test = base.extend<{
     );
     await page.reload();
     await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
-    await use(page);
-    if (stopCoverage) await stopCoverage();
+    // `finally`, because `use` runs the whole test body: an assertion that throws would otherwise
+    // skip the final drain and the write, and the coverage file would silently be missing every
+    // handler that failing test pressed. A lower number with no error to explain it is the worst
+    // way for this to fail.
+    try {
+      await use(page);
+    } finally {
+      if (stopCoverage) await stopCoverage();
+    }
   },
 });
 

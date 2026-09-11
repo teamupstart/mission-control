@@ -33,6 +33,44 @@ const REPLACEMENT_CAPTION = "Replacement visual evidence without a repository ch
 const SWITCHED_BINDING_CAPTION = "This unsent draft belongs only to the first binding";
 const EVIDENCE = artifactsDir("workflow-image-evidence");
 
+/**
+ * The Evidence pane, which is where frozen images live now that the run record is a tab bar.
+ *
+ * Image evidence stopped being a section of its own in the run-record consolidation: it is a
+ * thumbnail strip above the claims, and every audit field the old ledger card printed - caption,
+ * item id, scope, MIME type, size, availability, digest, the carry notice and "Use in next
+ * review" - moved into the preview that a thumbnail opens.
+ */
+async function evidencePane(page: Page): Promise<Locator> {
+  const tab = page.getByRole("tab", { name: /^Evidence/ });
+  await expect(tab).toBeVisible({ timeout: 40_000 });
+  if (await tab.getAttribute("aria-selected") !== "true") await tab.click();
+  return page.getByRole("tabpanel", { name: /^Evidence/ });
+}
+
+/**
+ * One image card in the strip, found by the name it was uploaded under.
+ *
+ * By prefix, because the daemon gives a frozen body a content suffix of its own: an upload named
+ * `initial-proof.png` is displayed as `initial-proof-fe5ba1d9.png`, and pinning the whole name
+ * here would pin a digest this spec has no business asserting.
+ */
+function card(pane: Locator, prefix: string): Locator {
+  return pane.getByRole("button", { name: new RegExp(`^Preview ${prefix}[\\w.-]*$`) });
+}
+
+/** One frozen image at full size, with the ledger's own fields in its footer. */
+async function openPreview(page: Page, pane: Locator, prefix: string): Promise<Locator> {
+  const control = card(pane, prefix);
+  const label = await control.getAttribute("aria-label");
+  await control.click();
+  const preview = page.getByRole("dialog", {
+    name: `Preview of ${label!.slice("Preview ".length)}`,
+  });
+  await expect(preview).toBeVisible();
+  return preview;
+}
+
 async function api<T>(
   daemon: DaemonHandle,
   path: string,
@@ -253,15 +291,14 @@ test("dashboard evidence reaches both native providers and remains auditable per
     expect(proof.observed[0]?.mimeType).toBe("image/png");
   }
 
-  const initialLedger = dashboard.locator("section.wf-image-evidence");
+  const initialLedger = await evidencePane(dashboard);
   await initialLedger.scrollIntoViewIfNeeded();
   await expect(initialLedger).toContainText(INITIAL_CAPTION);
-  // Scrolling activates the lazy loader. Do not race its Load image -> Loading image state
-  // transition with a manual click: a contended CI worker can observe the first state, then
-  // wait forever for the button after the observer has already started the request.
-  await expect(initialLedger.getByRole("img", { name: INITIAL_CAPTION })).toBeVisible({
-    timeout: 40_000,
-  });
+  // The card's own thumbnail, painted from the retained body the pane fetched. The picture is
+  // decorative beside a caption that already reads it out, so it is selected through the card
+  // that names it rather than by an accessible name of its own.
+  await expect(card(initialLedger, "initial-proof").locator("img"))
+    .toBeVisible({ timeout: 40_000 });
   await shoot(dashboard, "01-retained-history");
 
   // The repository stays untouched. Only the replacement image changes, and it must still
@@ -295,19 +332,52 @@ test("dashboard evidence reaches both native providers and remains auditable per
   const newestImage = detail.evidenceImages.find((group) => group.submissionId === newest.id)!.images[0]!;
   expect(newestImage.sha256).toBe(createHash("sha256").update(GIF).digest("hex"));
 
-  await expect(dashboard.locator("section.wf-image-evidence")).toContainText(REPLACEMENT_CAPTION, {
-    timeout: 40_000,
-  });
-  const ledger = dashboard.locator("section.wf-image-evidence");
+  const ledger = await evidencePane(dashboard);
+  await expect(ledger).toContainText(REPLACEMENT_CAPTION, { timeout: 40_000 });
   // The replacement round carries the first round's evidence forward, so this submission holds
-  // two records: the one it captured and the one it inherited. The carried record says so, and
-  // offers no restage button of its own - the same digest is already offered by the submission
-  // that captured it, and a second button would imply this submission captured it too.
-  await expect(ledger.getByText("Carried forward from round 1")).toBeVisible();
-  await expect(ledger.getByRole("button", { name: "Use in next review" })).toHaveCount(1);
+  // two cards: the one it captured and the one it inherited. The strip says which round each
+  // came from; the carry's full notice and every other audit field are in the preview.
+  await expect(ledger).toContainText("from round 1");
   await shoot(dashboard, "02-carried-forward-ledger", ledger);
-  await ledger.getByRole("button", { name: "Use in next review" }).click();
-  await expect(ledger.getByRole("button", { name: "Ready for next review" })).toBeVisible();
+
+  // The carried record offers no restage of its own - the same digest is already offered by the
+  // submission that captured it, and a second button would imply this submission captured it.
+  const carried = await openPreview(dashboard, ledger, "initial-proof");
+  await expect(carried).toContainText("Carried forward from round 1");
+  await expect(carried.getByRole("button", { name: "Use in next review" })).toHaveCount(0);
+  await carried.getByRole("button", { name: "Close" }).click();
+  await expect(carried).toBeHidden();
+
+  // The re-stage action moved into the preview with the rest of the ledger's fields, and it
+  // still reaches the same route and settles into the same label.
+  const captured = await openPreview(dashboard, ledger, "replacement-proof");
+  await expect(captured).toContainText(newestImage.sha256);
+
+  /*
+   * A REFUSED re-stage first, because the settled label is a claim about the daemon.
+   *
+   * "Ready for next review" says these bytes are staged for the next fresh review. A button
+   * that settled into it on a request that failed would be the surface asserting something
+   * the daemon never did, and the operator would find out at the next submission. So the
+   * reason is reported and the button stays pressable.
+   */
+  const reattach = "**/api/workflow-bindings/*/evidence/reattach";
+  await dashboard.route(reattach, (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "Retained bytes could not be staged" }),
+  }));
+  await captured.getByRole("button", { name: "Use in next review" }).click();
+  await expect(ledger.getByRole("alert").filter({ hasText: "Retained bytes could not be staged" }))
+    .toBeVisible();
+  await expect(captured.getByRole("button", { name: "Use in next review" })).toBeEnabled();
+  await expect(captured.getByRole("button", { name: "Ready for next review" })).toHaveCount(0);
+  await dashboard.unroute(reattach);
+
+  await captured.getByRole("button", { name: "Use in next review" }).click();
+  await expect(captured.getByRole("button", { name: "Ready for next review" })).toBeVisible();
+  await captured.getByRole("button", { name: "Close" }).click();
+  await expect(captured).toBeHidden();
 
   await dashboard.locator("header.wf-run-head").getByRole("button", { name: "Preview fresh evidence" }).click();
   const staged = dashboard.getByRole("dialog", { name: "Preview fresh evidence" });
@@ -348,12 +418,21 @@ test("dashboard evidence reaches both native providers and remains auditable per
   expect(body.status).toBe(410);
 
   await dashboard.reload();
-  const pruned = dashboard.locator("section.wf-image-evidence");
+  const pruned = await evidencePane(dashboard);
   await expect(pruned).toContainText(REPLACEMENT_CAPTION);
-  await expect(pruned).toContainText("Raw body pruned");
-  await expect(pruned.getByRole("button", { name: "Use in next review" })).toHaveCount(0);
-  await expect(pruned).toContainText(newestImage.sha256);
+  // The card keeps its place and says the bytes are gone rather than rendering as a broken
+  // image, and every auditable field survives in the preview with the reuse action withdrawn.
+  await expect(card(pruned, "replacement-proof")).toContainText("Body pruned");
+  const prunedPreview = await openPreview(dashboard, pruned, "replacement-proof");
+  await expect(prunedPreview).toContainText("Raw body pruned");
+  await expect(prunedPreview).toContainText(
+    "Caption, scope, MIME, size, and SHA-256 remain auditable",
+  );
+  await expect(prunedPreview).toContainText(newestImage.sha256);
+  await expect(prunedPreview.getByRole("button", { name: "Use in next review" })).toHaveCount(0);
   await shoot(dashboard, "02-pruned-history");
+  await prunedPreview.getByRole("button", { name: "Close" }).click();
+  await expect(prunedPreview).toBeHidden();
 
   // A browser draft survives closing this binding's modal, but cannot cross the mounted Runs
   // page into another binding. Change only the hash so this exercises the live component rather

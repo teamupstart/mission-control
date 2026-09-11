@@ -1,5 +1,6 @@
 import { test as base, expect, type Page } from "@playwright/test";
 
+import { startBrowserCoverage } from "./coverage.ts";
 import { startDaemon, type DaemonHandle } from "./daemon.ts";
 
 /**
@@ -111,6 +112,9 @@ export const test = base.extend<{
    * fetch has landed - and the first paint is early enough for a modal to be opened in it.
    */
   dashboard: async ({ page, daemon }, use) => {
+    // Off by default, so an ordinary suite pays nothing for it, and started before the first
+    // navigation because V8 counts calls only in functions it compiled with counters in them.
+    const stopCoverage = process.env.MC_COVERAGE ? await startBrowserCoverage(page) : null;
     const pinned = await fetch(`${daemon.baseURL}/api/ui/config`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -138,6 +142,7 @@ export const test = base.extend<{
     await page.reload();
     await expect(page.getByRole("button", { name: "Dispatch" })).toBeVisible();
     await use(page);
+    if (stopCoverage) await stopCoverage();
   },
 });
 

@@ -65,6 +65,10 @@ export const OVERLAY_IDS = {
   restoreSettings: "restore-settings",
   taskSourceWritebackDiscard: "task-source-writeback-discard",
   attachmentPreview: "attachment-preview",
+  // Its own id rather than a second use of `attachmentPreview`: the Escape registry hands the
+  // key to the TOPMOST layer by token, and two surfaces sharing an id makes `onlyOpen` - the
+  // "close my own overlay but stand down for everyone else's" guard - unable to tell them apart.
+  workflowEvidenceImage: "workflow-evidence-image",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

@@ -65,15 +65,19 @@ export function isLibrarySurface(value: string): value is LibrarySurface {
  *
  * `worklist` is first and is the default, and both facts are contracts rather than
  * arrangement: it is the primary object on the page, and it is the pane the initial-selection
- * order below falls back to when nothing else claims the reader. Later panes are appended, so
- * a kept link keeps meaning what it meant.
+ * order below falls back to when nothing else claims the reader.
  *
- * These strings reach the address bar as `?pane=`, so they are a durable spelling. A value
- * this build does not know takes the default rather than being carried into the hash - the
- * same rule an unknown run status and an unknown Command slot already take, and for the same
- * reason: a parameter naming a surface that does not exist is a link to nowhere.
+ * The rest are in bar order rather than in the order they were built, because that is what
+ * this list claims to be and the initial-selection order reads "the first blocking pane in TAB
+ * ORDER" off the bar itself. Order is arrangement; the STRINGS are the contract. They reach the
+ * address bar as `?pane=`, so a durable spelling is what keeps a kept link meaning what it
+ * meant, and inserting `evidence` between `deliveries` and `intent` leaves every existing link
+ * pointing at the same pane it always did. A value this build does not know takes the default
+ * rather than being carried into the hash - the same rule an unknown run status and an unknown
+ * Command slot already take, and for the same reason: a parameter naming a surface that does
+ * not exist is a link to nowhere.
  */
-export const RUN_RECORD_PANES = ["worklist", "deliveries", "intent"] as const;
+export const RUN_RECORD_PANES = ["worklist", "deliveries", "evidence", "intent"] as const;
 export type RunRecordPane = (typeof RUN_RECORD_PANES)[number];
 
 export function isRunRecordPane(value: string): value is RunRecordPane {

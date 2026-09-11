@@ -12,6 +12,10 @@ import assert from "node:assert/strict";
 import { WORKFLOW_CHECK_STATUSES, WORKFLOW_GATE_WAIT_REASONS } from "../src/shared/workflow.ts";
 import type {
   WorkflowDelivery,
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceImage,
+  WorkflowEvidenceReadinessCriterion,
+  WorkflowEvidenceReadinessResult,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowSubmission,
@@ -26,6 +30,9 @@ import {
   disabledStatusFor,
   endStatus,
   errorView,
+  evidenceActionError,
+  evidenceCitationSentence,
+  evidenceClaimStatus,
   eventLine,
   eventsByRound,
   firstLineOf,
@@ -40,6 +47,13 @@ import {
   newestInheritedSource,
   nodeStatusesForSubmission,
   readCapturedContext,
+  readinessActionLabel,
+  readinessGapCriteria,
+  readinessOverrideDisabled,
+  restageClientItemId,
+  restageDisabled,
+  restageLabel,
+  restageOffered,
   reviewerStatus,
   evidenceChipLabel,
   openEvidenceTray,
@@ -48,6 +62,7 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  runEvidenceCitations,
   runRecordSummary,
   runRoundGroups,
   runRounds,
@@ -1316,6 +1331,370 @@ test("a decision row summarises its size and its first line without truncating t
   // with a blank first line is still a decision, and a row with nothing on it is unscannable.
   assert.equal(firstLineOf("   \n  body"), "body");
 });
+
+/**
+ * The Evidence pane's numbers, its claim-to-criterion match, and its picture-to-claim relation.
+ *
+ * All three are cases the browser cannot check cheaply and a wrong answer in any of them is
+ * invisible: a claim row that says "linked" over a criterion the reconciliation refused, a
+ * thumbnail sitting beside a claim that never cited it, and a tab reading "Evidence 6" over a
+ * pane holding seven are each the surface lying rather than the surface being long.
+ */
+const claim = (
+  clientCriterionId: string,
+  overrides: Partial<WorkflowEvidenceCoverageClaim> = {},
+): WorkflowEvidenceCoverageClaim => ({
+  clientCriterionId,
+  criterion: `Criterion ${clientCriterionId}`,
+  proofClass: "focused_execution",
+  repositoryScope: "repo-01",
+  links: [],
+  ...overrides,
+});
+
+const criterion = (
+  criterionId: string,
+  overrides: Partial<WorkflowEvidenceReadinessCriterion> = {},
+): WorkflowEvidenceReadinessCriterion => ({
+  criterionId,
+  criterion: `Canonical ${criterionId}`,
+  material: true,
+  matchedClientCriterionId: null,
+  authorProofClass: null,
+  suggestedProofClass: null,
+  links: [],
+  gaps: [],
+  warnings: [],
+  ...overrides,
+});
+
+const readinessOf = (
+  criteria: WorkflowEvidenceReadinessCriterion[],
+): WorkflowEvidenceReadinessResult => ({
+  evaluatorVersion: "criterion_mapped_v1",
+  status: criteria.some((entry) => entry.gaps.length > 0) ? "gaps" : "ready",
+  criteria,
+  gapCodes: [...new Set(criteria.flatMap((entry) => entry.gaps))],
+  warningCodes: [...new Set(criteria.flatMap((entry) => entry.warnings))],
+  unavailableReason: null,
+});
+
+/** The two run fields the readiness block is read from, and nothing else. */
+const runOn = (status: string, currentPhase: string): WorkflowRunDetail["run"] =>
+  ({ status, currentPhase }) as unknown as WorkflowRunDetail["run"];
+
+const image = (
+  id: string,
+  overrides: Partial<WorkflowEvidenceImage> = {},
+): WorkflowEvidenceImage => ({
+  id,
+  ordinal: 0,
+  displayName: `${id}.png`,
+  caption: `Caption for ${id}`,
+  repositoryScope: "repo-01",
+  mimeType: "image/png",
+  bytes: 1024,
+  sha256: "c".repeat(64),
+  availability: "retained",
+  prunedAt: null,
+  createdAt: 1,
+  ...overrides,
+});
+
+test("runRecordSummary counts the evidence record and blocks only on a parked run", () => {
+  const gaps = readinessOf([
+    criterion("canon-1", { matchedClientCriterionId: "c1", warnings: ["model_proof_class_disagreement"] }),
+    criterion("canon-2", { gaps: ["missing_coverage"] }),
+    // Two codes on ONE criterion is one thing a reader has to answer for, not two.
+    criterion("canon-3", { gaps: ["ambiguous_mapping", "missing_rendered_output"] }),
+  ]);
+  const base = detail([submission("s1", 1, { readiness: gaps })], [], {
+    evidenceCoverage: [{ submissionId: "s1", coverage: [claim("c1"), claim("c2")] }],
+    evidenceImages: [{ submissionId: "s1", images: [image("i1"), image("i2")] }],
+  });
+  const evidence = runRecordSummary(base, base.submissions[0]!).evidence;
+  assert.equal(evidence.status, "gaps");
+  assert.equal(evidence.claimCount, 2);
+  assert.equal(evidence.gapCount, 2);
+  assert.equal(evidence.warningCount, 1);
+  assert.equal(evidence.imageCount, 2);
+  // GAPS ARE NOT A BLOCK. This run is still moving, so the count and the gap block report them
+  // and the tab does not seize the initial selection over them.
+  assert.equal(evidence.blocking, false);
+  assert.equal(evidence.refinementsExhausted, false);
+
+  // A submission that was never evaluated says so rather than reporting a verdict.
+  const unevaluated = detail([submission("s1", 1)], []);
+  const none = runRecordSummary(unevaluated, unevaluated.submissions[0]!).evidence;
+  assert.equal(none.status, null);
+  assert.equal(none.claimCount, 0);
+  assert.equal(none.imageCount, 0);
+  assert.equal(none.blocking, false);
+
+  // Parked: the run is waiting on readiness, the newest submission is the one waiting, and the
+  // reader is on it. All three have to hold.
+  const parkedSubmission = submission("s2", 2, {
+    status: "waiting_for_evidence_readiness",
+    readiness: gaps,
+  });
+  const parked = detail([submission("s1", 1), parkedSubmission], [], {
+    run: runOn("waiting_for_evidence_readiness", "evidence_readiness"),
+  });
+  assert.equal(runRecordSummary(parked, parkedSubmission).evidence.blocking, true);
+  // Scrubbed back to round 1: the block belongs to round 2 and is not reported against a round
+  // that is not the thing being decided.
+  assert.equal(runRecordSummary(parked, parked.submissions[0]!).evidence.blocking, false);
+  // The run has moved on: an old waiting submission is history, not a live decision.
+  const moved = detail([submission("s1", 1), parkedSubmission], [], {
+    run: runOn("running", "persona_review"),
+  });
+  assert.equal(runRecordSummary(moved, parkedSubmission).evidence.blocking, false);
+
+  // The refinement cap is a narrower fact than the block, and it is what withdraws the retry.
+  const exhausted = detail([parkedSubmission], [], {
+    run: runOn("blocked", "preflight_refinement_exhausted"),
+  });
+  const spent = runRecordSummary(exhausted, parkedSubmission).evidence;
+  assert.equal(spent.blocking, true);
+  assert.equal(spent.refinementsExhausted, true);
+});
+
+test("a claim row matches its canonical criterion by id, never by the criterion text", () => {
+  const linked = claim("c1", { links: [{ clientItemId: "item-a", role: "execution" }] });
+  // The author's wording and the canonical wording differ, which is the ordinary case and
+  // exactly what matching on text would get wrong.
+  const matched = readinessOf([criterion("canon-1", {
+    criterion: "The suite passes on a clean checkout",
+    matchedClientCriterionId: "c1",
+  })]);
+  assert.deepEqual(evidenceClaimStatus(linked, matched), {
+    label: "linked",
+    tone: "completed",
+    notes: [],
+  });
+
+  const withGaps = readinessOf([criterion("canon-1", {
+    matchedClientCriterionId: "c1",
+    gaps: ["missing_execution"],
+  })]);
+  assert.deepEqual(evidenceClaimStatus(linked, withGaps), {
+    label: "gaps",
+    tone: "failed",
+    notes: ["missing execution"],
+  });
+
+  const withWarning = readinessOf([criterion("canon-1", {
+    matchedClientCriterionId: "c1",
+    warnings: ["model_proof_class_disagreement"],
+  })]);
+  assert.deepEqual(evidenceClaimStatus(linked, withWarning), {
+    label: "warning",
+    tone: "waiting",
+    notes: ["model proof class disagreement"],
+  });
+
+  // No criterion accepted this claim, though a reconciliation ran and named the same words. The
+  // row states that rather than dressing an unreconciled claim up as a pass.
+  const unmatched = readinessOf([criterion("canon-1", {
+    criterion: "Criterion c1",
+    matchedClientCriterionId: null,
+    gaps: ["missing_coverage"],
+  })]);
+  assert.equal(evidenceClaimStatus(linked, unmatched).label, "not reconciled");
+  assert.equal(evidenceClaimStatus(linked, unmatched).tone, "waiting");
+
+  // No reconciliation at all: there is nothing to be unmatched by, and the claim stands.
+  assert.equal(evidenceClaimStatus(linked, null).label, "linked");
+  // A claim that linked nothing says so whether or not anything reconciled it.
+  assert.equal(evidenceClaimStatus(claim("c2"), null).label, "no evidence linked");
+  assert.equal(evidenceClaimStatus(claim("c2"), matched).label, "no evidence linked");
+
+  // The gap block is the criteria the reconciliation could not satisfy - including the ones
+  // with no author claim at all, which have no claim row to sit under.
+  assert.deepEqual(
+    readinessGapCriteria(unmatched).map((entry) => entry.criterionId),
+    ["canon-1"],
+  );
+  assert.deepEqual(readinessGapCriteria(matched), []);
+  assert.deepEqual(readinessGapCriteria(null), []);
+});
+
+test("frozen images and the claims citing them are matched through the readiness links", () => {
+  const images = [image("img-queue"), image("img-switch"), image("img-orphan")];
+  const coverage = [
+    claim("c1", { links: [{ clientItemId: "item-queue", role: "rendered_output" }] }),
+    claim("c2", {
+      links: [
+        { clientItemId: "item-queue", role: "rendered_output" },
+        { clientItemId: "item-switch", role: "state_snapshot" },
+      ],
+    }),
+    // The same picture in two roles from ONE claim is one citation, not two.
+    claim("c3", {
+      links: [
+        { clientItemId: "item-queue", role: "rendered_output" },
+        { clientItemId: "item-queue", role: "deliverable" },
+      ],
+    }),
+  ];
+  const readiness = readinessOf([
+    criterion("canon-1", {
+      matchedClientCriterionId: "c1",
+      links: [{ clientItemId: "item-queue", evidenceId: "img-queue", role: "rendered_output" }],
+    }),
+    criterion("canon-2", {
+      matchedClientCriterionId: "c2",
+      links: [{ clientItemId: "item-switch", evidenceId: "img-switch", role: "state_snapshot" }],
+    }),
+  ]);
+  const citations = runEvidenceCitations({ images, coverage, readiness });
+
+  const queue = citations.citationFor("img-queue");
+  assert.equal(queue.clientItemId, "item-queue");
+  assert.equal(queue.claims, 3);
+  assert.deepEqual(queue.roles, ["rendered_output", "deliverable"]);
+  assert.equal(evidenceCitationSentence(queue), "Cited by 3 claims as rendered output and deliverable");
+
+  const switched = citations.citationFor("img-switch");
+  assert.equal(switched.claims, 1);
+  assert.equal(evidenceCitationSentence(switched), "Cited by 1 claim as state snapshot");
+
+  // An image the readiness result never resolved cannot be tied to a claim by this build, and
+  // saying "cited by 0 claims" would be a much stronger statement than "this cannot tell".
+  const orphan = citations.citationFor("img-orphan");
+  assert.equal(orphan.clientItemId, null);
+  assert.equal(orphan.claims, 0);
+  assert.equal(evidenceCitationSentence(orphan), null);
+
+  // The other direction: which pictures a claim row carries a copy of.
+  assert.deepEqual(citations.byClaim.get("c1")!.map((entry) => entry.id), ["img-queue"]);
+  assert.deepEqual(
+    citations.byClaim.get("c2")!.map((entry) => entry.id),
+    ["img-queue", "img-switch"],
+  );
+  assert.deepEqual(citations.byClaim.get("c3")!.map((entry) => entry.id), ["img-queue"]);
+
+  // A claim citing nothing this submission froze has no row of thumbnails at all.
+  const bare = runEvidenceCitations({
+    images,
+    coverage: [claim("c4", { links: [{ clientItemId: "item-gone", role: "execution" }] })],
+    readiness,
+  });
+  assert.equal(bare.byClaim.get("c4"), undefined);
+  assert.equal(bare.citationFor("img-queue").claims, 0);
+  assert.equal(
+    evidenceCitationSentence(bare.citationFor("img-queue")),
+    "Cited by no frozen claim",
+  );
+
+  // Without a reconciliation there is no bridge, and nothing is guessed at.
+  const unbridged = runEvidenceCitations({ images, coverage, readiness: null });
+  assert.equal(unbridged.byClaim.size, 0);
+  assert.equal(unbridged.citationFor("img-queue").clientItemId, null);
+
+  // Total, so a caller never has to decide what an absent entry would have meant: an id this
+  // submission froze no image for answers with the uncited record rather than with nothing.
+  assert.deepEqual(citations.citationFor("img-never-frozen"), {
+    clientItemId: null,
+    claims: 0,
+    roles: [],
+  });
+  assert.equal(evidenceCitationSentence(citations.citationFor("img-never-frozen")), null);
+});
+
+
+/**
+ * The Evidence pane's decisions, checked without rendering.
+ *
+ * These rules used to live in arrow functions inline in the pane's JSX, where a coverage report
+ * calls them `anonymous_N` and nothing can say whether they were ever exercised. They are the
+ * conditions behind four controls a person presses - re-stage, retry, continue despite gaps -
+ * and one route a body is fetched from, so each one is a case here rather than a line somebody
+ * hopes a browser walked.
+ */
+test("a re-stage is offered only on bytes this submission captured and still holds", () => {
+  const retained = { availability: "retained" as const, inheritedFrom: null };
+  assert.equal(restageOffered(retained, true, true), true);
+  // No handler, or a binding that can no longer stage, withdraws it.
+  assert.equal(restageOffered(retained, true, false), false);
+  assert.equal(restageOffered(retained, false, true), false);
+  // A pruned body has nothing to stage.
+  assert.equal(
+    restageOffered({ availability: "pruned", inheritedFrom: null }, true, true),
+    false,
+  );
+  // A carried record is the same digest the capturing submission already offers, so a second
+  // button would stage the same bytes twice over and imply this submission captured them.
+  assert.equal(
+    restageOffered(
+      {
+        availability: "retained",
+        inheritedFrom: { submissionId: "s1", round: 1, repositoryFingerprint: null },
+      },
+      true,
+      true,
+    ),
+    false,
+  );
+});
+
+test("a re-stage mints one client item id per image and then reuses it", () => {
+  const minted = new Map<string, string>();
+  let n = 0;
+  const first = restageClientItemId(minted, "image-a", () => `uuid-${++n}`);
+  assert.equal(first, "history-uuid-1");
+  // Pressed again: the same id, because a second id for the same bytes is a second staged row
+  // pointing at one picture.
+  assert.equal(restageClientItemId(minted, "image-a", () => `uuid-${++n}`), "history-uuid-1");
+  assert.equal(n, 1);
+  // A different image gets its own.
+  assert.equal(restageClientItemId(minted, "image-b", () => `uuid-${++n}`), "history-uuid-2");
+  assert.deepEqual([...minted.keys()], ["image-a", "image-b"]);
+});
+
+test("the re-stage control never reads as settled while it is in flight or idle", () => {
+  assert.equal(restageLabel(false), "Use in next review");
+  assert.equal(restageLabel(true), "Ready for next review");
+  // In flight on THIS image, so not pressable again.
+  assert.equal(restageDisabled("image-a", false, "image-a"), true);
+  // In flight on another image leaves this one alone.
+  assert.equal(restageDisabled("image-b", false, "image-a"), false);
+  // Settled: the daemon accepted it, so there is nothing left to ask for.
+  assert.equal(restageDisabled(null, true, "image-a"), true);
+  assert.equal(restageDisabled(null, false, "image-a"), false);
+});
+
+test("continue despite gaps needs an acknowledgement and a reason that is not blank", () => {
+  assert.equal(readinessOverrideDisabled(null, true, "The mapping is right"), false);
+  // An unexplained override is an unexplained decision in the durable log.
+  assert.equal(readinessOverrideDisabled(null, true, ""), true);
+  assert.equal(readinessOverrideDisabled(null, true, "   \n  "), true);
+  assert.equal(readinessOverrideDisabled(null, false, "The mapping is right"), true);
+  // Nothing is pressable while either action is in flight.
+  assert.equal(readinessOverrideDisabled("retry", true, "The mapping is right"), true);
+  assert.equal(readinessOverrideDisabled("override", true, "The mapping is right"), true);
+});
+
+test("each readiness control says which of the two is in flight, not merely that one is", () => {
+  assert.equal(readinessActionLabel("retry", null), "Retry evidence preflight");
+  assert.equal(readinessActionLabel("retry", "retry"), "Retrying…");
+  // The other action being in flight must not relabel this one.
+  assert.equal(readinessActionLabel("retry", "override"), "Retry evidence preflight");
+  assert.equal(readinessActionLabel("override", null), "Continue despite gaps");
+  assert.equal(readinessActionLabel("override", "override"), "Continuing…");
+  assert.equal(readinessActionLabel("override", "retry"), "Continue despite gaps");
+});
+
+test("a failed action reports the daemon's own reason, or one that is still true", () => {
+  assert.equal(
+    evidenceActionError(new Error("Retained bytes could not be staged"), "fallback"),
+    "Retained bytes could not be staged",
+  );
+  // A rejection with nothing readable in it gets the sentence that still holds.
+  assert.equal(evidenceActionError("boom", "Could not stage retained image"), "Could not stage retained image");
+  assert.equal(evidenceActionError(undefined, "Image body could not be loaded"), "Image body could not be loaded");
+});
+
 
 /**
  * Which pane opens, and what may never move a reader off the one they are on.

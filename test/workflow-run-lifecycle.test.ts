@@ -140,6 +140,7 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     kind: "opaque",
   },
   failed_outcome: { detail: asJson({ outcome: "fail", label: "Rejected" }), kind: "opaque" },
+  evidence_reconciliation_error: { detail: { submissionId: "s", error: "mapping unavailable" }, kind: "opaque" },
   image_evidence_capture: { detail: asJson({ error: "e", code: "image_changed" }), kind: "opaque" },
   // The payload `check_cleanup_unresolved` writes, under the phase that means the OPPOSITE.
   infrastructure_error: {

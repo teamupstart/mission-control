@@ -1,3 +1,5 @@
+import type { RawWorkflowContext } from "./context.ts";
+import { previousEvidenceSubmission, submissionCoverageSelection } from "./coverage-selection.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import { paneToken } from "@shared/pane.ts";
@@ -89,6 +91,7 @@ import {
   workflowRunGaveUp,
   workflowRunResumesItself,
   evaluateWorkflowEvidenceReadiness,
+  selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
   type WorkflowResumptionWithheldReason,
@@ -139,6 +142,8 @@ import {
   captureBoundaryChanged,
   captureStableWorkflowContext,
   compactWorkflowContext,
+  reconcileWorkflowCoverage,
+  type WorkflowCompactionDeps,
   probeMatchesEvidence,
   readWorkflowContextRaw,
   readWorkflowIntentSnapshot,
@@ -349,6 +354,7 @@ export interface WorkflowManagerOptions {
   adoptedPullRequests?: () => readonly SessionActionAdoptedPullRequest[];
   resolveCommit?: (repoRoot: string, headSha: string) => Promise<string>;
   resolveCommitTree?: (repoRoot: string, commitOid: string) => Promise<string>;
+  reconcileContext?: WorkflowCompactionDeps["reconcile"];
   compactContext?: typeof compactWorkflowContext;
   queueManager?: QueueManager;
   inject?: typeof injectPrompt;
@@ -1082,6 +1088,8 @@ export class WorkflowManager {
   }
 
   private decorateRun(detail: WorkflowRunDetail): WorkflowRunDetail {
+    const latest = detail.submissions.at(-1);
+    detail = { ...detail, evidenceRecovery: latest ? this.evidenceRecoveryFor(detail.run, latest) : null };
     const state = this.gateState(detail.run);
     if (!state) return detail;
     const inspection = state.prKey
@@ -2152,6 +2160,65 @@ export class WorkflowManager {
       latest.evidenceFingerprint,
       input.resubmitUnchanged,
     );
+  }
+
+  private evidenceRecoveryFor(run: WorkflowRun, submission: WorkflowSubmission): WorkflowRunDetail["evidenceRecovery"] {
+    if (!["blocked", "waiting_for_evidence_readiness", "waiting_for_session"].includes(run.status)) return null;
+    const binding = this.store.getBinding(run.bindingId);
+    if (!binding?.sessionId || binding.state !== "active") return null;
+    const session = this.registry.getSession(binding.sessionId);
+    if (!session || session.state === "exited") return null;
+    if (!["evidence_reconciliation_error", "evidence_readiness", "preflight_refinement_exhausted", "persona_feedback", "round_limit", "infrastructure_error"].includes(run.currentPhase)) return null;
+    const parsed = WorkflowContextSnapshotSchema.safeParse(submission.context);
+    if (!parsed.success) return null;
+    if (run.currentPhase === "evidence_reconciliation_error" || submission.readiness?.gapCodes.includes("missing_coverage")) {
+      let cursor: WorkflowSubmission | null = submission;
+      for (let depth = 0; cursor && depth < 128; depth++) {
+        const context = WorkflowContextSnapshotSchema.safeParse(cursor.context);
+        if (context.success && context.data.reconciliation?.status === "complete") break;
+        if (context.success && context.data.reconciliation?.status === "failed"
+            || this.store.failedCriterionReconciliation(cursor.id)) {
+          return { submissionId: submission.id, kind: "mapping", label: "Retry criterion mapping" };
+        }
+        cursor = previousEvidenceSubmission(this.store, cursor);
+      }
+    }
+    const selection = submissionCoverageSelection(this.store, submission);
+    if (selection && submission.readiness?.gapCodes.includes("ambiguous_mapping")) {
+      const readiness = evaluateWorkflowEvidenceReadiness({
+        canonicalCriteria: parsed.data.canonicalCriteria, criterionMappings: parsed.data.criterionMappings,
+        coverage: this.store.listSubmissionCoverage(submission.id), selection,
+        evidence: this.store.submissionFrozenEvidenceIdentities(submission.id),
+      });
+      if (readiness.criteria.some((row) => row.matchedClientCriterionId && !row.gaps.includes("ambiguous_mapping")
+          && submission.readiness?.criteria.find((old) => old.criterionId === row.criterionId)?.gaps.includes("ambiguous_mapping"))) {
+        return { submissionId: submission.id, kind: "selection", label: "Recover inherited coverage" };
+      }
+    }
+    if (submission.readiness?.status === "ready" && this.store.listAttempts(submission.id).some((attempt) => {
+      const verdict = PersonaVerdictSchema.safeParse(attempt.verdict);
+      return verdict.success && verdict.data.verdict === "fail"
+        && verdict.data.requestedChanges.some((change) => change.basis === undefined || change.basis === "coverage_registration");
+    })) return { submissionId: submission.id, kind: "review", label: "Re-review evidence decision" };
+    return null;
+  }
+
+  async recoverEvidence(runId: string, submissionId: string, requestId: string): Promise<WorkflowRuntimeMutation<WorkflowSubmitResult>> {
+    const run = this.store.getRun(runId);
+    const binding = run ? this.store.getBinding(run.bindingId) : null;
+    if (!run || !binding) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    const key = `evidence-recovery:${runId}:${requestId}`;
+    const existing = this.store.submissionByTrigger(key);
+    if (existing?.parentSubmissionId === submissionId) return { ok: true, value: { run, submission: existing }, idempotent: true };
+    const latest = this.store.latestSubmission(runId);
+    const recovery = latest?.id === submissionId ? this.evidenceRecoveryFor(run, latest) : null;
+    if (!recovery || !latest) return { ok: false, reason: "conflict", message: "This snapshot has no eligible evidence recovery" };
+    const reserved = this.store.reserveEvidenceRecovery({
+      id: randomUUID(), runId, parentId: latest.id, requestId, reason: recovery.kind, now: Date.now(),
+    });
+    if (!reserved) return { ok: false, reason: "conflict", message: "The evidence or delivery state changed before recovery" };
+    this.publishRun(runId);
+    return this.captureAndActivate(binding, this.store.getRun(runId)!, reserved.submission, undefined, true);
   }
 
   async retryEvidenceReadiness(
@@ -6140,14 +6207,7 @@ export class WorkflowManager {
     runId: string,
     submission: WorkflowSubmission,
   ): { coverage: WorkflowEvidenceCoverageClaim[]; mappings: WorkflowCriterionMapping[] } {
-    const previous = submission.parentSubmissionId
-      ? this.store.getSubmission(submission.parentSubmissionId)
-      : this.store.listSubmissions(runId)
-        .filter((row) =>
-          row.id !== submission.id
-          && (row.round < submission.round
-            || (row.round === submission.round && row.segment < submission.segment)))
-        .at(-1) ?? null;
+    const previous = previousEvidenceSubmission(this.store, submission);
     if (!previous) return { coverage: [], mappings: [] };
     const parsed = WorkflowContextSnapshotSchema.safeParse(previous.context);
     return {
@@ -6225,7 +6285,9 @@ export class WorkflowManager {
         };
       }
       const frozenIntent = runRow.intent ?? null;
-      const captured = await captureStableWorkflowContext(
+      const recovered = submission.refinementReason === "evidence_recovery"
+        ? WorkflowContextSnapshotSchema.parse(submission.context) : null;
+      const captured = recovered ? { raw: { ...recovered, coverage: [], evidenceMetadata: [] } as RawWorkflowContext, context: recovered } : await captureStableWorkflowContext(
         () => (this.options.readContextRaw ?? readWorkflowContextRaw)(
           this.registry,
           binding,
@@ -6333,11 +6395,56 @@ export class WorkflowManager {
         artifacts: submissionArtifacts,
         stagedImageGeneration: reservedSubmission.stagedImageGeneration ?? 0,
       };
+      const priorCapture = WorkflowContextSnapshotSchema.safeParse(submission.context);
       // Persist bounded raw intent and evidence before the advisory model call.
       this.store.updateSubmissionCapture(submission.id, {
         context: workflowJson(captured.context),
         evidence: workflowJson(captured.context.evidence),
       }, Date.now());
+      const contextExecutions = new Map<WorkflowLlmPurpose, JobExecution>();
+      const contextCallIds = new Map<string, string>();
+      const observerFor = (purpose: WorkflowLlmPurpose): StructuredAttemptObserver => ({
+        start: (attempt, prompt) => {
+          if (!this.captureIsActive(run.id, submission.id)) return false;
+          // `onExecution` fires ahead of the first attempt, so this is populated by now. If
+          // it somehow is not, skip the row rather than labelling it with a guess - `finish`
+          // finds no id and does nothing, and a missing ledger row is far easier to read
+          // than one that confidently names the wrong provider.
+          const execution = contextExecutions.get(purpose);
+          if (!execution) return;
+          const id = randomUUID();
+          contextCallIds.set(`${purpose}:${attempt}`, id);
+          this.store.insertLlmCall({
+            id,
+            runId: run.id,
+            submissionId: submission.id,
+            nodeAttemptId: null,
+            purpose,
+            runner: execution.runner,
+            model: execution.model,
+            attempt,
+            state: "running",
+            startedAt: Date.now(),
+            finishedAt: null,
+            durationMs: null,
+            inputBytes: Buffer.byteLength(prompt),
+            outputBytes: 0,
+            costUsd: null,
+            errorCode: null,
+          });
+        },
+        finish: (attempt, result) => {
+          const id = contextCallIds.get(`${purpose}:${attempt}`);
+          if (!id) return;
+          this.store.finishLlmCall(
+            id,
+            result.parsed ? "succeeded" : "failed",
+            result.raw ? Buffer.byteLength(result.raw) : 0,
+            result.error ? `${purpose}_infrastructure` : result.parsed ? null : `${purpose}_parse`,
+            Date.now(),
+          );
+        },
+      });
       let context: WorkflowContextSnapshot;
       let criteriaReused = false;
       /*
@@ -6403,7 +6510,10 @@ export class WorkflowManager {
        * run" means, and it spends nothing to get there.
        */
       const inFlight = frozenIntent && !runCriteria ? this.runCriteriaClaims.get(run.id) : undefined;
-      if (runCriteria) {
+      if (recovered) {
+        context = { ...recovered, evidence: captured.raw.evidence };
+        criteriaReused = true;
+      } else if (runCriteria) {
         context = reuseRunCriteria(runCriteria, runCriteria.compactedFromSubmissionId);
         criteriaReused = true;
       } else if (inFlight) {
@@ -6459,53 +6569,10 @@ export class WorkflowManager {
             // What each workflow-context call REPORTS it resolved, filled in before its first
             // attempt runs. Stable extraction and source reconciliation have separate ledger
             // purposes because they have separate prompts, schemas, and failure boundaries.
-            const contextExecutions = new Map<WorkflowLlmPurpose, JobExecution>();
-            const contextCallIds = new Map<string, string>();
-            const observerFor = (purpose: WorkflowLlmPurpose): StructuredAttemptObserver => ({
-              start: (attempt, prompt) => {
-                if (!this.captureIsActive(run.id, submission.id)) return false;
-                // `onExecution` fires ahead of the first attempt, so this is populated by now. If
-                // it somehow is not, skip the row rather than labelling it with a guess - `finish`
-                // finds no id and does nothing, and a missing ledger row is far easier to read
-                // than one that confidently names the wrong provider.
-                const execution = contextExecutions.get(purpose);
-                if (!execution) return;
-                const id = randomUUID();
-                contextCallIds.set(`${purpose}:${attempt}`, id);
-                this.store.insertLlmCall({
-                  id,
-                  runId: run.id,
-                  submissionId: submission.id,
-                  nodeAttemptId: null,
-                  purpose,
-                  runner: execution.runner,
-                  model: execution.model,
-                  attempt,
-                  state: "running",
-                  startedAt: Date.now(),
-                  finishedAt: null,
-                  durationMs: null,
-                  inputBytes: Buffer.byteLength(prompt),
-                  outputBytes: 0,
-                  costUsd: null,
-                  errorCode: null,
-                });
-              },
-              finish: (attempt, result) => {
-                const id = contextCallIds.get(`${purpose}:${attempt}`);
-                if (!id) return;
-                this.store.finishLlmCall(
-                  id,
-                  result.parsed ? "succeeded" : "failed",
-                  result.raw ? Buffer.byteLength(result.raw) : 0,
-                  result.error ? `${purpose}_infrastructure` : result.parsed ? null : `${purpose}_parse`,
-                  Date.now(),
-                );
-              },
-            });
             // No `runner`/`model` override: the compaction stamps the snapshot from the pair the
             // call itself reports, which is the same one this ledger row is written from.
             context = await this.schedule(() => compactWorkflowContext(captured.raw, {
+              deferReconciliation: true,
               observer: observerFor("context_compaction"),
               reconciliationObserver: observerFor("context_reconciliation"),
               onExecution: (execution) => {
@@ -6565,6 +6632,29 @@ export class WorkflowManager {
           }
         }
       }
+      if (context.compaction.status === "model") {
+        const parent = previousEvidenceSubmission(this.store, submission);
+        const source = parent ? WorkflowContextSnapshotSchema.safeParse(parent.context) : null;
+        context = await this.schedule(() => reconcileWorkflowCoverage(context, frozenCoverage, {
+          previous: priorCapture.success && priorCapture.data.reconciliation
+            ? priorCapture.data : context.reconciliation ? context : submission.refinementReason === "evidence_recovery"
+            ? undefined : source?.success ? source.data : undefined,
+          sourceCoverage: bridge.coverage, sourceMappings: bridge.mappings,
+          reconcile: this.options.reconcileContext,
+          // Injected compactors never fall through to a real provider in tests or embedders.
+          ...(this.options.compactContext && !this.options.reconcileContext ? { execute: async () => ({
+            kind: "failed" as const, cause: "transport" as const, reason: "No injected reconciler",
+          }) } : {}),
+          reconciliationObserver: observerFor("context_reconciliation"),
+          onReconciliationExecution: (execution) => contextExecutions.set("context_reconciliation", execution),
+          active: () => this.captureIsActive(run.id, submission.id),
+          onProgress: (progress) => {
+            if (this.captureIsActive(run.id, submission.id)) this.store.updateSubmissionCapture(submission.id, {
+              context: workflowJson(WorkflowContextSnapshotSchema.parse(progress)), evidence: workflowJson(progress.evidence),
+            }, Date.now());
+          },
+        }), "capture");
+      }
       const currentRun = this.store.getRun(run.id);
       const currentSubmission = this.store.getSubmission(submission.id);
       if (
@@ -6580,6 +6670,17 @@ export class WorkflowManager {
           current: currentRun,
         };
       }
+      const selectionSource = previousEvidenceSubmission(this.store, submission);
+      context = WorkflowContextSnapshotSchema.parse({
+        ...context,
+        coverageSelection: selectWorkflowCoverageClaims({
+          canonicalCriteria: context.canonicalCriteria ?? [],
+          criterionMappings: context.criterionMappings ?? [],
+          coverage: frozenCoverage,
+          previous: selectionSource ? submissionCoverageSelection(this.store, selectionSource) : undefined,
+          sourceSubmissionId: selectionSource?.id ?? null,
+        }),
+      });
       const fingerprint = workflowContextFingerprint(context);
       const repositoryFingerprint = workflowRepositoryFingerprint(context);
       const version = this.store.getWorkflowVersionById(run.workflowVersionId);
@@ -6601,6 +6702,7 @@ export class WorkflowManager {
             canonicalCriteria: context.canonicalCriteria ?? [],
             criterionMappings: context.criterionMappings ?? [],
             coverage: frozenCoverage,
+            selection: context.coverageSelection,
             evidence: this.store.submissionFrozenEvidenceIdentities(submission.id),
             unavailableReason: context.compaction.status === "fallback"
               ? context.compaction.error ?? "Workflow context compaction was unavailable"
@@ -6715,6 +6817,18 @@ export class WorkflowManager {
           evaluated.eventId,
         );
       }
+      if (enforcingReadiness && context.reconciliation?.status !== "complete"
+          && context.reconciliation && readiness?.gapCodes.includes("missing_coverage")) {
+        this.store.setSubmissionState(submission.id, "failed", Date.now());
+        const blocked = this.store.setRunState(run.id, "blocked", "evidence_reconciliation_error", {
+          submissionId: submission.id, error: context.reconciliation.error ?? "Criterion mapping did not complete",
+        }, Date.now());
+        this.store.appendEvent(run.id, "evidence_reconciliation_error", {
+          submissionId: submission.id, attempts: context.reconciliation.attempts, cause: context.reconciliation.cause,
+        }, Date.now());
+        this.publishRun(run.id);
+        return { ok: true, value: { run: blocked, submission: this.store.getSubmission(submission.id)! } };
+      }
       if (enforcingReadiness && readiness?.status === "gaps") {
         const waitedAt = Date.now();
         const waitingSubmission = this.store.setSubmissionState(
@@ -6794,6 +6908,7 @@ export class WorkflowManager {
         const verdict: PersonaVerdict = parsed.data;
         return [{
           personaName: verdictAuthor(node),
+          origin: { submissionId: submission.id, round: submission.round, segment: submission.segment, attemptId: attempt.id, createdAt: attempt.createdAt },
           summary: verdict.summary,
           requestedChanges: verdict.requestedChanges.map((item) => item.title),
         }];

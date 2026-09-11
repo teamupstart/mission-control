@@ -117,6 +117,7 @@ import {
 import type {
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceReadinessResult,
+  WorkflowPersonaReviewInput,
   WorkflowEvidenceRepositoryScope,
   WorkflowJson,
 } from "./workflow.ts";
@@ -5240,7 +5241,32 @@ export const SubmitWorkflowEvidenceSchema = z.object({
 });
 export type SubmitWorkflowEvidence = z.infer<typeof SubmitWorkflowEvidenceSchema>;
 
+export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewInput> = z.object({
+  version: z.literal(1),
+  operationId: z.string().min(1).max(200),
+  submissionId: z.string().min(1).max(200),
+  round: z.number().int().min(1),
+  segment: z.number().int().nonnegative(),
+  policy: WorkflowEvidenceReadinessPolicySchema,
+  status: z.enum([...WORKFLOW_EVIDENCE_READINESS_STATUSES, "unknown"]),
+  evaluatorVersion: z.literal("criterion_mapped_v1").nullable(),
+  criteria: z.array(z.object({
+    criterionId: z.string().min(1).max(200),
+    material: z.boolean(),
+    claimId: z.string().min(1).max(200).nullable(),
+    evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
+    gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
+  })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+}).superRefine((input, ctx) => {
+  if (!utf8AtMost(JSON.stringify(input), 256 * 1_024)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Persona readiness input exceeds 256 KiB" });
+  if (new Set(input.criteria.map((row) => row.criterionId)).size !== input.criteria.length
+      || (input.status === "ready" && (input.evaluatorVersion === null || input.criteria.some((row) => row.material && row.gaps.length > 0)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Incoherent Persona readiness input" });
+  }
+});
+
 export const WorkflowRequestedChangeSchema = z.object({
+  basis: z.enum(["substantive", "coverage_registration", "evidence_access"]).optional(),
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   evidence: z
@@ -5330,7 +5356,24 @@ const WorkflowContextSnapshotInputSchema = z.object({
       "Workflow criterion mappings must be unique by canonical criterion id",
     )
     .optional(),
+  reconciliation: z.object({
+    version: z.literal(1), fingerprint: z.string().length(64),
+    status: z.enum(["pending", "complete", "failed"]),
+    method: z.enum(["deterministic", "semantic"]),
+    attempts: z.number().int().min(0).max(2),
+    error: z.string().max(8_000).nullable(),
+    cause: z.enum(["transport", "parse", "cancelled"]).nullable(),
+  }).optional(),
+  coverageSelection: z.object({
+    version: z.literal(1),
+    sourceSubmissionId: z.string().min(1).max(200).nullable(),
+    criteria: z.array(WorkflowCriterionMappingSchema).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+      .refine((rows) => new Set(rows.map((row) => row.criterionId)).size === rows.length,
+        "Coverage selection must be unique by criterion"),
+  }).optional(),
   priorPersonaFeedback: z.array(z.object({
+    omittedBefore: z.number().int().nonnegative().optional(),
+    origin: z.object({ submissionId: z.string().max(200), round: z.number().int().positive(), segment: z.number().int().nonnegative(), attemptId: z.string().max(200), createdAt: z.number().int() }).optional(),
     personaName: z.string().max(WORKFLOW_LIMITS.personaName),
     summary: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
     requestedChanges: z.array(z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary)).max(WORKFLOW_EXECUTION_LIMITS.verdictChanges),
@@ -5424,6 +5467,12 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
   };
 }).superRefine((value, ctx) => {
   const criterionIds = new Set(value.canonicalCriteria.map((criterion) => criterion.id));
+  for (const selection of value.coverageSelection?.criteria ?? []) {
+    if (!criterionIds.has(selection.criterionId)) ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ["coverageSelection"],
+      message: "Coverage selection names an unknown canonical criterion",
+    });
+  }
   value.criterionMappings.forEach((mapping, index) => {
     if (criterionIds.has(mapping.criterionId)) return;
     ctx.addIssue({

@@ -1086,7 +1086,8 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
   // it means a later code change cannot silently produce "inspector round limit" prose.
   inspector_round_limit: "out of GitHub Inspector rounds",
-  infrastructure_error: "provider call failed",
+  infrastructure_error: "review execution failed",
+  evidence_reconciliation_error: "criterion mapping unavailable",
   inspector_findings: "GitHub Inspector findings",
   inspector_disabled: "GitHub Inspector off",
   inspector_pr_closed: "PR closed",

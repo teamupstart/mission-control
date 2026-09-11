@@ -489,7 +489,7 @@ function headlessAnswer(prompt) {
       verdict: "fail",
       summary: "Deterministic e2e objection, restated",
       requestedChanges: [
-        {
+        { basis: "substantive",
           title: "E2E reworded change",
           rationale: "This reviewer is scripted to restate its objection",
           evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
@@ -505,7 +505,7 @@ function headlessAnswer(prompt) {
       verdict: "fail",
       summary: "Deterministic e2e objection, after a wait",
       requestedChanges: [
-        {
+        { basis: "substantive",
           title: "E2E slow requested change",
           rationale: "This reviewer is scripted to object after a delay",
           evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
@@ -530,7 +530,7 @@ function headlessAnswer(prompt) {
       verdict: "fail",
       summary: "Deterministic e2e evidence objection",
       requestedChanges: [
-        {
+        { basis: "substantive",
           title: "Attach a screenshot of the rendered result",
           rationale: "Nothing in this submission shows the rendered pixels a person would see.",
           evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],
@@ -539,12 +539,18 @@ function headlessAnswer(prompt) {
       confidence: 0.9,
     });
   }
+  if (prompt.includes("E2E_CONTRACT_REVIEW")) {
+    if (prompt.includes("E2E_CORRECT_REVIEW") && prompt.includes("Correction required:")) {
+      return JSON.stringify({ verdict: "pass", summary: "Corrected substantive review", approvalDetails: { reason: "Evidence proves the requested behavior", evidence: [] }, confidence: 1 });
+    }
+    return JSON.stringify({ verdict: "fail", summary: "Registration objection", requestedChanges: [{ basis: "coverage_registration", title: "Register coverage", rationale: "Missing coverage declaration", evidence: [{ kind: "goal", quote: "E2E coverage" }] }], confidence: 1 });
+  }
   if (prompt.includes("E2E_FAIL_VERDICT")) {
     return JSON.stringify({
       verdict: "fail",
       summary: "Deterministic e2e objection",
       requestedChanges: [
-        {
+        { basis: "substantive",
           title: "E2E requested change",
           rationale: "This reviewer is scripted to ask for changes",
           evidence: [{ kind: "goal", quote: "deterministic e2e evidence" }],

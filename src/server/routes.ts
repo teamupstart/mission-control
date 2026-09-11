@@ -2303,6 +2303,15 @@ export function buildApp(
       return workflowImageFailure(c, error, "Workflow evidence could not be staged");
     }
   });
+  app.post("/api/workflow-runs/:id/submissions/:submissionId/evidence-recovery",
+    bodyLimit({ maxSize: WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES }), async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, RetryWorkflowEvidenceReadinessSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = await manager.recoverEvidence(c.req.param("id"), c.req.param("submissionId"), parsed.data.requestId);
+      return result.ok ? c.json({ ...result.value, idempotent: result.idempotent ?? false }) : workflowRuntimeFailure(c, result);
+    });
   app.post(
     "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/retry",
     bodyLimit({

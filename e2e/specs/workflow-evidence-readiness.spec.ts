@@ -764,7 +764,7 @@ test("a round's spent preflight refinements block the run and hand the decision 
   );
 });
 
-test("a Persona failing a packet the preflight passed shows the disagreement on the run timeline", async ({
+for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as const) test(`Persona readiness shows ${reviewCase} review and its recovery`, async ({
   dashboard,
   daemon,
 }) => {
@@ -774,7 +774,7 @@ test("a Persona failing a packet the preflight passed shows the disagreement on 
   // `e2e/fixtures/fake-claude.mjs` answers with a fixed, schema-valid fail verdict.
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "Disagreement reviewer",
-    guidanceMarkdown: "# Disagreement reviewer\n\nE2E_FAIL_VERDICT",
+    guidanceMarkdown: `# Disagreement reviewer\n\n${reviewCase === "corrected" ? "E2E_CONTRACT_REVIEW E2E_CORRECT_REVIEW" : reviewCase === "exhausted" ? "E2E_CONTRACT_REVIEW" : "E2E_FAIL_VERDICT"}`,
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E readiness disagreement",
@@ -839,9 +839,37 @@ test("a Persona failing a packet the preflight passed shows the disagreement on 
   ).submissions[0]?.readiness?.status, { timeout: 60_000 }).toBe("ready");
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)
-  ).run.status, { timeout: 60_000 }).toBe("waiting_for_session");
+  ).run.status, { timeout: 60_000 }).toBe(reviewCase === "corrected" ? "completed" : reviewCase === "exhausted" ? "blocked" : "waiting_for_session");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  if (reviewCase === "corrected" || reviewCase === "exhausted") {
+    const detail = await api<{ attempts: Array<{ reviewRejections?: unknown[] }>; events: Array<{ kind: string }> }>(daemon, `/api/workflow-runs/${runId}`);
+    expect(detail.attempts.some((attempt) => (attempt.reviewRejections?.length ?? 0) > 0)).toBe(true);
+    const timeline = dashboard.locator("section.wf-run-timeline");
+    await expect(timeline).toContainText("Persona contract violation");
+    await expect(timeline).toContainText(reviewCase === "corrected" ? "accepted" : "exhausted");
+    if (reviewCase === "exhausted") {
+      await expect(dashboard.getByText(/Persona review contract error/).first()).toBeVisible();
+      await expect(dashboard.getByText("Rejected review responses", { exact: true })).toBeVisible();
+    }
+    await capture(dashboard, `11-contract-${reviewCase}`, timeline);
+    return;
+  }
+  if (reviewCase === "legacy") {
+    withDaemonDb(daemon, (db) => {
+      const row = db.prepare("SELECT id, verdict_json FROM workflow_node_attempts WHERE submission_id = ? AND persona_snapshot_json IS NOT NULL").get(created.submission.id) as { id: string; verdict_json: string };
+      const verdict = JSON.parse(row.verdict_json);
+      for (const change of verdict.requestedChanges) delete change.basis;
+      db.prepare("UPDATE workflow_node_attempts SET verdict_json = ?, review_input_json = NULL WHERE id = ?").run(JSON.stringify(verdict), row.id);
+    });
+    await dashboard.reload();
+    const recovery = dashboard.getByRole("region", { name: "Evidence recovery", exact: true });
+    await expect(recovery).toContainText("legacy finding reasons may be unknown");
+    await capture(dashboard, "12-legacy-review-recovery", recovery);
+    await recovery.getByRole("button", { name: "Re-review evidence decision" }).click();
+    await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`)).submissions.length).toBe(2);
+    return;
+  }
   const timeline = dashboard.locator("section.wf-run-timeline");
   await expect(timeline.getByRole("heading", { name: "Timeline" })).toBeVisible();
   const disagreement = timeline.getByRole("listitem")
@@ -858,6 +886,49 @@ test("a Persona failing a packet the preflight passed shows the disagreement on 
   await expect(timeline.getByRole("heading", { name: "Round 1" })).toBeVisible();
   await expect(timeline.getByRole("listitem").filter({ hasText: "Persona verdict" }))
     .toContainText("verdict fail");
+  await expect(dashboard.getByText(/Structural readiness at review: ready/)).toBeVisible();
   await disagreement.scrollIntoViewIfNeeded();
   await capture(dashboard, "09-readiness-review-disagreement", timeline);
+});
+
+test("mapping infrastructure recovery reuses frozen evidence in a new same-round segment", async ({ dashboard, daemon }) => {
+  test.setTimeout(180_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const versionId = await createWorkflow(daemon);
+  const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(daemon, "/api/sessions"))
+    .find((item) => item.id === sessionId)!;
+  const noteKey = session.agentSessionId ?? session.id;
+  withDaemonDb(daemon, (db) => {
+    db.prepare("INSERT INTO workflow_evidence_owners (note_key, generation, all_generation, updated_at) VALUES (?, 0, 0, ?)")
+      .run(noteKey, Date.now());
+  });
+  stageLaterPacket(daemon, noteKey, session.cwd, 1, "mapping-recovery", false);
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", { workflowVersionId: versionId, sessionId, deliveryMode: "preview" });
+  const created = await api<{ run: { id: string }; submission: { id: string } }>(daemon,
+    `/api/workflow-bindings/${binding.id}/submit`, { requestId: "mapping-root" });
+  await expect.poll(async () => (await api<{ run: { status: string } }>(daemon,
+    `/api/workflow-runs/${created.run.id}`)).run.status).toBe("waiting_for_evidence_readiness");
+  // Reproduce a persisted failed mapping operation without launching a real model.
+  withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT context_json FROM workflow_submissions WHERE id = ?").get(created.submission.id) as { context_json: string };
+    const context = JSON.parse(row.context_json);
+    context.criterionMappings = [];
+    context.reconciliation = { version: 1, fingerprint: "a".repeat(64), status: "failed", method: "semantic", attempts: 2, error: "mapping timeout", cause: "transport" };
+    delete context.coverageSelection;
+    db.prepare("UPDATE workflow_submissions SET context_json = ?, status = 'failed' WHERE id = ?").run(JSON.stringify(context), created.submission.id);
+    db.prepare("UPDATE workflow_runs SET status = 'blocked', current_phase = 'evidence_reconciliation_error', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify({ submissionId: created.submission.id, error: "mapping timeout" }), created.run.id);
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${created.run.id}`);
+  const recovery = dashboard.getByRole("region", { name: "Evidence recovery", exact: true });
+  await expect(recovery).toContainText("frozen evidence");
+  await expect(recovery.getByRole("button", { name: "Retry criterion mapping" })).toBeVisible();
+  await capture(dashboard, "10-mapping-recovery", recovery);
+  await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
+  await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon,
+    `/api/workflow-runs/${created.run.id}`)).submissions.length).toBe(2);
+  const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
+  expect(detail.submissions.map((item) => item.round)).toEqual([1, 1]);
+  expect(detail.submissions[1]!.parentSubmissionId).toBe(created.submission.id);
+  expect(detail.submissions[0]!.status).toBe("failed");
 });

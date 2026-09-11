@@ -335,13 +335,13 @@ test("compaction isolates stable intent and assigns stable daemon criterion ids"
   assert.deepEqual(first.criterionMappings?.[0]?.matchedClientCriterionIds, ["criterion-focused"]);
   assert.match(extractionPrompts[0] ?? "", /Keep focused execution green/);
   assert.doesNotMatch(extractionPrompts[0] ?? "", /criterion-focused|focused-command/);
-  assert.match(reconciliationPrompts[0] ?? "", /criterion-focused/);
+  assert.equal(reconciliationPrompts.length, 0, "exact matches need no model");
   assert.doesNotMatch(extractionPrompts[0] ?? "", /secret body|src\/a\.ts/);
   assert.doesNotMatch(extractionPrompts[0] ?? "", /node --test focused\.test\.ts/);
   assert.doesNotMatch(extractionPrompts[0] ?? "", /ok 1 - focused behavior/);
 });
 
-test("stable extraction excludes coverage and survives source reconciliation failure", async () => {
+test("stable extraction excludes coverage and preserves deterministic matches without reconciliation", async () => {
   const prompts: Array<{ phase: "extract" | "reconcile"; prompt: string }> = [];
   const raw = {
     primaryGoal: { rawPrompt: "Keep stable intent", refined: null, sourceNoteKey: "note" },
@@ -401,7 +401,7 @@ test("stable extraction excludes coverage and survives source reconciliation fai
   ]);
   assert.deepEqual(context.criterionMappings, [{
     criterionId: context.canonicalCriteria?.[0]?.id,
-    matchedClientCriterionIds: [],
+    matchedClientCriterionIds: ["volatile-source-claim"],
   }]);
   assert.deepEqual(evaluateWorkflowEvidenceReadiness({
     canonicalCriteria: context.canonicalCriteria ?? [],
@@ -412,10 +412,10 @@ test("stable extraction excludes coverage and survives source reconciliation fai
       evidenceId: "focused-command-evidence",
       repositoryScope: "repo-01",
     }],
-  }).gapCodes, ["missing_coverage"]);
-  assert.equal(prompts.length, 2);
+  }).gapCodes, []);
+  assert.equal(prompts.length, 1);
   assert.doesNotMatch(prompts[0]?.prompt ?? "", /volatile-source-claim/);
-  assert.match(prompts[1]?.prompt ?? "", /volatile-source-claim/);
+  assert.equal(context.reconciliation?.method, "deterministic");
 });
 
 test("source compaction semantically maps differently worded coverage outside stable criteria", async () => {
@@ -553,7 +553,7 @@ test("source compaction fails closed when one claim is proposed for multiple cri
           },
           {
             text: "The supporting outcome is verified",
-            material: false,
+            material: true,
             suggestedProofClass: "focused_execution",
           },
         ],

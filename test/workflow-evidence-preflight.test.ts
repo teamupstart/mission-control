@@ -80,6 +80,7 @@ async function harness(
     humanDecisions?: () => WorkflowHumanDecision[];
     recordCompactionLedger?: boolean;
     compactContext?: typeof compactWorkflowContext;
+    reconcileContext?: NonNullable<Parameters<typeof compactWorkflowContext>[1]>["reconcile"];
     /** The Persona verdict this run's single reviewer returns. Defaults to a pass. */
     runner?: LlmRunner;
     evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
@@ -197,6 +198,7 @@ async function harness(
       };
     },
     boundaryChanged: async () => false,
+    reconcileContext: options.reconcileContext,
     ...(options.compactContext ? {
       compactContext: options.compactContext,
     } : !options.recordCompactionLedger ? {
@@ -370,8 +372,8 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   assert.equal(
     h.store.listLlmCallPage(runId).items
       .filter((call) => call.purpose === "context_reconciliation").length,
-    1,
-    "only the source submission may reconcile claims through the model",
+    0,
+    "exact matches do not spend a reconciliation call",
   );
 });
 
@@ -535,14 +537,14 @@ test("a mid-run change to the live decisions never moves the run's frozen criter
     "initial intent packet did not wait",
   );
   assert.equal(compactionCount(runId), 1);
-  assert.equal(reconciliationCount(runId), 1);
+  assert.equal(reconciliationCount(runId), 0);
 
   await stageGap(1);
   const reused = await h.manager.retryEvidenceReadiness(runId, submitted.value.submission.id, "intent-reuse", 2);
   assert.equal(reused.ok, true);
   if (!reused.ok) return;
   assert.equal(compactionCount(runId), 1);
-  assert.equal(reconciliationCount(runId), 1);
+  assert.equal(reconciliationCount(runId), 0);
   const reusedContext = WorkflowContextSnapshotSchema.parse(reused.value.submission.context);
   assert.equal(reusedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
 
@@ -560,7 +562,7 @@ test("a mid-run change to the live decisions never moves the run's frozen criter
   assert.equal(changed.ok, true);
   if (!changed.ok) return;
   assert.equal(compactionCount(runId), 1, "a later decision must not buy a second compaction");
-  assert.equal(reconciliationCount(runId), 1);
+  assert.equal(reconciliationCount(runId), 0);
   const changedContext = WorkflowContextSnapshotSchema.parse(changed.value.submission.context);
   assert.equal(changedContext.compaction.reusedFromSubmissionId, submitted.value.submission.id);
   assert.deepEqual(
@@ -1032,7 +1034,7 @@ test("a Persona failing a submission the preflight passed records an operator-vi
       return JSON.stringify({
         verdict: "fail",
         summary: "No acceptance criterion coverage was declared for this submission",
-        requestedChanges: [{
+        requestedChanges: [{ basis: "substantive",
           title: "Declare criterion coverage",
           rationale: "The packet does not link evidence to the acceptance criteria",
           evidence: [{ kind: "goal", quote: "Render the final workflow state" }],
@@ -1133,4 +1135,110 @@ test("a Persona failing a submission the preflight passed records an operator-vi
     "off",
     "the advisory disagreement records the policy that did not enforce it",
   );
+});
+
+async function stageRecoveryProof(h: Awaited<ReturnType<typeof harness>>, id: string, criterion: string): Promise<void> {
+  const result = await h.manager.stageAgentEvidence(id, {
+    images: [], commandOutputs: [{ kind: "command", clientItemId: "repair-proof", command: "verify workflow behavior", exitCode: 0, output: "ok - focused behavior", caption: "Focused regression proof", repositoryScope: "all" }],
+    coverage: [{ clientCriterionId: "repair-claim", criterion, proofClass: "focused_execution", repositoryScope: "all", links: [{ clientItemId: "repair-proof", role: "execution" }] }],
+  });
+  assert.equal(result.artifacts.length, 1);
+}
+
+test("failed mapping is infrastructure and explicit recovery freezes a same-round child without live recapture", async (t) => {
+  let calls = 0; let recovered = false; let captures = 0;
+  const h = await harness(t, "mapping-recovery", async () => { captures++; }, {
+    compactContext: async (raw) => compactWorkflowContext(raw, {
+      deferReconciliation: true, execute: async () => ({ kind: "ok", value: { constraints: [], acceptanceCriteria: ["Rendered workflow state is inspectable"], canonicalCriteria: [{ text: "Rendered workflow state is inspectable", material: true, suggestedProofClass: null }] } }),
+    }),
+    reconcileContext: async () => {
+      calls++;
+      return recovered ? { kind: "ok", value: { criterionMappings: [{ canonicalCriterionOrdinal: 1, matchedClientCriterionIds: ["repair-claim"] }] } }
+        : { kind: "failed", cause: "transport", reason: "mapping timeout" };
+    },
+  });
+  await stageRecoveryProof(h, "mapping-recovery", "The user can inspect the rendered result");
+  const created = await h.manager.submit(h.binding.id, { requestId: "mapping-source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  const { run, submission } = created.value;
+  assert.equal(h.store.getRun(run.id)?.currentPhase, "evidence_reconciliation_error");
+  assert.equal(calls, 2);
+  assert.equal(h.store.listAttempts(submission.id).length, 0);
+  assert.equal(h.store.listDeliveries(run.id).length, 0);
+  const prior = h.store.getSubmission(submission.id)!;
+  const beforeCaptures = captures;
+  recovered = true;
+  const [retry, replay] = await Promise.all([
+    h.manager.recoverEvidence(run.id, submission.id, "mapping-retry"),
+    h.manager.recoverEvidence(run.id, submission.id, "mapping-retry"),
+  ]);
+  assert.equal(retry.ok, true); assert.equal(replay.ok, true); if (!retry.ok || !replay.ok) return;
+  assert.equal(retry.value.submission.id, replay.value.submission.id);
+  await waitFor(() => h.store.getRun(run.id)?.status === "completed", "recovery failed to finish");
+  assert.equal(calls, 3); assert.equal(captures, beforeCaptures);
+  const rows = h.store.listSubmissions(run.id);
+  assert.deepEqual(rows.map((row) => [row.round, row.segment]), [[1, 0], [1, 1]]);
+  assert.deepEqual(h.store.getSubmission(submission.id), prior);
+  assert.equal(rows[1]?.readiness?.status, "ready");
+  assert.equal(h.store.consecutiveEvidencePreflightRefinements(rows[1]!.id), 0);
+  assert.equal(h.store.listSubmissionTextArtifacts(rows[1]!.id).length, 1);
+});
+
+for (const scenario of ["registration", "mixed", "parse"] as const) test(`Persona ${scenario} correction has one durable budget and emits no false repair`, async (t) => {
+  let calls = 0;
+  const h = await harness(t, `contract-${scenario}`, undefined, { runner: { ...passingRunner, async run(prompt) {
+    calls++;
+    assert.match(prompt, /Daemon structural result/);
+    assert.match(prompt, /"status":"ready"/);
+    if (scenario === "parse" && calls === 1) return "invalid JSON";
+    const changes = [{ basis: "coverage_registration", title: "Declare coverage", rationale: "Missing declaration", evidence: [{ kind: "goal", quote: "Render the final workflow state" }] }];
+    if (scenario === "mixed") changes.push({ ...changes[0]!, basis: "substantive", title: "Fix implementation" });
+    if (scenario === "registration" && calls === 2) return passingRunner.run(prompt);
+    return JSON.stringify({ verdict: "fail", summary: "Repair coverage", requestedChanges: changes, confidence: 1 });
+  } } });
+  await stageRecoveryProof(h, `contract-${scenario}`, "Rendered workflow state is inspectable");
+  const created = await h.manager.submit(h.binding.id, { requestId: "contract-source" });
+  assert.equal(created.ok, true); if (!created.ok) return;
+  await waitFor(() => ["blocked", "completed"].includes(h.store.getRun(created.value.run.id)?.status ?? ""), "review never settled");
+  assert.equal(calls, 2);
+  const attempts = h.store.listAttempts(created.value.submission.id).filter((item) => item.persona);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0]?.reviewInput?.status, "ready");
+  assert.ok(attempts[0]?.reviewRejections?.length);
+  assert.equal(h.store.listReceipts(created.value.submission.id).some((receipt) => receipt.edgeId === "repair"), false);
+  assert.equal(h.store.getRun(created.value.run.id)?.status, scenario === "registration" ? "completed" : "blocked");
+  assert.equal(h.store.listSubmissions(created.value.run.id).length, 1);
+});
+
+test("sequential A and B preflight repairs retain A's winner through real frozen inheritance", async (t) => {
+  const h = await harness(t, "sequential-coverage", undefined, { compactContext: async (raw) => compactWorkflowContext(raw, {
+    deferReconciliation: true, execute: async () => ({ kind: "ok", value: {
+      constraints: [], acceptanceCriteria: ["Verify A", "Verify B"], canonicalCriteria: ["A", "B"].map((id) => ({ text: `Verify ${id}`, material: true, suggestedProofClass: null })),
+    } }),
+  }) });
+  const stage = (rows: Array<{ id: string; criterion: string; ready: boolean }>) => h.manager.stageAgentEvidence("sequential-coverage", {
+    images: [], commandOutputs: [{ kind: "command", clientItemId: "proof", command: "test A and B", exitCode: 0, output: "both behaviors passed", caption: "Shared focused execution", repositoryScope: "all" }],
+    coverage: rows.map((row) => ({ clientCriterionId: row.id, criterion: `Verify ${row.criterion}`, proofClass: row.ready ? "focused_execution" : "visual", repositoryScope: "all", links: [{ clientItemId: "proof", role: "execution" }] })),
+  });
+  await stage([{ id: "a0", criterion: "A", ready: false }, { id: "b0", criterion: "B", ready: false }]);
+  const source = await h.manager.submit(h.binding.id, { requestId: "sequential-source" });
+  assert.equal(source.ok, true); if (!source.ok) return;
+  await stage([{ id: "a1", criterion: "A", ready: true }]);
+  const a = await h.manager.retryEvidenceReadiness(source.value.run.id, source.value.submission.id, "repair-a");
+  assert.equal(a.ok, true); if (!a.ok) return;
+  await stage([{ id: "b1", criterion: "B", ready: true }]);
+  const b = await h.manager.retryEvidenceReadiness(source.value.run.id, a.value.submission.id, "repair-b");
+  assert.equal(b.ok, true); if (!b.ok) return;
+  await waitFor(() => h.store.getRun(source.value.run.id)?.status === "completed", "B repair regressed A");
+  const current = h.store.getSubmission(b.value.submission.id)!;
+  assert.deepEqual(current.readiness?.criteria.map((row) => row.matchedClientCriterionId), ["a1", "b1"]);
+  assert.equal(current.readiness?.status, "ready");
+  assert.equal(h.store.listSubmissionCoverage(current.id).length, 4);
+  const { submissionCoverageSelection } = await import("../src/server/workflows/coverage-selection.ts");
+  // Legacy rows have no winner metadata. Replay the immutable declaration provenance.
+  for (const row of h.store.listSubmissions(source.value.run.id)) {
+    const ctx = WorkflowContextSnapshotSchema.parse(row.context); delete ctx.coverageSelection;
+    openDb().prepare("UPDATE workflow_submissions SET context_json = ? WHERE id = ?").run(JSON.stringify(ctx), row.id);
+  }
+  assert.deepEqual(submissionCoverageSelection(h.store, h.store.getSubmission(current.id)!)?.criteria.map((row) => row.matchedClientCriterionIds), [["a1"], ["b1"]]);
 });

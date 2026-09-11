@@ -21,7 +21,7 @@ A session hosted in a multiplexer is detached. It has no window until someone as
 and Focus is the ask. Today the operator gets no say in what window appears.
 
 `raiseOutward` walks outward from the pane and, when nothing already hosts the multiplexer
-session, opens a fresh tab (`src/server/actions.ts:2216-2227`):
+session, opens a fresh tab (`src/server/actions.ts:2219-2227`):
 
 ```ts
 const argv = attachArgv(inside.session);
@@ -115,7 +115,7 @@ flowchart LR
 | --- | --- | --- |
 | Vocabulary | `src/shared/terminal.ts` | `resolveEmulatorBackend` - the emulator-only sibling of `resolveTerminalBackend`, so "a multiplexer is not a valid answer here" is a type fact rather than a filter each caller repeats. Plus `needsTerminalApp?: boolean` on `TerminalTargetView`. |
 | Wire | `src/shared/protocol.ts` | `TerminalsConfigSchema` carrying `multiplexerTerminal`, exhaustively keyed by `MultiplexerId` so adding a multiplexer fails typecheck rather than silently gaining no preference. Values are stored LOOSE (`z.string().nullable()`) and written STRICT (`z.enum(EMULATOR_IDS)` in the patch schema), mirroring the `StoredTerminalBackendSchema` / `TerminalBackendSchema` pair at `src/shared/protocol.ts:2335-2338`. A strict stored schema would reject a newer build's emulator id at parse time, which is precisely the value the unknown-but-reportable rule below exists to carry. |
-| Persistence | `src/shared/app-config-entries.ts`, `src/server/db.ts` | One `"setting"` entry, read and written through the existing `getAppConfig` / `setAppConfig` pair. Additive with a default, so an untouched install and an older build both resolve as they do now. |
+| Persistence | `src/shared/app-config-entries.ts`, `src/shared/settings-backup-domains.ts` | One `"setting"` entry plus its appended backup domain id. No `src/server/db.ts` change and no migration: `app_config` is an existing key/value table, and the entry is read and written through the generic `getAppConfig` / `setAppConfig` pair. Additive with a default, so an untouched install and an older build both resolve as they do now. |
 | Route | `src/server/routes.ts` | `GET` / `PUT /api/terminals/config`, beside the setup routes, merging per multiplexer key the way `setHarnessesConfig` merges per agent (`src/server/harnesses.ts:105`) - so setting tmux's terminal cannot blank Herdr's. Deliberately not folded into `/api/harnesses/config`: that object is keyed per agent, and this one is keyed per multiplexer. |
 | Availability view | `src/server/terminal/targets.ts` | `multiplexerView` sets `needsTerminalApp`, and names the chosen raiser in its blurb rather than the registry's first. `raiser(deps, mux)` gains the multiplexer argument and consults its preference before falling back to registry order. |
 | Focus | `src/server/actions.ts`, `src/server/terminal/registry.ts` | Step 4 orders its emulator attempts by that multiplexer's preference and skips a backend whose binary is absent. `TerminalDeps` extends `BinAvailabilityDeps` and `defaultTerminalDeps` supplies `installed: binPresent` / `unsupported: binUnsupportedReason`, exactly as `defaultTerminalTargetDeps` already does (`src/server/terminal/targets.ts:48-54`) - so the check is injectable and a test can assert that an absent terminal is never spawned at all. |

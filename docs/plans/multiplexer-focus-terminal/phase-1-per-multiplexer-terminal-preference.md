@@ -74,8 +74,9 @@ sites already hold the multiplexer.
 `binUnavailableReason`. It cannot as written: `TerminalDeps`
 (`src/server/terminal/registry.ts:118-121`) carries only `multiplexers` and `emulators`, with no
 availability dependency. `TerminalTargetDeps` already solves this by extending
-`BinAvailabilityDeps` and supplying `installed: binPresent` / `unsupported:
-binUnsupportedReason` in `defaultTerminalTargetDeps` (`src/server/terminal/targets.ts:42-54`).
+`BinAvailabilityDeps` (`src/server/terminal/targets.ts:42-46`) and supplying
+`installed: binPresent` / `unsupported: binUnsupportedReason` in `defaultTerminalTargetDeps`
+(`:48-54`).
 Do the same to `TerminalDeps` and `defaultTerminalDeps`, so the check is injectable and a test
 can assert that an absent terminal is never spawned at all.
 
@@ -344,3 +345,11 @@ and the things not to quietly change:
   and `resolveFocusEmulator` now returns the `{ backend, unknown }` pair instead of a bare id so
   the Setup row can report the ignored preference. No approved decision changed - this makes the
   artifacts consistent with behaviour `plan.md` already specified.
+- **Review round 2 (Inspector, both valid).** `plan.md` cited the step-4 block at
+  `actions.ts:2216-2227` while this file cited `:2219-2227`; harmonized on `:2219-2227`, the
+  `if (attachArgv) { ... }` block itself. The `targets.ts` citation was split so each fact
+  carries its own range: the interface at `:42-46`, `defaultTerminalTargetDeps` at `:48-54`.
+  Separately, `plan.md`'s persistence row named `src/server/db.ts`, which this phase never
+  edits - `app_config` already exists and the entry needs no migration. That row now names
+  `settings-backup-domains.ts` instead and says so explicitly. Editorial only; no approved
+  decision changed.

@@ -35,6 +35,7 @@ import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 const EVIDENCE = artifactsDir("settings-standing-instructions");
 
 const RULE = "Never run E2E tests locally. Run npm test and let CI cover the browser layer.";
+const DEFAULT_RULE = "Always preserve unrelated work and never force-push.";
 
 /** Photograph a state this spec has already asserted on, behind `MC_E2E_EVIDENCE`. */
 async function shoot(
@@ -123,6 +124,56 @@ async function writeRule(page: Page, daemon: DaemonHandle, repo: string, rule: s
     .toBe(rule);
 }
 
+async function writeDefault(page: Page, daemon: DaemonHandle) {
+  await page.getByLabel("Standing instructions for every repository").fill(DEFAULT_RULE);
+  await page.locator(".si-default").getByRole("button", { name: "Save" }).click();
+  await expect.poll(async () => {
+    const view = await (await page.request.get(`${daemon.baseURL}/api/instructions`)).json();
+    return view.default;
+  }).toBe(DEFAULT_RULE);
+}
+
+test("repository instructions append to the default in preview and the next session", async ({ dashboard, daemon }) => {
+  await openPanel(dashboard, daemon);
+  await writeDefault(dashboard, daemon);
+  await writeRule(dashboard, daemon, daemon.repo, RULE);
+  await openPanel(dashboard, daemon, { reload: true });
+  await openCard(dashboard, daemon.repo);
+  await expect(dashboard.getByLabel("Standing instructions for every repository")).toHaveValue(DEFAULT_RULE);
+  await expect(dashboard.getByLabel(`Standing instructions for ${daemon.repo}`)).toHaveValue(RULE);
+
+  await dashboard.getByRole("button", { name: "← Fleet" }).click();
+  await dashboard.getByRole("button", { name: "Dispatch" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("verify additive instructions");
+  await dialog.getByRole("button", { name: "view" }).click();
+  const preview = dialog.locator(".si-delivery-text");
+  await expect(preview).toContainText(`${DEFAULT_RULE}\n\n${RULE}`);
+  const expectedText = await preview.textContent();
+  await expectContentClearsBorder(dialog);
+  await shoot(dashboard, "additive-preview");
+  await dashboard.keyboard.press("Escape");
+  await dispatch(dashboard, daemon.repo, "verify additive instructions");
+  const id = await onlySession(dashboard, daemon);
+  await expect.poll(async () => (await launchSnapshot(dashboard, daemon, id))?.text).toBe(expectedText);
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  await dashboard.getByRole("button", { name: "See standing instructions" }).click();
+  const received = dashboard.getByRole("dialog", { name: "Standing instructions this session received" });
+  await expect(received.locator(".si-delivery-text")).toHaveText(expectedText!);
+  await expectContentClearsBorder(received);
+  await shoot(dashboard, "additive-session");
+
+  await dashboard.keyboard.press("Escape");
+  await openPanel(dashboard, daemon, { reload: true });
+  await openCard(dashboard, daemon.repo);
+  await expect(cardFor(dashboard, daemon.repo).getByText("appended", { exact: true })).toBeVisible();
+  await expect(dashboard.getByText("Repository instructions are appended after the default.")).toBeVisible();
+  await shoot(dashboard, "additive-settings");
+});
+
 /** Drive the dispatch modal for `repo`, with the workflow pinned to none. */
 async function dispatch(page: Page, repo: string, task: string): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
@@ -201,9 +252,7 @@ test("a rule written in Settings survives a reload and reads back from the daemo
   await openCard(dashboard, daemon.repo);
   await expect(dashboard.getByLabel(`Standing instructions for ${daemon.repo}`))
     .toHaveValue(RULE);
-  // `override`, not `inherited` - the chip is what tells an operator this repository carries
-  // its own text rather than falling through to the machine-wide default.
-  await expect(cardFor(dashboard, daemon.repo).getByText("override")).toBeVisible();
+  await expect(cardFor(dashboard, daemon.repo).getByText("appended", { exact: true })).toBeVisible();
   await shoot(dashboard, "rule-saved");
 
   // The reach block, row by row, in a browser. The Node test pins the DERIVATION that
@@ -452,16 +501,14 @@ test("a repository path containing a space is previewed, not silently split", as
   await expect(dialog.getByText(`from the rule for ${spaced}`)).toBeVisible();
 });
 
-// ---- 6. Use global default removes the override rather than emptying it ----
+// ---- 6. Clearing or removing repository instructions preserves the default ----
 
-test("Use global default returns a repository to inheriting, which an empty box does not", async ({
+test("clearing and removing repository instructions both preserve the default", async ({
   dashboard,
   daemon,
 }) => {
-  // The distinction the whole store is built on, driven through the two real controls: a
-  // box cleared to empty is an override meaning "send nothing HERE" and beats the
-  // machine-wide default, while removing the override falls back through to it.
   await openPanel(dashboard, daemon);
+  await writeDefault(dashboard, daemon);
   await writeRule(dashboard, daemon, daemon.repo, RULE);
 
   const card = cardFor(dashboard, daemon.repo);
@@ -473,19 +520,30 @@ test("Use global default returns a repository to inheriting, which an empty box 
     .poll(async () => {
       const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
       return Object.hasOwn(view.repositories, daemon.repo) ? view.repositories[daemon.repo] : "ABSENT";
-    }, { message: "clearing the box stores an empty override - it does not remove the key" })
+    }, { message: "clearing the box stores an empty entry" })
     .toBe("");
-  // Still an override, because "" beats the default. The chip has to say so.
-  await expect(card.getByText("override")).toBeVisible();
+  await expect(card.getByText("default", { exact: true })).toBeVisible();
+  await expect(card.getByText(/Leave this empty to keep only the default/)).toBeVisible();
+  const resolved = async () => (await dashboard.request.get(
+    `${daemon.baseURL}/api/instructions/resolved?repoPath=${encodeURIComponent(daemon.repo)}&agent=claude&runtime=sdk`,
+  )).json();
+  expect((await resolved()).text).toBe(`## Standing instructions for this repository\n\n${DEFAULT_RULE}`);
+  await shoot(dashboard, "empty-repository-keeps-default");
 
-  await card.getByRole("button", { name: "Use global default" }).click();
+  await card.getByRole("button", { name: "Remove repository instructions" }).click();
   await expect
     .poll(async () => {
       const view = await (await dashboard.request.get(`${daemon.baseURL}/api/instructions`)).json();
       return Object.hasOwn(view.repositories, daemon.repo);
-    }, { message: "Use global default sends null, which removes the key" })
+    }, { message: "removing repository instructions sends null, which removes the key" })
     .toBe(false);
   await expect(dashboard.getByText("0 configured")).toBeVisible();
+  expect((await resolved()).text).toBe(`## Standing instructions for this repository\n\n${DEFAULT_RULE}`);
+  await dashboard.getByRole("button", { name: "← Fleet" }).click();
+  await dispatch(dashboard, daemon.repo, "verify the default remains");
+  const id = await onlySession(dashboard, daemon);
+  await expect.poll(async () => (await launchSnapshot(dashboard, daemon, id))?.text)
+    .toBe(`## Standing instructions for this repository\n\n${DEFAULT_RULE}`);
 });
 
 // ---- 7. A poll landing mid-edit does not revert the operator's text ----

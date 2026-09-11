@@ -277,13 +277,14 @@ This is per-repository **and** machine-local, which is why its badge is *This ma
 daemon acts locally, and nothing is written to `~/` or sent to GitHub.
 
 The panel holds a machine-wide **Every repository** box plus one card per configured
-checkout. Two distinctions are load-bearing and the chips render both. An **absent** key
-inherits the machine-wide default; a key stored **empty** is still an `override` and means
-"send nothing for this repository", which beats that default. Clearing a box and pressing
-**Use global default** are therefore two different gestures with two different outcomes - the
-button removes the key, the empty box stores one. Resolution is longest-path-match on the
-canonical repo-rooted path, so a monorepo package's rule beats the monorepo's, and a
-subdirectory is a legitimate key.
+checkout. The default is sent first to every new session. Repository instructions are
+**appended** after it, and the card's **appended** chip identifies a saved addition.
+An **empty** repository entry adds nothing and shows **default**; it never suppresses the
+machine-wide instructions. **Remove repository instructions** removes the entry entirely.
+Resolution selects the longest matching canonical repo-rooted path, so a package entry
+takes the place of its monorepo entry while still keeping the default. Clearing a package
+entry keeps only the default; removing it can reveal the monorepo's addition again.
+Subdirectories are legitimate keys.
 
 Each card carries a **reach** block, and it is not decoration. It states, per harness *and*
 runtime, which sessions get the text and by which mechanism - a system-prompt append on

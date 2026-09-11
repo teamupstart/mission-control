@@ -65,14 +65,22 @@ function ReachBlock(): React.JSX.Element {
   );
 }
 
-function Card({
-  card,
-  state,
-}: {
+interface RepositoryCardProps {
   card: StandingInstructionsCard;
   state: StandingInstructionsState;
-}): React.JSX.Element {
+}
+
+function Card(props: RepositoryCardProps): React.JSX.Element {
   const [open, setOpen] = useState(false);
+  return <StandingInstructionsRepositoryCard {...props} open={open} onToggle={() => setOpen((v) => !v)} />;
+}
+
+export function StandingInstructionsRepositoryCard({
+  card,
+  state,
+  open,
+  onToggle,
+}: RepositoryCardProps & { open: boolean; onToggle: () => void }): React.JSX.Element {
   const label = card.key;
   const inConflict = card.theirs !== null || state.conflictCards.includes(card.key);
   return (
@@ -82,18 +90,19 @@ function Card({
           type="button"
           className="si-card-head"
           aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
+          onClick={onToggle}
         >
           <span className="si-disclosure" aria-hidden>{open ? "▾" : "▸"}</span>
           <RepositoryName path={label} className="si-card-name" />
-          <StateChip label={card.override ? "override" : "inherited"} />
+          <StateChip label={card.configured && state.view?.repositories[card.key] ? "appended" : "default"} />
           {card.dirty && <span className="si-chip si-chip-unsaved">unsaved</span>}
         </button>
       </Tooltip>
       {open && (
         <div className="si-card-body">
           <p className="settings-hint">
-            Sent to every session Mission Control opens into this repository.
+            Appended after the default for every new session in this repository.
+            Leave this empty to keep only the default.
           </p>
           <label className="sr-only" htmlFor={`si-text-${label}`}>
             {`Standing instructions for ${label}`}
@@ -115,7 +124,7 @@ function Card({
                 This repository changed in another window while you were editing. Your text is
                 still here and nothing has been written.
               </p>
-              <pre className="si-conflict-theirs">{card.theirs ?? "(no override)"}</pre>
+              <pre className="si-conflict-theirs">{card.theirs ?? "(no repository instructions)"}</pre>
               <div className="si-actions">
                 <Tooltip label="Keep the text you typed, on top of the newer document">
                   <button type="button" className="btn" onClick={state.keepMine}>
@@ -155,18 +164,18 @@ function Card({
             {card.key !== DEFAULT_CARD && (
               <Tooltip
                 label={
-                  card.override
-                    ? "Remove this repository's rule so it inherits the machine-wide default"
-                    : "This repository already inherits the machine-wide default"
+                  card.configured
+                    ? "Remove this entry; the default still applies, along with any matching parent entry"
+                    : "This repository has no saved entry to remove"
                 }
               >
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  disabled={!card.override || state.saving !== null}
-                  onClick={() => void state.useGlobalDefault(card.key)}
+                  disabled={!card.configured || state.saving !== null}
+                  onClick={() => void state.removeRepository(card.key)}
                 >
-                  Use global default
+                  Remove repository instructions
                 </button>
               </Tooltip>
             )}
@@ -215,8 +224,8 @@ export function StandingInstructionsPanel({
           <div>
             <h4>Every repository</h4>
             <p className="settings-hint">
-              What a session gets when its checkout has no rule of its own. Leave it empty to
-              send nothing by default.
+              Sent first to every new session, including repositories with their own instructions.
+              Leave it empty to send only repository instructions.
             </p>
           </div>
         </div>
@@ -272,15 +281,18 @@ export function StandingInstructionsPanel({
           <div>
             <h4>Repositories</h4>
             <p className="settings-hint">
-              A rule here beats the default. The longest matching path wins, so a
-              package&rsquo;s rule beats its monorepo&rsquo;s.
+              Repository instructions are appended after the default.
+            </p>
+            <p className="settings-hint">
+              The longest matching path selects which repository instructions to append,
+              so a package entry takes the place of its monorepo entry. The default always applies.
             </p>
           </div>
           {/* STORED rules, not cards drawn. A repository staged from the combobox is on
               screen but nothing is saved for it yet, and counting it would tell the operator
               a rule is in force that no session will ever receive. */}
           <span className="si-count">
-            {`${repoCards.filter((c) => c.override).length} configured`}
+            {`${repoCards.filter((c) => c.configured).length} configured`}
           </span>
         </div>
 

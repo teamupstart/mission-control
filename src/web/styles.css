@@ -32911,7 +32911,7 @@ body.foreman-sidecar-open .modal-backdrop {
   white-space: nowrap;
 }
 
-.si-chip-override {
+.si-chip-appended {
   border-color: color-mix(in oklab, var(--select) 34%, var(--border));
   color: var(--select);
   background: color-mix(in oklab, var(--select) 9%, transparent);

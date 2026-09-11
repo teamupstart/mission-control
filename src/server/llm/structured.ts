@@ -102,12 +102,13 @@ export async function runStructured<S extends ZodTypeAny>(
   extract: (raw: string) => TypeOf<S> | null,
   label = "The model",
   observer?: StructuredAttemptObserver,
-  opts?: { shapeGuaranteed?: boolean },
+  opts?: { shapeGuaranteed?: boolean; maxAttempts?: 1 | 2 },
 ): Promise<StructuredResult<TypeOf<S>>> {
   // A provider-guaranteed INPUT shape makes a JSON-syntax re-prompt redundant. Extraction
   // still runs below on every path: callers consume Zod's OUTPUT type, including transforms
   // and refinements no provider-side JSON Schema can execute.
-  const attempts = opts?.shapeGuaranteed
+  // A caller that owns its retry budget can independently cap this helper at one execution.
+  const attempts = opts?.shapeGuaranteed || opts?.maxAttempts === 1
     ? [prompt]
     : [prompt, `${prompt}\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON object.`];
   for (let index = 0; index < attempts.length; index++) {

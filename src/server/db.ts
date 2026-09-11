@@ -1219,6 +1219,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       operator_directive_json TEXT,
       -- Same-submission Check outcomes frozen when a Persona first became runnable.
       check_evidence_json     TEXT,
+      review_input_json       TEXT,
+      review_rejections_json  TEXT,
       -- The Command slot this attempt RESERVED an execution of, or NULL for every attempt
       -- that never reached one. It is the durable claim on a Command's per-run budget, and
       -- it is a slot rather than a flag because the budget belongs to the Command: two check
@@ -3195,6 +3197,8 @@ function migrate(d: DatabaseSync): void {
   // active at claim time; retries of the same attempt retain a non-null snapshot.
   addColumn(d, "workflow_node_attempts", "operator_directive_json", "TEXT");
   addColumn(d, "workflow_node_attempts", "check_evidence_json", "TEXT");
+  addColumn(d, "workflow_node_attempts", "review_input_json", "TEXT");
+  addColumn(d, "workflow_node_attempts", "review_rejections_json", "TEXT");
 
   // Where an imported Persona was read from, so an upstream edit can be SEEN rather than
   // silently adopted. Nullable with no default because a Persona authored in the editor

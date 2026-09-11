@@ -246,7 +246,7 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
         ? JSON.stringify({
             verdict: "fail",
             summary: "Needs repair",
-            requestedChanges: [{
+            requestedChanges: [{ basis: "substantive",
               title: "Fix it",
               rationale: "Intent is not met",
               evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
@@ -687,11 +687,10 @@ test("SDK failures keep the existing persona_infrastructure vocabulary and durab
   assert.deepEqual(calls, [
     { state: "failed", error_code: "persona_infrastructure" },
     { state: "failed", error_code: "persona_infrastructure" },
-    { state: "failed", error_code: "persona_infrastructure" },
   ]);
 
   const attempts = store.listAttempts("submission-infra").filter((attempt) => attempt.nodeId === "p");
-  assert.deepEqual(attempts.map((attempt) => attempt.attempt), [1, 2, 3]);
+  assert.deepEqual(attempts.map((attempt) => attempt.attempt), [1]);
   assert.ok(attempts.every((attempt) => attempt.state === "error"));
   assert.equal(store.listReceipts("submission-infra").some((receipt) => receipt.edgeId === "p-fail"), false);
   assert.equal(store.getRun("run-infra")?.currentPhase, "infrastructure_error");
@@ -721,7 +720,7 @@ test("SDK failures keep the existing persona_infrastructure vocabulary and durab
       .filter((attempt) => attempt.nodeId === "p")
       .map((attempt) => attempt.attempt)
       .sort((a, b) => a - b),
-    [1, 2, 3, 4],
+    [1, 2],
   );
   assert.equal(store.addReceipt("submission-infra", "p-pass", failed.id, { outcome: "pass" }, 22), true);
   assert.equal(
@@ -1733,7 +1732,7 @@ function verdictRunner(reviewed: string[]) {
         ? JSON.stringify({
             verdict: "fail",
             summary: "Needs repair",
-            requestedChanges: [{
+            requestedChanges: [{ basis: "substantive",
               title: "Fix it",
               rationale: "Intent is not met",
               evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
@@ -1855,7 +1854,7 @@ test("Persona feedback stays scoped to one reviewer and persists into repair rou
           ? JSON.stringify({
               verdict: "fail",
               summary: "Needs repair",
-              requestedChanges: [{
+              requestedChanges: [{ basis: "substantive",
                 title: "Fix it",
                 rationale: "Intent is not met",
                 evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
@@ -2029,7 +2028,7 @@ for (const skipPassedJudges of [true, false]) {
           const pass = runner === "claude" ? count === 1 : count >= 3;
           return JSON.stringify(pass
             ? { verdict: "pass", summary: "Approved", approvalDetails: { reason: "Met", evidence: [] }, confidence: 1 }
-            : { verdict: "fail", summary: "Repair", requestedChanges: [{ title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
+            : { verdict: "fail", summary: "Repair", requestedChanges: [{ basis: "substantive", title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
         },
       }),
     };
@@ -2092,7 +2091,7 @@ test("explicit rechecks supersede older passes when judge reuse is reenabled", a
         const pass = runner === "claude" ? count !== 2 : count === 4;
         return JSON.stringify(pass
           ? { verdict: "pass", summary: "Approved", approvalDetails: { reason: "Met", evidence: [] }, confidence: 1 }
-          : { verdict: "fail", summary: "Regression", requestedChanges: [{ title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
+          : { verdict: "fail", summary: "Regression", requestedChanges: [{ basis: "substantive", title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
       },
     }),
   };
@@ -2217,6 +2216,59 @@ test("cancelled, failed, disabled and unexecuted judges do not earn a reusable p
     }, 70 + index);
     assert.equal(store.priorPassedJudge("run-judge-pass-exclusions", "p1", 2), null);
   }
+});
+
+test("rejected Persona responses retain a UTF-8 byte bound without splitting characters", () => {
+  const store = seedSubmission("rejection-byte-bound", disableGraph());
+  const attempt = store.insertAttempt({ id: "unicode-rejection", submissionId: "submission-rejection-byte-bound",
+    nodeId: "p1", attempt: 1, state: "running", persona: persona("p1", "Judge", "claude", "review"),
+    inputFingerprint: "unicode-rejection", now: 5 });
+  for (const [index, raw] of ["a" + "界".repeat(64_000), "a" + "😀".repeat(64_000)].entries()) {
+    store.retainRejectedPersonaVerdict(attempt.id, index + 1, "parse", raw);
+    const retained = store.getAttempt(attempt.id)!.reviewRejections!.find((item) => item.execution === index + 1)!.raw;
+    assert.ok(Buffer.byteLength(retained, "utf8") <= 64_000);
+    assert.ok(Buffer.byteLength(retained, "utf8") >= 63_997);
+    assert.ok(raw.startsWith(retained));
+    assert.equal(Buffer.from(retained, "utf8").toString("utf8"), retained);
+  }
+  assert.equal(store.getAttempt(attempt.id)!.reviewRejections!.length, 2);
+});
+
+for (const priorBasis of [null, "coverage_registration", "evidence_access", "parse"])
+for (const priorCalls of [1, 2]) test(`restart retains Persona input and ${priorBasis ?? "transport"} correction with ${priorCalls} prior executions`, async () => {
+  const id = `contract-restart-${priorCalls}-${priorBasis ?? "transport"}`;
+  const reviewer = persona("p", "Contract reviewer", "claude", "Review");
+  const executionGraph: PublishedWorkflowGraph = {
+    nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "p", kind: "persona", persona: reviewer, position: { x: 100, y: 0 } }, { id: "end", kind: "end", outcome: "Done", position: { x: 200, y: 0 } }],
+    edges: [{ id: "start", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" }, { id: "pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" }, { id: "fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" }],
+  };
+  const store = seedSubmission(id, executionGraph);
+  const { personaReviewInput, personaReviewInputDigest } = await import("../src/server/workflows/persona-contract.ts");
+  const input = personaReviewInput(store.getSubmission(`submission-${id}`)!, store.getWorkflowVersionById(`version-${id}`)!);
+  const fingerprint = personaReviewInputDigest(input);
+  store.insertAttempt({ id: `attempt-${id}`, submissionId: `submission-${id}`, nodeId: "p", attempt: 1, state: "running", persona: reviewer, reviewInput: input, inputFingerprint: fingerprint, now: 4 });
+  if (priorBasis) store.retainRejectedPersonaVerdict(`attempt-${id}`, 1, priorBasis, "rejected review");
+  for (let i = 1; i <= priorCalls; i++) store.insertLlmCall({ id: `call-${id}-${i}`, runId: `run-${id}`, submissionId: `submission-${id}`, nodeAttemptId: `attempt-${id}`, purpose: "persona_review", runner: "claude", model: "fake", attempt: i, state: "running", startedAt: 5, finishedAt: null, durationMs: null, inputBytes: 100, outputBytes: 0, costUsd: null, errorCode: null });
+  store.setRunState(`run-${id}`, "running", "persona_review", null, 6);
+  store.updateSubmissionCapture(`submission-${id}`, { context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: { evaluatorVersion: "criterion_mapped_v1", status: "unavailable", criteria: [], gapCodes: [], warningCodes: [], unavailableReason: "Changed after attempt creation" } }, 6);
+  let calls = 0;
+  const fake: LlmRunner = { id: "claude", label: "fake", runInThread: null, structuredOutput: null, sandbox: null, price: () => null, litter: null, killLiveRuns() {}, async run(prompt) {
+    calls++; assert.match(prompt, /"status":"unknown"/); assert.doesNotMatch(prompt, /Changed after attempt creation/);
+    assert.ok(prompt.includes(`Correction required: ${priorBasis && priorBasis !== "parse" ? priorBasis : "the prior reply could not be executed or parsed"}.`));
+    return JSON.stringify({ verdict: "pass", summary: "Pass", approvalDetails: { reason: "Proven", evidence: [] }, confidence: 1 });
+  } };
+  const engine = new WorkflowEngine(store, () => {}, { runnerFor: () => fake, resolveExecution: () => ({ runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" } }), retryBaseMs: 1 });
+  engine.start();
+  try { await waitFor(() => ["completed", "blocked"].includes(store.getRun(`run-${id}`)?.status ?? "")); }
+  finally { await engine.stop(); }
+  assert.equal(calls, 2 - priorCalls);
+  assert.equal(store.getRun(`run-${id}`)?.status, priorCalls === 1 ? "completed" : "blocked");
+  assert.equal(store.personaOperationCalls(input.operationId), 2);
+  assert.deepEqual(store.getAttempt(`attempt-${id}`)?.reviewInput, input);
+  for (const row of store.listAttempts(`submission-${id}`).filter((a) => a.persona)) {
+    assert.deepEqual(row.reviewInput, input); assert.equal(row.inputFingerprint, fingerprint);
+  }
+  assert.equal(store.listReceipts(`submission-${id}`).some((receipt) => receipt.edgeId === "fail"), false);
 });
 
 // --- Per-node execution overrides: the workflow's own provider and model ---

@@ -211,15 +211,14 @@ export const WORKFLOW_IMAGE_LIMITS = {
 /**
  * Bounded text or log evidence registered beside workflow screenshots.
  *
- * The aggregate stays below one model-facing review section, even before the manifest and
- * fence framing are added. A focused test transcript is normally a few kilobytes; 64 KiB per
- * item leaves room for a useful failure tail without allowing one log to dominate the immutable
- * 2 MB workflow context.
+ * Each artifact gets its own model-facing review section. The 64 KiB item bound leaves room
+ * for a useful failure tail; the aggregate bounds the combined evidence alongside the rest
+ * of the immutable 2 MB workflow context, whose serialized byte limit is checked separately.
  */
 export const WORKFLOW_TEXT_EVIDENCE_LIMITS = {
   maxCount: 8,
   maxBytesPerArtifact: 64 * 1_024,
-  maxAggregateBytes: 192 * 1_024,
+  maxAggregateBytes: 384 * 1_024,
   captionChars: 1_000,
   displayNameChars: 200,
   clientItemIdChars: 200,
@@ -358,6 +357,49 @@ export interface WorkflowCriterionMapping {
   matchedClientCriterionIds: string[];
 }
 
+export interface WorkflowCriterionReconciliation {
+  version: 1;
+  fingerprint: string;
+  status: "pending" | "complete" | "failed";
+  method: "deterministic" | "semantic";
+  attempts: number;
+  error: string | null;
+  cause: "transport" | "parse" | "cancelled" | null;
+}
+
+/** Daemon-owned declaration selection; absent claims stay selected so history cannot revive them. */
+export interface WorkflowCoverageSelection {
+  version: 1;
+  sourceSubmissionId: string | null;
+  criteria: WorkflowCriterionMapping[];
+}
+
+export function selectWorkflowCoverageClaims(input: {
+  canonicalCriteria: readonly WorkflowCanonicalCriterion[];
+  criterionMappings: readonly WorkflowCriterionMapping[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  previous?: WorkflowCoverageSelection;
+  sourceSubmissionId?: string | null;
+}): WorkflowCoverageSelection {
+  const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
+  return {
+    version: 1,
+    sourceSubmissionId: input.sourceSubmissionId ?? null,
+    criteria: input.canonicalCriteria.map((criterion) => {
+      const mapped = [...new Set(input.criterionMappings
+        .filter((mapping) => mapping.criterionId === criterion.id)
+        .flatMap((mapping) => mapping.matchedClientCriterionIds))].filter((id) => claims.has(id));
+      const declared = mapped.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
+      const previous = input.previous?.criteria.find((row) => row.criterionId === criterion.id);
+      return {
+        criterionId: criterion.id,
+        matchedClientCriterionIds: [...new Set(declared.length > 0
+          ? declared : previous?.matchedClientCriterionIds.length ? previous.matchedClientCriterionIds : mapped)].sort(),
+      };
+    }),
+  };
+}
+
 export interface WorkflowEvidenceReadinessLink {
   clientItemId: string;
   evidenceId: string;
@@ -468,6 +510,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   coverage: readonly WorkflowEvidenceCoverageClaim[];
   evidence: readonly WorkflowFrozenEvidenceIdentity[];
   unavailableReason?: string | null;
+  selection?: WorkflowCoverageSelection;
   enforceCoverage?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
@@ -507,30 +550,17 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       .flatMap((mapping) => mapping.matchedClientCriterionIds))]
       .filter((id) => claims.has(id))
       .sort();
-    /*
-     * A claim the author declared HERE answers for the criterion; a carried one only stands in.
-     *
-     * Evidence carry-forward retains every frozen claim of the previous submission, so a
-     * criterion an author keeps re-proving accumulates its own ancestry. Reading that ancestry
-     * as competing declarations would report `ambiguous_mapping` on a submission whose current
-     * claim is perfectly clear, and a mapping repair that re-declares the criterion it was sent
-     * back to repair could never become ready again.
-     *
-     * Ambiguity is a question about what the AUTHOR is asserting now. Two claims they wrote for
-     * one criterion is exactly that and still reports; their own claim standing in front of the
-     * copies it descends from is not. Where no claim was declared here, the carried ones answer
-     * and are judged among themselves exactly as before - which is what makes inheritance worth
-     * anything, since that is the case where the criterion would otherwise have no claim at all.
-     */
     const declaredIds = mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
-    const matchedIds = declaredIds.length > 0 ? declaredIds : mappedIds;
+    const selected = input.selection?.criteria.find((row) => row.criterionId === canonical.id);
+    const matchedIds = declaredIds.length > 0 ? declaredIds
+      : selected ? selected.matchedClientCriterionIds : mappedIds;
     const crossCriterionAmbiguity = matchedIds.some((id) => crossCriterionClaimIds.has(id));
-    const claim = matchedIds.length === 1 && !crossCriterionAmbiguity
+    const claim = matchedIds.length === 1 && mappedIds.includes(matchedIds[0]!) && !crossCriterionAmbiguity
       ? claims.get(matchedIds[0]!)!
       : null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
-    if (canonical.material && matchedIds.length === 0) gaps.push("missing_coverage");
+    if (canonical.material && !crossCriterionAmbiguity && (matchedIds.length === 0 || (matchedIds.length === 1 && !claim))) gaps.push("missing_coverage");
     if (matchedIds.length > 1 || crossCriterionAmbiguity) gaps.push("ambiguous_mapping");
     const links = claim?.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
       const item = evidence.get(link.clientItemId);
@@ -2433,6 +2463,7 @@ export type WorkflowSubmissionStatus = (typeof WORKFLOW_SUBMISSION_STATUSES)[num
 export const WORKFLOW_SUBMISSION_REFINEMENT_REASONS = [
   "session_action",
   "evidence_preflight",
+  "evidence_recovery",
 ] as const;
 export type WorkflowSubmissionRefinementReason =
   (typeof WORKFLOW_SUBMISSION_REFINEMENT_REASONS)[number];
@@ -3997,6 +4028,25 @@ export function manualWorkflowTriggerRequestId(
   return requestId.length > 0 && !requestId.includes(":") ? requestId : null;
 }
 
+/** Daemon-owned structural facts frozen with a Persona attempt, without authored prose. */
+export interface WorkflowPersonaReviewInput {
+  version: 1;
+  operationId: string;
+  submissionId: string;
+  round: number;
+  segment: number;
+  policy: WorkflowEvidenceReadinessPolicy;
+  status: WorkflowEvidenceReadinessStatus | "unknown";
+  evaluatorVersion: "criterion_mapped_v1" | null;
+  criteria: Array<{
+    criterionId: string;
+    material: boolean;
+    claimId: string | null;
+    evidenceIds: string[];
+    gaps: WorkflowEvidenceReadinessGapCode[];
+  }>;
+}
+
 export interface WorkflowNodeAttempt {
   id: WorkflowNodeAttemptId;
   submissionId: WorkflowSubmissionId;
@@ -4020,6 +4070,8 @@ export interface WorkflowNodeAttempt {
    * Absent on historical attempts and every non-Persona attempt.
    */
   checkEvidence?: WorkflowCheckEvidence[];
+  reviewInput?: WorkflowPersonaReviewInput;
+  reviewRejections?: Array<{ execution: number; basis: string; raw: string }>;
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
@@ -4110,6 +4162,8 @@ export interface WorkflowHumanDecision {
 }
 
 export interface PersonaFeedbackSummary {
+  omittedBefore?: number;
+  origin?: { submissionId: string; round: number; segment: number; attemptId: string; createdAt: number };
   personaName: string;
   summary: string;
   requestedChanges: string[];
@@ -4182,6 +4236,8 @@ export type WorkflowContextSnapshot = WorkflowSteeringContext & {
   canonicalCriteria?: WorkflowCanonicalCriterion[];
   /** Per-submission author claim matches, separate from stable canonical criterion identity. */
   criterionMappings?: WorkflowCriterionMapping[];
+  coverageSelection?: WorkflowCoverageSelection;
+  reconciliation?: WorkflowCriterionReconciliation;
   priorPersonaFeedback: PersonaFeedbackSummary[];
   session: {
     agent: string;
@@ -4276,7 +4332,10 @@ export interface EvidenceRef {
   line?: number;
 }
 
+export const PERSONA_FINDING_BASES = ["substantive", "coverage_registration", "evidence_access"] as const;
+
 export interface RequestedChange {
+  basis?: (typeof PERSONA_FINDING_BASES)[number];
   title: string;
   rationale: string;
   evidence: EvidenceRef[];
@@ -4466,6 +4525,7 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;
   version: WorkflowVersion | null;

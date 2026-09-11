@@ -9,6 +9,7 @@ import type {
   WorkflowCanonicalCriterion,
   WorkflowContextSnapshot,
   WorkflowCriterionMapping,
+  WorkflowCriterionReconciliation,
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceProofClass,
   WorkflowHumanDecision,
@@ -100,6 +101,7 @@ type CompactionValue = z.infer<typeof CompactionSchema>;
 type CriterionReconciliationValue = z.infer<typeof CriterionReconciliationSchema>;
 
 export interface WorkflowCompactionDeps {
+  deferReconciliation?: boolean;
   execute?: (prompt: string) => Promise<StructuredResult<CompactionValue>>;
   reconcile?: (prompt: string) => Promise<StructuredResult<CriterionReconciliationValue>>;
   runner?: WorkflowContextSnapshot["compaction"]["runner"];
@@ -176,7 +178,7 @@ function boundedDecisions(items: WorkflowHumanDecision[]): WorkflowHumanDecision
 function boundedFeedback(items: PersonaFeedbackSummary[]): PersonaFeedbackSummary[] {
   const out: PersonaFeedbackSummary[] = [];
   let remaining = MAX_FEEDBACK_BYTES;
-  for (const item of items.slice(-100)) {
+  for (const item of items.slice(-100).reverse()) {
     if (remaining <= 0) break;
     const summary = clipUtf8Bytes(item.summary, Math.min(remaining, 2_000));
     remaining -= Buffer.byteLength(summary);
@@ -189,6 +191,9 @@ function boundedFeedback(items: PersonaFeedbackSummary[]): PersonaFeedbackSummar
     }
     out.push({ ...item, summary, requestedChanges });
   }
+  // Spend the budget newest-first, then present the retained history in its original order.
+  out.reverse();
+  if (out[0] && items.length > out.length) out[0].omittedBefore = items.length - out.length;
   return out;
 }
 
@@ -508,56 +513,82 @@ function criterionReconciliationPrompt(
   ].join("\n\n");
 }
 
-async function reconcileSourceWorkflowCriteria(
-  criteria: readonly WorkflowCanonicalCriterion[],
+/** One capture operation owns at most two semantic executions, including interrupted calls. */
+export async function reconcileWorkflowCoverage(
+  context: WorkflowContextSnapshot,
   coverage: readonly WorkflowEvidenceCoverageClaim[],
-  deps: WorkflowCompactionDeps,
-): Promise<WorkflowCriterionMapping[]> {
-  if (criteria.length === 0 || coverage.length === 0) {
-    return reconcileWorkflowCriterionMappings(criteria, coverage);
-  }
-  const prompt = criterionReconciliationPrompt(criteria, coverage);
-  let result: StructuredResult<CriterionReconciliationValue>;
-  if (deps.reconcile) {
-    result = await deps.reconcile(prompt);
-  } else if (deps.execute) {
-    // An injected extraction seam must never fall through to a real model call in a test or embedder.
-    result = {
-      kind: "failed",
-      reason: "Workflow criterion reconciliation was not supplied.",
-      cause: "transport",
-    };
-  } else {
-    result = await runJobStructured<typeof CriterionReconciliationSchema>(
-      "workflow-context",
-      prompt,
-      (text) => parseModelJson(text, CriterionReconciliationSchema),
-      "Workflow criterion reconciliation",
-      {
-        timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
-        observer: deps.reconciliationObserver,
-        onExecution: deps.onReconciliationExecution,
-        schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
-        shapeGuaranteed: true,
-      },
-    );
-  }
-  if (result.kind === "failed") {
-    return criteria.map((criterion) => ({
-      criterionId: criterion.id,
-      matchedClientCriterionIds: [],
-    }));
-  }
-  const proposedMappings: WorkflowCriterionMapping[] = result.value.criterionMappings.flatMap((mapping) => {
-    const criterion = criteria[mapping.canonicalCriterionOrdinal - 1];
-    return criterion
-      ? [{
-          criterionId: criterion.id,
-          matchedClientCriterionIds: mapping.matchedClientCriterionIds,
-        }]
-      : [];
+  deps: WorkflowCompactionDeps & {
+    previous?: WorkflowContextSnapshot;
+    sourceCoverage?: readonly WorkflowEvidenceCoverageClaim[];
+    sourceMappings?: readonly WorkflowCriterionMapping[];
+    onProgress?: (context: WorkflowContextSnapshot) => void;
+    active?: () => boolean;
+  } = {},
+): Promise<WorkflowContextSnapshot> {
+  const criteria = context.canonicalCriteria ?? [];
+  const fingerprint = sha(criterionReconciliationPrompt(criteria, [...coverage]
+    .sort((a, b) => a.clientCriterionId.localeCompare(b.clientCriterionId))));
+  const previous = deps.previous?.reconciliation?.fingerprint === fingerprint ? deps.previous : undefined;
+  let mappings = reconcileWorkflowCriterionMappings(criteria, coverage, {
+    sourceCoverage: deps.sourceCoverage, sourceMappings: deps.sourceMappings,
+    proposedMappings: previous?.reconciliation?.status === "complete" ? previous.criterionMappings : context.criterionMappings,
   });
-  return reconcileWorkflowCriterionMappings(criteria, coverage, { proposedMappings });
+  const complete = (state: WorkflowCriterionReconciliation): WorkflowContextSnapshot => ({
+    ...context, criterionMappings: mappings, reconciliation: state,
+  });
+  if (previous?.reconciliation?.status === "complete") return complete(previous.reconciliation);
+  if (!coverage.length || criteria.every((criterion) => !criterion.material
+    || mappings.some((mapping) => mapping.criterionId === criterion.id && mapping.matchedClientCriterionIds.length > 0))) {
+    return complete({ version: 1, fingerprint, status: "complete", method: "deterministic", attempts: 0, error: null, cause: null });
+  }
+  let state: WorkflowCriterionReconciliation = {
+    version: 1, fingerprint, status: "failed", method: "semantic",
+    attempts: previous?.reconciliation?.attempts ?? 0,
+    error: previous?.reconciliation?.error ?? "Criterion mapping did not complete", cause: previous?.reconciliation?.cause ?? "transport",
+  };
+  const prompt = criterionReconciliationPrompt(criteria, coverage);
+  while (state.attempts < 2 && deps.active?.() !== false) {
+    state = { ...state, status: "pending", attempts: state.attempts + 1 };
+    deps.onProgress?.(complete(state));
+    const attempt = state.attempts;
+    let result: StructuredResult<CriterionReconciliationValue>;
+    if (deps.reconcile) {
+      try { result = await deps.reconcile(prompt); }
+      catch (error) { result = { kind: "failed", cause: "transport", reason: String(error) }; }
+    } else if (deps.execute) {
+      result = { kind: "failed", cause: "transport", reason: "Workflow criterion reconciliation was not supplied." };
+    } else {
+      result = await runJobStructured<typeof CriterionReconciliationSchema>(
+        "workflow-context", prompt,
+        (text) => parseModelJson(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
+          timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, maxAttempts: 1,
+          schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
+          onExecution: deps.onReconciliationExecution,
+          observer: {
+            start: (_index, request) => deps.reconciliationObserver?.start(attempt, request),
+            finish: (_index, outcome) => deps.reconciliationObserver?.finish(attempt, outcome),
+          },
+        },
+      );
+    }
+    if (deps.active?.() === false) return complete({ ...state, status: "failed", cause: "cancelled", error: "Capture stopped during criterion mapping" });
+    if (result.kind === "ok") {
+      const proposedMappings = result.value.criterionMappings.flatMap((mapping) => {
+        const criterion = criteria[mapping.canonicalCriterionOrdinal - 1];
+        return criterion ? [{ criterionId: criterion.id, matchedClientCriterionIds: mapping.matchedClientCriterionIds }] : [];
+      });
+      mappings = reconcileWorkflowCriterionMappings(criteria, coverage, {
+        sourceCoverage: deps.sourceCoverage, sourceMappings: deps.sourceMappings, proposedMappings,
+      });
+      state = { ...state, status: "complete", error: null, cause: null };
+      deps.onProgress?.(complete(state));
+      return complete(state);
+    }
+    state = { ...state, status: "failed", error: result.reason.slice(0, 8_000), cause: result.cause };
+    deps.onProgress?.(complete(state));
+    if (result.cause === "cancelled") break;
+  }
+  return complete(state);
 }
 
 function contextFields(raw: RawWorkflowContext): Omit<
@@ -735,11 +766,7 @@ export async function compactWorkflowContext(
   ).filter(
     (criterion): criterion is WorkflowCanonicalCriterion => criterion !== null,
   );
-  const criterionMappings = await reconcileSourceWorkflowCriteria(
-    canonicalCriteria,
-    raw.coverage ?? [],
-    deps,
-  );
+  const criterionMappings = reconcileWorkflowCriterionMappings(canonicalCriteria, raw.coverage ?? []);
   const compacted: WorkflowContextSnapshot = {
     ...contextFields(raw),
     intentFingerprint: workflowIntentFingerprint(raw),
@@ -758,7 +785,8 @@ export async function compactWorkflowContext(
       reusedFromSubmissionId: null,
     },
   };
-  return WorkflowContextSnapshotSchema.parse(compacted);
+  return WorkflowContextSnapshotSchema.parse(deps.deferReconciliation ? compacted
+    : await reconcileWorkflowCoverage(compacted, raw.coverage ?? [], deps));
 }
 
 export async function captureStableWorkflowContext<T>(
@@ -901,6 +929,10 @@ function sourceFingerprint(context: WorkflowContextSnapshot): string {
 }
 
 export function workflowContextFingerprint(context: WorkflowContextSnapshot): string {
+  if (context.coverageSelection || context.reconciliation) return sha(JSON.stringify({
+    source: sourceFingerprint(context), selection: context.coverageSelection,
+    reconciliation: context.reconciliation,
+  }));
   return sourceFingerprint(context);
 }
 

@@ -420,6 +420,14 @@ const render = (
   ...props,
 }));
 
+test("evidence recovery is offered only when the view has a recovery handler", () => {
+  const detail = { ...runningDetail(), evidenceRecovery: {
+    submissionId: "submission-1", kind: "mapping" as const, label: "Retry criterion mapping",
+  } };
+  assert.doesNotMatch(render(detail, { pane: "evidence" }), /Retry criterion mapping/);
+  assert.match(render(detail, { pane: "evidence", onRecoverEvidence: async () => {} }), /Retry criterion mapping/);
+});
+
 /**
  * The run header alone - the identity block and both action rows.
  *

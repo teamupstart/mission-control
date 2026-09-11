@@ -188,3 +188,41 @@ test("a failed compaction stamps the provider it tried, on the same evidence", a
   assert.equal(snapshot.compaction.runner, "codex");
   assert.equal(snapshot.compaction.model, "gpt-5.6-luna");
 });
+
+for (const scenario of ["parse", "transport", "corrected", "cancelled"] as const) {
+  test(`mapping ${scenario} counts actual Codex executions across the structured job boundary`, async () => {
+    const { fallbackWorkflowContext, reconcileWorkflowCoverage } = await import("../src/server/workflows/context.ts");
+    setLlmConfig({ runners: { "workflow-context": "codex" } });
+    assert.equal(LLM_RUNNERS.codex.structuredOutput, null);
+    let calls = 0;
+    let active = true;
+    LLM_RUNNERS.codex.run = async () => {
+      calls++;
+      if (scenario === "transport") throw new Error("provider unavailable");
+      if (scenario === "cancelled") active = false;
+      return scenario === "corrected" && calls === 2 ? '{"criterionMappings":[]}' : "invalid JSON";
+    };
+    const starts: number[] = [];
+    const finishes: number[] = [];
+    const result = await reconcileWorkflowCoverage({
+      ...fallbackWorkflowContext(RAW, null),
+      canonicalCriteria: [{ id: "canonical", text: "Expected behavior", material: true, suggestedProofClass: null }],
+      criterionMappings: [],
+    }, [{ clientCriterionId: "claim", criterion: "Paraphrased behavior", proofClass: "focused_execution",
+      repositoryScope: "repo-01", links: [] }], {
+      active: () => active,
+      reconciliationObserver: { start: (attempt) => { starts.push(attempt); }, finish: (attempt) => { finishes.push(attempt); } },
+    });
+    assert.equal(calls, scenario === "cancelled" ? 1 : 2);
+    assert.deepEqual(starts, scenario === "cancelled" ? [1] : [1, 2]);
+    assert.deepEqual(finishes, starts);
+    assert.equal(result.reconciliation?.attempts, calls);
+    assert.equal(result.reconciliation?.status, scenario === "corrected" ? "complete" : "failed");
+    assert.equal(result.reconciliation?.cause, scenario === "corrected" ? null : scenario);
+    if (scenario !== "cancelled") {
+      await reconcileWorkflowCoverage(result, [{ clientCriterionId: "claim", criterion: "Paraphrased behavior",
+        proofClass: "focused_execution", repositoryScope: "repo-01", links: [] }], { previous: result });
+      assert.equal(calls, 2, "a restart must reuse the completed result or exhausted budget");
+    }
+  });
+}

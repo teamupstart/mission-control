@@ -44,6 +44,7 @@ const {
   WORKFLOW_IMAGE_LIMITS,
   WORKFLOW_LIMITS,
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
+  workflowCommandEvidenceContent,
 } = await import("../src/shared/workflow.ts");
 const {
   captureSubmissionImages,
@@ -322,6 +323,93 @@ test("workflow image contracts default historical context and bind image citatio
       repositoryScope: "repo-01",
     }],
   }).success, false);
+});
+
+test("384 KiB of mixed workflow text evidence survives registration and capture", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-workflow-text-budget-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    writeFileSync(join(repo, ".gitignore"), "evidence/\n");
+    mkdirSync(join(repo, "evidence"));
+    const commands = Array.from({ length: 6 }, (_, index) => {
+      const item = {
+        kind: "command" as const,
+        clientItemId: `text-budget-${index}`,
+        command: `node --test budget-${index}.test.ts`,
+        exitCode: 0,
+        output: "",
+        caption: `Budget boundary output ${index}`,
+        repositoryScope: "repo-01" as const,
+      };
+      const tail = `\nok 1 - budget ${index}\n`;
+      const remaining = 64 * 1024 - Buffer.byteLength(workflowCommandEvidenceContent(item))
+        - Buffer.byteLength(tail);
+      item.output = "é".repeat(Math.floor(remaining / 2)) + "x".repeat(remaining % 2) + tail;
+      return item;
+    });
+    assert.equal(SubmitWorkflowEvidenceSchema.safeParse({ commandOutputs: commands }).success, true);
+    const overflow = { ...commands[0]!, clientItemId: "text-budget-overflow", output: "" };
+    const rejected = SubmitWorkflowEvidenceSchema.safeParse({ commandOutputs: [...commands, overflow] });
+    assert.equal(rejected.success, false);
+    if (!rejected.success) assert.match(rejected.error.message, /aggregate UTF-8 bytes/);
+
+    const artifacts = commands.slice(3).map((item) => {
+      const path = `evidence/${item.clientItemId}.log`;
+      writeFileSync(join(repo, path), workflowCommandEvidenceContent(item));
+      return {
+        kind: "text" as const,
+        clientItemId: item.clientItemId,
+        path,
+        caption: item.caption,
+        repositoryScope: item.repositoryScope,
+      };
+    });
+    const store = new WorkflowStore();
+    const staged = await stageAgentWorkflowEvidence({
+      store, noteKey: "text-budget-note", task: taskAt(repo), fallbackRoot: repo,
+      images: [], artifacts, commandOutputs: commands.slice(0, 3), now: 1,
+    });
+    assert.equal(staged.artifacts.reduce((sum, item) => sum + item.bytes, 0), 384 * 1024);
+    await assert.rejects(() => stageAgentWorkflowEvidence({
+      store, noteKey: "text-budget-note", task: taskAt(repo), fallbackRoot: repo,
+      images: [], commandOutputs: [overflow], now: 2,
+    }), (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_aggregate");
+    assert.equal(store.listWorkflowEvidence("text-budget-note").artifacts.length, 6);
+
+    const binding = store.insertBinding({
+      id: "text-budget-binding", workflowVersionId: IMAGE_WORKFLOW_VERSION_ID,
+      noteKey: "text-budget-note", sessionId: "text-budget-session", sessionAgent: "codex",
+      sessionName: "text budget", sessionCwd: repo, sessionRepoRoot: repo,
+      triggerMode: "manual", deliveryMode: "preview", maxRepairRounds: 5, now: 3,
+    });
+    const created = store.createInitialSubmission(
+      { id: "text-budget-run", binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "text-budget-root", now: 4 },
+      { id: "text-budget-submission", triggerSource: "manual", triggerKey: "text-budget-root", context: {}, evidence: {}, now: 4 },
+    );
+    const captured = await captureSubmissionTextArtifacts(store, created.submission.id, 5);
+    assert.equal(captured.length, 6);
+    assert.equal(captured.reduce((sum, item) => sum + item.bytes, 0), 384 * 1024);
+    for (const item of captured) {
+      const command = commands.find((entry) => `${entry.clientItemId}-command-output.txt` === item.displayName
+        || `${entry.clientItemId}.log` === item.displayName);
+      assert.ok(command);
+      assert.equal(item.content, workflowCommandEvidenceContent(command));
+    }
+    const snapshot = context();
+    snapshot.evidence.artifacts = captured;
+    assert.equal(WorkflowContextSnapshotSchema.safeParse(snapshot).success, true);
+    const escaped = WorkflowContextSnapshotSchema.safeParse({
+      ...snapshot,
+      evidence: {
+        ...snapshot.evidence,
+        artifacts: captured.map((item) => ({ ...item, content: "\u0000".repeat(item.bytes) })),
+      },
+    });
+    assert.equal(escaped.success, false);
+    if (!escaped.success) assert.match(escaped.error.message, /Workflow context exceeds 2000000 UTF-8 bytes/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test("workflow evidence HTTP sizing reserves metadata for every command item", () => {

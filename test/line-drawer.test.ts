@@ -386,7 +386,7 @@ test("a run's row is named in three steps, and the GUID is the last of them", ()
 test("a stopped run's sentence states its cause, and an unmapped cause is still readable", () => {
   assert.equal(blockedPhaseClause("session_disappeared"), "session gone");
   assert.equal(blockedPhaseClause("round_limit"), "out of rounds");
-  assert.equal(blockedPhaseClause("infrastructure_error"), "provider call failed");
+  assert.equal(blockedPhaseClause("infrastructure_error"), "review execution failed");
   // `phase` is a free string, not a union - `orphanBinding` and every `setRunState` caller
   // write their own code into it. An unmapped one has to degrade to readable text, using the
   // same fallback `alerts.ts` prints reasons with, or two surfaces disagree about one field.

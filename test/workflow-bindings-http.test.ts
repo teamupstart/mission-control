@@ -1081,6 +1081,7 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
         verdict: "fail",
         summary: "Needs changes",
         requestedChanges: [{
+          basis: "substantive",
           title: "Fix it",
           rationale: "Not complete",
           evidence: [{ kind: "goal", quote: "Immutable goal" }],

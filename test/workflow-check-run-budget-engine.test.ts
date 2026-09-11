@@ -228,6 +228,7 @@ const scriptedRunner = (verdicts: () => "pass" | "fail") => (id: LlmRunnerId): L
           verdict: "fail",
           summary: "Needs repair",
           requestedChanges: [{
+            basis: "substantive",
             title: "Fix it",
             rationale: "Intent is not met",
             evidence: [{ kind: "goal", quote: "REPAIR THE THING" }],

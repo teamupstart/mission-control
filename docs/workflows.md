@@ -923,6 +923,10 @@ its exact output directly through the existing evidence tool, so normalized tran
 ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
 command-execution endpoint; Check nodes remain the server-observed execution path.
 
+Text artifacts and completed-command outputs share an eight-item limit, with at most 64 KiB
+per artifact and 384 KiB combined. Command and exit-code framing counts toward these byte
+limits. The complete serialized workflow context must also fit its 2,000,000-byte limit.
+
 The same tool and dashboard composer accept `coverage` claims. Each claim carries a stable
 caller-owned criterion id, the criterion text, an author-selected proof class, an issued
 repository scope, and links from evidence client ids to proof roles. Proof classes select a
@@ -1045,13 +1049,13 @@ reaching it is recorded as `evidence_carry_truncated` alongside the evidence cou
 re-declared under the same id is the same claim, and the author's current wording wins; a
 different id for the same criterion is a different claim and is retained beside it.
 
-Readiness distinguishes the two. Where a canonical criterion has a claim the author declared on
-this submission, that claim answers for it and the retained ancestry behind it is not read as a
-competing declaration. Two claims the author wrote here for one criterion is still
-`ambiguous_mapping` and still reports, because that is a real question about what they are
-asserting. Where a criterion has no claim of its own, the carried claims answer for it and are
-judged among themselves exactly as before, which is the case inheritance exists for: without it
-a mapping repair regresses a criterion its parent had already proven to `missing_coverage`.
+Readiness persists the effective claim selection separately from retained ancestry. A new
+unique declaration replaces the selected claim for that criterion; two current declarations
+remain ambiguous. A later repair of another criterion retains the earlier selection. Missing
+selected claims or links become gaps instead of reviving an older claim. Each new snapshot
+revalidates its selected claims against its own frozen evidence. Legacy chains reconstruct this
+selection from declaration provenance through at most 128 preceding submissions; uncertain or
+broken lineage does not invent a winner.
 
 A refinement child repairs a coverage mapping inside one round, so its tree is its parent's
 tree and the carry is unverified. A new repair round's tree has moved, so each carried item is
@@ -1065,16 +1069,33 @@ unchanged-evidence refusal: that comparison reads evidence by digest, caption, a
 than by frozen row id.
 
 Coverage is reserved in the same transaction as its linked evidence and copied to an immutable
-submission table. After evidence bytes are safely captured, the source compaction semantically maps
-the author's claim ids to daemon-assigned canonical ids even when their wording differs. Stable
-canonical identity, text, materiality, and proof suggestion live in `canonicalCriteria`; the current
-packet's claim ids live separately in `criterionMappings`. For a reused source, the mapped prior
-claim text becomes the exact normalized bridge to replacement claim ids, while the prior id itself
-is never reused. Nonmatching, changed, duplicate, or otherwise ambiguous claims therefore remain
-gaps instead of inheriting readiness. Links resolve only against evidence frozen for that
-submission, and the daemon persists a deterministic readiness result with `ready`, `gaps`, or
-`unavailable` status. Historical snapshots with embedded matches normalize into the separate
-mapping representation when read.
+submission table. After evidence bytes are safely captured, mapping first uses normalized exact
+matches and the prior source bridge. Unresolved material criteria use semantic reconciliation.
+Stable canonical identity, text, materiality, and proof suggestion live in `canonicalCriteria`;
+raw matches live in `criterionMappings`, with effective choices in `coverageSelection`.
+
+Reconciliation records its input fingerprint, completion status, consumed attempts and failure
+cause separately from readiness. Each operation allows two actual provider executions, including
+parse correction and interrupted calls, with a 45-second timeout per call. Successful identical
+inputs are cached, including a successful no-match result. A failed mapping preserves deterministic
+matches and, when material claims remain unresolved under enforced policy, parks the run in
+`evidence_reconciliation_error` before any Persona or author repair delivery. A successful mapping
+that finds no claim remains an ordinary author evidence gap.
+
+Eligible attached runs expose an explicit evidence recovery action. It reserves one idempotent
+`evidence_recovery` segment in the same round using frozen criteria and evidence, without a live
+recapture, new staged proof, or an author refinement charge. It also repairs proven inherited
+selection regressions and permits inspected legacy reviews to be re-reviewed. Old snapshots and
+verdicts stay intact, pending repair deliveries are retired, and in-flight or uncertain deliveries
+prevent recovery. Completed, cancelled, detached, superseded and pruned snapshots cannot recover.
+Each run can reserve at most three recovery segments across all rounds. The store checks that
+durable count atomically with reservation; replaying a request remains idempotent, while a new
+request after exhaustion is refused without provider work. Exhaustion keeps the failed run
+blocked and withdraws its recovery action. This budget is separate from author refinements.
+No historical runs are resumed in bulk.
+
+Links resolve only against evidence frozen for that submission. Historical snapshots with embedded
+matches normalize into the separate mapping representation when read.
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
 
@@ -1094,7 +1115,7 @@ every round and segment. Submission events record whether criteria were reused a
 immutable source supplied them. A run created before the intent snapshot existed keeps the older
 behaviour: it compacts per submission and a preflight child reuses its parent's criteria only
 when their intent fingerprints match. The LLM ledger records stable extraction as
-`context_compaction`, source claim mapping as `context_reconciliation`, and no call for
+`context_compaction`, semantic claim mapping as `context_reconciliation`, and no call for
 deterministic reuse.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
@@ -1122,11 +1143,29 @@ version that opts in; v14 retains that policy while changing reviewer routing, a
 through 12 remain byte-compatible and non-enforcing.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
-before repository evidence. Prior Persona feedback is labeled as non-human input and all
-captured evidence is fenced as untrusted data. A strict `pass` verdict requires approval
-details; a strict `fail` verdict requires concrete requested changes and evidence references.
-Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
-fail verdicts.
+before repository evidence. A versioned daemon readiness projection is frozen on each new
+Persona attempt and included in its input fingerprint. It identifies the submission, round,
+segment, policy, structural status, criterion IDs, selected claims and evidence references.
+Unknown legacy readiness stays unknown; off-policy and overridden results never imply enforced
+approval. Readiness proves structural registration, not substantive correctness.
+
+Prior Persona feedback carries its source submission, round, segment, attempt and timestamp when
+known. The bounded history prefers recent observations and reports omitted entries. Legacy
+feedback has unknown origin and resolution. Current registration facts supersede contradictory
+historical registration requests without removing human requirements or substantive objections.
+
+New Persona failures declare a finding basis: `substantive`, `coverage_registration`, or
+`evidence_access`. The latter two are review execution problems and cannot emit author repair
+receipts. Mixed responses are rejected whole, never trimmed into approval. One correction shares
+a durable maximum of two provider executions with parsing, transport and restart recovery.
+Exhaustion pauses in `infrastructure_error`; an explicit infrastructure retry starts a new bounded
+operation with the same frozen review input. Rejected responses remain inspectable on the attempt.
+Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
+
+The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the
+existing broad `readiness_review_disagreement` signal. A valid substantive failure after ready
+preflight still follows the normal repair path. A declared basis cannot guarantee semantic
+honesty; prose is never rewritten or automatically passed by keyword matching.
 
 Each transcript turn may contribute up to 8,000 UTF-8 bytes. An oversized turn keeps an
 explicitly marked head and tail with the exact omitted-byte count. The aggregate transcript
@@ -2175,6 +2214,15 @@ For an offline backup, stop Mission Control and copy
 and `-shm` files when present. Run and version exports are portable audit artifacts, not a database
 restore format. Restore the SQLite files only into a stopped daemon using the same or a newer
 Mission Control build.
+
+Evidence recovery adds a durable `evidence_recovery` refinement reason, and the larger text
+budget permits snapshots older builds cannot parse. Upgrade by stopping the old daemon before
+starting the new build; state ownership prevents overlapping daemons. To downgrade after writing
+new recovery or larger-evidence snapshots, stop Mission Control and restore an offline backup
+taken before the upgrade, then start the matching older build. Do not open the upgraded database
+with that build or relabel recovery rows as author refinements. A downgrade loses history recorded
+after the backup; retain exports for audit before restoring. Settings-only backups do not restore
+workflow history.
 
 ### Canvas and accessibility controls
 

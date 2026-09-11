@@ -156,6 +156,7 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     kind: "opaque",
   },
   failed_outcome: { detail: asJson({ outcome: "fail", label: "Rejected" }), kind: "opaque" },
+  evidence_reconciliation_error: { detail: { submissionId: "s", error: "mapping unavailable" }, kind: "opaque" },
   // The payload `check_cleanup_unresolved` writes, under the phase that means the OPPOSITE.
   infrastructure_error: {
     detail: asJson({ nodeId: "n", attempts: 3, error: "provider call failed" }),
@@ -1109,7 +1110,7 @@ test("every blocked-capable phase has a clause that beats the fallback", () => {
   // from the registry cannot quietly shrink what this test walks.
   const blockedCapable = WORKFLOW_RUN_PHASES
     .filter((phase) => WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked"));
-  assert.equal(blockedCapable.length, 27);
+  assert.equal(blockedCapable.length, 28);
 
   // One-directional, and deliberately so. The map also serves the triage column's PARKED rows,
   // which are `waiting_for_session`, so it legitimately holds keys that are not blocked-capable.

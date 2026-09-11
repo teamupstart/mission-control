@@ -191,6 +191,7 @@ export const WORKFLOW_RUN_PHASES = [
   "unchanged_evidence_exhausted",
   "unchanged_repository",
   ...WORKFLOW_INSPECTOR_GATE_PHASES,
+  "evidence_reconciliation_error",
 ] as const;
 
 /**
@@ -267,6 +268,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   external_artifact_mismatch: ["blocked"],
   failed_outcome: ["failed"],
   image_evidence_capture: ["blocked"],
+  evidence_reconciliation_error: ["blocked"],
   infrastructure_error: ["blocked"],
   invalid_version: ["failed"],
   missing_workflow_version: ["failed"],
@@ -335,7 +337,8 @@ const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
   // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
   // it means a later code change cannot silently produce "inspector round limit" prose.
   inspector_round_limit: "out of GitHub Inspector rounds",
-  infrastructure_error: "provider call failed",
+  infrastructure_error: "review execution failed",
+  evidence_reconciliation_error: "criterion mapping unavailable",
   inspector_findings: "GitHub Inspector findings",
   inspector_disabled: "GitHub Inspector off",
   inspector_pr_closed: "PR closed",
@@ -544,6 +547,7 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
   failed_outcome: [...PERSONA_VERDICT_KEYS, "label", "completionPolicy"],
   // Allowed, never required, so a row written before the identity existed keeps decoding.
   image_evidence_capture: ["error", "code", "itemName", "itemClientId"],
+  evidence_reconciliation_error: ["submissionId", "error"],
   infrastructure_error: ["nodeId", "attempts", "error"],
   invalid_version: ["error"],
   missing_workflow_version: ["error"],

@@ -547,6 +547,7 @@ test("Live sends one exact packet, attributes it once, and re-arms only the drai
         verdict: "fail",
         summary: "One issue",
         requestedChanges: [{
+          basis: "substantive",
           title: "Fix it",
           rationale: "The evidence requires it.",
           evidence: [{ kind: "diff", quote: "bad line" }],

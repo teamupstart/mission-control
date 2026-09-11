@@ -492,6 +492,7 @@ function VerdictCard({
         <strong>{attempt.persona?.name ?? "Missing persona"}</strong>
         <span className="wf-run-confidence">{Math.round(verdict.confidence * 100)}% confident</span>
       </header>
+      <PersonaReadinessInput attempt={attempt} />
       <p className="wf-run-summary">{verdict.summary}</p>
       {verdict.verdict === "pass" ? (
         <div className="wf-run-card-body">
@@ -527,6 +528,13 @@ function VerdictCard({
  * a provider failure, and the runner and revision that were resolved for the attempt that
  * failed.
  */
+function PersonaReadinessInput({ attempt }: { attempt: WorkflowNodeAttempt }): React.JSX.Element | null {
+  if (!attempt.persona) return null;
+  return <p className="wf-run-meta">Structural readiness at review: {attempt.reviewInput?.status ?? "unknown"}
+    {attempt.reviewInput ? ` · policy ${attempt.reviewInput.policy} · contract v${attempt.reviewInput.version}` : " · legacy input"}.
+    {" Readiness checks registration; the Persona checks whether the evidence proves the work."}</p>;
+}
+
 function AttemptCard({
   attempt,
   name,
@@ -546,6 +554,15 @@ function AttemptCard({
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
       </p>
+      <PersonaReadinessInput attempt={attempt} />
+      {(attempt.reviewRejections?.length ?? 0) > 0 && (
+        <details>
+          <Tooltip label="Show the review responses rejected by the review contract">
+            <summary>Rejected review responses</summary>
+          </Tooltip>
+          <pre>{JSON.stringify(attempt.reviewRejections, null, 2)}</pre>
+        </details>
+      )}
       <ErrorLine raw={attempt.error} />
     </article>
   );
@@ -1396,6 +1413,7 @@ function ChangeDetail({
           <span className="wf-run-meta">{meta.runner} · {meta.model}</span>
         )}
       </header>
+      {attempt && <PersonaReadinessInput attempt={attempt} />}
       <h5 className="wf-run-change-title">{row.title}</h5>
       {summary && <p className="wf-run-summary">{summary}</p>}
       <dl className="wf-run-facts-list">
@@ -2198,6 +2216,8 @@ function EvidencePane({
   onRestage,
   onRetry,
   onOverride,
+  recovery,
+  onRecover,
 }: {
   runId: string;
   summary: RunRecordEvidenceSummary;
@@ -2211,6 +2231,8 @@ function EvidencePane({
   onRestage?: (image: WorkflowEvidenceImage, clientItemId: string) => Promise<void>;
   onRetry?: () => Promise<void>;
   onOverride?: (reason: string) => Promise<void>;
+  recovery?: WorkflowRunDetail["evidenceRecovery"];
+  onRecover?: (submissionId: string) => Promise<void>;
 }): React.JSX.Element {
   const bodies = useFrozenImageBodies(runId, images);
   const [preview, setPreview] = useState<string | null>(null);
@@ -2392,6 +2414,16 @@ function EvidencePane({
             </Tooltip>
           </div>
         </div>
+      )}
+      {recovery && onRecover && (
+        <section className="wf-run-section" aria-label="Evidence recovery">
+          <h4>Evidence recovery</h4>
+          <p>Retry with this submission's frozen evidence and criteria in a new segment of the same round. Earlier reviews remain available.</p>
+          {recovery.kind === "review" && <p>Inspect the prior finding before re-reviewing. Structural readiness does not establish substantive correctness; legacy finding reasons may be unknown.</p>}
+          <Tooltip label="Retry with the frozen evidence in a new segment without spending an author repair">
+            <button type="button" className="btn btn-ghost" onClick={() => void onRecover(recovery.submissionId)}>{recovery.label}</button>
+          </Tooltip>
+        </section>
       )}
       <h5 className="wf-evidence-head">Frozen images</h5>
       {images.length === 0 ? (
@@ -2891,6 +2923,7 @@ export function WorkflowRunView({
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
   onRetryEvidenceReadiness = async () => {},
+  onRecoverEvidence,
   onOverrideEvidenceReadiness = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
@@ -2975,6 +3008,7 @@ export function WorkflowRunView({
     confirmation?: string,
   ) => Promise<void>;
   onRetryEvidenceReadiness?: (submissionId: string) => Promise<void>;
+  onRecoverEvidence?: (submissionId: string) => Promise<void>;
   onOverrideEvidenceReadiness?: (submissionId: string, reason: string) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
@@ -3775,6 +3809,8 @@ export function WorkflowRunView({
                   .filter((entry) => entry.submissionId === viewed.id)
                   .at(-1)?.reason ?? null}
                 onRestage={onRestageImage}
+                recovery={isLatest ? detail.evidenceRecovery : undefined}
+                onRecover={onRecoverEvidence}
                 /*
                  * The block is what stopped the refinements, so the button that asks for
                  * another one is withdrawn with it. The override stays, because the decision
@@ -3948,6 +3984,7 @@ export function WorkflowRunView({
           </div>
         </section>
       )}
+
 
 
       <section className="wf-run-section">
@@ -4953,6 +4990,12 @@ export function WorkflowRuns({
                         }
                       : {}),
                   }),
+                }));
+            }}
+            onRecoverEvidence={async (submissionId) => {
+              actionController.run(`evidence-recovery:${submissionId}`, (requestId) =>
+                workflowRequest(`/api/workflow-runs/${detail.run.id}/submissions/${submissionId}/evidence-recovery`, {
+                  method: "POST", body: JSON.stringify({ requestId }),
                 }));
             }}
             onRetryEvidenceReadiness={async (submissionId) => {

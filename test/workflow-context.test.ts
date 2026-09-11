@@ -173,6 +173,30 @@ test("workflow context excludes a delivered workflow packet after live attributi
   );
 });
 
+test("bounded feedback keeps recent entries in chronological order and marks the oldest boundary", async () => {
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "feedback-order", agent: "claude", name: "feedback", nameSource: "process",
+    cwd: process.cwd(), gitBranch: "feature", gitRoot: process.cwd(), repoRoot: process.cwd(),
+    pid: 8, tty: "ttys-feedback", terminals: [], startedAt: 1,
+  } as DiscoveredSession]);
+  const session = registry.getSession("feedback-order")!;
+  const binding = { id: "feedback-order", sessionId: session.id, noteKey: noteKeyFor(session) } as WorkflowBinding;
+  for (const [count, large] of [[3, false], [110, false], [5, true]] as const) {
+    const feedback = Array.from({ length: count }, (_, index) => ({
+      personaName: `Reviewer ${index}`, summary: large ? "s".repeat(2_000) : `Review ${index}`,
+      requestedChanges: large ? Array.from({ length: 20 }, () => "x".repeat(2_000)) : [`Repair ${index}`],
+      origin: { submissionId: `submission-${index}`, round: index + 1, segment: 0, attemptId: `attempt-${index}`, createdAt: index },
+    }));
+    const captured = (await readWorkflowContextRaw(registry, binding, feedback)).raw.priorPersonaFeedback;
+    const retained = large ? 3 : Math.min(100, count);
+    assert.deepEqual(captured.map((item) => item.origin?.createdAt), Array.from({ length: retained }, (_, i) => count - retained + i));
+    assert.equal(captured[0]?.omittedBefore, count > retained ? count - retained : undefined);
+    assert.ok(captured.slice(1).every((item) => item.omittedBefore === undefined));
+    assert.ok(captured.reduce((bytes, item) => bytes + Buffer.byteLength(item.summary) + item.requestedChanges.reduce((n, change) => n + Buffer.byteLength(change), 0), 0) <= 120_000);
+  }
+});
+
 test("transcript evidence retains the observed 5,393-byte TAP turn through test 13", () => {
   const finalLine = "ok 13 - regression finishes here\n";
   const tapPrefix = [

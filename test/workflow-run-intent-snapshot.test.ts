@@ -198,6 +198,7 @@ const failingRunner: LlmRunner = {
       verdict: "fail",
       summary: "Not yet",
       requestedChanges: [{
+        basis: "substantive",
         title: "Show the rendered result",
         rationale: "The spinner is still visible in the diff.",
         evidence: [{ kind: "diff", quote: "patch" }],

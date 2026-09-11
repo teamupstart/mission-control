@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   WORKFLOW_EXECUTION_LIMITS,
+  PERSONA_FINDING_BASES,
   type WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
 import {
@@ -9,6 +10,17 @@ import {
   parsePersonaVerdict,
 } from "../src/server/workflows/verdict.ts";
 import { buildPersonaPrompt } from "../src/server/workflows/prompt.ts";
+import { WorkflowRequestedChangeSchema } from "../src/shared/protocol.ts";
+
+test("persisted findings accept every runtime basis and preserve legacy omissions", () => {
+  for (const basis of [...PERSONA_FINDING_BASES, undefined]) {
+    const change = { basis, title: "Fix behavior", rationale: "The evidence does not prove it",
+      evidence: [{ kind: "goal", quote: "Expected behavior" }] };
+    const verdict = normalizePersonaVerdict({ verdict: "fail", summary: "Needs repair", requestedChanges: [change], confidence: 1 });
+    assert.equal(verdict?.verdict, "fail");
+    if (verdict?.verdict === "fail") assert.equal(WorkflowRequestedChangeSchema.parse(verdict.requestedChanges[0]).basis, basis);
+  }
+});
 
 test("Persona verdicts discriminate pass and fail and clamp bounded model values", () => {
   const pass = parsePersonaVerdict(JSON.stringify({
@@ -137,19 +149,10 @@ test("the evidence-availability contract scopes coverage declarations out of Per
     prompt.indexOf("# Prior Persona feedback"),
   );
   assert.ok(contract.length > 0);
-  const disclaimer = contract
-    .split("\n")
-    .find((line) => line.startsWith("Criterion coverage declarations"));
-  assert.ok(disclaimer, "the contract must carry the coverage disclaimer");
-  assert.match(disclaimer, /validated by the evidence preflight before this review/);
-  assert.match(disclaimer, /is never a reason to fail a submission/);
-  // ONE sentence, which is the form the request asked for rather than a stylistic preference:
-  // this line sits in a contract a Persona reads before judging, and a paragraph invites the
-  // reader to weigh clauses against each other where a single rule cannot be read two ways.
-  assert.equal(disclaimer.split(". ").length, 1);
-  assert.equal(disclaimer.match(/\.$/) !== null, true);
-  // The coverage rows themselves are still not rendered; the sentence says so, and a later
-  // change that starts rendering them has to revisit the source plan's decision first.
+  assert.match(contract, /Coverage registration belongs to Mission Control/);
+  assert.match(contract, /Ready establishes structural completeness, not substantive sufficiency/);
+  assert.match(contract, /Legacy attempt has no frozen readiness input/);
+  assert.match(contract, /Do not request coverage registration repairs/);
   assert.equal(prompt.includes("proofClass"), false);
 });
 

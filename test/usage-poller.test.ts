@@ -16,6 +16,7 @@ const {
   openDb,
   recordAutomationUsage,
   reportedUsageLedgerHasRows,
+  sessionCostFor,
   usageCursorFor,
 } = await import("../src/server/db.ts");
 
@@ -363,5 +364,22 @@ test("Pi's dispatched identity reaches the card and ledger once; hand-run Pi sta
   } finally {
     stop();
     HARNESSES.pi.transcript = original;
+  }
+});
+
+
+test("starting the poller recovers Astra history even without an active rollout", () => {
+  commitUsageRead({ sourceKey: "old-astra-source", noteKey: "old-astra-session", sessionId: null,
+    agent: "codex", cursor: { offset: 50, modelId: "gpt-6-astra", fileId: "old:astra", discardPartial: false },
+    updatedAt: Date.now(), events: [{ identity: "old-astra-request", ts: Date.now(), modelId: "gpt-6-astra",
+      querySource: "main", input: 1_000, output: 400, reasoningOutput: 100, cacheRead: 2_000,
+      cacheWrite: 3_000, costUsd: null, pricingVersion: "" }] });
+  const registry = new Registry();
+  const stop = startUsagePoller(registry);
+  try {
+    assert.equal(sessionCostFor("old-astra-session")?.costUsd, 0.0695);
+    assert.equal(usageCursorFor("old-astra-source").offset, 50);
+  } finally {
+    stop();
   }
 });

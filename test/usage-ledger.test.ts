@@ -174,3 +174,90 @@ test("pruning is by age alone and leaves newer rows untouched", () => {
   const cost = sessionCostFor("k-old");
   assert.equal(cost?.costUsd, 4, "the newer one stays, whatever session it belonged to");
 });
+
+test("a newly verified price recovers only unpriced usage and preserves history and cursors", async () => {
+  const { priceUnpricedUsage, recordAutomationUsage } = await import("../src/server/db.ts");
+  const { estimateStandardApiUsage, CODEX_PRICE_VERSION } = await import("../src/server/harness/codex/pricing.ts");
+  const cursor = { offset: 1234, modelId: "gpt-6-astra", discardPartial: false, fileId: "recover:1" };
+  for (const [noteKey, agent, modelId, costUsd] of [
+    ["recover-astra", "codex", "gpt-6-astra", null],
+    ["preserve-priced", "codex", "gpt-5.6-sol", 42],
+    ["preserve-unknown", "codex", "gpt-future", null],
+    ["preserve-provider", "pi", "gpt-6-astra", null],
+  ] as const) {
+    commitUsageRead({ sourceKey: noteKey, noteKey, sessionId: null, agent, cursor, updatedAt: 99_000,
+      events: [{ identity: "recover-event", ts: 99_000, modelId, querySource: "main",
+        input: 1_000, cacheRead: 2_000, cacheWrite: 3_000, output: 400, reasoningOutput: 100,
+        costUsd, pricingVersion: costUsd === null ? "" : "old-price" }] });
+  }
+  recordAutomationUsage({ role: "foreman:review", agent: "codex", runId: "recover-automation", ts: 99_000,
+    models: [{ modelId: "gpt-6-astra", input: 1_000, cacheRead: 2_000, cacheWrite: 3_000,
+      output: 400, reasoningOutput: 100, costUsd: null, basis: "unpriced", pricingVersion: "" }] });
+  const before = fleetTokensSince(99_000);
+  assert.equal(sessionCostFor("recover-astra")?.costUsd, null);
+  assert.deepEqual(priceUnpricedUsage("codex", estimateStandardApiUsage).sort(), ["foreman:review", "recover-astra"]);
+  assert.equal(sessionCostFor("recover-astra")?.costUsd, 0.0695);
+  assert.deepEqual(sessionCostFor("recover-astra")?.pricingVersions, [CODEX_PRICE_VERSION]);
+  assert.equal(sessionCostFor("preserve-priced")?.costUsd, 42);
+  assert.deepEqual(sessionCostFor("preserve-priced")?.pricingVersions, ["old-price"]);
+  assert.equal(sessionCostFor("preserve-unknown")?.costUsd, null);
+  assert.equal(sessionCostFor("preserve-provider")?.costUsd, null);
+  assert.equal(fleetTokensSince(99_000), before);
+  assert.deepEqual(usageCursorFor("recover-astra"), cursor);
+  assert.deepEqual(priceUnpricedUsage("codex", estimateStandardApiUsage), []);
+});
+
+
+test("historical repricing rolls back earlier updates and propagates an estimator failure", async () => {
+  const { priceUnpricedUsage } = await import("../src/server/db.ts");
+  const { estimateStandardApiUsage } = await import("../src/server/harness/codex/pricing.ts");
+  const keys = ["rollback-astra-1", "rollback-astra-2"];
+  for (const noteKey of keys) {
+    commitUsageRead({
+      sourceKey: noteKey, noteKey, sessionId: null, agent: "codex",
+      cursor: { offset: 123, modelId: "gpt-6-astra", discardPartial: false, fileId: noteKey },
+      updatedAt: 101_000,
+      events: [{ identity: noteKey, ts: 101_000, modelId: "gpt-6-astra", querySource: "main",
+        input: 1_000, cacheRead: 2_000, cacheWrite: 3_000, output: 400, reasoningOutput: 100,
+        costUsd: null, pricingVersion: "" }],
+    });
+  }
+  const rows = () => openDb().prepare(
+    "SELECT * FROM usage_ledger WHERE note_key IN (?, ?) ORDER BY note_key",
+  ).all(...keys);
+  const before = rows();
+  const cursors = keys.map(usageCursorFor);
+  const failure = new Error("estimator failed on the second historical request");
+  let candidates = 0;
+  assert.throws(() => priceUnpricedUsage("codex", (event) => {
+    if (!keys.includes(event.identity)) return null;
+    candidates++;
+    if (candidates === 2) {
+      assert.equal(rows().filter((row) => row.cost_known === 1).length, 1,
+        "the first candidate was updated inside the transaction before the failure");
+      throw failure;
+    }
+    return estimateStandardApiUsage(event);
+  }), (error) => error === failure, "the original error reaches the caller");
+  assert.equal(candidates, 2);
+  assert.deepEqual(rows(), before, "rollback restores every ledger field, including pricing provenance");
+  assert.deepEqual(keys.map(usageCursorFor), cursors);
+
+  assert.deepEqual(priceUnpricedUsage("codex", (event) =>
+    keys.includes(event.identity) ? estimateStandardApiUsage(event) : null).sort(), keys,
+  "a later retry can begin and commit a fresh transaction");
+  for (const key of keys) assert.equal(sessionCostFor(key)?.costUsd, 0.0695);
+});
+
+test("Claude session telemetry accepts every shipped model, snapshots, and long-context ids", async () => {
+  const { MODEL_CATALOG } = await import("../src/shared/model.ts");
+  for (const modelId of [...MODEL_CATALOG.claude.map((model) => model.id),
+    "claude-haiku-4-5-20251001", "claude-opus-4-8[1m]", "claude-future"]) {
+    const key = { ...cell(`claude-price:${modelId}`, "claude-price", 100_000), modelId };
+    upsertUsageCell(key, "input", 1000);
+    upsertUsageCell(key, "costUsd", 1.23);
+    const result = sessionCostFor(key.noteKey);
+    assert.equal(result?.costUsd, 1.23, modelId);
+    assert.equal(result?.basis, "reported", modelId);
+  }
+});

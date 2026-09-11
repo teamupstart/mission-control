@@ -1,6 +1,6 @@
 import { envVar } from "./config.ts";
-import { commitUsageRead, touchUsageSource, usageCursorFor } from "./db.ts";
-import { transcriptFor, usageFor } from "./harness/index.ts";
+import { commitUsageRead, priceUnpricedUsage, touchUsageSource, usageCursorFor } from "./db.ts";
+import { allHarnesses, transcriptFor, usageFor } from "./harness/index.ts";
 import type { Session } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { unref } from "./util/timers.ts";
@@ -38,12 +38,22 @@ export function startUsagePoller(registry: Registry): () => void {
   // append-only source. Keep that exact conversation/path quarantined for this daemon
   // lifetime; changing either value produces a new key and is the only safe reset signal.
   const rejected = new Set<string>();
+  let pricesRecovered = false;
 
   const tick = (): void => {
     if (stopped) return;
     const now = Date.now();
     let more = false;
     try {
+      if (!pricesRecovered) {
+        for (const harness of allHarnesses()) {
+          if (!harness.usage) continue;
+          for (const key of priceUnpricedUsage(harness.id, harness.usage.estimate)) {
+            registry.applyDurableUsage(key);
+          }
+        }
+        pricesRecovered = true;
+      }
       for (const session of registry.liveSessions()) {
         const usage = usageFor(session);
         const transcript = transcriptFor(session);

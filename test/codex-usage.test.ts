@@ -1,9 +1,11 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCodexUsage } from "../src/server/harness/codex/usage.ts";
+import { estimateStandardApiUsage } from "../src/server/harness/codex/pricing.ts";
+import type { UsageCursor } from "../src/server/harness/types.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -26,6 +28,34 @@ const token = JSON.stringify({
     input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 10,
     output_tokens: 12, reasoning_output_tokens: 4,
   } } },
+});
+
+test("pricing follows model switches across incremental reads without leaking the previous rate", () => {
+  const path = file("");
+  let cursor: UsageCursor = { offset: 0, modelId: null, discardPartial: false, fileId: null };
+  const cases = [
+    ["gpt-6-astra", 0.001445],
+    ["gpt-5.6-sol", 0.000578],
+    ["gpt-unknown", null],
+    ["gpt-6-astra", 0.001445],
+  ] as const;
+  for (const [index, [model, expected]] of cases.entries()) {
+    const context = JSON.stringify({ type: "turn_context", payload: { model } });
+    const request = JSON.parse(token);
+    request.timestamp = new Date(Date.UTC(2026, 8, 11, 12, index)).toISOString();
+    appendFileSync(path, `${context}\n${JSON.stringify(request)}\n`);
+    const read = readCodexUsage(path, cursor, 1024 * 1024);
+    assert.equal(read.reset, false);
+    assert.equal(read.events.length, 1);
+    assert.equal(read.events[0]!.modelId, model);
+    const price = estimateStandardApiUsage(read.events[0]!);
+    assert.equal(price?.costUsd ?? null, expected, model);
+    if (price) assert.equal(price.pricingModel, model);
+    assert.equal(read.cursor.modelId, model);
+    assert.ok(read.cursor.offset > cursor.offset);
+    cursor = read.cursor;
+  }
+  assert.deepEqual(readCodexUsage(path, cursor, 1024 * 1024).events, []);
 });
 
 test("reads request deltas, carries the model, and splits every input tier", () => {

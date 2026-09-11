@@ -189,3 +189,60 @@ test("nothing in this module reads Pi's auth file", async () => {
   assert.doesNotMatch(source, /auth\.json/);
   assert.doesNotMatch(source, /readFile|readFileSync/);
 });
+
+test("a provider message long enough to fill the cap still carries its remedy", () => {
+  // The failure this guards: `redact` caps from the START of the string and ran twice on
+  // this path, once over the detail and again over `detail + remedy` inside the
+  // `PiSdkError` constructor. The second pass spent the whole budget on the detail, so the
+  // repair sentence - the only actionable part - was cut off or dropped entirely. Bedrock
+  // reaches this routinely: an AccessDeniedException quotes a full IAM ARN and the policy
+  // explanation back at the caller.
+  const bedrock =
+    "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/SomeVeryLongRoleName/session-name " +
+    "is not authorized to perform: bedrock:InvokeModelWithResponseStream on resource: " +
+    "arn:aws:bedrock:us-east-1::foundation-model/deepseek.v3.2 because no identity-based policy allows the " +
+    "bedrock:InvokeModelWithResponseStream action. Please consult the service documentation and your " +
+    "administrator for the policy required.";
+  assert.ok(bedrock.length > PI_FAILURE_MESSAGE_CAP, "the fixture has to overflow to test anything");
+
+  const failure = classifyPiFailure(new Error(bedrock), "amazon-bedrock");
+  assert.equal(failure.kind, "access-denied");
+  assert.ok(failure.message.length <= PI_FAILURE_MESSAGE_CAP, "the cap still holds");
+  assert.ok(
+    failure.message.endsWith("grant this account access to the model in its provider console"),
+    `the remedy was truncated away: ${failure.message}`,
+  );
+});
+
+test("every remedy survives an overflowing message, and none of them exceeds the cap", () => {
+  // One case per kind that HAS a remedy, because the budget is computed from the remedy's
+  // own length - a longer one added later must keep working rather than eat the detail.
+  const pad = "x".repeat(500);
+  const cases = [
+    ["No API key found for this provider.", "open a Pi session and run /login amazon-bedrock"],
+    ["ExpiredToken: the security token included in the request is expired.", "Mission Control never stores it"],
+    ["AccessDeniedException: not authorized to perform bedrock:InvokeModel.", "in its provider console"],
+    ["ValidationException: model is not supported in this region.", "in Pi's provider configuration"],
+  ] as const;
+
+  for (const [head, remedyTail] of cases) {
+    const failure = classifyPiFailure(new Error(`${head} ${pad}`), "amazon-bedrock");
+    assert.ok(
+      failure.message.length <= PI_FAILURE_MESSAGE_CAP,
+      `${head} produced ${failure.message.length} characters`,
+    );
+    assert.ok(failure.message.endsWith(remedyTail), `${head} lost its remedy: ${failure.message}`);
+    // The detail is still present, not sacrificed entirely to make room.
+    assert.ok(failure.message.length > remedyTail.length + 40, "the detail was cut to nothing");
+  }
+});
+
+test("an already-classified failure is never re-wrapped, so remedies cannot compound", () => {
+  // `completeTurn` re-classifies a string the vendor seam already redacted. A failure that
+  // arrives as a PiSdkError is returned untouched, which is what stops a second remedy from
+  // being appended to a sentence that already carries one.
+  const once = classifyPiFailure(new Error("No API key found for this provider."), "amazon-bedrock");
+  const twice = classifyPiFailure(once, "amazon-bedrock");
+  assert.equal(twice, once);
+  assert.equal(twice.message, once.message);
+});

@@ -79,13 +79,31 @@ export const REDACTED = "[redacted]";
  * than of the messages we happen to have seen.
  */
 export function redact(text: string): string {
+  return redactWithin(text, PI_FAILURE_MESSAGE_CAP);
+}
+
+/**
+ * `redact`, against a caller-chosen budget.
+ *
+ * Scrubbing and whitespace collapsing are idempotent, so running them twice is harmless.
+ * TRUNCATION is not: the cap counts from the start of the string, so a second pass over
+ * `detail + remedy` spends the whole budget on the detail and drops the repair sentence a
+ * provider message was long enough to push past the end. `classifyPiFailure` reserves the
+ * remedy's room here instead, which is what keeps "run /login amazon-bedrock" attached to a
+ * 400-character Bedrock AccessDeniedException that quotes a full IAM ARN back at us.
+ */
+function redactWithin(text: string, cap: number): string {
   let out = text;
   for (const pattern of SECRETS) out = out.replace(pattern, REDACTED);
   out = out.replace(/\s+/g, " ").trim();
-  return out.length > PI_FAILURE_MESSAGE_CAP
-    ? `${out.slice(0, PI_FAILURE_MESSAGE_CAP - 1)}…`
-    : out;
+  // A floor, so a future remedy longer than the cap truncates ITSELF rather than computing a
+  // negative budget and slicing the detail away to nothing.
+  const room = Math.max(cap, MIN_DETAIL_BUDGET);
+  return out.length > room ? `${out.slice(0, room - 1)}…` : out;
 }
+
+/** The smallest detail worth showing beside a remedy. */
+const MIN_DETAIL_BUDGET = 40;
 
 /** A managed Pi failure, carrying its classification so callers never re-parse prose. */
 export class PiSdkError extends Error {
@@ -137,8 +155,13 @@ export function classifyPiFailure(error: unknown, provider: string | null): PiSd
   const raw = error instanceof Error ? error.message : String(error);
   const kind = classifyKind(raw);
   const remedy = remedyFor(kind, provider);
-  const detail = redact(raw);
-  return new PiSdkError(kind, remedy ? `${detail} - ${remedy}` : detail, { cause: error });
+  const suffix = remedy ? ` - ${remedy}` : "";
+  // The remedy's room comes off the top, so the combined sentence is already within the cap
+  // and `PiSdkError`'s own `redact` has nothing left to cut. Without this the repair
+  // instruction is what gets dropped, which is the one part of the sentence that is
+  // actionable.
+  const detail = redactWithin(raw, PI_FAILURE_MESSAGE_CAP - suffix.length);
+  return new PiSdkError(kind, `${detail}${suffix}`, { cause: error });
 }
 
 function classifyKind(raw: string): PiFailureKind {

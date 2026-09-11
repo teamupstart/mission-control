@@ -9276,6 +9276,7 @@ function metaDisplayEqual(a: SessionMeta | null, b: SessionMeta | null): boolean
     a.modelId === b.modelId &&
     a.longContext === b.longContext &&
     a.thinkingLevel === b.thinkingLevel &&
+    a.nativeEffort === b.nativeEffort &&
     a.thinkingEnabled === b.thinkingEnabled &&
     a.contextPct === b.contextPct
   );
@@ -9319,6 +9320,7 @@ function metaFromStatusLine(ingest: StatusLineIngest, now: number): SessionMeta 
     // so it governs the 1M badge directly (an explicit 200k must not be overridden).
     longContext: isLongContext(window),
     thinkingLevel: ingest.effort ?? null,
+    nativeEffort: ingest.nativeEffort ?? null,
     thinkingEnabled: ingest.thinkingEnabled ?? null,
     contextPct,
     contextTokens: contextPct !== null ? tokens : null,

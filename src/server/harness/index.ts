@@ -1,3 +1,4 @@
+import { piHooks } from "./pi/hooks.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, PermissionMode, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
@@ -197,7 +198,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     ...HARNESS_CAPABILITIES.pi,
     transcript: piTranscript,
     usage: piUsage,
-    hooks: null,
+    hooks: piHooks,
     detect: piDetect,
     bin: piBin,
     // Resolve inside the closure so every probe observes the same current override chain
@@ -208,9 +209,8 @@ export const HARNESSES: Record<AgentType, Harness> = {
     },
     tui: null,
     control: piControl,
-    // Phase 6 fills this with pi's `--mode rpc` adapter, which is also where pi first gains
-    // structured needs-you evidence: its `hooks: null` and absent work lifecycle are both
-    // consequences of having no push channel, and the driver IS one.
+    // An embedded `--mode rpc` driver is separate work. The terminal extension already
+    // reports structured lifecycle and needs-you events through the machine HookSpec.
     sdk: null,
     // `pi --session <id>`. NOT `--resume`, which opens pi's interactive picker and takes no
     // id, and NOT `--fork`, which branches rather than continues. Three adjacent flags in

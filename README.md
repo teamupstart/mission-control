@@ -289,6 +289,13 @@ setting in the app or use the environment variable as a process-level fallback:
 See [Configuration](docs/configuration.md) for the complete precedence rules and transport
 tradeoffs.
 
+## Pi session integration
+
+The [Pi extension](docs/pi-extension.md) bridges Mission Control tools, lifecycle, live model,
+effort, context, and attributed usage for hand-run Pi sessions. Build it with `npm run build`
+and exercise it with `pi -e /absolute/path/to/dist/pi-extension/index.js`. Setup installation
+is a separate phase; building does not change the operator's Pi home.
+
 ## Community participation
 
 Sessions can [report product feedback](docs/sessions.md) with the

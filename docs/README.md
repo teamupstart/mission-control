@@ -6,6 +6,7 @@ Mission Control's product reference is organized by feature below.
 
 - [Product overview](overview.md)
 - [Sessions and conversations](sessions.md)
+- [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
 - [Dispatch, backlog, and task sources](dispatch-and-backlog.md)
 - [Recurring missions](recurring-missions.md)
 - [Multi-agent ensembles](ensembles.md)

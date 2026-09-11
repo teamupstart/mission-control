@@ -1887,7 +1887,7 @@ export function RuntimeMetaRow({
   omit?: ReadonlySet<RuntimeMetaPart>;
 }): React.JSX.Element | null {
   const hasModel = Boolean(meta.model) && !omit.has("model");
-  const hasEffort = Boolean(meta.thinkingLevel) && !omit.has("effort");
+  const hasEffort = Boolean(meta.thinkingLevel || meta.nativeEffort) && !omit.has("effort");
   const hasCtx = meta.contextPct != null && !omit.has("context");
   // Nothing LEFT to draw, which now covers both "the session has not reported it" and
   // "this host asked for it to be left out". An empty `.card-runtime` would still take its
@@ -1912,13 +1912,13 @@ export function RuntimeMetaRow({
         (session ? (
           <EffortPicker session={session} />
         ) : (
-          <Tooltip label={`Reasoning effort: ${meta.thinkingLevel}`}>
-            <span className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}>
+          <Tooltip label={`Reasoning effort: ${meta.thinkingLevel ?? meta.nativeEffort}`}>
+            <span className={`rt-pill rt-think rt-think-${meta.thinkingLevel ?? meta.nativeEffort}`}>
               {/* `EffortReading` owns what an effort pill prints, including the level's own
                   element - which the console header's ladder sheds while keeping the mark. It
                   is imported rather than restated so this static spelling and the picker's
                   cannot drift, which they did once. */}
-              <EffortReading level={meta.thinkingLevel!} />
+              {meta.thinkingLevel ? <EffortReading level={meta.thinkingLevel} /> : meta.nativeEffort}
             </span>
           </Tooltip>
         ))}

@@ -510,15 +510,15 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
   for (const agent of has) assert.equal(workQueueUnsupportedWhy(agent), null);
 });
 
-test("Pi's queue names extension installation as the remedy while lifecycle hooks are absent", () => {
+test("Pi declares machine instrumentation and explains a session with no lifecycle hooks", () => {
   const session = mkSession({ agent: "pi", runtime: "terminal", hooksSeen: false });
   const queue = capabilitiesFor("pi").workQueue;
   assert.ok(queue);
-  assert.equal(HARNESSES.pi.hooks, null);
-  assert.equal(foremanAutomationAuthorized(session), false);
+  assert.equal(HARNESSES.pi.hooks?.scope, "machine");
+  assert.equal(foremanAutomationAuthorized(session), true);
   assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
-  assert.match(queue.uninstrumentedWhy, /Install the Mission Control extension for Pi to enable Foreman's work queue/);
-  assert.match(queue.uninstrumentedWhy, /hasn't reported lifecycle hooks/);
+  assert.match(queue.uninstrumentedWhy, /has not loaded.*lifecycle hooks/);
+  assert.doesNotMatch(queue.uninstrumentedWhy, /Install|Setup/);
 });
 
 // ---- clearing context: the defect this item fixes ----

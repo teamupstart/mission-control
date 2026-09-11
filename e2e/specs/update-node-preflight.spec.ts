@@ -85,6 +85,9 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     const previousProbes = probes;
     await status.getByRole("button", { name: "Check again" }).click();
     await expect.poll(() => probes).toBeGreaterThan(previousProbes);
+    // The probe count advances before its subprocess finishes. Wait for that check
+    // to settle before changing the fixture; another click during it shares its result.
+    await expect.poll(() => controller.getSnapshot().phase).toBe("available");
     await expect(update).toBeDisabled();
     await expect(status).toContainText("If this warning persists after changing Node in another terminal, restart Mission Control with the corrected Node.js environment.");
     expect(builds).toBe(0);

@@ -815,10 +815,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       isolatedDirName: "pi-skills",
     },
     // Pi can report lifecycle events through the Mission Control extension. Name the
-    // installation remedy here; the extension, installer and HookSpec belong to later phases.
+    // missing instrumentation without promising an installer before it ships.
     workQueue: {
       uninstrumentedWhy:
-        "Install the Mission Control extension for Pi to enable Foreman's work queue. This session hasn't reported lifecycle hooks, so Foreman can't tell when work starts or finishes.",
+        "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes.",
     },
     // Verified: `/new` starts a fresh session in-place ("New session started", no prompt),
     // pi's equivalent of Claude's `/clear`. There is no `/clear` (pi has `/compact`, which

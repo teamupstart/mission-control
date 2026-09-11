@@ -291,7 +291,9 @@ export const StatusLineIngestSchema = z.object({
       tokens: z.number().optional(),
     })
     .optional(),
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  effort: EffortLevelSchema.optional(),
+  /** A harness-native effort with no equivalent in the shared picker vocabulary. */
+  nativeEffort: z.string().min(1).max(40).optional(),
   thinkingEnabled: z.boolean().optional(),
   /**
    * The subscription's rate-limit windows, lifted from `payload.rate_limits`.

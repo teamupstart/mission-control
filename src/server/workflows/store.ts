@@ -8862,7 +8862,10 @@ export class WorkflowStore {
       const inFlight = this.db.prepare(`SELECT 1 FROM workflow_deliveries
         WHERE run_id = ? AND state IN ('sending', 'uncertain') LIMIT 1`).get(run.id);
       if (inFlight) return null;
-      const context = WorkflowContextSnapshotSchema.parse(parent.context);
+      if (parent.mode !== "full_workflow") return null;
+      const parsedContext = WorkflowContextSnapshotSchema.safeParse(parent.context);
+      if (!parsedContext.success) return null;
+      const context = parsedContext.data;
       if (context.evidence.retention?.state === "pruned"
           || this.listSubmissionImages(parent.id).some((item) => item.availability !== "retained")
           || this.listSubmissionTextArtifacts(parent.id).some((item) => item.availability !== "retained")) return null;

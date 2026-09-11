@@ -8,6 +8,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { workflowCommandEvidenceContent } from "../../src/shared/workflow.ts";
+import { WorkflowContextSnapshotSchema } from "../../src/shared/protocol.ts";
 import type {
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceReadinessResult,
@@ -992,8 +993,20 @@ test("mapping infrastructure recovery reuses frozen evidence in a new same-round
   await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
   await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon,
     `/api/workflow-runs/${created.run.id}`)).submissions.length).toBe(2);
+  await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon,
+    `/api/workflow-runs/${created.run.id}`)).submissions[1]?.status).not.toBe("capturing");
   const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
   expect(detail.submissions.map((item) => item.round)).toEqual([1, 1]);
   expect(detail.submissions[1]!.parentSubmissionId).toBe(created.submission.id);
   expect(detail.submissions[0]!.status).toBe("failed");
+  // Recovery gives inherited records new row ids and provenance, while their proof stays frozen.
+  const frozenContent = (submission: WorkflowSubmission) => {
+    const { images, artifacts, ...repository } = WorkflowContextSnapshotSchema.parse(submission.context).evidence;
+    return {
+      ...repository,
+      images: images?.map(({ id: _id, createdAt: _createdAt, inheritedFrom: _inheritedFrom, ...proof }) => proof),
+      artifacts: artifacts?.map(({ id: _id, createdAt: _createdAt, inheritedFrom: _inheritedFrom, ...proof }) => proof),
+    };
+  };
+  expect(frozenContent(detail.submissions[1]!)).toEqual(frozenContent(detail.submissions[0]!));
 });

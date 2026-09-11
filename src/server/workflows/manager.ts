@@ -2165,6 +2165,7 @@ export class WorkflowManager {
   }
 
   private evidenceRecoveryFor(run: WorkflowRun, submission: WorkflowSubmission): WorkflowRunDetail["evidenceRecovery"] {
+    if (submission.mode !== "full_workflow") return null;
     if (!["blocked", "waiting_for_evidence_readiness", "waiting_for_session"].includes(run.status)) return null;
     const binding = this.store.getBinding(run.bindingId);
     if (!binding?.sessionId || binding.state !== "active") return null;
@@ -2185,8 +2186,9 @@ export class WorkflowManager {
         cursor = previousEvidenceSubmission(this.store, cursor);
       }
     }
-    const selection = submissionCoverageSelection(this.store, submission);
-    if (selection && submission.readiness?.gapCodes.includes("ambiguous_mapping")) {
+    const selection = submission.readiness?.gapCodes.includes("ambiguous_mapping")
+      ? submissionCoverageSelection(this.store, submission) : undefined;
+    if (selection) {
       const readiness = evaluateWorkflowEvidenceReadiness({
         canonicalCriteria: parsed.data.canonicalCriteria, criterionMappings: parsed.data.criterionMappings,
         coverage: this.store.listSubmissionCoverage(submission.id), selection,

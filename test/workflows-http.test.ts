@@ -106,6 +106,11 @@ test("evidence readiness mutations reject oversized bodies before parsing", asyn
   const override = await mutation("override");
   assert.equal(override.status, 413);
   assert.deepEqual(await override.json(), { error: "Workflow evidence readiness override is too large" });
+  const recovery = await request("/api/workflow-runs/missing/submissions/missing/evidence-recovery", {
+    method: "POST", body: oversized,
+  });
+  assert.equal(recovery.status, 413);
+  assert.deepEqual(await recovery.json(), { error: "Workflow evidence recovery request is too large" });
 });
 
 test("definition CAS conflicts are 409 and validation failures are 422", async () => {

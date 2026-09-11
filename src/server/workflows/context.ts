@@ -559,7 +559,7 @@ export async function reconcileWorkflowCoverage(
       result = await runJobStructured<typeof CriterionReconciliationSchema>(
         "workflow-context", prompt,
         (text) => parseModelJson(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
-          timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, shapeGuaranteed: true,
+          timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, maxAttempts: 1,
           schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
           onExecution: deps.onReconciliationExecution,
           observer: {

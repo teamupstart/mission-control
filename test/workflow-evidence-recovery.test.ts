@@ -118,6 +118,17 @@ test("readiness input refuses duplicate, oversized and contradictory authority m
   assert.equal(WorkflowPersonaReviewInputSchema.safeParse(maximumCount).success, true);
   const oversized = { ...maximumCount, criteria: maximumCount.criteria.map((row) => ({ ...row, evidenceIds: Array.from({ length: 32 }, (_, i) => `${i}${"界".repeat(190)}`) })) };
   assert.equal(WorkflowPersonaReviewInputSchema.safeParse(oversized).success, false);
-  const conflicting = evaluateWorkflowEvidenceReadiness({ canonicalCriteria: criteria, coverage: [claim("a", "A"), claim("b", "B")], criterionMappings: [{ criterionId: "A", matchedClientCriterionIds: ["a"] }, { criterionId: "B", matchedClientCriterionIds: ["b"] }], selection: { version: 1, sourceSubmissionId: "parent", criteria: [{ criterionId: "A", matchedClientCriterionIds: ["absent"] }] }, evidence: [] });
-  assert.notEqual(conflicting.status, "ready");
+  const inherited = {
+    canonicalCriteria: criteria, coverage: [claim("a", "A", true), claim("b", "B")],
+    criterionMappings: [{ criterionId: "A", matchedClientCriterionIds: ["a"] }, { criterionId: "B", matchedClientCriterionIds: ["b"] }],
+    evidence: ["a", "b"].map((id) => ({ clientItemId: `proof-${id}`, evidenceId: id, repositoryScope: "repo-01" as const })),
+  };
+  assert.equal(evaluateWorkflowEvidenceReadiness(inherited).status, "ready");
+  const conflicting = evaluateWorkflowEvidenceReadiness({ ...inherited,
+    selection: { version: 1, sourceSubmissionId: "parent", criteria: [{ criterionId: "A", matchedClientCriterionIds: ["absent"] }] },
+  });
+  assert.equal(conflicting.criteria[0]?.matchedClientCriterionId, null);
+  assert.deepEqual(conflicting.criteria[0]?.gaps, ["missing_coverage"]);
+  assert.equal(conflicting.criteria[1]?.matchedClientCriterionId, "b");
+  assert.deepEqual(conflicting.criteria[1]?.gaps, []);
 });

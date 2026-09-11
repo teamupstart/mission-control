@@ -1145,6 +1145,32 @@ async function stageRecoveryProof(h: Awaited<ReturnType<typeof harness>>, id: st
   assert.equal(result.artifacts.length, 1);
 }
 
+for (const invalid of ["uncaptured", "malformed", "inspector_only"] as const) {
+  test(`evidence recovery refuses ${invalid} parent context without reserving a child`, async (t) => {
+    const h = await harness(t, `invalid-recovery-${invalid}`);
+    const created = await h.manager.submit(h.binding.id, { requestId: "source" });
+    assert.equal(created.ok, true); if (!created.ok) return;
+    const { run, submission } = created.value;
+    h.store.setRunState(run.id, "blocked", "evidence_reconciliation_error", { submissionId: submission.id, error: "Unavailable context" });
+    if (invalid === "inspector_only") {
+      openDb().prepare("UPDATE workflow_submissions SET mode = 'inspector_only' WHERE id = ?").run(submission.id);
+    } else {
+      h.store.updateSubmissionCapture(submission.id, {
+        context: invalid === "uncaptured" ? {} : { evidence: "corrupt" },
+        evidence: h.store.getSubmission(submission.id)!.evidence,
+      });
+    }
+    const before = h.store.getSubmission(submission.id);
+    assert.equal(h.store.reserveEvidenceRecovery({ id: `refused-${invalid}`, runId: run.id,
+      parentId: submission.id, requestId: "retry", reason: "mapping", now: Date.now() }), null);
+    const response = await h.manager.recoverEvidence(run.id, submission.id, "retry");
+    assert.equal(response.ok, false);
+    if (!response.ok) assert.equal(response.reason, "conflict");
+    assert.equal(h.store.listSubmissions(run.id).length, 1);
+    assert.deepEqual(h.store.getSubmission(submission.id), before);
+  });
+}
+
 test("failed mapping is infrastructure and explicit recovery freezes a same-round child without live recapture", async (t) => {
   let calls = 0; let recovered = false; let captures = 0;
   const h = await harness(t, "mapping-recovery", async () => { captures++; }, {

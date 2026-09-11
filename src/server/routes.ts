@@ -2305,7 +2305,10 @@ export function buildApp(
     }
   });
   app.post("/api/workflow-runs/:id/submissions/:submissionId/evidence-recovery",
-    bodyLimit({ maxSize: WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES }), async (c) => {
+    bodyLimit({
+      maxSize: WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow evidence recovery request is too large" }, 413),
+    }), async (c) => {
       const manager = workflowManager();
       if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
       const parsed = await parseBody(c, RetryWorkflowEvidenceReadinessSchema);

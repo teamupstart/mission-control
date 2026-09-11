@@ -1770,6 +1770,7 @@ button.wf-run-version:focus-visible {
    because it reports something that is not happening. */
 .wf-run-granted,
 .wf-run-refused,
+.wf-run-refused-claim,
 .wf-run-parked {
   font-size: 12px;
   line-height: 1.5;
@@ -1787,6 +1788,14 @@ button.wf-run-version:focus-visible {
    is the override for it. */
 .wf-run-refused {
   color: var(--attention);
+}
+
+/* The session finished again and was turned away. Muted rather than attention-coloured, and
+   its own class rather than a second `.wf-run-refused`: the line above is the problem, this
+   one is a thing that happened while the problem stood, and a page shouting twice in the same
+   colour makes the reader work out which of the two is the one to act on. */
+.wf-run-refused-claim {
+  color: var(--muted);
 }
 
 .wf-run-parked {

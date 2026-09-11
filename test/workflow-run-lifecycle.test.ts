@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  WORKFLOW_CAPTURE_FAILURE_PHASES,
   WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE,
   WORKFLOW_GATE_DETAIL_KEY,
   WORKFLOW_GATE_OWNED_STATUSES,
@@ -17,6 +18,7 @@ import {
   blockedPhaseClauseGaps,
   decodeWorkflowRunLifecycle,
   withInspectorGate,
+  workflowCaptureFailure,
   workflowCheckCleanupBlock,
   workflowInspectorGate,
   workflowRoundLimitBudget,
@@ -92,6 +94,20 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   evidence_readiness_capture: { detail: null, kind: "none" },
   persona_review: { detail: null, kind: "none" },
 
+  // ---- the capture family: one payload, four phases, and the phase is what names it -------
+  capture_error: { detail: asJson({ error: "capture failed" }), kind: "capture_failure" },
+  capture_interrupted: { detail: asJson({ error: "interrupted" }), kind: "capture_failure" },
+  image_evidence_capture: {
+    detail: asJson({
+      error: "Evidence image changed after it was staged; register it again",
+      code: "image_changed",
+      itemName: "steering-context.png",
+      itemClientId: "phase2-steering-disclosure",
+    }),
+    kind: "capture_failure",
+  },
+  stale_capture: { detail: asJson({ error: "stale" }), kind: "capture_failure" },
+
   // ---- the two payloads an engine path acts on -------------------------------------------
   check_cleanup_unresolved: {
     detail: asJson({ nodeId: "check-1", attempts: 2, error: "lease unresolved" }),
@@ -124,8 +140,6 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
 
   // ---- phases that record a note about themselves and nothing acts on --------------------
   binding_archived: { detail: asJson({ reason: "binding_archived" }), kind: "opaque" },
-  capture_error: { detail: asJson({ error: "capture failed" }), kind: "opaque" },
-  capture_interrupted: { detail: asJson({ error: "interrupted" }), kind: "opaque" },
   complete: { detail: asJson({ outcome: "pass", label: "Approved" }), kind: "opaque" },
   conversation_changed: { detail: asJson({ reason: "conversation_changed" }), kind: "opaque" },
   delivery_blocked: { detail: asJson({ deliveryId: "d", reason: "consent" }), kind: "opaque" },
@@ -142,7 +156,6 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     kind: "opaque",
   },
   failed_outcome: { detail: asJson({ outcome: "fail", label: "Rejected" }), kind: "opaque" },
-  image_evidence_capture: { detail: asJson({ error: "e", code: "image_changed" }), kind: "opaque" },
   // The payload `check_cleanup_unresolved` writes, under the phase that means the OPPOSITE.
   infrastructure_error: {
     detail: asJson({ nodeId: "n", attempts: 3, error: "provider call failed" }),
@@ -174,7 +187,6 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   },
   session_action_parallel_unsupported: { detail: asJson({ error: "parallel" }), kind: "opaque" },
   session_disappeared: { detail: asJson({ reason: "session_disappeared" }), kind: "opaque" },
-  stale_capture: { detail: asJson({ error: "stale" }), kind: "opaque" },
   preflight_refinement_exhausted: {
     detail: asJson({ submissionId: "s1", round: 1, refinements: 2 }),
     kind: "opaque",
@@ -341,6 +353,74 @@ test("every phase the daemon acts on is registered, and the registry is the only
     );
   }
   assert.ok(WORKFLOW_RUN_PHASES.length > WORKFLOW_INSPECTOR_GATE_PHASES.length);
+});
+
+test("a capture failure decodes its cause, with and without the failing item's identity", () => {
+  const named = record("blocked", "image_evidence_capture", asJson({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: "steering-context.png",
+    itemClientId: "phase2-steering-disclosure",
+  }));
+  assert.deepEqual(workflowCaptureFailure(named), {
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: "steering-context.png",
+    itemClientId: "phase2-steering-disclosure",
+  });
+
+  // A row written before the identity keys existed; the whitelist is allowed-key, not required.
+  const legacy = record("blocked", "image_evidence_capture", asJson({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+  }));
+  assert.deepEqual(workflowCaptureFailure(legacy), {
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: null,
+    itemClientId: null,
+  });
+
+  assert.deepEqual(workflowCaptureFailure(record("blocked", "stale_capture", asJson({
+    error: "The workflow submission stopped during evidence capture",
+  }))), {
+    error: "The workflow submission stopped during evidence capture",
+    code: null,
+    itemName: null,
+    itemClientId: null,
+  });
+});
+
+test("a capture payload with no cause is opaque rather than an empty explanation", () => {
+  for (const detail of [asJson({ code: "image_changed" }), asJson({ error: "" })]) {
+    const lifecycle = decodeWorkflowRunLifecycle(record("blocked", "image_evidence_capture", detail));
+    assert.equal(lifecycle.detail.kind, "opaque", JSON.stringify(detail));
+    assert.equal(workflowCaptureFailure(record("blocked", "image_evidence_capture", detail)), null);
+  }
+});
+
+test("only a capture phase reads as a capture failure, and only while the run is open", () => {
+  // Phase-first: `delivery_prepare_error` persists an `error` of its own.
+  const foreign = record("blocked", "delivery_prepare_error", asJson({
+    submissionId: "s1",
+    error: "the packet could not be prepared",
+  }));
+  assert.equal(decodeWorkflowRunLifecycle(foreign).detail.kind, "opaque");
+  assert.equal(workflowCaptureFailure(foreign), null);
+
+  for (const phase of WORKFLOW_CAPTURE_FAILURE_PHASES) {
+    assert.ok(workflowRunPhaseRecognized(phase), `${phase} is not in the phase registry`);
+    assert.deepEqual(
+      WORKFLOW_RUN_PHASE_STATUSES[phase],
+      ["blocked"],
+      `${phase} is declared blocked-only, which is what the decoder's status guard assumes`,
+    );
+  }
+
+  assert.equal(
+    workflowCaptureFailure(record("blocked", "capture_something_newer", asJson({ error: "e" }))),
+    null,
+  );
 });
 
 test("an unrecognised payload stays readable and is never handed to an executable path", () => {

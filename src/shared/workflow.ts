@@ -4519,6 +4519,16 @@ export interface WorkflowRunDetail {
    */
   resumption?: WorkflowRunResumptionState | null;
   /**
+   * The Foreman completion claim this run refused, when that was the last thing it did with
+   * one, or null once a later claim was accepted.
+   *
+   * Its own field for the reason `repairGrant` and `resumption` have one: `events` is a PAGE
+   * of the OLDEST two hundred rows, and a refused claim is late by construction - the run must
+   * already be blocked for one to bounce off it - so a browser-side derivation would answer on
+   * short runs and go quiet on long ones. Detail-only and optional, like its neighbours.
+   */
+  refusedCompletion?: WorkflowRunRefusedCompletion | null;
+  /**
    * Provenance for a run an external orchestrator started. Optional and detail-only: run
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.
    */
@@ -4548,6 +4558,19 @@ export interface WorkflowRunRepairGrant {
   round: number;
   from: number;
   to: number;
+}
+
+/**
+ * A Foreman completion claim the daemon would not act on.
+ *
+ * The claim was made and the once-only guard WAS spent - the store logs
+ * `workflow_completion_blocked`, retires the guard and answers `claimed: true` with no
+ * submission - so this records work that finished and went nowhere, not a call that failed.
+ */
+export interface WorkflowRunRefusedCompletion {
+  at: number;
+  completionKind: string | null;
+  summary: string | null;
 }
 
 /**

@@ -22,6 +22,7 @@ import type {
 } from "../src/shared/workflow.ts";
 import {
   carriedStageStatus,
+  completionClaimOutcome,
   carriedStatus,
   checkOutcomeOf,
   checkStatus,
@@ -64,6 +65,8 @@ import {
   roundOpensEvidenceTray,
   runEvidenceCitations,
   runRecordSummary,
+  runRefusedCompletionSentence,
+  runRefusedSentence,
   runRoundGroups,
   runRounds,
   selectedSubmission,
@@ -1763,6 +1766,145 @@ test("the run record opens on the route's pane, then on a blocking one, then on 
     "deliveries",
     "worklist",
   ), "worklist");
+});
+
+const captureBlockedDetail = (
+  gateState: unknown,
+  overrides: Partial<WorkflowRunDetail> = {},
+): WorkflowRunDetail => detail([submission("s1", 1)], [], {
+  summary: { round: 1, maxRepairRounds: 3, gate: "none" },
+  run: {
+    id: "run",
+    status: "blocked",
+    currentPhase: "image_evidence_capture",
+    gateState,
+  },
+  ...overrides,
+} as unknown as Partial<WorkflowRunDetail>);
+
+test("a capture-blocked run names the item, the cost, and the recovery that works", () => {
+  const sentence = runRefusedSentence(captureBlockedDetail({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: "steering-context.png",
+    itemClientId: "phase2-steering-disclosure",
+  }));
+  assert.ok(sentence);
+  assert.match(sentence, /steering-context\.png \(registered as phase2-steering-disclosure\)/);
+  assert.match(sentence, /Evidence image changed after it was staged; register it again\./);
+  assert.match(sentence, /nothing was reviewed and no repair round was spent/);
+  assert.match(sentence, /picked up by the next round and not by a resume/);
+  assert.match(sentence, /resuming replays the same frozen reservation/);
+});
+
+test("a capture phase whose reservation did not fail does not claim resume is futile", () => {
+  // `resumeCapture` revives the same submission for all four capture phases; only
+  // `image_evidence_capture` refused because of the frozen bytes.
+  const sentence = runRefusedSentence(detail([submission("s1", 1)], [], {
+    summary: { round: 1, maxRepairRounds: 3 },
+    run: {
+      status: "blocked",
+      currentPhase: "capture_interrupted",
+      gateState: { error: "The conversation changed while evidence was being captured" },
+    },
+  } as unknown as Partial<WorkflowRunDetail>));
+  assert.ok(sentence);
+  assert.match(sentence, /The conversation changed while evidence was being captured\./);
+  assert.match(sentence, /no repair round was spent/);
+  assert.match(sentence, /Starting the next round re-reads the session/);
+  assert.doesNotMatch(sentence, /frozen reservation/);
+});
+
+test("a capture failure with no recorded item degrades to the general sentence", () => {
+  // The row a build predating the identity wrote.
+  const sentence = runRefusedSentence(captureBlockedDetail({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+  }));
+  assert.ok(sentence);
+  assert.doesNotMatch(sentence, /registered as/);
+  assert.doesNotMatch(sentence, /It stopped on/);
+  assert.match(sentence, /Evidence image changed after it was staged; register it again\./);
+  assert.match(sentence, /no repair round was spent/);
+  assert.match(sentence, /picked up by the next round and not by a resume/);
+
+  const idOnly = runRefusedSentence(captureBlockedDetail({
+    error: "Reserved workflow upload is missing or expired",
+    code: "upload_unavailable",
+    itemClientId: "att-1",
+  }));
+  assert.ok(idOnly);
+  assert.match(idOnly, /It stopped on att-1: Reserved workflow upload is missing or expired\./);
+  assert.match(idOnly, /picked up by the next round and not by a resume/);
+});
+
+test("a capture phase with nothing to say stays silent rather than claiming a reason", () => {
+  assert.equal(runRefusedSentence(captureBlockedDetail(null)), null);
+  assert.equal(runRefusedSentence(captureBlockedDetail({ code: "image_changed" })), null);
+  assert.equal(
+    runRefusedSentence(detail([submission("s1", 1)], [], {
+      summary: { round: 1, maxRepairRounds: 3 },
+      run: { status: "blocked", currentPhase: "session_disappeared", gateState: null },
+    } as unknown as Partial<WorkflowRunDetail>)),
+    null,
+  );
+});
+
+test("a refused completion claim is promoted only while the run is still blocked", () => {
+  const refused = { at: 1_000_000, completionKind: "prompted", summary: "Fixed the diff link" };
+  const blocked = captureBlockedDetail(
+    { error: "Evidence image changed after it was staged", code: "image_changed" },
+    { refusedCompletion: refused },
+  );
+  const sentence = runRefusedCompletionSentence(blocked, 1_000_000 + 3_600_000);
+  assert.ok(sentence);
+  assert.match(sentence, /This session finished again 1h ago/);
+  assert.match(sentence, /the run was already blocked, so it opened no round/);
+  assert.match(sentence, /starting the next round is what picks it up/);
+
+  assert.equal(runRefusedCompletionSentence(captureBlockedDetail({ error: "e" })), null);
+  assert.equal(
+    runRefusedCompletionSentence(detail([submission("s1", 1)], [], {
+      summary: { round: 1, maxRepairRounds: 3 },
+      run: { status: "running", currentPhase: "persona_review", gateState: null },
+      refusedCompletion: refused,
+    } as unknown as Partial<WorkflowRunDetail>)),
+    null,
+  );
+});
+
+test("the header and the claim card cannot disagree about a refused claim", () => {
+  // Two surfaces, one daemon behaviour. They frame it differently and only the header carries
+  // an age, but what the refusal cost and what clears it belong to `claimForemanCompletion`,
+  // so a change there must not be able to reach one surface and miss the other.
+  const card = completionClaimOutcome("blocked").sentence ?? "";
+  const header = runRefusedCompletionSentence(captureBlockedDetail(
+    { error: "Evidence image changed after it was staged", code: "image_changed" },
+    { refusedCompletion: { at: 1_000, completionKind: "prompted", summary: "done" } },
+  ), 1_000) ?? "";
+  for (const shared of [
+    "it opened no round and produced no submission",
+    "Whatever evidence that turn registered is staged and waiting,"
+      + " and starting the next round is what picks it up.",
+  ]) {
+    assert.ok(card.includes(shared), `the claim card dropped: ${shared}`);
+    assert.ok(header.includes(shared), `the header dropped: ${shared}`);
+  }
+});
+
+test("a completion claim card says what the claim did, not which enum it was stored as", () => {
+  const refused = completionClaimOutcome("blocked");
+  assert.equal(refused.label, "refused");
+  assert.match(refused.sentence ?? "", /opened no round and produced no submission/);
+  assert.match(refused.sentence ?? "", /the session was told it had completed anyway/);
+
+  assert.equal(completionClaimOutcome("started").label, "started the run");
+  assert.equal(completionClaimOutcome("resubmitted").label, "opened the next round");
+  assert.equal(completionClaimOutcome("already_claimed").label, "already counted");
+
+  const unknown = completionClaimOutcome("some_newer_state");
+  assert.equal(unknown.label, "some newer state");
+  assert.equal(unknown.sentence, null);
 });
 
 test("a repair's reused judge pass links to the original round, including through continuation", () => {

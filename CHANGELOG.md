@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.15.0](https://github.com/teamupstart/mission-control/compare/v1.14.0...v1.15.0) (2026-09-11)
+
+
+### Features
+
+* **harness:** run Pi on a managed SDK runtime with Bedrock models ([#993](https://github.com/teamupstart/mission-control/issues/993)) ([a2c3c81](https://github.com/teamupstart/mission-control/commit/a2c3c8130343ed60127bea7fa6413cc14ca304ef))
+* **pi:** connect sessions to Mission Control tools and dashboard ([#1003](https://github.com/teamupstart/mission-control/issues/1003)) ([6115843](https://github.com/teamupstart/mission-control/commit/6115843df3bb48a3b3e92f311b88e0b67b1427c6))
+* **pi:** reconcile machine-wide extension installation ([#1007](https://github.com/teamupstart/mission-control/issues/1007)) ([e684e22](https://github.com/teamupstart/mission-control/commit/e684e22cf3f08b0a2ff98b3b8b06741cf2ea0e05))
+* **pi:** report extension health and add first install in Setup ([#1017](https://github.com/teamupstart/mission-control/issues/1017)) ([5527cf5](https://github.com/teamupstart/mission-control/commit/5527cf509237f936f8cbbc63754695530299ca41))
+* **workflows:** apply Foreman CI preference to PR actions ([#1010](https://github.com/teamupstart/mission-control/issues/1010)) ([d13d6fc](https://github.com/teamupstart/mission-control/commit/d13d6fc7b0e3e1b0569532a88e2c20d1db8647f5))
+* **workflows:** fold the Inspector gate and Foreman claims into a Completion tab ([#1016](https://github.com/teamupstart/mission-control/issues/1016)) ([7082a4a](https://github.com/teamupstart/mission-control/commit/7082a4a6e5c0f122b9571ffc4b5ee188d237d810))
+* **workflows:** give Personas frozen human steering context ([#1002](https://github.com/teamupstart/mission-control/issues/1002)) ([297a116](https://github.com/teamupstart/mission-control/commit/297a116ab50dfd6715d29de4b35e16b32cc8941b))
+* **workflows:** merge image evidence and readiness into one Evidence pane ([#1005](https://github.com/teamupstart/mission-control/issues/1005)) ([b14efbd](https://github.com/teamupstart/mission-control/commit/b14efbd40fce012d0b50551291b730c64f2f061e))
+* **workflows:** name the cause on every surface a blocked run reaches ([#1006](https://github.com/teamupstart/mission-control/issues/1006)) ([534bba3](https://github.com/teamupstart/mission-control/commit/534bba31e4de0db07b695060f72a9f5b6270494e))
+* **workflows:** override provider and model per Persona node ([#1008](https://github.com/teamupstart/mission-control/issues/1008)) ([555569d](https://github.com/teamupstart/mission-control/commit/555569d6ab67dfa252ff6eb3c3493f8ab0557047))
+* **workflows:** remove coverage percentage gate ([#1014](https://github.com/teamupstart/mission-control/issues/1014)) ([f8e056b](https://github.com/teamupstart/mission-control/commit/f8e056b69c97b71a26eceda8eea0c31c43b765ae))
+* **workflows:** retain judge passes across repair rounds ([#1004](https://github.com/teamupstart/mission-control/issues/1004)) ([9445ca7](https://github.com/teamupstart/mission-control/commit/9445ca7b7f41a020b3f0b328b2c57faa6a4a2182))
+* **workflows:** say what kind of ask a run froze ([#1009](https://github.com/teamupstart/mission-control/issues/1009)) ([fd2ac67](https://github.com/teamupstart/mission-control/commit/fd2ac67bfd17734ba731f7a6c899a237264c1d7c))
+* **workflows:** say why a run blocked by evidence capture stopped ([#1013](https://github.com/teamupstart/mission-control/issues/1013)) ([5a053da](https://github.com/teamupstart/mission-control/commit/5a053dadc232a76062838e917e0e344f8198daf6))
+
+
+### Bug Fixes
+
+* **feedback:** keep Report publicly working after hot updates ([#997](https://github.com/teamupstart/mission-control/issues/997)) ([60f4a31](https://github.com/teamupstart/mission-control/commit/60f4a317d85d7058756b14d5a755055e9be8f5b4))
+* **files:** keep a comment's control reachable and its composer inside the pane ([#1001](https://github.com/teamupstart/mission-control/issues/1001)) ([a24e763](https://github.com/teamupstart/mission-control/commit/a24e763c1444e9820f7d38beeca7610aab23d307))
+* **harnesses:** keep model options inside the harness card select ([#1019](https://github.com/teamupstart/mission-control/issues/1019)) ([6493cf7](https://github.com/teamupstart/mission-control/commit/6493cf762b552898da6da66752483096ad09703b))
+* **instructions:** append repository rules to standing defaults ([#1015](https://github.com/teamupstart/mission-control/issues/1015)) ([781102c](https://github.com/teamupstart/mission-control/commit/781102c284f08a0a3b74db8c65d5799c2ae46a75))
+* **pi:** refuse required Mission tools before provisioning ([1756386](https://github.com/teamupstart/mission-control/commit/175638620ad5efe53fe5edc2c8684ec7b3accded))
+* price Astra usage and recover unpriced model history ([#1020](https://github.com/teamupstart/mission-control/issues/1020)) ([68eeed5](https://github.com/teamupstart/mission-control/commit/68eeed5dd43e6b33a77526b72dccb810581f3a8b))
+* **scripts:** match GitHub's heading anchors for underscores ([#1011](https://github.com/teamupstart/mission-control/issues/1011)) ([78e862e](https://github.com/teamupstart/mission-control/commit/78e862e0e88ecc2e56e6ba2c2b8271969029deba))
+* **terminal:** make cmux work end to end, and stop a rebuild bricking daemon startup ([#1000](https://github.com/teamupstart/mission-control/issues/1000)) ([4c41094](https://github.com/teamupstart/mission-control/commit/4c41094e8a5b0c0fdbbae72fa4112024d8a23cf4))
+* **terminal:** retain task names for dispatched Ghostty sessions ([#1018](https://github.com/teamupstart/mission-control/issues/1018)) ([f554410](https://github.com/teamupstart/mission-control/commit/f554410940419d24fbc82c79a1296c0d0e82a8b5))
+* **workflows:** make evidence repairs recoverable ([#1012](https://github.com/teamupstart/mission-control/issues/1012)) ([da8301b](https://github.com/teamupstart/mission-control/commit/da8301b800afba2b0207e97f997d5def15c4fa11))
+
 ## [1.14.0](https://github.com/teamupstart/mission-control/compare/v1.13.0...v1.14.0) (2026-09-10)
 
 

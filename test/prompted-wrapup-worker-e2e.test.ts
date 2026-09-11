@@ -266,7 +266,10 @@ const goalRecord = {
   updatedAt: 0,
 };
 
-/** How long the worker may take to print its first line before the action budget starts. */
+/** The worker's own first log line, from `worker.ts`. Its stdout, never stderr. */
+const WORKER_READY = "Foreman worker started";
+
+/** How long the worker may take to announce itself before the action budget starts. */
 const BOOT_MS = 30_000;
 
 /** The multiple of an action budget a run may reach once starvation is credited back. */
@@ -316,17 +319,23 @@ async function runWorker(
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
   /**
-   * The worker's first byte, which is `Foreman worker started (…)`. It is the boundary
-   * between BOOTING and WORKING, and the two need separate budgets: spawning `node --import
-   * tsx` over this repository compiles the worker's whole import graph, and on a loaded
-   * machine that alone can outlast the action budget a caller passed. Counting boot against
-   * that budget is what turns "the machine was busy" into "the worker never acted".
+   * The worker announcing itself on stdout. It is the boundary between BOOTING and WORKING,
+   * and the two need separate budgets: spawning `node --import tsx` over this repository
+   * compiles the worker's whole import graph, and on a loaded machine that alone can outlast
+   * the action budget a caller passed. Counting boot against that budget is what turns "the
+   * machine was busy" into "the worker never acted".
    */
-  let booted = false;
-  child.stdout?.on("data", (d: string) => { booted = true; out += d; });
-  child.stderr?.on("data", (d: string) => { booted = true; out += d; });
+  let stdout = "";
+  child.stdout?.on("data", (d: string) => { stdout += d; out += d; });
+  // Stderr is RECORDED but never counts as booted. Node prints `ExperimentalWarning` and
+  // friends to stderr before a line of the worker's own output exists, so treating any
+  // stderr byte as the start signal hands the action budget away to a warning and quietly
+  // reinstates the defect this split exists to fix.
+  child.stderr?.on("data", (d: string) => { out += d; });
+  // Matched against the ACCUMULATED stdout rather than one chunk: a pipe may split the line.
+  const booted = (): boolean => stdout.includes(WORKER_READY);
   const bootDeadline = Date.now() + BOOT_MS;
-  while (!booted && Date.now() < bootDeadline && !opts.until?.()) await sleep(25);
+  while (!booted() && Date.now() < bootDeadline && !opts.until?.()) await sleep(25);
 
   /**
    * `opts.ms` as an OPPORTUNITY budget rather than a wall-clock one.

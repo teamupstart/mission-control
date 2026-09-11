@@ -140,6 +140,17 @@ export function NodeExecutionEditor({
                   withNodeExecutionRunner(state, event.target.value as LlmRunnerId),
                 )}
               >
+                {/*
+                  The saved runner always has an option, even when the catalog does not list
+                  it. `providers` is empty until the daemon answers, so a controlled select
+                  bound to a stored runner would otherwise paint blank on first render and
+                  stop saying what this reviewer runs on. Not disabled, unlike the Persona
+                  editor's equivalent: that one retains an id this build cannot resolve, while
+                  this value is a supported `LlmRunnerId` whose label has simply not arrived.
+                */}
+                {!providers.some((provider) => provider.id === state.runner) && (
+                  <option value={state.runner}>{state.runner}</option>
+                )}
                 {providers.map((provider) => (
                   <option key={provider.id} value={provider.id}>{provider.label}</option>
                 ))}

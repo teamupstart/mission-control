@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { LlmProviderView } from "../src/shared/types.ts";
+import { NodeExecutionEditor } from "../src/web/workflows/NodeExecutionEditor.tsx";
 import {
   addMember,
   insertStage,
@@ -528,4 +532,36 @@ test("every routing readout names the object that decided it", () => {
     model: "claude-haiku-4-5",
   });
   assert.equal(personaNodeRouting(undefined), null);
+});
+
+// The provider select is CONTROLLED on the saved runner, and `providers` arrives from the
+// daemon a moment after first paint. A select whose value matches no option renders blank,
+// so the one moment a reviewer most needs to see what it runs on - the first frame after a
+// reload - is the moment it would stop saying. Raised by CodeRabbit on #1008.
+test("the routing form always offers an option for the runner it is bound to", () => {
+  const render = (providers: LlmProviderView[]): string => renderToStaticMarkup(
+    createElement(NodeExecutionEditor, {
+      subject: { nodeId: "intent", personaId: P1 },
+      name: "Security",
+      override: OVERRIDE,
+      seed: { runner: "claude" as const, model: "claude-sonnet-5" },
+      inherited: "claude · claude-sonnet-5",
+      providers,
+      readOnly: false,
+      onChange: () => {},
+    }),
+  );
+
+  // The catalog has not answered yet: the saved runner is still offered, named by its id,
+  // and still the selected option rather than a blank row.
+  const empty = render([]);
+  assert.match(empty, /<option value="codex" selected="">codex<\/option>/);
+
+  // Once it answers, the catalog's own label wins and no duplicate option is left behind.
+  const loaded = render([
+    { id: "claude", label: "Claude Code" },
+    { id: "codex", label: "Codex" },
+  ]);
+  assert.match(loaded, /<option value="codex" selected="">Codex<\/option>/);
+  assert.equal(loaded.match(/value="codex"/g)?.length, 1, "exactly one option for the runner");
 });

@@ -256,6 +256,23 @@ test("a default this build doesn't know is still shown as selected", () => {
   assert.match(html, /not currently reported/);
 });
 
+test("a card's model options are bare labels, so a long hint cannot overflow the select", () => {
+  // `.harnesses-select` is capped at 250px, and the hints are free text each harness
+  // reports for itself - Codex's are whole sentences. Composing `label - hint` here ran
+  // the selected option under the chevron and clipped it, and no cap chosen today
+  // survives the next catalog. The roomier pickers still show hints; this one must not.
+  const html = render({});
+  assert.match(html, /<option value="claude-opus-4-8">Opus 4\.8<\/option>/);
+  assert.doesNotMatch(html, /previous-generation Opus/);
+});
+
+test("a retained model keeps its hint, because it is the only thing explaining the row", () => {
+  // The exception to the rule above, and a short fixed string rather than harness text:
+  // without it the option is an unexplained id the operator cannot account for.
+  const html = render({ defaultModel: { claude: "claude-opus-9-9" } });
+  assert.match(html, /<option value="claude-opus-9-9" selected[^>]*>[^<]*not currently reported/);
+});
+
 test("the model pickers are disabled until the first config read lands", () => {
   // Same race as the switch: a writable select on a config we haven't read yet would
   // patch a default over a value we never saw.

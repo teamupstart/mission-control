@@ -41,14 +41,12 @@ test("Codex pickers show its discovered catalog and retain selection through dis
   await expect
     .poll(() => settingsModel.locator(`option[value="${DISCOVERED_ONLY}"]`).count())
     .toBe(1);
-  // Label and hint both come off the wire - Codex's own display name and description -
-  // which no shipped row for this id could supply.
-  await expect(settingsModel.locator(`option[value="${DISCOVERED_ONLY}"]`)).toHaveText(
-    "GPT-5.4 - Strong model for everyday coding.",
-  );
-  await expect(settingsModel.locator('option[value="gpt-5.4-mini"]')).toHaveText(
-    "GPT-5.4-Mini - Small, fast, and cost-efficient model.",
-  );
+  // The label comes off the wire - Codex's own display name - which no shipped row for
+  // this id could supply. The harness card prints the label alone; Codex's descriptions
+  // are full sentences and overflowed the 250px select, so the hint moves to the roomier
+  // Dispatch picker asserted below.
+  await expect(settingsModel.locator(`option[value="${DISCOVERED_ONLY}"]`)).toHaveText("GPT-5.4");
+  await expect(settingsModel.locator('option[value="gpt-5.4-mini"]')).toHaveText("GPT-5.4-Mini");
 
   // A row Codex hides from its own picker stays hidden here.
   await expect(settingsModel.locator('option[value="gpt-5.6-e2e-hidden"]')).toHaveCount(0);
@@ -72,7 +70,10 @@ test("Codex pickers show its discovered catalog and retain selection through dis
   await expect(dispatchModel).toBeEnabled();
   await expect(dispatchModel).toHaveValue("");
   await expect(dispatchModel).toContainText("Default - GPT-5.4");
-  await expect(dispatchModel.locator(`option[value="${DISCOVERED_ONLY}"]`)).toHaveCount(1);
+  // Same wire row, with the description the harness card had no room for.
+  await expect(dispatchModel.locator(`option[value="${DISCOVERED_ONLY}"]`)).toHaveText(
+    "GPT-5.4 - Strong model for everyday coding.",
+  );
   await dashboard.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 

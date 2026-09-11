@@ -1094,6 +1094,19 @@ export function PipelineEditor({
                     // all. Both conditions are read once here so the actions slot can stay
                     // NULL when neither control renders - an empty `<span>` in the row's
                     // second grid column is a layout change, not an absence.
+                    /**
+                     * WHICH member this row is, as one phrase its row and both of its
+                     * buttons share.
+                     *
+                     * The position is the identity, not decoration. A stage may hold the
+                     * same Persona twice - that is the whole point of a per-node override -
+                     * so a name built from the reviewer and the stage alone gives two rows
+                     * one accessible name and leaves a screen-reader user unable to tell
+                     * their Routing and Remove buttons apart. Composed once so the row and
+                     * the buttons cannot drift into naming the same thing two ways.
+                     */
+                    const memberRef =
+                      `${label}, ${noun} ${memberIndex + 1} of ${stage.members.length} in ${stageRef}`;
                     const routable = member.kind === "persona" && member.nodeId !== null;
                     const routingOpen = routable && openRouting === member.nodeId;
                     return (
@@ -1106,7 +1119,7 @@ export function PipelineEditor({
                         item={{
                           tabIndex: current === key ? 0 : -1,
                           focusKey: key,
-                          ariaLabel: `${label}, ${noun} ${memberIndex + 1} of ${stage.members.length} in ${stageRef}`,
+                          ariaLabel: memberRef,
                           draggable: !readOnly,
                           onFocus: () => setFocusKey(key),
                           onDragStart: (event) => {
@@ -1139,7 +1152,7 @@ export function PipelineEditor({
                                 <button
                                   type="button"
                                   className="btn btn-ghost"
-                                  aria-label={`Model routing for ${label} in ${stageRef}`}
+                                  aria-label={`Model routing for ${memberRef}`}
                                   aria-expanded={routingOpen}
                                   onClick={() => setOpenRouting(
                                     routingOpen ? null : member.nodeId,
@@ -1154,7 +1167,7 @@ export function PipelineEditor({
                                 <button
                                   type="button"
                                   className="btn btn-ghost"
-                                  aria-label={`Remove ${label} from ${stageRef}`}
+                                  aria-label={`Remove ${memberRef}`}
                                   onClick={() => confirmRemoveMember(ref)}
                                 >
                                   ✕

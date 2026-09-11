@@ -249,8 +249,17 @@ test("resetting, replacing the Persona, and a second occurrence each behave inde
     .filter({ hasText: intent });
   await expect(rows).toHaveCount(2);
 
+  // Each Routing button carries its member's POSITION, so the two occurrences are separable
+  // by accessible name rather than only by DOM order. That is the difference between a
+  // screen-reader user being able to route the second reviewer and not, and the reason this
+  // selects by name here instead of reaching for `rows.nth(1)`. Raised by GitHub Inspector.
+  const firstRouting = `Model routing for ${intent}, reviewer 1 of 3 in Stage 2`;
+  const secondRouting = `Model routing for ${intent}, reviewer 3 of 3 in Stage 2`;
+  await expect(dashboard.getByRole("button", { name: firstRouting })).toHaveCount(1);
+  await expect(dashboard.getByRole("button", { name: secondRouting })).toHaveCount(1);
+
   const second = rows.nth(1);
-  await second.getByRole("button", { name: new RegExp(`^Model routing for ${intent}`) }).click();
+  await dashboard.getByRole("button", { name: secondRouting }).click();
   await second.getByRole("combobox", { name: `Model routing for ${intent}` })
     .selectOption("override");
   await second.getByRole("combobox", { name: `Provider for ${intent}` }).selectOption("claude");

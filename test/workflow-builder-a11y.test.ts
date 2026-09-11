@@ -92,7 +92,14 @@ test("the pipeline editor roves by name and announces in names", () => {
   // `labelOfStage`, never from a member's `nodeId` - and `labelOfMember` is what makes a check
   // say its own slot instead of falling through the Persona lookup as "Missing persona".
   assert.match(editor, /`Added \$\{labelOfMember\(seeded\(seed\)\)\} to \$\{refOfStage\(stageIndex\)\}`/);
-  assert.match(editor, /ariaLabel: `\$\{label\}, \$\{noun\} \$\{memberIndex \+ 1\}/);
+  // One phrase names WHICH member, and the row plus both of its buttons all use it. The
+  // position is what makes it an identity: a stage may hold the same Persona twice, so a
+  // name built from the reviewer and the stage alone collides across two rows and leaves a
+  // screen-reader user unable to tell their Routing and Remove buttons apart.
+  assert.match(editor, /const memberRef =\n\s*`\$\{label\}, \$\{noun\} \$\{memberIndex \+ 1\} of \$\{stage\.members\.length\} in \$\{stageRef\}`/);
+  assert.match(editor, /ariaLabel: memberRef,/);
+  assert.match(editor, /aria-label=\{`Model routing for \$\{memberRef\}`\}/);
+  assert.match(editor, /aria-label=\{`Remove \$\{memberRef\}`\}/);
   assert.match(editor, /member\.kind === "check" \? checkLabel\(member\.slot\) : nameOf\(member\.personaId\)/);
   // The stage's own name, then its KIND when it has one worth saying, then its position. The
   // kind clause is not decoration: a session action card otherwise sounds exactly like a

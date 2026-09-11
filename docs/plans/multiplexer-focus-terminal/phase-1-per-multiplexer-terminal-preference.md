@@ -130,10 +130,21 @@ No `node:` imports - this file is browser-safe and `src/shared/` is a controlled
 ### 2. Wire contract - `src/shared/protocol.ts`
 
 - `TerminalsConfigSchema` with one field, `multiplexerTerminal`: an object with a key per
-  `MULTIPLEXER_IDS` member, each a stored emulator id defaulting to `null`. Write the keys out
-  explicitly and constrain the object so it stays exhaustive over `MultiplexerId` - adding a
-  multiplexer must fail typecheck here rather than silently produce a backend with no
-  preference. `HarnessesConfigSchema.terminalBackend` (`:2506-2513`) is the shape to mirror.
+  `MULTIPLEXER_IDS` member, each defaulting to `null`. Write the keys out explicitly and
+  constrain the object so it stays exhaustive over `MultiplexerId` - adding a multiplexer must
+  fail typecheck here rather than silently produce a backend with no preference.
+  `HarnessesConfigSchema.terminalBackend` (`:2506-2513`) is the shape to mirror.
+- **The stored value type is loose on purpose, and this is load-bearing.** Reuse
+  `StoredTerminalBackendSchema` (`:2335`, `z.string().nullable()`) for the stored values, and a
+  strict `z.enum(EMULATOR_IDS)` only in the patch schema - exactly the split
+  `StoredTerminalBackendSchema` / `TerminalBackendSchema` already draws at `:2335-2338`, whose
+  comment reads "Strict: this build writes only registered backend ids."
+
+  A strict *stored* schema would throw on an emulator id written by a newer build, before
+  `resolveEmulatorBackend` ever ran. That would make the unknown-but-reportable rule in
+  `plan.md` unimplementable: the value the row needs in order to say "I ignored a preference
+  written by a newer build" is the very value the parse rejected. Loose on read, strict on
+  write.
 - `TerminalsConfigPatchSchema` beside it, every key optional and nullable, `.strict()`, refusing
   an empty patch - mirroring `HarnessesConfigPatchSchema` (`:2759-2765`).
 
@@ -153,9 +164,12 @@ Mirror `src/server/harnesses.ts` closely, minus the legacy-upgrade handling it c
 - `getTerminalsConfig()` - `getAppConfig(CONFIG_ENTRY)` then `TerminalsConfigSchema.parse(stored ?? {})`.
 - `setTerminalsConfig(patch)` - merge `multiplexerTerminal` per key over the current value,
   persist, return the result.
-- `resolveFocusEmulator(mux: MultiplexerId): EmulatorId | null` - the one function the policy
-  layer calls, running the stored value through `resolveEmulatorBackend` so an unknown id
-  degrades to Automatic rather than throwing.
+- `resolveFocusEmulator(mux: MultiplexerId): { backend: EmulatorId | null; unknown: string | null }` -
+  the one function the policy and panel layers call, running the stored value through
+  `resolveEmulatorBackend`. It returns the **pair**, not a bare id: a resolver that collapses to
+  `EmulatorId | null` throws away the unknown value the Setup row needs in order to report that
+  it ignored a preference, which is the same reason `resolveTerminalBackend` returns a pair
+  today. Policy callers read `.backend`; the row reads `.unknown`.
 
 Read at call time, never cached at module scope: a change must reach the next Focus without a
 daemon restart.
@@ -173,7 +187,7 @@ is keyed per multiplexer.
 
 - `multiplexerView` sets `needsTerminalApp: Boolean(sessions.attachArgv)` on every multiplexer
   row, including the early-return branches, so the field is never absent for a multiplexer.
-- `raiser(deps, mux: MultiplexerId)` consults `resolveFocusEmulator(mux)` first: if that emulator
+- `raiser(deps, mux: MultiplexerId)` consults `resolveFocusEmulator(mux).backend` first: if that emulator
   exists in `deps.emulators`, has a `spawn`, and has no `binUnavailableReason`, return it.
   Otherwise fall back to the existing `EMULATOR_IDS` walk, unchanged.
 - Update both call sites (`:113`, `:328`) to pass the multiplexer they already hold. The blurb at
@@ -189,7 +203,8 @@ seams require it - `TerminalTargetDeps` is the established place for that.
   `installed: binPresent` and `unsupported: binUnsupportedReason`, exactly as
   `defaultTerminalTargetDeps` does.
 - In step 4, build the attempt order as the preferred emulator (when
-  `resolveFocusEmulator(mux.id)` names one) followed by `EMULATOR_IDS` with that id removed, so
+  `resolveFocusEmulator(mux.id).backend` names one) followed by `EMULATOR_IDS` with that id
+  removed, so
   no backend is tried twice.
 - Skip any candidate with no `spawn` **or** with a non-null `binUnavailableReason` before
   attempting a spawn. A terminal that is present but fails anyway still falls through to the
@@ -218,6 +233,10 @@ seams require it - `TerminalTargetDeps` is the established place for that.
     control, disabled, reading Automatic. There is nothing to set a preference for yet.
   - target reports `needsTerminalApp === false`: the text "Needs no terminal" instead. Derived
     from the field, never from the id.
+  - when `resolveFocusEmulator(mux).unknown` is non-null, the row says it is ignoring a stored
+    preference this build does not recognize, rather than presenting Automatic as the
+    operator's own choice. `TerminalPreferencePicker` already renders this case for the
+    Harnesses card (`resolved.unknown`); follow its wording.
 - CSS for the row split and the aside. The mockup in `plan.html` uses `.setup-row-split`,
   `.setup-row-aside` and `.pref-inert`; match the existing `.setup-row` vocabulary and keep the
   rows readable at narrow widths.
@@ -231,7 +250,9 @@ The modal inset rule does not apply here (this is a panel, not a modal), but the
   defaults, so an existing database gains the key on first write and reads as all-Automatic
   before that.
 - **Downgrade:** a build without this entry ignores the row. A build with it reading a row
-  written by a newer build resolves unknown ids to Automatic while keeping them reportable.
+  written by a newer build **parses successfully** - the stored values are `z.string().nullable()` -
+  and then resolves the unrecognized id to Automatic while keeping it reportable. This only
+  works because the stored schema is loose; see step 2.
 - **Backups:** picked up automatically by `SETTINGS_CONFIG_BACKUP_ENTRIES`. Confirm a snapshot
   round-trips the new domain rather than assuming it.
 
@@ -257,7 +278,9 @@ Cover:
 - `needsTerminalApp`: false for a multiplexer with `attachArgv: null`, true for one with an
   attach argv, across every `multiplexerView` return path.
 - Schema: exhaustive default of all-null; a patch for one multiplexer leaves its siblings
-  untouched; an empty patch is refused.
+  untouched; an empty patch is refused; **a stored row holding an unrecognized emulator id
+  parses rather than throwing**, and resolves to Automatic with that id reported as `unknown`;
+  the patch schema **refuses** that same unrecognized id.
 
 End-to-end under `e2e/` (required - this is a new UI control; see `e2e/README.md`):
 
@@ -294,6 +317,9 @@ No later phase depends on this one. For future work, these are the contracts est
 and the things not to quietly change:
 
 - `multiplexerTerminal` stays exhaustive over `MULTIPLEXER_IDS`.
+- Its stored values stay loose (`z.string().nullable()`) and its patch values stay strict. Do
+  not "tighten" the stored schema to the enum: that silently breaks the unknown-but-reportable
+  rule for every operator who downgrades.
 - `needsTerminalApp` stays derived from the adapter's `attachArgv`. No consumer may name a
   backend to decide it.
 - The `terminals` backup domain id is append-only and must never be reordered.
@@ -310,3 +336,11 @@ and the things not to quietly change:
   updated with the same correction during review, so the two agree.
 - **Final audit.** Every requirement in `plan.md` maps to a step here; no step depends on an
   unmerged artifact; the phase leaves the repository operable with no deferred cleanup.
+- **Review round 1 (CodeRabbit, valid).** The wire contract said the stored values were
+  `EmulatorId | null` while the plan promised an unrecognized stored id would stay reportable.
+  Those contradict: a strict stored schema rejects the value at parse time, before the resolver
+  runs. Corrected in step 2 to the loose-read / strict-write split the repository already uses
+  (`StoredTerminalBackendSchema` / `TerminalBackendSchema`, `src/shared/protocol.ts:2335-2338`),
+  and `resolveFocusEmulator` now returns the `{ backend, unknown }` pair instead of a bare id so
+  the Setup row can report the ignored preference. No approved decision changed - this makes the
+  artifacts consistent with behaviour `plan.md` already specified.

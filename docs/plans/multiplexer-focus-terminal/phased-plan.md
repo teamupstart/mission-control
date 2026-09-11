@@ -81,9 +81,14 @@ task names.
 With one phase there is nothing to hand between phases. The contracts below are the ones Phase 1
 establishes for *future* work, and it must not leave them implicit:
 
-- `multiplexerTerminal` is an exhaustive `Record<MultiplexerId, EmulatorId | null>`. Adding a
-  multiplexer to `MULTIPLEXER_IDS` must fail typecheck here rather than silently produce a
-  backend with no preference.
+- `multiplexerTerminal` is exhaustively keyed by `MultiplexerId`. Adding a multiplexer to
+  `MULTIPLEXER_IDS` must fail typecheck here rather than silently produce a backend with no
+  preference.
+- Its values are stored loose and written strict - `z.string().nullable()` on read,
+  `z.enum(EMULATOR_IDS)` in the patch schema - mirroring `StoredTerminalBackendSchema` /
+  `TerminalBackendSchema` (`src/shared/protocol.ts:2335-2338`). Tightening the stored schema
+  would reject a newer build's emulator id at parse time and break the unknown-but-reportable
+  rule.
 - `needsTerminalApp` on `TerminalTargetView` is derived from the adapter's `attachArgv`, never
   from a backend id. No consumer may name cmux.
 - `terminals` is appended to `SETTINGS_BACKUP_DOMAINS` and never reordered.

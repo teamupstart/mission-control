@@ -441,7 +441,8 @@ svg { display: block; height: auto; max-width: 100%; }
 <h2>Cross-phase contracts</h2>
 <p>With one phase there is nothing to hand between phases. These are the contracts Phase 1 establishes for <em>future</em> work, and it must not leave them implicit:</p>
 <ul>
-<li><code>multiplexerTerminal</code> is an exhaustive <code>Record&lt;MultiplexerId, EmulatorId | null&gt;</code>. Adding a multiplexer must fail typecheck here rather than silently produce a backend with no preference.</li>
+<li><code>multiplexerTerminal</code> is exhaustively keyed by <code>MultiplexerId</code>. Adding a multiplexer must fail typecheck here rather than silently produce a backend with no preference.</li>
+<li>Its values are stored loose and written strict - <code>z.string().nullable()</code> on read, <code>z.enum(EMULATOR_IDS)</code> in the patch schema - mirroring <code>StoredTerminalBackendSchema</code> / <code>TerminalBackendSchema</code> (<code>src/shared/protocol.ts:2335-2338</code>). Tightening the stored schema would reject a newer build&#8217;s emulator id at parse time and break the unknown-but-reportable rule.</li>
 <li><code>needsTerminalApp</code> on <code>TerminalTargetView</code> is derived from the adapter's <code>attachArgv</code>, never from a backend id. No consumer may name cmux.</li>
 <li><code>terminals</code> is appended to <code>SETTINGS_BACKUP_DOMAINS</code> and never reordered.</li>
 <li>The preference is read at focus time, not captured at dispatch.</li>

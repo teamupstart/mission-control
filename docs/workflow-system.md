@@ -6,6 +6,13 @@ perform a session action. The [workflow manager](../src/server/workflows/manager
 run orchestration and recovery; its [store](../src/server/workflows/store.ts) owns the
 durable workflow records.
 
+The machine policy `skipPassedJudges` defaults to true. At claim time the engine looks up an
+executed, completed pass for the same Persona node in an earlier round of the same run. It
+records a completed attempt with `reusedPassAttemptId` and atomically emits the usual pass
+receipts without a model call. The original attempt remains the authority, including after
+daemon recovery; no second pass ledger is stored. Runs resolves that reference to display the
+original round. Checks and Session actions continue through their existing execution paths.
+
 Personas and session actions are editable catalogs managed by
 [`personas.ts`](../src/server/workflows/personas.ts) and
 [`session-actions.ts`](../src/server/workflows/session-actions.ts). The repository's builtin

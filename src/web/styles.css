@@ -20471,6 +20471,16 @@ select.foreman-model-input {
 .wf-settings-empty {
   color: var(--dim);
 }
+.wf-judge-passes {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wf-judge-passes input {
+  accent-color: var(--working);
+}
 .wf-default-row {
   display: flex;
   align-items: center;

@@ -7880,6 +7880,19 @@ export class WorkflowStore {
     return Number(row.n);
   }
 
+  /** Only an executed, completed Persona pass in an earlier round can satisfy this judge. */
+  priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
+    const row = this.db.prepare(
+      `SELECT a.* FROM workflow_node_attempts a
+         JOIN workflow_submissions s ON s.id = a.submission_id
+        WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+          AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
+          AND a.runner_id IS NOT NULL AND json_extract(a.verdict_json, '$.verdict') = 'pass'
+        ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1`,
+    ).get(runId, beforeRound, nodeId);
+    return row ? parseWorkflowNodeAttemptRow(row) : null;
+  }
+
   listAttempts(submissionId: string): WorkflowNodeAttempt[] {
     return (this.db.prepare(
       `SELECT * FROM workflow_node_attempts

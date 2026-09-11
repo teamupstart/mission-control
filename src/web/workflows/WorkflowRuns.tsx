@@ -3130,7 +3130,7 @@ export function WorkflowRunView({
             ? inspectorGateSentence(detail)
             : null}
           repair={detail.summary.maxRepairRounds > 0
-            ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
+            ? "Any fail returns the submission to Session for repair, then a new round starts."
             : null}
           disabledNodeIds={detail.run.disabledNodeIds ?? []}
           disabledChipFor={(nodeId) =>

@@ -2795,6 +2795,8 @@ export function legacyCheckCommands(
  * is what keeps authorization a separate question from resolution.
  */
 export interface WorkflowPolicy {
+  /** Keep each Persona node's earned pass across later repair rounds of the same run. */
+  skipPassedJudges: boolean;
   /**
    * Machine-wide authorisation to TYPE a repair packet into a session's pane.
    *
@@ -2880,6 +2882,7 @@ export interface WorkflowRetentionConfig {
 }
 
 export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
+  skipPassedJudges: true,
   // Authorised, and gated on `repoAllowlist` being non-empty. See the field's docstring: an
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,

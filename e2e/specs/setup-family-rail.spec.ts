@@ -16,7 +16,7 @@ import { expectRowStatus, openSetupFamily, setupRow } from "../fixtures/setup-pa
 test.describe.configure({ timeout: 120_000 });
 test.use({ daemonEnv: { MC_E2E_GH_STARTS_MISSING: "1" }, setupReminder: true });
 
-const FAMILIES = ["Agent CLIs", "Terminals", "GitHub", "Claude Code extensions", "Pipelines"];
+const FAMILIES = ["Agent CLIs", "Terminals", "GitHub", "Agent extensions", "Pipelines"];
 
 function railItem(page: Page, family: string) {
   return page.getByRole("button", { name: new RegExp(`^${family}(:|$)`) });

@@ -376,6 +376,7 @@ import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
+import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
 import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
@@ -6619,6 +6620,10 @@ export function buildApp(
   app.post("/api/setup/install", async (c) => {
     const parsed = await parseBody(c, SetupInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.id === "pi-integration") {
+      const result = await installPiExtensionFromSetup();
+      return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : 409);
+    }
     const result = await executeSetupInstall(parsed.data, {
       catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
       homeDir: setupInstallDeps?.homeDir ?? homedir(),

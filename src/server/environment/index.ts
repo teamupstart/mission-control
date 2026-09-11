@@ -7,6 +7,7 @@ import {
   type EnvironmentCheckView,
 } from "@shared/environment-checks.ts";
 
+import { piExtensionCheck } from "./pi-extension.ts";
 import { claudeHookScriptCheck } from "./claude-hooks.ts";
 import { upstartclawSetupCheck } from "./upstartclaw.ts";
 import type {
@@ -37,6 +38,7 @@ import type {
 export const ENVIRONMENT_CHECKS: Record<EnvironmentCheckId, EnvironmentCheckImpl> = {
   "upstartclaw-core-setup": upstartclawSetupCheck,
   "mission-hook-script": claudeHookScriptCheck,
+  "pi-extension": piExtensionCheck,
 };
 
 /**

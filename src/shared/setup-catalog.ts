@@ -72,8 +72,8 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
   },
   extensions: {
     id: "extensions",
-    label: "Claude Code extensions",
-    description: "Plugins add external capabilities; Mission Control skills add reusable session workflows.",
+    label: "Agent extensions",
+    description: "Extensions connect agents to Mission Control; plugins and skills add capabilities and reusable workflows.",
   },
   pipelines: {
     id: "pipelines",
@@ -444,6 +444,8 @@ export interface SetupRowView {
 }
 
 export interface SetupChecksView {
+  /** First installation only, never a repair of an existing or enabled integration. */
+  piExtensionInstallAvailable?: boolean;
   rows: SetupRowView[];
   banner: SetupBannerView;
   /**
@@ -495,6 +497,16 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     remedy: SetupRemedy;
   }
 > = {
+  "pi-extension": {
+    family: "extensions",
+    requirement: "required",
+    enables: "A broken Pi extension can silently lose Mission Control integration or prevent every Pi session from starting.",
+    remedy: {
+      kind: "command",
+      argv: ["npm", "run", "install-pi-extension"],
+      note: "Build first with npm run build in a durable Mission Control clone, then run this installer. For a desktop install, update or reinstall the integration from a durable app installation. This row never repairs it automatically.",
+    },
+  },
   "upstartclaw-core-setup": {
     family: "extensions",
     requirement: "optional",

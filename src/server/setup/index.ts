@@ -1,3 +1,4 @@
+import { canInstallPiExtension } from "../environment/pi-extension.ts";
 import type { AgentType } from "@shared/types.ts";
 import { EXECUTABLE_SOURCE_LABELS, type ExecutableId } from "@shared/executables.ts";
 import {
@@ -342,6 +343,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     executableDiagnostic: async (id) => {
       const resolved = await locateExecutable(id);
@@ -423,6 +425,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    piExtensionInstallAvailable: deps.canInstallPiExtension?.() ?? false,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
   };

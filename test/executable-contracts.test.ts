@@ -66,6 +66,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/server/claude-cli.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Claude CLI" },
   ],
+  "src/server/environment/pi-extension.ts": [
+    { operation: "execFile", command: "descriptor.command", contract: "current-runtime", reason: "bounded isolated Pi extension load through the shared Node or Electron runtime resolver" },
+  ],
   "src/server/executables/locator.ts": [
     { operation: "spawn", command: "shell", contract: "bootstrap-login-shell", reason: "bounded shell probe that constructs the locator snapshot" },
   ],

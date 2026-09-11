@@ -12,7 +12,7 @@ The resolver is the skills resolver: `PI_EXTENSIONS_DIR` first, then `pi-extensi
 explicit `MISSION_HOME` (including supported legacy aliases), then the real home above. An
 isolated daemon therefore never reconciles the machine-wide install against its empty config.
 
-`getPiExtensionConfig()` is the single persisted-intent reader for Phase 6. Intent lives in the
+`getPiExtensionConfig()` is the single persisted-intent reader. Intent lives in the
 `pi-extension.json` file under the resolved Mission Control state home, defaults off when absent,
 and is independent of skills. Writes publish atomically; malformed intent is refused. The writer
 shares `src/server/state/isolation.ts` with the database, without importing the database module. This
@@ -35,12 +35,11 @@ teardown, it does not change persisted intent. Plain hook installation never opt
 Implementation choices for Phase 5: a separate machine-local intent file replaces the proposed
 reuse of the skills blob, because skills and executable integration are independently enabled.
 The file also permits a standalone install while an older daemon owns SQLite, without replacing
-the running app or bypassing database ownership. The CLI and backend configuration API supply
-the actionable switch before Phase 6 adds Setup. Ownership
-recognition is stricter than the skill name-prefix rule, so an arbitrary symlink at the reserved
-name is preserved. Unknown dangling links are reported rather than guessed to be ours. Phase 6
-must use `capabilitiesFor("pi").extensions`, `extensionsDirFor`, `linkName`, and the exported intent
-reader; it must report staleness without repairing the link.
+the running app or bypassing database ownership. The CLI, backend configuration API, and Setup
+supply explicit installation entry points. Ownership recognition is stricter than the skill name-prefix rule, so an arbitrary symlink at the reserved
+name is preserved. Unknown dangling links are reported rather than guessed to be ours. The health
+check uses `capabilitiesFor("pi").extensions`, `extensionsDirFor`, `linkName`, and the exported
+intent reader; it reports staleness without repairing the link.
 
 The extension starts one Node MCP child per active Pi session. It discovers every published tool
 from `dist/mcp/server.mjs`, passes its JSON Schema directly to Pi, and forwards execution over
@@ -82,15 +81,45 @@ explicit build targets must end in `.js`; other suffixes are rejected before any
 The artifact exports
 `missionControlBuild`, containing a deterministic SHA-256 `version` and the absolute
 `mcpServerPath` resolved at build time. `MISSION_MCP_SERVER` overrides the baked path at runtime.
-No token is baked; clients read credentials when sending requests. The future staleness check
-must inspect both paths and the marker, without repairing either. The installer must link to the
+No token is baked; clients read credentials when sending requests. The staleness check
+inspects both paths and the marker, without repairing either. The installer must link to the
 artifact without relocating it.
 
-The Phase 3 availability seam currently requires a regular `.js` artifact (following symlinks).
-Invalid paths, directories, and filesystem errors report unavailable; build validation stays strict.
-Phase 6 replaces this temporary
-probe with the authoritative installed-extension reading; it must remain the single availability
-decider. Setup controls and staleness reporting remain in Phase 6.
+## Health and Setup
+
+`environment/pi-extension.ts` is the authoritative installed-and-current reading for Setup
+and the Mission tools dispatch guard. No entry and no persisted intent is silent but unavailable;
+an enabled integration whose entry vanished warns. A dangling link explains that Pi reports
+nothing. A bundle that fails its bounded child import warns that every Pi session may refuse
+to start. A missing baked MCP path identifies the tools half as broken even if lifecycle reports
+continue. A missing or mismatched build marker and a bridge missing any `MISSION_MCP_TOOLS`
+name both warn. Healthy installations produce no environment row.
+
+Extension imports resolve canonical paths and run outside the daemon with a three-second
+SIGKILL timeout and a 16 KiB output cap. Output is not repeated to the operator. The MCP probe
+reuses the existing initialize/tools-list handshake and its bounds, with an isolated environment
+that does not merge the daemon's credentials back in. Both probes use `agentSubprocessEnv` and
+clean up their disposable homes. Permission errors on the path probe are not called absence,
+and cannot grant dispatch availability. Failure to inspect the extension entry, resolve its link
+(including a cycle or inaccessible target), or inspect its baked MCP bundle warns with manual
+recovery guidance rather than disappearing from Setup. The baked-bundle warning identifies the
+tools half as unavailable even when lifecycle reports still work. These reports refine the proposed
+phase's silence on non-absence errors: the failure must remain visible without claiming the target
+is missing or repairing it. Only proven absence with no persisted intent stays silent.
+Re-check reads again without requiring a daemon restart.
+
+Phase 6 implementation choices: the first-install action is a strict `id: "pi-integration"`
+case on `/api/setup/install`, with no browser-supplied command, path, or terminal. It uses
+Phase 5's intent writer and installer, after the same health reader verifies the candidate.
+It refuses an enabled integration or any existing entry, rechecks absence before writing, and
+refuses a pooled source. It is presented separately from the required warning row, rather than
+adding a permanently missing dependency row for a machine that never opted in. The shared
+snapshot carries only whether first installation is available. These choices preserve the
+approved report-only boundary while matching the route's existing terminal-install behavior.
+
+The report checks the baked MCP path and then probes the configured override, when present,
+because the extension honors that override. A missing build marker is reported as stale rather
+than a load failure. These refine the proposed route without changing Phase 5's installer.
 
 ## Verification
 
@@ -111,3 +140,10 @@ so the extension retains active bash commands until their matching end event. Th
 locator needed to consume and validate reported paths. Native effort needed a separate display
 field rather than a picker-union change. Statusline readings accompany lifecycle events as well
 as selection/turn events, allowing an initial discovery race to heal on the next activity.
+
+`test/pi-extension-health.test.ts` exercises the report taxonomy, bounded child execution,
+credential cleanup, directory agreement, tool drift, immediate recovery, and first-install
+refusals. `e2e/specs/pi-extension-setup.spec.ts` covers first install, required warning rows,
+manual recovery, and a real Pi terminal plan dispatch through the guard and installed symlink,
+using a deterministic loopback provider. The managed SDK path still has its pre-existing MCP-client requirement;
+changing that runtime is outside this phase.

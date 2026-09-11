@@ -3,7 +3,7 @@ import {
   type SetupDependencyId,
   type SetupDependencyInfo,
 } from "@shared/setup-catalog.ts";
-import type { SetupInstallerLaunchBody } from "@shared/protocol.ts";
+import type { SetupTerminalInstallerLaunchBody } from "@shared/protocol.ts";
 import type {
   PipelineInstallerCandidatesResult,
   PipelineProviderId,
@@ -105,7 +105,7 @@ export interface SetupInstallExecutionDeps {
     checkout: string,
     repoRoots: readonly string[],
   ): Promise<PipelineInstallerPreparation>;
-  launchTerminal(backend: SetupInstallerLaunchBody["backend"], spec: TerminalLaunchSpec): Promise<TerminalLaunchOutcome>;
+  launchTerminal(backend: SetupTerminalInstallerLaunchBody["backend"], spec: TerminalLaunchSpec): Promise<TerminalLaunchOutcome>;
 }
 
 /** Dependencies routes may override without moving command ownership into a caller. */
@@ -137,7 +137,7 @@ export function setupInstallerShell(argv: readonly string[]): string {
 
 /** Resolve one browser selection into a daemon-owned visible-terminal launch. */
 export async function executeSetupInstall(
-  body: SetupInstallerLaunchBody,
+  body: SetupTerminalInstallerLaunchBody,
   deps: SetupInstallExecutionDeps,
 ): Promise<SetupInstallResponse> {
   const info = deps.catalog[body.id];

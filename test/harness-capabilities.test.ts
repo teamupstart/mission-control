@@ -520,8 +520,8 @@ test("Pi declares machine instrumentation and explains a session with no lifecyc
   assert.equal(foremanAutomationAuthorized(session), true);
   assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
   assert.match(queue.uninstrumentedWhy, /has not loaded.*lifecycle hooks/);
-  assert.match(queue.uninstrumentedWhy, /PUT \/api\/extensions\/pi\/config/);
-  assert.doesNotMatch(queue.uninstrumentedWhy, /Setup/);
+  assert.match(queue.uninstrumentedWhy, /Settings > Setup > Agent extensions/);
+  assert.doesNotMatch(queue.uninstrumentedWhy, /PUT \/api/);
 });
 
 // ---- clearing context: the defect this item fixes ----

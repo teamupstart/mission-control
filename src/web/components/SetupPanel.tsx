@@ -415,6 +415,37 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
   );
 }
 
+/** Separate from warning rows: installing for the first time is an explicit opt-in. */
+function PiExtensionInstall({ available, warning, onInstalled }: { available: boolean; warning: boolean; onInstalled(): void }): React.JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [detail, setDetail] = useState<string | null>(null);
+  const install = async () => {
+    setBusy(true);
+    try {
+      const result = await openSetupInstaller({ id: "pi-integration" });
+      setDetail(result.detail ?? result.error ?? "The Pi integration could not be installed.");
+    } catch (error) { setDetail(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); onInstalled(); }
+  };
+  if (!available && (!detail || warning)) return <></>;
+  return (
+    <article className="setup-row" aria-label="Install Pi integration">
+      <div className="setup-row-main">
+        <div className="setup-row-title"><strong>Pi integration</strong></div>
+        <p className="setup-impact">Connect new Pi sessions to Mission Control tools and lifecycle reporting.</p>
+        {available && (
+          <Tooltip label="Install the Mission Control extension for new Pi sessions on this machine">
+            <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void install()}>
+              {busy ? "Installing..." : "Install Pi integration"}
+            </button>
+          </Tooltip>
+        )}
+        {detail && <p className="setup-why" role="status">{detail}</p>}
+      </div>
+    </article>
+  );
+}
+
 const STATUS_LABEL = {
   satisfied: "Ready",
   missing: "Missing",
@@ -664,7 +695,7 @@ function VerdictHeader({
             {loading ? "Checking..." : "Re-check"}
           </button>
         </Tooltip>
-        <p className="setup-verdict-note">Remedies open in a visible terminal you can watch.</p>
+        <p className="setup-verdict-note">Package installers open in a visible terminal. Integration installs run here.</p>
       </div>
     </header>
   );
@@ -794,6 +825,13 @@ export function SetupPanel({
             <h3 id={`setup-family-${active}-title`}>{info.label}</h3>
             <p>{info.description}</p>
           </header>
+          {active === "extensions" && (
+            <PiExtensionInstall
+              available={state.view?.piExtensionInstallAvailable ?? false}
+              warning={rows.some(row => row.rowId.source === "environment-check" && row.rowId.id === "pi-extension")}
+              onInstalled={onRepaired}
+            />
+          )}
           {activeRows.length > 0
             ? (
                 <div className="setup-rows">

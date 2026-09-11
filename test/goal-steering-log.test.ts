@@ -72,6 +72,31 @@ test("only a steer verdict appends a durable instruction from the real refiner",
   }
 });
 
+for (const [reason, relationship, resolvedPromptRevision] of [
+  ["non-steering goal", "amend", 2],
+  ["mismatched resolved revision", "steer", 1],
+] as const) {
+  test(`steering rejects a ${reason} before persisting either row`, () => {
+    const id = `invalid-steering-${resolvedPromptRevision}`;
+    const template = session(`${id}-template`).getGoal(`${id}-template`)!;
+    const goal = { ...template, noteKey: id, relationship, resolvedPromptRevision };
+    const note = {
+      revision: 2, instruction: "do the smaller one first", relationship: "steer" as const,
+      rationale: "Change the sequence", timestamp: 100,
+    };
+    assert.equal(getSessionGoal(id), undefined);
+    assert.deepEqual(readSessionGoalSteering(id, Number.MAX_SAFE_INTEGER), []);
+
+    assert.throws(() => upsertSessionGoalWithSteering(goal, note), {
+      name: "Error", message: "Steering must belong to the resolved goal revision",
+    });
+
+    assert.equal(getSessionGoal(id), undefined, "the invalid goal must not be persisted");
+    assert.deepEqual(readSessionGoalSteering(id, Number.MAX_SAFE_INTEGER), [],
+      "the invalid steering instruction must not be persisted");
+  });
+}
+
 test("duplicate writes are idempotent and a failure after the goal update rolls back both durable and cached state", () => {
   const id = "atomic-steering";
   const registry = session(id);

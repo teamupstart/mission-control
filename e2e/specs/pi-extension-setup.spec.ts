@@ -34,8 +34,8 @@ test("Setup installs Pi only on first use, reports a dangling link without repai
   await expect(page.locator(".tooltip")).toHaveCount(0);
   await page.locator(".setup-panel").screenshot({ path: join(evidence, "first-install.png") });
   await install.click();
-  await expect(page.getByRole("status")).toContainText("Pi integration installed");
   await expect(install).toHaveCount(0);
+  await expect(page.getByRole("article", { name: "Install Pi integration" })).toHaveCount(0);
   const link = join(daemon.home, "pi-extensions", "mission-control.js");
   const expected = resolve("dist/pi-extension/index.js");
   const config = JSON.parse(readFileSync(join(daemon.home, "pi-extension.json"), "utf8"));
@@ -209,5 +209,20 @@ test.describe("first-install preflight failure", () => {
     await page.mouse.move(0, 0);
     await expect(page.locator(".tooltip")).toHaveCount(0);
     await page.locator(".setup-panel").screenshot({ path: join(artifactsDir("pi-extension-setup"), "candidate-refused.png") });
+    // A manual install must replace the failed attempt's local message with current health.
+    writeFileSync(candidate, readFileSync(resolve("dist/pi-extension/index.js")));
+    const extensions = join(daemon.home, "pi-extensions"); mkdirSync(extensions, { recursive: true });
+    const link = join(extensions, "mission-control.js"); symlinkSync(candidate, link);
+    writeFileSync(join(daemon.home, "pi-extension.json"), '{"enabled":true}');
+    await page.getByRole("button", { name: "Re-check" }).click();
+    await expect(page.getByRole("article", { name: "Install Pi integration" })).toHaveCount(0);
+    await expect(status).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await page.locator(".setup-panel").screenshot({ path: join(artifactsDir("pi-extension-setup"), "manual-install-rechecked.png") });
+    // Nor may a later absence resurrect the old failed-attempt notice.
+    rmSync(link); writeFileSync(join(daemon.home, "pi-extension.json"), '{"enabled":false}');
+    await page.getByRole("button", { name: "Re-check" }).click();
+    await expect(install).toBeVisible();
+    await expect(status).toHaveCount(0);
   });
 });

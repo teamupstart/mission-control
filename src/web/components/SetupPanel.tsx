@@ -419,6 +419,8 @@ function Remedy({ row, onRepaired }: { row: SetupRowView; onRepaired(): void }):
 function PiExtensionInstall({ available, warning, onInstalled }: { available: boolean; warning: boolean; onInstalled(): void }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<string | null>(null);
+  // An attempt notice is obsolete once a fresh check reports a different installation state.
+  useEffect(() => { setDetail(null); }, [available, warning]);
   const install = async () => {
     setBusy(true);
     try {

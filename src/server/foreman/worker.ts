@@ -116,8 +116,12 @@ import { reviewShipRecovery } from "./ship-recovery-review.ts";
 import {
   decideImmediateHeldGapDelivery,
   decideShipShepherd,
+  shipRecoveryBrief,
 } from "./ship-shepherd.ts";
-import type { ShipShepherdDecision } from "./ship-shepherd.ts";
+import type {
+  ShipRecoveryDeliveryOutcome,
+  ShipShepherdDecision,
+} from "./ship-shepherd.ts";
 import type { WorkflowStagedEvidenceList } from "@shared/workflow.ts";
 import { initializeExecutableEnvironment } from "../executables/locator.ts";
 
@@ -1515,7 +1519,7 @@ async function recordShipRecovery(
   session: Session,
   decision: Exclude<ShipShepherdDecision, { kind: "skip" }>,
   result: {
-    delivery: "delivered" | "delivery unknown" | "confirmed undelivered" | "escalated";
+    delivery: ShipRecoveryDeliveryOutcome;
     detail: string;
     sentText: string | null;
   },
@@ -1528,14 +1532,18 @@ async function recordShipRecovery(
   );
   const next = recoveryNextLabel(decision, result.delivery);
   const purpose = `Pre-PR ship recovery: ${reasonLabel(decision.reason)}, ${attempt}, ${result.delivery}, ${next}.`;
-  const decisionSummary = decision.decision?.summary.trim();
-  const brief = [
-    result.detail,
-    decisionSummary && decisionSummary !== result.detail
-      ? `Completion decision: ${decisionSummary}`
-      : null,
-    `Quiet age: ${quietMinutes} minutes. Delivery: ${result.delivery}. Next: ${next}.`,
-  ].filter((line): line is string => Boolean(line)).join("\n\n");
+  // Composed by the shepherd's own pure helper rather than inline, for the reason
+  // `episodeFromPlan` lives in `verdict.ts`: this module calls `main()` at import, so a
+  // rule written here can never be unit-tested - and the rule this one carries decides
+  // whether an already-delivered instruction is printed to the operator a second time.
+  const brief = shipRecoveryBrief({
+    detail: result.detail,
+    decisionSummary: decision.decision?.summary ?? null,
+    quietMinutes,
+    delivery: result.delivery,
+    next,
+    sentText: result.sentText,
+  });
   const disposition = result.delivery === "escalated"
     ? "escalated" as const
     : result.delivery === "confirmed undelivered"
@@ -1580,7 +1588,7 @@ async function recordShipRecovery(
 
 function recoveryNextLabel(
   decision: Exclude<ShipShepherdDecision, { kind: "skip" }>,
-  delivery: "delivered" | "delivery unknown" | "confirmed undelivered" | "escalated",
+  delivery: ShipRecoveryDeliveryOutcome,
 ): string {
   if (delivery === "confirmed undelivered") return "same attempt ready to retry";
   if (decision.kind === "escalate") return "stopped for human attention";

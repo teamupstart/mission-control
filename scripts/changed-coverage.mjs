@@ -18,6 +18,31 @@
  * The denominator is every statement and every function-like node the compiler finds on a
  * changed line - arrows passed to `onClick`, callbacks handed to `.then`, and the branches
  * inside them included, because those are the changed runtime behaviour.
+ *
+ * ## Running it
+ *
+ * ```sh
+ * rm -rf /tmp/mc-cov            # see below: a stale directory INFLATES the number
+ * npx vite build --sourcemap
+ * MC_COVERAGE=1 MC_COVERAGE_DIR=/tmp/mc-cov npx playwright test <specs…>
+ * node --import ./test/setup-state.mjs --import tsx scripts/changed-coverage.mjs \
+ *   origin/main --browser /tmp/mc-cov <test files…> <source files…>
+ * ```
+ *
+ * The `rm -rf` is load-bearing. `e2e/fixtures/coverage.ts` writes one uniquely named file
+ * per worker per run and `browserCovered` reads EVERY `.json` under the directory, so a reused
+ * directory silently merges an earlier measurement into this one. Ranges are summed rather
+ * than replaced, so the error is always in the flattering direction: code some previous
+ * revision exercised is reported as covered by this one.
+ *
+ * **`--import tsx` is not optional, and leaving it off does not fail - it UNDERREPORTS.** The
+ * tests run in this process (`isolation: "none"`, below, and for a reason), so they are loaded
+ * by whatever this process can load. Node 24 strips types natively, so every plain `.ts` file
+ * imports fine without the loader and the run looks healthy; a `.tsx` does not, so the render
+ * tests throw during import, the module they were measuring never loads, and every unit in it
+ * is counted as unexercised. On this repository that was the difference between 52.81% and
+ * 93.02% for the same code and the same tests. `test failures during measurement` is the tell:
+ * it is not a warning, it is the number being wrong.
  */
 import { Session } from "node:inspector/promises";
 import { run } from "node:test";

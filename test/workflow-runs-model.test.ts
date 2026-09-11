@@ -41,6 +41,9 @@ import {
   humanDecisionSummary,
   humanDecisionsSummary,
   initialRunRecordPane,
+  inspectorFindingLocation,
+  inspectorFindingSeverityStatus,
+  inspectorFindingStatusStatus,
   inheritedAttempts,
   inheritedPasses,
   priorAttemptPassed,
@@ -63,6 +66,9 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  completionClaimOutcomeSentences,
+  completionClaimStatus,
+  runCompletionClaims,
   runEvidenceCitations,
   runRecordSummary,
   runRefusedCompletionSentence,
@@ -1460,6 +1466,259 @@ test("runRecordSummary counts the evidence record and blocks only on a parked ru
   const spent = runRecordSummary(exhausted, parkedSubmission).evidence;
   assert.equal(spent.blocking, true);
   assert.equal(spent.refinementsExhausted, true);
+});
+
+/**
+ * The Completion pane's facts, which are the numbers a reader trusts without opening the tab.
+ *
+ * The gate section used to print its findings as one card each and the Foreman claims as one
+ * paragraph each, so no number in either was derived at all - a reader counted the cards. In a
+ * stat strip over a table, a wrong count is the collapsed summary telling the one lie this
+ * consolidation exists to prevent, so every one of these is pinned directly.
+ */
+const finding = (
+  id: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id,
+  prKey: "owner/repo#91",
+  fingerprint: id,
+  path: "src/gate.ts",
+  line: 42,
+  title: `Finding ${id}`,
+  body: "The body the row opens.",
+  severity: "major",
+  round: 2,
+  status: "open",
+  replies: 0,
+  answeredCommentId: null,
+  createdAt: 5,
+  updatedAt: 6,
+  ...overrides,
+});
+
+const claimEvent = (
+  id: number,
+  state: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id,
+  kind: "workflow_completion_claimed",
+  payload: {
+    completionKind: "prompted",
+    marker: `${id}`.repeat(24),
+    summary: `Claim ${id} says the work is finished.`,
+    state,
+    ...overrides,
+  },
+});
+
+const gatedDetail = (
+  findings: Record<string, unknown>[],
+  overrides: Record<string, unknown> = {},
+): WorkflowRunDetail => detail([submission("s1", 1)], [], {
+  summary: { gate: "findings", gatePrNumber: 91, round: 1 },
+  run: { status: "waiting_for_new_head", currentPhase: "inspector_findings" },
+  inspectorGate: {
+    state: {
+      prKey: "owner/repo#91",
+      prUrl: "https://github.com/owner/repo/pull/91",
+      targetHeadSha: "head-123456789",
+      failedHeadSha: null,
+      enteredAt: 1,
+      lastObservedAt: 2,
+      observedHeadSha: "head-123456789",
+      reviewPosture: "live",
+      waitReason: "findings",
+      findingFingerprints: [],
+    },
+    inspector: { enabled: true, mode: "live", posture: "live" },
+    inspection: {
+      key: "owner/repo#91",
+      number: 91,
+      source: "hook",
+      state: "open",
+      observedState: "OPEN",
+      observedHeadSha: "head-123456789",
+      headSha: "head-123456789",
+      reviewPosture: "live",
+      round: 8,
+      lastError: null,
+      nextAttemptAt: null,
+      openFindings: 1,
+      resolvedFindings: 9,
+    },
+    findings,
+  },
+  ...overrides,
+} as unknown as Partial<WorkflowRunDetail>);
+
+test("runRecordSummary counts the completion record from the rows the table draws", () => {
+  const gated = gatedDetail([
+    finding("f1", { status: "resolved" }),
+    finding("f2", { status: "resolved", severity: "minor" }),
+    finding("f3", { status: "drafted", severity: "nit" }),
+  ]);
+  const completion = runRecordSummary(gated, gated.submissions[0]!).completion;
+  assert.equal(completion.present, true);
+  assert.equal(completion.hasGate, true);
+  assert.equal(completion.findingCount, 3);
+  assert.equal(completion.openFindings, 1);
+  assert.equal(completion.resolvedFindings, 2);
+  assert.deepEqual(completion.pullRequest, {
+    number: 91,
+    url: "https://github.com/owner/repo/pull/91",
+    state: "OPEN",
+  });
+  assert.equal(completion.inspectorRound, 8);
+  assert.equal(completion.gate?.label, "Findings");
+  assert.equal(completion.blocking, true);
+  // No claims on this run, so the sentence counting them says nothing rather than "0 claims".
+  assert.equal(completion.claimCount, 0);
+  assert.equal(completion.claimSentence, null);
+});
+
+test("runRecordSummary offers no Completion record for a run with neither gate nor claim", () => {
+  const plain = detail([submission("s1", 1)], []);
+  const completion = runRecordSummary(plain, plain.submissions[0]!).completion;
+  assert.equal(completion.present, false);
+  assert.equal(completion.hasGate, false);
+  assert.equal(completion.gate, null);
+  assert.equal(completion.pullRequest, null);
+  assert.equal(completion.inspectorRound, null);
+  assert.equal(completion.blocking, false);
+});
+
+test("a gate with no findings is still a Completion record, and a claim with no gate is too", () => {
+  // A clean gate: present, countable, and not blocking. This is the case the phase document's
+  // "blocking when the gate has not passed" would have got wrong - `gate: "none"` is most of a
+  // gated run's life, and a badge there would drag every reader off the worklist.
+  const clean = gatedDetail([], {
+    summary: { gate: "none", gatePrNumber: 91, round: 1 },
+    run: { status: "running", currentPhase: null },
+  });
+  const cleanCompletion = runRecordSummary(clean, clean.submissions[0]!).completion;
+  assert.equal(cleanCompletion.present, true);
+  assert.equal(cleanCompletion.findingCount, 0);
+  assert.equal(cleanCompletion.openFindings, 0);
+  assert.equal(cleanCompletion.resolvedFindings, 0);
+  assert.equal(cleanCompletion.blocking, false);
+
+  // Claims with no gate at all: the pane exists for them alone, and nothing about them blocks.
+  const claimed = detail([submission("s1", 1)], [], {
+    events: [claimEvent(1, "started"), claimEvent(2, "already_claimed")],
+  } as unknown as Partial<WorkflowRunDetail>);
+  const claimedCompletion = runRecordSummary(claimed, claimed.submissions[0]!).completion;
+  assert.equal(claimedCompletion.present, true);
+  assert.equal(claimedCompletion.hasGate, false);
+  assert.equal(claimedCompletion.claimCount, 2);
+  assert.equal(claimedCompletion.blocking, false);
+});
+
+test("five claims restating one completion are counted into one sentence", () => {
+  const run = detail([submission("s1", 1)], [], {
+    events: [
+      claimEvent(1, "already_claimed"),
+      claimEvent(2, "already_claimed"),
+      claimEvent(3, "started"),
+      claimEvent(4, "already_claimed"),
+      claimEvent(5, "already_claimed"),
+    ],
+  } as unknown as Partial<WorkflowRunDetail>);
+  const completion = runRecordSummary(run, run.submissions[0]!).completion;
+  assert.equal(completion.claimCount, 5);
+  // The dominant state leads, so the sentence answers "did anything actually start" first, and
+  // it counts in `completionClaimOutcome`'s own words rather than in the raw persisted state -
+  // the chip on each row says the same thing, and two vocabularies for one record is the drift
+  // this consolidation is most able to introduce.
+  assert.equal(
+    completion.claimSentence,
+    "5 claims on this run: 4 already counted, 1 started the run.",
+  );
+
+  /*
+   * And each state's SENTENCE, once. `completionClaimOutcome` gives every claim a sentence and
+   * the card printed it per claim, so four claims sharing a state printed one identical
+   * sentence four times. Nothing is dropped: the sentence is a fact about the state.
+   */
+  assert.deepEqual(completionClaimOutcomeSentences(runCompletionClaims(run)), [
+    `already counted: ${completionClaimOutcome("already_claimed").sentence}`,
+    `started the run: ${completionClaimOutcome("started").sentence}`,
+  ]);
+  // A state with no sentence contributes none rather than an empty line.
+  assert.deepEqual(
+    completionClaimOutcomeSentences([
+      { id: 1, completionKind: "prompted", marker: "m", summary: "s", state: "withdrawn" },
+    ]),
+    [],
+  );
+
+  const one = detail([submission("s1", 1)], [], {
+    events: [claimEvent(1, "started")],
+  } as unknown as Partial<WorkflowRunDetail>);
+  assert.equal(
+    runRecordSummary(one, one.submissions[0]!).completion.claimSentence,
+    "1 claim on this run: 1 started the run.",
+  );
+});
+
+test("a completion claim event with a payload this build cannot read is skipped", () => {
+  const run = detail([submission("s1", 1)], [], {
+    events: [
+      claimEvent(1, "started"),
+      { id: 2, kind: "workflow_completion_claimed", payload: null },
+      { id: 3, kind: "workflow_completion_claimed", payload: ["not", "an", "object"] },
+      { id: 4, kind: "workflow_completion_claimed", payload: { completionKind: "prompted" } },
+      { id: 5, kind: "workflow_round_opened", payload: { state: "started" } },
+    ],
+  } as unknown as Partial<WorkflowRunDetail>);
+  const claims = runCompletionClaims(run);
+  assert.equal(claims.length, 1);
+  assert.equal(claims[0]!.state, "started");
+});
+
+test("a spent gate is blocking because its reconciliation is the decision left to make", () => {
+  const spent = spentGateDetail();
+  const completion = runRecordSummary(spent, spent.submissions[0]!).completion;
+  assert.equal(completion.blocking, true);
+  // The spent-gate reconciliation supplies the chip, not the raw gate summary: "Blocked" is
+  // what the workflow recorded when it stopped, and "Clean head ready" is what is true now.
+  assert.equal(completion.gate?.label, "Clean head ready");
+});
+
+test("a completion claim state is never green by accident, and never invents its own words", () => {
+  // The LABEL is `completionClaimOutcome`'s, always. This adds a tone and nothing else, so the
+  // chip on a row and the sentence counting the rows cannot say two different things.
+  for (const state of ["started", "resubmitted", "already_claimed", "blocked", "withdrawn"]) {
+    assert.equal(completionClaimStatus(state).label, completionClaimOutcome(state).label);
+  }
+  assert.equal(completionClaimStatus("started").tone, "passed");
+  assert.equal(completionClaimStatus("resubmitted").tone, "passed");
+  // Amber, not red: a second claim of one completion is the ordinary, correct answer.
+  assert.equal(completionClaimStatus("already_claimed").tone, "waiting");
+  // Red: the run turned this claim away and the session was told it had completed anyway.
+  assert.equal(completionClaimStatus("blocked").tone, "failed");
+  // A state a later daemon writes reads NEUTRAL rather than falling through to the pass tone.
+  assert.deepEqual(completionClaimStatus("withdrawn"), { tone: "stopped", label: "withdrawn" });
+});
+
+test("a finding's severity, status and location are spelled once", () => {
+  assert.deepEqual(inspectorFindingSeverityStatus("blocker"), { tone: "failed", label: "blocker" });
+  assert.deepEqual(inspectorFindingSeverityStatus("major"), { tone: "failed", label: "major" });
+  assert.deepEqual(inspectorFindingSeverityStatus("minor"), { tone: "waiting", label: "minor" });
+  assert.deepEqual(inspectorFindingSeverityStatus("nit"), { tone: "waiting", label: "nit" });
+  assert.deepEqual(inspectorFindingStatusStatus("resolved"), { tone: "passed", label: "resolved" });
+  assert.deepEqual(inspectorFindingStatusStatus("posting"), { tone: "waiting", label: "posting" });
+  assert.deepEqual(inspectorFindingStatusStatus("drafted"), { tone: "failed", label: "drafted" });
+  assert.deepEqual(inspectorFindingStatusStatus("open"), { tone: "failed", label: "open" });
+  const located = finding("f1") as unknown as Parameters<typeof inspectorFindingLocation>[0];
+  assert.equal(inspectorFindingLocation(located), "src/gate.ts:42");
+  assert.equal(
+    inspectorFindingLocation({ ...located, line: null }),
+    "src/gate.ts",
+  );
+  // A finding with no path is "general", which is the word the card already used.
+  assert.equal(inspectorFindingLocation({ ...located, path: null, line: null }), "general");
 });
 
 test("a claim row matches its canonical criterion by id, never by the criterion text", () => {

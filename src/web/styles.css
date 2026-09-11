@@ -2299,7 +2299,8 @@ button.wf-run-version:focus-visible {
 
 /* A subhead inside a pane. The pane's container already carries the section heading, so these
    are the bands within it rather than sections of their own. */
-.wf-evidence-head {
+.wf-evidence-head,
+.wf-run-subhead {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 11px;
@@ -2474,14 +2475,16 @@ button.wf-run-version:focus-visible {
   font-weight: 600;
 }
 
-.wf-evidence-claims {
+.wf-evidence-claims,
+.wf-run-rowlist {
   display: grid;
   gap: 4px;
 }
 
 /* One claim per row rather than per card. Six claims were 621px of cards on the run this was
    measured against, saying what six lines say. */
-.wf-evidence-claim {
+.wf-evidence-claim,
+.wf-run-rowlist-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
@@ -2492,17 +2495,20 @@ button.wf-run-version:focus-visible {
   background: var(--panel-2);
 }
 
-.wf-evidence-claim-body {
+.wf-evidence-claim-body,
+.wf-run-rowlist-body {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
 
-.wf-evidence-claim-text {
+.wf-evidence-claim-text,
+.wf-run-rowlist-title {
   font-size: 12.5px;
 }
 
-.wf-evidence-claim-facts {
+.wf-evidence-claim-facts,
+.wf-run-rowlist-facts {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -2511,7 +2517,8 @@ button.wf-run-version:focus-visible {
   font-size: 10.5px;
 }
 
-.wf-evidence-claim-facts code {
+.wf-evidence-claim-facts code,
+.wf-run-rowlist-facts code {
   font-size: 9.5px;
   overflow-wrap: anywhere;
 }
@@ -2962,18 +2969,21 @@ button.wf-run-version:focus-visible {
 .wf-run-delivery.is-delivered { border-left-color: var(--idle); }
 .wf-run-delivery.is-uncertain,
 .wf-run-delivery.is-refused { border-left-color: var(--danger); }
-.wf-run-finding.is-blocker,
-.wf-run-finding.is-major { border-left-color: var(--danger); }
-.wf-run-finding.is-minor,
-.wf-run-finding.is-nit { border-left-color: var(--attention); }
-
-.wf-run-gate {
-  border-left: 4px solid var(--working);
+/* A findings ROW carries the severity edge the finding CARD used to draw, on its first cell.
+   Ten of those cards were the whole height of the gate section on the run this was measured
+   against; the two-tone split they drew - blocker and major against minor and nit - is the one
+   a reader already knows, so the row keeps it rather than inventing a four-tone scale nobody
+   has seen. The severity word is on the chip beside it, so the colour only has to say which
+   half of the split the row is in. */
+.wf-run-finding-row > td:first-child {
+  border-left: 3px solid transparent;
+  padding-left: 7px;
 }
 
-.wf-run-gate.is-findings,
-.wf-run-gate.is-blocked { border-left-color: var(--danger); }
-.wf-run-gate.is-clean { border-left-color: var(--idle); }
+.wf-run-finding-row.is-blocker > td:first-child,
+.wf-run-finding-row.is-major > td:first-child { border-left-color: var(--danger); }
+.wf-run-finding-row.is-minor > td:first-child,
+.wf-run-finding-row.is-nit > td:first-child { border-left-color: var(--attention); }
 
 /* A spent gate contains two records with different owners. The split is semantic before it is
    decorative: the dashed historical card is the workflow's immutable stop, while the solid
@@ -3031,12 +3041,6 @@ button.wf-run-version:focus-visible {
   color: var(--dim);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.wf-run-findings,
-.wf-run-recovery {
-  display: grid;
-  gap: 9px;
 }
 
 .wf-run-recovery {

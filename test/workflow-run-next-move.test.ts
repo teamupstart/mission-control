@@ -597,12 +597,12 @@ test("a blocked fault that a fresh capture can clear still offers the resubmissi
 
 test("a block whose recovery is a decision offers no move and names the owner", () => {
   const rows: [string, string][] = [
-    ["inspector_findings", "they are listed under GitHub Inspector final gate below"],
-    ["inspector_pr_closed", "GitHub Inspector final gate below carries the pull request"],
-    ["inspector_disabled", "Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below."],
-    ["delivery_uncertain", "Confirm or discard it in Deliveries below"],
-    ["delivery_refused", "Retry or resolve it in Deliveries below"],
-    ["delivery_blocked", "Deliveries below carries the packet and why it is held."],
+    ["inspector_findings", "they are listed in the run record's Completion tab"],
+    ["inspector_pr_closed", "the run record's Completion tab carries the pull request"],
+    ["inspector_disabled", "Turn it back on from Open GitHub Inspector settings, in the run record's Completion tab."],
+    ["delivery_uncertain", "Confirm or discard it in the run record's Deliveries tab"],
+    ["delivery_refused", "Retry or resolve it in the run record's Deliveries tab"],
+    ["delivery_blocked", "The run record's Deliveries tab carries the packet and why it is held."],
   ];
   for (const [phase, owner] of rows) {
     const detail = detailFor({ status: "blocked", phase });

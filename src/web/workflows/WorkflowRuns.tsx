@@ -8,6 +8,7 @@ import type {
   WorkflowHumanDecision,
   WorkflowCheckOutcome,
   WorkflowExternalSource,
+  WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowRunPage,
@@ -114,8 +115,10 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  completionClaimOutcome,
   runEvidenceCitations,
   runIsParked,
+  runRefusedCompletionSentence,
   runRefusedSentence,
   runRecordSummary,
   runRoundGroups,
@@ -2657,6 +2660,46 @@ function RunDisclosure({
   );
 }
 
+/** What each provenance verdict is called on screen. `objective` never reaches here. */
+const GOAL_PROVENANCE_LABELS: Record<
+  Exclude<WorkflowGoalProvenanceVerdict, "objective">,
+  string
+> = {
+  automation: "Ask looks machine-authored",
+  implausible: "Ask looks too short to review against",
+  unreconciled: "Ask frozen before the newest instruction was reconciled",
+};
+
+/**
+ * A run that froze something other than a durable objective, said on the screen.
+ *
+ * Draws NOTHING for a healthy run and nothing for a run that predates the verdict. A badge on
+ * the ordinary case is a badge on every run, which is how the defect behind this survived for
+ * months: it was visible to anyone who queried for it and announced by nothing.
+ *
+ * The label is the one-word answer and the accessible name carries the whole reason, because
+ * the reason names every check that matched and a chip that printed all of it would push the
+ * ask it is about off the screen. `role="note"` rather than an alert: this is ancillary
+ * information about a run that is running perfectly well, and it never blocks it.
+ */
+function GoalProvenanceBadge(
+  { intent }: { intent: RunRecordIntentSummary },
+): React.JSX.Element | null {
+  const verdict = intent.provenanceVerdict;
+  if (verdict === null || verdict === "objective") return null;
+  return (
+    <p className="wf-run-chiprow">
+      <span
+        className="workflow-chip workflow-stopped"
+        role="note"
+        aria-label={intent.provenanceReason ?? GOAL_PROVENANCE_LABELS[verdict]}
+      >
+        {GOAL_PROVENANCE_LABELS[verdict]}
+      </span>
+    </p>
+  );
+}
+
 /**
  * What this round was trying to do, and who decided it.
  *
@@ -2738,6 +2781,7 @@ function IntentPane({
           {intent.refinedGoal ?? "No refined goal was recorded for this round."}
         </p>
       </div>
+      <GoalProvenanceBadge intent={intent} />
       <RunDisclosure
         title="Review contract"
         meta={`${intent.rawGoalCharacters.toLocaleString()} characters`}
@@ -3167,6 +3211,7 @@ export function WorkflowRunView({
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
   const refusedSentence = runRefusedSentence(detail);
+  const refusedClaimSentence = runRefusedCompletionSentence(detail);
   /*
    * Every count and every summary sentence the tab bar and its panes print, derived once.
    *
@@ -3281,6 +3326,9 @@ export function WorkflowRunView({
               In that order, because it is the order the events happened in. */}
           {grantNotice && <p className="wf-run-granted">{grantNotice}</p>}
           {refusedSentence && <p className="wf-run-refused">{refusedSentence}</p>}
+          {/* Under the refusal: that one says what to fix, this one says the session has
+              already done its half. */}
+          {refusedClaimSentence && <p className="wf-run-refused-claim">{refusedClaimSentence}</p>}
           {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
@@ -3917,16 +3965,22 @@ export function WorkflowRunView({
         <section className="wf-run-section">
           <h4>Foreman completion claim</h4>
           <div className="wf-run-cards">
-            {completionClaims.map((claim) => (
-              <article className="wf-run-card" key={claim.id}>
-                <header className="wf-run-card-head">
-                  <strong>{claim.completionKind} completion</strong>
-                  <span>{claim.state.replaceAll("_", " ")}</span>
-                </header>
-                <p>{claim.summary}</p>
-                <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
-              </article>
-            ))}
+            {completionClaims.map((claim) => {
+              // What the claim DID. The head used to print `blocked`, which on this page
+              // already means the run stopped rather than that the claim was turned away.
+              const outcome = completionClaimOutcome(claim.state);
+              return (
+                <article className="wf-run-card" key={claim.id}>
+                  <header className="wf-run-card-head">
+                    <strong>{claim.completionKind} completion</strong>
+                    <span>{outcome.label}</span>
+                  </header>
+                  <p>{claim.summary}</p>
+                  {outcome.sentence && <p className="wf-run-meta">{outcome.sentence}</p>}
+                  <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}

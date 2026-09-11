@@ -16,6 +16,7 @@ import type {
   WorkflowEvidenceReadinessStatus,
   WorkflowGateSummary,
   WorkflowEvent,
+  WorkflowGoalProvenanceVerdict,
   WorkflowGateWaitReason,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
@@ -40,7 +41,8 @@ import {
   workflowRunGaveUp,
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
-import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
+import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -48,6 +50,7 @@ import {
   SessionActionCompletedOutputSchema,
   WorkflowCheckOutcomeSchema,
 } from "@shared/protocol.ts";
+import { relativeTime } from "../lib/format.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmDescriptor } from "./run-actions.ts";
 import { WorkflowApiError } from "./workflowApi.ts";
@@ -1369,6 +1372,17 @@ export interface RunRecordIntentSummary {
   rawGoalCharacters: number;
   hasOpeningAsk: boolean;
   openingAskCharacters: number;
+  /**
+   * The freeze-time goal-provenance verdict, or null for a run nobody classified.
+   *
+   * Null and `objective` are different answers and the pane draws neither, so the distinction
+   * only matters to a reader of this model - but it is the distinction the column exists to
+   * keep: `objective` is a run that was measured and found healthy, null is a run created
+   * before there was anything to measure it with.
+   */
+  provenanceVerdict: WorkflowGoalProvenanceVerdict | null;
+  /** The sentence naming every check that matched, shown as the badge's accessible name. */
+  provenanceReason: string | null;
   decisionCount: number;
   /** Total characters across every decision body and rationale - the block this phase bounds. */
   decisionCharacters: number;
@@ -1527,6 +1541,11 @@ export function runRecordSummary(
       rawGoalCharacters: context?.primaryGoal.rawPrompt.length ?? 0,
       hasOpeningAsk: Boolean(context?.primaryGoal.openingAsk),
       openingAskCharacters: context?.primaryGoal.openingAsk?.length ?? 0,
+      // Off the RUN, not off the round's captured context. The verdict describes one freeze at
+      // run creation, so every round of the run reports the same one and a scrubbed-to round
+      // does not appear to have been classified separately.
+      provenanceVerdict: detail.run.intentProvenance?.verdict ?? null,
+      provenanceReason: detail.run.intentProvenance?.reason ?? null,
       decisionCount: decisions.length,
       decisionCharacters: decisions.reduce(
         (total, decision) => total + decision.decision.length + (decision.rationale?.length ?? 0),
@@ -1958,8 +1977,107 @@ export function runRefusedSentence(detail: WorkflowRunDetail): string | null {
       return `The evidence captured for round ${round} is identical to the round before it,`
         + " so the reviewers were not run against it.";
     default:
-      return null;
+      // No `case` per capture phase: the decoder owns that set, and a copy here would drift.
+      return captureRefusedSentence(detail);
   }
+}
+
+/** The failing item, as a reader names it, or null when the row never recorded one. */
+function captureFailureItem(failure: WorkflowCaptureFailure): string | null {
+  // An id with no name is still what a re-registration replaces.
+  if (!failure.itemName) return failure.itemClientId;
+  return failure.itemClientId
+    ? `${failure.itemName} (registered as ${failure.itemClientId})`
+    : failure.itemName;
+}
+
+/**
+ * Why evidence capture refused this round, and which of the two recoveries works.
+ *
+ * The cause is the daemon's own message, not a clause composed from `failure.code`: a dozen
+ * codes reach these phases, so a code map would need the silent fallback being repaired here.
+ */
+function captureRefusedSentence(detail: WorkflowRunDetail): string | null {
+  const failure = workflowCaptureFailure({
+    status: detail.run.status,
+    phase: detail.run.currentPhase,
+    gateState: detail.run.gateState ?? null,
+  });
+  if (!failure) return null;
+  const item = captureFailureItem(failure);
+  const reason = failure.error.replace(/[.\s]+$/, "");
+  /*
+   * `resumeCapture` revives the same submission and therefore the same immutable reservation,
+   * so under `image_evidence_capture` resuming re-checks the very bytes that were refused.
+   * Under the other three the reservation is not what failed, and saying so would be untrue.
+   */
+  const remedy = detail.run.currentPhase === "image_evidence_capture"
+    ? " A re-registered item is picked up by the next round and not by a resume: resuming"
+      + " replays the same frozen reservation, so it re-checks the very bytes that were just"
+      + " refused."
+    : " Starting the next round re-reads the session and captures its evidence again.";
+  return "Evidence capture refused this round, so nothing was reviewed and no repair round was"
+    + " spent."
+    + (item ? ` It stopped on ${item}: ${reason}.` : ` ${reason}.`)
+    + remedy;
+}
+
+/**
+ * What the daemon did with a refused completion claim, and how it is recovered - stated once.
+ *
+ * Two surfaces say both of these: the run header and the *Foreman completion claim* card. They
+ * frame it differently and only one of them has a timestamp, but they must not be able to
+ * disagree about what the refusal COST or what clears it, because that is a property of the
+ * daemon rather than of either view. Owning the clauses here is what makes a change to
+ * `claimForemanCompletion` a one-line edit instead of two that can be made separately.
+ */
+const REFUSED_CLAIM_CONSEQUENCE = "it opened no round and produced no submission";
+const REFUSED_CLAIM_RECOVERY = "Whatever evidence that turn registered is staged and waiting,"
+  + " and starting the next round is what picks it up.";
+
+/** Open rather than closed: these are persisted strings, so an unknown state must not throw. */
+const COMPLETION_CLAIM_OUTCOMES: Record<string, { label: string; sentence: string }> = {
+  started: {
+    label: "started the run",
+    sentence: "This claim created the run and the first submission it reviewed.",
+  },
+  resubmitted: {
+    label: "opened the next round",
+    sentence: "This claim opened the next repair round against freshly captured evidence.",
+  },
+  already_claimed: {
+    label: "already counted",
+    sentence: "A claim for this same turn had already been accepted, so this one opened no"
+      + " round of its own.",
+  },
+  blocked: {
+    label: "refused",
+    sentence: `The run was already blocked when this claim arrived, so ${REFUSED_CLAIM_CONSEQUENCE}`
+      + ` - and the session was told it had completed anyway. ${REFUSED_CLAIM_RECOVERY}`,
+  },
+};
+
+export function completionClaimOutcome(state: string): { label: string; sentence: string | null } {
+  const known = COMPLETION_CLAIM_OUTCOMES[state];
+  return known ?? { label: state.replaceAll("_", " "), sentence: null };
+}
+
+/**
+ * That the session finished again and the daemon would not take it, for a blocked run.
+ *
+ * Display only: the store still refuses the claim and still retires the prompted guard.
+ * Making a blocked run accept a fresh claim is a behavioural fix and a separate plan.
+ */
+export function runRefusedCompletionSentence(
+  detail: WorkflowRunDetail,
+  now = Date.now(),
+): string | null {
+  // Scoped to a run that is still blocked; on one that took another round the claim is history.
+  const refused = detail.refusedCompletion;
+  if (!refused || detail.run.status !== "blocked") return null;
+  return `This session finished again ${relativeTime(refused.at, now)} and the review could not`
+    + ` accept it: the run was already blocked, so ${REFUSED_CLAIM_CONSEQUENCE}.`
+    + ` ${REFUSED_CLAIM_RECOVERY}`;
 }
 
 /**

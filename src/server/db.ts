@@ -983,7 +983,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       persona_directives_json TEXT,
       check_budget_epoch_round INTEGER,
       intent_json           TEXT,
-      run_criteria_json     TEXT
+      run_criteria_json     TEXT,
+      intent_provenance_json TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
       ON workflow_runs(trigger_key);
@@ -3088,6 +3089,17 @@ function migrate(d: DatabaseSync): void {
   // runs freeze.
   addColumn(d, "workflow_runs", "intent_json", "TEXT");
   addColumn(d, "workflow_runs", "run_criteria_json", "TEXT");
+
+  // ---- Goal provenance verdict ----------------------------------------------------------
+  //
+  // What KIND of ask the run above froze, written by the same transaction that inserts the
+  // run. Nullable, no default and NO BACKFILL, and the absence means "never classified"
+  // rather than "healthy": the verdict describes the moment of a freeze, and inventing one
+  // now for a row frozen last year would make the record claim something nobody measured.
+  // A separate axis from the intent state beside it - `unreadable` means the row is damaged,
+  // this means the row is intact and suspicious - so it is a column of its own rather than a
+  // value folded into the other.
+  addColumn(d, "workflow_runs", "intent_provenance_json", "TEXT");
 
   // ---- SessionAction continuation segments -------------------------------------------
   //

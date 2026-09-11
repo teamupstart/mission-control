@@ -57,6 +57,7 @@ const {
   WorkflowImageEvidenceError,
   workflowEvidenceOrphanCount,
 } = await import("../src/server/workflows/images.ts");
+const { withEvidenceItem } = await import("../src/server/workflows/evidence-error.ts");
 const { parsePersonaVerdict } = await import("../src/server/workflows/verdict.ts");
 
 openDb();
@@ -172,6 +173,42 @@ function context(images: WorkflowContextSnapshot["evidence"]["images"] = []): Wo
     compaction: { status: "fallback", runner: null, model: null, error: null },
   };
 }
+
+/*
+ * `inspectReservedSource` and `inspectReservedTextSource` both wrap a whole reserved row and
+ * can nest, so an outer frame must not relabel a refusal the inner one already attributed.
+ */
+test("an evidence refusal keeps the item identity it already carried, and its code", () => {
+  const inner = new WorkflowImageEvidenceError(
+    "image_changed",
+    "Evidence image changed after it was staged; register it again",
+    409,
+    { displayName: "steering-context.png", clientItemId: "phase2-steering-disclosure" },
+  );
+  const rewrapped = withEvidenceItem(inner, {
+    displayName: "some-other-item.png",
+    clientItemId: "not-the-one-that-failed",
+  });
+  assert.equal(rewrapped, inner, "an error that already named its item is returned untouched");
+  assert.deepEqual(rewrapped.item, {
+    displayName: "steering-context.png",
+    clientItemId: "phase2-steering-disclosure",
+  });
+
+  const bare = new WorkflowImageEvidenceError("image_size", "Evidence image is too large", 400);
+  assert.equal(bare.item, null);
+  const named = withEvidenceItem(bare, {
+    displayName: "oversized.png",
+    clientItemId: "att-3",
+  });
+  assert.notEqual(named, bare, "a new error is raised rather than the original mutated");
+  assert.deepEqual(named.item, { displayName: "oversized.png", clientItemId: "att-3" });
+  assert.equal(named.code, "image_size");
+  assert.equal(named.message, "Evidence image is too large");
+  assert.equal(named.status, 400);
+  assert.equal(bare.item, null, "the error handed in is left exactly as it was");
+  assert.ok(named instanceof WorkflowImageEvidenceError);
+});
 
 test("workflow image contracts default historical context and bind image citations to the current manifest", () => {
   const parsed = WorkflowContextSnapshotSchema.parse(context().evidence.images === undefined
@@ -483,7 +520,10 @@ test("gitignored UTF-8 logs preserve BOM bytes when digest-bound and submission-
     writeFileSync(logPath, `${original}not the staged bytes\n`);
     await assert.rejects(
       () => captureSubmissionTextArtifacts(store, created.submission.id, 4),
-      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "artifact_changed",
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && error.code === "artifact_changed"
+        && error.item?.displayName === "focused.tap"
+        && error.item?.clientItemId === "focused-log",
     );
     assert.deepEqual(store.listSubmissionTextArtifacts(created.submission.id), []);
 
@@ -891,7 +931,11 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
     writeFileSync(join(primary, "swap.png"), Buffer.concat([PNG, Buffer.from([0])]));
     await assert.rejects(
       () => captureSubmissionImages(store, lead.submission.id, 5),
-      (error: unknown) => error instanceof WorkflowImageEvidenceError && error.code === "image_changed",
+      // Only `staged-swap` moved; `staged-all` is reserved by the same submission and intact.
+      (error: unknown) => error instanceof WorkflowImageEvidenceError
+        && error.code === "image_changed"
+        && error.item?.displayName === "swap.png"
+        && error.item?.clientItemId === "screen-swap",
     );
     assert.deepEqual(store.listSubmissionImages(lead.submission.id), []);
     store.setSubmissionState(lead.submission.id, "failed", 5);

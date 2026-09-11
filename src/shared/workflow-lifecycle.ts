@@ -545,7 +545,8 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
     "requireCleanWorktree",
   ],
   failed_outcome: [...PERSONA_VERDICT_KEYS, "label", "completionPolicy"],
-  image_evidence_capture: ["error", "code"],
+  // Allowed, never required, so a row written before the identity existed keeps decoding.
+  image_evidence_capture: ["error", "code", "itemName", "itemClientId"],
   evidence_reconciliation_error: ["submissionId", "error"],
   infrastructure_error: ["nodeId", "attempts", "error"],
   invalid_version: ["error"],
@@ -610,6 +611,31 @@ export interface WorkflowCheckCleanupBlock {
 }
 
 /**
+ * Every phase a run blocks in when evidence capture refused the round, as a closed set.
+ *
+ * `external_artifact_mismatch` is deliberately absent: it records the two commits it compared
+ * rather than an `error` sentence, so it is explained from other fields.
+ */
+export const WORKFLOW_CAPTURE_FAILURE_PHASES = [
+  "capture_error",
+  "capture_interrupted",
+  "image_evidence_capture",
+  "stale_capture",
+] as const satisfies readonly WorkflowRunPhase[];
+
+/**
+ * Why evidence capture refused a round. `error` is required - a payload with no cause decodes
+ * `opaque` rather than becoming a refusal a header would print as a blank claim.
+ */
+export interface WorkflowCaptureFailure {
+  error: string;
+  code: string | null;
+  /** Null together on a row written before the throw site attached them; degrade, never guess. */
+  itemName: string | null;
+  itemClientId: string | null;
+}
+
+/**
  * The closed set of PHASE-SCOPED detail payloads, tagged.
  *
  * Phase-scoped is the distinction that makes this a union at all. `gate_state_json` carries
@@ -627,6 +653,7 @@ export type WorkflowGateDetail =
   | { kind: "none" }
   | { kind: "round_limit"; budget: WorkflowRoundLimitBudget }
   | { kind: "check_cleanup"; block: WorkflowCheckCleanupBlock }
+  | { kind: "capture_failure"; failure: WorkflowCaptureFailure }
   | { kind: "opaque"; detail: WorkflowJson };
 
 export type WorkflowGateDetailKind = WorkflowGateDetail["kind"];
@@ -727,6 +754,24 @@ function checkCleanupBlock(
   return { nodeId, attempts, error: typeof error === "string" ? error : "" };
 }
 
+/** A string that is actually there. */
+function optionalText(value: WorkflowJson | undefined): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+function captureFailure(
+  detail: { [key: string]: WorkflowJson },
+): WorkflowCaptureFailure | null {
+  const { error, code, itemName, itemClientId } = detail;
+  if (typeof error !== "string" || error === "") return null;
+  return {
+    error,
+    code: optionalText(code),
+    itemName: optionalText(itemName),
+    itemClientId: optionalText(itemClientId),
+  };
+}
+
 /**
  * Read one run's three lifecycle columns as exactly one state.
  *
@@ -795,6 +840,15 @@ function decodeDetail(
     const block = checkCleanupBlock(own);
     return block ? { kind: "check_cleanup", block } : { kind: "opaque", detail: own };
   }
+  // Phase-first, like the branch above: `capture_error` and `image_evidence_capture` persist
+  // the same two keys, so only the phase tells them apart.
+  if (
+    (WORKFLOW_CAPTURE_FAILURE_PHASES as readonly string[]).includes(record.phase)
+    && record.status === "blocked"
+  ) {
+    const failure = captureFailure(own);
+    return failure ? { kind: "capture_failure", failure } : { kind: "opaque", detail: own };
+  }
   return { kind: "opaque", detail: own };
 }
 
@@ -821,6 +875,21 @@ export function workflowCheckCleanupBlock(
   const lifecycle = decodeWorkflowRunLifecycle(record);
   return lifecycle.executable && lifecycle.detail.kind === "check_cleanup"
     ? lifecycle.detail.block
+    : null;
+}
+
+/**
+ * Why capture refused this round, only on a run actually blocked in a capture phase.
+ *
+ * The one typed reader of a capture-family phase detail: add readers here rather than
+ * re-parsing `gateState` at a call site, so two surfaces cannot disagree about one row.
+ */
+export function workflowCaptureFailure(
+  record: WorkflowRunLifecycleRecord,
+): WorkflowCaptureFailure | null {
+  const lifecycle = decodeWorkflowRunLifecycle(record);
+  return lifecycle.executable && lifecycle.detail.kind === "capture_failure"
+    ? lifecycle.detail.failure
     : null;
 }
 

@@ -29,7 +29,7 @@ unknown to an older build is reported and falls back through the shared provider
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
-Review v15 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
+Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
 the other seven on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
 
 A workflow can override that default for one reviewer node, without changing the Persona or
@@ -107,7 +107,7 @@ one immediately.
 | Persona | What it judges |
 |---|---|
 | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
-| Test Coverage Judge | Whether tests genuinely exercise at least 80% of changed executable code, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
+| Test Coverage Judge | Whether tests appropriately cover changed material executable behavior, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
@@ -158,7 +158,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 14 are preserved for bindings that already pin them, and version 15 is current. There is
+through 15 are preserved for bindings that already pin them, and version 16 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -181,21 +181,20 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the eight built-in Personas wired the way they were written to compose. In version
-15, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the same
-submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
-misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code
-Design Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are
-stage 4. Each group runs in parallel behind its own All-pass Join. Every fail returns to the session
-for repair, and the Pull Request action does not run until all three Persona stages pass.
+Behind it are the eight built-in Personas wired the way they were written to compose. In versions 15
+and 16, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
+misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
+Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
+Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
+repair, and the Pull Request action does not run until all three Persona stages pass.
 
-Test Coverage Judge requires at least 80% changed-line coverage of executable code, then checks the
-tests themselves for meaningful happy-path, boundary, and exception assertions. A percentage alone
-does not pass: the judge traces setup to the production path and the assertion to its observable
-consequence, specifically looking for tests whose names claim one behavior while their bodies prove
-another. Test Evidence Auditor remains separate and later because it judges whether the requested
-product behavior was demonstrated end to end, not whether the test suite adequately exercises the
-changed code.
+Test Coverage Judge assesses whether the submitted tests appropriately cover changed material
+executable behavior through meaningful happy-path, boundary, and exception assertions. It traces
+setup to the production path and the assertion to its observable consequence, specifically looking
+for tests whose names claim one behavior while their bodies prove another. Test Evidence Auditor
+remains separate and later because it judges whether the requested product behavior was demonstrated
+end to end, not whether the test suite adequately exercises the changed code.
 
 Code Design Reviewer joined that stage in version 11 rather than taking a stage of its own,
 which is what makes it cost one model call per round and no extra wall-clock stage: all three
@@ -229,9 +228,9 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 15 preserve that verified publication
-contract. Versions 10 through 15 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 15.
+would ask for one the run already has. Versions 9 through 16 preserve that verified publication
+contract. Versions 10 through 16 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 16.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -284,16 +283,18 @@ Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor wit
 Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
 Slop Filter to stage 4; version 13 keeps that graph while enabling criterion-mapped evidence
 preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
-with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; and version 15 adds
+with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; version 15 adds
 Test Coverage Judge beside Intent Conformance Judge in stage 2, with the same pinned Codex Terra
-routing as the other non-design reviewers. Every earlier version remains in the
+routing as the other non-design reviewers; and version 16 keeps that graph and routing while
+freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy. Version 15
+retains the percentage-based guidance it was published with. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 15 because it is current. Adopting the newer version on an
+take version 16 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -858,6 +859,33 @@ retype remains an accepted instruction even if the transcript still labels the e
 as automation. Accepted pending revisions and recorded steering survive restarts. Amendments,
 replacements and unclear instructions are not steering. No historical steering is backfilled.
 
+Creating a run also CLASSIFIES the ask it just froze, in the same transaction, so no run can
+exist without a verdict. The verdict is one of `automation` (the ask matches a payload Mission
+Control types itself - a repair packet, an evidence-preflight packet, a Foreman recovery nudge,
+a wrap-up instruction, an SDK restart continuation), `implausible` (under 24 characters, too
+short to name a subject and a state of doneness), `unreconciled` (an instruction the session
+already accepted is still waiting for the goal refiner, so it may yet replace this objective),
+or `objective` for an ask that tripped nothing. The checks overlap, so the verdict is the
+highest-precedence match in that order and the recorded reason names every check that matched.
+The opening ask of a session is never `unreconciled` on its own account: it becomes the
+objective without the refiner's help.
+
+**The verdict reports and never blocks.** A run whose ask looks wrong still starts, reviews and
+finishes, and the operator decides what to do about it. A non-`objective` verdict appends one
+`run_intent_classified` event at the freeze and draws a badge beside the review contract in run
+detail, with the full reason as the badge's accessible name; `objective` draws nothing, because
+a badge on every healthy run is a badge nobody reads. No existing run is reclassified - a run
+frozen before this existed carries no verdict, which reads as "never measured" rather than as
+healthy.
+
+The `automation` check is deliberately not made redundant by the authorship rule that keeps
+[Mission Control's own turns out of the Goal](sessions.md). That rule works on who delivered a
+turn, spends its recognition on one echo, and holds it in memory; a daemon restart landing
+between a delivery and its echo lets that one turn through as though a human typed it. This
+check works on the text instead, so it still sees a machine-authored ask that arrived by a path
+authorship did not cover, and it is what would make a regression in that rule visible on a
+screen rather than only in a query.
+
 The session Goal stays live and keeps being displayed as the conversation's current objective.
 Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent
 is frozen. Later human input does not amend the frozen ask; an ask that genuinely changed needs
@@ -962,6 +990,15 @@ UTF-8 and copied into a submission-owned immutable row with its byte count and d
 changed, missing, oversized, or invalid source blocks the whole run in the historical
 `image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
 submission and therefore the same reserved bytes.
+
+The refusal names the registered item it is about - its display name and the client id a
+re-registration replaces - and the run page states the whole refusal without a disclosure: what
+capture found, which item, that no reviewer ran and no repair round was spent, and that the
+recovery is to register the item again and start the next round. Resuming is not that recovery:
+it revives the same submission and therefore the same immutable reservation, so it re-checks
+the bytes that were just refused and cannot see a re-registered item. A blocked run that has
+been claimed complete again says so beside the refusal; the claim opens no round, and the
+evidence that turn registered is picked up by the next round.
 
 An image whose digest is already frozen and retained references that existing body instead of
 copying it again, so registering the same screenshot in five rounds stores it once. That is a

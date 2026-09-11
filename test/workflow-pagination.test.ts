@@ -293,7 +293,8 @@ test("run detail statement count is constant as submission history grows", () =>
   assert.equal(detail?.attempts.length, 20);
   assert.equal(detail?.receipts.length, 20);
   assert.equal(many.statements.count, one.statements.count);
-  // Readiness overrides are a separate append-only ledger and add one bounded query. Keep the
-  // important contract here: detail cost stays constant as immutable submission history grows.
-  assert.ok(many.statements.count <= 17, `detail used ${many.statements.count} statements`);
+  // Readiness overrides and the refused-completion claim are each a separate append-only
+  // ledger read behind one bounded query. Keep the important contract here: detail cost stays
+  // constant as immutable submission history grows, which the equality above is what proves.
+  assert.ok(many.statements.count <= 18, `detail used ${many.statements.count} statements`);
 });

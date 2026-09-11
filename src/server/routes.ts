@@ -6621,8 +6621,21 @@ export function buildApp(
     const parsed = await parseBody(c, SetupInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
     if (parsed.data.id === "pi-integration") {
-      const result = await installPiExtensionFromSetup();
-      return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : 409);
+      // JSON requires a CORS preflight. No cross-origin CORS permission is granted;
+      // validate Origin too, while allowing the dashboard's loopback Vite proxy.
+      const origin = c.req.header("origin");
+      let trustedOrigin = !origin;
+      if (origin) {
+        try {
+          const url = new URL(origin);
+          trustedOrigin = url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.host);
+        } catch { trustedOrigin = false; }
+      }
+      if (!trustedOrigin || c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+        return c.json({ error: "forbidden" }, 403);
+      }
+      const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
+      return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
     }
     const result = await executeSetupInstall(parsed.data, {
       catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,

@@ -1,5 +1,6 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test, expect } from "../fixtures/test.ts";
 import { openSetupFamily } from "../fixtures/setup-panel.ts";
@@ -182,6 +183,31 @@ test("a healthy installed extension admits a Pi plan dispatch through the real d
     throw error;
   } finally {
     const task = (await tasksNow()).find(task => task.agent === "pi" && task.kind === "plan");
-    if (task?.homeName && task.homeBackend === "tmux") execFileSync("tmux", ["kill-session", "-t", task.homeName]);
+    if (task?.homeName && task.homeBackend === "tmux") spawnSync("tmux", ["kill-session", "-t", task.homeName], { stdio: "ignore" });
   }
+});
+
+
+test.describe("first-install preflight failure", () => {
+  const candidate = join(tmpdir(), `mission-pi-preflight-${process.pid}.js`);
+  test.use({ daemonEnv: { MISSION_PI_EXTENSION: candidate } });
+  test.beforeAll(() => {
+    mkdirSync(artifactsDir("pi-extension-setup"), { recursive: true });
+    writeFileSync(candidate, 'throw Error("candidate fixture cannot load");');
+  });
+  test.afterAll(() => rmSync(candidate, { force: true }));
+  test("Setup explains that a rejected candidate was never installed", async ({ daemon, page }) => {
+    await page.goto(`${daemon.baseURL}/#/settings/setup`);
+    await openSetupFamily(page, "extensions");
+    const install = page.getByRole("button", { name: "Install Pi integration" });
+    await install.click();
+    const status = page.getByRole("status");
+    await expect(status).toContainText("Nothing was installed or enabled");
+    await expect(status).toContainText("candidate Pi extension");
+    await expect(status).not.toContainText("Every Pi session on this machine may refuse");
+    await expect(install).toBeEnabled();
+    await page.mouse.move(0, 0);
+    await expect(page.locator(".tooltip")).toHaveCount(0);
+    await page.locator(".setup-panel").screenshot({ path: join(artifactsDir("pi-extension-setup"), "candidate-refused.png") });
+  });
 });

@@ -115,7 +115,22 @@ It refuses an enabled integration or any existing entry, rechecks absence before
 refuses a pooled source. It is presented separately from the required warning row, rather than
 adding a permanently missing dependency row for a machine that never opted in. The shared
 snapshot carries only whether first installation is available. These choices preserve the
-approved report-only boundary while matching the route's existing terminal-install behavior.
+approved report-only boundary. Pi installation conflicts return HTTP 409, while operational
+preflight or publication failures return HTTP 500. A rejected candidate is explicitly described
+as not installed. The action requires JSON and a loopback Origin when supplied; the separate
+loopback Host guard remains in force.
+
+Dispatch reuses completed health readings for at most 30 seconds. Canonical link targets,
+file identity, permissions, size, modification/change times, reference and baked/overridden MCP
+bundles, persisted intent, and environment changes invalidate the reading. Setup Re-check always
+performs a new inspection and invalidates dispatch's cache. Changes inside a bridge dependency
+that leave these identities unchanged may take up to 30 seconds to reach dispatch.
+
+After intent has been persisted, publication or post-install verification failures retain that
+intent and report manual recovery. This follows Phase 5's durable-intent contract. Automatic
+rollback would require an installer-owned transaction receipt identifying exactly which link
+this attempt published; the existing reconciliation result does not supply that ownership.
+Calling the general disable operation here could remove a link replaced concurrently.
 
 The report checks the baked MCP path and then probes the configured override, when present,
 because the extension honors that override. A missing build marker is reported as stale rather

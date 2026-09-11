@@ -1,9 +1,9 @@
-import { inspectPiExtension } from "./environment/pi-extension.ts";
+import { piExtensionHealthyForDispatch } from "./environment/pi-extension.ts";
 import { capabilitiesFor, missionToolsUnavailableWhy } from "@shared/harness-capabilities.ts";
 import type { AgentType } from "@shared/types.ts";
 
 /** The same reading Setup uses, including the installed link and bridged tools. */
-export const piExtensionInstalled = async (): Promise<boolean> => (await inspectPiExtension()).healthy;
+export const piExtensionInstalled = piExtensionHealthyForDispatch;
 
 /**
  * Resolve machine availability once before provisioning. Launch-scoped tools still need

@@ -109,7 +109,9 @@ export interface SetupInstallExecutionDeps {
 }
 
 /** Dependencies routes may override without moving command ownership into a caller. */
-export type SetupInstallRouteDeps = Partial<Omit<SetupInstallExecutionDeps, "launchTerminal">>;
+export type SetupInstallRouteDeps = Partial<Omit<SetupInstallExecutionDeps, "launchTerminal">> & {
+  installPiExtension?: typeof import("./pi-extension.ts").installPiExtensionFromSetup;
+};
 
 export interface SetupInstallResponse {
   status: 200 | 404 | 409 | 502 | 504;

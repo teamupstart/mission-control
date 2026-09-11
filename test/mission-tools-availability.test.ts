@@ -8,8 +8,10 @@ import { piExtensionPath } from "../src/server/config.ts";
 
 test("Pi availability degrades invalid and non-file paths to a clean refusal", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-availability-"));
-  const prior = process.env.MISSION_PI_EXTENSION;
+  const prior = { ...process.env };
   try {
+    process.env.PI_EXTENSIONS_DIR = join(dir, "extensions");
+    process.env.MISSION_HOME = join(dir, "state");
     mkdirSync(join(dir, "directory.js"));
     writeFileSync(join(dir, "index.js"), "export default () => {};\n");
     symlinkSync(join(dir, "missing.js"), join(dir, "broken.js"));
@@ -29,7 +31,7 @@ test("Pi availability degrades invalid and non-file paths to a clean refusal", a
       assert.equal((await missionToolsAvailability("pi")).available, false, "an uninstalled artifact does not grant availability");
     }
   } finally {
-    if (prior === undefined) delete process.env.MISSION_PI_EXTENSION; else process.env.MISSION_PI_EXTENSION = prior;
+    process.env = prior;
     rmSync(dir, { recursive: true, force: true });
   }
 });

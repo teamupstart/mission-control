@@ -7,7 +7,7 @@ import { inspectPiExtension, loadPiExtensionMetadata, canInstallPiExtension, piE
 import { missionToolsAvailability } from "../src/server/mission-tools.ts";
 import { MISSION_MCP_TOOLS } from "../src/server/mission-mcp.ts";
 import { ENVIRONMENT_CHECK_IDS } from "../src/shared/environment-checks.ts";
-import { applyPiExtensionConfig } from "../src/server/extensions/config.ts";
+import { applyPiExtensionConfig, getPiExtensionConfig } from "../src/server/extensions/config.ts";
 import { installPiExtensionFromSetup } from "../src/server/setup/pi-extension.ts";
 
 const root = mkdtempSync(join(tmpdir(), "pi-health-"));
@@ -105,7 +105,10 @@ test("Setup installs once, verifies health and refuses a second or broken-instal
 });
 test("Setup refuses an unhealthy candidate before persisting intent or publishing a link", async () => {
   writeFileSync(expected, "throw Error('bad build')");
-  assert.equal((await installPiExtensionFromSetup()).ok, false);
+  const result = await installPiExtensionFromSetup();
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /Nothing was installed or enabled.*candidate.*failed to load/);
+  assert.doesNotMatch(result.detail, /Every Pi session.*may refuse/);
   assert.equal(existsSync(link), false);
   assert.equal(existsSync(join(root, "state", "pi-extension.json")), false);
   assert.equal(canInstallPiExtension(), true);
@@ -221,4 +224,80 @@ test("baked MCP bundle access failure warns about tools and preserves permission
   } finally { chmodSync(restricted, 0o700); }
   assert.equal(readFileSync(baked, "utf8"), protocol);
   assert.equal((await inspectPiExtension()).healthy, true);
+});
+
+
+test("unexpected intent errors log a bounded diagnostic without disclosing file contents", async (t) => {
+  mkdirSync(join(root, "state"));
+  writeFileSync(join(root, "state", "pi-extension.json"), "private-intent-content");
+  const log = t.mock.method(console, "warn", () => {});
+  assert.match((await inspectPiExtension()).warning!, /could not establish/);
+  assert.equal(log.mock.callCount(), 1);
+  const logged = JSON.stringify(log.mock.calls[0]!.arguments);
+  assert.match(logged, /SyntaxError/);
+  assert.doesNotMatch(logged, /private-intent-content/);
+});
+
+test("dispatch caches completed health but observes link, bundle, bridge and intent changes", async () => {
+  const counter = join(root, "loads");
+  const counted = `import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(counter)}, 'x'); `;
+  writeFileSync(installed, counted + metadata()); symlinkSync(installed, link);
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  assert.equal(readFileSync(counter, "utf8"), "x", "unchanged dispatch reuses a completed probe");
+  await inspectPiExtension();
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  assert.equal(readFileSync(counter, "utf8"), "xxx", "Setup re-check bypasses and invalidates dispatch cache");
+  writeFileSync(installed, counted + metadata("old"));
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+  writeFileSync(installed, counted + metadata());
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  writeFileSync(expected, metadata("new-reference"));
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+  writeFileSync(expected, metadata());
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  mcp(["request_input"]);
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+  mcp();
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  process.env.MISSION_MCP_SERVER = join(root, "missing-override.mjs");
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+  delete process.env.MISSION_MCP_SERVER;
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  rmSync(link); symlinkSync(join(root, "missing-target.js"), link);
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+  rmSync(link);
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+  assert.equal((await installPiExtensionFromSetup()).ok, true);
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+});
+
+test("dispatch cache expires when an unchanged bridge stops providing tools", async (t) => {
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const flag = join(root, "stop-bridge");
+  const protocol = readFileSync(bridge, "utf8");
+  writeFileSync(bridge, `import {existsSync} from 'node:fs'; if (existsSync(${JSON.stringify(flag)})) process.exit(1);\n` + protocol);
+  symlinkSync(installed, link);
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  writeFileSync(flag, "");
+  assert.equal((await missionToolsAvailability("pi")).available, true);
+  clock += 30_001;
+  assert.equal((await missionToolsAvailability("pi")).available, false);
+});
+
+
+test("post-publication failure retains explicit intent and reports manual recovery without removing the link", async () => {
+  const firstLoad = join(root, "candidate-loaded");
+  writeFileSync(expected, `import {existsSync,writeFileSync} from 'node:fs';
+    if (existsSync(${JSON.stringify(firstLoad)})) throw Error('post-install failure');
+    writeFileSync(${JSON.stringify(firstLoad)}, 'loaded'); ${metadata()}`);
+  const result = await installPiExtensionFromSetup();
+  assert.equal(result.ok, false);
+  assert.equal(!result.ok && result.status, 500);
+  assert.match(result.detail, /npm run install-pi-extension/);
+  assert.equal(getPiExtensionConfig().enabled, true);
+  assert.equal(readlinkSync(link), expected);
+  assert.equal(canInstallPiExtension(), false);
+  assert.match((await inspectPiExtension()).warning!, /Every Pi session.*may refuse/);
 });

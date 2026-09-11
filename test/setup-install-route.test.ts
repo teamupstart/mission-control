@@ -407,3 +407,43 @@ test("terminal outcomes preserve status and the launcher's exact sentence", asyn
     assert.equal(calls.length, 1);
   }
 });
+
+
+test("Pi Setup uses the injected installer and preserves conflict versus operational status", async () => {
+  for (const result of [
+    { ok: true, detail: "Installed" },
+    { ok: false, status: 409, detail: "Already enabled" },
+    { ok: false, status: 500, detail: "Bundle could not load" },
+  ] as const) {
+    let installs = 0;
+    const calls: LaunchCall[] = [];
+    const app = appFor({ calls, install: { installPiExtension: async () => { installs++; return result; } } });
+    const response = await post(app, { id: "pi-integration" });
+    assert.equal(response.status, result.ok ? 200 : result.status);
+    assert.deepEqual(await response.json(), { ...result, id: "pi-integration" });
+    assert.equal(installs, 1);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("Pi Setup rejects cross-site simple requests and foreign origins before installation", async () => {
+  let installs = 0;
+  const app = appFor({ calls: [], install: { installPiExtension: async () => { installs++; return { ok: true, detail: "Installed" }; } } });
+  for (const headers of [
+    { ...LOOPBACK, "content-type": "text/plain" },
+    { ...LOOPBACK, origin: "https://attacker.example" },
+    { ...LOOPBACK, origin: "null" },
+    { ...LOOPBACK, origin: "http://localhost.attacker.example" },
+    { ...LOOPBACK, origin: "http://localhost:7317/extra" },
+    { ...LOOPBACK, host: "attacker.example", origin: "http://localhost:7317" },
+  ]) {
+    const response = await app.request("http://127.0.0.1:7317/api/setup/install", { method: "POST", headers, body: JSON.stringify({ id: "pi-integration" }) });
+    assert.equal(response.status, 403, JSON.stringify(headers));
+  }
+  assert.equal(installs, 0);
+  for (const origin of ["http://127.0.0.1:7317", "http://localhost:5173", "http://[::1]:7317"]) {
+    const response = await app.request("http://127.0.0.1:7317/api/setup/install", { method: "POST", headers: { ...LOOPBACK, origin }, body: JSON.stringify({ id: "pi-integration" }) });
+    assert.equal(response.status, 200, origin);
+  }
+  assert.equal(installs, 3);
+});

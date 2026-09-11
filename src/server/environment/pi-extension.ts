@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -61,10 +62,54 @@ export async function loadPiExtensionMetadata(path: string, timeoutMs = 3000): P
 
 /** Report only: a background read must never repoint a machine-wide executable link. */
 export async function inspectPiExtension(bundleToInstall?: string): Promise<PiExtensionReading> {
+  invalidatePiExtensionAvailability();
+  return inspect(bundleToInstall);
+}
+
+let cached: { key: string; paths: Map<string, string>; healthy: boolean; expires: number } | undefined;
+let cacheGeneration = 0;
+export function invalidatePiExtensionAvailability(): void { cached = undefined; cacheGeneration += 1; }
+
+function pathIdentity(path: string): string {
+  try {
+    const entry = lstatSync(path);
+    const target = realpathSync(path);
+    const file = statSync(target);
+    return JSON.stringify([target, ...[entry, file].map(s => [s.dev, s.ino, s.mode, s.size, s.mtimeMs, s.ctimeMs])]);
+  } catch (error) { return String((error as NodeJS.ErrnoException).code); }
+}
+function availabilityKey(): string {
+  // Hash, never retain or report credentials. Runtime/environment changes invalidate too.
+  return createHash("sha256").update(JSON.stringify([
+    piExtensionLinkPath(), piExtensionPath(), getPiExtensionConfig(),
+    Object.entries(process.env).sort(([a], [b]) => a.localeCompare(b)),
+  ])).digest("hex");
+}
+
+/** Dispatch reuses only completed, unchanged readings, for at most thirty seconds.
+ * Setup always calls inspectPiExtension directly, invalidating this bounded cache. */
+export async function piExtensionHealthyForDispatch(): Promise<boolean> {
+  let key: string;
+  try { key = availabilityKey(); } catch { return (await inspectPiExtension()).healthy; }
+  if (cached?.key === key && cached.expires > Date.now()
+    && [...cached.paths].every(([path, identity]) => pathIdentity(path) === identity)) return cached.healthy;
+  const generation = cacheGeneration;
+  const paths = new Map<string, string>();
+  const reading = await inspect(undefined, path => { if (!paths.has(path)) paths.set(path, pathIdentity(path)); });
+  try {
+    if (generation === cacheGeneration && key === availabilityKey() && [...paths].every(([path, identity]) => pathIdentity(path) === identity)) {
+      cached = { key, paths, healthy: reading.healthy, expires: Date.now() + 30_000 };
+    }
+  } catch { invalidatePiExtensionAvailability(); }
+  return reading.healthy;
+}
+
+async function inspect(bundleToInstall?: string, observe: (path: string) => void = () => {}): Promise<PiExtensionReading> {
   const silent: PiExtensionReading = { healthy: false, warning: null, detail: null };
   const warn = (warning: string, detail: string): PiExtensionReading => ({ healthy: false, warning: `${warning} ${remedy}`, detail: short(detail) });
   try {
     const link = bundleToInstall ?? piExtensionLinkPath();
+    observe(link);
     let entry;
     try { entry = lstatSync(link); }
     catch (error) {
@@ -82,11 +127,13 @@ export async function inspectPiExtension(bundleToInstall?: string): Promise<PiEx
     }
     if (!statSync(target).isFile()) return warn(`Pi's extension at ${short(target)} is not a regular bundle file. Mission Control integration is unavailable.`, target);
     const load = await loadPiExtensionMetadata(target);
+    if (!load.loaded && bundleToInstall) return warn(`The candidate Pi extension at ${short(target)} failed to load within the bounded child check. Installing it could prevent Pi sessions from starting.`, target);
     if (!load.loaded) return warn(`Every Pi session on this machine may refuse to start: the extension at ${short(target)} failed to load within the bounded child check. Pi can be started without extensions using pi -ne.`, target);
     const installed = load.metadata;
     if (!installed) return warn("The installed Pi extension has no valid build marker and is out of date.", target);
     const baked = installed.mcpServerPath;
     if (!isAbsolute(baked)) return warn("The Pi extension has an invalid baked MCP path; its Mission Control tools are unavailable.", target);
+    observe(baked);
     try {
       if (!statSync(baked).isFile()) return warn(`The Pi extension's baked MCP bundle at ${short(baked)} is not a file. Lifecycle reports may still work, but its tools do not.`, baked);
     } catch (error) {
@@ -94,6 +141,7 @@ export async function inspectPiExtension(bundleToInstall?: string): Promise<PiEx
       return warn(`The Pi extension's baked MCP bundle is missing at ${short(baked)}. Lifecycle reports may still work, but its tools do not.`, baked);
     }
     const expectedPath = piExtensionPath();
+    observe(expectedPath);
     let expectedTarget: string;
     try { expectedTarget = realpathSync(expectedPath); }
     catch { return warn(`This Mission Control build cannot read its reference Pi extension at ${short(expectedPath)}, so freshness cannot be established.`, expectedPath); }
@@ -104,12 +152,17 @@ export async function inspectPiExtension(bundleToInstall?: string): Promise<PiEx
     // The extension itself honors this override. Check the baked path too so removing an
     // override cannot conceal a moved checkout, then ask the bridge Pi will actually use.
     const bridgePath = envVar("MCP_SERVER") ?? baked;
+    observe(bridgePath);
     let bridge: string;
     try { bridge = realpathSync(bridgePath); }
     catch { return warn(`The Pi extension's configured MCP bridge at ${short(bridgePath)} cannot be resolved. Lifecycle reports may still work, but its tools do not.`, bridgePath); }
     if (!await inspectMissionMcpTools(bridge)) return warn(`The Pi extension's MCP bridge at ${short(bridge)} is stale or cannot answer tools/list. Lifecycle reports may still work, but the required Mission Control tools are unavailable.`, bridge);
     return { healthy: true, warning: null, detail: null };
-  } catch {
+  } catch (error) {
+    // Do not log file contents, subprocess output, or arbitrary error messages.
+    const diagnostic = error instanceof Error ? error.name : typeof error;
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    console.warn("[pi-extension] Health inspection failed", { kind: short(diagnostic), code: typeof code === "string" ? short(code) : null });
     return { healthy: false, warning: `The Pi extension check could not establish a healthy installation. ${remedy}`, detail: null };
   }
 }

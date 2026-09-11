@@ -1532,8 +1532,9 @@ chip never folds its stage to **Failed**; the stage counts it with the not-run g
 
 Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
 requested changes with evidence references, and the runner, model, duration and cost that
-actually ran. GitHub Inspector gate state, Foreman completion claims and repair deliveries are
-ledgers rather than cards, each in its own tab of the run record. Durable failures read as
+actually ran. GitHub Inspector gate state and Foreman completion claims are ledgers rather than
+cards, sharing the run record's Completion tab; repair deliveries are a ledger in its Deliveries
+tab. Durable failures read as
 sentences - "The write may or may not have landed" - with the machine code kept beside them for
 a bug report, never instead of them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
 the complete durable JSON records sit beside it under **Audit and bug reports**, collapsed,

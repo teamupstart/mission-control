@@ -2982,7 +2982,14 @@ function CompletionPane({
           <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
           <h5 className="wf-run-subhead">Findings</h5>
           {gate.findings.length === 0 ? (
-            <p className="wf-run-empty">No findings are recorded for this adopted pull request.</p>
+            /* Two sentences, because "no findings" means two different things. A gate that
+               has adopted a pull request and found nothing wrong is a result; a gate that has
+               adopted nothing yet has not looked. The old copy asserted an adopted pull
+               request either way, which the strip four lines above contradicts by printing
+               "not resolved". */
+            <p className="wf-run-empty">{summary.pullRequest === null
+              ? "No pull request is adopted yet, so no findings are recorded."
+              : "No findings are recorded for this adopted pull request."}</p>
           ) : (
             <div className="wf-run-table wf-run-ledger">
               <table>

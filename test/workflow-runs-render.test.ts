@@ -476,6 +476,36 @@ const assertLedgerFacts = (pane: string, facts: readonly (readonly [string, stri
   }
 };
 
+/**
+ * Where the element opened at `start` closes, found by balancing its own tag.
+ *
+ * `lastIndexOf("</tag>", …)` cannot answer this and fails in the one direction that matters:
+ * on a document where a sibling has been inserted after the element, the nearest closing tag
+ * searched backwards belongs to the INSERTED sibling, so a caller using it to prove "nothing
+ * was inserted here" measures an empty span and passes. Counting opens and closes is immune to
+ * that, and to the nesting the run record's panes already contain.
+ */
+const endOfElement = (html: string, start: number, tag: string): number => {
+  const opens = new RegExp(`<${tag}[\\s>]`, "g");
+  const close = `</${tag}>`;
+  let depth = 0;
+  let at = start;
+  for (;;) {
+    opens.lastIndex = at;
+    const next = opens.exec(html);
+    const shut = html.indexOf(close, at);
+    assert.notEqual(shut, -1, `the <${tag}> at ${start} is never closed`);
+    if (next !== null && next.index < shut) {
+      depth += 1;
+      at = next.index + 1;
+      continue;
+    }
+    depth -= 1;
+    at = shut + close.length;
+    if (depth === 0) return at;
+  }
+};
+
 /** Every identity the published graph carries. None of them may reach the screen. */
 const GRAPH_IDS = [...Object.values(NODE), ...Object.values(EDGE)];
 
@@ -2162,13 +2192,28 @@ test("below the round scrubber the page is the scrubber, the bands, the tabs, th
   assert.doesNotMatch(html, /<h4>GitHub Inspector final gate<\/h4>/);
   assert.doesNotMatch(html, /<h4>Foreman completion claim<\/h4>/);
   assert.match(html, /id="run-record-tab-completion"[^>]*>Completion</);
-  // Nothing between the tab container and the model calls, which is what "the page below the
-  // scrubber is exactly these" means: the whole span is one `</section>` closing the tabs.
-  const tabs = at('class="wf-run-section wf-run-record"');
+  /*
+   * NOTHING between the tab container and the model calls, which is what "the page below the
+   * scrubber is exactly these" means.
+   *
+   * The container's close is found by BALANCING its own tag rather than by searching backwards
+   * from the model calls. A backwards search lands on the nearest `</section>`, which on the
+   * regression this guards against - a new sibling section inserted between the two - is that
+   * new section's own closing tag. The span then shrinks to the very thing it was supposed to
+   * catch, and the assertion passes. Balancing also survives the panes, which nest sections of
+   * their own: the Evidence pane carries an Evidence recovery section, ledger regions are
+   * sections, and the worklist pane is one.
+   */
+  const tabs = at('<section class="wf-run-section wf-run-record">');
   const calls = at("<h4>Workflow-owned model calls</h4>");
-  const between = html.slice(html.lastIndexOf("</section>", calls), calls);
-  assert.doesNotMatch(between, /<h4>/, "a section reappeared between the run record and the model calls");
-  assert.ok(tabs < calls);
+  const callsSection = html.lastIndexOf("<section", calls);
+  const tabsEnd = endOfElement(html, tabs, "section");
+  assert.ok(tabs < callsSection, "the model calls section does not follow the run record");
+  assert.equal(
+    html.slice(tabsEnd, callsSection).trim(),
+    "",
+    "a sibling was inserted between the run record and the model calls",
+  );
 });
 
 /**
@@ -2228,7 +2273,10 @@ test("a gate with nothing adopted names every fact it does not have yet", () => 
   // No adopted pull request means no link to one, and no findings means the empty sentence
   // rather than a table with no rows in it.
   assert.doesNotMatch(pane, /<a href[^>]*>#/);
-  assert.match(pane, /No findings are recorded for this adopted pull request\./);
+  // "No findings" without claiming a pull request that does not exist: the strip on the same
+  // pane prints "not resolved", and the two may not contradict each other.
+  assert.match(pane, /No pull request is adopted yet, so no findings are recorded\./);
+  assert.doesNotMatch(pane, /for this adopted pull request/);
   assert.doesNotMatch(pane, /wf-run-finding-row/);
   // A version with no Inspector completion policy still states the policy, as its defaults.
   assert.match(pane, /Findings policy: <strong>none<\/strong> · Missing PR: <strong>wait<\/strong>/);
@@ -2513,7 +2561,9 @@ test("a spent gate with no current inspection says so in every field rather than
   ]);
   // The strip counts the ROWS, and there are none - not the tallies, which are unknown here.
   assert.match(pane, /<span class="wf-run-stat-key">Open findings<\/span><strong class="wf-run-stat-value">0<\/strong>/);
-  assert.match(pane, /No findings are recorded for this adopted pull request\./);
+  // Nothing was adopted here either, so the empty sentence says that rather than inventing a
+  // pull request for the reader to go looking for.
+  assert.match(pane, /No pull request is adopted yet, so no findings are recorded\./);
 });
 
 test("scrubbing to an earlier round never withdraws a live recovery action", () => {

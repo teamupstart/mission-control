@@ -1100,7 +1100,9 @@ export class WorkflowEngine {
     const consumed = claimed.reviewInput ? this.store.personaOperationCalls(claimed.reviewInput.operationId) : 0;
     let verdict: PersonaVerdict | null = null;
     let failure = "Persona review execution budget exhausted";
-    let violation: string | null = null;
+    const priorRejection = claimed.reviewInput
+      ? this.store.personaOperationRejectionBasis(claimed.reviewInput.operationId) : null;
+    let violation = priorRejection === "parse" ? null : priorRejection;
     for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
       const result = await runStructured(
         (request) => runner.run(request, { model: execution.model.id, timeoutMs: PERSONA_TIMEOUT_MS, images }),

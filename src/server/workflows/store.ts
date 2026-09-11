@@ -8905,6 +8905,13 @@ export class WorkflowStore {
       .get(operationId) as { n: number }).n;
   }
 
+  personaOperationRejectionBasis(operationId: string): string | null {
+    const row = this.db.prepare(`SELECT id FROM workflow_node_attempts
+      WHERE json_extract(review_input_json, '$.operationId') = ? AND review_rejections_json IS NOT NULL
+      ORDER BY attempt DESC, created_at DESC, id DESC LIMIT 1`).get(operationId) as { id: string } | undefined;
+    return row ? this.getAttempt(row.id)?.reviewRejections?.at(-1)?.basis ?? null : null;
+  }
+
   retainRejectedPersonaVerdict(attemptId: string, execution: number, basis: string, raw: string): void {
     const previous = this.getAttempt(attemptId)?.reviewRejections ?? [];
     const entries = [...previous.filter((item) => item.execution !== execution), { execution, basis, raw: clipUtf8Bytes(raw, 64_000) }].slice(-2);

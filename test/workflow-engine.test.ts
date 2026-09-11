@@ -2234,8 +2234,9 @@ test("rejected Persona responses retain a UTF-8 byte bound without splitting cha
   assert.equal(store.getAttempt(attempt.id)!.reviewRejections!.length, 2);
 });
 
-for (const priorCalls of [1, 2]) test(`restart retains Persona input and counts ${priorCalls} prior executions against its budget`, async () => {
-  const id = `contract-restart-${priorCalls}`;
+for (const priorBasis of [null, "coverage_registration", "evidence_access", "parse"])
+for (const priorCalls of [1, 2]) test(`restart retains Persona input and ${priorBasis ?? "transport"} correction with ${priorCalls} prior executions`, async () => {
+  const id = `contract-restart-${priorCalls}-${priorBasis ?? "transport"}`;
   const reviewer = persona("p", "Contract reviewer", "claude", "Review");
   const executionGraph: PublishedWorkflowGraph = {
     nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "p", kind: "persona", persona: reviewer, position: { x: 100, y: 0 } }, { id: "end", kind: "end", outcome: "Done", position: { x: 200, y: 0 } }],
@@ -2246,12 +2247,14 @@ for (const priorCalls of [1, 2]) test(`restart retains Persona input and counts 
   const input = personaReviewInput(store.getSubmission(`submission-${id}`)!, store.getWorkflowVersionById(`version-${id}`)!);
   const fingerprint = personaReviewInputDigest(input);
   store.insertAttempt({ id: `attempt-${id}`, submissionId: `submission-${id}`, nodeId: "p", attempt: 1, state: "running", persona: reviewer, reviewInput: input, inputFingerprint: fingerprint, now: 4 });
+  if (priorBasis) store.retainRejectedPersonaVerdict(`attempt-${id}`, 1, priorBasis, "rejected review");
   for (let i = 1; i <= priorCalls; i++) store.insertLlmCall({ id: `call-${id}-${i}`, runId: `run-${id}`, submissionId: `submission-${id}`, nodeAttemptId: `attempt-${id}`, purpose: "persona_review", runner: "claude", model: "fake", attempt: i, state: "running", startedAt: 5, finishedAt: null, durationMs: null, inputBytes: 100, outputBytes: 0, costUsd: null, errorCode: null });
   store.setRunState(`run-${id}`, "running", "persona_review", null, 6);
   store.updateSubmissionCapture(`submission-${id}`, { context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: { evaluatorVersion: "criterion_mapped_v1", status: "unavailable", criteria: [], gapCodes: [], warningCodes: [], unavailableReason: "Changed after attempt creation" } }, 6);
   let calls = 0;
   const fake: LlmRunner = { id: "claude", label: "fake", runInThread: null, structuredOutput: null, sandbox: null, price: () => null, litter: null, killLiveRuns() {}, async run(prompt) {
     calls++; assert.match(prompt, /"status":"unknown"/); assert.doesNotMatch(prompt, /Changed after attempt creation/);
+    assert.ok(prompt.includes(`Correction required: ${priorBasis && priorBasis !== "parse" ? priorBasis : "the prior reply could not be executed or parsed"}.`));
     return JSON.stringify({ verdict: "pass", summary: "Pass", approvalDetails: { reason: "Proven", evidence: [] }, confidence: 1 });
   } };
   const engine = new WorkflowEngine(store, () => {}, { runnerFor: () => fake, resolveExecution: () => ({ runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" } }), retryBaseMs: 1 });
@@ -2259,6 +2262,7 @@ for (const priorCalls of [1, 2]) test(`restart retains Persona input and counts 
   try { await waitFor(() => ["completed", "blocked"].includes(store.getRun(`run-${id}`)?.status ?? "")); }
   finally { await engine.stop(); }
   assert.equal(calls, 2 - priorCalls);
+  assert.equal(store.getRun(`run-${id}`)?.status, priorCalls === 1 ? "completed" : "blocked");
   assert.equal(store.personaOperationCalls(input.operationId), 2);
   assert.deepEqual(store.getAttempt(`attempt-${id}`)?.reviewInput, input);
   for (const row of store.listAttempts(`submission-${id}`).filter((a) => a.persona)) {

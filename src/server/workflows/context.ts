@@ -191,6 +191,8 @@ function boundedFeedback(items: PersonaFeedbackSummary[]): PersonaFeedbackSummar
     }
     out.push({ ...item, summary, requestedChanges });
   }
+  // Spend the budget newest-first, then present the retained history in its original order.
+  out.reverse();
   if (out[0] && items.length > out.length) out[0].omittedBefore = items.length - out.length;
   return out;
 }

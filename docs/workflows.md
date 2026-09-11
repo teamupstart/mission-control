@@ -2215,6 +2215,15 @@ and `-shm` files when present. Run and version exports are portable audit artifa
 restore format. Restore the SQLite files only into a stopped daemon using the same or a newer
 Mission Control build.
 
+Evidence recovery adds a durable `evidence_recovery` refinement reason, and the larger text
+budget permits snapshots older builds cannot parse. Upgrade by stopping the old daemon before
+starting the new build; state ownership prevents overlapping daemons. To downgrade after writing
+new recovery or larger-evidence snapshots, stop Mission Control and restore an offline backup
+taken before the upgrade, then start the matching older build. Do not open the upgraded database
+with that build or relabel recovery rows as author refinements. A downgrade loses history recorded
+after the backup; retain exports for audit before restoring. Settings-only backups do not restore
+workflow history.
+
 ### Canvas and accessibility controls
 
 Palette buttons add a node at the current viewport center; pointer drag remains available.

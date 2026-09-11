@@ -858,6 +858,33 @@ retype remains an accepted instruction even if the transcript still labels the e
 as automation. Accepted pending revisions and recorded steering survive restarts. Amendments,
 replacements and unclear instructions are not steering. No historical steering is backfilled.
 
+Creating a run also CLASSIFIES the ask it just froze, in the same transaction, so no run can
+exist without a verdict. The verdict is one of `automation` (the ask matches a payload Mission
+Control types itself - a repair packet, an evidence-preflight packet, a Foreman recovery nudge,
+a wrap-up instruction, an SDK restart continuation), `implausible` (under 24 characters, too
+short to name a subject and a state of doneness), `unreconciled` (an instruction the session
+already accepted is still waiting for the goal refiner, so it may yet replace this objective),
+or `objective` for an ask that tripped nothing. The checks overlap, so the verdict is the
+highest-precedence match in that order and the recorded reason names every check that matched.
+The opening ask of a session is never `unreconciled` on its own account: it becomes the
+objective without the refiner's help.
+
+**The verdict reports and never blocks.** A run whose ask looks wrong still starts, reviews and
+finishes, and the operator decides what to do about it. A non-`objective` verdict appends one
+`run_intent_classified` event at the freeze and draws a badge beside the review contract in run
+detail, with the full reason as the badge's accessible name; `objective` draws nothing, because
+a badge on every healthy run is a badge nobody reads. No existing run is reclassified - a run
+frozen before this existed carries no verdict, which reads as "never measured" rather than as
+healthy.
+
+The `automation` check is deliberately not made redundant by the authorship rule that keeps
+[Mission Control's own turns out of the Goal](sessions.md). That rule works on who delivered a
+turn, spends its recognition on one echo, and holds it in memory; a daemon restart landing
+between a delivery and its echo lets that one turn through as though a human typed it. This
+check works on the text instead, so it still sees a machine-authored ask that arrived by a path
+authorship did not cover, and it is what would make a regression in that rule visible on a
+screen rather than only in a query.
+
 The session Goal stays live and keeps being displayed as the conversation's current objective.
 Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent
 is frozen. Later human input does not amend the frozen ask; an ask that genuinely changed needs

@@ -16,6 +16,7 @@ import type {
   WorkflowEvidenceReadinessStatus,
   WorkflowGateSummary,
   WorkflowEvent,
+  WorkflowGoalProvenanceVerdict,
   WorkflowGateWaitReason,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
@@ -1369,6 +1370,17 @@ export interface RunRecordIntentSummary {
   rawGoalCharacters: number;
   hasOpeningAsk: boolean;
   openingAskCharacters: number;
+  /**
+   * The freeze-time goal-provenance verdict, or null for a run nobody classified.
+   *
+   * Null and `objective` are different answers and the pane draws neither, so the distinction
+   * only matters to a reader of this model - but it is the distinction the column exists to
+   * keep: `objective` is a run that was measured and found healthy, null is a run created
+   * before there was anything to measure it with.
+   */
+  provenanceVerdict: WorkflowGoalProvenanceVerdict | null;
+  /** The sentence naming every check that matched, shown as the badge's accessible name. */
+  provenanceReason: string | null;
   decisionCount: number;
   /** Total characters across every decision body and rationale - the block this phase bounds. */
   decisionCharacters: number;
@@ -1527,6 +1539,11 @@ export function runRecordSummary(
       rawGoalCharacters: context?.primaryGoal.rawPrompt.length ?? 0,
       hasOpeningAsk: Boolean(context?.primaryGoal.openingAsk),
       openingAskCharacters: context?.primaryGoal.openingAsk?.length ?? 0,
+      // Off the RUN, not off the round's captured context. The verdict describes one freeze at
+      // run creation, so every round of the run reports the same one and a scrubbed-to round
+      // does not appear to have been classified separately.
+      provenanceVerdict: detail.run.intentProvenance?.verdict ?? null,
+      provenanceReason: detail.run.intentProvenance?.reason ?? null,
       decisionCount: decisions.length,
       decisionCharacters: decisions.reduce(
         (total, decision) => total + decision.decision.length + (decision.rationale?.length ?? 0),

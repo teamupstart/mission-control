@@ -308,11 +308,31 @@ test("the Completion tab folds the gate and the Foreman claims into one pane", a
   await expect(detail).toContainText(RESOLVED_BODY);
   await expect(detail).toContainText("fingerprint-resolved");
   await shoot(dashboard, pane, "02-finding-expanded");
+  // Hide closes it again rather than leaving the only way out a click on another row.
+  await rows.filter({ hasText: RESOLVED_FINDING }).getByRole("button", { name: "Hide finding" })
+    .click();
+  await expect(pane.locator("tr.wf-run-ledger-detail")).toHaveCount(0);
+  await expect(pane).not.toContainText(RESOLVED_BODY);
+
   // And the LEGACY arm, for a row whose detail was never persisted, rather than an empty panel.
   await rows.filter({ hasText: "swallows all errors" })
     .getByRole("button", { name: "Show finding" }).click();
   await expect(pane.locator("tr.wf-run-ledger-detail"))
     .toContainText("Legacy finding: detail was not persisted");
+
+  // The UNRESOLVED row opens too, and it does not print its body a second time: the body is
+  // already on screen under the row, so the disclosure carries only the audit fields.
+  await rows.filter({ hasText: OPEN_FINDING }).getByRole("button", { name: "Show finding" })
+    .click();
+  const openDetail = pane.locator("tr.wf-run-ledger-detail");
+  await expect(openDetail).toHaveCount(1);
+  await expect(openDetail).toContainText("fingerprint-open");
+  await expect(openDetail).toContainText("Recorded");
+  await expect(openDetail).not.toContainText("Past two hops the comparison is on the carried row");
+  // Once, in the alert row above it, where it has been all along.
+  await expect(
+    pane.getByText("Past two hops the comparison is on the carried row rather than its source."),
+  ).toHaveCount(1);
 
   // FIVE PARAGRAPHS BECAME FIVE ROWS, with one sentence counting the states so nobody has to
   // read five restatements of one completion to learn there was one.

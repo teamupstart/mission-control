@@ -459,6 +459,23 @@ const paneOf = (html: string): string => {
   return html.slice(start, end === -1 ? undefined : end);
 };
 
+/**
+ * A gate ledger's fields, asserted as `<dt>`-and-`<dd>` PAIRS.
+ *
+ * Pairs rather than "the word is on the page somewhere", because every fallback in this ledger
+ * is one of a handful of phrases - "not observed", "not reviewed", "none" - and half a dozen
+ * fields share them. A fallback landing under the wrong label would pass every looser check.
+ */
+const assertLedgerFacts = (pane: string, facts: readonly (readonly [string, string])[]): void => {
+  for (const [label, value] of facts) {
+    assert.match(
+      pane,
+      new RegExp(`<dt>${label}</dt><dd>${value}`),
+      `the ledger did not print ${label} as ${value}`,
+    );
+  }
+};
+
 /** Every identity the published graph carries. None of them may reach the screen. */
 const GRAPH_IDS = [...Object.values(NODE), ...Object.values(EDGE)];
 
@@ -2154,6 +2171,139 @@ test("below the round scrubber the page is the scrubber, the bands, the tabs, th
   assert.ok(tabs < calls);
 });
 
+/**
+ * The gate BEFORE anything has been adopted, which is most of a gated run's life.
+ *
+ * Every field in this ledger is a `??` away from a sentence saying the fact is not known yet,
+ * and until now not one of those arms had a test: the fixtures all carried a fully adopted pull
+ * request, so the pane was only ever asserted in its best case. A gate is entered before a pull
+ * request exists, and what it prints then is the thing an operator reads while they wait.
+ */
+test("a gate with nothing adopted names every fact it does not have yet", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_pr", gate: "waiting_pr", gatePrNumber: null },
+    run: { ...base.run, status: "waiting_for_pr", currentPhase: "waiting_for_pr" },
+    inspectorGate: {
+      state: {
+        prKey: null,
+        prUrl: null,
+        targetHeadSha: null,
+        failedHeadSha: null,
+        enteredAt: 5,
+        lastObservedAt: null,
+        observedHeadSha: null,
+        reviewPosture: null,
+        waitReason: "missing_pr",
+        findingFingerprints: [],
+      },
+      inspector: { enabled: false, mode: "live", posture: null },
+      inspection: null,
+      findings: [],
+    },
+  } as WorkflowRunDetail, { pane: "completion" });
+  const pane = paneOf(html);
+
+  // The strip says what it does not know rather than printing a zero that reads as a fact.
+  assert.match(pane, /<span class="wf-run-stat-key">Pull request<\/span><strong class="wf-run-stat-value">not resolved<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Inspector round<\/span><strong class="wf-run-stat-value">not adopted<\/strong>/);
+  // Waiting is neither ok nor alert: the gate has not failed, it has not been reached.
+  assert.match(pane, /<span class="wf-run-stat-key">Gate<\/span><strong class="wf-run-stat-value">Waiting for a PR<\/strong>/);
+  assert.doesNotMatch(pane, /wf-run-stat-value is-alert/);
+
+  // And the ledger, field by field. `<dt>` and `<dd>` together, so a fallback landing under the
+  // wrong label would fail rather than pass on the word being somewhere on the page.
+  assertLedgerFacts(pane, [
+    ["Pull request", "not resolved"],
+    ["Adopted provenance", "not adopted"],
+    ["GitHub Inspector", "disabled · unknown posture"],
+    ["Review round", "0"],
+    ["Target head", "<code>not pinned</code>"],
+    ["Observed head", "<code>not observed</code>"],
+    ["Reviewed head", "<code>not reviewed</code>"],
+    ["Observed", "waiting for post-entry observation"],
+    ["Backoff", "none"],
+  ]);
+  // No adopted pull request means no link to one, and no findings means the empty sentence
+  // rather than a table with no rows in it.
+  assert.doesNotMatch(pane, /<a href[^>]*>#/);
+  assert.match(pane, /No findings are recorded for this adopted pull request\./);
+  assert.doesNotMatch(pane, /wf-run-finding-row/);
+  // A version with no Inspector completion policy still states the policy, as its defaults.
+  assert.match(pane, /Findings policy: <strong>none<\/strong> · Missing PR: <strong>wait<\/strong>/);
+});
+
+/** A gate that PASSED reads green, which is the one arm the failing fixtures cannot reach. */
+test("a clean gate reads green in the strip and carries the observed pull request state", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "completed", gate: "clean", gatePrNumber: 91 },
+    run: { ...base.run, status: "completed", currentPhase: "completed" },
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: "https://github.com/owner/repo/pull/91",
+        targetHeadSha: "cleanhead0123456789",
+        failedHeadSha: null,
+        enteredAt: 5,
+        lastObservedAt: 6,
+        observedHeadSha: "cleanhead0123456789",
+        reviewPosture: "live",
+        waitReason: null,
+        findingFingerprints: [],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: {
+        key: "owner/repo#91",
+        number: 91,
+        source: "pipeline",
+        state: "open",
+        observedState: "MERGED",
+        observedHeadSha: "cleanhead0123456789",
+        headSha: "cleanhead0123456789",
+        reviewPosture: "live",
+        round: 2,
+        lastError: null,
+        nextAttemptAt: null,
+        openFindings: 0,
+        resolvedFindings: 0,
+      } as never,
+      findings: [{
+        id: "resolved-only",
+        prKey: "owner/repo#91",
+        fingerprint: "resolved-only",
+        path: null,
+        line: null,
+        title: "Everything here was answered",
+        body: "Resolved before the gate passed.",
+        severity: "nit",
+        round: 1,
+        status: "resolved",
+        replies: 0,
+        answeredCommentId: null,
+        createdAt: 5,
+        updatedAt: 6,
+      }],
+    },
+  } as WorkflowRunDetail, { pane: "completion" });
+  const pane = paneOf(html);
+
+  assert.match(pane, /<span class="wf-run-stat-key">Gate<\/span><strong class="wf-run-stat-value is-ok">Clean<\/strong>/);
+  // The pull request carries the state the Inspector OBSERVED, lowercased beside its number.
+  assert.match(pane, /<span class="wf-run-stat-key">Pull request<\/span><strong class="wf-run-stat-value">#91 merged<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Inspector round<\/span><strong class="wf-run-stat-value">2<\/strong>/);
+  assert.match(pane, /<dt>Adopted provenance<\/dt><dd>pipeline/);
+  // A finding with no path is "general" rather than an empty cell, and nothing is blocking, so
+  // its body stays behind the row's own control.
+  assert.match(pane, /<code>general<\/code>/);
+  assert.doesNotMatch(pane, /wf-run-ledger-alert/);
+  assert.doesNotMatch(pane, /Resolved before the gate passed\./);
+  // Nothing stops this run, so the tab carries no badge at all.
+  assert.doesNotMatch(html, /id="run-record-tab-completion"[^>]*>Completion<span class="workflow-tab-badge"/);
+});
+
 test("a spent gate separates its historical observation from a clean current Inspector ledger", () => {
   const base = runningDetail();
   const currentHead = "cleanhead0123456789";
@@ -2275,6 +2425,95 @@ test("a spent gate separates its historical observation from a clean current Ins
   assert.match(pane, /Clean head ready/);
   assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Adopt clean Inspector head</);
   assert.doesNotMatch(html, /Recheck GitHub Inspector/);
+});
+
+/**
+ * The spent gate's OTHER half: a workflow that stopped and a current ledger that cannot answer.
+ *
+ * `spentInspectorGateCondition` fails closed on missing or contradictory evidence, and the
+ * two-ledger shape is what it fails closed INTO - so the historical card is drawn beside a
+ * current card whose every field is unknown. That is the case an operator sees when the
+ * Inspector never adopted the pull request the workflow stopped on, and every sentence in it
+ * was previously untested: the fixtures all carried a complete inspection.
+ *
+ * The historical fingerprint here deliberately names no row in the current ledger, which is the
+ * one thing that list exists to survive: a finding the workflow stopped on can be gone from the
+ * Inspector's own records, and the ledger says so instead of rendering an empty line.
+ */
+test("a spent gate with no current inspection says so in every field rather than going blank", () => {
+  const base = runningDetail();
+  const inspectorOnly = submission("submission-unavailable", 4, {
+    mode: "inspector_only",
+    prHeadSha: "failedhead0123456789",
+    status: "completed",
+    completedAt: 8,
+  });
+  const html = render({
+    ...base,
+    summary: {
+      ...base.summary,
+      status: "blocked",
+      round: 4,
+      maxRepairRounds: 3,
+      gate: "blocked",
+      gatePrNumber: null,
+    },
+    run: { ...base.run, status: "blocked", currentPhase: "round_limit", maxRepairRounds: 3 },
+    submissions: [...base.submissions, inspectorOnly],
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: null,
+        targetHeadSha: "failedhead0123456789",
+        failedHeadSha: null,
+        enteredAt: 7,
+        lastObservedAt: null,
+        observedHeadSha: null,
+        reviewPosture: "live",
+        waitReason: "review_pending",
+        findingFingerprints: ["fingerprint-the-inspector-forgot"],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: null,
+      findings: [],
+    },
+  } as WorkflowRunDetail, { pane: "completion" });
+  const pane = paneOf(html);
+
+  // Both cards are drawn, because the reconciliation failed closed rather than being absent.
+  assert.match(pane, /aria-label="Last workflow observation"/);
+  assert.match(pane, /aria-label="Current Inspector"/);
+  assert.match(pane, /last workflow observation and current Inspector, 16 facts/);
+  assert.match(pane, /Current Inspector evidence is unavailable for this stopped workflow\./);
+
+  // The historical card: no link without a url, the TARGET head standing in for a failed head
+  // that was never pinned, and no observation yet.
+  assert.match(pane, /<dt>Pull request<\/dt><dd>not resolved/);
+  assert.doesNotMatch(pane, /<a href[^>]*>#/);
+  assert.match(pane, /<dt>Failed head<\/dt><dd><code>failedhead01<\/code>/);
+  assert.match(pane, /<dt>Observed head<\/dt><dd><code>not observed<\/code>/);
+  assert.match(pane, /<dt>Observed<\/dt><dd>waiting for post-entry observation/);
+  // The fingerprint the workflow stopped on is no longer a row the Inspector holds, and the
+  // ledger keeps the fingerprint and says what happened to it.
+  assert.match(pane, /aria-label="Historical finding fingerprints"/);
+  assert.match(pane, /Finding not present in current ledger/);
+  assert.match(pane, /fingerprint-the-inspector-forgot/);
+
+  // The current card: every field unknown, and each one says which kind of unknown it is.
+  assertLedgerFacts(pane, [
+    ["Adopted provenance", "not adopted"],
+    ["Review posture", "not reviewed"],
+    ["Review round", "0"],
+    ["Observed head", "<code>not observed</code>"],
+    ["Reviewed head", "<code>not reviewed</code>"],
+    ["Pull request state", "not observed"],
+    ["Open findings", "unknown"],
+    ["Resolved findings", "unknown"],
+    ["Backoff", "none"],
+  ]);
+  // The strip counts the ROWS, and there are none - not the tallies, which are unknown here.
+  assert.match(pane, /<span class="wf-run-stat-key">Open findings<\/span><strong class="wf-run-stat-value">0<\/strong>/);
+  assert.match(pane, /No findings are recorded for this adopted pull request\./);
 });
 
 test("scrubbing to an earlier round never withdraws a live recovery action", () => {

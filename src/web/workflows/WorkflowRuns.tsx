@@ -3107,7 +3107,9 @@ function CompletionPane({
               </div>
             ))}
           </div>
-          {summary.claimSentence && <p className="wf-run-meta">{summary.claimSentence}</p>}
+          {/* Unguarded: `claimSentence` is null only when there are no claims, and this whole
+              block is inside the test for that. A guard here was a branch nothing could take. */}
+          <p className="wf-run-meta">{summary.claimSentence}</p>
           {/* One sentence per STATE present, not per claim. `completionClaimOutcome` gives
               every claim a sentence and the card printed it on each one, so four claims sharing
               a state printed one identical sentence four times. It is a fact about the state,

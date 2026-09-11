@@ -32,6 +32,7 @@ import { resolveEvaluatorExecution } from "./ensembles/reviews/execution.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
+import { getForemanConfig } from "./foreman/config.ts";
 import { startPoller } from "./discovery/poller.ts";
 import {
   defaultRetentionCleanupDeps,
@@ -305,6 +306,7 @@ const worktreeOperations = new WorktreeOperationsService(worktrees, {
 // other's store. The guard hands back only a reason string or null.
 let ensembles: EnsembleManager;
 const workflows = new WorkflowManager(registry, personas.store, {
+  trackCiFailures: () => getForemanConfig().trackCiFailures,
   queueManager: queues,
   reviewScheduler,
   checkScheduler,

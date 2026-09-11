@@ -37,6 +37,7 @@ const { SESSION_ACTION_ADAPTERS, sessionActionAdapter, sessionActionCapabilities
   await import("../src/server/workflows/session-action-adapters.ts");
 const { renderSessionAction } = await import("../src/server/workflows/feedback.ts");
 const { executionAuthorizationContract } = await import("../src/server/execution-authorization.ts");
+const { workflowPullRequestCiContract } = await import("../src/server/workflows/agent-contract.ts");
 
 const db = openDb();
 const store = new WorkflowStore(db, [], [], []);
@@ -326,6 +327,18 @@ test("only a session_action delivery names an attempt, and it must name one", ()
     parseWorkflowDeliveryRow(deliveryRow({ kind: "pr_handoff", node_attempt_id: null })).nodeAttemptId,
     null,
   );
+});
+
+test("action deliveries retain their complete packet budget without enlarging other deliveries", () => {
+  for (const kind of ["session_action", "pr_handoff"] as const) {
+    const limit = kind === "session_action"
+      ? WORKFLOW_LIMITS.sessionActionPacketBytes
+      : WORKFLOW_LIMITS.eventPayloadBytes;
+    const row = deliveryRow({ kind, node_attempt_id: kind === "session_action" ? "a1" : null });
+    const payload = "x".repeat(limit);
+    assert.equal(parseWorkflowDeliveryRow({ ...row, payload }).payload, payload);
+    assert.throws(() => parseWorkflowDeliveryRow({ ...row, payload: `${payload}x` }), WorkflowRowError);
+  }
 });
 
 // ---- the continuation transaction ----------------------------------------------------------
@@ -631,13 +644,15 @@ test("what may be authored is derived from what can be delivered, not chosen bes
     WORKFLOW_LIMITS.sessionActionPacketBytes - WORKFLOW_LIMITS.sessionActionEnvelopeBytes,
   );
   // The envelope allowance really does cover everything wrapped around the prompt.
-  const envelope = WORKFLOW_LIMITS.sessionActionName
+  const envelope = 3 * (WORKFLOW_LIMITS.sessionActionName
     + WORKFLOW_LIMITS.workflowName
     + WORKFLOW_LIMITS.sessionActionSkillId
+    + WORKFLOW_LIMITS.checkRepoRoot)
     + Buffer.byteLength(executionAuthorizationContract({
       workflowEvidence: true,
       workflowContinuation: true,
     }), "utf8")
+    + Buffer.byteLength(workflowPullRequestCiContract(), "utf8")
     + 200; // run id, version, labels and newlines
   assert.ok(
     envelope < WORKFLOW_LIMITS.sessionActionEnvelopeBytes,

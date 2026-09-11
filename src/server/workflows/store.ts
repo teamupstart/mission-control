@@ -2069,7 +2069,10 @@ const DELIVERY_RUN_STATUS: Partial<Record<WorkflowDeliveryKind, WorkflowRun["sta
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
   const row = parseShape("workflow_deliveries", WorkflowDeliveryRowSchema, value);
-  if (utf8.encode(row.payload).byteLength > WORKFLOW_LIMITS.eventPayloadBytes) {
+  const payloadLimit = row.kind === "session_action"
+    ? WORKFLOW_LIMITS.sessionActionPacketBytes
+    : WORKFLOW_LIMITS.eventPayloadBytes;
+  if (utf8.encode(row.payload).byteLength > payloadLimit) {
     throw new WorkflowRowError("workflow_deliveries", row.id, "payload exceeds the delivery limit");
   }
   // The link is required for an action and refused for everything else. Stated as one

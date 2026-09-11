@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CODEX_PRICE_VERSION, estimateStandardApiUsage } from "../src/server/harness/codex/pricing.ts";
+import { CODEX_PRICE_VERSION, estimateStandardApiUsage, STANDARD_TOKEN_PRICES } from "../src/server/harness/codex/pricing.ts";
 import { MODEL_CATALOG } from "../src/shared/model.ts";
 import { claudeRunner } from "../src/server/llm/claude.ts";
 import type { HarnessUsageEvent } from "../src/server/harness/types.ts";
@@ -119,4 +119,15 @@ test("Pro, chat, and legacy models use their published rates without inventing c
   }
   assert.equal(estimateStandardApiUsage(usage("gpt-5.4-pro")), null,
     "a cache tier with no published rate cannot be valued as free");
+});
+
+
+test("models without published cache rates decline both cache reads and first-turn writes", () => {
+  for (const [id, price] of Object.entries(STANDARD_TOKEN_PRICES)) {
+    if (price.cachedInputPerM !== null) continue;
+    for (const [cacheRead, cacheWrite] of [[1, 0], [0, 1], [1, 1]]) {
+      assert.equal(estimateStandardApiUsage(usage(id, { cacheRead, cacheWrite })), null, id);
+    }
+    assert.ok(estimateStandardApiUsage(usage(id, { cacheRead: 0, cacheWrite: 0 })), id);
+  }
 });

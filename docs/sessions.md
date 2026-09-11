@@ -1691,7 +1691,10 @@ published prices, including Sol's promotional rate, available at least through N
 Unknown model variants remain unpriced until their official rates are verified.
 On daemon startup, previously unpriced rollout and automation rows are valued when the
 installed snapshot now recognizes their model. Already-priced history keeps its original
-snapshot and amount, and token counts and ingestion cursors do not change. Claude models,
+snapshot and amount, and token counts and ingestion cursors do not change. Recovery failures
+are logged and retried after one minute without blocking live usage ingestion. Models without
+a published cache rate remain unpriced when either cache reads or cache writes are reported.
+Claude models,
 including dated ids and long-context variants, use Claude Code's reported cost without a
 model allowlist; a missing reported cost is never guessed.
 Claude's estimate can include provider-priced server tools such as web search; Codex

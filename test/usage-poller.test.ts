@@ -34,8 +34,8 @@ function token(ts: string): string {
 }
 
 async function eventually(check: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const until = Date.now() + timeoutMs;
-  while (Date.now() < until) {
+  const until = performance.now() + timeoutMs;
+  while (performance.now() < until) {
     if (check()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -379,6 +379,62 @@ test("starting the poller recovers Astra history even without an active rollout"
   try {
     assert.equal(sessionCostFor("old-astra-session")?.costUsd, 0.0695);
     assert.equal(usageCursorFor("old-astra-source").offset, 50);
+  } finally {
+    stop();
+  }
+});
+
+
+test("historical pricing failures do not block live usage and retries are throttled", async (t) => {
+  const { HARNESSES } = await import("../src/server/harness/index.ts");
+  const originalEstimate = HARNESSES.codex.usage!.estimate;
+  let attempts = 0;
+  let failRecovery = true;
+  t.mock.method(HARNESSES.codex.usage!, "estimate", (event: Parameters<typeof originalEstimate>[0]) => {
+    if (event.identity === "recovery-failure-request") {
+      attempts++;
+      if (failRecovery) throw new Error("historical estimator failure");
+    }
+    return originalEstimate(event);
+  });
+  const errors = t.mock.method(console, "error", () => {});
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  commitUsageRead({ sourceKey: "recovery-failure-source", noteKey: "recovery-failure-history", sessionId: null,
+    agent: "codex", cursor: { offset: 50, modelId: "gpt-6-astra", fileId: null, discardPartial: false },
+    updatedAt: now, events: [{ identity: "recovery-failure-request", ts: now, modelId: "gpt-6-astra",
+      querySource: "main", input: 1_000, output: 0, reasoningOutput: 0, cacheRead: 0,
+      cacheWrite: 0, costUsd: null, pricingVersion: "" }] });
+  const path = join(home, "recovery-failure-live.jsonl");
+  writeFileSync(path, [
+    JSON.stringify({ type: "session_meta", payload: { id: "recovery-live", cwd: "/repo" } }),
+    JSON.stringify({ type: "turn_context", payload: { model: "gpt-6-astra" } }),
+    token("2026-09-11T12:00:00.000Z"),
+  ].join("\n") + "\n");
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "recovery-live-card", agent: "codex", name: "codex", nameSource: "process", cwd: "/repo",
+    gitBranch: "main", gitRoot: null, repoRoot: null, pid: 46, tty: "ttys46", terminals: [], startedAt: 0,
+    agentSessionId: "recovery-live", transcriptPath: path,
+  }]);
+  const stop = startUsagePoller(registry);
+  try {
+    assert.equal(attempts, 1);
+    assert.equal(registry.getSession("recovery-live-card")?.cost?.input, 700);
+    appendFileSync(path, token("2026-09-11T12:01:00.000Z") + "\n");
+    await eventually(() => registry.getSession("recovery-live-card")?.cost?.input === 1_400);
+    assert.equal(attempts, 1, "ordinary live polls must not retry recovery");
+    now += 60_000;
+    appendFileSync(path, token("2026-09-11T12:02:00.000Z") + "\n");
+    await eventually(() => registry.getSession("recovery-live-card")?.cost?.input === 2_100);
+    assert.equal(attempts, 2, "persistent recovery failure must still allow live ingestion");
+    assert.equal(errors.mock.callCount(), 2);
+    assert.equal(sessionCostFor("recovery-failure-history")?.basis, "unpriced");
+    failRecovery = false;
+    now += 60_000;
+    await eventually(() => sessionCostFor("recovery-failure-history")?.costUsd === 0.01);
+    assert.equal(attempts, 3);
+    assert.equal(usageCursorFor("recovery-failure-source").offset, 50);
   } finally {
     stop();
   }

@@ -113,7 +113,7 @@ export function estimateStandardApiUsage(event: HarnessUsageEvent): PricedUsage 
   const price = Object.hasOwn(STANDARD_TOKEN_PRICES, model)
     ? STANDARD_TOKEN_PRICES[model]
     : undefined;
-  if (!price || (event.cacheRead > 0 && price.cachedInputPerM === null)) return null;
+  if (!price || ((event.cacheRead > 0 || event.cacheWrite > 0) && price.cachedInputPerM === null)) return null;
 
   const fullInput = event.input + event.cacheRead + event.cacheWrite;
   const long = price.longContextAfter !== null && fullInput > price.longContextAfter;

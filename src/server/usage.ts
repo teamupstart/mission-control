@@ -8,6 +8,7 @@ import { unref } from "./util/timers.ts";
 const USAGE_POLL_MS = Number(envVar("USAGE_POLL_MS") ?? 4000);
 const USAGE_READ_BYTES = 1024 * 1024;
 const FINAL_DRAIN_MS = 30_000;
+const PRICE_RECOVERY_RETRY_MS = 60_000;
 const SOURCE_TOUCH_MS = 24 * 60 * 60 * 1000;
 
 interface HeldSource {
@@ -39,13 +40,14 @@ export function startUsagePoller(registry: Registry): () => void {
   // lifetime; changing either value produces a new key and is the only safe reset signal.
   const rejected = new Set<string>();
   let pricesRecovered = false;
+  let nextPriceRecoveryAt = 0;
 
   const tick = (): void => {
     if (stopped) return;
     const now = Date.now();
     let more = false;
-    try {
-      if (!pricesRecovered) {
+    if (!pricesRecovered && now >= nextPriceRecoveryAt) {
+      try {
         for (const harness of allHarnesses()) {
           if (!harness.usage) continue;
           for (const key of priceUnpricedUsage(harness.id, harness.usage.estimate)) {
@@ -53,7 +55,12 @@ export function startUsagePoller(registry: Registry): () => void {
           }
         }
         pricesRecovered = true;
+      } catch (err) {
+        nextPriceRecoveryAt = now + PRICE_RECOVERY_RETRY_MS;
+        console.error("[usage] historical pricing recovery failed:", err);
       }
+    }
+    try {
       for (const session of registry.liveSessions()) {
         const usage = usageFor(session);
         const transcript = transcriptFor(session);

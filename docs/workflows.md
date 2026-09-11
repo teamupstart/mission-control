@@ -988,9 +988,10 @@ One round may spend at most two consecutive `evidence_preflight` refinements. A 
 session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
 the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
 submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
-alone. The waiting submission stays waiting, so the run detail keeps showing the evidence-readiness
-decision panel and the operator can still continue despite gaps from the block; the retry control is
-withdrawn with the loop it would restart. Resubmitting the run opens an ordinary new round instead.
+alone. The waiting submission stays waiting, so the run record opens on its **Evidence** tab with the
+readiness decision on screen, and the operator can still continue despite gaps from the block; the
+retry control is withdrawn with the loop it would restart. Resubmitting the run opens an ordinary
+new round instead.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another
@@ -1108,13 +1109,27 @@ SessionAction ids beside the older human-facing Persona names and Action wait re
 resolve same-name shadows and identify one action stage exactly; the browser never fetches every
 workflow to reconstruct either answer.
 
-Each submission in run detail has its own image-evidence ledger. It records the thumbnail,
-caption, repository scope, full sha256 digest, byte size, MIME type, and whether the retained
-body still exists. Image bodies load lazily through the authenticated dashboard route and the
-browser releases their object URLs when the ledger leaves the page. Retention cleanup changes
-the body to **Pruned** without erasing the metadata or digest that explains what reviewers saw.
-A retained image offers **Use in next review**, which stages a fresh immutable copy in the
-binding's composer. A pruned image keeps its audit record but cannot be reused.
+Each submission in run detail has its own evidence record, and the run record's **Evidence** tab
+is where it reads. A stat strip carries the readiness verdict, the frozen author claims, every
+canonical criterion left with an unresolved gap, its warnings and the image count. A gap is
+reported once, in the place that can act on it: against a criterion the reconciliation matched to
+an author claim it prints on that claim's row, and against a criterion it matched to nothing it
+gets a named block of its own, because there is no row for it to sit under. The **Gaps** figure
+counts both, so it is not the length of that block. Frozen images are a thumbnail strip above the
+claims, and a claim row that cites one carries a small copy of it, so a screenshot sits beside the
+claim it proves. Clicking a thumbnail opens it full size,
+with its caption, item id, repository scope, MIME type, byte size, availability and full sha256
+digest, plus **Use in next review**, which stages a fresh immutable copy in the binding's composer.
+Image bodies load lazily through the authenticated dashboard route - one request per image whatever
+draws it - and the browser releases their object URLs when the pane leaves the page. Retention
+cleanup changes the body to **Pruned** without erasing the metadata or digest that explains what
+reviewers saw; a pruned image keeps its audit record but cannot be reused.
+
+An image is tied to the claim citing it through the reconciliation's own evidence links, which are
+the only place the browser is sent both the author's public item id and the daemon's frozen image
+id. A submission whose reconciliation resolved neither - one that came back `unavailable`, or a
+claim no canonical criterion matched - shows its images without an item id and without a "cited by"
+line rather than guessing at one.
 
 ### Watching a run
 

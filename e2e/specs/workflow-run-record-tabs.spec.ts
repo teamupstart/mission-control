@@ -460,8 +460,13 @@ test("a run with nothing blocking opens on the worklist, and offers no empty tab
   const bar = dashboard.getByRole("tablist", { name: "Run record" });
   await expect(bar).toBeVisible({ timeout: 30_000 });
   await expect(tab(dashboard, /^Review worklist/)).toHaveAttribute("aria-selected", "true");
-  await expect(bar.getByRole("tab")).toHaveCount(2);
+  // Three, not four: this run sent no packets, so Deliveries is absent. Evidence is offered on
+  // every round that has a submission - a round that froze nothing still has an answer to what
+  // it proved, and "nothing was frozen for this submission" is that answer rather than a
+  // missing tab.
+  await expect(bar.getByRole("tab")).toHaveCount(3);
   await expect(tab(dashboard, /^Deliveries/)).toHaveCount(0);
+  await expect(tab(dashboard, /^Evidence$/)).toBeVisible();
   // No count on a clean worklist either: this label answers "is anything still being asked
   // for", and a bare `0` on it reads as "no reviewers".
   await expect(tab(dashboard, /^Review worklist$/)).toBeVisible();

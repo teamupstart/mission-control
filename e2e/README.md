@@ -2051,6 +2051,20 @@ manual check.
 
 ## Pi installation and terminal dispatch
 
+`specs/pi-interrupt-conversation.spec.ts` covers empty and partial aborted responses in both
+conversation views on the managed Pi runtime. `specs/pi-interrupt-terminal.spec.ts` runs the
+pinned Pi TUI in a test-owned tmux pane against a deterministic loopback provider, interrupts
+from the dashboard and directly in the pane, and checks that the conversation survives a
+reload and accepts another turn. Both use no external model requests. Successful screenshots
+with `MC_E2E_EVIDENCE=1` land in `e2e/.artifacts/pi-interrupt-conversation/`.
+
+`specs/pi-interrupt-herdr.spec.ts` covers the real Pi and Herdr combination. It starts a
+headless Herdr server in a disposable config root, runs the pinned Pi TUI against a local
+provider, interrupts through the dashboard, reloads the conversation, and sends a follow-up.
+Opt in with `MC_E2E_REAL_HERDR_BIN=/absolute/path/to/herdr`; the case skips when that variable
+is absent. With `MC_E2E_EVIDENCE=1`, the rendered proof is
+`e2e/.artifacts/pi-interrupt-conversation/real-pi-herdr.png`.
+
 `specs/pi-extension-setup.spec.ts` exercises the first-install action and report-only warning
 row. Its terminal proof enables discovery but addresses only its own dispatched task and tmux
 home. `fixtures/fake-pi-plan.mjs` retains the catalog fake, then runs the pinned Pi CLI against

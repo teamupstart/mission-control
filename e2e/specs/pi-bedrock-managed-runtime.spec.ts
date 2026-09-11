@@ -31,7 +31,7 @@ import { launchedCommand } from "../fixtures/isolated-launch.ts";
  *
  * Everything else is real: the real adapter, the real supervisor, the real registry, the
  * real SQLite row, the real SSE stream, and Pi's real JSONL transcript format read back by
- * the real `piToMessage`.
+ * the real `piToMessages`.
  */
 
 const EVIDENCE = artifactsDir("pi-bedrock-managed-runtime");

@@ -14,7 +14,7 @@
  * format, and a stream of session events.
  *
  * The transcript matters as much as the events. Mission Control reads a Pi conversation off
- * `~/.pi/agent/sessions/--<encoded cwd>--/<ts>_<uuid>.jsonl` with `piToMessage`, on both
+ * `~/.pi/agent/sessions/--<encoded cwd>--/<ts>_<uuid>.jsonl` with `piToMessages`, on both
  * runtimes, so a fake that emitted events without writing the file would show a card with a
  * working session and an empty conversation - and the spec would be asserting on nothing.
  *
@@ -107,7 +107,7 @@ class FakeSession {
     appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
   }
 
-  /** One conversation turn, in the record shape `piToMessage` reads back. */
+  /** One conversation turn, in the record shape `piToMessages` reads back. */
   writeMessage(role, text, extra = {}) {
     this.append({
       type: "message",
@@ -177,6 +177,7 @@ class FakeSession {
     this.emit({ type: "turn_start" });
     this.emit({ type: "message_start" });
     if (/SLOWLY/.test(text)) {
+      this.partialReply = /PARTIAL/.test(text) ? "Pi response before interruption" : "";
       this.emit({
         type: "tool_execution_start",
         toolCallId: "slow-1",
@@ -190,9 +191,10 @@ class FakeSession {
 
   settleWith(text, aborted = false) {
     const reply = aborted
-      ? "Operation aborted"
+      ? this.partialReply ?? ""
       : `pi answered: ${[text, this.steered].filter(Boolean).join(" + ")}`;
     this.steered = undefined;
+    this.partialReply = undefined;
     const usage = {
       input: 120,
       output: 24,

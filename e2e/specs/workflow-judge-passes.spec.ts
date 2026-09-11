@@ -16,10 +16,10 @@ async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promi
   if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`);
   return await response.json() as T;
 }
-async function shoot(page: Page, name: string): Promise<void> {
+async function shoot(page: Page, name: string, keepHover = false): Promise<void> {
   if (!process.env.MC_E2E_EVIDENCE) return;
   mkdirSync(EVIDENCE, { recursive: true });
-  await page.mouse.move(0, 0);
+  if (!keepHover) await page.mouse.move(0, 0);
   await page.screenshot({ path: `${EVIDENCE}${name}.png` });
 }
 
@@ -36,6 +36,12 @@ test("judge-pass checkbox defaults on, persists changes, and leads the reordered
   expect(boxes[0]!.y + boxes[0]!.height).toBeLessThan(boxes[1]!.y);
   expect(boxes[1]!.y + boxes[1]!.height).toBeLessThan(boxes[2]!.y);
   await expect(repositories.getByRole("button", { name: /Manage in Trust/ })).toBeVisible();
+  await checkbox.hover();
+  await expect(dashboard.locator(".tooltip")).toHaveText(
+    "Keep earned judge passes across repair rounds. Turn off to review every judge again.",
+  );
+  await expect(dashboard.locator(".tooltip")).toBeVisible();
+  await shoot(dashboard, "settings-tooltip", true);
   await shoot(dashboard, "settings-default");
   await checkbox.uncheck();
   await expect.poll(async () => (await api<WorkflowConfig>(daemon, "/api/workflows/config")).skipPassedJudges).toBe(false);
@@ -46,8 +52,15 @@ test("judge-pass checkbox defaults on, persists changes, and leads the reordered
   await expect.poll(async () => (await api<WorkflowConfig>(daemon, "/api/workflows/config")).skipPassedJudges).toBe(true);
 });
 
-for (const enabled of [true, false]) {
-  test(`repair rounds ${enabled ? "skip the passed judge" : "rerun judges when unchecked"}`, async ({ dashboard, daemon }) => {
+for (const { enabled, changedFeedback } of [
+  { enabled: true, changedFeedback: false },
+  { enabled: false, changedFeedback: false },
+  { enabled: true, changedFeedback: true },
+]) {
+  const reuse = enabled && !changedFeedback;
+  const behavior = changedFeedback ? "rerun a passed judge after changed feedback"
+    : enabled ? "skip the passed judge" : "rerun judges when unchecked";
+  test(`repair rounds ${behavior}`, async ({ dashboard, daemon }) => {
     await dashboard.goto(`${daemon.baseURL}/#/settings/workflows`);
     const checkbox = dashboard.getByRole("checkbox", { name: "Skip judges that already passed" });
     await expect(checkbox).toBeEnabled();
@@ -99,6 +112,11 @@ for (const enabled of [true, false]) {
     const probe = () => api<WorkflowRunDetail>(daemon, `/api/workflow-runs/${run.id}`);
     await expect.poll(async () => (await probe()).run.status, { timeout: 40_000 }).toBe("waiting_for_session");
     const original = (await probe()).attempts.find((attempt) => attempt.nodeId === "first")!;
+    if (changedFeedback) {
+      await api(daemon, `/api/workflow-runs/${run.id}/set-persona-directive`, {
+        requestId: "recheck-first", nodeId: "first", feedback: "E2E_DIRECTIVE_PASS_VERDICT",
+      });
+    }
     await api(daemon, `/api/workflow-runs/${run.id}/set-persona-directive`, {
       requestId: "fix-second", nodeId: "second", feedback: "E2E_DIRECTIVE_PASS_VERDICT",
     });
@@ -107,15 +125,16 @@ for (const enabled of [true, false]) {
     const detail = await probe();
     const repair = detail.submissions.find((submission) => submission.round === 2)!;
     const judges = detail.attempts.filter((attempt) => attempt.submissionId === repair.id && attempt.persona);
-    expect(judges.find((attempt) => attempt.nodeId === "first")?.runner).toBe(enabled ? null : "claude");
+    expect(judges.find((attempt) => attempt.nodeId === "first")?.runner).toBe(reuse ? null : "claude");
     expect(judges.find((attempt) => attempt.nodeId === "second")?.runner).toBe("claude");
-    if (enabled) expect(judges.find((attempt) => attempt.nodeId === "first")?.output).toEqual({ outcome: "pass", reusedPassAttemptId: original.id });
+    if (reuse) expect(judges.find((attempt) => attempt.nodeId === "first")?.output).toEqual({ outcome: "pass", reusedPassAttemptId: original.id });
+    if (changedFeedback) expect(judges.find((attempt) => attempt.nodeId === "first")?.operatorDirective?.feedback).toBe("E2E_DIRECTIVE_PASS_VERDICT");
     await dashboard.setViewportSize({ width: 1800, height: 1100 });
     await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
     await expect(dashboard.getByText("Any fail returns the submission to Session for repair, then a new round starts.", { exact: true })).toBeVisible();
     const pipeline = dashboard.locator(".wf-pipeline-strip");
     const row = pipeline.locator("li.wf-pipeline-reviewer").filter({ hasText: "First judge" });
-    if (enabled) {
+    if (reuse) {
       await expect(row).toContainText("Not re-run");
       await expect(pipeline.getByRole("button", { name: /Passed in Round 1.*Show that round/ }).first()).toBeVisible();
       await shoot(dashboard, "repair-skips-passed-judge");

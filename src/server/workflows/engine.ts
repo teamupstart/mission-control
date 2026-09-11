@@ -966,7 +966,16 @@ export class WorkflowEngine {
     if (this.workflowPolicy().skipPassedJudges) {
       const prior = this.store.priorPassedJudge(run.id, node.id, submission.round);
       const parsed = PersonaVerdictSchema.safeParse(prior?.verdict);
-      if (prior && parsed.success && parsed.data.verdict === "pass") {
+      const directive = initial.operatorDirective
+        ?? run.personaDirectives?.find((item) => item.nodeId === node.id);
+      const previous = prior?.operatorDirective;
+      // New, edited, removed, or recreated feedback must reach a real provider call once.
+      // An unchanged directive can retain the pass that was earned under that instruction.
+      const sameDirective = directive?.revision === previous?.revision
+        && directive?.feedback === previous?.feedback
+        && directive?.createdAt === previous?.createdAt
+        && directive?.updatedAt === previous?.updatedAt;
+      if (prior && parsed.success && parsed.data.verdict === "pass" && sameDirective) {
         const source = this.store.getSubmission(prior.submissionId)!;
         const reason = `${node.persona.name} passed in Round ${source.round}. That pass still stands, so this judge was not re-run.`;
         this.runSkippedAttempt(initial, submission, run, version, node, {

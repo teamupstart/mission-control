@@ -2076,6 +2076,131 @@ for (const skipPassedJudges of [true, false]) {
   });
 }
 
+test("explicit rechecks supersede older passes when judge reuse is reenabled", async () => {
+  const id = "judge-pass-recheck";
+  const store = seedSubmission(id, disableGraph());
+  const calls = { claude: 0, codex: 0 };
+  let skipPassedJudges = true;
+  const options = {
+    concurrency: 3,
+    workflowPolicy: () => checkPolicy({ skipPassedJudges }),
+    resolveExecution: passingExecution,
+    runnerFor: (runner: LlmRunnerId): LlmRunner => ({
+      ...passingRunner(runner),
+      async run() {
+        const count = ++calls[runner as keyof typeof calls];
+        const pass = runner === "claude" ? count !== 2 : count === 4;
+        return JSON.stringify(pass
+          ? { verdict: "pass", summary: "Approved", approvalDetails: { reason: "Met", evidence: [] }, confidence: 1 }
+          : { verdict: "fail", summary: "Regression", requestedChanges: [{ title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
+      },
+    }),
+  };
+  let latestPassId = "";
+  for (const round of [1, 2, 3, 4]) {
+    skipPassedJudges = round !== 2;
+    const submissionId = round === 1 ? `submission-${id}` : `submission-${id}-${round}`;
+    if (round > 1) {
+      store.createRepairSubmission({
+        id: submissionId, runId: `run-${id}`, round,
+        triggerSource: "manual", triggerKey: `manual:${id}:${round}`,
+        context: {}, evidence: {}, now: 20 + round,
+      });
+      store.updateSubmissionCapture(submissionId, {
+        context: workflowJson(context), evidence: workflowJson(context.evidence),
+        fingerprint: `changed-evidence-${round}`, status: "running",
+      }, 30 + round);
+    }
+    // Reopening the engine must retain the superseding verdict as well as earned passes.
+    const engine = new WorkflowEngine(store, () => {}, options);
+    try {
+      engine.start();
+      engine.activateSubmission(submissionId);
+      await waitFor(() => store.getRun(`run-${id}`)?.status ===
+        (round === 4 ? "completed" : "waiting_for_session"));
+      const attempt = store.latestAttemptForNode(submissionId, "p1")!;
+      assert.equal(attempt.runner, round === 4 ? null : "claude", `round ${round}`);
+      if (round === 2) assert.equal(store.priorPassedJudge(`run-${id}`, "p1", 3), null);
+      if (round === 3) latestPassId = attempt.id;
+      if (round === 4) {
+        assert.deepEqual(attempt.output, { outcome: "pass", reusedPassAttemptId: latestPassId });
+      }
+    } finally {
+      await engine.stop();
+    }
+  }
+  assert.deepEqual(calls, { claude: 3, codex: 4 });
+});
+
+for (const change of ["added", "edited", "removed", "recreated"] as const) {
+  test(`directive changes invalidate a prior judge pass: ${change}`, async () => {
+    const id = `judge-pass-directive-${change}`;
+    const store = seedSubmission(id, disableGraph());
+    const reviewed: string[] = [];
+    const prompts: string[] = [];
+    const setDirective = (feedback: string, now: number) => store.setRunPersonaDirective(
+      `run-${id}`, "p1", feedback,
+      { kind: "persona_directive_set", payload: { nodeId: "p1" } }, now,
+    );
+    const removeDirective = () => store.removeRunPersonaDirective(
+      `run-${id}`, "p1",
+      { kind: "persona_directive_removed", payload: { nodeId: "p1" } }, 10,
+    );
+    if (change !== "added") setDirective("FIRST_OPERATOR_DIRECTIVE", 4);
+    let earnedPassId = "";
+    for (const round of [1, 2, 3]) {
+      if (round === 2) {
+        if (change === "removed" || change === "recreated") removeDirective();
+        if (change !== "removed") {
+          // Recreating identical text resets revision to 1, but is still a new instruction.
+          setDirective(change === "recreated" ? "FIRST_OPERATOR_DIRECTIVE" : "NEW_OPERATOR_DIRECTIVE", 11);
+        }
+      }
+      const submissionId = round === 1 ? `submission-${id}` : `submission-${id}-${round}`;
+      if (round > 1) {
+        store.createRepairSubmission({
+          id: submissionId, runId: `run-${id}`, round,
+          triggerSource: "manual", triggerKey: `manual:${id}:${round}`,
+          context: {}, evidence: {}, now: 20 + round,
+        });
+        store.updateSubmissionCapture(submissionId, {
+          context: workflowJson(context), evidence: workflowJson(context.evidence),
+          fingerprint: `changed-evidence-${round}`, status: "running",
+        }, 30 + round);
+      }
+      const engine = new WorkflowEngine(store, () => {}, {
+        concurrency: 3,
+        workflowPolicy: () => checkPolicy(),
+        resolveExecution: passingExecution,
+        runnerFor: (runner) => {
+          const delegate = verdictRunner(reviewed)(runner);
+          return { ...delegate, async run(prompt, ...args) {
+            if (runner === "claude") prompts.push(prompt);
+            return delegate.run(prompt, ...args);
+          } };
+        },
+      });
+      try {
+        engine.start();
+        engine.activateSubmission(submissionId);
+        await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+        const attempt = store.latestAttemptForNode(submissionId, "p1")!;
+        assert.equal(attempt.runner, round === 3 ? null : "claude", `round ${round}`);
+        if (round === 2) {
+          earnedPassId = attempt.id;
+          if (change === "removed") assert.doesNotMatch(prompts[1]!, /OPERATOR_DIRECTIVE/);
+          else assert.match(prompts[1]!, change === "recreated" ? /FIRST_OPERATOR_DIRECTIVE/ : /NEW_OPERATOR_DIRECTIVE/);
+        }
+        if (round === 3) assert.deepEqual(attempt.output, { outcome: "pass", reusedPassAttemptId: earnedPassId });
+      } finally {
+        await engine.stop();
+      }
+    }
+    assert.equal(prompts.length, 2, "unchanged feedback can reuse the newly earned pass");
+    assert.equal(reviewed.filter((item) => item === "blocking").length, 3);
+  });
+}
+
 test("cancelled, failed, disabled and unexecuted judges do not earn a reusable pass", () => {
   const store = seedSubmission("judge-pass-exclusions", disableGraph());
   for (const [index, state] of ["cancelled", "error", "completed", "completed"].entries()) {

@@ -696,17 +696,19 @@ export function WorkflowSettingsPanel({
           </ConsoleCard>
 
           <ConsoleCard title="Judge passes" anchor="workflows/judge-passes">
-            <label className="wf-judge-passes">
-              <input
-                type="checkbox"
-                checked={config?.skipPassedJudges ?? true}
-                disabled={!config || busy}
-                onChange={(event) => {
-                  if (config) void save({ ...config, skipPassedJudges: event.target.checked });
-                }}
-              />
-              Skip judges that already passed
-            </label>
+            <Tooltip label="Keep earned judge passes across repair rounds. Turn off to review every judge again.">
+              <label className="wf-judge-passes">
+                <input
+                  type="checkbox"
+                  checked={config?.skipPassedJudges ?? true}
+                  disabled={!config || busy}
+                  onChange={(event) => {
+                    if (config) void save({ ...config, skipPassedJudges: event.target.checked });
+                  }}
+                />
+                Skip judges that already passed
+              </label>
+            </Tooltip>
             <p className="settings-hint">
               On by default. Each judge only needs to pass once per workflow run. If another
               judge fails, later repair rounds keep earlier passes and only run the remaining

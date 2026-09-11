@@ -39,6 +39,7 @@ const { SessionActionManager } = await import("../src/server/workflows/session-a
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
 const { fallbackWorkflowContext } = await import("../src/server/workflows/context.ts");
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
+const { getForemanConfig } = await import("../src/server/foreman/config.ts");
 
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: ["/repo"] });
 
@@ -606,6 +607,21 @@ test("only PR actions with CI tracking enabled receive the runtime policy", asyn
         await h.stop();
       }
     }
+  }
+});
+
+test("an unstored Foreman CI preference reaches PR packets as default-on", async () => {
+  const h = await harness("ci-policy-default", {
+    pullRequest: true,
+    trackCiFailures: () => getForemanConfig().trackCiFailures,
+    deliveryMode: "preview",
+  });
+  try {
+    const runId = await runToAction(h);
+    await waitFor(() => h.store.listDeliveries(runId).length === 1, "no action packet was prepared");
+    assert.match(h.store.listDeliveries(runId)[0]!.payload, /Workflow pull request CI follow-through/);
+  } finally {
+    await h.stop();
   }
 });
 

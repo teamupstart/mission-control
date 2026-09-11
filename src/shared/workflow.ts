@@ -64,13 +64,14 @@ export const WORKFLOW_LIMITS = {
   sessionActionPromptBytes: 58_000,
   /**
    * Headroom for everything the packet wraps the prompt in: the skill invocation, the action
-   * and workflow names, the version, the run id, execution authorization and optional CI policy.
+   * and workflow names, the repository root, the version, the run id, execution authorization
+   * and optional CI policy. Character-bounded metadata reserves three UTF-8 bytes per UTF-16
+   * code unit, including the 4,096-character repository root.
    *
-   * The CI policy needs more room than the original 2,000-byte envelope. Increase the packet
-   * budget with it, still below the delivery row's read bound, so the existing 58,000-byte
-   * authored and published prompt ceiling does not shrink.
+   * Action deliveries have their own read bound so a long repository root does not consume
+   * the existing 58,000-byte authored and published prompt allowance.
    */
-  sessionActionEnvelopeBytes: 4_000,
+  sessionActionEnvelopeBytes: 18_000,
   /**
    * What may be STORED, which is looser than what may be authored or published.
    *
@@ -93,10 +94,11 @@ export const WORKFLOW_LIMITS = {
    * from verdicts, so eight kilobytes is a design budget; an action packet carries the
    * operator's own authored instruction, and clipping that at the review budget would
    * silently deliver a different instruction from the one the version was published with.
-   * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom,
-   * and `sessionActionPromptBytes` is derived FROM this so the two cannot drift apart.
+   * This is also the read bound for action delivery rows; other delivery kinds retain
+   * `eventPayloadBytes`. `sessionActionPromptBytes` is derived FROM this budget so the two
+   * cannot drift apart.
    */
-  sessionActionPacketBytes: 62_000,
+  sessionActionPacketBytes: 76_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,

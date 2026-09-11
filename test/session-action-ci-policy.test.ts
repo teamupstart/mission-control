@@ -60,8 +60,12 @@ test("a maximum authored prompt still fits with authorization and CI instruction
   const promptMarkdown = "x".repeat(WORKFLOW_LIMITS.sessionActionPromptBytes);
   const result = renderSessionAction({
     ...packet,
-    actionName: "a".repeat(WORKFLOW_LIMITS.sessionActionName),
-    origin: { ...packet.origin, workflowName: "w".repeat(WORKFLOW_LIMITS.workflowName) },
+    actionName: "界".repeat(WORKFLOW_LIMITS.sessionActionName),
+    origin: {
+      ...packet.origin,
+      workflowName: "界".repeat(WORKFLOW_LIMITS.workflowName),
+      repoRoot: `/${"界".repeat(WORKFLOW_LIMITS.checkRepoRoot - 1)}`,
+    },
     skillCommand: `/${"s".repeat(WORKFLOW_LIMITS.sessionActionSkillId)}`,
     promptMarkdown,
     pullRequestCi: true,
@@ -69,5 +73,5 @@ test("a maximum authored prompt still fits with authorization and CI instruction
   assert.equal(result.ok, true, "CI policy must not make existing maximum-size actions undeliverable");
   if (!result.ok) return;
   assert.ok(result.payload.endsWith(promptMarkdown));
-  assert.ok(Buffer.byteLength(result.payload) < WORKFLOW_LIMITS.eventPayloadBytes);
+  assert.ok(Buffer.byteLength(result.payload) <= WORKFLOW_LIMITS.sessionActionPacketBytes);
 });

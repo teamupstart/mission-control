@@ -81,11 +81,14 @@ export async function expectOptionsFitSelect(select: Locator): Promise<void> {
   );
 
   expect(worst, "the select offered no options at all, so nothing was measured").not.toBeNull();
+  // Compared raw, rounded only to report. Layout here is fractional, and rounding each side
+  // on its own lets a real overflow compare equal: 100.49px of text and 100.01px of room are
+  // both 100. Rounding is a reading aid for the operator, never part of the judgement.
   expect(
-    Math.round(worst!.width),
+    worst!.width,
     `"${worst!.text}" needs ${Math.round(worst!.width)}px of text room and the closed select ` +
       `offers ${Math.round(worst!.room)}px, so it renders through the chevron and clips. A ` +
       `compact picker passes includeHints={false} to ModelCatalogOptions rather than widening ` +
       `its cap - harness hints are free text and no cap survives the next catalog.`,
-  ).toBeLessThanOrEqual(Math.round(worst!.room));
+  ).toBeLessThanOrEqual(worst!.room);
 }

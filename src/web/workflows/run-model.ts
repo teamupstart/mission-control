@@ -1788,12 +1788,8 @@ export function restageLabel(settled: boolean): string {
 }
 
 /** Pressable only while nothing is in flight and the daemon has not already accepted it. */
-export function restageDisabled(
-  busy: string | null,
-  settled: boolean,
-  imageId: string,
-): boolean {
-  return busy === imageId || settled;
+export function restageDisabled(inFlight: boolean, settled: boolean): boolean {
+  return inFlight || settled;
 }
 
 /**

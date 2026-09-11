@@ -884,10 +884,10 @@ const PREVIEW_IMAGE: WorkflowEvidenceImage = {
 
 const restageControl = (over: Partial<RestageControl> = {}): RestageControl => ({
   offered: () => true,
-  busy: null,
+  busy: new Set<string>(),
   settled: new Set<string>(),
   run: () => {},
-  failure: null,
+  failures: new Map<string, string>(),
   ...over,
 });
 
@@ -987,7 +987,7 @@ test("a pruned or carried image keeps its audit record and loses only the reuse 
   assert.match(settled, /disabled=""/);
   // And in flight, which must not read as settled.
   const busy = previewMarkup(PREVIEW_IMAGE, {
-    restage: restageControl({ busy: PREVIEW_IMAGE.id }),
+    restage: restageControl({ busy: new Set([PREVIEW_IMAGE.id]) }),
   });
   assert.match(busy, /Use in next review/);
   assert.match(busy, /disabled=""/);
@@ -1035,7 +1035,7 @@ test("the image frame draws one of four arms and never a broken picture", () => 
 test("a refused re-stage explains itself inside the dialog that asked for it", () => {
   const refused = previewMarkup(PREVIEW_IMAGE, {
     restage: restageControl({
-      failure: { imageId: PREVIEW_IMAGE.id, message: "Retained bytes could not be staged" },
+      failures: new Map([[PREVIEW_IMAGE.id, "Retained bytes could not be staged"]]),
     }),
   });
 

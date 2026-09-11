@@ -148,8 +148,9 @@ import {
   restagePress,
   runReadinessAction,
   startFrozenImageLoads,
+  withRestageBusy,
+  withRestageFailure,
 } from "./evidence-pane-controller.ts";
-import type { RestageFailure } from "./evidence-pane-controller.ts";
 import {
   copyFeedbackAction,
   deliveryResolutionActions,
@@ -2017,17 +2018,18 @@ export function FrozenImageFrame({
 /** The restage action's whole state, so the strip and the preview cannot disagree about it. */
 export interface RestageControl {
   offered: (image: WorkflowEvidenceImage) => boolean;
-  busy: string | null;
+  /** The image ids with a staging request in flight. Two can overlap. */
+  busy: ReadonlySet<string>;
   settled: ReadonlySet<string>;
   run: (image: WorkflowEvidenceImage) => void;
   /**
-   * The last failed press, with the image it was made for.
+   * Why staging each image was refused, keyed by image id.
    *
-   * Carried whole rather than pre-resolved to a message, because two surfaces read it for two
-   * different images: the preview for the one it is showing, and the strip card for its own.
-   * `restageErrorFor` is the one place that decides whether a failure is this image's.
+   * Per image rather than one pane-wide value, because two surfaces read it for two different
+   * images - the preview for the one it is showing, the strip card for its own - and because a
+   * press on one image must not erase what the daemon said about another.
    */
-  failure: RestageFailure | null;
+  failures: ReadonlyMap<string, string>;
 }
 
 /**
@@ -2135,9 +2137,9 @@ export function FrozenImagePreview({
             can be pressed from, and this dialog draws a backdrop over the pane, so an error
             painted onto the pane behind it is an explanation the operator cannot read without
             first closing the thing they were acting in. */}
-        {restageErrorFor(restage.failure, image.id) && (
+        {restageErrorFor(restage.failures, image.id) && (
           <p className="wf-run-error" role="alert">
-            {restageErrorFor(restage.failure, image.id)}
+            {restageErrorFor(restage.failures, image.id)}
           </p>
         )}
         <div className="wf-image-preview-actions">
@@ -2146,7 +2148,10 @@ export function FrozenImagePreview({
               <button
                 type="button"
                 className="btn btn-ghost"
-                disabled={restageDisabled(restage.busy, restage.settled.has(image.id), image.id)}
+                disabled={restageDisabled(
+                  restage.busy.has(image.id),
+                  restage.settled.has(image.id),
+                )}
                 onClick={() => restage.run(image)}
               >
                 {restageLabel(restage.settled.has(image.id))}
@@ -2210,9 +2215,11 @@ function EvidencePane({
   const [reason, setReason] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState<"retry" | "override" | null>(null);
-  const [restageBusy, setRestageBusy] = useState<string | null>(null);
+  const [restageBusy, setRestageBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [restaged, setRestaged] = useState<ReadonlySet<string>>(() => new Set());
-  const [restageError, setRestageError] = useState<RestageFailure | null>(null);
+  const [restageFailures, setRestageFailures] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
   const itemIds = useRef(new Map<string, string>());
   const citations = runEvidenceCitations({ images, coverage, readiness });
   const scopeLabel = (scope: string): string =>
@@ -2245,14 +2252,16 @@ function EvidencePane({
     offered: (image) => restageOffered(image, canRestage, Boolean(onRestage)),
     busy: restageBusy,
     settled: restaged,
-    failure: restageError,
+    failures: restageFailures,
     run: (image) => restagePress({
       image,
       minted: itemIds.current,
       onRestage,
-      setBusy: setRestageBusy,
+      // Both setters close over THIS image, so a press reports only its own outcome. The
+      // controller speaks in "started" and "finished" and does not know there are others.
+      setBusy: (id) => setRestageBusy((now) => withRestageBusy(now, image.id, id !== null)),
       setError: (message) =>
-        setRestageError(message === null ? null : { imageId: image.id, message }),
+        setRestageFailures((now) => withRestageFailure(now, image.id, message)),
       settle: (imageId) => setRestaged((current) => new Set(current).add(imageId)),
     }),
   };
@@ -2430,10 +2439,10 @@ function EvidencePane({
                           operator who closes the preview before the request settles would
                           otherwise be told nothing at all, and walk away believing these bytes
                           are queued for the next review when the daemon refused them. */}
-                      {restage.busy === image.id && (
+                      {restage.busy.has(image.id) && (
                         <span className="wf-evidence-card-restage">Staging…</span>
                       )}
-                      {restageErrorFor(restage.failure, image.id) && (
+                      {restageErrorFor(restage.failures, image.id) && (
                         <span className="wf-evidence-card-restage is-alert" role="alert">
                           Re-stage failed
                         </span>

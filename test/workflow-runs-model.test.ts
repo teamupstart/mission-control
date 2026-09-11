@@ -1688,13 +1688,12 @@ test("a re-stage mints one client item id per image and then reuses it", () => {
 test("the re-stage control never reads as settled while it is in flight or idle", () => {
   assert.equal(restageLabel(false), "Use in next review");
   assert.equal(restageLabel(true), "Ready for next review");
-  // In flight on THIS image, so not pressable again.
-  assert.equal(restageDisabled("image-a", false, "image-a"), true);
-  // In flight on another image leaves this one alone.
-  assert.equal(restageDisabled("image-b", false, "image-a"), false);
+  // In flight, so not pressable again. Which image is in flight is decided by the caller, which
+  // holds a set of them: two staging requests can overlap and neither disables the other.
+  assert.equal(restageDisabled(true, false), true);
   // Settled: the daemon accepted it, so there is nothing left to ask for.
-  assert.equal(restageDisabled(null, true, "image-a"), true);
-  assert.equal(restageDisabled(null, false, "image-a"), false);
+  assert.equal(restageDisabled(false, true), true);
+  assert.equal(restageDisabled(false, false), false);
 });
 
 test("continue despite gaps needs an acknowledgement and a reason that is not blank", () => {

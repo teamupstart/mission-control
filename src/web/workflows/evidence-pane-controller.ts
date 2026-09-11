@@ -197,28 +197,57 @@ export async function runRestage(input: {
   }
 }
 
-/** A re-stage failure, kept with the image it belongs to. */
-export interface RestageFailure {
-  imageId: string;
-  message: string;
+/**
+ * Why staging THIS image was refused, or null.
+ *
+ * Keyed by image because a submission may freeze eight of them and each is staged on its own. A
+ * single pane-wide value cannot express that: a press on one image would clear the recorded
+ * failure of another whose bytes were never staged and which nothing retried, quietly removing
+ * the only mark saying so.
+ */
+export function restageErrorFor(
+  failures: ReadonlyMap<string, string>,
+  imageId: string | null,
+): string | null {
+  if (imageId === null) return null;
+  return failures.get(imageId) ?? null;
 }
 
 /**
- * Whether a recorded re-stage failure is the open preview's own.
+ * The recorded failures with one image's outcome applied, as a new map.
  *
- * The reason is rendered inside the preview, and a staging request outlives the dialog it was
- * pressed in: nothing cancels it when the operator closes that preview and opens another. Without
- * this the rejection would land on whichever image happened to be open when it arrived, telling a
- * reader that staging THIS picture failed when it was a different one. The request is deliberately
- * not cancelled - it may still succeed, and its outcome belongs to the image it was made for -
- * so the display is scoped instead.
+ * A press clears its OWN previous failure before it attempts anything, which is why the clearing
+ * case takes the image rather than emptying the collection. `runRestage` reports the start of
+ * every attempt as `null`, and a request outlives the dialog it was pressed in, so the pane can
+ * be holding one image's refusal while another is mid-flight.
  */
-export function restageErrorFor(
-  failure: RestageFailure | null,
-  openImageId: string | null,
-): string | null {
-  if (failure === null || openImageId === null) return null;
-  return failure.imageId === openImageId ? failure.message : null;
+export function withRestageFailure(
+  failures: ReadonlyMap<string, string>,
+  imageId: string,
+  message: string | null,
+): ReadonlyMap<string, string> {
+  const next = new Map(failures);
+  if (message === null) next.delete(imageId);
+  else next.set(imageId, message);
+  return next;
+}
+
+/**
+ * The in-flight image ids with one image's state applied, as a new set.
+ *
+ * Also per image, and for the same reason read from the other end: two staging requests can
+ * overlap, and the first to settle would otherwise clear a flag the second is still relying on -
+ * taking "Staging…" off a card whose request has not resolved.
+ */
+export function withRestageBusy(
+  busy: ReadonlySet<string>,
+  imageId: string,
+  inFlight: boolean,
+): ReadonlySet<string> {
+  const next = new Set(busy);
+  if (inFlight) next.add(imageId);
+  else next.delete(imageId);
+  return next;
 }
 
 /**

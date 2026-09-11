@@ -51,11 +51,11 @@ test("Astra usage reaches the session chip and fleet, alongside Claude and older
     const response = await fetch(`${daemon.baseURL}/api/usage/automation`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ role: "foreman:review", runner, runId: modelId, ts: Date.now(), models: [{
-        modelId, input: 1_000, cacheRead: 0, cacheWrite: 0, output: 0, reasoningOutput: 0, reportedCostUsd,
+        modelId, input: 1_000_000, cacheRead: 0, cacheWrite: 0, output: 0, reasoningOutput: 0, reportedCostUsd,
       }] }),
     });
     expect(response.ok).toBe(true);
   }
   await dashboard.getByRole("button", { name: /^Spend - / }).click();
-  await expect(dashboard.getByRole("dialog", { name: "Spend today" }).locator(".spend-row", { hasText: "Automation" })).toContainText("≈$0.25");
+  await expect(dashboard.getByRole("dialog", { name: "Spend today" }).locator(".spend-row", { hasText: "Automation" })).toContainText("≈$1.00");
 });

@@ -131,3 +131,18 @@ test("models without published cache rates decline both cache reads and first-tu
     assert.ok(estimateStandardApiUsage(usage(id, { cacheRead: 0, cacheWrite: 0 })), id);
   }
 });
+
+
+test("the Sol alias and verified Pro snapshots retain their base rates and cache guards", () => {
+  for (const [id, base] of [["gpt-5.6", "gpt-5.6-sol"],
+    ["gpt-5.5-pro-2026-04-23", "gpt-5.5-pro"], ["gpt-5.4-pro-2026-03-05", "gpt-5.4-pro"],
+    ["gpt-5-pro-2025-10-06", "gpt-5-pro"]] as const) {
+    const event = usage(id, { cacheRead: 0, cacheWrite: 0 });
+    assert.deepEqual(estimateStandardApiUsage(event), {
+      ...estimateStandardApiUsage({ ...event, modelId: base }), pricingModel: id,
+    });
+    if (base.endsWith("-pro")) {
+      assert.equal(estimateStandardApiUsage({ ...event, cacheWrite: 1 }), null);
+    }
+  }
+});

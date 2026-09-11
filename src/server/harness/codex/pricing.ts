@@ -83,6 +83,10 @@ export const STANDARD_TOKEN_PRICES: Readonly<Record<string, StandardTokenPrice>>
 
 /** Only snapshots listed by the model reference with the same verified rates. */
 const PRICING_ALIASES: Readonly<Record<string, string>> = {
+  "gpt-5.6": "gpt-5.6-sol",
+  "gpt-5.5-pro-2026-04-23": "gpt-5.5-pro",
+  "gpt-5.4-pro-2026-03-05": "gpt-5.4-pro",
+  "gpt-5-pro-2025-10-06": "gpt-5-pro",
   "gpt-5.5-2026-04-23": "gpt-5.5",
   "gpt-5.4-2026-03-05": "gpt-5.4",
   "gpt-5.4-mini-2026-03-17": "gpt-5.4-mini",

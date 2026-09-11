@@ -10,10 +10,10 @@ import {
   workflowRunGaveUp,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
+import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
 // One-directional: this module reads `run-model`'s derivations at runtime, and `run-model` takes
 // only a TYPE from here, so there is no cycle to resolve at load.
 import {
-  blockedPhaseClause,
   cancelGateSentence,
   cancelReleasesGate,
   gateWaitSentence,

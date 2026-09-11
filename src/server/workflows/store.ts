@@ -1,6 +1,7 @@
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { clipUtf8Bytes } from "../util/utf8.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
@@ -8833,7 +8834,7 @@ export class WorkflowStore {
 
   retainRejectedPersonaVerdict(attemptId: string, execution: number, basis: string, raw: string): void {
     const previous = this.getAttempt(attemptId)?.reviewRejections ?? [];
-    const entries = [...previous.filter((item) => item.execution !== execution), { execution, basis, raw: raw.slice(0, 64_000) }].slice(-2);
+    const entries = [...previous.filter((item) => item.execution !== execution), { execution, basis, raw: clipUtf8Bytes(raw, 64_000) }].slice(-2);
     this.db.prepare("UPDATE workflow_node_attempts SET review_rejections_json = ? WHERE id = ? AND state = 'running'")
       .run(JSON.stringify(entries), attemptId);
   }

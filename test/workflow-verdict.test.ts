@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   WORKFLOW_EXECUTION_LIMITS,
+  PERSONA_FINDING_BASES,
   type WorkflowContextSnapshot,
 } from "../src/shared/workflow.ts";
 import {
@@ -9,6 +10,17 @@ import {
   parsePersonaVerdict,
 } from "../src/server/workflows/verdict.ts";
 import { buildPersonaPrompt } from "../src/server/workflows/prompt.ts";
+import { WorkflowRequestedChangeSchema } from "../src/shared/protocol.ts";
+
+test("persisted findings accept every runtime basis and preserve legacy omissions", () => {
+  for (const basis of [...PERSONA_FINDING_BASES, undefined]) {
+    const change = { basis, title: "Fix behavior", rationale: "The evidence does not prove it",
+      evidence: [{ kind: "goal", quote: "Expected behavior" }] };
+    const verdict = normalizePersonaVerdict({ verdict: "fail", summary: "Needs repair", requestedChanges: [change], confidence: 1 });
+    assert.equal(verdict?.verdict, "fail");
+    if (verdict?.verdict === "fail") assert.equal(WorkflowRequestedChangeSchema.parse(verdict.requestedChanges[0]).basis, basis);
+  }
+});
 
 test("Persona verdicts discriminate pass and fail and clamp bounded model values", () => {
   const pass = parsePersonaVerdict(JSON.stringify({

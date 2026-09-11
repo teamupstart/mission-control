@@ -80,6 +80,7 @@ import {
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
   EVIDENCE_REF_KINDS,
+  PERSONA_FINDING_BASES,
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
   SESSION_ACTION_COMPLETION_KINDS,
@@ -5309,7 +5310,7 @@ export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewIn
 });
 
 export const WorkflowRequestedChangeSchema = z.object({
-  basis: z.enum(["substantive", "coverage_registration", "evidence_access"]).optional(),
+  basis: z.enum(PERSONA_FINDING_BASES).optional(),
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   evidence: z

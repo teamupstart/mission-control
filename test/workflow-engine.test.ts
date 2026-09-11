@@ -2218,6 +2218,22 @@ test("cancelled, failed, disabled and unexecuted judges do not earn a reusable p
   }
 });
 
+test("rejected Persona responses retain a UTF-8 byte bound without splitting characters", () => {
+  const store = seedSubmission("rejection-byte-bound", disableGraph());
+  const attempt = store.insertAttempt({ id: "unicode-rejection", submissionId: "submission-rejection-byte-bound",
+    nodeId: "p1", attempt: 1, state: "running", persona: persona("p1", "Judge", "claude", "review"),
+    inputFingerprint: "unicode-rejection", now: 5 });
+  for (const [index, raw] of ["a" + "界".repeat(64_000), "a" + "😀".repeat(64_000)].entries()) {
+    store.retainRejectedPersonaVerdict(attempt.id, index + 1, "parse", raw);
+    const retained = store.getAttempt(attempt.id)!.reviewRejections!.find((item) => item.execution === index + 1)!.raw;
+    assert.ok(Buffer.byteLength(retained, "utf8") <= 64_000);
+    assert.ok(Buffer.byteLength(retained, "utf8") >= 63_997);
+    assert.ok(raw.startsWith(retained));
+    assert.equal(Buffer.from(retained, "utf8").toString("utf8"), retained);
+  }
+  assert.equal(store.getAttempt(attempt.id)!.reviewRejections!.length, 2);
+});
+
 for (const priorCalls of [1, 2]) test(`restart retains Persona input and counts ${priorCalls} prior executions against its budget`, async () => {
   const id = `contract-restart-${priorCalls}`;
   const reviewer = persona("p", "Contract reviewer", "claude", "Review");

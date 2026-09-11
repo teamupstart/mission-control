@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
+  WORKFLOW_CAPTURE_FAILURE_PHASES,
   WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE,
   WORKFLOW_GATE_DETAIL_KEY,
   WORKFLOW_GATE_OWNED_STATUSES,
@@ -13,8 +14,11 @@ import {
   WORKFLOW_RUN_PHASES,
   WORKFLOW_RUN_PHASE_MAX,
   WORKFLOW_RUN_PHASE_STATUSES,
+  blockedPhaseClause,
+  blockedPhaseClauseGaps,
   decodeWorkflowRunLifecycle,
   withInspectorGate,
+  workflowCaptureFailure,
   workflowCheckCleanupBlock,
   workflowInspectorGate,
   workflowRoundLimitBudget,
@@ -90,6 +94,20 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   evidence_readiness_capture: { detail: null, kind: "none" },
   persona_review: { detail: null, kind: "none" },
 
+  // ---- the capture family: one payload, four phases, and the phase is what names it -------
+  capture_error: { detail: asJson({ error: "capture failed" }), kind: "capture_failure" },
+  capture_interrupted: { detail: asJson({ error: "interrupted" }), kind: "capture_failure" },
+  image_evidence_capture: {
+    detail: asJson({
+      error: "Evidence image changed after it was staged; register it again",
+      code: "image_changed",
+      itemName: "steering-context.png",
+      itemClientId: "phase2-steering-disclosure",
+    }),
+    kind: "capture_failure",
+  },
+  stale_capture: { detail: asJson({ error: "stale" }), kind: "capture_failure" },
+
   // ---- the two payloads an engine path acts on -------------------------------------------
   check_cleanup_unresolved: {
     detail: asJson({ nodeId: "check-1", attempts: 2, error: "lease unresolved" }),
@@ -122,8 +140,6 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
 
   // ---- phases that record a note about themselves and nothing acts on --------------------
   binding_archived: { detail: asJson({ reason: "binding_archived" }), kind: "opaque" },
-  capture_error: { detail: asJson({ error: "capture failed" }), kind: "opaque" },
-  capture_interrupted: { detail: asJson({ error: "interrupted" }), kind: "opaque" },
   complete: { detail: asJson({ outcome: "pass", label: "Approved" }), kind: "opaque" },
   conversation_changed: { detail: asJson({ reason: "conversation_changed" }), kind: "opaque" },
   delivery_blocked: { detail: asJson({ deliveryId: "d", reason: "consent" }), kind: "opaque" },
@@ -140,7 +156,7 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
     kind: "opaque",
   },
   failed_outcome: { detail: asJson({ outcome: "fail", label: "Rejected" }), kind: "opaque" },
-  image_evidence_capture: { detail: asJson({ error: "e", code: "image_changed" }), kind: "opaque" },
+  evidence_reconciliation_error: { detail: { submissionId: "s", error: "mapping unavailable" }, kind: "opaque" },
   // The payload `check_cleanup_unresolved` writes, under the phase that means the OPPOSITE.
   infrastructure_error: {
     detail: asJson({ nodeId: "n", attempts: 3, error: "provider call failed" }),
@@ -172,7 +188,6 @@ const VALID_STATES: Record<WorkflowRunPhase, { detail: WorkflowJson | null; kind
   },
   session_action_parallel_unsupported: { detail: asJson({ error: "parallel" }), kind: "opaque" },
   session_disappeared: { detail: asJson({ reason: "session_disappeared" }), kind: "opaque" },
-  stale_capture: { detail: asJson({ error: "stale" }), kind: "opaque" },
   preflight_refinement_exhausted: {
     detail: asJson({ submissionId: "s1", round: 1, refinements: 2 }),
     kind: "opaque",
@@ -339,6 +354,74 @@ test("every phase the daemon acts on is registered, and the registry is the only
     );
   }
   assert.ok(WORKFLOW_RUN_PHASES.length > WORKFLOW_INSPECTOR_GATE_PHASES.length);
+});
+
+test("a capture failure decodes its cause, with and without the failing item's identity", () => {
+  const named = record("blocked", "image_evidence_capture", asJson({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: "steering-context.png",
+    itemClientId: "phase2-steering-disclosure",
+  }));
+  assert.deepEqual(workflowCaptureFailure(named), {
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: "steering-context.png",
+    itemClientId: "phase2-steering-disclosure",
+  });
+
+  // A row written before the identity keys existed; the whitelist is allowed-key, not required.
+  const legacy = record("blocked", "image_evidence_capture", asJson({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+  }));
+  assert.deepEqual(workflowCaptureFailure(legacy), {
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: null,
+    itemClientId: null,
+  });
+
+  assert.deepEqual(workflowCaptureFailure(record("blocked", "stale_capture", asJson({
+    error: "The workflow submission stopped during evidence capture",
+  }))), {
+    error: "The workflow submission stopped during evidence capture",
+    code: null,
+    itemName: null,
+    itemClientId: null,
+  });
+});
+
+test("a capture payload with no cause is opaque rather than an empty explanation", () => {
+  for (const detail of [asJson({ code: "image_changed" }), asJson({ error: "" })]) {
+    const lifecycle = decodeWorkflowRunLifecycle(record("blocked", "image_evidence_capture", detail));
+    assert.equal(lifecycle.detail.kind, "opaque", JSON.stringify(detail));
+    assert.equal(workflowCaptureFailure(record("blocked", "image_evidence_capture", detail)), null);
+  }
+});
+
+test("only a capture phase reads as a capture failure, and only while the run is open", () => {
+  // Phase-first: `delivery_prepare_error` persists an `error` of its own.
+  const foreign = record("blocked", "delivery_prepare_error", asJson({
+    submissionId: "s1",
+    error: "the packet could not be prepared",
+  }));
+  assert.equal(decodeWorkflowRunLifecycle(foreign).detail.kind, "opaque");
+  assert.equal(workflowCaptureFailure(foreign), null);
+
+  for (const phase of WORKFLOW_CAPTURE_FAILURE_PHASES) {
+    assert.ok(workflowRunPhaseRecognized(phase), `${phase} is not in the phase registry`);
+    assert.deepEqual(
+      WORKFLOW_RUN_PHASE_STATUSES[phase],
+      ["blocked"],
+      `${phase} is declared blocked-only, which is what the decoder's status guard assumes`,
+    );
+  }
+
+  assert.equal(
+    workflowCaptureFailure(record("blocked", "capture_something_newer", asJson({ error: "e" }))),
+    null,
+  );
 });
 
 test("an unrecognised payload stays readable and is never handed to an executable path", () => {
@@ -991,4 +1074,386 @@ test("an unknown inspector_ phase is an unknown phase like any other", () => {
   //   store.setRunState(id, "blocked", "inspector_inspector_disabled", ...)
   //     -> TS2345: not assignable to parameter of type WorkflowRunPhase
   assert.equal(workflowRunPhaseRecognized("inspector_inspector_disabled"), false);
+});
+
+/*
+ * The vocabulary guard: no phase a run can block in may render as its own identifier.
+ *
+ * This is not a style rule. `blockedPhaseClause` falls back to `phase.replaceAll("_", " ")`
+ * for a code nobody mapped, and that fallback is silent and plausible-looking - so the DEFAULT
+ * for a phase added to the registry above is to ship unnamed and print
+ * "preflight refinement exhausted" at an operator in the Line strip, the Review drawer, the
+ * Runs rail and the notification that fires the moment the run blocks. Twelve of the
+ * twenty-seven blocked-capable phases were in exactly that state, including the one a real
+ * No-Mistakes run stopped on.
+ *
+ * The assertion is over `blockedPhaseClauseGaps` rather than spelled here, so the rule has one
+ * definition and the failure can say what to do about it. Adding a phase to
+ * `WORKFLOW_RUN_PHASES` with `blocked` among its statuses is what makes this fail; writing the
+ * clause is what makes it pass.
+ */
+test("every blocked-capable phase has a clause that beats the fallback", () => {
+  const gaps = blockedPhaseClauseGaps();
+  assert.deepEqual(
+    gaps,
+    [],
+    gaps.map((gap) => `${gap.phase} ${gap.problem}`).join("\n"),
+  );
+
+  // Both halves of the rule are live, demonstrated on the registry itself rather than asserted
+  // about the helper in the abstract. `delivery_refused` is the one the weaker guard missed:
+  // it HAD a key for a release, whose value was character-for-character the fallback.
+  assert.equal(blockedPhaseClause("delivery_refused"), "pane refused the write");
+  assert.notEqual(blockedPhaseClause("delivery_refused"), "delivery refused");
+
+  // Every blocked-capable phase is covered, and the count is stated so that deleting a phase
+  // from the registry cannot quietly shrink what this test walks.
+  const blockedCapable = WORKFLOW_RUN_PHASES
+    .filter((phase) => WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked"));
+  assert.equal(blockedCapable.length, 28);
+
+  // One-directional, and deliberately so. The map also serves the triage column's PARKED rows,
+  // which are `waiting_for_session`, so it legitimately holds keys that are not blocked-capable.
+  // A guard asserting the converse would demand those entries be deleted and put the phase code
+  // back on the rows they exist for.
+  assert.equal(blockedPhaseClause("reattached_resubmit_required"), "reattached");
+  assert.equal(
+    WORKFLOW_RUN_PHASE_STATUSES.reattached_resubmit_required.includes("blocked"),
+    false,
+  );
+
+  // And the contract every other surface leans on: an unmapped code still degrades to readable
+  // text rather than to `undefined`. `alerts.ts` and `run-actions.ts` read the same function
+  // now, so this is the one spelling of the fallback rather than two that must agree.
+  assert.equal(blockedPhaseClause("some_future_reason"), "some future reason");
+});
+
+/*
+ * The goal-provenance verdict, which is a different question from every lifecycle triple
+ * above: not "is this run in a state a reader can act on" but "is the ask it froze the kind of
+ * thing a review can be judged against at all".
+ *
+ * It lives beside the lifecycle rules because it shares their invariant. A run that exists
+ * without a verdict would falsify the only claim this instrument makes - that every run
+ * created from here on says what kind of ask it froze - so the verdict is written by the same
+ * transaction that inserts the run, at BOTH insert sites. The second one is not an edge case:
+ * `claimForemanCompletion` is the Foreman completion path, and it produced four of the ten
+ * machine-authored goals the investigation behind this measured.
+ */
+
+const PROVENANCE_BINDING = {
+  workflowVersionId: "provenance-version",
+  noteKey: "provenance-note",
+  sessionId: "provenance-session",
+  sessionAgent: "claude" as const,
+  sessionName: "provenance",
+  sessionCwd: process.cwd(),
+  sessionRepoRoot: process.cwd(),
+  triggerMode: "manual" as const,
+  deliveryMode: "preview" as const,
+  maxRepairRounds: 3,
+};
+
+/** The repair packet's opening line - the payload shape the classifier recognises by prefix. */
+const MACHINE_ASK =
+  "Workflow review failed. This is a repair round; address the review packet below."
+  + "\n\nOriginal user goal:\nMake the diff link stop spinning";
+
+const HUMAN_ASK = "Make the diff link stop showing a busy spinner after the diff loads";
+
+const provenanceIntent = (rawGoal: string) => ({
+  rawGoal,
+  refinedGoal: null,
+  sourceNoteKey: PROVENANCE_BINDING.noteKey,
+  decisions: [],
+  frozenAt: 1,
+});
+
+const classifiedEvents = (runId: string) =>
+  store.listEvents(runId).filter((event) => event.kind === "run_intent_classified");
+
+/** Every run row's stored verdict column, read raw so an absent one is visible as absent. */
+const storedVerdict = (runId: string): string | null => {
+  const row = db.prepare(
+    `SELECT intent_provenance_json FROM workflow_runs WHERE id = ?`,
+  ).get(runId) as { intent_provenance_json: string | null } | undefined;
+  return row?.intent_provenance_json ?? null;
+};
+
+function provenanceBinding(id: string) {
+  return store.insertBinding({ ...PROVENANCE_BINDING, id, now: 1 });
+}
+
+test("a run created by the manual path says what kind of ask it froze", () => {
+  clearWorkflowTables(db);
+  const binding = provenanceBinding("provenance-manual-binding");
+  const created = store.createInitialSubmission(
+    {
+      id: "provenance-manual-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "provenance-manual-trigger",
+      now: 5,
+      intent: provenanceIntent(MACHINE_ASK),
+    },
+    {
+      id: "provenance-manual-submission",
+      triggerSource: "manual",
+      triggerKey: "provenance-manual-trigger",
+      context: {},
+      evidence: {},
+      now: 5,
+    },
+  );
+  assert.equal(created.run.intentProvenance?.verdict, "automation");
+  assert.deepEqual(created.run.intentProvenance?.signals, ["automation"]);
+  assert.equal(created.run.intentProvenance?.classifiedAt, 5);
+  assert.match(created.run.intentProvenance?.reason ?? "", /Mission Control types itself/);
+  assert.ok(storedVerdict("provenance-manual-run"), "the verdict reached the column");
+
+  // Announced once, at the freeze. Not on every submission, and not again on a retry: the
+  // event id is derived from the run, so `appendEvent` answers a replay with the row it has.
+  assert.equal(classifiedEvents("provenance-manual-run").length, 1);
+  const payload = classifiedEvents("provenance-manual-run")[0]!.payload as {
+    verdict: string;
+    signals: string[];
+  };
+  assert.deepEqual(
+    { verdict: payload.verdict, signals: payload.signals },
+    { verdict: "automation", signals: ["automation"] },
+  );
+
+  const retried = store.createInitialSubmission(
+    {
+      id: "provenance-manual-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "provenance-manual-trigger",
+      now: 6,
+      intent: provenanceIntent(MACHINE_ASK),
+    },
+    {
+      id: "provenance-manual-submission",
+      triggerSource: "manual",
+      triggerKey: "provenance-manual-trigger",
+      context: {},
+      evidence: {},
+      now: 6,
+    },
+  );
+  assert.equal(retried.idempotent, true);
+  assert.equal(classifiedEvents("provenance-manual-run").length, 1, "a retry announced twice");
+});
+
+test("a run created by the Foreman completion path says it too", () => {
+  clearWorkflowTables(db);
+  const binding = provenanceBinding("provenance-foreman-binding");
+  // `retireGuard: false` is the sibling-repository claim: the completion boundary was already
+  // spent by the first repository's claim, so this one rides the same proof. It reaches the
+  // same INSERT as an ordinary drain claim without a queue guard to arm first.
+  const claimed = store.claimForemanCompletion({
+    binding,
+    completionKind: "drain",
+    marker: "provenance-marker",
+    expectedWorkCycle: null,
+    summary: "",
+    evidenceFingerprint: "provenance-fingerprint",
+    expectedIntent: null,
+    runId: "provenance-foreman-run",
+    submissionId: "provenance-foreman-submission",
+    retireGuard: false,
+    intent: provenanceIntent(MACHINE_ASK),
+    now: 7,
+  });
+  assert.equal(claimed.created, true);
+  assert.equal(claimed.run.intentProvenance?.verdict, "automation");
+  assert.ok(storedVerdict("provenance-foreman-run"), "the second insert site classifies too");
+  assert.equal(classifiedEvents("provenance-foreman-run").length, 1);
+});
+
+test("a healthy ask is classified and says nothing about it", () => {
+  clearWorkflowTables(db);
+  const binding = provenanceBinding("provenance-healthy-binding");
+  const created = store.createInitialSubmission(
+    {
+      id: "provenance-healthy-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "provenance-healthy-trigger",
+      now: 8,
+      intent: provenanceIntent(HUMAN_ASK),
+    },
+    {
+      id: "provenance-healthy-submission",
+      triggerSource: "manual",
+      triggerKey: "provenance-healthy-trigger",
+      context: {},
+      evidence: {},
+      now: 8,
+    },
+  );
+  assert.equal(created.run.intentProvenance?.verdict, "objective");
+  assert.deepEqual(created.run.intentProvenance?.signals, []);
+  // Stored, because "measured and healthy" is a fact worth having. Silent, because an event
+  // on every healthy run would bury the ones that mean something.
+  assert.ok(storedVerdict("provenance-healthy-run"));
+  assert.equal(classifiedEvents("provenance-healthy-run").length, 0);
+});
+
+test("the verdict and the run commit together, or neither exists", () => {
+  clearWorkflowTables(db);
+  const binding = provenanceBinding("provenance-atomic-binding");
+  // A submission id already taken. The run row and its event are written first, so a throw
+  // here is exactly the crash-in-between this has to survive.
+  store.createInitialSubmission(
+    {
+      id: "provenance-first-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "provenance-first-trigger",
+      now: 9,
+      intent: provenanceIntent(HUMAN_ASK),
+    },
+    {
+      id: "provenance-shared-submission",
+      triggerSource: "manual",
+      triggerKey: "provenance-first-trigger",
+      context: {},
+      evidence: {},
+      now: 9,
+    },
+  );
+  assert.throws(() => store.createInitialSubmission(
+    {
+      id: "provenance-rolled-back-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "provenance-second-trigger",
+      now: 10,
+      intent: provenanceIntent(MACHINE_ASK),
+    },
+    {
+      id: "provenance-shared-submission",
+      triggerSource: "manual",
+      triggerKey: "provenance-second-trigger",
+      context: {},
+      evidence: {},
+      now: 10,
+    },
+  ));
+  assert.equal(store.getRun("provenance-rolled-back-run"), null);
+  assert.equal(storedVerdict("provenance-rolled-back-run"), null);
+  assert.equal(classifiedEvents("provenance-rolled-back-run").length, 0);
+
+  // And the standing invariant behind all of this: no row in the table has a NULL verdict
+  // unless nothing this build wrote created it.
+  const unclassified = db.prepare(
+    `SELECT COUNT(*) AS count FROM workflow_runs WHERE intent_provenance_json IS NULL`,
+  ).get() as { count: number };
+  assert.equal(Number(unclassified.count), 0, "a run created here must never lack a verdict");
+});
+
+test("a run frozen before the verdict existed is not classified after the fact", () => {
+  clearWorkflowTables(db);
+  // Exactly what a daemon upgrade leaves behind: the column exists and this row predates it.
+  seedRun("provenance-legacy", "waiting_for_session", "pr_handoff", null);
+  assert.equal(storedVerdict("provenance-legacy"), null);
+  assert.equal(
+    store.getRun("provenance-legacy")?.intentProvenance ?? null,
+    null,
+    "reading a legacy run must not invent a verdict for a freeze nobody measured",
+  );
+  assert.equal(classifiedEvents("provenance-legacy").length, 0);
+});
+
+/**
+ * A damaged verdict column costs the operator the badge, and nothing else.
+ *
+ * `readRunIntentProvenance` is the one tolerant read on this row besides the intent pair, and
+ * the reason is stated where it lives: every other JSON column throws through
+ * `parseNullableJson`, which `getRun` turns into a NULL run, so one bad byte in a diagnostic
+ * column would take the whole run out of every listing. Paying that for a badge would be
+ * absurd - the operator would lose the run in order to be told something about it.
+ *
+ * That tolerance is only worth having if it is contained, which is what this pins: the run is
+ * still there, its identity, lifecycle and frozen ask are still readable, and the verdict alone
+ * degrades to the same "not classified" a legacy row already means. The legacy test above
+ * covers an ABSENT column; this covers a present one this build cannot read, which is the state
+ * a partial restore or a newer daemon's payload actually produces.
+ */
+test("a verdict this build cannot read costs the badge and never the run", () => {
+  clearWorkflowTables(db);
+  const binding = provenanceBinding("provenance-corrupt-binding");
+  store.createInitialSubmission(
+    {
+      id: "provenance-corrupt-run",
+      binding,
+      triggerSource: "manual",
+      triggerKey: "provenance-corrupt-trigger",
+      now: 11,
+      intent: provenanceIntent(HUMAN_ASK),
+    },
+    {
+      id: "provenance-corrupt-submission",
+      triggerSource: "manual",
+      triggerKey: "provenance-corrupt-trigger",
+      context: {},
+      evidence: {},
+      now: 11,
+    },
+  );
+  const healthy = store.getRun("provenance-corrupt-run");
+  assert.equal(healthy?.intentProvenance?.verdict, "objective", "the fixture starts classified");
+
+  const damaged = [
+    // A truncated write: not JSON at all.
+    { label: "invalid JSON", payload: '{"verdict":"objective",' },
+    // Parses, and says something this build has no meaning for - a newer daemon's vocabulary.
+    { label: "unknown verdict", payload: JSON.stringify({
+      verdict: "suspicious", signals: [], reason: "from a newer build", classifiedAt: 11,
+    }) },
+    // Parses, uses only known words, and CONTRADICTS itself: the verdict is not the
+    // highest-precedence signal beside it. The schema refuses this rather than picking a half.
+    { label: "verdict disagreeing with its signals", payload: JSON.stringify({
+      verdict: "objective", signals: ["automation"], reason: "both and neither", classifiedAt: 11,
+    }) },
+    // Structurally wrong where the column is meant to be an object.
+    { label: "an array", payload: "[]" },
+  ];
+
+  for (const { label, payload } of damaged) {
+    db.prepare(`UPDATE workflow_runs SET intent_provenance_json = ? WHERE id = ?`)
+      .run(payload, "provenance-corrupt-run");
+    const run = store.getRun("provenance-corrupt-run");
+    assert.ok(run, `${label} must not erase the run`);
+    assert.equal(run.intentProvenance ?? null, null, `${label} must read as unclassified`);
+    // Contained: everything else on the row still reads, so the run stays operable rather than
+    // becoming a second kind of damaged that nobody can act on.
+    assert.equal(run.id, "provenance-corrupt-run");
+    assert.equal(run.status, "capturing", `${label} must not disturb the lifecycle`);
+    assert.equal(run.currentPhase, "capturing");
+    assert.equal(run.intentState, "frozen", `${label} must not touch the frozen ask`);
+    assert.equal(run.intent?.rawGoal, HUMAN_ASK);
+    // And it is still reachable the way a listing reaches it, not just by id - which is the
+    // failure mode being ruled out, since a throwing read is what removes a run from those.
+    assert.equal(
+      store.listRuns().some((row) => row.id === "provenance-corrupt-run"),
+      true,
+      `${label} must leave the run in the fleet listing`,
+    );
+    assert.equal(store.activeRunForBinding(binding.id)?.id, "provenance-corrupt-run");
+  }
+
+  // The damage is the column's alone: a well-formed verdict written back reads again, so
+  // nothing about the tolerance is sticky.
+  db.prepare(`UPDATE workflow_runs SET intent_provenance_json = ? WHERE id = ?`).run(
+    JSON.stringify({
+      verdict: "automation",
+      signals: ["automation"],
+      reason: "restored by hand",
+      classifiedAt: 12,
+    }),
+    "provenance-corrupt-run",
+  );
+  assert.equal(store.getRun("provenance-corrupt-run")?.intentProvenance?.verdict, "automation");
 });

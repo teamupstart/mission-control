@@ -191,6 +191,7 @@ export const WORKFLOW_RUN_PHASES = [
   "unchanged_evidence_exhausted",
   "unchanged_repository",
   ...WORKFLOW_INSPECTOR_GATE_PHASES,
+  "evidence_reconciliation_error",
 ] as const;
 
 /**
@@ -267,6 +268,7 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   external_artifact_mismatch: ["blocked"],
   failed_outcome: ["failed"],
   image_evidence_capture: ["blocked"],
+  evidence_reconciliation_error: ["blocked"],
   infrastructure_error: ["blocked"],
   invalid_version: ["failed"],
   missing_workflow_version: ["failed"],
@@ -302,6 +304,175 @@ export const WORKFLOW_RUN_PHASE_STATUSES: Record<
   inspector_unadopted_pr: ["waiting_for_pr"],
   inspector_working_tree_not_pushed: ["waiting_for_session"],
 };
+
+/**
+ * Why a stopped run stopped, as a short clause to hang off its status word.
+ *
+ * Deliberately a different grain from the whole-sentence maps on a run's own page: these are
+ * three or four words for a triage column that is 240px of 10px mono. "Blocked" alone is the
+ * complaint this map answers - it is true of thirty rows at once and actionable on none of
+ * them.
+ *
+ * `phase` is a free `string` and NOT a union: `orphanBinding` and every `setRunState` caller
+ * write their own reason code into it, and a row written by a newer daemon may name a phase
+ * this build has never heard of. So the lookup FALLS BACK to `phase.replaceAll("_", " ")`,
+ * and an unmapped code has to degrade to readable text rather than to `undefined`.
+ *
+ * It lives HERE, beside the phase registry, for two reasons that used to pull against each
+ * other. The registry is what `blockedPhaseClauseGaps` walks, so the vocabulary and the
+ * phases it must cover cannot drift into separate modules. And `alerts.ts` runs in the
+ * daemon as well as the browser: while this map sat in `src/web/`, the notification fired at
+ * the moment a run blocked printed the raw phase through its own hand-rolled copy of the
+ * fallback, so the alert and the triage column disagreed about one field by construction.
+ *
+ * A clause that merely restates its own identifier is the defect wearing a map key, which is
+ * why `blockedPhaseClauseGaps` rejects one. `delivery_blocked` and `delivery_refused` were
+ * mapped for a release to values character-for-character identical to the fallback, and no
+ * reader saw a difference.
+ */
+const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
+  session_disappeared: "session gone",
+  round_limit: "out of rounds",
+  // Written by the gate as an EVENT kind today rather than as a phase (the phase it sets is
+  // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
+  // it means a later code change cannot silently produce "inspector round limit" prose.
+  inspector_round_limit: "out of GitHub Inspector rounds",
+  infrastructure_error: "review execution failed",
+  evidence_reconciliation_error: "criterion mapping unavailable",
+  inspector_findings: "GitHub Inspector findings",
+  inspector_disabled: "GitHub Inspector off",
+  inspector_pr_closed: "PR closed",
+  inspector_head_mismatch: "head moved",
+  inspector_gate_context_invalid: "gate context lost",
+  // The gate is pinned to one pull request and the session now proposes another, so the
+  // switch is refused rather than followed. Named for the STATE a reader has to resolve -
+  // two pull requests, one of them pinned - not for the refusal, which the status word
+  // beside it already carries.
+  inspector_pr_switch_refused: "pinned to a different PR",
+  // The three delivery blocks in one vocabulary, because their remedies differ and the
+  // status word cannot tell them apart. `deliveryBlock` refuses BEFORE the first byte, so
+  // nothing was typed; `delivery_refused` is the one case with positive evidence that an
+  // attempted write did not land (`pasted === false`); uncertain is neither.
+  delivery_blocked: "packet never sent",
+  delivery_refused: "pane refused the write",
+  delivery_uncertain: "delivery unconfirmed",
+  // Both prepare paths failed while BUILDING a packet, before any destination was involved.
+  // Spelled apart because the pull-request handoff is the one an operator can also perform
+  // by hand, and a reader who cannot tell which packet failed cannot tell that.
+  delivery_prepare_error: "packet not prepared",
+  pr_handoff_prepare_error: "PR handoff not prepared",
+  // `schedulePreparedDelivery` re-drives a packet that was already prepared - after a
+  // restart, or when a sibling repository's turn frees up - and threw. The packet still
+  // exists, which is what separates this from the two above.
+  delivery_recovery_error: "packet resend failed",
+  stale_capture: "evidence went stale",
+  capture_error: "capture failed",
+  // NOT "evidence image changed", which names one of the dozen codes
+  // `WorkflowImageEvidenceError` carries - changed, missing, a symlink, an unsupported MIME
+  // type, over the aggregate byte limit. What is true of every one of them is that capture
+  // re-opened what a session registered and would not use it. Run detail names the specific
+  // code; this column says which half of the run to look at.
+  image_evidence_capture: "registered evidence refused",
+  // `engine.recover` writes this for a run caught mid-capture, with the error "Evidence
+  // capture was interrupted by daemon restart; submit again". The restart is the fact the
+  // operator needs - nothing about the run or its evidence was wrong.
+  capture_interrupted: "daemon restarted",
+  // The manager's two refusals for an evidence snapshot that did not move between rounds. Both
+  // were missing, so a run parked on either printed the raw phase code through the fallback
+  // below - "unchanged evidence exhausted" - in the one column whose whole job is being read.
+  unchanged_evidence: "evidence unchanged",
+  unchanged_evidence_exhausted: "evidence never changed",
+  // Borrowed verbatim from `runRefusedSentence`'s "same commit, same working tree" rather
+  // than invented beside it: this is the same refusal said shorter, and two vocabularies for
+  // one fact is what a reader has to reconcile.
+  unchanged_repository: "same commit and tree",
+  // The binding paused because the bound session started a different conversation, so the
+  // turn this run was reviewing can no longer be attributed. "The session's conversation was
+  // replaced" is already how `ACTION_BLOCK_SENTENCES` words it.
+  conversation_changed: "conversation replaced",
+  // A check node's retry is WITHHELD while its pooled worktree's lease is unresolved, and the
+  // reclamation pass schedules it the moment it can. Named for the withheld retry rather than
+  // the lease, which is internal machinery an operator has no handle on - and self-clearing,
+  // so this is the rare clause that describes a wait rather than a dead end.
+  check_cleanup_unresolved: "check retry withheld",
+  // NOT "action could not run": half the codes reaching `blockSessionAction` are raised after
+  // the packet was delivered and the turn began - `session_lost`, `conversation_changed`,
+  // `capture_failed` - and only the other half (`prompt_too_large`, `adapter_unavailable`,
+  // `delivery_refused`) mean it never started. What holds for all of them is that no result
+  // came back.
+  session_action_blocked: "action did not finish",
+  // An externally sourced submission is refused when the checkout is not where its caller
+  // promised: `expectationMismatch` compares HEAD and, when the caller asked for it, a clean
+  // working tree. Both halves are named because restoring the commit and cleaning the tree
+  // are different actions.
+  external_artifact_mismatch: "wrong commit or dirty tree",
+  // Stated as the budget it ran out of, matching `round_limit` above, because the cap and the
+  // repair-round cap are the two an operator meets and telling them apart is the whole point.
+  // "refinement" is this product's own word for the retry - the readiness card already prints
+  // "This round has spent its evidence preflight refinements".
+  preflight_refinement_exhausted: "out of evidence refinements",
+  // Not a block at all: the binding was reattached to a live session and the run is parked
+  // until somebody opens the next round. The clause says what HAPPENED; the remedy button
+  // beside it says what to do about it, which is why this is not "reattached, needs
+  // resubmit" - the second half would be the button repeating itself into a column that
+  // cannot hold it.
+  reattached_resubmit_required: "reattached",
+};
+
+/** The short cause for `phase`, or the phase code made readable when it is unmapped. */
+export function blockedPhaseClause(phase: string): string {
+  return BLOCKED_PHASE_CLAUSES[phase] ?? blockedPhaseFallback(phase);
+}
+
+/** What an unmapped phase renders as. One spelling, so no two surfaces can disagree. */
+function blockedPhaseFallback(phase: string): string {
+  return phase.replaceAll("_", " ");
+}
+
+/**
+ * Every blocked-capable phase that still renders as its own identifier, with why.
+ *
+ * The guard behind the vocabulary, exported so a test can state the rule once rather than
+ * re-deriving it. A phase is added to `WORKFLOW_RUN_PHASES` and `WORKFLOW_RUN_PHASE_STATUSES`
+ * by whoever needs to write it, and nothing about that edit mentions this map - so the
+ * DEFAULT for a new blocked phase is to ship unnamed, printing `preflight_refinement_exhausted`
+ * at an operator through a fallback that is silent and plausible-looking.
+ *
+ * Two kinds of gap, because a key-existence check is known to be insufficient here rather
+ * than suspected to be: `delivery_blocked` and `delivery_refused` carried entries whose value
+ * was character-for-character what the fallback already produced, so mapping them changed
+ * nothing a reader saw.
+ *
+ * ONE-DIRECTIONAL on purpose. The map legitimately holds `unchanged_evidence` and
+ * `reattached_resubmit_required`, which are `waiting_for_session` phases rather than blocked
+ * ones, because the triage column also renders parked runs. Every blocked-capable phase owes
+ * a clause; not every clause owes a blocked-capable phase.
+ */
+export function blockedPhaseClauseGaps(): { phase: WorkflowRunPhase; problem: string }[] {
+  const gaps: { phase: WorkflowRunPhase; problem: string }[] = [];
+  for (const phase of WORKFLOW_RUN_PHASES) {
+    if (!WORKFLOW_RUN_PHASE_STATUSES[phase].includes("blocked")) continue;
+    const clause = BLOCKED_PHASE_CLAUSES[phase];
+    if (clause === undefined) {
+      gaps.push({
+        phase,
+        problem: `has no BLOCKED_PHASE_CLAUSES entry, so it renders as "${
+          blockedPhaseFallback(phase)}". Add three or four words naming the CAUSE a reader `
+          + "can act on, grounded in the code that writes the phase.",
+      });
+      continue;
+    }
+    if (clause === blockedPhaseFallback(phase)) {
+      gaps.push({
+        phase,
+        problem: `is mapped to "${clause}", which is exactly what the unmapped fallback `
+          + "already produces. An entry that restates its own identifier adds a map key and "
+          + "changes nothing a reader sees; write one that beats the fallback.",
+      });
+    }
+  }
+  return gaps;
+}
 
 /**
  * The keys each declared phase's own detail may carry.
@@ -374,7 +545,9 @@ export const WORKFLOW_RUN_PHASE_DETAIL_KEYS: Record<WorkflowRunPhase, readonly s
     "requireCleanWorktree",
   ],
   failed_outcome: [...PERSONA_VERDICT_KEYS, "label", "completionPolicy"],
-  image_evidence_capture: ["error", "code"],
+  // Allowed, never required, so a row written before the identity existed keeps decoding.
+  image_evidence_capture: ["error", "code", "itemName", "itemClientId"],
+  evidence_reconciliation_error: ["submissionId", "error"],
   infrastructure_error: ["nodeId", "attempts", "error"],
   invalid_version: ["error"],
   missing_workflow_version: ["error"],
@@ -438,6 +611,31 @@ export interface WorkflowCheckCleanupBlock {
 }
 
 /**
+ * Every phase a run blocks in when evidence capture refused the round, as a closed set.
+ *
+ * `external_artifact_mismatch` is deliberately absent: it records the two commits it compared
+ * rather than an `error` sentence, so it is explained from other fields.
+ */
+export const WORKFLOW_CAPTURE_FAILURE_PHASES = [
+  "capture_error",
+  "capture_interrupted",
+  "image_evidence_capture",
+  "stale_capture",
+] as const satisfies readonly WorkflowRunPhase[];
+
+/**
+ * Why evidence capture refused a round. `error` is required - a payload with no cause decodes
+ * `opaque` rather than becoming a refusal a header would print as a blank claim.
+ */
+export interface WorkflowCaptureFailure {
+  error: string;
+  code: string | null;
+  /** Null together on a row written before the throw site attached them; degrade, never guess. */
+  itemName: string | null;
+  itemClientId: string | null;
+}
+
+/**
  * The closed set of PHASE-SCOPED detail payloads, tagged.
  *
  * Phase-scoped is the distinction that makes this a union at all. `gate_state_json` carries
@@ -455,6 +653,7 @@ export type WorkflowGateDetail =
   | { kind: "none" }
   | { kind: "round_limit"; budget: WorkflowRoundLimitBudget }
   | { kind: "check_cleanup"; block: WorkflowCheckCleanupBlock }
+  | { kind: "capture_failure"; failure: WorkflowCaptureFailure }
   | { kind: "opaque"; detail: WorkflowJson };
 
 export type WorkflowGateDetailKind = WorkflowGateDetail["kind"];
@@ -555,6 +754,24 @@ function checkCleanupBlock(
   return { nodeId, attempts, error: typeof error === "string" ? error : "" };
 }
 
+/** A string that is actually there. */
+function optionalText(value: WorkflowJson | undefined): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+function captureFailure(
+  detail: { [key: string]: WorkflowJson },
+): WorkflowCaptureFailure | null {
+  const { error, code, itemName, itemClientId } = detail;
+  if (typeof error !== "string" || error === "") return null;
+  return {
+    error,
+    code: optionalText(code),
+    itemName: optionalText(itemName),
+    itemClientId: optionalText(itemClientId),
+  };
+}
+
 /**
  * Read one run's three lifecycle columns as exactly one state.
  *
@@ -623,6 +840,15 @@ function decodeDetail(
     const block = checkCleanupBlock(own);
     return block ? { kind: "check_cleanup", block } : { kind: "opaque", detail: own };
   }
+  // Phase-first, like the branch above: `capture_error` and `image_evidence_capture` persist
+  // the same two keys, so only the phase tells them apart.
+  if (
+    (WORKFLOW_CAPTURE_FAILURE_PHASES as readonly string[]).includes(record.phase)
+    && record.status === "blocked"
+  ) {
+    const failure = captureFailure(own);
+    return failure ? { kind: "capture_failure", failure } : { kind: "opaque", detail: own };
+  }
   return { kind: "opaque", detail: own };
 }
 
@@ -649,6 +875,21 @@ export function workflowCheckCleanupBlock(
   const lifecycle = decodeWorkflowRunLifecycle(record);
   return lifecycle.executable && lifecycle.detail.kind === "check_cleanup"
     ? lifecycle.detail.block
+    : null;
+}
+
+/**
+ * Why capture refused this round, only on a run actually blocked in a capture phase.
+ *
+ * The one typed reader of a capture-family phase detail: add readers here rather than
+ * re-parsing `gateState` at a call site, so two surfaces cannot disagree about one row.
+ */
+export function workflowCaptureFailure(
+  record: WorkflowRunLifecycleRecord,
+): WorkflowCaptureFailure | null {
+  const lifecycle = decodeWorkflowRunLifecycle(record);
+  return lifecycle.executable && lifecycle.detail.kind === "capture_failure"
+    ? lifecycle.detail.failure
     : null;
 }
 

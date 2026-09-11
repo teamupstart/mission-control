@@ -22,15 +22,18 @@ to a local `.md` Blob, and both imports store the document unchanged after deriv
 name from the first level-one heading or the filename. Download URLs are revoked after the
 click. Duplicate creates a new Persona rather than editing the source.
 
-Each saved Persona shows the provider and model its reviews use. Resolution is:
+Each saved Persona shows the provider and model its reviews use by default. Resolution is:
 the Persona's provider override or the app-wide provider; then the Persona's model override,
 `MISSION_WORKFLOW_PERSONA_MODEL`, or that provider's balanced default. A stored provider id
 unknown to an older build is reported and falls back through the shared provider ladder.
 Each attempt is a fresh, tool-less provider call. The actual provider and model are recorded
 on the attempt so history never has to re-resolve them from current settings.
 Published workflow versions freeze those routing fields with the Persona guidance. No-Mistakes
-Review v15 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
+Review v16 pins its eight snapshots to `codex`, with Code Design Reviewer on `gpt-5.6-sol` and
 the other seven on `gpt-5.6-terra`, so app-wide and environment defaults cannot change them.
+
+A workflow can override that default for one reviewer node, without changing the Persona or
+copying it. See [per-node provider and model](#per-node-provider-and-model).
 
 ### Importing a Persona from a file
 
@@ -104,7 +107,7 @@ one immediately.
 | Persona | What it judges |
 |---|---|
 | Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
-| Test Coverage Judge | Whether tests genuinely exercise at least 80% of changed executable code, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
+| Test Coverage Judge | Whether tests appropriately cover changed material executable behavior, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
@@ -155,7 +158,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 14 are preserved for bindings that already pin them, and version 15 is current. There is
+through 15 are preserved for bindings that already pin them, and version 16 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -178,21 +181,20 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the eight built-in Personas wired the way they were written to compose. In version
-15, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the same
-submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
-misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code
-Design Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are
-stage 4. Each group runs in parallel behind its own All-pass Join. Every fail returns to the session
-for repair, and the Pull Request action does not run until all three Persona stages pass.
+Behind it are the eight built-in Personas wired the way they were written to compose. In versions 15
+and 16, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
+misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
+Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
+Each group runs in parallel behind its own All-pass Join. Every fail returns to the session for
+repair, and the Pull Request action does not run until all three Persona stages pass.
 
-Test Coverage Judge requires at least 80% changed-line coverage of executable code, then checks the
-tests themselves for meaningful happy-path, boundary, and exception assertions. A percentage alone
-does not pass: the judge traces setup to the production path and the assertion to its observable
-consequence, specifically looking for tests whose names claim one behavior while their bodies prove
-another. Test Evidence Auditor remains separate and later because it judges whether the requested
-product behavior was demonstrated end to end, not whether the test suite adequately exercises the
-changed code.
+Test Coverage Judge assesses whether the submitted tests appropriately cover changed material
+executable behavior through meaningful happy-path, boundary, and exception assertions. It traces
+setup to the production path and the assertion to its observable consequence, specifically looking
+for tests whose names claim one behavior while their bodies prove another. Test Evidence Auditor
+remains separate and later because it judges whether the requested product behavior was demonstrated
+end to end, not whether the test suite adequately exercises the changed code.
 
 Code Design Reviewer joined that stage in version 11 rather than taking a stage of its own,
 which is what makes it cost one model call per round and no extra wall-clock stage: all three
@@ -226,9 +228,9 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 15 preserve that verified publication
-contract. Versions 10 through 15 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 15.
+would ask for one the run already has. Versions 9 through 16 preserve that verified publication
+contract. Versions 10 through 16 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 16.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -281,16 +283,18 @@ Risk Reviewer with Code Quality Judge in stage 3, then Test Evidence Auditor wit
 Steward in stage 4; version 11 adds Code Design Reviewer to that stage 3; version 12 adds
 Slop Filter to stage 4; version 13 keeps that graph while enabling criterion-mapped evidence
 preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
-with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; and version 15 adds
+with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; version 15 adds
 Test Coverage Judge beside Intent Conformance Judge in stage 2, with the same pinned Codex Terra
-routing as the other non-design reviewers. Every earlier version remains in the
+routing as the other non-design reviewers; and version 16 keeps that graph and routing while
+freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy. Version 15
+retains the percentage-based guidance it was published with. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 15 because it is current. Adopting the newer version on an
+take version 16 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -363,6 +367,63 @@ final gate is GitHub Inspector. It is a projection of the completion policy and 
 no drag handle, no member list, no graph edge and no delete, it is marked `Fixed`, and its
 switches are the ones in the settings rail. End is still where the graph succeeds; GitHub Inspector
 claims that success afterwards. A workflow whose final gate is None shows no footer at all.
+
+### Per-node provider and model
+
+A Persona carries a *recommended* provider and model. A workflow can override that pair for
+one reviewer **occurrence**, and the two are separate settings: the Persona keeps its
+recommendation, every other workflow keeps whatever it was doing, and two nodes naming the
+same Persona in one workflow may run on different models.
+
+Each Persona node offers **Use Persona default** and **Override for this workflow**. The
+default is inheritance, and a workflow written before this feature stores nothing at all -
+absence is what "inherit" is spelled as, so no existing draft, version, binding or run
+changes. The control appears in both editing views and shows the same answer in each: in
+Pipeline it is the reviewer row's **Routing** disclosure, and in Graph it is under the
+selected node's Persona picker.
+
+An override is a **pair**: an explicit provider and a nonempty model, chosen together. It is
+not two independently inherited fields, because a workflow that overrode only the model would
+still resolve its provider from the Persona - so the day someone repointed that Persona at
+another provider, the node would spawn a model id that provider has never heard of. Turning
+the override on seeds the pair from what the Persona resolves to right now, so the choice is
+complete from the start. Changing the provider clears the model and asks for a deliberate one;
+until you pick it, nothing is saved and the node keeps running what it was already running.
+Model ids stay free text under the usual conventions - one absent from the suggestion list is
+allowed, and a provider this build cannot spawn is refused when the draft is saved.
+
+Resolution, in one table:
+
+| Node setting | Provider and model used |
+| --- | --- |
+| No override | The existing Persona resolution, unchanged |
+| Explicit override | The node's own provider and model pair |
+| Override removed in a draft | Live Persona defaults again, app and environment fallbacks included |
+| Published version with no override | The frozen Persona snapshot, with the usual fallbacks where its fields are unset |
+
+Publish freezes the override **beside** the Persona snapshot rather than inside it, so a
+published version can still say which of the two decided. Editing the Persona afterwards
+changes the snapshot a *future* publish would take and never an existing version's explicit
+pair. Changing only an override is an ordinary draft edit: it bumps the draft revision and
+publishes a distinct version, and republishing the same revision is idempotent as always.
+**Published versions** in the right rail prints both lines for every reviewer - the frozen
+Persona default, and the workflow override or its absence.
+
+Selecting a different Persona for a node **resets** it to inheritance: a model chosen for one
+reviewer is not a decision about another. Moving, reordering, duplicating a node, switching
+views, saving, reloading, duplicating the whole workflow, exporting a version, and restoring
+a settings backup all preserve it. Built-in workflows stay read-only: their routing is
+readable and none of it is editable, and **Duplicate** is how you get a copy you own - it
+needs no copies of the Personas.
+
+At run time the node's pair wins over the Persona, the app-wide provider and
+`MISSION_WORKFLOW_PERSONA_MODEL`. It is resolved once per attempt, before the attempt is
+claimed, and that one resolution is what the attempt records, what the CLI is launched with,
+and what the call is billed against - retries and daemon restarts included. A node disabled
+for a run still launches nothing. A known provider that is unavailable on this machine fails
+as infrastructure, exactly as it did before; no other model is substituted. Run detail keeps
+reporting the provider and model the **attempt** recorded, so history is never relabelled by
+a later change to a default.
 
 ### Session actions
 
@@ -466,6 +527,25 @@ The tree comparison is content-semantic rather than commit-semantic. A packaging
 change author, message, parent, or commit id without changing reviewed content. If the published
 tree differs, the action blocks durably with `published_content_changed`; the prior verdict is
 not reused and End is not reached. The content must go through a fresh review before shipping.
+
+**Conditional CI instructions.** Foreman's **Keep sessions on track with CI** preference also
+applies when the daemon prepares a workflow action whose completion is **Pull request**,
+including custom actions and actions frozen in older workflow versions. When selected, the
+runtime envelope tells the session to wait for CI, repair actionable failures on the same
+branch using focused tests, push, and verify the newly pushed head. It extends an older
+instruction that says to stop immediately after opening the PR without rewriting that frozen
+instruction. With the preference off, no CI follow-through policy is added.
+
+The preference is read once per newly prepared packet. Preview, retries, and restart retain
+the recorded payload even if the setting later changes. Foreman's enabled state, mode,
+allowlist, and review-comment preference do not change this instruction choice; the workflow's
+existing delivery authorization still applies. Other completion kinds and on-demand session
+actions receive no CI policy. The existing legacy missing-PR handoff is unchanged.
+
+The instruction is not a new CI completion gate or a replacement for the content-tree proof
+above. Sessions report absent or unavailable checks and concrete external blockers accurately.
+CI repairs and rebases can change the accepted tree and still require a fresh review. Inspector
+comments and merge authority remain with their existing owners.
 
 **Mission Control never polls GitHub for this.** The GitHub Inspector's existing poller is the only
 thing that talks to a provider, and the action reads what it wrote down - which is also why a
@@ -665,6 +745,23 @@ design, edit the mutable draft and publish a new version. Opening a workflow fet
 bounded version metadata; selecting one history entry fetches that immutable graph and its
 exact Persona Markdown from the version route.
 
+**Settings > Workflows > Judge passes** offers **Skip judges that already passed**, enabled
+by default, including for saved settings that predate the option. Each Persona judge node needs
+to pass once within a workflow run: if one passes and another fails, subsequent repair rounds
+reuse the earned pass and run the remaining judges. Runs shows **Not re-run** with a link to the
+round that earned the pass. Disabled nodes and cancelled or unsuccessful attempts do not earn
+passes. Separate runs and separate nodes using the same Persona earn their own passes.
+Adding, editing, or removing critical feedback requires that judge to review again. Once it
+passes under the current feedback, later rounds can reuse that pass.
+
+Turn the checkbox off to run judges again on later repair rounds. If a recheck fails, that
+newer verdict replaces the older pass; turning reuse back on still requires the judge to pass
+again. Changes apply when the next judge is about to start; already running calls keep their
+outcome. Commands retain their own execution budgets, and Session actions and completion
+gates still follow the workflow graph.
+The checkbox appears above the consent controls. **Allowed repositories**, including its Trust
+link, sits below the **Workflow Commands** toggle.
+
 Workflow settings also store binding defaults: Manual or Foreman-complete trigger, Preview
 or Live delivery, and a repair-round limit. Foreman complete plus Preview is the default for
 new workflows. The optional GitHub Inspector final gate and its missing-PR and findings policies are
@@ -746,6 +843,49 @@ a differing opening request as provenance beside the review contract, bounded by
 240,000-character section limit with an explicit truncation marker. That prompt-only bound
 does not alter stored opening requests. These additions do not affect the intent fingerprint.
 
+Resolved human steering is recorded separately and frozen with each new run. The Persona prompt
+and the Intent tab label it as method, sequence and priority context that does not add, remove
+or narrow acceptance criteria. A reviewer can use it to recognize legitimately skipped or
+deferred steps. It never enters criteria compaction or the intent fingerprint, including through
+a matching transcript decision. Capture keeps the newest 50 revisions within 32,000 UTF-8 bytes,
+then drops oldest notes until the entire intent fits its remaining storage budget. Its recorded
+resolved-revision cutoff excludes later classifications. Steering and its cutoff are one optional
+state: both must be present, or both absent for historical snapshots. A present empty list still
+records its cutoff. Existing runs gain no steering retroactively.
+
+The steering log consumes accepted revisions from the Goal pipeline, whose authorship guard
+suppresses daemon-delivered prompt echoes before they enter the pending queue. A later human
+retype remains an accepted instruction even if the transcript still labels the earlier delivery
+as automation. Accepted pending revisions and recorded steering survive restarts. Amendments,
+replacements and unclear instructions are not steering. No historical steering is backfilled.
+
+Creating a run also CLASSIFIES the ask it just froze, in the same transaction, so no run can
+exist without a verdict. The verdict is one of `automation` (the ask matches a payload Mission
+Control types itself - a repair packet, an evidence-preflight packet, a Foreman recovery nudge,
+a wrap-up instruction, an SDK restart continuation), `implausible` (under 24 characters, too
+short to name a subject and a state of doneness), `unreconciled` (an instruction the session
+already accepted is still waiting for the goal refiner, so it may yet replace this objective),
+or `objective` for an ask that tripped nothing. The checks overlap, so the verdict is the
+highest-precedence match in that order and the recorded reason names every check that matched.
+The opening ask of a session is never `unreconciled` on its own account: it becomes the
+objective without the refiner's help.
+
+**The verdict reports and never blocks.** A run whose ask looks wrong still starts, reviews and
+finishes, and the operator decides what to do about it. A non-`objective` verdict appends one
+`run_intent_classified` event at the freeze and draws a badge beside the review contract in run
+detail, with the full reason as the badge's accessible name; `objective` draws nothing, because
+a badge on every healthy run is a badge nobody reads. No existing run is reclassified - a run
+frozen before this existed carries no verdict, which reads as "never measured" rather than as
+healthy.
+
+The `automation` check is deliberately not made redundant by the authorship rule that keeps
+[Mission Control's own turns out of the Goal](sessions.md). That rule works on who delivered a
+turn, spends its recognition on one echo, and holds it in memory; a daemon restart landing
+between a delivery and its echo lets that one turn through as though a human typed it. This
+check works on the text instead, so it still sees a machine-authored ask that arrived by a path
+authorship did not cover, and it is what would make a regression in that rule visible on a
+screen rather than only in a query.
+
 The session Goal stays live and keeps being displayed as the conversation's current objective.
 Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent
 is frozen. Later human input does not amend the frozen ask; an ask that genuinely changed needs
@@ -782,6 +922,10 @@ output or logs. `commandOutputs` instead carries one completed focused command, 
 its exact output directly through the existing evidence tool, so normalized transcripts that omit
 ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
 command-execution endpoint; Check nodes remain the server-observed execution path.
+
+Text artifacts and completed-command outputs share an eight-item limit, with at most 64 KiB
+per artifact and 384 KiB combined. Command and exit-code framing counts toward these byte
+limits. The complete serialized workflow context must also fit its 2,000,000-byte limit.
 
 The same tool and dashboard composer accept `coverage` claims. Each claim carries a stable
 caller-owned criterion id, the criterion text, an author-selected proof class, an issued
@@ -847,6 +991,15 @@ changed, missing, oversized, or invalid source blocks the whole run in the histo
 `image_evidence_capture` recovery phase. Explicit retry of a capture fault revives the same
 submission and therefore the same reserved bytes.
 
+The refusal names the registered item it is about - its display name and the client id a
+re-registration replaces - and the run page states the whole refusal without a disclosure: what
+capture found, which item, that no reviewer ran and no repair round was spent, and that the
+recovery is to register the item again and start the next round. Resuming is not that recovery:
+it revives the same submission and therefore the same immutable reservation, so it re-checks
+the bytes that were just refused and cannot see a re-registered item. A blocked run that has
+been claimed complete again says so beside the refusal; the claim opens no round, and the
+evidence that turn registered is picked up by the next round.
+
 An image whose digest is already frozen and retained references that existing body instead of
 copying it again, so registering the same screenshot in five rounds stores it once. That is a
 rule about bodies, not records: a submission may hold two records with byte-identical content
@@ -896,13 +1049,13 @@ reaching it is recorded as `evidence_carry_truncated` alongside the evidence cou
 re-declared under the same id is the same claim, and the author's current wording wins; a
 different id for the same criterion is a different claim and is retained beside it.
 
-Readiness distinguishes the two. Where a canonical criterion has a claim the author declared on
-this submission, that claim answers for it and the retained ancestry behind it is not read as a
-competing declaration. Two claims the author wrote here for one criterion is still
-`ambiguous_mapping` and still reports, because that is a real question about what they are
-asserting. Where a criterion has no claim of its own, the carried claims answer for it and are
-judged among themselves exactly as before, which is the case inheritance exists for: without it
-a mapping repair regresses a criterion its parent had already proven to `missing_coverage`.
+Readiness persists the effective claim selection separately from retained ancestry. A new
+unique declaration replaces the selected claim for that criterion; two current declarations
+remain ambiguous. A later repair of another criterion retains the earlier selection. Missing
+selected claims or links become gaps instead of reviving an older claim. Each new snapshot
+revalidates its selected claims against its own frozen evidence. Legacy chains reconstruct this
+selection from declaration provenance through at most 128 preceding submissions; uncertain or
+broken lineage does not invent a winner.
 
 A refinement child repairs a coverage mapping inside one round, so its tree is its parent's
 tree and the carry is unverified. A new repair round's tree has moved, so each carried item is
@@ -916,16 +1069,33 @@ unchanged-evidence refusal: that comparison reads evidence by digest, caption, a
 than by frozen row id.
 
 Coverage is reserved in the same transaction as its linked evidence and copied to an immutable
-submission table. After evidence bytes are safely captured, the source compaction semantically maps
-the author's claim ids to daemon-assigned canonical ids even when their wording differs. Stable
-canonical identity, text, materiality, and proof suggestion live in `canonicalCriteria`; the current
-packet's claim ids live separately in `criterionMappings`. For a reused source, the mapped prior
-claim text becomes the exact normalized bridge to replacement claim ids, while the prior id itself
-is never reused. Nonmatching, changed, duplicate, or otherwise ambiguous claims therefore remain
-gaps instead of inheriting readiness. Links resolve only against evidence frozen for that
-submission, and the daemon persists a deterministic readiness result with `ready`, `gaps`, or
-`unavailable` status. Historical snapshots with embedded matches normalize into the separate
-mapping representation when read.
+submission table. After evidence bytes are safely captured, mapping first uses normalized exact
+matches and the prior source bridge. Unresolved material criteria use semantic reconciliation.
+Stable canonical identity, text, materiality, and proof suggestion live in `canonicalCriteria`;
+raw matches live in `criterionMappings`, with effective choices in `coverageSelection`.
+
+Reconciliation records its input fingerprint, completion status, consumed attempts and failure
+cause separately from readiness. Each operation allows two actual provider executions, including
+parse correction and interrupted calls, with a 45-second timeout per call. Successful identical
+inputs are cached, including a successful no-match result. A failed mapping preserves deterministic
+matches and, when material claims remain unresolved under enforced policy, parks the run in
+`evidence_reconciliation_error` before any Persona or author repair delivery. A successful mapping
+that finds no claim remains an ordinary author evidence gap.
+
+Eligible attached runs expose an explicit evidence recovery action. It reserves one idempotent
+`evidence_recovery` segment in the same round using frozen criteria and evidence, without a live
+recapture, new staged proof, or an author refinement charge. It also repairs proven inherited
+selection regressions and permits inspected legacy reviews to be re-reviewed. Old snapshots and
+verdicts stay intact, pending repair deliveries are retired, and in-flight or uncertain deliveries
+prevent recovery. Completed, cancelled, detached, superseded and pruned snapshots cannot recover.
+Each run can reserve at most three recovery segments across all rounds. The store checks that
+durable count atomically with reservation; replaying a request remains idempotent, while a new
+request after exhaustion is refused without provider work. Exhaustion keeps the failed run
+blocked and withdraws its recovery action. This budget is separate from author refinements.
+No historical runs are resumed in bulk.
+
+Links resolve only against evidence frozen for that submission. Historical snapshots with embedded
+matches normalize into the separate mapping representation when read.
 Run detail shows both the frozen author claims and canonical reconciliation. Full criterion
 text does not enter fleet summaries.
 
@@ -945,7 +1115,7 @@ every round and segment. Submission events record whether criteria were reused a
 immutable source supplied them. A run created before the intent snapshot existed keeps the older
 behaviour: it compacts per submission and a preflight child reuses its parent's criteria only
 when their intent fingerprints match. The LLM ledger records stable extraction as
-`context_compaction`, source claim mapping as `context_reconciliation`, and no call for
+`context_compaction`, semantic claim mapping as `context_reconciliation`, and no call for
 deterministic reuse.
 The operator may instead continue through the run detail after entering a reason and acknowledging
 that Test Evidence Auditor can still reject the packet. That append-only override and the original
@@ -955,9 +1125,10 @@ One round may spend at most two consecutive `evidence_preflight` refinements. A 
 session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
 the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
 submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
-alone. The waiting submission stays waiting, so the run detail keeps showing the evidence-readiness
-decision panel and the operator can still continue despite gaps from the block; the retry control is
-withdrawn with the loop it would restart. Resubmitting the run opens an ordinary new round instead.
+alone. The waiting submission stays waiting, so the run record opens on its **Evidence** tab with the
+readiness decision on screen, and the operator can still continue despite gaps from the block; the
+retry control is withdrawn with the loop it would restart. Resubmitting the run opens an ordinary
+new round instead.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another
@@ -972,11 +1143,29 @@ version that opts in; v14 retains that policy while changing reviewer routing, a
 through 12 remain byte-compatible and non-enforcing.
 
 Persona prompts put the operator's intent, decisions, constraints, and acceptance criteria
-before repository evidence. Prior Persona feedback is labeled as non-human input and all
-captured evidence is fenced as untrusted data. A strict `pass` verdict requires approval
-details; a strict `fail` verdict requires concrete requested changes and evidence references.
-Malformed output, provider failures, and timeouts are infrastructure errors, never Persona
-fail verdicts.
+before repository evidence. A versioned daemon readiness projection is frozen on each new
+Persona attempt and included in its input fingerprint. It identifies the submission, round,
+segment, policy, structural status, criterion IDs, selected claims and evidence references.
+Unknown legacy readiness stays unknown; off-policy and overridden results never imply enforced
+approval. Readiness proves structural registration, not substantive correctness.
+
+Prior Persona feedback carries its source submission, round, segment, attempt and timestamp when
+known. The bounded history prefers recent observations and reports omitted entries. Legacy
+feedback has unknown origin and resolution. Current registration facts supersede contradictory
+historical registration requests without removing human requirements or substantive objections.
+
+New Persona failures declare a finding basis: `substantive`, `coverage_registration`, or
+`evidence_access`. The latter two are review execution problems and cannot emit author repair
+receipts. Mixed responses are rejected whole, never trimmed into approval. One correction shares
+a durable maximum of two provider executions with parsing, transport and restart recovery.
+Exhaustion pauses in `infrastructure_error`; an explicit infrastructure retry starts a new bounded
+operation with the same frozen review input. Rejected responses remain inspectable on the attempt.
+Stored legacy verdicts and Check outcomes remain readable without the new Persona discriminator.
+
+The timeline distinguishes `persona_contract_violation` and `persona_contract_outcome` from the
+existing broad `readiness_review_disagreement` signal. A valid substantive failure after ready
+preflight still follows the normal repair path. A declared basis cannot guarantee semantic
+honesty; prose is never rewritten or automatically passed by keyword matching.
 
 Each transcript turn may contribute up to 8,000 UTF-8 bytes. An oversized turn keeps an
 explicitly marked head and tail with the exact omitted-byte count. The aggregate transcript
@@ -1075,13 +1264,27 @@ SessionAction ids beside the older human-facing Persona names and Action wait re
 resolve same-name shadows and identify one action stage exactly; the browser never fetches every
 workflow to reconstruct either answer.
 
-Each submission in run detail has its own image-evidence ledger. It records the thumbnail,
-caption, repository scope, full sha256 digest, byte size, MIME type, and whether the retained
-body still exists. Image bodies load lazily through the authenticated dashboard route and the
-browser releases their object URLs when the ledger leaves the page. Retention cleanup changes
-the body to **Pruned** without erasing the metadata or digest that explains what reviewers saw.
-A retained image offers **Use in next review**, which stages a fresh immutable copy in the
-binding's composer. A pruned image keeps its audit record but cannot be reused.
+Each submission in run detail has its own evidence record, and the run record's **Evidence** tab
+is where it reads. A stat strip carries the readiness verdict, the frozen author claims, every
+canonical criterion left with an unresolved gap, its warnings and the image count. A gap is
+reported once, in the place that can act on it: against a criterion the reconciliation matched to
+an author claim it prints on that claim's row, and against a criterion it matched to nothing it
+gets a named block of its own, because there is no row for it to sit under. The **Gaps** figure
+counts both, so it is not the length of that block. Frozen images are a thumbnail strip above the
+claims, and a claim row that cites one carries a small copy of it, so a screenshot sits beside the
+claim it proves. Clicking a thumbnail opens it full size,
+with its caption, item id, repository scope, MIME type, byte size, availability and full sha256
+digest, plus **Use in next review**, which stages a fresh immutable copy in the binding's composer.
+Image bodies load lazily through the authenticated dashboard route - one request per image whatever
+draws it - and the browser releases their object URLs when the pane leaves the page. Retention
+cleanup changes the body to **Pruned** without erasing the metadata or digest that explains what
+reviewers saw; a pruned image keeps its audit record but cannot be reused.
+
+An image is tied to the claim citing it through the reconciliation's own evidence links, which are
+the only place the browser is sent both the author's public item id and the daemon's frozen image
+id. A submission whose reconciliation resolved neither - one that came back `unavailable`, or a
+claim no canonical criterion matched - shows its images without an item id and without a "cited by"
+line rather than guessing at one.
 
 ### Watching a run
 
@@ -1329,10 +1532,11 @@ chip never folds its stage to **Failed**; the stage counts it with the not-run g
 
 Verdicts are cards: the outcome, the reviewer, its summary, its approval rationale or
 requested changes with evidence references, and the runner, model, duration and cost that
-actually ran. GitHub Inspector gate state, Foreman completion claims and repair deliveries are the
-same card with a different accent. Durable failures read as sentences - "The write may or may
-not have landed" - with the machine code kept beside them for a bug report, never instead of
-them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
+actually ran. GitHub Inspector gate state and Foreman completion claims are ledgers rather than
+cards, sharing the run record's Completion tab; repair deliveries are a ledger in its Deliveries
+tab. Durable failures read as
+sentences - "The write may or may not have landed" - with the machine code kept beside them for
+a bug report, never instead of them. The timeline names Personas and rounds rather than printing payload JSON; the run id and
 the complete durable JSON records sit beside it under **Audit and bug reports**, collapsed,
 because they answer a bug report rather than a reader.
 
@@ -1369,8 +1573,10 @@ is the same unexplained click the grant used to produce.
   It replays the snapshot already taken, so it names the images frozen into it.
 
 When there is no move, the header says so **in a sentence** and names where the decision
-actually lives: "Confirm or discard it in Deliveries below", "they are listed under GitHub Inspector
-final gate below". A control that cannot run is never left standing in place of an explanation.
+actually lives: "Confirm or discard it in the run record's Deliveries tab", "they are listed in
+the run record's Completion tab". It names a tab rather than a direction, because the records it
+points at are offered rather than stacked. A control that cannot run is never left standing in
+place of an explanation.
 That covers the states nothing argument-free revives - the bound session is gone, the run is
 externally sourced - and the states blocked on a judgement the page carries the material for
 further down.
@@ -1821,6 +2027,27 @@ push after pinning requires a fresh full submission. A stale ledger timestamp or
 alone, including one loaded after a daemon restart, cannot satisfy the gate; the next normal
 GitHub Inspector observation must first prove which head is current.
 
+**The gate reads in the run record's Completion tab**, which is present only on a run that has
+an Inspector gate or a Foreman completion claim - most runs have neither and are offered no such
+tab. A stat strip carries the gate state, the open and resolved finding counts, the adopted pull
+request with its observed state, and the Inspector's review round; the counts are the ledger rows
+the table under them draws, not the Inspector's own tallies, which keep their own fields in the
+ledger disclosure. Findings are a table - severity, title, `path:line`, round and status - with
+one row each. A finding that is not resolved is why the gate has not passed, so its body is on
+screen rather than behind its row's control; a resolved one opens its body and the fingerprint the
+gate tracks it by on request. The label carries the open-finding count in amber. Findings never
+appear in the [review worklist](#the-review-worklist), which is built from Persona verdicts only,
+so this is the one place they are listed. The findings policy, the missing-PR policy and
+**Open GitHub Inspector settings** sit at the foot of the same tab.
+
+Foreman completion claims share that tab, one row each: the outcome chip, the completion kind,
+the once-only guard and the claim summary's first line, with the whole summary as the row's
+accessible description. A sentence under them counts the outcomes, so a run that recorded the
+same completion five times reads as "5 claims on this run: 4 already counted, 1 started the run"
+rather than as five near-identical paragraphs. Each outcome's own sentence - what a claim in that
+state did, or why it was refused - is stated **once** under that count rather than repeated on
+every row sharing it.
+
 Once the matching head is pinned, the durable GitHub Inspector ledger decides the state:
 
 - A pending, failed, or backed-off review remains waiting and shows its current posture and retry.
@@ -1829,12 +2056,13 @@ Once the matching head is pinned, the durable GitHub Inspector ledger decides th
 - A completed current-head review with zero findings completes the workflow.
 - Closing or switching the PR blocks instead of accepting old approval.
 
-When an Inspector-only run has already spent its repair budget, run detail keeps two records
-visible. **Last workflow observation** is the immutable reason that run stopped: its failed
-head, observed head, wait reason, observation time, and historical finding fingerprints.
+When an Inspector-only run has already spent its repair budget, the gate keeps two records.
+**Last workflow observation** is the immutable reason that run stopped: its failed head,
+observed head, wait reason, observation time, and historical finding fingerprints.
 **Current Inspector** is the mutable ledger the Inspector owns now: its open pull-request
 state, observed and reviewed heads, review posture, current mode, finding tallies, backoff, and
-error. Resolving a finding or reviewing a later head updates only the second record; it never
+error. Both sit inside the Completion tab's **Gate ledgers** disclosure, which is also where a
+live gate's own nine facts read. Resolving a finding or reviewing a later head updates only the second record; it never
 rewrites the failed observation into a historical pass.
 
 A clean current record is actionable only when the pull request is open, the observed and
@@ -2011,6 +2239,15 @@ For an offline backup, stop Mission Control and copy
 and `-shm` files when present. Run and version exports are portable audit artifacts, not a database
 restore format. Restore the SQLite files only into a stopped daemon using the same or a newer
 Mission Control build.
+
+Evidence recovery adds a durable `evidence_recovery` refinement reason, and the larger text
+budget permits snapshots older builds cannot parse. Upgrade by stopping the old daemon before
+starting the new build; state ownership prevents overlapping daemons. To downgrade after writing
+new recovery or larger-evidence snapshots, stop Mission Control and restore an offline backup
+taken before the upgrade, then start the matching older build. Do not open the upgraded database
+with that build or relabel recovery rows as author refinements. A downgrade loses history recorded
+after the backup; retain exports for audit before restoring. Settings-only backups do not restore
+workflow history.
 
 ### Canvas and accessibility controls
 

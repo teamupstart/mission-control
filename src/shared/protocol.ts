@@ -80,6 +80,7 @@ import {
   DEFAULT_WORKFLOW_RESUMPTION_POLICY,
   DEFAULT_WORKFLOW_EVIDENCE_READINESS_POLICY,
   EVIDENCE_REF_KINDS,
+  PERSONA_FINDING_BASES,
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
   SESSION_ACTION_COMPLETION_KINDS,
@@ -101,7 +102,10 @@ import {
   WORKFLOW_EVIDENCE_READINESS_WARNING_CODES,
   WORKFLOW_MISSING_PR_ACTIONS,
   WORKFLOW_EXECUTION_LIMITS,
+  WORKFLOW_STEERING_LIMITS,
   WORKFLOW_GATE_WAIT_REASONS,
+  WORKFLOW_GOAL_PROVENANCE_SIGNALS,
+  WORKFLOW_GOAL_PROVENANCE_VERDICTS,
   WORKFLOW_NODE_ATTEMPT_STATES,
   WORKFLOW_RESUMPTION_POLICIES,
   WORKFLOW_RUN_STATUSES,
@@ -117,6 +121,7 @@ import {
 import type {
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceReadinessResult,
+  WorkflowPersonaReviewInput,
   WorkflowEvidenceRepositoryScope,
   WorkflowJson,
 } from "./workflow.ts";
@@ -291,7 +296,9 @@ export const StatusLineIngestSchema = z.object({
       tokens: z.number().optional(),
     })
     .optional(),
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  effort: EffortLevelSchema.optional(),
+  /** A harness-native effort with no equivalent in the shared picker vocabulary. */
+  nativeEffort: z.string().min(1).max(40).optional(),
   thinkingEnabled: z.boolean().optional(),
   /**
    * The subscription's rate-limit windows, lifted from `payload.rate_limits`.
@@ -921,12 +928,22 @@ const TaskDependenciesSchema = z
 export const ModelIdSchema = z
   .string()
   .max(80)
-  // `/` is allowed only in the INTERIOR, never as the first character, so a provider-qualified
-  // id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the provider) passes while
-  // a path such as `../../etc/passwd` or a bare `-rf` still fails on the leading-char class.
+  // `/` and `:` are allowed only in the INTERIOR, never as the first character, so a
+  // provider-qualified id like `openai/gpt-5.5` (Pi is multi-provider and its ids carry the
+  // provider) passes while a path such as `../../etc/passwd` or a bare `-rf` still fails on
+  // the leading-char class.
+  //
+  // `:` is here because Amazon Bedrock's own ids carry a version suffix - measured against
+  // Pi 0.85.1, 41 of the 121 models it lists for `amazon-bedrock` are of the shape
+  // `anthropic.claude-sonnet-4-5-20250929-v1:0`. Excluding it did not reject those ids at
+  // the edge, it dropped a third of that provider's catalog silently: the row never reached
+  // the picker, so the model simply did not exist as far as an operator could tell. It is
+  // no weaker than the rest of the class - not whitespace, not a control character, not a
+  // path separator, and not able to start the string.
+  //
   // Terminal adapters own argv preservation; this schema owns the persisted id vocabulary.
   // Test: `dispatch-model.test.ts`.
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/, "model id must be alphanumeric with . _ - / only");
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._/:-]*$/, "model id must be alphanumeric with . _ - / : only");
 
 /** Bounds for the aggregate harness model catalog carried over HTTP. */
 export const HARNESS_MODEL_CATALOG_LIMITS = {
@@ -2018,9 +2035,8 @@ export type StandingInstructionsView = z.infer<typeof StandingInstructionsViewSc
  * must not send its whole draft map - doing so would persist every other repository's
  * unsaved text as though the operator had committed to it.
  *
- * The empty string is a real value here and is NOT a removal: it means "send nothing for
- * this repository", which beats the machine-wide default. That is the whole reason the
- * removal spelling is `null` rather than `""`.
+ * The empty string stores an entry with no repository addition. The default still applies.
+ * Removal is `null`, which can reveal a shorter matching repository key.
  */
 export const StandingInstructionsUpdateSchema = z
   .object({
@@ -2322,10 +2338,16 @@ const StoredTerminalBackendSchema = z.string().nullable();
 const TerminalBackendSchema = z.enum(TERMINAL_BACKEND_IDS);
 
 /**
- * The runtime an untouched installation uses for each harness. Only harnesses with a
- * declared embedded driver start on the Agent SDK; Pi remains terminal-backed until it
- * has one. Kept beside the schema so the server's first read and the browser's pre-load
- * state cannot disagree.
+ * The runtime an untouched installation uses for each harness.
+ *
+ * Pi stays TERMINAL, and that is now a choice rather than an absence: it has a managed
+ * driver, and flipping the default would move every existing Pi dispatch onto a runtime
+ * whose provider credentials, project-trust posture and in-process shell isolation the
+ * operator has not looked at yet. It is offered in the Harnesses panel and taken on
+ * purpose. Claude and Codex keep the Agent SDK they shipped on.
+ *
+ * Kept beside the schema so the server's first read and the browser's pre-load state
+ * cannot disagree.
  */
 export const DEFAULT_HARNESSES_SESSION_RUNTIMES = {
   claude: "sdk",
@@ -2458,10 +2480,11 @@ export const HarnessesConfigSchema = z.object({
    * How a dispatched session of each harness is DRIVEN: through a terminal pane, or
    * embedded through the harness's own programmatic interface.
    *
-   * New installations use the Agent SDK for Claude and Codex, the two harnesses with
-   * embedded drivers. Pi stays terminal-backed because it has no SDK driver. Scoped to
-   * dispatch like every other key in this blob: a session an operator started themselves
-   * is pane-backed whatever this says, because we do not own their pty.
+   * New installations use the Agent SDK for Claude and Codex. Pi has one too and still
+   * ships terminal-backed - see `DEFAULT_HARNESSES_SESSION_RUNTIMES` for why that is a
+   * decision rather than a gap. Scoped to dispatch like every other key in this blob: a
+   * session an operator started themselves is pane-backed whatever this says, because we
+   * do not own their pty.
    *
    * A stored value this build cannot read, or one naming a runtime the harness does not
    * offer, falls back to `"terminal"` and says so - see `resolveDispatchRuntime`. Read at
@@ -2827,12 +2850,17 @@ export type PipelineInstallerLaunchBody = z.infer<typeof PipelineInstallerLaunch
  * The daemon resolves any provider checkout and owns argv, shell text, cwd, environment, and
  * the window title.
  */
-export const SetupInstallerLaunchSchema = z
+export const SetupTerminalInstallerLaunchSchema = z
   .object({
     id: z.enum(SETUP_DEPENDENCY_IDS),
     backend: z.enum(TERMINAL_BACKEND_IDS),
   })
   .strict();
+export type SetupTerminalInstallerLaunchBody = z.infer<typeof SetupTerminalInstallerLaunchSchema>;
+export const SetupInstallerLaunchSchema = z.union([
+  SetupTerminalInstallerLaunchSchema,
+  z.object({ id: z.literal("pi-integration") }).strict(),
+]);
 export type SetupInstallerLaunchBody = z.infer<typeof SetupInstallerLaunchSchema>;
 
 /**
@@ -4524,6 +4552,25 @@ export const PersonaSnapshotSchema = z.object({
   model: ModelIdSchema.nullable(),
 });
 
+/**
+ * A workflow node's own provider/model choice, validated as ONE pair.
+ *
+ * `runner` is the headless runner registry, so an id this build cannot spawn is refused at
+ * the boundary rather than discovered at attempt time. `model` reuses the persisted model-id
+ * vocabulary every other stored id goes through, plus `.min(1)`: `ModelIdSchema`'s pattern
+ * already rejects an empty string, and saying it here as well is what makes the refusal
+ * legible when the message is read rather than the regex.
+ *
+ * Both keys are REQUIRED, which is the whole point of the pair being one object: a body
+ * carrying only one half is refused here rather than completed from the Persona, the app
+ * config or the environment. The optionality lives one level up, on the node, where absence
+ * means inheritance.
+ */
+export const WorkflowNodeExecutionOverrideSchema = z.object({
+  runner: z.enum(LLM_RUNNER_IDS),
+  model: ModelIdSchema.min(1),
+});
+
 export const WorkflowPersonaDirectiveFeedbackSchema = z.string().trim().min(1)
   .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.personaDirectiveBytes), {
     message: `Persona feedback exceeds ${WORKFLOW_LIMITS.personaDirectiveBytes} UTF-8 bytes`,
@@ -4746,6 +4793,10 @@ export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     personaId: WorkflowIdSchema,
     position: WorkflowPointSchema,
+    // `.optional()` and deliberately NOT `.default(...)`: absence is the persisted spelling of
+    // "inherit the Persona's own routing", and a default would write the field onto every
+    // legacy graph the moment one was read back.
+    executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   z.object({
@@ -4775,6 +4826,8 @@ export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
     kind: z.literal("persona"),
     persona: PersonaSnapshotSchema,
     position: WorkflowPointSchema,
+    // Beside the snapshot, never inside it. See `PublishedWorkflowNode`.
+    executionOverride: WorkflowNodeExecutionOverrideSchema.optional(),
   }),
   z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
   // Identical to the draft arm: a Check snapshots nothing, because its command is
@@ -5238,7 +5291,32 @@ export const SubmitWorkflowEvidenceSchema = z.object({
 });
 export type SubmitWorkflowEvidence = z.infer<typeof SubmitWorkflowEvidenceSchema>;
 
+export const WorkflowPersonaReviewInputSchema: z.ZodType<WorkflowPersonaReviewInput> = z.object({
+  version: z.literal(1),
+  operationId: z.string().min(1).max(200),
+  submissionId: z.string().min(1).max(200),
+  round: z.number().int().min(1),
+  segment: z.number().int().nonnegative(),
+  policy: WorkflowEvidenceReadinessPolicySchema,
+  status: z.enum([...WORKFLOW_EVIDENCE_READINESS_STATUSES, "unknown"]),
+  evaluatorVersion: z.literal("criterion_mapped_v1").nullable(),
+  criteria: z.array(z.object({
+    criterionId: z.string().min(1).max(200),
+    material: z.boolean(),
+    claimId: z.string().min(1).max(200).nullable(),
+    evidenceIds: z.array(z.string().min(1).max(200)).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim),
+    gaps: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES)).max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
+  })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+}).superRefine((input, ctx) => {
+  if (!utf8AtMost(JSON.stringify(input), 256 * 1_024)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Persona readiness input exceeds 256 KiB" });
+  if (new Set(input.criteria.map((row) => row.criterionId)).size !== input.criteria.length
+      || (input.status === "ready" && (input.evaluatorVersion === null || input.criteria.some((row) => row.material && row.gaps.length > 0)))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Incoherent Persona readiness input" });
+  }
+});
+
 export const WorkflowRequestedChangeSchema = z.object({
+  basis: z.enum(PERSONA_FINDING_BASES).optional(),
   title: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   rationale: WorkflowVerdictTextSchema.max(WORKFLOW_EXECUTION_LIMITS.verdictReason),
   evidence: z
@@ -5306,6 +5384,25 @@ const WorkflowIntentSourceSchema = z.object({
   relationship: z.enum(["initial", "steer", "amend", "replace", "unclear"]).nullable(),
 });
 
+export const WorkflowSteeringNoteSchema = z.object({
+  revision: z.number().int().positive(),
+  instruction: z.string().max(WORKFLOW_STEERING_LIMITS.instruction),
+  relationship: z.literal("steer"),
+  rationale: z.string().max(WORKFLOW_STEERING_LIMITS.rationale),
+  timestamp: z.number().int().nonnegative(),
+});
+
+const WorkflowSteeringContextSchema = z.union([
+  z.object({ steering: z.undefined().optional(), steeringResolvedRevision: z.undefined().optional() }),
+  z.object({
+    steering: z.array(WorkflowSteeringNoteSchema).max(WORKFLOW_STEERING_LIMITS.count)
+      .refine((steering) => jsonAtMost(steering, WORKFLOW_STEERING_LIMITS.bytes), {
+        message: `Workflow steering exceeds ${WORKFLOW_STEERING_LIMITS.bytes} UTF-8 bytes`,
+      }),
+    steeringResolvedRevision: z.number().int().nonnegative(),
+  }),
+]);
+
 const WorkflowContextSnapshotInputSchema = z.object({
   primaryGoal: z.object({
     rawPrompt: z.string().max(16_000),
@@ -5328,7 +5425,24 @@ const WorkflowContextSnapshotInputSchema = z.object({
       "Workflow criterion mappings must be unique by canonical criterion id",
     )
     .optional(),
+  reconciliation: z.object({
+    version: z.literal(1), fingerprint: z.string().length(64),
+    status: z.enum(["pending", "complete", "failed"]),
+    method: z.enum(["deterministic", "semantic"]),
+    attempts: z.number().int().min(0).max(2),
+    error: z.string().max(8_000).nullable(),
+    cause: z.enum(["transport", "parse", "cancelled"]).nullable(),
+  }).optional(),
+  coverageSelection: z.object({
+    version: z.literal(1),
+    sourceSubmissionId: z.string().min(1).max(200).nullable(),
+    criteria: z.array(WorkflowCriterionMappingSchema).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims)
+      .refine((rows) => new Set(rows.map((row) => row.criterionId)).size === rows.length,
+        "Coverage selection must be unique by criterion"),
+  }).optional(),
   priorPersonaFeedback: z.array(z.object({
+    omittedBefore: z.number().int().nonnegative().optional(),
+    origin: z.object({ submissionId: z.string().max(200), round: z.number().int().positive(), segment: z.number().int().nonnegative(), attemptId: z.string().max(200), createdAt: z.number().int() }).optional(),
     personaName: z.string().max(WORKFLOW_LIMITS.personaName),
     summary: z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
     requestedChanges: z.array(z.string().max(WORKFLOW_EXECUTION_LIMITS.verdictSummary)).max(WORKFLOW_EXECUTION_LIMITS.verdictChanges),
@@ -5402,7 +5516,7 @@ const WorkflowContextSnapshotInputSchema = z.object({
     error: z.string().max(8_000).nullable(),
     reusedFromSubmissionId: z.string().min(1).max(200).nullable().optional(),
   }),
-});
+}).and(WorkflowSteeringContextSchema);
 
 export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.transform((value) => {
   const legacyMappings = value.canonicalCriteria.flatMap((criterion) =>
@@ -5422,6 +5536,12 @@ export const WorkflowContextSnapshotSchema = WorkflowContextSnapshotInputSchema.
   };
 }).superRefine((value, ctx) => {
   const criterionIds = new Set(value.canonicalCriteria.map((criterion) => criterion.id));
+  for (const selection of value.coverageSelection?.criteria ?? []) {
+    if (!criterionIds.has(selection.criterionId)) ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ["coverageSelection"],
+      message: "Coverage selection names an unknown canonical criterion",
+    });
+  }
   value.criterionMappings.forEach((mapping, index) => {
     if (criterionIds.has(mapping.criterionId)) return;
     ctx.addIssue({
@@ -5451,7 +5571,7 @@ export const WorkflowRunIntentSnapshotSchema = z.object({
   decisions: z.array(WorkflowHumanDecisionSchema).max(200),
   fingerprint: z.string().length(64),
   frozenAt: z.number().int().nonnegative(),
-});
+}).and(WorkflowSteeringContextSchema);
 
 /**
  * One run's stable acceptance criteria. Per-submission mappings are deliberately absent.
@@ -5464,6 +5584,55 @@ export const WorkflowRunIntentSnapshotSchema = z.object({
  * boundary, so a future writer cannot reintroduce the state by calling `freezeRunCriteria`
  * directly.
  */
+/**
+ * The freeze-time verdict on a run's ask, bounded so a damaged row cannot hide behind size.
+ *
+ * `reason` is prose the classifier composes from its own clauses, never operator or agent
+ * text, so a small ceiling is a real bound rather than a guess: the widest sentence the three
+ * checks can produce together is a few hundred characters.
+ */
+export const WorkflowRunIntentProvenanceSchema = z.object({
+  verdict: z.enum(WORKFLOW_GOAL_PROVENANCE_VERDICTS),
+  signals: z.array(z.enum(WORKFLOW_GOAL_PROVENANCE_SIGNALS))
+    .max(WORKFLOW_GOAL_PROVENANCE_SIGNALS.length),
+  reason: z.string().min(1).max(2_000),
+  classifiedAt: z.number().int().nonnegative(),
+}).superRefine((value, ctx) => {
+  /*
+   * The whole contract, at the boundary that persists it.
+   *
+   * `signals` is documented as every matched check IN PRECEDENCE ORDER, and `verdict` is
+   * documented as the first of them - so the two fields state the same fact twice and a row
+   * where they disagree is a verdict nobody can act on. Checking only `verdict === signals[0]`
+   * left the rest representable: `["unreconciled", "automation"]` validated, published itself
+   * as authoritative provenance, and left every future reader to decide for itself whether the
+   * list or the order was the lie.
+   *
+   * Ordering is checked by strictly increasing position in the canonical list, which is one
+   * test for two rules: out-of-precedence order fails, and so does a repeat.
+   */
+  const order = value.signals.map(
+    (signal) => (WORKFLOW_GOAL_PROVENANCE_SIGNALS as readonly string[]).indexOf(signal),
+  );
+  if (order.some((position, index) => index > 0 && position <= order[index - 1]!)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["signals"],
+      message: "Workflow goal provenance signals must be unique and in precedence order",
+    });
+    return;
+  }
+  // Empty exactly for `objective` falls out of this: an empty list expects `objective`, and a
+  // non-empty one expects its own first entry, which is never `objective`.
+  const expected = value.signals[0] ?? "objective";
+  if (value.verdict === expected) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ["verdict"],
+    message: "Workflow goal provenance verdict must be its highest-precedence matched signal",
+  });
+});
+
 export const WorkflowRunCriteriaSchema = z.object({
   intentFingerprint: z.string().length(64),
   constraints: z.array(z.string().max(4_000)).max(100),
@@ -5778,6 +5947,7 @@ export type UpdateWorkflowCommand = z.infer<typeof UpdateWorkflowCommandSchema>;
  * the same shape.
  */
 export const WorkflowPolicySchema = z.object({
+  skipPassedJudges: z.boolean().default(DEFAULT_WORKFLOW_POLICY.skipPassedJudges),
   liveEnabled: z.boolean().default(DEFAULT_WORKFLOW_POLICY.liveEnabled),
   repoAllowlist: z.array(z.string().min(1).max(4_096)).max(500).default([]),
   defaultWorkflowId: z.string().min(1).max(500).nullable()

@@ -3,8 +3,10 @@ import {
   type SetupServiceId,
 } from "@shared/setup-catalog.ts";
 
+import { cmuxAppStart } from "../terminal/cmux.ts";
 import { herdrServerStart } from "../terminal/herdr.ts";
 import type { TerminalResult } from "../terminal/types.ts";
+import { enableCmuxSocketControl } from "./cmux-config.ts";
 
 /**
  * Starting one local background service a Setup row asked about.
@@ -14,6 +16,13 @@ import type { TerminalResult } from "../terminal/types.ts";
  * their machine and takes minutes. Starting a service does not: it is a call the daemon
  * already makes on its own during a dispatch, so it runs here and returns whether the
  * service is now answering.
+ *
+ * `cmux-socket-control` stretches "service" and is here anyway, because the alternative was
+ * worse. It writes one value into the operator's `~/.config/cmux/cmux.json` rather than
+ * starting a process - but it is the same promise every other entry makes (a named repair
+ * the daemon owns end to end, no argv on the wire), and it is the ONLY repair cmux leaves
+ * open: under the shipped `socketControlMode: "cmuxOnly"` every socket call is denied,
+ * `reload-config` included, so there is no process to start that would fix it.
  *
  * The request carries an id and nothing else. Every starter is a function in this file, so
  * there is no argv for a browser to influence and no path by which an unknown service can
@@ -33,6 +42,14 @@ export type SetupServiceStarters = Record<SetupServiceId, () => Promise<Terminal
 
 export const DEFAULT_SETUP_SERVICE_STARTERS: SetupServiceStarters = {
   "herdr-server": () => herdrServerStart(),
+  "cmux-app": () => cmuxAppStart(),
+  "cmux-socket-control": async () => {
+    const written = enableCmuxSocketControl();
+    if (!written.ok) return { ok: false, error: written.error, outcomeUnknown: false };
+    // No reload is asked for: under `cmuxOnly` that call is refused too, and cmux picks the
+    // file up by watching it. See `setup/cmux-config.ts` for where that was measured.
+    return { ok: true, outcomeUnknown: false };
+  },
 };
 
 export interface SetupServiceResponse {
@@ -45,7 +62,7 @@ export async function startSetupService(
   service: SetupServiceId,
   starters: SetupServiceStarters = DEFAULT_SETUP_SERVICE_STARTERS,
 ): Promise<SetupServiceResponse> {
-  const label = SETUP_SERVICE_INFO[service].label;
+  const { label, started, refused } = SETUP_SERVICE_INFO[service];
   const result = await starters[service]();
   if (result.ok) {
     return {
@@ -55,7 +72,9 @@ export async function startSetupService(
         service,
         outcome: "started",
         label,
-        detail: `The ${label} is running.`,
+        // The service's own sentence, because only two of the three start a process and a
+        // sentence built around the label claimed all of them did.
+        detail: started,
       },
     };
   }
@@ -70,7 +89,7 @@ export async function startSetupService(
       service,
       outcome: unknown ? "unknown" : "refused",
       label,
-      detail: result.error ?? `The ${label} could not be started.`,
+      detail: result.error ?? refused,
     },
   };
 }

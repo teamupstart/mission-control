@@ -251,6 +251,8 @@ export interface SessionMeta {
   longContext: boolean;
   /** Live reasoning effort; null when unknown or the model has no effort parameter. */
   thinkingLevel: ThinkingLevel | null;
+  /** Observed native effort outside the shared picker vocabulary; display only. */
+  nativeEffort?: string | null;
   /** Whether extended thinking is on (Claude statusLine only; null otherwise). */
   thinkingEnabled: boolean | null;
   /** Share of the context window used, 0-100 (rounded to an int), or null. */
@@ -478,10 +480,11 @@ export interface Session {
    */
   foremanInvite: ForemanInvite | null;
   /**
-   * Display name. A terminal session takes it from the highest-priority backend holding
+   * Display name. A discovered terminal session takes it from the highest-priority backend holding
    * its pane - a multiplexer's session name, else an emulator's tab title, else an
    * `<agent> <pid>` process fallback. The SDK supervisor names a driver-run session.
-   * `nameSource` says which answered.
+   * `nameSource` says which backend answered. For an emulator session we dispatched,
+   * the bound task's recorded launch name takes precedence over its mutable tab title.
    *
    * The priority is the registries' declared order (`MULTIPLEXER_IDS` then `EMULATOR_IDS`,
    * `@shared/terminal.ts`), not a tmux-then-wezterm branch: a multiplexer pane lives inside
@@ -490,6 +493,8 @@ export interface Session {
    */
   name: string;
   nameSource: NameSource;
+  /** Backend Rename capability. Optional for older daemon snapshots; SDK names are local. */
+  renameable?: boolean;
   state: SessionState;
   cwd: string | null;
   /**
@@ -2145,7 +2150,9 @@ export interface Task {
    */
   extraRepos: TaskRepoEntry[];
   /**
-   * The name of the terminal home we created for this task, or null before dispatch.
+   * The launch name of the terminal home we created for this task, or null before dispatch.
+   * An emulator's actual tab title may differ. Its bound card retains this name using
+   * `terminalResourceId`; discovery continues to report the actual title on its handle.
    *
    * Vendor-neutral: it is a NAME, and which backend holds it is resolved against the
    * terminal registry (`killHome` / `homeAlive` in `terminal/home.ts`), never assumed to

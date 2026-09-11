@@ -376,6 +376,8 @@ import { repositoryIndexEnvironmentOverride } from "./repo-index-config.ts";
 import { publishSettingsStatus } from "./settings-status.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
+import { installPiExtensionFromSetup } from "./setup/pi-extension.ts";
+import { applyPiExtensionConfig, getPiExtensionConfig, PiExtensionConfigPatchSchema } from "./extensions/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards, readStandardsFromGitTree } from "./standards.ts";
@@ -2605,6 +2607,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       return workflowImageFailure(c, error, "Workflow evidence could not be staged");
     }
   });
+  app.post("/api/workflow-runs/:id/submissions/:submissionId/evidence-recovery",
+    bodyLimit({
+      maxSize: WORKFLOW_READINESS_RETRY_BODY_MAX_BYTES,
+      onError: (c) => c.json({ error: "Workflow evidence recovery request is too large" }, 413),
+    }), async (c) => {
+      const manager = workflowManager();
+      if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+      const parsed = await parseBody(c, RetryWorkflowEvidenceReadinessSchema);
+      if (!parsed.ok) return parsed.res;
+      const result = await manager.recoverEvidence(c.req.param("id"), c.req.param("submissionId"), parsed.data.requestId);
+      return result.ok ? c.json({ ...result.value, idempotent: result.idempotent ?? false }) : workflowRuntimeFailure(c, result);
+    });
   app.post(
     "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/retry",
     bodyLimit({
@@ -6108,6 +6122,14 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     };
   };
 
+  app.get("/api/extensions/pi/config", (c) => c.json(getPiExtensionConfig()));
+  app.put("/api/extensions/pi/config", async (c) => {
+    const parsed = await parseBody(c, PiExtensionConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = applyPiExtensionConfig(parsed.data);
+    return c.json(result, result.blocked.length ? 409 : 200);
+  });
+
   app.get("/api/skills", (c) => c.json(skillsView()));
 
   /**
@@ -6912,6 +6934,23 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/setup/install", async (c) => {
     const parsed = await parseBody(c, SetupInstallerLaunchSchema);
     if (!parsed.ok) return parsed.res;
+    if (parsed.data.id === "pi-integration") {
+      // JSON requires a CORS preflight. No cross-origin CORS permission is granted;
+      // validate Origin too, while allowing the dashboard's loopback Vite proxy.
+      const origin = c.req.header("origin");
+      let trustedOrigin = !origin;
+      if (origin) {
+        try {
+          const url = new URL(origin);
+          trustedOrigin = url.origin === origin && url.protocol === "http:" && hostIsLoopback(url.host);
+        } catch { trustedOrigin = false; }
+      }
+      if (!trustedOrigin || c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+        return c.json({ error: "forbidden" }, 403);
+      }
+      const result = await (setupInstallDeps?.installPiExtension ?? installPiExtensionFromSetup)();
+      return c.json({ ...result, id: "pi-integration" }, result.ok ? 200 : result.status);
+    }
     const result = await executeSetupInstall(parsed.data, {
       catalog: setupInstallDeps?.catalog ?? DEFAULT_SETUP_INSTALL_CATALOG,
       homeDir: setupInstallDeps?.homeDir ?? homedir(),

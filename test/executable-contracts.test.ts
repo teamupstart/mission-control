@@ -46,6 +46,9 @@ interface ChildProcessBoundary {
  * self-attested source comment. The syntax-tree scan below must find this exact multiset.
  */
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
+  "src/pi/mcp-client.ts": [
+    { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
+  ],
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },
@@ -62,6 +65,9 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   ],
   "src/server/claude-cli.ts": [
     { operation: "spawn", command: "executable.path", contract: "locator-result", reason: "resolved Claude CLI" },
+  ],
+  "src/server/environment/pi-extension.ts": [
+    { operation: "execFile", command: "descriptor.command", contract: "current-runtime", reason: "bounded isolated Pi extension load through the shared Node or Electron runtime resolver" },
   ],
   "src/server/executables/locator.ts": [
     { operation: "spawn", command: "shell", contract: "bootstrap-login-shell", reason: "bounded shell probe that constructs the locator snapshot" },
@@ -238,7 +244,7 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
     case "bootstrap-login-shell":
       return boundary.command === "shell";
     case "current-runtime":
-      return ["args.node", "descriptor.command", "request.node"].includes(boundary.command);
+      return ["args.node", "descriptor.command", "request.node", "process.execPath"].includes(boundary.command);
     case "locator-result":
       return boundary.command === "executable.path" || boundary.command === "resolved";
     case "operator-command":

@@ -8,6 +8,7 @@ import type {
   WorkflowHumanDecision,
   WorkflowCheckOutcome,
   WorkflowExternalSource,
+  WorkflowGoalProvenanceVerdict,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowRunPage,
@@ -19,6 +20,7 @@ import type {
   WorkflowEvidenceReadinessResult,
   WorkflowLlmCallPage,
   WorkflowUploadEvidenceLocator,
+  WorkflowVersion,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_LIMITS,
@@ -28,7 +30,10 @@ import {
   sessionActionSkillLabel,
   workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
-import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
+import {
+  WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
+  blockedPhaseClause,
+} from "@shared/workflow-lifecycle.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -39,7 +44,10 @@ import {
   WorkflowConfirmModal,
   type WorkflowConfirmRequest,
 } from "./WorkflowConfirmModal.tsx";
+import { Overlay, OVERLAY_IDS } from "../components/Overlay.tsx";
 import { Tooltip } from "../components/Tooltip.tsx";
+import { captureFocusBookmark, restoreFocusBookmark } from "../tour/focus-containment.ts";
+import type { FocusBookmark } from "../tour/focus-containment.ts";
 import { workflowRunTone } from "../components/session-bits.tsx";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import { formatBytes, relativeTime, repoLeaf } from "../lib/format.ts";
@@ -53,7 +61,10 @@ import {
 import type {
   ChangeWorklistRow,
   ChangeWorklistState,
+  RunCompletionClaim,
+  RunRecordCompletionSummary,
   RunRecordDeliverySummary,
+  RunRecordEvidenceSummary,
   RunRecordIntentSummary,
 } from "./run-model.ts";
 import {
@@ -66,10 +77,15 @@ import {
   checkOutcomeOf,
   checkStatus,
   checkStatusView,
+  completionClaimOutcomeSentences,
+  completionClaimStatus,
   continuationSourceAttempt,
   disabledStatusFor,
   endStatus,
   errorView,
+  evidenceCitationSentence,
+  evidenceClaimStatus,
+  evidenceCodeLabel,
   eventLine,
   eventsByRound,
   deliveryKindLabel,
@@ -78,18 +94,28 @@ import {
   humanDecisionSummary,
   humanDecisionsSummary,
   initialRunRecordPane,
-  gateSummaryStatus,
   gateWaitSentence,
   inheritedAttempts,
   inheritedPasses,
+  inspectorFindingBody,
+  inspectorFindingLocation,
+  inspectorFindingSeverityStatus,
+  inspectorFindingStatusStatus,
   inspectorGateSentence,
   inspectorFooterStatus,
   latestAttemptsFor,
   nodeStatusesForSubmission,
   readCapturedContext,
+  readinessActionLabel,
+  readinessGapCriteria,
+  readinessOverrideDisabled,
+  restageDisabled,
+  restageLabel,
+  restageOffered,
   reviewerAttempts,
   reviewerStatus,
   runChangeWorklist,
+  runCompletionClaims,
   runGrantNotice,
   runParkedSentence,
   evidenceChipLabel,
@@ -98,12 +124,16 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  runEvidenceCitations,
+  runIsParked,
+  runRefusedCompletionSentence,
   runRefusedSentence,
   runRecordSummary,
   runRoundGroups,
   runRounds,
   runStalemates,
   runStatusLabel,
+  runTriageSentence,
   segmentProvenanceSentence,
   selectedSubmission,
   submissionRoundLabel,
@@ -120,6 +150,18 @@ import {
   workflowFeedbackText,
   workflowRunLoadError,
 } from "./run-model.ts";
+import {
+  BROWSER_IMAGE_SERVICES,
+  closePreview,
+  frozenImageBodiesLifecycle,
+  openPreview,
+  restageErrorFor,
+  restagePress,
+  runReadinessAction,
+  startFrozenImageLoads,
+  withRestageBusy,
+  withRestageFailure,
+} from "./evidence-pane-controller.ts";
 import {
   copyFeedbackAction,
   deliveryResolutionActions,
@@ -161,328 +203,6 @@ import { useTourTargetRef } from "../tour/target-context.tsx";
 
 function when(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
-}
-
-function LazyWorkflowEvidenceImage({
-  runId,
-  image,
-}: {
-  runId: string;
-  image: WorkflowEvidenceImage;
-}): React.JSX.Element {
-  const frame = useRef<HTMLDivElement>(null);
-  const [load, setLoad] = useState(false);
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (load || image.availability !== "retained") return;
-    const node = frame.current;
-    if (!node || typeof IntersectionObserver === "undefined") return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) setLoad(true);
-    }, { rootMargin: "240px" });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [image.availability, load]);
-  useEffect(() => {
-    if (!load || image.availability !== "retained") return;
-    let live = true;
-    void fetch(
-      `/api/workflow-runs/${encodeURIComponent(runId)}/images/${encodeURIComponent(image.id)}`,
-    ).then(async (response) => {
-      if (!response.ok) {
-        const body = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(body?.error ?? `Image body could not be loaded (${response.status})`);
-      }
-      return response.blob();
-    }).then((blob) => {
-      const next = URL.createObjectURL(blob);
-      if (!live) {
-        URL.revokeObjectURL(next);
-        return;
-      }
-      setUrl(next);
-    }).catch((caught) => {
-      if (live) setError(caught instanceof Error ? caught.message : "Image body could not be loaded");
-    });
-    return () => { live = false; };
-  }, [image.availability, image.id, load, runId]);
-  useEffect(() => () => {
-    if (url) URL.revokeObjectURL(url);
-  }, [url]);
-  return (
-    <div ref={frame} className="wf-image-frame">
-      {image.availability === "pruned" ? (
-        <span className="wf-image-pruned" aria-label={`${image.displayName} body pruned`}>Body pruned</span>
-      ) : url ? (
-        <img src={url} alt={image.caption} />
-      ) : error ? (
-        <span className="wf-image-error" role="alert">{error}</span>
-      ) : (
-        <Tooltip label={`Load the retained body for ${image.displayName}`}>
-          <button type="button" className="text-btn" onClick={() => setLoad(true)}>
-            {load ? "Loading image…" : "Load image"}
-          </button>
-        </Tooltip>
-      )}
-    </div>
-  );
-}
-
-function SubmissionImageEvidence({
-  runId,
-  images,
-  scopeOptions,
-  canRestage,
-  onRestage,
-}: {
-  runId: string;
-  images: WorkflowEvidenceImage[];
-  scopeOptions: readonly { value: string; label: string }[];
-  canRestage: boolean;
-  onRestage?: (image: WorkflowEvidenceImage, clientItemId: string) => Promise<void>;
-}): React.JSX.Element {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [restaged, setRestaged] = useState<Set<string>>(() => new Set());
-  const [error, setError] = useState<string | null>(null);
-  const itemIds = useRef(new Map<string, string>());
-  const scopeLabel = (scope: string): string =>
-    scopeOptions.find((option) => option.value === scope)?.label ?? scope;
-  return (
-    <section className="wf-run-section wf-image-evidence">
-      <header className="wf-run-section-head">
-        <h4>Image evidence</h4>
-        <span className="wf-run-meta">
-          {images.length} image{images.length === 1 ? "" : "s"} frozen for this submission
-        </span>
-      </header>
-      {images.length === 0 ? (
-        <p className="wf-run-empty">No image evidence was attached to this submission.</p>
-      ) : (
-        <ol className="wf-image-ledger">
-          {images.map((image) => (
-            <li key={image.id} className={`wf-image-record is-${image.availability}`}>
-              <LazyWorkflowEvidenceImage runId={runId} image={image} />
-              <div className="wf-image-record-body">
-                <div className="wf-image-record-head">
-                  <strong>{image.caption}</strong>
-                  <span className={`workflow-chip workflow-${image.availability === "retained" ? "completed" : "stopped"}`}>
-                    {image.availability}
-                  </span>
-                </div>
-                <p>{image.displayName}</p>
-                <dl>
-                  <div><dt>Scope</dt><dd>{scopeLabel(image.repositoryScope)}</dd></div>
-                  <div><dt>Type</dt><dd>{image.mimeType}</dd></div>
-                  <div><dt>Size</dt><dd>{formatBytes(image.bytes)}</dd></div>
-                  <div><dt>Digest</dt><dd><code>{image.sha256}</code></dd></div>
-                </dl>
-                {image.availability === "pruned" && (
-                  <p className="wf-run-pruned">
-                    Raw body pruned {image.prunedAt ? when(image.prunedAt) : "by retention policy"}.
-                    Caption, scope, MIME, size, and SHA-256 remain auditable.
-                  </p>
-                )}
-                {image.inheritedFrom && (
-                  <p className="wf-run-pruned">
-                    Carried forward from round {image.inheritedFrom.round}. These exact bytes were
-                    captured for an earlier submission of this run, and the submission that
-                    captured them is where they can be staged again.
-                  </p>
-                )}
-                {/*
-                  * A carried record offers no restage button of its own. It is the same digest
-                  * the capturing submission already offers, so a second button would stage the
-                  * same bytes twice over and imply this submission captured them itself.
-                  */}
-                {!image.inheritedFrom && image.availability === "retained" && canRestage && onRestage && (
-                  <Tooltip label="Stage these exact retained bytes, caption, and scope for the next fresh review">
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      disabled={busy === image.id || restaged.has(image.id)}
-                      onClick={() => {
-                        let clientItemId = itemIds.current.get(image.id);
-                        if (!clientItemId) {
-                          clientItemId = `history-${crypto.randomUUID()}`;
-                          itemIds.current.set(image.id, clientItemId);
-                        }
-                        setBusy(image.id);
-                        setError(null);
-                        void onRestage(image, clientItemId).then(
-                          () => setRestaged((current) => new Set(current).add(image.id)),
-                          (caught) => setError(caught instanceof Error ? caught.message : "Could not stage retained image"),
-                        ).finally(() => setBusy(null));
-                      }}
-                    >
-                      {restaged.has(image.id) ? "Ready for next review" : "Use in next review"}
-                    </button>
-                  </Tooltip>
-                )}
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
-      {error && <p className="wf-run-error" role="alert">{error}</p>}
-    </section>
-  );
-}
-
-function SubmissionEvidenceReadiness({
-  coverage,
-  readiness,
-  enforced = false,
-  waiting = false,
-  refinementsExhausted = false,
-  overrideReason = null,
-  onRetry,
-  onOverride,
-}: {
-  coverage: readonly WorkflowEvidenceCoverageClaim[];
-  readiness: WorkflowEvidenceReadinessResult | null | undefined;
-  enforced?: boolean;
-  waiting?: boolean;
-  /** The run is parked on this submission because the round spent its refinement cap. */
-  refinementsExhausted?: boolean;
-  overrideReason?: string | null;
-  onRetry?: () => Promise<void>;
-  onOverride?: (reason: string) => Promise<void>;
-}): React.JSX.Element {
-  const [reason, setReason] = useState("");
-  const [acknowledged, setAcknowledged] = useState(false);
-  const [busy, setBusy] = useState<"retry" | "override" | null>(null);
-  return (
-    <section className="wf-run-section wf-evidence-readiness" aria-label="Evidence readiness">
-      <header className="wf-run-section-head">
-        <h4>Evidence readiness</h4>
-        <span className={`workflow-chip workflow-${readiness?.status === "ready" ? "passed" : readiness ? "waiting" : "stopped"}`}>
-          {readiness?.status.replaceAll("_", " ") ?? "not evaluated"}
-        </span>
-      </header>
-      <p className="wf-run-meta">{enforced
-        ? "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient."
-        : "Advisory only. This result did not block workflow execution."}</p>
-      {coverage.length === 0 ? (
-        <p className="wf-run-empty">No acceptance criterion coverage was frozen for this submission.</p>
-      ) : (
-        <div className="wf-coverage-ledger">
-          <h5>Frozen author claims</h5>
-          {coverage.map((claim) => (
-            <article key={claim.clientCriterionId} className="wf-run-card">
-              <header className="wf-run-card-head">
-                <strong>{claim.criterion}</strong>
-                <span>{claim.proofClass.replaceAll("_", " ")}</span>
-              </header>
-              <p className="wf-run-meta">{claim.repositoryScope}</p>
-              <div className="wf-evidence-links">
-                {claim.links.length === 0 ? <span className="workflow-chip workflow-waiting">No evidence linked</span> : claim.links.map((link) => (
-                  <span className="workflow-chip workflow-completed" key={`${link.clientItemId}:${link.role}`}>
-                    {link.role.replaceAll("_", " ")}: {link.clientItemId}
-                  </span>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-      {readiness?.status === "unavailable" && (
-        <p className="wf-run-error" role="alert">Unavailable: {readiness.unavailableReason ?? "Context compaction did not return canonical criteria."}</p>
-      )}
-      {readiness && readiness.criteria.length > 0 && (
-        <div className="wf-coverage-ledger">
-          <h5>Canonical reconciliation</h5>
-          {readiness.criteria.map((criterion) => (
-            <article key={criterion.criterionId} className="wf-run-card">
-              <header className="wf-run-card-head">
-                <strong>{criterion.criterion}</strong>
-                <span>{criterion.material ? "material" : "supporting"}</span>
-              </header>
-              {criterion.gaps.length > 0 && (
-                <p className="wf-run-error">Gaps: {criterion.gaps.map((gap) => gap.replaceAll("_", " ")).join(", ")}</p>
-              )}
-              {criterion.warnings.length > 0 && (
-                <p className="wf-run-notice">Warnings: {criterion.warnings.map((warning) => warning.replaceAll("_", " ")).join(", ")}</p>
-              )}
-              <div className="wf-evidence-links">
-                {criterion.links.map((link) => (
-                  <span className="workflow-chip workflow-completed" key={`${link.evidenceId}:${link.role}`}>
-                    {link.role.replaceAll("_", " ")}: {link.clientItemId}
-                  </span>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-      {overrideReason && (
-        <p className="wf-run-notice" role="status">
-          Operator continued despite gaps: {overrideReason}
-        </p>
-      )}
-      {waiting && onOverride && (
-        <div className="wf-readiness-override" role="region" aria-label="Evidence readiness override">
-          <h5>Continue despite gaps</h5>
-          {refinementsExhausted && (
-            <p className="wf-run-notice" role="status">
-              This round has spent its evidence preflight refinements without closing these gaps,
-              so the run is blocked for you rather than refining again. Continue despite gaps to
-              review this packet as it stands, or start a new round.
-            </p>
-          )}
-          <label>
-            Reason
-            <textarea
-              value={reason}
-              maxLength={WORKFLOW_LIMITS.readinessOverrideReason}
-              placeholder="Why this structurally incomplete packet should continue"
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </label>
-          <label className="wf-checkbox-label">
-            <Tooltip label="Acknowledge that readiness gaps remain visible to the Test Evidence Auditor">
-              <input
-                type="checkbox"
-                checked={acknowledged}
-                onChange={(event) => setAcknowledged(event.target.checked)}
-              />
-            </Tooltip>
-            Test Evidence Auditor may still reject this packet.
-          </label>
-          <div className="wf-run-actions">
-            {onRetry && (
-              <Tooltip label="Capture newly staged evidence and evaluate this round again">
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={busy !== null}
-                  onClick={() => {
-                    setBusy("retry");
-                    void onRetry().finally(() => setBusy(null));
-                  }}
-                >
-                  {busy === "retry" ? "Retrying…" : "Retry evidence preflight"}
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip label="Record this reason and continue the current submission despite readiness gaps">
-              <button
-                type="button"
-                className="btn"
-                disabled={busy !== null || !acknowledged || reason.trim().length === 0}
-                onClick={() => {
-                  setBusy("override");
-                  void onOverride(reason.trim()).finally(() => setBusy(null));
-                }}
-              >
-                {busy === "override" ? "Continuing…" : "Continue despite gaps"}
-              </button>
-            </Tooltip>
-          </div>
-        </div>
-      )}
-    </section>
-  );
 }
 
 const EXTERNAL_SOURCE_LABELS: Record<WorkflowExternalSource["kind"], string> = {
@@ -780,6 +500,7 @@ function VerdictCard({
         <strong>{attempt.persona?.name ?? "Missing persona"}</strong>
         <span className="wf-run-confidence">{Math.round(verdict.confidence * 100)}% confident</span>
       </header>
+      <PersonaReadinessInput attempt={attempt} />
       <p className="wf-run-summary">{verdict.summary}</p>
       {verdict.verdict === "pass" ? (
         <div className="wf-run-card-body">
@@ -815,6 +536,13 @@ function VerdictCard({
  * a provider failure, and the runner and revision that were resolved for the attempt that
  * failed.
  */
+function PersonaReadinessInput({ attempt }: { attempt: WorkflowNodeAttempt }): React.JSX.Element | null {
+  if (!attempt.persona) return null;
+  return <p className="wf-run-meta">Structural readiness at review: {attempt.reviewInput?.status ?? "unknown"}
+    {attempt.reviewInput ? ` · policy ${attempt.reviewInput.policy} · contract v${attempt.reviewInput.version}` : " · legacy input"}.
+    {" Readiness checks registration; the Persona checks whether the evidence proves the work."}</p>;
+}
+
 function AttemptCard({
   attempt,
   name,
@@ -834,6 +562,15 @@ function AttemptCard({
           attempt.persona ? `Persona revision ${attempt.persona.sourceRevision}` : null,
         ].filter(Boolean).join(" · ")}
       </p>
+      <PersonaReadinessInput attempt={attempt} />
+      {(attempt.reviewRejections?.length ?? 0) > 0 && (
+        <details>
+          <Tooltip label="Show the review responses rejected by the review contract">
+            <summary>Rejected review responses</summary>
+          </Tooltip>
+          <pre>{JSON.stringify(attempt.reviewRejections, null, 2)}</pre>
+        </details>
+      )}
       <ErrorLine raw={attempt.error} />
     </article>
   );
@@ -1684,6 +1421,7 @@ function ChangeDetail({
           <span className="wf-run-meta">{meta.runner} · {meta.model}</span>
         )}
       </header>
+      {attempt && <PersonaReadinessInput attempt={attempt} />}
       <h5 className="wf-run-change-title">{row.title}</h5>
       {summary && <p className="wf-run-summary">{summary}</p>}
       <dl className="wf-run-facts-list">
@@ -2190,6 +1928,690 @@ function DeliveriesPane({
   );
 }
 
+
+/**
+ * Every frozen image body for one submission, fetched once and shared by everything that draws it.
+ *
+ * This replaces a per-thumbnail fetch, and the reason is the feature rather than tidiness: the
+ * same picture is now drawn in three places at once - its card in the strip, a small copy on
+ * every claim row that cites it, and the preview - and three components each owning a `fetch`
+ * and an object URL would pull the same body down three times and paint three decodes of it.
+ *
+ * WHAT STARTS A FETCH also moved, and this is the part that had to change. The old ledger
+ * observed each frame scrolling into view. That cannot survive the move into a pane: the tab
+ * container sits well below the pipeline, so a reader who selects Evidence is looking at a pane
+ * whose strip is under the fold, and an intersection trigger leaves every thumbnail saying
+ * "Loading image…" until they scroll - which is the exact defect this phase exists to remove.
+ *
+ * So the trigger is the pane itself being rendered, and there is no observer at all. The phase
+ * document proposed keeping one for a long strip, and the repository says there cannot be one:
+ * `WORKFLOW_IMAGE_LIMITS.maxCount` is 8 and `WorkflowContextSnapshotSchema` caps the frozen
+ * array at the same number, carried-forward records included. Withholding at most eight small
+ * bodies inside a pane somebody deliberately opened buys nothing and costs the thing the pane
+ * is for.
+ *
+ * Revoking is the owner's job and the owner is this hook: every URL it created is released when
+ * the pane unmounts, which is the same commit that destroys every consumer of them.
+ */
+/** A resolved body, either way. An image with no entry yet has not answered. */
+export interface FrozenImageBody {
+  url: string | null;
+  error: string | null;
+}
+
+function useFrozenImageBodies(
+  runId: string,
+  images: readonly WorkflowEvidenceImage[],
+): ReadonlyMap<string, FrozenImageBody> {
+  const [bodies, setBodies] = useState<ReadonlyMap<string, FrozenImageBody>>(() => new Map());
+  const started = useRef(new Set<string>());
+  const urls = useRef<string[]>([]);
+  const alive = useRef(true);
+  /*
+   * A pruned body is not a failure and there is nothing to ask the daemon for; the frame says so
+   * on its own. The ids are joined into ONE string rather than passed as an array because
+   * `images` is a fresh array on any render that resolved it through a `?? []` - a dependency on
+   * the array itself would restart this effect on every commit, which is a re-entrant fetch loop
+   * rather than a re-render.
+   */
+  const retained = images
+    .filter((image) => image.availability === "retained")
+    .map((image) => image.id)
+    .join(",");
+  // `started` is what makes a request happen once, and the map below holds only ANSWERS, so a
+  // frame with no entry is one still waiting - there is no third state to keep in step. Both
+  // rules live in `startFrozenImageLoads`, which has its own cases.
+  useEffect(() => startFrozenImageLoads({
+    runId,
+    // `filter(Boolean)` rather than a guard: `"".split(",")` is `[""]`, and an id of the empty
+    // string is not an id. The empty case then needs no branch of its own.
+    retained: retained.split(",").filter(Boolean),
+    started: started.current,
+    ...BROWSER_IMAGE_SERVICES,
+    isAlive: () => alive.current,
+    keepUrl: (url) => urls.current.push(url),
+    onLoaded: (id, url) => setBodies((now) => new Map(now).set(id, { url, error: null })),
+    onFailed: (id, error) => setBodies((now) => new Map(now).set(id, { url: null, error })),
+  }), [retained, runId]);
+  useEffect(() => frozenImageBodiesLifecycle({
+    alive,
+    urls,
+    started,
+    revokeObjectURL: BROWSER_IMAGE_SERVICES.revokeObjectURL,
+  }), []);
+  return bodies;
+}
+
+/**
+ * One frozen image in a frame, in whichever of its four states it is actually in.
+ *
+ * A pruned record keeps its frame and says so, rather than becoming a broken-image icon that
+ * reads as "the page is broken" beside a card whose every other field is intact. That arm and
+ * the error arm are both carried over from the ledger this replaces.
+ */
+export function FrozenImageFrame({
+  image,
+  body,
+  className,
+  alt,
+  ...rest
+}: {
+  image: WorkflowEvidenceImage;
+  body: FrozenImageBody | undefined;
+  className: string;
+  /** Empty where the picture sits beside text that already names it. */
+  alt: string;
+  /*
+   * Everything else lands on the frame element itself, which is what lets `Tooltip` wrap one:
+   * it clones its child and merges `aria-describedby` and its hover handlers onto it, and a
+   * component that swallowed them would take the tooltip with them.
+   */
+} & React.HTMLAttributes<HTMLSpanElement>): React.JSX.Element {
+  return (
+    <span className={className} {...rest}>
+      {image.availability === "pruned" ? (
+        <span className="wf-image-pruned" aria-label={`${image.displayName} body pruned`}>
+          Body pruned
+        </span>
+      ) : body?.url ? (
+        <img src={body.url} alt={alt} />
+      ) : body?.error ? (
+        <span className="wf-image-error" role="alert">{body.error}</span>
+      ) : (
+        <span className="wf-image-loading">Loading image…</span>
+      )}
+    </span>
+  );
+}
+
+/** The restage action's whole state, so the strip and the preview cannot disagree about it. */
+export interface RestageControl {
+  offered: (image: WorkflowEvidenceImage) => boolean;
+  /** The image ids with a staging request in flight. Two can overlap. */
+  busy: ReadonlySet<string>;
+  settled: ReadonlySet<string>;
+  run: (image: WorkflowEvidenceImage) => void;
+  /**
+   * Why staging each image was refused, keyed by image id.
+   *
+   * Per image rather than one pane-wide value, because two surfaces read it for two different
+   * images - the preview for the one it is showing, the strip card for its own - and because a
+   * press on one image must not erase what the daemon said about another.
+   */
+  failures: ReadonlyMap<string, string>;
+}
+
+/**
+ * One frozen image at full size, over whatever was on screen.
+ *
+ * The shape is `AttachmentPreview`'s, deliberately: `Overlay` with `.modal attach-preview`, a
+ * `.modal-head` carrying the name and an autofocused close control, and a
+ * `.modal-body attach-preview-body` whose own dark backdrop is what keeps a dark screenshot's
+ * edges visible against the panel. Escape, the close control and the backdrop all dismiss it,
+ * and Escape closes THIS layer only.
+ *
+ * Two things differ from the dispatch case and both are forced by the data. The dispatch
+ * preview paints a blob already in memory; this one shows the body the strip already fetched,
+ * so opening it costs no second request. And a frozen image has a caption, an item id, a scope,
+ * a MIME type, a size, an availability, a digest and a re-stage action that a dropped file does
+ * not - all of which used to be printed on a ledger card. They move into the footer, which is
+ * what lets the strip stay scannable without a single field being dropped.
+ *
+ * Nothing here re-declares a horizontal inset. `.modal` owns `--modal-inset` and `.modal-head`,
+ * `.modal-body` and `.modal-foot` already apply it.
+ */
+export function FrozenImagePreview({
+  image,
+  body,
+  scopeLabel,
+  clientItemId,
+  citation,
+  restage,
+  onClose,
+}: {
+  image: WorkflowEvidenceImage;
+  body: FrozenImageBody | undefined;
+  scopeLabel: string;
+  /** The author's own id for this evidence, when the reconciliation resolved one. */
+  clientItemId: string | null;
+  citation: string | null;
+  restage: RestageControl;
+  onClose: () => void;
+}): React.JSX.Element {
+  return (
+    <Overlay
+      id={OVERLAY_IDS.workflowEvidenceImage}
+      onClose={onClose}
+      className="modal attach-preview wf-image-preview"
+      role="dialog"
+      ariaModal
+      ariaLabel={`Preview of ${image.displayName}`}
+    >
+      <header className="modal-head">
+        <strong className="attach-preview-name">{image.displayName}</strong>
+        <Tooltip label="Close the preview (Escape)">
+          <button type="button" className="icon-btn" aria-label="Close" autoFocus onClick={onClose}>
+            ✕
+          </button>
+        </Tooltip>
+      </header>
+      <div className="modal-body attach-preview-body">
+        {image.availability === "pruned" ? (
+          // The footer carries the date and what survives pruning; this frame only has to
+          // explain why there is no picture in it.
+          <span className="wf-image-pruned" role="status">Body pruned</span>
+        ) : body?.url ? (
+          // Named, not decorative: in the strip the picture sits beside a caption that reads
+          // it out, and here it IS the content of the dialog.
+          <img className="attach-preview-image" src={body.url} alt={image.caption} />
+        ) : body?.error ? (
+          <span className="wf-image-error" role="alert">{body.error}</span>
+        ) : (
+          <span className="wf-image-loading">Loading image…</span>
+        )}
+      </div>
+      <footer className="modal-foot">
+        <p className="wf-image-preview-caption">{image.caption}</p>
+        <dl className="wf-run-facts-list">
+          {/* Two identifier spaces, named apart rather than folded into one row: `Item` is the
+              author's own id, the one their claims cite and the only one that means anything
+              outside this run, and it is absent when the reconciliation resolved none. `Evidence
+              id` is the daemon's durable row, which is what the body route and the audit trail
+              are keyed on. */}
+          <div>
+            <dt>Item</dt>
+            <dd>{clientItemId ? <code>{clientItemId}</code> : "not resolved to a claim"}</dd>
+          </div>
+          <div><dt>Evidence id</dt><dd><code>{image.id}</code></dd></div>
+          <div><dt>Scope</dt><dd>{scopeLabel}</dd></div>
+          <div><dt>Type</dt><dd>{image.mimeType}</dd></div>
+          <div><dt>Size</dt><dd>{formatBytes(image.bytes)}</dd></div>
+          <div><dt>Availability</dt><dd>{image.availability}</dd></div>
+          <div><dt>Digest</dt><dd><code>{image.sha256}</code></dd></div>
+        </dl>
+        {image.availability === "pruned" && (
+          <p className="wf-run-pruned">
+            Raw body pruned {image.prunedAt ? when(image.prunedAt) : "by retention policy"}.
+            Caption, scope, MIME, size, and SHA-256 remain auditable.
+          </p>
+        )}
+        {image.inheritedFrom && (
+          <p className="wf-run-pruned">
+            Carried forward from round {image.inheritedFrom.round}. These exact bytes were
+            captured for an earlier submission of this run, and the submission that captured
+            them is where they can be staged again.
+          </p>
+        )}
+        {/* IN THE DIALOG, beside the button that produced it. This is the only place a re-stage
+            can be pressed from, and this dialog draws a backdrop over the pane, so an error
+            painted onto the pane behind it is an explanation the operator cannot read without
+            first closing the thing they were acting in. */}
+        {restageErrorFor(restage.failures, image.id) && (
+          <p className="wf-run-error" role="alert">
+            {restageErrorFor(restage.failures, image.id)}
+          </p>
+        )}
+        <div className="wf-image-preview-actions">
+          {restage.offered(image) && (
+            <Tooltip label="Stage these exact retained bytes, caption, and scope for the next fresh review">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                disabled={restageDisabled(
+                  restage.busy.has(image.id),
+                  restage.settled.has(image.id),
+                )}
+                onClick={() => restage.run(image)}
+              >
+                {restageLabel(restage.settled.has(image.id))}
+              </button>
+            </Tooltip>
+          )}
+          {citation && <span className="wf-run-meta">{citation}.</span>}
+        </div>
+      </footer>
+    </Overlay>
+  );
+}
+
+/**
+ * What this submission proved, and what it did not: readiness, coverage, reconciliation and the
+ * frozen pictures, in one pane.
+ *
+ * Two sections became one. They measured 1,420px between them and read as near-duplicates on a
+ * submission where nothing was wrong, because on THAT submission every author claim matched a
+ * canonical criterion and the two card lists said the same thing twice. They are not duplicates
+ * where it matters: on a submission with gaps, five of six canonical criteria can have no author
+ * claim at all, and there is no claim row for such a criterion to hang under. So the
+ * reconciliation keeps a block of its own, at the top, named as what it is.
+ *
+ * The part that is new rather than rewritten is the pictures. A frozen image used to be
+ * reachable only by scrolling past the deliveries into a section of its own, and its link to
+ * the claim it proved was a bare `clientItemId` in a chip that a reader had to match by eye.
+ * Now it is a thumbnail above the claims, a small copy on every claim row citing it, and one
+ * click from full size.
+ */
+function EvidencePane({
+  runId,
+  summary,
+  images,
+  coverage,
+  readiness,
+  enforced,
+  scopeOptions,
+  canRestage,
+  overrideReason,
+  onRestage,
+  onRetry,
+  onOverride,
+  recovery,
+  onRecover,
+}: {
+  runId: string;
+  summary: RunRecordEvidenceSummary;
+  images: readonly WorkflowEvidenceImage[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  readiness: WorkflowEvidenceReadinessResult | null | undefined;
+  enforced: boolean;
+  scopeOptions: readonly { value: string; label: string }[];
+  canRestage: boolean;
+  overrideReason: string | null;
+  onRestage?: (image: WorkflowEvidenceImage, clientItemId: string) => Promise<void>;
+  onRetry?: () => Promise<void>;
+  onOverride?: (reason: string) => Promise<void>;
+  recovery?: WorkflowRunDetail["evidenceRecovery"];
+  onRecover?: (submissionId: string) => Promise<void>;
+}): React.JSX.Element {
+  const bodies = useFrozenImageBodies(runId, images);
+  const [preview, setPreview] = useState<string | null>(null);
+  const returnFocus = useRef<FocusBookmark | null>(null);
+  const [reason, setReason] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState<"retry" | "override" | null>(null);
+  const [restageBusy, setRestageBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const [restaged, setRestaged] = useState<ReadonlySet<string>>(() => new Set());
+  const [restageFailures, setRestageFailures] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
+  const itemIds = useRef(new Map<string, string>());
+  const citations = runEvidenceCitations({ images, coverage, readiness });
+  const scopeLabel = (scope: string): string =>
+    scopeOptions.find((option) => option.value === scope)?.label ?? scope;
+  const gapCriteria = readinessGapCriteria(readiness);
+  const previewImage = images.find((image) => image.id === preview) ?? null;
+  const citationOf = (image: WorkflowEvidenceImage): string | null =>
+    evidenceCitationSentence(citations.citationFor(image.id));
+
+  // Whatever had focus when the preview was asked for, so closing puts it back - in practice
+  // the card itself, which both routes focus before they fire. The round trip is
+  // `openPreview`/`closePreview`, which have their own cases.
+  const open = (image: WorkflowEvidenceImage): void => openPreview({
+    imageId: image.id,
+    bookmark: returnFocus,
+    capture: () => captureFocusBookmark(document.activeElement),
+    show: (imageId) => setPreview(imageId),
+  });
+  const close = (): void => void closePreview({
+    bookmark: returnFocus,
+    hide: () => setPreview(null),
+    restore: restoreFocusBookmark,
+  });
+  /*
+   * A carried record offers no restage button of its own. It is the same digest the capturing
+   * submission already offers, so a second button would stage the same bytes twice over and
+   * imply this submission captured them itself.
+   */
+  const restage: RestageControl = {
+    offered: (image) => restageOffered(image, canRestage, Boolean(onRestage)),
+    busy: restageBusy,
+    settled: restaged,
+    failures: restageFailures,
+    run: (image) => restagePress({
+      image,
+      minted: itemIds.current,
+      onRestage,
+      // Both setters close over THIS image, so a press reports only its own outcome. The
+      // controller speaks in "started" and "finished" and does not know there are others.
+      setBusy: (id) => setRestageBusy((now) => withRestageBusy(now, image.id, id !== null)),
+      setError: (message) =>
+        setRestageFailures((now) => withRestageFailure(now, image.id, message)),
+      settle: (imageId) => setRestaged((current) => new Set(current).add(imageId)),
+    }),
+  };
+
+  return (
+    <>
+      <div className="wf-run-strip">
+        <RunStat
+          label="Readiness"
+          value={summary.status ? evidenceCodeLabel(summary.status) : "not evaluated"}
+          /*
+           * Amber on a verdict a reader should act on, which is a WIDER set than the amber
+           * badge on the tab: `gaps` on a run that is still moving has not stopped anything,
+           * so it never seizes the reader's attention from the bar - but inside the pane it is
+           * the headline, and printing it in the same neutral ink as "ready" would bury it.
+           * `overridden` is settled by a human and stays neutral.
+           */
+          tone={summary.status === "ready"
+            ? "ok"
+            : summary.status === "gaps" || summary.status === "unavailable" ? "alert" : null}
+        />
+        <RunStat label="Author claims" value={summary.claimCount} />
+        <RunStat
+          label="Gaps"
+          value={summary.gapCount}
+          tone={summary.gapCount > 0 ? "alert" : null}
+        />
+        <RunStat label="Warnings" value={summary.warningCount} />
+        <RunStat
+          label="Images"
+          value={summary.imageCount}
+          tone={summary.imageCount > 0 ? "ok" : null}
+        />
+      </div>
+      <p className="wf-run-meta">{enforced
+        ? "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient."
+        : "Advisory only. This result did not block workflow execution."}</p>
+      {readiness?.status === "unavailable" && (
+        <p className="wf-run-error" role="alert">
+          Unavailable: {readiness.unavailableReason
+            ?? "Context compaction did not return canonical criteria."}
+        </p>
+      )}
+      {overrideReason && (
+        <p className="wf-run-notice" role="status">
+          Operator continued despite gaps: {overrideReason}
+        </p>
+      )}
+      {gapCriteria.length > 0 && (
+        <section className="wf-evidence-gaps" aria-label="Unmatched canonical criteria">
+          <h5>What the reconciliation could not match</h5>
+          <p className="wf-run-meta">
+            These are canonical criteria, not author claims. A criterion with no claim at all has
+            no row below to sit under, which is why they are named here.
+          </p>
+          {gapCriteria.map((criterion) => (
+            <div className="wf-evidence-gap-row" key={criterion.criterionId}>
+              <span className="wf-evidence-gap-text">{criterion.criterion}</span>
+              <span className="wf-evidence-gap-codes">
+                {criterion.gaps.map((gap) => (
+                  <span className="workflow-chip workflow-failed" key={gap}>
+                    {evidenceCodeLabel(gap)}
+                  </span>
+                ))}
+              </span>
+            </div>
+          ))}
+        </section>
+      )}
+      {summary.blocking && onOverride && (
+        <div className="wf-readiness-override" role="region" aria-label="Evidence readiness override">
+          <h5>Continue despite gaps</h5>
+          {summary.refinementsExhausted && (
+            <p className="wf-run-notice" role="status">
+              This round has spent its evidence preflight refinements without closing these gaps,
+              so the run is blocked for you rather than refining again. Continue despite gaps to
+              review this packet as it stands, or start a new round.
+            </p>
+          )}
+          <label>
+            Reason
+            <textarea
+              value={reason}
+              maxLength={WORKFLOW_LIMITS.readinessOverrideReason}
+              placeholder="Why this structurally incomplete packet should continue"
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <label className="wf-checkbox-label">
+            <Tooltip label="Acknowledge that readiness gaps remain visible to the Test Evidence Auditor">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+            </Tooltip>
+            Test Evidence Auditor may still reject this packet.
+          </label>
+          <div className="wf-run-actions">
+            {onRetry && (
+              <Tooltip label="Capture newly staged evidence and evaluate this round again">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={busy !== null}
+                  onClick={() => void runReadinessAction("retry", onRetry, setBusy)}
+                >
+                  {readinessActionLabel("retry", busy)}
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label="Record this reason and continue the current submission despite readiness gaps">
+              <button
+                type="button"
+                className="btn"
+                disabled={readinessOverrideDisabled(busy, acknowledged, reason)}
+                onClick={() => void runReadinessAction(
+                  "override",
+                  () => onOverride(reason.trim()),
+                  setBusy,
+                )}
+              >
+                {readinessActionLabel("override", busy)}
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      )}
+      {recovery && onRecover && (
+        <section className="wf-run-section" aria-label="Evidence recovery">
+          <h4>Evidence recovery</h4>
+          <p>Retry with this submission's frozen evidence and criteria in a new segment of the same round. Earlier reviews remain available.</p>
+          {recovery.kind === "review" && <p>Inspect the prior finding before re-reviewing. Structural readiness does not establish substantive correctness; legacy finding reasons may be unknown.</p>}
+          <Tooltip label="Retry with the frozen evidence in a new segment without spending an author repair">
+            <button type="button" className="btn btn-ghost" onClick={() => void onRecover(recovery.submissionId)}>{recovery.label}</button>
+          </Tooltip>
+        </section>
+      )}
+      <h5 className="wf-evidence-head">Frozen images</h5>
+      {images.length === 0 ? (
+        <p className="wf-run-empty">No image evidence was attached to this submission.</p>
+      ) : (
+        <>
+          <div className="wf-evidence-strip">
+            {images.map((image) => {
+              const citation = citations.citationFor(image.id);
+              const sentence = citationOf(image);
+              return (
+                /*
+                 * A SINGLE click, which is deliberately not what `AttachmentStrip` does.
+                 *
+                 * That strip opens on double-click because a single click there would land the
+                 * second click of a double on the backdrop that has just appeared. An evidence
+                 * thumbnail has no second gesture competing for the single click, and the ask
+                 * is that clicking a thumbnail opens it. The `detail === 0` route is kept, so
+                 * Enter, Space and a synthesised activation still open it too.
+                 */
+                <Tooltip
+                  key={image.id}
+                  label={`${image.displayName} - click to open it full size`}
+                >
+                  <button
+                    type="button"
+                    className={`wf-evidence-card is-${image.availability}`}
+                    aria-label={`Preview ${image.displayName}`}
+                    onClick={() => open(image)}
+                  >
+                    <FrozenImageFrame
+                      image={image}
+                      body={bodies.get(image.id)}
+                      className="wf-image-frame"
+                      alt=""
+                    />
+                    <span className="wf-evidence-card-meta">
+                      <strong>{image.displayName}</strong>
+                      <span className="wf-evidence-card-caption">{image.caption}</span>
+                      <span className="wf-evidence-card-facts">
+                        {citation.clientItemId && <><code>{citation.clientItemId}</code>{" · "}</>}
+                        {scopeLabel(image.repositoryScope)}
+                        {` · ${formatBytes(image.bytes)}`}
+                        {image.inheritedFrom ? ` · from round ${image.inheritedFrom.round}` : ""}
+                      </span>
+                      {sentence && <span className="wf-evidence-card-cite">{sentence}</span>}
+                      {/* On the CARD, because a press outlives the dialog it was made in. An
+                          operator who closes the preview before the request settles would
+                          otherwise be told nothing at all, and walk away believing these bytes
+                          are queued for the next review when the daemon refused them. */}
+                      {restage.busy.has(image.id) && (
+                        <span className="wf-evidence-card-restage">Staging…</span>
+                      )}
+                      {restageErrorFor(restage.failures, image.id) && (
+                        <span className="wf-evidence-card-restage is-alert" role="alert">
+                          Re-stage failed
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+          {/* The action is named only where it exists. On history no session can stage from -
+              which is most of the runs list - promising a control the dialog will not offer
+              sends a reader looking for it. */}
+          <p className="wf-run-meta">
+            Click a thumbnail to open it full size. Caption, item id, scope, MIME type, size,
+            availability and SHA-256 are in that dialog
+            {images.some((image) => restage.offered(image))
+              ? ", with Use in next review."
+              : "."}
+          </p>
+        </>
+      )}
+      <h5 className="wf-evidence-head">Frozen author claims</h5>
+      {coverage.length === 0 ? (
+        <p className="wf-run-empty">
+          No acceptance criterion coverage was frozen for this submission.
+        </p>
+      ) : (
+        <div className="wf-evidence-claims">
+          {coverage.map((claim) => {
+            const status = evidenceClaimStatus(claim, readiness);
+            const cited = citations.byClaim.get(claim.clientCriterionId) ?? [];
+            return (
+              <div className="wf-evidence-claim" key={claim.clientCriterionId}>
+                <div className="wf-evidence-claim-body">
+                  <span className="wf-evidence-claim-text">{claim.criterion}</span>
+                  <span className="wf-evidence-claim-facts">
+                    {evidenceCodeLabel(claim.proofClass)}
+                    {` · ${claim.repositoryScope}`}
+                    {claim.links.length === 0 ? " · no evidence linked" : ""}
+                    {claim.links.map((link) => (
+                      <code key={`${link.clientItemId}:${link.role}`}>{link.clientItemId}</code>
+                    ))}
+                    {status.notes.length > 0 && (
+                      <span className="wf-evidence-claim-note">{status.notes.join(", ")}</span>
+                    )}
+                  </span>
+                </div>
+                <div className="wf-evidence-claim-side">
+                  {/* The point of a screenshot as evidence is that it can be seen BESIDE the
+                      claim it proves. `alt=""`, because the row already names the claim these
+                      pictures are under; which picture each one IS comes from the tooltip. */}
+                  {cited.map((image) => (
+                    /* `Tooltip`, not a `title` attribute, which this codebase does not use and
+                       pins a test against. It also does the job better here: the label is
+                       always rendered into a hidden node the frame points `aria-describedby`
+                       at, so this 34px copy IS named in the accessible tree even though its
+                       `alt` is empty - which is the only way a reader who cannot see it can
+                       tell which of four screenshots the row is carrying. */
+                    <Tooltip key={image.id} label={image.displayName}>
+                      <FrozenImageFrame
+                        image={image}
+                        body={bodies.get(image.id)}
+                        className="wf-evidence-mini"
+                        alt=""
+                      />
+                    </Tooltip>
+                  ))}
+                  <span className={`workflow-chip workflow-${status.tone}`}>{status.label}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {readiness && readiness.criteria.length > 0 && (
+        <RunDisclosure
+          title="Canonical reconciliation"
+          meta={`${readiness.criteria.length} criteria · ${readiness.evaluatorVersion}`}
+          tooltip="Show every canonical criterion, what it matched, and the evidence it resolved to"
+        >
+          {readiness.criteria.map((criterion) => (
+            <article key={criterion.criterionId} className="wf-run-card">
+              <header className="wf-run-card-head">
+                <strong>{criterion.criterion}</strong>
+                <span>{criterion.material ? "material" : "supporting"}</span>
+              </header>
+              {criterion.gaps.length > 0 && (
+                <p className="wf-run-error">
+                  Gaps: {criterion.gaps.map(evidenceCodeLabel).join(", ")}
+                </p>
+              )}
+              {criterion.warnings.length > 0 && (
+                <p className="wf-run-notice">
+                  Warnings: {criterion.warnings.map(evidenceCodeLabel).join(", ")}
+                </p>
+              )}
+              <div className="wf-evidence-links">
+                {criterion.links.map((link) => (
+                  <span
+                    className="workflow-chip workflow-completed"
+                    key={`${link.evidenceId}:${link.role}`}
+                  >
+                    {evidenceCodeLabel(link.role)}: {link.clientItemId}
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </RunDisclosure>
+      )}
+      {previewImage && (
+        <FrozenImagePreview
+          image={previewImage}
+          body={bodies.get(previewImage.id)}
+          scopeLabel={scopeLabel(previewImage.repositoryScope)}
+          clientItemId={citations.citationFor(previewImage.id).clientItemId}
+          citation={citationOf(previewImage)}
+          restage={restage}
+          onClose={close}
+        />
+      )}
+    </>
+  );
+}
+
 /**
  * One human decision, as a row that opens.
  *
@@ -2243,6 +2665,46 @@ function RunDisclosure({
       </Tooltip>
       <div className="wf-run-disclosure-body">{children}</div>
     </details>
+  );
+}
+
+/** What each provenance verdict is called on screen. `objective` never reaches here. */
+const GOAL_PROVENANCE_LABELS: Record<
+  Exclude<WorkflowGoalProvenanceVerdict, "objective">,
+  string
+> = {
+  automation: "Ask looks machine-authored",
+  implausible: "Ask looks too short to review against",
+  unreconciled: "Ask frozen before the newest instruction was reconciled",
+};
+
+/**
+ * A run that froze something other than a durable objective, said on the screen.
+ *
+ * Draws NOTHING for a healthy run and nothing for a run that predates the verdict. A badge on
+ * the ordinary case is a badge on every run, which is how the defect behind this survived for
+ * months: it was visible to anyone who queried for it and announced by nothing.
+ *
+ * The label is the one-word answer and the accessible name carries the whole reason, because
+ * the reason names every check that matched and a chip that printed all of it would push the
+ * ask it is about off the screen. `role="note"` rather than an alert: this is ancillary
+ * information about a run that is running perfectly well, and it never blocks it.
+ */
+function GoalProvenanceBadge(
+  { intent }: { intent: RunRecordIntentSummary },
+): React.JSX.Element | null {
+  const verdict = intent.provenanceVerdict;
+  if (verdict === null || verdict === "objective") return null;
+  return (
+    <p className="wf-run-chiprow">
+      <span
+        className="workflow-chip workflow-stopped"
+        role="note"
+        aria-label={intent.provenanceReason ?? GOAL_PROVENANCE_LABELS[verdict]}
+      >
+        {GOAL_PROVENANCE_LABELS[verdict]}
+      </span>
+    </p>
   );
 }
 
@@ -2327,6 +2789,7 @@ function IntentPane({
           {intent.refinedGoal ?? "No refined goal was recorded for this round."}
         </p>
       </div>
+      <GoalProvenanceBadge intent={intent} />
       <RunDisclosure
         title="Review contract"
         meta={`${intent.rawGoalCharacters.toLocaleString()} characters`}
@@ -2350,6 +2813,23 @@ function IntentPane({
           {` · resolved revision ${context.primaryGoal.intentSource.resolvedPromptRevision}`}
           {` · ${context.primaryGoal.intentSource.relationship ?? "unresolved"}`}
         </p>
+      )}
+      {!!context.steering?.length && (
+        <RunDisclosure
+          title="Human steering context"
+          meta={`${context.steering.length} instruction${context.steering.length === 1 ? "" : "s"}`}
+          tooltip="Show frozen method, sequence and priority changes that do not move the acceptance contract"
+        >
+          <p>Steering does not add, remove or narrow acceptance criteria.</p>
+          <p className="wf-run-meta">Frozen through resolved prompt revision {context.steeringResolvedRevision}.</p>
+          {context.steering.map((note) => (
+            <div key={note.revision}>
+              <p className="wf-run-meta">Revision {note.revision} · <time dateTime={new Date(note.timestamp).toISOString()}>{when(note.timestamp)}</time></p>
+              <pre>{note.instruction}</pre>
+              <p>{note.rationale}</p>
+            </div>
+          ))}
+        </RunDisclosure>
       )}
       <RunDisclosure
         title="Human decisions and rationale"
@@ -2429,6 +2909,333 @@ function IntentPane({
   );
 }
 
+/**
+ * How this run finishes: the GitHub Inspector final gate and the Foreman completion claim.
+ *
+ * Two sections became one pane, and both had the same shape of problem as the other three - a
+ * small amount of decisive information wrapped in a large amount of chrome. The gate was a
+ * status sentence, two fact ledgers of sixteen fields between them, a findings-policy line, a
+ * settings button and one CARD per finding; on the run in the mockups that was ten cards across
+ * eight Inspector rounds. The claims were one card each, and four of that run's five were
+ * `already_claimed` restating the same completion - five near-identical paragraphs saying what
+ * one counting sentence says.
+ *
+ * Nothing here re-decides the gate. The Inspector's adoption, its posture, its retry schedule
+ * and its completion policy are untouched; every fact those two ledgers carried is still drawn,
+ * inside one disclosure, under the accessible names the specs already reach them by.
+ *
+ * Findings stay OUT of the Review worklist deliberately. `runChangeWorklist` is built from
+ * Persona attempt verdicts only - it skips an attempt with no persona - so an Inspector finding
+ * has never appeared there, and folding it in would change what that list means and what its
+ * segment counts count. This pane is the one place they appear.
+ */
+function CompletionPane({
+  detail,
+  summary,
+  claims,
+  version,
+  onOpenInspectorSettings,
+}: {
+  detail: WorkflowRunDetail;
+  summary: RunRecordCompletionSummary;
+  claims: readonly RunCompletionClaim[];
+  version: WorkflowVersion | null;
+  onOpenInspectorSettings: () => void;
+}): React.JSX.Element {
+  const [openFinding, setOpenFinding] = useState<string | null>(null);
+  const gate = detail.inspectorGate;
+  const spentGateCondition = spentInspectorGateCondition(detail);
+  return (
+    <>
+      {gate && summary.gate && (
+        <div className="wf-run-strip">
+          <RunStat
+            label="Gate"
+            value={summary.gate.label}
+            tone={summary.gate.tone === "passed" ? "ok" : summary.gate.tone === "failed" ? "alert" : null}
+          />
+          <RunStat
+            label="Open findings"
+            value={summary.openFindings}
+            tone={summary.openFindings > 0 ? "alert" : null}
+          />
+          <RunStat
+            label="Resolved"
+            value={summary.resolvedFindings}
+            tone={summary.resolvedFindings > 0 ? "ok" : null}
+          />
+          <RunStat
+            label="Pull request"
+            value={summary.pullRequest === null
+              ? "not resolved"
+              : `${summary.pullRequest.number === null ? "adopted" : `#${summary.pullRequest.number}`}${
+                summary.pullRequest.state ? ` ${summary.pullRequest.state.toLowerCase()}` : ""}`}
+          />
+          <RunStat
+            label="Inspector round"
+            value={summary.inspectorRound ?? "not adopted"}
+          />
+        </div>
+      )}
+      {gate && (
+        <>
+          <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
+          <h5 className="wf-run-subhead">Findings</h5>
+          {gate.findings.length === 0 ? (
+            /* Two sentences, because "no findings" means two different things. A gate that
+               has adopted a pull request and found nothing wrong is a result; a gate that has
+               adopted nothing yet has not looked. The old copy asserted an adopted pull
+               request either way, which the strip four lines above contradicts by printing
+               "not resolved". */
+            <p className="wf-run-empty">{summary.pullRequest === null
+              ? "No pull request is adopted yet, so no findings are recorded."
+              : "No findings are recorded for this adopted pull request."}</p>
+          ) : (
+            <div className="wf-run-table wf-run-ledger">
+              <table>
+                <caption className="sr-only">
+                  {spentGateCondition
+                    ? "Current Inspector findings"
+                    : "GitHub Inspector findings on the adopted pull request"}
+                </caption>
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>Finding</th>
+                    <th>Where</th>
+                    <th>Round</th>
+                    <th>Status</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gate.findings.map((finding) => {
+                    const severity = inspectorFindingSeverityStatus(finding.severity);
+                    const status = inspectorFindingStatusStatus(finding.status);
+                    const open = openFinding === finding.id;
+                    // An UNRESOLVED finding is why the gate has not passed, so its body is
+                    // never behind a disclosure - the same rule the delivery ledger applies to
+                    // a refused packet, and for the same reason: a reader should not have to go
+                    // looking for the thing that stopped the run.
+                    const unresolved = finding.status !== "resolved";
+                    return (
+                      <Fragment key={finding.id}>
+                        <tr className={`wf-run-ledger-row wf-run-finding-row is-${finding.severity}`}>
+                          <td>
+                            <span className={`workflow-chip workflow-${severity.tone}`}>
+                              {severity.label}
+                            </span>
+                          </td>
+                          <td>{finding.title}</td>
+                          <td><code>{inspectorFindingLocation(finding)}</code></td>
+                          <td>{finding.round}</td>
+                          <td>
+                            <span className={`workflow-chip workflow-${status.tone}`}>
+                              {status.label}
+                            </span>
+                          </td>
+                          <td>
+                            <Tooltip label={open
+                              ? "Hide this finding's fingerprint and its timestamps"
+                              : "Show the fingerprint the gate tracks this finding by, and when it moved"}>
+                              <button
+                                className="btn btn-ghost wf-run-ledger-toggle"
+                                aria-expanded={open}
+                                aria-controls={`wf-run-finding-${finding.id}`}
+                                onClick={() => setOpenFinding(open ? null : finding.id)}
+                              >
+                                {open ? "Hide finding" : "Show finding"}
+                              </button>
+                            </Tooltip>
+                          </td>
+                        </tr>
+                        {unresolved && (
+                          <tr className="wf-run-ledger-alert">
+                            <td colSpan={6}>
+                              <p className="wf-run-sentence">{inspectorFindingBody(finding)}</p>
+                            </td>
+                          </tr>
+                        )}
+                        {open && (
+                          <tr className="wf-run-ledger-detail" id={`wf-run-finding-${finding.id}`}>
+                            <td colSpan={6}>
+                              {/* A resolved finding's body opens here; an unresolved one is
+                                  already printed above rather than twice. */}
+                              {!unresolved && <p>{inspectorFindingBody(finding)}</p>}
+                              <dl className="wf-run-facts-list">
+                                <div><dt>Fingerprint</dt><dd><code>{finding.fingerprint}</code></dd></div>
+                                <div><dt>Recorded</dt><dd>{when(finding.createdAt)}</dd></div>
+                                <div><dt>Last change</dt><dd>{when(finding.updatedAt)}</dd></div>
+                              </dl>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="wf-run-meta">
+            Findings are not in the Review worklist - that list is built from Persona verdicts
+            only - so this is the one place they appear.
+          </p>
+        </>
+      )}
+      {claims.length > 0 && (
+        <>
+          <h5 className="wf-run-subhead">Foreman completion claims</h5>
+          <div className="wf-run-rowlist" role="list" aria-label="Foreman completion claims">
+            {claims.map((claim) => (
+              <div className="wf-run-rowlist-row" role="listitem" key={claim.id}>
+                <div className="wf-run-rowlist-body">
+                  {/*
+                    * The FIRST LINE on the row, the WHOLE summary in the tooltip - and the
+                    * tooltip is what keeps this from being a field dropped. `Tooltip` renders
+                    * its label into a hidden node the row points `aria-describedby` at, so the
+                    * paragraph is in the document and in the accessible tree whether or not
+                    * anyone hovers. Five claims restating one completion differ in their first
+                    * sentence and nowhere else, which is what makes the first line the right
+                    * thing to print.
+                    */}
+                  <Tooltip label={claim.summary}>
+                    <span className="wf-run-rowlist-title">{firstLineOf(claim.summary)}</span>
+                  </Tooltip>
+                  <span className="wf-run-rowlist-facts">
+                    {claim.completionKind}
+                    {" · once-only guard "}
+                    <code>{claim.marker.slice(0, 12)}</code>
+                  </span>
+                </div>
+                <span className={`workflow-chip workflow-${completionClaimStatus(claim.state).tone}`}>
+                  {completionClaimStatus(claim.state).label}
+                </span>
+              </div>
+            ))}
+          </div>
+          {/* Unguarded: `claimSentence` is null only when there are no claims, and this whole
+              block is inside the test for that. A guard here was a branch nothing could take. */}
+          <p className="wf-run-meta">{summary.claimSentence}</p>
+          {/* One sentence per STATE present, not per claim. `completionClaimOutcome` gives
+              every claim a sentence and the card printed it on each one, so four claims sharing
+              a state printed one identical sentence four times. It is a fact about the state,
+              so it is said once and the chips point at it. */}
+          {completionClaimOutcomeSentences(claims).map((sentence) => (
+            <p className="wf-run-meta" key={sentence}>{sentence}</p>
+          ))}
+        </>
+      )}
+      {gate && (
+        <RunDisclosure
+          title="Gate ledgers"
+          meta={spentGateCondition
+            ? "last workflow observation and current Inspector, 16 facts"
+            : "the adopted pull request and its review, 9 facts"}
+          tooltip="Show every fact the final gate records about the pull request and the Inspector that reviewed it"
+        >
+          {spentGateCondition ? (
+            <div className="wf-run-gate-ledgers">
+              <section className="wf-run-gate-ledger is-history" aria-label="Last workflow observation">
+                <h5>Last workflow observation</h5>
+                <dl className="wf-run-facts-list">
+                  <div>
+                    <dt>Pull request</dt>
+                    <dd>
+                      {gate.state.prUrl ? (
+                        <Tooltip label="Open the adopted pull request on GitHub">
+                          <a href={gate.state.prUrl} target="_blank" rel="noreferrer">
+                            #{gate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
+                          </a>
+                        </Tooltip>
+                      ) : "not resolved"}
+                    </dd>
+                  </div>
+                  <div><dt>Failed head</dt><dd><code>{shortSha(gate.state.failedHeadSha ?? gate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
+                  <div><dt>Observed head</dt><dd><code>{shortSha(gate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
+                  <div><dt>Stopped on</dt><dd>{gateWaitSentence(gate.state.waitReason)}</dd></div>
+                  <div><dt>Observed</dt><dd>{gate.state.lastObservedAt ? when(gate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
+                  <div><dt>Historical findings</dt><dd>{gate.state.findingFingerprints.length}</dd></div>
+                </dl>
+                {gate.state.findingFingerprints.length > 0 && (
+                  <ul className="wf-run-gate-fingerprints" aria-label="Historical finding fingerprints">
+                    {gate.state.findingFingerprints.map((fingerprint) => {
+                      const finding = gate.findings.find((row) => row.fingerprint === fingerprint);
+                      return (
+                        <li key={fingerprint}>
+                          <span>{finding?.title ?? "Finding not present in current ledger"}</span>
+                          <code>{fingerprint}</code>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+              <section className="wf-run-gate-ledger is-current" aria-label="Current Inspector">
+                <h5>Current Inspector</h5>
+                <dl className="wf-run-facts-list">
+                  <div><dt>Adopted provenance</dt><dd>{gate.inspection?.source === "hook" ? "hook" : gate.inspection?.source === "pipeline" ? "pipeline" : gate.inspection ? "legacy import" : "not adopted"}</dd></div>
+                  <div><dt>Current posture</dt><dd>{gate.inspector.enabled ? gate.inspector.mode : "disabled"} · {gate.inspector.posture ?? "unknown posture"}</dd></div>
+                  <div><dt>Review posture</dt><dd>{gate.inspection?.reviewPosture ?? "not reviewed"}</dd></div>
+                  <div><dt>Review round</dt><dd>{gate.inspection?.round ?? 0}</dd></div>
+                  <div><dt>Observed head</dt><dd><code>{shortSha(gate.inspection?.observedHeadSha) ?? "not observed"}</code></dd></div>
+                  <div><dt>Reviewed head</dt><dd><code>{shortSha(gate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
+                  <div><dt>Pull request state</dt><dd>{gate.inspection?.observedState ?? "not observed"}</dd></div>
+                  <div><dt>Open findings</dt><dd>{gate.inspection?.openFindings ?? "unknown"}</dd></div>
+                  <div><dt>Resolved findings</dt><dd>{gate.inspection?.resolvedFindings ?? "unknown"}</dd></div>
+                  <div><dt>Backoff</dt><dd>{gate.inspection?.nextAttemptAt ? when(gate.inspection.nextAttemptAt) : "none"}</dd></div>
+                </dl>
+                <ErrorLine raw={gate.inspection?.lastError} alert />
+              </section>
+            </div>
+          ) : (
+            <>
+              <dl className="wf-run-facts-list">
+                <div>
+                  <dt>Pull request</dt>
+                  <dd>
+                    {gate.state.prUrl ? (
+                      <Tooltip label="Open the adopted pull request on GitHub">
+                        <a href={gate.state.prUrl} target="_blank" rel="noreferrer">
+                          #{gate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
+                        </a>
+                      </Tooltip>
+                    ) : "not resolved"}
+                  </dd>
+                </div>
+                <div><dt>Adopted provenance</dt><dd>{gate.inspection?.source === "hook" ? "hook" : gate.inspection?.source === "pipeline" ? "pipeline" : gate.inspection ? "legacy import" : "not adopted"}</dd></div>
+                <div><dt>GitHub Inspector</dt><dd>{gate.inspector.enabled ? gate.inspector.mode : "disabled"} · {gate.inspector.posture ?? "unknown posture"}</dd></div>
+                <div><dt>Review round</dt><dd>{gate.inspection?.round ?? 0}</dd></div>
+                <div><dt>Target head</dt><dd><code>{shortSha(gate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
+                <div><dt>Observed head</dt><dd><code>{shortSha(gate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
+                <div><dt>Reviewed head</dt><dd><code>{shortSha(gate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
+                <div><dt>Observed</dt><dd>{gate.state.lastObservedAt ? when(gate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
+                <div><dt>Backoff</dt><dd>{gate.inspection?.nextAttemptAt ? when(gate.inspection.nextAttemptAt) : "none"}</dd></div>
+              </dl>
+              <ErrorLine raw={gate.inspection?.lastError} alert />
+            </>
+          )}
+        </RunDisclosure>
+      )}
+      {gate && (
+        <>
+          <p className="wf-run-meta">
+            Findings policy: <strong>{version?.completionPolicy.kind === "inspector"
+              ? version.completionPolicy.onFindings.replaceAll("_", " ")
+              : "none"}</strong>
+            {" · "}Missing PR: <strong>{version?.completionPolicy.kind === "inspector"
+              ? version.completionPolicy.missingPrAction.replaceAll("_", " ")
+              : "wait"}</strong>
+          </p>
+          <Tooltip label="Open GitHub Inspector settings to review its enablement, mode, and allowlist">
+            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open GitHub Inspector settings</button>
+          </Tooltip>
+        </>
+      )}
+    </>
+  );
+}
+
 export function WorkflowRunView({
   detail,
   roundId = null,
@@ -2451,6 +3258,7 @@ export function WorkflowRunView({
   onRetryDelivery = async () => {},
   onResolveDelivery = async () => {},
   onRetryEvidenceReadiness = async () => {},
+  onRecoverEvidence,
   onOverrideEvidenceReadiness = async () => {},
   onLoadEvents = async () => {},
   onLoadCalls = async () => {},
@@ -2535,6 +3343,7 @@ export function WorkflowRunView({
     confirmation?: string,
   ) => Promise<void>;
   onRetryEvidenceReadiness?: (submissionId: string) => Promise<void>;
+  onRecoverEvidence?: (submissionId: string) => Promise<void>;
   onOverrideEvidenceReadiness?: (submissionId: string, reason: string) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
@@ -2594,11 +3403,6 @@ export function WorkflowRunView({
   const viewedRound = rounds.find((round) => round.submissionId === viewed?.id) ?? null;
   const latest = rounds.at(-1) ?? null;
   const isLatest = viewed === null || viewed.id === latest?.submissionId;
-  // The refinement cap parks the run on a submission that is still waiting for readiness, so
-  // this is a fact about the RUN's state rather than the submission's - see the readiness
-  // section below, which owns the decision this block asks the operator to make.
-  const preflightExhausted = detail.run.status === "blocked"
-    && detail.run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE;
   /**
    * Two different questions, and they were one variable until the Inspector caught it.
    *
@@ -2637,7 +3441,6 @@ export function WorkflowRunView({
     ? detail.evidenceCoverage?.find((group) => group.submissionId === viewed.id)?.coverage ?? []
     : [];
   const inspectorGate = detail.inspectorGate;
-  const spentGateCondition = spentInspectorGateCondition(detail);
   const spentGateStatus = spentInspectorGateStatus(detail);
   const roundAttempts = detail.attempts.filter((attempt) => attempt.submissionId === viewed?.id);
   // Split by what the attempt IS, read off the durable snapshot column the runtime writes for
@@ -2681,22 +3484,7 @@ export function WorkflowRunView({
   const inheritedOutcomes = inheritedAttempts(detail, viewed);
   const statuses = nodeStatusesForSubmission(detail, viewed?.id ?? null);
   const calls = detail.llmCalls ?? [];
-  const completionClaims = detail.events.flatMap((event) => {
-    if (
-      event.kind !== "workflow_completion_claimed"
-      || !event.payload
-      || Array.isArray(event.payload)
-      || typeof event.payload !== "object"
-    ) return [];
-    const { completionKind, marker, summary, state } = event.payload;
-    if (
-      typeof completionKind !== "string"
-      || typeof marker !== "string"
-      || typeof summary !== "string"
-      || typeof state !== "string"
-    ) return [];
-    return [{ id: event.id, completionKind, marker, summary, state }];
-  });
+  const completionClaims = runCompletionClaims(detail);
   const feedbackAction = copyFeedbackAction(detail, feedbackCopied);
   /**
    * The one thing to do about this run, and the sentence for when there is nothing.
@@ -2742,6 +3530,7 @@ export function WorkflowRunView({
   const sessionBound = detail.binding.sessionId !== null;
   const parkedSentence = runParkedSentence(detail);
   const refusedSentence = runRefusedSentence(detail);
+  const refusedClaimSentence = runRefusedCompletionSentence(detail);
   /*
    * Every count and every summary sentence the tab bar and its panes print, derived once.
    *
@@ -2856,6 +3645,9 @@ export function WorkflowRunView({
               In that order, because it is the order the events happened in. */}
           {grantNotice && <p className="wf-run-granted">{grantNotice}</p>}
           {refusedSentence && <p className="wf-run-refused">{refusedSentence}</p>}
+          {/* Under the refusal: that one says what to fix, this one says the session has
+              already done its half. */}
+          {refusedClaimSentence && <p className="wf-run-refused-claim">{refusedClaimSentence}</p>}
           {parkedSentence && <p className="wf-run-parked">{parkedSentence}</p>}
           {detail.externalSource && <ExternalProvenance source={detail.externalSource} />}
           <small>Started {when(detail.run.startedAt)} · updated {relativeTime(detail.run.updatedAt)}</small>
@@ -3130,7 +3922,7 @@ export function WorkflowRunView({
             ? inspectorGateSentence(detail)
             : null}
           repair={detail.summary.maxRepairRounds > 0
-            ? "Any fail returns the submission to Session for repair, then the whole pipeline runs again."
+            ? "Any fail returns the submission to Session for repair, then a new round starts."
             : null}
           disabledNodeIds={detail.run.disabledNodeIds ?? []}
           disabledChipFor={(nodeId) =>
@@ -3209,9 +4001,8 @@ export function WorkflowRunView({
         * from a stack of cards into a ledger.
         *
         * The bar is `.workflow-tabs`, which the Runs page already ships; nothing here is a
-        * second tab family. Image evidence, Evidence readiness, the Inspector gate and the
-        * Foreman completion claim are still their own sections below this container and are
-        * unchanged - two later phases move them in.
+        * second tab family. Below this container the page is now only the workflow-owned model
+        * calls and the Timeline, both deliberately unchanged.
         */}
       <RunRecordTabs
         routePane={pane}
@@ -3304,6 +4095,53 @@ export function WorkflowRunView({
             ),
           },
           {
+            id: "evidence",
+            label: "Evidence",
+            hint: "What this submission proved, the pictures it froze, and what the reconciliation could not match",
+            /*
+             * The AUTHOR CLAIM count, withheld at zero.
+             *
+             * It is what this pane is for: how many things the packet says it proves. Withheld
+             * at zero because a submission can freeze four screenshots and no claims, and
+             * "Evidence 0" printed over four visible thumbnails is exactly the lie a collapsed
+             * summary exists not to tell.
+             */
+            count: record.evidence.claimCount > 0 ? record.evidence.claimCount : null,
+            blocking: record.evidence.blocking,
+            // A submission is the unit this pane reports on, so a run with no submission
+            // selected has no evidence record to offer rather than an empty one.
+            render: () => !viewed ? null : (
+              <EvidencePane
+                key={viewed.id}
+                runId={detail.run.id}
+                summary={record.evidence}
+                images={submissionImages}
+                coverage={submissionCoverage}
+                readiness={viewed.readiness}
+                enforced={workflowEvidenceReadinessPolicyEnforces(
+                  version?.evidenceReadinessPolicy,
+                )}
+                scopeOptions={evidenceScopeOptions}
+                canRestage={detail.binding.state === "active" && !detail.externalSource}
+                overrideReason={(detail.readinessOverrides ?? [])
+                  .filter((entry) => entry.submissionId === viewed.id)
+                  .at(-1)?.reason ?? null}
+                onRestage={onRestageImage}
+                recovery={isLatest ? detail.evidenceRecovery : undefined}
+                onRecover={onRecoverEvidence}
+                /*
+                 * The block is what stopped the refinements, so the button that asks for
+                 * another one is withdrawn with it. The override stays, because the decision
+                 * the block exists to ask for is exactly the one that button records.
+                 */
+                onRetry={record.evidence.refinementsExhausted
+                  ? undefined
+                  : () => onRetryEvidenceReadiness(viewed.id)}
+                onOverride={(reason) => onOverrideEvidenceReadiness(viewed.id, reason)}
+              />
+            ),
+          },
+          {
             id: "intent",
             label: "Intent",
             hint: "What this round was trying to do, and the decisions a human recorded for it",
@@ -3320,177 +4158,36 @@ export function WorkflowRunView({
               />
             ),
           },
+          {
+            id: "completion",
+            label: "Completion",
+            hint: "The GitHub Inspector final gate, and what Foreman claimed about finishing",
+            /*
+             * OPEN FINDINGS, withheld at zero - not the claim count, and not the finding count.
+             *
+             * This pane answers "did this run finish", and an open finding is the only countable
+             * thing that answers "no". The claims are the wrong number to print: on the run this
+             * was measured against five of them restated ONE completion, so "Completion 5" would
+             * report a single finish five times. A blocking pane with nothing to count still
+             * earns its badge - the container prints `!` for exactly that.
+             */
+            count: record.completion.openFindings > 0 ? record.completion.openFindings : null,
+            blocking: record.completion.blocking,
+            // The ONE conditional pane in the bar. A run with no Inspector gate and no Foreman
+            // claim has no record of how it finishes, so it is offered no tab rather than an
+            // empty one - which is Phase 1's null-render rule rather than a flag of its own.
+            render: () => !record.completion.present ? null : (
+              <CompletionPane
+                detail={detail}
+                summary={record.completion}
+                claims={completionClaims}
+                version={version}
+                onOpenInspectorSettings={onOpenInspectorSettings}
+              />
+            ),
+          },
         ]}
       />
-
-      {inspectorGate && (
-        <section className={`wf-run-section wf-run-gate is-${detail.summary.gate}`}>
-          <header className="wf-run-section-head">
-            <h4>GitHub Inspector final gate</h4>
-            <span className={`workflow-chip workflow-${(spentGateStatus ?? gateSummaryStatus(detail.summary.gate)).tone}`}>
-              {(spentGateStatus ?? gateSummaryStatus(detail.summary.gate)).label}
-            </span>
-          </header>
-          <p className="wf-run-sentence">{inspectorGateSentence(detail)}</p>
-          {spentGateCondition ? (
-            <div className="wf-run-gate-ledgers">
-              <section className="wf-run-gate-ledger is-history" aria-label="Last workflow observation">
-                <h5>Last workflow observation</h5>
-                <dl className="wf-run-facts-list">
-                  <div>
-                    <dt>Pull request</dt>
-                    <dd>
-                      {inspectorGate.state.prUrl ? (
-                        <Tooltip label="Open the adopted pull request on GitHub">
-                          <a href={inspectorGate.state.prUrl} target="_blank" rel="noreferrer">
-                            #{inspectorGate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
-                          </a>
-                        </Tooltip>
-                      ) : "not resolved"}
-                    </dd>
-                  </div>
-                  <div><dt>Failed head</dt><dd><code>{shortSha(inspectorGate.state.failedHeadSha ?? inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
-                  <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
-                  <div><dt>Stopped on</dt><dd>{gateWaitSentence(inspectorGate.state.waitReason)}</dd></div>
-                  <div><dt>Observed</dt><dd>{inspectorGate.state.lastObservedAt ? when(inspectorGate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
-                  <div><dt>Historical findings</dt><dd>{inspectorGate.state.findingFingerprints.length}</dd></div>
-                </dl>
-                {inspectorGate.state.findingFingerprints.length > 0 && (
-                  <ul className="wf-run-gate-fingerprints" aria-label="Historical finding fingerprints">
-                    {inspectorGate.state.findingFingerprints.map((fingerprint) => {
-                      const finding = inspectorGate.findings.find((row) => row.fingerprint === fingerprint);
-                      return (
-                        <li key={fingerprint}>
-                          <span>{finding?.title ?? "Finding not present in current ledger"}</span>
-                          <code>{fingerprint}</code>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-              <section className="wf-run-gate-ledger is-current" aria-label="Current Inspector">
-                <h5>Current Inspector</h5>
-                <dl className="wf-run-facts-list">
-                  <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection?.source === "pipeline" ? "pipeline" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
-                  <div><dt>Current posture</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
-                  <div><dt>Review posture</dt><dd>{inspectorGate.inspection?.reviewPosture ?? "not reviewed"}</dd></div>
-                  <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
-                  <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.inspection?.observedHeadSha) ?? "not observed"}</code></dd></div>
-                  <div><dt>Reviewed head</dt><dd><code>{shortSha(inspectorGate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
-                  <div><dt>Pull request state</dt><dd>{inspectorGate.inspection?.observedState ?? "not observed"}</dd></div>
-                  <div><dt>Open findings</dt><dd>{inspectorGate.inspection?.openFindings ?? "unknown"}</dd></div>
-                  <div><dt>Resolved findings</dt><dd>{inspectorGate.inspection?.resolvedFindings ?? "unknown"}</dd></div>
-                  <div><dt>Backoff</dt><dd>{inspectorGate.inspection?.nextAttemptAt ? when(inspectorGate.inspection.nextAttemptAt) : "none"}</dd></div>
-                </dl>
-                <ErrorLine raw={inspectorGate.inspection?.lastError} alert />
-              </section>
-            </div>
-          ) : (
-            <>
-              <dl className="wf-run-facts-list">
-                <div>
-                  <dt>Pull request</dt>
-                  <dd>
-                    {inspectorGate.state.prUrl ? (
-                      <Tooltip label="Open the adopted pull request on GitHub">
-                        <a href={inspectorGate.state.prUrl} target="_blank" rel="noreferrer">
-                          #{inspectorGate.inspection?.number ?? detail.summary.gatePrNumber ?? "unknown"}
-                        </a>
-                      </Tooltip>
-                    ) : "not resolved"}
-                  </dd>
-                </div>
-                <div><dt>Adopted provenance</dt><dd>{inspectorGate.inspection?.source === "hook" ? "hook" : inspectorGate.inspection?.source === "pipeline" ? "pipeline" : inspectorGate.inspection ? "legacy import" : "not adopted"}</dd></div>
-                <div><dt>GitHub Inspector</dt><dd>{inspectorGate.inspector.enabled ? inspectorGate.inspector.mode : "disabled"} · {inspectorGate.inspector.posture ?? "unknown posture"}</dd></div>
-                <div><dt>Review round</dt><dd>{inspectorGate.inspection?.round ?? 0}</dd></div>
-                <div><dt>Target head</dt><dd><code>{shortSha(inspectorGate.state.targetHeadSha) ?? "not pinned"}</code></dd></div>
-                <div><dt>Observed head</dt><dd><code>{shortSha(inspectorGate.state.observedHeadSha) ?? "not observed"}</code></dd></div>
-                <div><dt>Reviewed head</dt><dd><code>{shortSha(inspectorGate.inspection?.headSha) ?? "not reviewed"}</code></dd></div>
-                <div><dt>Observed</dt><dd>{inspectorGate.state.lastObservedAt ? when(inspectorGate.state.lastObservedAt) : "waiting for post-entry observation"}</dd></div>
-                <div><dt>Backoff</dt><dd>{inspectorGate.inspection?.nextAttemptAt ? when(inspectorGate.inspection.nextAttemptAt) : "none"}</dd></div>
-              </dl>
-              <ErrorLine raw={inspectorGate.inspection?.lastError} alert />
-            </>
-          )}
-          <p className="wf-run-meta">
-            Findings policy: <strong>{version?.completionPolicy.kind === "inspector"
-              ? version.completionPolicy.onFindings.replaceAll("_", " ")
-              : "none"}</strong>
-            {" · "}Missing PR: <strong>{version?.completionPolicy.kind === "inspector"
-              ? version.completionPolicy.missingPrAction.replaceAll("_", " ")
-              : "wait"}</strong>
-          </p>
-          <Tooltip label="Open GitHub Inspector settings to review its enablement, mode, and allowlist">
-            <button className="btn btn-ghost" onClick={onOpenInspectorSettings}>Open GitHub Inspector settings</button>
-          </Tooltip>
-          <div className="wf-run-findings" aria-label={spentGateCondition ? "Current Inspector findings" : undefined}>
-            {inspectorGate.findings.length === 0 ? (
-              <p className="wf-run-empty">No findings are recorded for this adopted pull request.</p>
-            ) : inspectorGate.findings.map((finding) => (
-              <article key={finding.id} className={`wf-run-card wf-run-finding is-${finding.severity}`}>
-                <header className="wf-run-card-head">
-                  <strong>{finding.severity} · {finding.title}</strong>
-                  <span>{finding.status}</span>
-                </header>
-                <code>{finding.path ?? "general"}{finding.line ? `:${finding.line}` : ""}</code>
-                <p>{finding.body ?? "Legacy finding: detail was not persisted by the GitHub Inspector version that created this row."}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {completionClaims.length > 0 && (
-        <section className="wf-run-section">
-          <h4>Foreman completion claim</h4>
-          <div className="wf-run-cards">
-            {completionClaims.map((claim) => (
-              <article className="wf-run-card" key={claim.id}>
-                <header className="wf-run-card-head">
-                  <strong>{claim.completionKind} completion</strong>
-                  <span>{claim.state.replaceAll("_", " ")}</span>
-                </header>
-                <p>{claim.summary}</p>
-                <p className="wf-run-meta">Once-only guard <code>{claim.marker.slice(0, 12)}</code></p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-
-
-      {viewed && (
-        <SubmissionImageEvidence
-          runId={detail.run.id}
-          images={submissionImages}
-          scopeOptions={evidenceScopeOptions}
-          canRestage={detail.binding.state === "active" && !detail.externalSource}
-          onRestage={onRestageImage}
-        />
-      )}
-      {viewed && (submissionCoverage.length > 0 || viewed.readiness != null) && (
-        <SubmissionEvidenceReadiness
-          key={viewed.id}
-          coverage={submissionCoverage}
-          readiness={viewed.readiness}
-          enforced={workflowEvidenceReadinessPolicyEnforces(version?.evidenceReadinessPolicy)}
-          waiting={isLatest
-            && viewed.status === "waiting_for_evidence_readiness"
-            && (detail.run.status === "waiting_for_evidence_readiness" || preflightExhausted)}
-          /*
-           * The block is what stopped the refinements, so the button that asks for another one
-           * is withdrawn with it. The override below stays, because the decision the block
-           * exists to ask for is exactly the one that button records.
-           */
-          refinementsExhausted={preflightExhausted}
-          overrideReason={(detail.readinessOverrides ?? [])
-            .filter((entry) => entry.submissionId === viewed.id)
-            .at(-1)?.reason ?? null}
-          onRetry={preflightExhausted ? undefined : () => onRetryEvidenceReadiness(viewed.id)}
-          onOverride={(reason) => onOverrideEvidenceReadiness(viewed.id, reason)}
-        />
-      )}
 
       <section className="wf-run-section">
         <header className="wf-run-section-head">
@@ -4305,7 +5002,7 @@ export function WorkflowRuns({
         <div className="wf-run-list" role="list" aria-label="Workflow runs">
           {ordered.map((run) => (
             <div role="listitem" key={run.id}>
-              <Tooltip label={`Open this ${run.workflowName} run - ${runStatusLabel(run.status)}`}>
+              <Tooltip label={`Open this ${run.workflowName} run - ${runTriageSentence(run)}`}>
                 <button
                   ref={(node) => {
                     if (node) runRows.current.set(run.id, node);
@@ -4322,6 +5019,16 @@ export function WorkflowRuns({
                   <span className={`workflow-chip workflow-${workflowRunTone(run)}`}>
                     {runStatusLabel(run.status)}
                   </span>
+                  {/* WHY it stopped, beside the chip that says THAT it stopped.
+                      The chip has always been able to say "Blocked", which is true of every
+                      stopped run at once and actionable on none of them - so a rail of them
+                      was a column of one word and a reader who had to open each in turn to
+                      find out which was theirs. `runIsParked` rather than `status ===
+                      "blocked"`, and `blockedPhaseClause` rather than a second lookup, so
+                      this row and the Review drawer's cannot disagree about one field. */}
+                  {runIsParked(run) && (
+                    <span className="wf-run-row-why">{blockedPhaseClause(run.phase)}</span>
+                  )}
                   <span className="wf-run-row-session">{run.noteKey}</span>
                   {run.repoRoot && (
                     <span className="wf-run-row-repo">{repoLeaf(run.repoRoot)}</span>
@@ -4485,6 +5192,12 @@ export function WorkflowRuns({
                         }
                       : {}),
                   }),
+                }));
+            }}
+            onRecoverEvidence={async (submissionId) => {
+              actionController.run(`evidence-recovery:${submissionId}`, (requestId) =>
+                workflowRequest(`/api/workflow-runs/${detail.run.id}/submissions/${submissionId}/evidence-recovery`, {
+                  method: "POST", body: JSON.stringify({ requestId }),
                 }));
             }}
             onRetryEvidenceReadiness={async (submissionId) => {

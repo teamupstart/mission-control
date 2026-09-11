@@ -42,6 +42,7 @@ function deps(
     agentBin: (agent) => `/fake/${agent}`,
     installedBackend: async (id) => `/fake/${id}`,
     herdrServer: async () => ({ state: "ready", socket: "/fake/herdr.sock", version: "0.9.0" }),
+    cmuxControl: async () => ({ state: "ready", accessMode: "allowAll" }),
     ghBin: () => "/fake/gh",
     resolveBinPath: async (bin) => bin,
     runCommand: async () => stubRun({ stdout: "Logged in to github.com account fake", stderr: "", code: 0 }),

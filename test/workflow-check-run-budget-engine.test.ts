@@ -228,6 +228,7 @@ const scriptedRunner = (verdicts: () => "pass" | "fail") => (id: LlmRunnerId): L
           verdict: "fail",
           summary: "Needs repair",
           requestedChanges: [{
+            basis: "substantive",
             title: "Fix it",
             rationale: "Intent is not met",
             evidence: [{ kind: "goal", quote: "REPAIR THE THING" }],
@@ -248,6 +249,7 @@ const checkPolicy = () => ({
   defaultWorkflowId: null,
   retention: { rawEvidenceDays: 30, completedRunDays: 180, maxCompletedRuns: 1_000 },
   checksEnabled: true,
+  skipPassedJudges: true,
 });
 
 /** The catalog reader the engine injects, over one configured `test` Command. */

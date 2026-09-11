@@ -178,6 +178,7 @@ const workflowFields = {
   defaultWorkflowId: "setting",
   retention: "setting",
   checksEnabled: "setting",
+  skipPassedJudges: "setting",
 } satisfies Record<keyof WorkflowPolicy, AppConfigValueClass>;
 
 const taskSourcesFields = {

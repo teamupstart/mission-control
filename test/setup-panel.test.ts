@@ -200,7 +200,7 @@ test("the panel keeps the host-owned remedy states and copyable commands", () =>
     }),
   ]);
   assert.match(html, /Checking workspace repositories/);
-  assert.match(html, /Remedies open in a visible terminal you can watch/);
+  assert.match(html, /Package installers open in a visible terminal/);
   assert.match(html, />Re-check</);
   assert.doesNotMatch(html, /name="argv"/);
 });

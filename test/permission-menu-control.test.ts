@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setPermissionMode, type PaneDeps } from "../src/server/actions.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
-import type { Key, TerminalResult } from "../src/server/terminal/types.ts";
+import type { Key, PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import { mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 import {
   CODEX_COMMAND_APPROVAL,
@@ -17,6 +17,8 @@ const EMPTY_COMPOSER = `
 `;
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
+/** A paste from a backend that holds the composer, which every fake here stands in for. */
+const held = (): PasteResult => ({ ok: true, outcomeUnknown: false, submitted: false });
 
 function driven(start: string): { deps: PaneDeps; did: string[] } {
   let screen = start;
@@ -51,7 +53,7 @@ function driven(start: string): { deps: PaneDeps; did: string[] } {
         }
         return ok();
       },
-      paste: async () => ok(),
+      paste: async () => held(),
     },
   };
   return {

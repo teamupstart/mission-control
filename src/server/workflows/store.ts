@@ -1,4 +1,7 @@
+import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
+import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { clipUtf8Bytes } from "../util/utf8.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { RASTER_IMAGE_MIME_TYPES } from "@shared/images.ts";
@@ -28,6 +31,7 @@ import {
   WorkflowPersonaDirectiveSchema,
   WorkflowPersonaDirectiveSnapshotSchema,
   WorkflowRunCriteriaSchema,
+  WorkflowRunIntentProvenanceSchema,
   WorkflowRunIntentSnapshotSchema,
   WorkflowRunStatusSchema,
   WorkflowContextSnapshotSchema,
@@ -75,6 +79,7 @@ import {
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
+  withExecutionOverride,
   personasForDisplay,
   sessionActionSnapshotOf,
   sessionActionsForDisplay,
@@ -155,12 +160,14 @@ import type {
   WorkflowCommandOverride,
   WorkflowCommandView,
   WorkflowAssetReferenceSet,
+  WorkflowRunIntentProvenance,
 } from "@shared/workflow.ts";
 import {
   freezeWorkflowRunIntent,
   workflowRunIntentFingerprint,
   type WorkflowRunIntentInput,
 } from "./intent-fingerprint.ts";
+import { classifyWorkflowGoalProvenance } from "./goal-provenance.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import type { SessionIntentGuard } from "@shared/types.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
@@ -213,6 +220,9 @@ export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
  * it parks the run for the operator rather than costing another repair round.
  */
 export const EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT = 2;
+
+/** Explicit recovery has a separate durable run budget, independent of author repairs. */
+export const EVIDENCE_RECOVERY_LIMIT = 3;
 
 type RunCursor = { updatedAt: number; id: string };
 
@@ -599,6 +609,35 @@ function readRunIntent(
 }
 
 /**
+ * Read the freeze-time verdict, or null for a run nobody classified.
+ *
+ * Tolerant like `readRunIntent` above and for its reason, not as a general relaxation of this
+ * row's strictness: every other column here throws through `parseNullableJson`, which `getRun`
+ * turns into a null run, so one damaged byte would take the whole run out of every listing.
+ * Paying that for a diagnostic badge would be absurd - the operator would lose the run in
+ * order to be told something about it - so an unreadable verdict is reported to the log and
+ * read as "not classified", which is what a null column already means.
+ */
+function readRunIntentProvenance(
+  id: string,
+  raw: string | null,
+): WorkflowRunIntentProvenance | null {
+  if (raw === null) return null;
+  try {
+    return parseJson(
+      "workflow_runs",
+      id,
+      "intent_provenance_json",
+      raw,
+      WorkflowRunIntentProvenanceSchema,
+    );
+  } catch (error) {
+    diagnose(error);
+    return null;
+  }
+}
+
+/**
  * Validate the frozen intent on the way IN, not only on the way out.
  *
  * A snapshot that parses on read and not on write would be a run whose review intent silently
@@ -633,6 +672,34 @@ function durableRunJson(id: string, column: string, value: unknown): string {
     );
   }
   return payload;
+}
+
+/**
+ * Serialize the freeze-time verdict, refusing a payload this build could not read back.
+ *
+ * Classified HERE rather than by the caller, from the same snapshot the row is about to hold,
+ * so a verdict and the ask it describes cannot come from two different reads of the Goal. The
+ * two run-creating paths call this beside `frozenIntentJson` inside one transaction: a run
+ * that existed without a verdict would falsify the only thing this instrument claims.
+ */
+function intentProvenanceJson(
+  id: string,
+  intent: WorkflowRunIntentInput,
+  now: number,
+): { json: string; provenance: WorkflowRunIntentProvenance } {
+  const provenance = classifyWorkflowGoalProvenance({
+    rawGoal: intent.rawGoal,
+    intentSource: intent.intentSource,
+    now,
+  });
+  return {
+    json: durableRunJson(
+      id,
+      "intent_provenance_json",
+      WorkflowRunIntentProvenanceSchema.parse(provenance),
+    ),
+    provenance,
+  };
 }
 
 function frozenIntentJson(id: string, intent: WorkflowRunIntentInput): string {
@@ -1186,6 +1253,7 @@ const WorkflowRunRowSchema = z.object({
   check_budget_epoch_round: nullableInteger.optional().default(null),
   intent_json: nullableText.optional().default(null),
   run_criteria_json: nullableText.optional().default(null),
+  intent_provenance_json: nullableText.optional().default(null),
 });
 
 /** Node ids an operator disabled for one run. Bounded by the graph's own node ceiling. */
@@ -1234,6 +1302,7 @@ export function parseWorkflowRunRow(value: unknown): WorkflowRun {
     ) ?? [],
     checkBudgetEpochRound: row.check_budget_epoch_round ?? null,
     ...readRunIntent(row.id, row.intent_json ?? null, row.run_criteria_json ?? null),
+    intentProvenance: readRunIntentProvenance(row.id, row.intent_provenance_json ?? null),
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -1251,7 +1320,7 @@ type WorkflowSubmissionOrigin =
       nodeAttemptId: string;
     }
   | {
-      kind: "evidence_preflight";
+      kind: "evidence_preflight" | "evidence_recovery";
       segment: number;
       parentSubmissionId: string;
     };
@@ -1261,7 +1330,7 @@ interface WorkflowSubmissionOriginColumns {
   parentSubmissionId: string | null;
   continuationNodeId: string | null;
   continuationNodeAttemptId: string | null;
-  refinementReason: "session_action" | "evidence_preflight" | null;
+  refinementReason: "session_action" | "evidence_preflight" | "evidence_recovery" | null;
 }
 
 function workflowSubmissionOriginColumns(
@@ -1290,6 +1359,7 @@ function workflowSubmissionOriginColumns(
         continuationNodeAttemptId: origin.nodeAttemptId,
         refinementReason: origin.kind,
       };
+    case "evidence_recovery":
     case "evidence_preflight":
       if (origin.segment <= 0 || !origin.parentSubmissionId) {
         throw new Error("An evidence-preflight origin requires parent provenance and a positive segment");
@@ -1379,6 +1449,7 @@ export function parseWorkflowSubmissionRow(value: unknown): WorkflowSubmission {
         };
       }
       break;
+    case "evidence_recovery":
     case "evidence_preflight":
       if (
         segment > 0
@@ -1855,6 +1926,8 @@ const WorkflowNodeAttemptRowSchema = z.object({
   session_action_snapshot_json: nullableText.optional().default(null),
   operator_directive_json: nullableText.optional().default(null),
   check_evidence_json: nullableText.optional().default(null),
+  review_input_json: nullableText.optional().default(null),
+  review_rejections_json: nullableText.optional().default(null),
   runner_id: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
   model_id: nullableText.optional().default(null),
   verdict_json: nullableText,
@@ -1932,6 +2005,10 @@ export function parseWorkflowNodeAttemptRow(value: unknown): WorkflowNodeAttempt
       WorkflowPersonaDirectiveSnapshotSchema,
       WORKFLOW_LIMITS.personaDirectiveBytes + 1_000,
     ),
+    reviewRejections: parseNullableJson("workflow_node_attempts", row.id, "review_rejections_json", row.review_rejections_json,
+      z.array(z.object({ execution: z.number().int().min(1).max(2), basis: z.string().max(200), raw: z.string().max(64_000) })).max(2),
+      WORKFLOW_EXECUTION_LIMITS.contextJsonBytes) ?? undefined,
+    reviewInput: parseNullableJson("workflow_node_attempts", row.id, "review_input_json", row.review_input_json, WorkflowPersonaReviewInputSchema, WORKFLOW_EXECUTION_LIMITS.contextJsonBytes) ?? undefined,
     checkEvidence: parseNullableJson(
       "workflow_node_attempts",
       row.id,
@@ -2068,7 +2145,10 @@ const DELIVERY_RUN_STATUS: Partial<Record<WorkflowDeliveryKind, WorkflowRun["sta
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
   const row = parseShape("workflow_deliveries", WorkflowDeliveryRowSchema, value);
-  if (utf8.encode(row.payload).byteLength > WORKFLOW_LIMITS.eventPayloadBytes) {
+  const payloadLimit = row.kind === "session_action"
+    ? WORKFLOW_LIMITS.sessionActionPacketBytes
+    : WORKFLOW_LIMITS.eventPayloadBytes;
+  if (utf8.encode(row.payload).byteLength > payloadLimit) {
     throw new WorkflowRowError("workflow_deliveries", row.id, "payload exceeds the delivery limit");
   }
   // The link is required for an action and refused for everything else. Stated as one
@@ -2526,6 +2606,7 @@ interface WorkflowSubmissionInsertBase {
 type WorkflowSubmissionInsert = WorkflowSubmissionInsertBase & {
   /** Server-owned origin. The variant derives the complete persisted provenance tuple. */
   origin: WorkflowSubmissionOrigin;
+  reserveEvidence?: boolean;
 };
 
 type WorkflowRootSubmissionInsert = WorkflowSubmissionInsertBase;
@@ -2670,6 +2751,7 @@ export interface WorkflowAttemptInsert {
   sessionActionState?: SessionActionAttemptState | null;
   /** Frozen only for Persona attempts; omitted everywhere else. */
   checkEvidence?: readonly WorkflowCheckEvidence[];
+  reviewInput?: WorkflowPersonaReviewInput;
   inputFingerprint: string;
   retryAt?: number | null;
   error?: string | null;
@@ -4418,6 +4500,13 @@ export class WorkflowStore {
             kind: "persona" as const,
             position: node.position,
             persona: personaSnapshotOf(persona),
+            // Copied BESIDE the snapshot, from the draft node rather than from the Persona
+            // row, and only when the draft had one. That separation is what a published
+            // version needs to keep answering: the snapshot says what the Persona
+            // recommended when this version was cut, this says what the workflow chose, and
+            // a version that merged them could never tell an operator which of the two they
+            // are looking at.
+            ...withExecutionOverride(node.executionOverride),
           };
         }),
         edges: workflow.draft.edges,
@@ -5757,7 +5846,7 @@ export class WorkflowStore {
   evidenceInheritanceSource(
     submission: WorkflowSubmission,
   ): { source: WorkflowSubmission; mode: "refinement" | "round" } | null {
-    if (submission.refinementReason === "evidence_preflight" && submission.parentSubmissionId) {
+    if ((submission.refinementReason === "evidence_preflight" || submission.refinementReason === "evidence_recovery") && submission.parentSubmissionId) {
       const parent = this.getSubmission(submission.parentSubmissionId);
       return parent ? { source: parent, mode: "refinement" } : null;
     }
@@ -5836,332 +5925,339 @@ export class WorkflowStore {
     stagingIds: readonly string[];
     now: number;
   }): number {
-    return transaction(this.db, () => {
-      const source = this.getSubmission(input.sourceSubmissionId);
-      if (!source) return 0;
-      const carry = new Set(input.stagingIds);
-      const ownImages = this.listSubmissionImages(input.submissionId);
-      const ownArtifacts = this.listSubmissionTextArtifacts(input.submissionId);
-      /*
-       * Deliberately NO digest test on the carried set.
-       *
-       * Deduplication in this phase is about BODIES, not rows: one file per digest, which
-       * `captureSubmissionImages` achieves by pointing a new row at a retained body and which
-       * a carried row inherits by copying `storage_relative_path`. A source submission is
-       * explicitly allowed to hold two frozen rows with byte-identical content under two
-       * client ids, and `captureSubmissionImages` freezes exactly that.
-       *
-       * Skipping the second of those on digest would leave its client id with no reservation
-       * here, so `submissionFrozenEvidenceIdentities` would not resolve it, and every parent
-       * claim link citing that id would be filtered out a few lines below - an invented gap,
-       * for evidence whose bytes are demonstrably present under the sibling id. The only
-       * "already have it" test that is safe is the staging id in `held`, which is the same
-       * ITEM rather than merely the same bytes.
-       */
-      /*
-       * What is left of this submission's evidence budget after its own captures.
-       *
-       * Carrying is subject to the same aggregate limits as capturing, and it competes for
-       * them LAST: a submission's own freshly staged proof is never displaced by something
-       * carried in behind it. Within the carry, source ordinal order puts the source's OWN
-       * captures ahead of what it had itself carried, so what the limit refuses is drawn from
-       * the oldest ancestry first - the half most likely to be stale. Ordering inside each of
-       * those two groups is staging order, not recency, and nothing here depends on it.
-       *
-       * The first refusal of a kind ends the carry for that kind, whether the count or the
-       * byte cap produced it. Refusing only the item that did not fit would let a smaller,
-       * OLDER one through behind it, and the source's own captures come first in this order,
-       * so the item refused for its size is the more recent of the two. That is the ordering
-       * inverted, in exchange for a few more bytes carried.
-       *
-       * `WorkflowContextSnapshotSchema` caps the frozen arrays at these same counts, so this
-       * is not a policy choice that could simply be relaxed: a carry that ignored the limit
-       * would fail the whole capture as `stale_capture` and lose every item rather than the
-       * few at the margin. What the limit refuses is recorded as `evidence_carry_truncated`.
-       *
-       * Without a bound here a run that mints a fresh client id every round accumulates one
-       * more artifact per round until the immutable context snapshot refuses to validate, and
-       * a repair round then fails as a stale capture with a schema error - which is a worse
-       * outcome than the empty tray this phase replaced.
-       */
-      const budget = {
-        images: WORKFLOW_IMAGE_LIMITS.maxCount - ownImages.length,
-        imageBytes: WORKFLOW_IMAGE_LIMITS.maxAggregateBytes
-          - ownImages.reduce((sum, image) => sum + image.bytes, 0),
-        artifacts: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount - ownArtifacts.length,
-        artifactBytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
-          - ownArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
-      };
-      const held = new Set([
-        ...(this.db.prepare(
-          `SELECT staging_id FROM workflow_submission_images WHERE submission_id = ?
-           UNION
-           SELECT staging_id FROM workflow_submission_text_artifacts WHERE submission_id = ?`,
-        ).all(input.submissionId, input.submissionId) as Array<{ staging_id: string }>)
-          .map((row) => row.staging_id),
-      ]);
-      const nextOrdinal = Number((this.db.prepare(
-        `SELECT COALESCE(MAX(ordinal), -1) + 1 AS next FROM (
-           SELECT ordinal FROM workflow_submission_images WHERE submission_id = ?
-           UNION ALL
-           SELECT ordinal FROM workflow_submission_text_artifacts WHERE submission_id = ?
-           UNION ALL
-           SELECT ordinal FROM workflow_evidence_reservations WHERE submission_id = ?
-         )`,
-      ).get(input.submissionId, input.submissionId, input.submissionId) as { next: number }).next);
-      /*
-       * What the source CAPTURED before what the source had itself carried.
-       *
-       * Stated in the ORDER BY rather than left to insertion order, because this is what
-       * decides which items survive when the cap refuses part of a carry, and inheritance
-       * happens to append carried rows after captured ones today. A run that carries across
-       * many segments accumulates ancestry that has been re-carried repeatedly and describes
-       * ever older trees; the source's own captures describe the tree the source was reviewed
-       * against. When something has to go, it is the oldest ancestry, never a capture the
-       * previous submission made itself.
-       */
-      const imageRows = (this.db.prepare(
-        `SELECT * FROM workflow_submission_images
-          WHERE submission_id = ? AND availability = 'retained'
-          ORDER BY (inherited_from_submission_id IS NULL) DESC, ordinal ASC`,
-      ).all(input.sourceSubmissionId) as unknown[]).map(parseWorkflowSubmissionImageRow);
-      const artifactRows = (this.db.prepare(
-        `SELECT * FROM workflow_submission_text_artifacts
-          WHERE submission_id = ? AND availability = 'retained'
-          ORDER BY (inherited_from_submission_id IS NULL) DESC, ordinal ASC`,
-      ).all(input.sourceSubmissionId) as unknown[]).map(parseWorkflowSubmissionTextArtifactRow);
-      const insertImage = this.db.prepare(
-        `INSERT INTO workflow_submission_images (
-           id, submission_id, staging_id, ordinal, display_name, caption,
-           repository_scope, mime_type, bytes, sha256, storage_relative_path,
-           availability, pruned_at, inherited_from_submission_id, origin_round,
-           origin_repository_fingerprint, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'retained', NULL, ?, ?, ?, ?)`,
-      );
-      const insertArtifact = this.db.prepare(
-        `INSERT INTO workflow_submission_text_artifacts (
-           id, submission_id, staging_id, ordinal, display_name, caption,
-           repository_scope, mime_type, bytes, sha256, content,
-           availability, pruned_at, inherited_from_submission_id, origin_round,
-           origin_repository_fingerprint, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'retained', NULL, ?, ?, ?, ?)`,
-      );
-      const reserve = this.db.prepare(
-        `INSERT OR IGNORE INTO workflow_evidence_reservations
-           (staging_id, submission_id, ordinal, created_at)
-         VALUES (?, ?, ?, ?)`,
-      );
-      const cancelCleanup = this.db.prepare(
-        `DELETE FROM workflow_image_cleanup WHERE storage_relative_path = ?`,
-      );
-      // What the cap refused, so a carry that could not be complete says so out loud instead of
-      // letting evidence go quiet - which is the failure mode this whole phase exists to end.
-      const truncated = { images: 0, artifacts: 0, claims: 0 };
-      let ordinal = nextOrdinal;
-      let carried = 0;
-      const carriedStagingIds = new Set<string>();
-      for (const row of imageRows) {
-        if (!carry.has(row.staging_id) || held.has(row.staging_id)) continue;
-        if (budget.images <= 0 || row.bytes > budget.imageBytes) {
-          // A byte miss closes the door exactly as an exhausted count does. Skipping only the
-          // item that did not fit would let a SMALLER, older one through behind it, and since
-          // the source's own captures are ordered first, the one refused for its size is the
-          // more recent of the two. Greedy packing would carry marginally more bytes at the
-          // cost of the ordering the whole rule exists to state.
-          budget.images = 0;
-          truncated.images += 1;
-          continue;
-        }
-        budget.images -= 1;
-        budget.imageBytes -= row.bytes;
-        cancelCleanup.run(row.storage_relative_path);
-        insertImage.run(
-          frozenEvidenceId("img", input.submissionId, row.staging_id),
-          input.submissionId,
-          row.staging_id,
-          ordinal,
-          row.display_name,
-          row.caption,
-          row.repository_scope,
-          row.mime_type,
-          row.bytes,
-          row.sha256,
-          row.storage_relative_path,
-          row.inherited_from_submission_id ?? input.sourceSubmissionId,
-          row.origin_round ?? source.round,
-          row.origin_repository_fingerprint ?? source.repositoryFingerprint ?? null,
-          input.now,
-        );
-        reserve.run(row.staging_id, input.submissionId, ordinal, input.now);
-        carriedStagingIds.add(row.staging_id);
-        ordinal += 1;
-        carried += 1;
+    return transaction(this.db, () => this.inheritSubmissionEvidenceInTransaction(input));
+  }
+
+  private inheritSubmissionEvidenceInTransaction(input: {
+    submissionId: string;
+    sourceSubmissionId: string;
+    stagingIds: readonly string[];
+    now: number;
+  }): number {
+    const source = this.getSubmission(input.sourceSubmissionId);
+    if (!source) return 0;
+    const carry = new Set(input.stagingIds);
+    const ownImages = this.listSubmissionImages(input.submissionId);
+    const ownArtifacts = this.listSubmissionTextArtifacts(input.submissionId);
+    /*
+     * Deliberately NO digest test on the carried set.
+     *
+     * Deduplication in this phase is about BODIES, not rows: one file per digest, which
+     * `captureSubmissionImages` achieves by pointing a new row at a retained body and which
+     * a carried row inherits by copying `storage_relative_path`. A source submission is
+     * explicitly allowed to hold two frozen rows with byte-identical content under two
+     * client ids, and `captureSubmissionImages` freezes exactly that.
+     *
+     * Skipping the second of those on digest would leave its client id with no reservation
+     * here, so `submissionFrozenEvidenceIdentities` would not resolve it, and every parent
+     * claim link citing that id would be filtered out a few lines below - an invented gap,
+     * for evidence whose bytes are demonstrably present under the sibling id. The only
+     * "already have it" test that is safe is the staging id in `held`, which is the same
+     * ITEM rather than merely the same bytes.
+     */
+    /*
+     * What is left of this submission's evidence budget after its own captures.
+     *
+     * Carrying is subject to the same aggregate limits as capturing, and it competes for
+     * them LAST: a submission's own freshly staged proof is never displaced by something
+     * carried in behind it. Within the carry, source ordinal order puts the source's OWN
+     * captures ahead of what it had itself carried, so what the limit refuses is drawn from
+     * the oldest ancestry first - the half most likely to be stale. Ordering inside each of
+     * those two groups is staging order, not recency, and nothing here depends on it.
+     *
+     * The first refusal of a kind ends the carry for that kind, whether the count or the
+     * byte cap produced it. Refusing only the item that did not fit would let a smaller,
+     * OLDER one through behind it, and the source's own captures come first in this order,
+     * so the item refused for its size is the more recent of the two. That is the ordering
+     * inverted, in exchange for a few more bytes carried.
+     *
+     * `WorkflowContextSnapshotSchema` caps the frozen arrays at these same counts, so this
+     * is not a policy choice that could simply be relaxed: a carry that ignored the limit
+     * would fail the whole capture as `stale_capture` and lose every item rather than the
+     * few at the margin. What the limit refuses is recorded as `evidence_carry_truncated`.
+     *
+     * Without a bound here a run that mints a fresh client id every round accumulates one
+     * more artifact per round until the immutable context snapshot refuses to validate, and
+     * a repair round then fails as a stale capture with a schema error - which is a worse
+     * outcome than the empty tray this phase replaced.
+     */
+    const budget = {
+      images: WORKFLOW_IMAGE_LIMITS.maxCount - ownImages.length,
+      imageBytes: WORKFLOW_IMAGE_LIMITS.maxAggregateBytes
+        - ownImages.reduce((sum, image) => sum + image.bytes, 0),
+      artifacts: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount - ownArtifacts.length,
+      artifactBytes: WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes
+        - ownArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
+    };
+    const held = new Set([
+      ...(this.db.prepare(
+        `SELECT staging_id FROM workflow_submission_images WHERE submission_id = ?
+         UNION
+         SELECT staging_id FROM workflow_submission_text_artifacts WHERE submission_id = ?`,
+      ).all(input.submissionId, input.submissionId) as Array<{ staging_id: string }>)
+        .map((row) => row.staging_id),
+    ]);
+    const nextOrdinal = Number((this.db.prepare(
+      `SELECT COALESCE(MAX(ordinal), -1) + 1 AS next FROM (
+         SELECT ordinal FROM workflow_submission_images WHERE submission_id = ?
+         UNION ALL
+         SELECT ordinal FROM workflow_submission_text_artifacts WHERE submission_id = ?
+         UNION ALL
+         SELECT ordinal FROM workflow_evidence_reservations WHERE submission_id = ?
+       )`,
+    ).get(input.submissionId, input.submissionId, input.submissionId) as { next: number }).next);
+    /*
+     * What the source CAPTURED before what the source had itself carried.
+     *
+     * Stated in the ORDER BY rather than left to insertion order, because this is what
+     * decides which items survive when the cap refuses part of a carry, and inheritance
+     * happens to append carried rows after captured ones today. A run that carries across
+     * many segments accumulates ancestry that has been re-carried repeatedly and describes
+     * ever older trees; the source's own captures describe the tree the source was reviewed
+     * against. When something has to go, it is the oldest ancestry, never a capture the
+     * previous submission made itself.
+     */
+    const imageRows = (this.db.prepare(
+      `SELECT * FROM workflow_submission_images
+        WHERE submission_id = ? AND availability = 'retained'
+        ORDER BY (inherited_from_submission_id IS NULL) DESC, ordinal ASC`,
+    ).all(input.sourceSubmissionId) as unknown[]).map(parseWorkflowSubmissionImageRow);
+    const artifactRows = (this.db.prepare(
+      `SELECT * FROM workflow_submission_text_artifacts
+        WHERE submission_id = ? AND availability = 'retained'
+        ORDER BY (inherited_from_submission_id IS NULL) DESC, ordinal ASC`,
+    ).all(input.sourceSubmissionId) as unknown[]).map(parseWorkflowSubmissionTextArtifactRow);
+    const insertImage = this.db.prepare(
+      `INSERT INTO workflow_submission_images (
+         id, submission_id, staging_id, ordinal, display_name, caption,
+         repository_scope, mime_type, bytes, sha256, storage_relative_path,
+         availability, pruned_at, inherited_from_submission_id, origin_round,
+         origin_repository_fingerprint, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'retained', NULL, ?, ?, ?, ?)`,
+    );
+    const insertArtifact = this.db.prepare(
+      `INSERT INTO workflow_submission_text_artifacts (
+         id, submission_id, staging_id, ordinal, display_name, caption,
+         repository_scope, mime_type, bytes, sha256, content,
+         availability, pruned_at, inherited_from_submission_id, origin_round,
+         origin_repository_fingerprint, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'retained', NULL, ?, ?, ?, ?)`,
+    );
+    const reserve = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_evidence_reservations
+         (staging_id, submission_id, ordinal, created_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    const cancelCleanup = this.db.prepare(
+      `DELETE FROM workflow_image_cleanup WHERE storage_relative_path = ?`,
+    );
+    // What the cap refused, so a carry that could not be complete says so out loud instead of
+    // letting evidence go quiet - which is the failure mode this whole phase exists to end.
+    const truncated = { images: 0, artifacts: 0, claims: 0 };
+    let ordinal = nextOrdinal;
+    let carried = 0;
+    const carriedStagingIds = new Set<string>();
+    for (const row of imageRows) {
+      if (!carry.has(row.staging_id) || held.has(row.staging_id)) continue;
+      if (budget.images <= 0 || row.bytes > budget.imageBytes) {
+        // A byte miss closes the door exactly as an exhausted count does. Skipping only the
+        // item that did not fit would let a SMALLER, older one through behind it, and since
+        // the source's own captures are ordered first, the one refused for its size is the
+        // more recent of the two. Greedy packing would carry marginally more bytes at the
+        // cost of the ordering the whole rule exists to state.
+        budget.images = 0;
+        truncated.images += 1;
+        continue;
       }
-      for (const row of artifactRows) {
-        if (!carry.has(row.staging_id) || held.has(row.staging_id)) continue;
-        if (budget.artifacts <= 0 || row.bytes > budget.artifactBytes) {
-          // Same rule as the images above: the first refusal ends the carry for this kind.
-          budget.artifacts = 0;
-          truncated.artifacts += 1;
-          continue;
-        }
-        budget.artifacts -= 1;
-        budget.artifactBytes -= row.bytes;
-        insertArtifact.run(
-          frozenEvidenceId("txt", input.submissionId, row.staging_id),
-          input.submissionId,
-          row.staging_id,
-          ordinal,
-          row.display_name,
-          row.caption,
-          row.repository_scope,
-          row.mime_type,
-          row.bytes,
-          row.sha256,
-          row.content,
-          row.inherited_from_submission_id ?? input.sourceSubmissionId,
-          row.origin_round ?? source.round,
-          row.origin_repository_fingerprint ?? source.repositoryFingerprint ?? null,
-          input.now,
-        );
-        reserve.run(row.staging_id, input.submissionId, ordinal, input.now);
-        carriedStagingIds.add(row.staging_id);
-        ordinal += 1;
-        carried += 1;
-      }
-      // Coverage is carried whether or not any evidence needed to be, because a claim citing
-      // items this submission staged under the same ids is still a claim it did not repeat.
-      const applicable = new Set(
-        this.submissionFrozenEvidenceIdentities(input.submissionId).map((item) => item.clientItemId),
+      budget.images -= 1;
+      budget.imageBytes -= row.bytes;
+      cancelCleanup.run(row.storage_relative_path);
+      insertImage.run(
+        frozenEvidenceId("img", input.submissionId, row.staging_id),
+        input.submissionId,
+        row.staging_id,
+        ordinal,
+        row.display_name,
+        row.caption,
+        row.repository_scope,
+        row.mime_type,
+        row.bytes,
+        row.sha256,
+        row.storage_relative_path,
+        row.inherited_from_submission_id ?? input.sourceSubmissionId,
+        row.origin_round ?? source.round,
+        row.origin_repository_fingerprint ?? source.repositoryFingerprint ?? null,
+        input.now,
       );
-      const freezeCoverage = this.db.prepare(
-        `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
-           submission_id, staging_id, client_criterion_id, criterion, proof_class,
-           repository_scope, links_json, inherited_from_submission_id, generation,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      reserve.run(row.staging_id, input.submissionId, ordinal, input.now);
+      carriedStagingIds.add(row.staging_id);
+      ordinal += 1;
+      carried += 1;
+    }
+    for (const row of artifactRows) {
+      if (!carry.has(row.staging_id) || held.has(row.staging_id)) continue;
+      if (budget.artifacts <= 0 || row.bytes > budget.artifactBytes) {
+        // Same rule as the images above: the first refusal ends the carry for this kind.
+        budget.artifacts = 0;
+        truncated.artifacts += 1;
+        continue;
+      }
+      budget.artifacts -= 1;
+      budget.artifactBytes -= row.bytes;
+      insertArtifact.run(
+        frozenEvidenceId("txt", input.submissionId, row.staging_id),
+        input.submissionId,
+        row.staging_id,
+        ordinal,
+        row.display_name,
+        row.caption,
+        row.repository_scope,
+        row.mime_type,
+        row.bytes,
+        row.sha256,
+        row.content,
+        row.inherited_from_submission_id ?? input.sourceSubmissionId,
+        row.origin_round ?? source.round,
+        row.origin_repository_fingerprint ?? source.repositoryFingerprint ?? null,
+        input.now,
       );
-      const coverageRows = this.db.prepare(
-        `SELECT * FROM workflow_submission_evidence_coverage WHERE submission_id = ?`,
-      ).all(input.sourceSubmissionId) as unknown[];
-      const ownCoverage = this.listSubmissionCoverage(input.submissionId);
-      let claimBudget = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims - ownCoverage.length;
+      reserve.run(row.staging_id, input.submissionId, ordinal, input.now);
+      carriedStagingIds.add(row.staging_id);
+      ordinal += 1;
+      carried += 1;
+    }
+    // Coverage is carried whether or not any evidence needed to be, because a claim citing
+    // items this submission staged under the same ids is still a claim it did not repeat.
+    const applicable = new Set(
+      this.submissionFrozenEvidenceIdentities(input.submissionId).map((item) => item.clientItemId),
+    );
+    const freezeCoverage = this.db.prepare(
+      `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
+         submission_id, staging_id, client_criterion_id, criterion, proof_class,
+         repository_scope, links_json, inherited_from_submission_id, generation,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const coverageRows = this.db.prepare(
+      `SELECT * FROM workflow_submission_evidence_coverage WHERE submission_id = ?`,
+    ).all(input.sourceSubmissionId) as unknown[];
+    const ownCoverage = this.listSubmissionCoverage(input.submissionId);
+    let claimBudget = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims - ownCoverage.length;
+    /*
+     * Every frozen parent claim, retained whole, up to what a submission can hold.
+     *
+     * Not collapsed to one claim per criterion, and not reduced to a merge of its links into
+     * somebody else's claim. A claim is an author's assertion with its own id, proof class,
+     * scope and link set, and carrying a criterion's proof forward while discarding the claim
+     * that made it is not inheriting coverage - it is summarising it.
+     *
+     * The one bound is the frozen-coverage limit itself. `listSubmissionCoverage` reads this
+     * table through `WorkflowEvidenceCoverageClaimsSchema`, which caps a submission at
+     * `maxClaims`, so a carry that ignored it would not retain more coverage - it would make
+     * the submission's coverage unreadable and lose all of it. `maxClaims` is 100 and a
+     * submission cannot stage more than that either, so the bound is only reachable when a
+     * parent already at the cap meets a child that declared claims of its own. Reaching it is
+     * recorded as `evidence_carry_truncated` rather than passed over in silence.
+     *
+     * The reason this can be literal is that ambiguity moved to where it belongs.
+     * `evaluateWorkflowEvidenceReadiness` prefers a claim the author declared on THIS
+     * submission over the ancestry standing behind it, so retaining the ancestry no longer
+     * turns a clear current claim into `ambiguous_mapping`. Where a criterion has no claim of
+     * its own, the carried ones answer for it and are judged among themselves exactly as
+     * before, which is the case inheritance exists for.
+     *
+     * Newest first, so the claim budget is spent on the most recent ancestry when a run has
+     * more of it than the limit admits.
+     */
+    const orderedCoverage = coverageRows
+      .map((value) => ({
+        claim: submissionCoverageClaimFromRow(value),
+        row: parseShape(
+          "workflow_submission_evidence_coverage",
+          WorkflowSubmissionCoverageRowSchema,
+          value,
+        ),
+      }))
       /*
-       * Every frozen parent claim, retained whole, up to what a submission can hold.
+       * What the source DECLARED before what the source had itself carried, exactly as the
+       * evidence carry above orders its rows, and for the same reason: when the budget
+       * refuses part of a carry it must refuse the oldest ancestry, never a claim the
+       * immediately preceding submission made itself.
        *
-       * Not collapsed to one claim per criterion, and not reduced to a merge of its links into
-       * somebody else's claim. A claim is an author's assertion with its own id, proof class,
-       * scope and link set, and carrying a criterion's proof forward while discarding the claim
-       * that made it is not inheriting coverage - it is summarising it.
-       *
-       * The one bound is the frozen-coverage limit itself. `listSubmissionCoverage` reads this
-       * table through `WorkflowEvidenceCoverageClaimsSchema`, which caps a submission at
-       * `maxClaims`, so a carry that ignored it would not retain more coverage - it would make
-       * the submission's coverage unreadable and lose all of it. `maxClaims` is 100 and a
-       * submission cannot stage more than that either, so the bound is only reachable when a
-       * parent already at the cap meets a child that declared claims of its own. Reaching it is
-       * recorded as `evidence_carry_truncated` rather than passed over in silence.
-       *
-       * The reason this can be literal is that ambiguity moved to where it belongs.
-       * `evaluateWorkflowEvidenceReadiness` prefers a claim the author declared on THIS
-       * submission over the ancestry standing behind it, so retaining the ancestry no longer
-       * turns a clear current claim into `ambiguous_mapping`. Where a criterion has no claim of
-       * its own, the carried ones answer for it and are judged among themselves exactly as
-       * before, which is the case inheritance exists for.
-       *
-       * Newest first, so the claim budget is spent on the most recent ancestry when a run has
-       * more of it than the limit admits.
+       * Recency alone gets this backwards, and silently. A submission's own claims are frozen
+       * at reservation and keep their STAGING row's timestamps, while claims it carries are
+       * written later, when inheritance runs during its capture - so a source's carried-in
+       * ancestry always has a NEWER `created_at` than the claims that source declared. Sorting
+       * by recency first would therefore evict the source's own declarations and keep its
+       * grandparent's, which is the reverse of the stated rule. Only a three-level chain
+       * reaches it, which is why `a three-level chain refuses the oldest ancestry, not the
+       * parent's own claims` exists.
        */
-      const orderedCoverage = coverageRows
-        .map((value) => ({
-          claim: submissionCoverageClaimFromRow(value),
-          row: parseShape(
-            "workflow_submission_evidence_coverage",
-            WorkflowSubmissionCoverageRowSchema,
-            value,
-          ),
-        }))
-        /*
-         * What the source DECLARED before what the source had itself carried, exactly as the
-         * evidence carry above orders its rows, and for the same reason: when the budget
-         * refuses part of a carry it must refuse the oldest ancestry, never a claim the
-         * immediately preceding submission made itself.
-         *
-         * Recency alone gets this backwards, and silently. A submission's own claims are frozen
-         * at reservation and keep their STAGING row's timestamps, while claims it carries are
-         * written later, when inheritance runs during its capture - so a source's carried-in
-         * ancestry always has a NEWER `created_at` than the claims that source declared. Sorting
-         * by recency first would therefore evict the source's own declarations and keep its
-         * grandparent's, which is the reverse of the stated rule. Only a three-level chain
-         * reaches it, which is why `a three-level chain refuses the oldest ancestry, not the
-         * parent's own claims` exists.
-         */
-        .sort((a, b) =>
-          Number(a.row.inherited_from_submission_id !== null)
-            - Number(b.row.inherited_from_submission_id !== null)
-          || b.row.created_at - a.row.created_at
-          || a.claim.clientCriterionId.localeCompare(b.claim.clientCriterionId));
+      .sort((a, b) =>
+        Number(a.row.inherited_from_submission_id !== null)
+          - Number(b.row.inherited_from_submission_id !== null)
+        || b.row.created_at - a.row.created_at
+        || a.claim.clientCriterionId.localeCompare(b.claim.clientCriterionId));
+    /*
+     * A criterion this submission re-declared under the SAME id is not a carry at all.
+     *
+     * `freezeCoverage` is `INSERT OR IGNORE` on `(submission_id, client_criterion_id)`, so a
+     * carried row whose id this submission already froze is silently ignored: the author's
+     * current wording wins, which is the documented behaviour. Charging the budget for it
+     * anyway spends capacity on a row that was never written, and enough same-id
+     * re-declarations then truncate DISTINCT ancestry that would have fit - the opposite of
+     * the rule this budget exists to express.
+     *
+     * Filtered before the budget rather than detected after the insert, so `truncated.claims`
+     * counts only claims genuinely refused for want of room. A row that was never a candidate
+     * is not a claim the limit turned away.
+     */
+    const declaredHere = new Set(ownCoverage.map((claim) => claim.clientCriterionId));
+    for (const { claim, row } of orderedCoverage) {
+      if (declaredHere.has(claim.clientCriterionId)) continue;
+      if (claimBudget <= 0) {
+        truncated.claims += 1;
+        continue;
+      }
       /*
-       * A criterion this submission re-declared under the SAME id is not a carry at all.
-       *
-       * `freezeCoverage` is `INSERT OR IGNORE` on `(submission_id, client_criterion_id)`, so a
-       * carried row whose id this submission already froze is silently ignored: the author's
-       * current wording wins, which is the documented behaviour. Charging the budget for it
-       * anyway spends capacity on a row that was never written, and enough same-id
-       * re-declarations then truncate DISTINCT ancestry that would have fit - the opposite of
-       * the rule this budget exists to express.
-       *
-       * Filtered before the budget rather than detected after the insert, so `truncated.claims`
-       * counts only claims genuinely refused for want of room. A row that was never a candidate
-       * is not a claim the limit turned away.
+       * The claim is always retained. Only a link whose evidence did not come with it is
+       * dropped, and only because a link pointing at nothing is not proof: it would hand the
+       * preflight an `evidence_not_frozen` gap invented by the carry rather than found in the
+       * work. Dropping the whole claim over one unresolvable link, as this did before, threw
+       * away the criterion's authorship and proof class along with it and could regress a
+       * criterion the parent had answered for all the way back to `missing_coverage`.
        */
-      const declaredHere = new Set(ownCoverage.map((claim) => claim.clientCriterionId));
-      for (const { claim, row } of orderedCoverage) {
-        if (declaredHere.has(claim.clientCriterionId)) continue;
-        if (claimBudget <= 0) {
-          truncated.claims += 1;
-          continue;
-        }
-        /*
-         * The claim is always retained. Only a link whose evidence did not come with it is
-         * dropped, and only because a link pointing at nothing is not proof: it would hand the
-         * preflight an `evidence_not_frozen` gap invented by the carry rather than found in the
-         * work. Dropping the whole claim over one unresolvable link, as this did before, threw
-         * away the criterion's authorship and proof class along with it and could regress a
-         * criterion the parent had answered for all the way back to `missing_coverage`.
-         */
-        const links = claim.links.filter((link) => applicable.has(link.clientItemId));
-        claimBudget -= 1;
-        // `OR IGNORE` on (submission_id, client_criterion_id): where this submission declared a
-        // claim under the same id, that is the same claim re-declared and the author's current
-        // wording wins. A DIFFERENT id for the same criterion is a different claim and is
-        // retained beside it.
-        freezeCoverage.run(
-          input.submissionId,
-          row.staging_id,
-          claim.clientCriterionId,
-          claim.criterion,
-          claim.proofClass,
-          claim.repositoryScope,
-          JSON.stringify(links),
-          row.inherited_from_submission_id ?? input.sourceSubmissionId,
-          row.generation,
-          input.now,
-          input.now,
-        );
+      const links = claim.links.filter((link) => applicable.has(link.clientItemId));
+      claimBudget -= 1;
+      // `OR IGNORE` on (submission_id, client_criterion_id): where this submission declared a
+      // claim under the same id, that is the same claim re-declared and the author's current
+      // wording wins. A DIFFERENT id for the same criterion is a different claim and is
+      // retained beside it.
+      freezeCoverage.run(
+        input.submissionId,
+        row.staging_id,
+        claim.clientCriterionId,
+        claim.criterion,
+        claim.proofClass,
+        claim.repositoryScope,
+        JSON.stringify(links),
+        row.inherited_from_submission_id ?? input.sourceSubmissionId,
+        row.generation,
+        input.now,
+        input.now,
+      );
+    }
+    if (truncated.images > 0 || truncated.artifacts > 0 || truncated.claims > 0) {
+      const submission = this.getSubmission(input.submissionId);
+      if (submission) {
+        this.appendEvent(submission.runId, "evidence_carry_truncated", {
+          submissionId: input.submissionId,
+          sourceSubmissionId: input.sourceSubmissionId,
+          ...truncated,
+        }, input.now);
       }
-      if (truncated.images > 0 || truncated.artifacts > 0 || truncated.claims > 0) {
-        const submission = this.getSubmission(input.submissionId);
-        if (submission) {
-          this.appendEvent(submission.runId, "evidence_carry_truncated", {
-            submissionId: input.submissionId,
-            sourceSubmissionId: input.sourceSubmissionId,
-            ...truncated,
-          }, input.now);
-        }
-      }
-      return carried;
-    });
+    }
+    return carried;
   }
 
   /** Resolve public client ids only to immutable evidence frozen for this submission. */
@@ -6404,12 +6500,14 @@ export class WorkflowStore {
         if (!existingRun) throw new Error(`Workflow run ${existing.runId} is missing`);
         return { run: existingRun, submission: existing, idempotent: true };
       }
+      const provenance = intentProvenanceJson(run.id, run.intent, run.now);
       this.db.prepare(
         `INSERT INTO workflow_runs (
            id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
            trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
-           gate_state_json, started_at, updated_at, completed_at, intent_json
-         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
+           gate_state_json, started_at, updated_at, completed_at, intent_json,
+           intent_provenance_json
+         ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?)`,
       ).run(
         run.id,
         run.binding.id,
@@ -6420,7 +6518,9 @@ export class WorkflowStore {
         run.now,
         run.now,
         frozenIntentJson(run.id, run.intent),
+        provenance.json,
       );
+      this.announceIntentProvenance(run.id, provenance.provenance);
       this.insertSubmissionInTransaction({
         ...submission,
         runId: run.id,
@@ -6559,12 +6659,14 @@ export class WorkflowStore {
       let previousFingerprint: string | undefined;
 
       if (!run) {
+        const provenance = intentProvenanceJson(input.runId, input.intent, input.now);
         this.db.prepare(
           `INSERT INTO workflow_runs (
              id, binding_id, workflow_version_id, status, current_phase, max_repair_rounds,
              trigger_source, trigger_key, inspector_pr_key, inspector_head_sha,
-             gate_state_json, started_at, updated_at, completed_at, intent_json
-           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
+             gate_state_json, started_at, updated_at, completed_at, intent_json,
+             intent_provenance_json
+           ) VALUES (?, ?, ?, 'capturing', 'capturing', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?, ?)`,
         ).run(
           input.runId,
           binding.id,
@@ -6575,7 +6677,9 @@ export class WorkflowStore {
           input.now,
           input.now,
           frozenIntentJson(input.runId, input.intent),
+          provenance.json,
         );
+        this.announceIntentProvenance(input.runId, provenance.provenance);
         this.insertSubmissionInTransaction({
           id: input.submissionId,
           runId: input.runId,
@@ -7628,13 +7732,16 @@ export class WorkflowStore {
   }
 
   insertAttempt(input: WorkflowAttemptInsert): WorkflowNodeAttempt {
+    if (input.reviewInput && (!input.persona || input.reviewInput.submissionId !== input.submissionId)) {
+      throw new Error("Persona review input must identify its owning attempt submission");
+    }
     this.db.prepare(
       `INSERT OR IGNORE INTO workflow_node_attempts (
          id, submission_id, node_id, attempt, state, persona_snapshot_json,
-         session_action_snapshot_json, operator_directive_json, check_evidence_json, runner_id,
+         session_action_snapshot_json, operator_directive_json, check_evidence_json, review_input_json, runner_id,
          model_id, verdict_json, output_json, retry_at, input_fingerprint, error,
          created_at, updated_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
     ).run(
       input.id,
       input.submissionId,
@@ -7644,6 +7751,7 @@ export class WorkflowStore {
       input.persona === null ? null : JSON.stringify(input.persona),
       input.sessionAction ? JSON.stringify(input.sessionAction) : null,
       input.checkEvidence ? JSON.stringify(input.checkEvidence) : null,
+      input.reviewInput ? JSON.stringify(WorkflowPersonaReviewInputSchema.parse(input.reviewInput)) : null,
       // The waiting attempt's observation state is written WITH the row, not after it: a
       // daemon that stopped between the two would leave an attempt nothing can tell apart
       // from one whose packet was already prepared.
@@ -7880,6 +7988,21 @@ export class WorkflowStore {
     return Number(row.n);
   }
 
+  /** The newest executed, completed verdict must pass; an explicit recheck can revoke a pass. */
+  priorPassedJudge(runId: string, nodeId: string, beforeRound: number): WorkflowNodeAttempt | null {
+    const row = this.db.prepare(
+      `SELECT * FROM (
+         SELECT a.* FROM workflow_node_attempts a
+           JOIN workflow_submissions s ON s.id = a.submission_id
+          WHERE s.run_id = ? AND s.round < ? AND a.node_id = ?
+            AND a.state = 'completed' AND a.persona_snapshot_json IS NOT NULL
+            AND a.runner_id IS NOT NULL
+          ORDER BY s.round DESC, s.segment DESC, a.attempt DESC LIMIT 1
+       ) WHERE json_extract(verdict_json, '$.verdict') = 'pass'`,
+    ).get(runId, beforeRound, nodeId);
+    return row ? parseWorkflowNodeAttemptRow(row) : null;
+  }
+
   listAttempts(submissionId: string): WorkflowNodeAttempt[] {
     return (this.db.prepare(
       `SELECT * FROM workflow_node_attempts
@@ -8066,6 +8189,7 @@ export class WorkflowStore {
           state: "queued",
           persona: attempt.persona,
           checkEvidence: attempt.checkEvidence,
+          reviewInput: attempt.reviewInput ? { ...attempt.reviewInput, operationId: randomUUID() } : undefined,
           inputFingerprint: attempt.inputFingerprint,
           now,
         });
@@ -8767,11 +8891,94 @@ export class WorkflowStore {
   consecutiveEvidencePreflightRefinements(submissionId: string): number {
     let current = this.getSubmission(submissionId);
     let refinements = 0;
-    while (current?.refinementReason === "evidence_preflight" && current.parentSubmissionId) {
-      refinements += 1;
+    while ((current?.refinementReason === "evidence_preflight" || current?.refinementReason === "evidence_recovery") && current.parentSubmissionId) {
+      if (current.refinementReason === "evidence_preflight") refinements += 1;
       current = this.getSubmission(current.parentSubmissionId);
     }
     return refinements;
+  }
+
+  personaOperationCalls(operationId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_llm_calls c
+      JOIN workflow_node_attempts a ON a.id = c.node_attempt_id
+      WHERE c.purpose = 'persona_review' AND json_extract(a.review_input_json, '$.operationId') = ?`)
+      .get(operationId) as { n: number }).n;
+  }
+
+  personaOperationRejectionBasis(operationId: string): string | null {
+    const row = this.db.prepare(`SELECT id FROM workflow_node_attempts
+      WHERE json_extract(review_input_json, '$.operationId') = ? AND review_rejections_json IS NOT NULL
+      ORDER BY attempt DESC, created_at DESC, id DESC LIMIT 1`).get(operationId) as { id: string } | undefined;
+    return row ? this.getAttempt(row.id)?.reviewRejections?.at(-1)?.basis ?? null : null;
+  }
+
+  retainRejectedPersonaVerdict(attemptId: string, execution: number, basis: string, raw: string): void {
+    const previous = this.getAttempt(attemptId)?.reviewRejections ?? [];
+    const entries = [...previous.filter((item) => item.execution !== execution), { execution, basis, raw: clipUtf8Bytes(raw, 64_000) }].slice(-2);
+    this.db.prepare("UPDATE workflow_node_attempts SET review_rejections_json = ? WHERE id = ? AND state = 'running'")
+      .run(JSON.stringify(entries), attemptId);
+  }
+
+  failedCriterionReconciliation(submissionId: string): boolean {
+    const row = this.db.prepare(`SELECT state FROM workflow_llm_calls
+      WHERE submission_id = ? AND purpose = 'context_reconciliation'
+      ORDER BY started_at DESC, attempt DESC LIMIT 1`).get(submissionId) as { state: string } | undefined;
+    return row?.state === "failed";
+  }
+
+  evidenceRecoveryCount(runId: string): number {
+    return (this.db.prepare(`SELECT count(*) AS n FROM workflow_submissions
+      WHERE run_id = ? AND refinement_reason = 'evidence_recovery'`).get(runId) as { n: number }).n;
+  }
+
+  reserveEvidenceRecovery(input: {
+    id: string; runId: string; parentId: string; requestId: string; reason: string; now: number;
+  }): { submission: WorkflowSubmission; idempotent: boolean } | null {
+    return transaction(this.db, () => {
+      const key = `evidence-recovery:${input.runId}:${input.requestId}`;
+      const existing = this.submissionByTrigger(key);
+      if (existing) return existing.parentSubmissionId === input.parentId
+        ? { submission: existing, idempotent: true } : null;
+      // Count and reserve under the same transaction; unique request ids cannot reset it.
+      if (this.evidenceRecoveryCount(input.runId) >= EVIDENCE_RECOVERY_LIMIT) return null;
+      const run = this.getRun(input.runId);
+      const parent = this.getSubmission(input.parentId);
+      if (!run || !parent || parent.runId !== run.id || this.latestSubmission(run.id)?.id !== parent.id
+          || !["blocked", "waiting_for_evidence_readiness", "waiting_for_session"].includes(run.status)) return null;
+      const binding = this.getBinding(run.bindingId);
+      if (!binding?.sessionId || binding.state !== "active") return null;
+      const inFlight = this.db.prepare(`SELECT 1 FROM workflow_deliveries
+        WHERE run_id = ? AND state IN ('sending', 'uncertain') LIMIT 1`).get(run.id);
+      if (inFlight) return null;
+      if (parent.mode !== "full_workflow") return null;
+      const parsedContext = WorkflowContextSnapshotSchema.safeParse(parent.context);
+      if (!parsedContext.success) return null;
+      const context = parsedContext.data;
+      if (context.evidence.retention?.state === "pruned"
+          || this.listSubmissionImages(parent.id).some((item) => item.availability !== "retained")
+          || this.listSubmissionTextArtifacts(parent.id).some((item) => item.availability !== "retained")) return null;
+      const { reconciliation: _prior, ...recovered } = context;
+      this.insertSubmissionInTransaction({
+        id: input.id, runId: run.id, round: parent.round,
+        origin: { kind: "evidence_recovery", segment: parent.segment + 1, parentSubmissionId: parent.id },
+        triggerSource: "manual", triggerKey: key, mode: parent.mode,
+        context: workflowJson(recovered), evidence: workflowJson(context.evidence), reserveEvidence: false, now: input.now,
+      });
+      this.inheritSubmissionEvidenceInTransaction({
+        submissionId: input.id, sourceSubmissionId: parent.id,
+        stagingIds: this.listInheritableSubmissionEvidence(parent.id).map((item) => item.stagingId), now: input.now,
+      });
+      this.db.prepare("UPDATE workflow_submissions SET staged_image_generation = ? WHERE id = ?")
+        .run(parent.stagedImageGeneration ?? 0, input.id);
+      this.db.prepare(`UPDATE workflow_deliveries SET state = 'cancelled', error = 'superseded_by_evidence_recovery', updated_at = ?
+        WHERE run_id = ? AND state = 'prepared'`).run(input.now, run.id);
+      this.setRunState(run.id, "capturing", "evidence_readiness_capture", null, input.now);
+      this.appendEvent(run.id, "evidence_recovery_reserved", {
+        submissionId: input.id, parentSubmissionId: parent.id, reason: input.reason,
+        round: parent.round, segment: parent.segment + 1,
+      }, input.now);
+      return { submission: this.mustSubmission(input.id), idempotent: false };
+    });
   }
 
   reserveEvidenceReadinessRefinement(input: {
@@ -9012,6 +9219,34 @@ export class WorkflowStore {
     const row = this.db.prepare(`SELECT * FROM workflow_events WHERE id = ?`).get(Number(result.lastInsertRowid));
     workflowLog("info", { run: runId, event: kind });
     return parseWorkflowEventRow(row);
+  }
+
+  /**
+   * Say out loud that a run froze an ask that looks wrong. Once, at the freeze, and never again.
+   *
+   * `objective` appends nothing. An event on the healthy case would be one row per run for
+   * ever, saying only that the ordinary thing happened, and the events an operator scrolls
+   * for would be buried under it - the same noise the badge avoids by drawing nothing.
+   *
+   * The event id is derived from the run alone rather than from the verdict beside it. A
+   * retried creation replays the same classification, so `appendEvent`'s deduplication answers
+   * it with the row already there; a retry that somehow produced a DIFFERENT verdict for one
+   * run is a contradiction rather than a second event, and the replay conflict it raises is
+   * the honest response to it.
+   *
+   * Called from inside the creating transaction, so a run and its announcement commit
+   * together or not at all.
+   */
+  private announceIntentProvenance(
+    runId: string,
+    provenance: WorkflowRunIntentProvenance,
+  ): void {
+    if (provenance.verdict === "objective") return;
+    this.appendEvent(runId, "run_intent_classified", {
+      verdict: provenance.verdict,
+      signals: provenance.signals,
+      reason: provenance.reason,
+    }, provenance.classifiedAt, `run-intent-classified:${runId}`);
   }
 
   listEvents(runId: string): WorkflowEvent[] {
@@ -9773,6 +10008,44 @@ export class WorkflowStore {
     return { round, from, to };
   }
 
+  /** See `WorkflowRunDetail.refusedCompletion` for why this is a field and not a browser scan. */
+  private runRefusedCompletion(runId: string): WorkflowRunDetail["refusedCompletion"] {
+    // One indexed row off `idx_workflow_events_run`, not a `listEvents` scan: `runDetail`'s
+    // statement count must stay flat as a run's ledger grows.
+    const row = this.db.prepare(
+      `SELECT ts, payload_json FROM workflow_events
+        WHERE run_id = ? AND event_kind = 'workflow_completion_claimed'
+        ORDER BY id DESC LIMIT 1`,
+    ).get(runId) as { ts: number; payload_json: string } | undefined;
+    if (!row) return null;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload_json);
+    } catch {
+      return null;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const claim = payload as { [key: string]: unknown };
+    if (claim.state !== "blocked") return null;
+    /*
+     * Scoped to the block this claim bounced off, not merely to the run being blocked now.
+     *
+     * A refused claim records no submission of its own - the branch that logs
+     * `workflow_completion_blocked` creates none - so the run's own history is what dates it.
+     * A submission opened at or after the claim means the run was resumed and has since
+     * blocked again, possibly for an unrelated reason, and the older refusal is answered
+     * history. Without this a capture failure in round three would be captioned with a
+     * completion claim from round one.
+     */
+    const latest = this.latestSubmission(runId);
+    if (latest && latest.createdAt >= Number(row.ts)) return null;
+    return {
+      at: Number(row.ts),
+      completionKind: typeof claim.completionKind === "string" ? claim.completionKind : null,
+      summary: typeof claim.summary === "string" ? claim.summary : null,
+    };
+  }
+
   /**
    * The observer's last word on this run, for the page that has to explain a parked round.
    *
@@ -9857,6 +10130,7 @@ export class WorkflowStore {
       nextLlmCallAfter: llmCalls.nextAfter,
       ...(offenders.length === 0 ? {} : { repeatOffenders: offenders }),
       repairGrant: this.runRepairGrant(id),
+      refusedCompletion: this.runRefusedCompletion(id),
       resumption: this.runResumptionState(run, binding, version),
       // Taken off the summary the join already resolved, not looked up a second way. The
       // detail's field predates the summary's and stays because the reader reads it here;
@@ -10287,7 +10561,7 @@ export class WorkflowStore {
       input.status ?? "capturing",
       input.now,
     );
-    this.reserveWorkflowEvidenceInTransaction(
+    if (input.reserveEvidence !== false) this.reserveWorkflowEvidenceInTransaction(
       input.id,
       input.evidenceGroupKey ?? input.triggerKey,
       input.now,

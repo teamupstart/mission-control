@@ -9,15 +9,18 @@ import type {
   WorkflowCanonicalCriterion,
   WorkflowContextSnapshot,
   WorkflowCriterionMapping,
+  WorkflowCriterionReconciliation,
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceProofClass,
   WorkflowHumanDecision,
   WorkflowRunCriteria,
   WorkflowRunIntentSnapshot,
   WorkflowStandardsDocument,
+  WorkflowSteeringContext,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  WORKFLOW_EXECUTION_LIMITS,
   workflowCrossCriterionClaimIds,
 } from "@shared/workflow.ts";
 import {
@@ -98,6 +101,7 @@ type CompactionValue = z.infer<typeof CompactionSchema>;
 type CriterionReconciliationValue = z.infer<typeof CriterionReconciliationSchema>;
 
 export interface WorkflowCompactionDeps {
+  deferReconciliation?: boolean;
   execute?: (prompt: string) => Promise<StructuredResult<CompactionValue>>;
   reconcile?: (prompt: string) => Promise<StructuredResult<CriterionReconciliationValue>>;
   runner?: WorkflowContextSnapshot["compaction"]["runner"];
@@ -114,7 +118,7 @@ export interface WorkflowCompactionDeps {
   onReconciliationExecution?: (execution: JobExecution) => void;
 }
 
-export interface RawWorkflowContext {
+export type RawWorkflowContext = WorkflowSteeringContext & {
   primaryGoal: WorkflowContextSnapshot["primaryGoal"];
   humanDecisions: WorkflowHumanDecision[];
   priorPersonaFeedback: PersonaFeedbackSummary[];
@@ -130,7 +134,7 @@ export interface RawWorkflowContext {
     repositoryScope: string;
     exitCode: number | null;
   }>;
-}
+};
 
 export interface WorkflowCaptureRead {
   context: WorkflowContextSnapshot;
@@ -174,7 +178,7 @@ function boundedDecisions(items: WorkflowHumanDecision[]): WorkflowHumanDecision
 function boundedFeedback(items: PersonaFeedbackSummary[]): PersonaFeedbackSummary[] {
   const out: PersonaFeedbackSummary[] = [];
   let remaining = MAX_FEEDBACK_BYTES;
-  for (const item of items.slice(-100)) {
+  for (const item of items.slice(-100).reverse()) {
     if (remaining <= 0) break;
     const summary = clipUtf8Bytes(item.summary, Math.min(remaining, 2_000));
     remaining -= Buffer.byteLength(summary);
@@ -187,6 +191,9 @@ function boundedFeedback(items: PersonaFeedbackSummary[]): PersonaFeedbackSummar
     }
     out.push({ ...item, summary, requestedChanges });
   }
+  // Spend the budget newest-first, then present the retained history in its original order.
+  out.reverse();
+  if (out[0] && items.length > out.length) out[0].omittedBefore = items.length - out.length;
   return out;
 }
 
@@ -506,62 +513,88 @@ function criterionReconciliationPrompt(
   ].join("\n\n");
 }
 
-async function reconcileSourceWorkflowCriteria(
-  criteria: readonly WorkflowCanonicalCriterion[],
+/** One capture operation owns at most two semantic executions, including interrupted calls. */
+export async function reconcileWorkflowCoverage(
+  context: WorkflowContextSnapshot,
   coverage: readonly WorkflowEvidenceCoverageClaim[],
-  deps: WorkflowCompactionDeps,
-): Promise<WorkflowCriterionMapping[]> {
-  if (criteria.length === 0 || coverage.length === 0) {
-    return reconcileWorkflowCriterionMappings(criteria, coverage);
-  }
-  const prompt = criterionReconciliationPrompt(criteria, coverage);
-  let result: StructuredResult<CriterionReconciliationValue>;
-  if (deps.reconcile) {
-    result = await deps.reconcile(prompt);
-  } else if (deps.execute) {
-    // An injected extraction seam must never fall through to a real model call in a test or embedder.
-    result = {
-      kind: "failed",
-      reason: "Workflow criterion reconciliation was not supplied.",
-      cause: "transport",
-    };
-  } else {
-    result = await runJobStructured<typeof CriterionReconciliationSchema>(
-      "workflow-context",
-      prompt,
-      (text) => parseModelJson(text, CriterionReconciliationSchema),
-      "Workflow criterion reconciliation",
-      {
-        timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS,
-        observer: deps.reconciliationObserver,
-        onExecution: deps.onReconciliationExecution,
-        schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
-        shapeGuaranteed: true,
-      },
-    );
-  }
-  if (result.kind === "failed") {
-    return criteria.map((criterion) => ({
-      criterionId: criterion.id,
-      matchedClientCriterionIds: [],
-    }));
-  }
-  const proposedMappings: WorkflowCriterionMapping[] = result.value.criterionMappings.flatMap((mapping) => {
-    const criterion = criteria[mapping.canonicalCriterionOrdinal - 1];
-    return criterion
-      ? [{
-          criterionId: criterion.id,
-          matchedClientCriterionIds: mapping.matchedClientCriterionIds,
-        }]
-      : [];
+  deps: WorkflowCompactionDeps & {
+    previous?: WorkflowContextSnapshot;
+    sourceCoverage?: readonly WorkflowEvidenceCoverageClaim[];
+    sourceMappings?: readonly WorkflowCriterionMapping[];
+    onProgress?: (context: WorkflowContextSnapshot) => void;
+    active?: () => boolean;
+  } = {},
+): Promise<WorkflowContextSnapshot> {
+  const criteria = context.canonicalCriteria ?? [];
+  const fingerprint = sha(criterionReconciliationPrompt(criteria, [...coverage]
+    .sort((a, b) => a.clientCriterionId.localeCompare(b.clientCriterionId))));
+  const previous = deps.previous?.reconciliation?.fingerprint === fingerprint ? deps.previous : undefined;
+  let mappings = reconcileWorkflowCriterionMappings(criteria, coverage, {
+    sourceCoverage: deps.sourceCoverage, sourceMappings: deps.sourceMappings,
+    proposedMappings: previous?.reconciliation?.status === "complete" ? previous.criterionMappings : context.criterionMappings,
   });
-  return reconcileWorkflowCriterionMappings(criteria, coverage, { proposedMappings });
+  const complete = (state: WorkflowCriterionReconciliation): WorkflowContextSnapshot => ({
+    ...context, criterionMappings: mappings, reconciliation: state,
+  });
+  if (previous?.reconciliation?.status === "complete") return complete(previous.reconciliation);
+  if (!coverage.length || criteria.every((criterion) => !criterion.material
+    || mappings.some((mapping) => mapping.criterionId === criterion.id && mapping.matchedClientCriterionIds.length > 0))) {
+    return complete({ version: 1, fingerprint, status: "complete", method: "deterministic", attempts: 0, error: null, cause: null });
+  }
+  let state: WorkflowCriterionReconciliation = {
+    version: 1, fingerprint, status: "failed", method: "semantic",
+    attempts: previous?.reconciliation?.attempts ?? 0,
+    error: previous?.reconciliation?.error ?? "Criterion mapping did not complete", cause: previous?.reconciliation?.cause ?? "transport",
+  };
+  const prompt = criterionReconciliationPrompt(criteria, coverage);
+  while (state.attempts < 2 && deps.active?.() !== false) {
+    state = { ...state, status: "pending", attempts: state.attempts + 1 };
+    deps.onProgress?.(complete(state));
+    const attempt = state.attempts;
+    let result: StructuredResult<CriterionReconciliationValue>;
+    if (deps.reconcile) {
+      try { result = await deps.reconcile(prompt); }
+      catch (error) { result = { kind: "failed", cause: "transport", reason: String(error) }; }
+    } else if (deps.execute) {
+      result = { kind: "failed", cause: "transport", reason: "Workflow criterion reconciliation was not supplied." };
+    } else {
+      result = await runJobStructured<typeof CriterionReconciliationSchema>(
+        "workflow-context", prompt,
+        (text) => parseModelJson(text, CriterionReconciliationSchema), "Workflow criterion reconciliation", {
+          timeoutMs: WORKFLOW_CONTEXT_TIMEOUT_MS, maxAttempts: 1,
+          schema: CRITERION_RECONCILIATION_JSON_SCHEMA,
+          onExecution: deps.onReconciliationExecution,
+          observer: {
+            start: (_index, request) => deps.reconciliationObserver?.start(attempt, request),
+            finish: (_index, outcome) => deps.reconciliationObserver?.finish(attempt, outcome),
+          },
+        },
+      );
+    }
+    if (deps.active?.() === false) return complete({ ...state, status: "failed", cause: "cancelled", error: "Capture stopped during criterion mapping" });
+    if (result.kind === "ok") {
+      const proposedMappings = result.value.criterionMappings.flatMap((mapping) => {
+        const criterion = criteria[mapping.canonicalCriterionOrdinal - 1];
+        return criterion ? [{ criterionId: criterion.id, matchedClientCriterionIds: mapping.matchedClientCriterionIds }] : [];
+      });
+      mappings = reconcileWorkflowCriterionMappings(criteria, coverage, {
+        sourceCoverage: deps.sourceCoverage, sourceMappings: deps.sourceMappings, proposedMappings,
+      });
+      state = { ...state, status: "complete", error: null, cause: null };
+      deps.onProgress?.(complete(state));
+      return complete(state);
+    }
+    state = { ...state, status: "failed", error: result.reason.slice(0, 8_000), cause: result.cause };
+    deps.onProgress?.(complete(state));
+    if (result.cause === "cancelled") break;
+  }
+  return complete(state);
 }
 
 function contextFields(raw: RawWorkflowContext): Omit<
   RawWorkflowContext,
-  "coverage" | "evidenceMetadata"
-> {
+  "coverage" | "evidenceMetadata" | keyof WorkflowSteeringContext
+> & WorkflowSteeringContext {
   const { coverage: _coverage, evidenceMetadata: _evidenceMetadata, ...context } = raw;
   return context;
 }
@@ -733,11 +766,7 @@ export async function compactWorkflowContext(
   ).filter(
     (criterion): criterion is WorkflowCanonicalCriterion => criterion !== null,
   );
-  const criterionMappings = await reconcileSourceWorkflowCriteria(
-    canonicalCriteria,
-    raw.coverage ?? [],
-    deps,
-  );
+  const criterionMappings = reconcileWorkflowCriterionMappings(canonicalCriteria, raw.coverage ?? []);
   const compacted: WorkflowContextSnapshot = {
     ...contextFields(raw),
     intentFingerprint: workflowIntentFingerprint(raw),
@@ -756,7 +785,8 @@ export async function compactWorkflowContext(
       reusedFromSubmissionId: null,
     },
   };
-  return WorkflowContextSnapshotSchema.parse(compacted);
+  return WorkflowContextSnapshotSchema.parse(deps.deferReconciliation ? compacted
+    : await reconcileWorkflowCoverage(compacted, raw.coverage ?? [], deps));
 }
 
 export async function captureStableWorkflowContext<T>(
@@ -899,6 +929,10 @@ function sourceFingerprint(context: WorkflowContextSnapshot): string {
 }
 
 export function workflowContextFingerprint(context: WorkflowContextSnapshot): string {
+  if (context.coverageSelection || context.reconciliation) return sha(JSON.stringify({
+    source: sourceFingerprint(context), selection: context.coverageSelection,
+    reconciliation: context.reconciliation,
+  }));
   return sourceFingerprint(context);
 }
 
@@ -990,8 +1024,9 @@ function readLiveWorkflowIntent(
   binding: WorkflowBinding,
   session: Session,
   contextTranscript: TranscriptMessage[],
-): { primaryGoal: RawWorkflowContext["primaryGoal"]; humanDecisions: WorkflowHumanDecision[] } {
-  const goal = registry.getGoal(session.id);
+  goal = registry.getGoal(session.id),
+  excludeSteering = false,
+): WorkflowSteeringContext & Pick<RawWorkflowContext, "primaryGoal" | "humanDecisions"> {
   return {
     primaryGoal: {
       rawPrompt: clip(goal?.prompt ?? goal?.text ?? "", MAX_GOAL),
@@ -1010,7 +1045,11 @@ function readLiveWorkflowIntent(
           rationale: clip(episode.brief ?? episode.recommendation ?? "", MAX_DECISION_TEXT) || null,
           source: { kind: "foreman_episode", id: String(episode.id) },
         })),
-      ...humanTranscriptDecisions(contextTranscript),
+      ...humanTranscriptDecisions(excludeSteering
+        ? contextTranscript.filter((message) => !registry.isGoalSteering(
+            session.id, goal?.resolvedPromptRevision ?? 0, message.text,
+          ))
+        : contextTranscript),
     ]),
   };
 }
@@ -1039,20 +1078,22 @@ export function readWorkflowIntentSnapshot(
   const located = sessionMessages(session);
   const transcriptWindow = located?.read.window(located.path, 12, 68)
     ?? { messages: [], truncated: false, headCount: 0 };
+  const goal = registry.getGoal(session.id);
   const intent = readLiveWorkflowIntent(
     registry,
     binding,
     session,
     contextTranscriptFor(session, located, transcriptWindow.messages, deliveredWorkflowAnchors),
+    goal,
+    true,
   );
-  const goal = registry.getGoal(session.id);
   // The objective and its provenance are a new-run contract, not a change to the live
   // compatibility path used by runs that predate intent snapshots.
   // Minted through the one constructor, never assembled here. The store derives a snapshot's
   // identity the same way when a run is created, and two spellings of "build a snapshot" would
   // be two places to update if derivation ever changes - with the manager-visible snapshot free
   // to disagree with the durable one in the meantime.
-  return freezeWorkflowRunIntent({
+  const snapshot = freezeWorkflowRunIntent({
     rawGoal: goal?.objective != null ? clip(goal.objective, MAX_GOAL) : intent.primaryGoal.rawPrompt,
     refinedGoal: intent.primaryGoal.refined,
     sourceNoteKey: intent.primaryGoal.sourceNoteKey,
@@ -1066,6 +1107,28 @@ export function readWorkflowIntentSnapshot(
     decisions: intent.humanDecisions,
     frozenAt: now,
   });
+  return withWorkflowSteering(snapshot, registry.getGoalSteering(session.id, goal?.resolvedPromptRevision ?? 0),
+    goal?.resolvedPromptRevision ?? 0);
+}
+
+/** Spend only the space left by the existing intent, including JSON framing and provenance. */
+export function withWorkflowSteering(
+  snapshot: WorkflowRunIntentSnapshot,
+  notes: NonNullable<WorkflowRunIntentSnapshot["steering"]>,
+  resolvedRevision: number,
+): WorkflowRunIntentSnapshot {
+  const candidate = { ...snapshot, steeringResolvedRevision: resolvedRevision, steering: [] as typeof notes };
+  let remaining = WORKFLOW_EXECUTION_LIMITS.contextJsonBytes - Buffer.byteLength(JSON.stringify(candidate));
+  // Even the additive empty-array framing must not make a previously valid freeze fail.
+  if (remaining < 0) return snapshot;
+  for (let index = notes.length - 1; index >= 0; index--) {
+    const note = notes[index]!;
+    const bytes = Buffer.byteLength(JSON.stringify(note)) + (candidate.steering.length ? 1 : 0);
+    if (bytes > remaining) break;
+    candidate.steering.unshift(note);
+    remaining -= bytes;
+  }
+  return candidate;
 }
 
 /**
@@ -1122,7 +1185,11 @@ export async function readWorkflowContextRaw(
   // The frozen ask wins outright where the run has one. The transcript, diff, standards and
   // evidence beside it stay live per-submission reads - only intent is frozen, because only
   // intent is the thing the review is judged AGAINST rather than a fact about the work.
-  const intent = frozenIntent
+  const steering: WorkflowSteeringContext = frozenIntent?.steering ? {
+    steering: frozenIntent.steering,
+    steeringResolvedRevision: frozenIntent.steeringResolvedRevision,
+  } : {};
+  const intent: ReturnType<typeof readLiveWorkflowIntent> = frozenIntent
     ? {
         primaryGoal: {
           rawPrompt: frozenIntent.rawGoal,
@@ -1132,14 +1199,14 @@ export async function readWorkflowContextRaw(
           sourceNoteKey: frozenIntent.sourceNoteKey,
         },
         humanDecisions: frozenIntent.decisions,
+        ...steering,
       }
     : readLiveWorkflowIntent(registry, binding, session, contextTranscript);
   const boundedDiff = clipUtf8Bytes(diff.patch, MAX_DIFF_BYTES);
   const boundedTranscript = boundedWorkflowTranscript(contextTranscript);
   const transcript = boundedTranscript.transcript;
   const raw: RawWorkflowContext = {
-    primaryGoal: intent.primaryGoal,
-    humanDecisions: intent.humanDecisions,
+    ...intent,
     priorPersonaFeedback: boundedFeedback(priorPersonaFeedback),
     session: {
       agent: session.agent,

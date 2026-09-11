@@ -63,7 +63,7 @@ const { MODEL_PICKER_XHIGH } = await import("./fixtures/claude-panes.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt" | "missionTools";
+type SplitCap = "extensions" | "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp" | "interrupt" | "missionTools";
 
 /** An agent whose harness declares the capability, and one that declares it null. */
 function split<K extends SplitCap>(cap: K) {
@@ -172,6 +172,7 @@ test("every capability's null path is exercised, by a real harness or a named fi
   // slot lost its last null declarer, and this test went red until `interrupt` moved here.
   const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "interrupt", "workQueue", "missionTools"];
   for (const cap of [
+    "extensions",
     "permissionModes",
     "skills",
     "workQueue",
@@ -331,8 +332,9 @@ test("when a level takes effect is declared by the harness, not inferred from it
     claude: "now",
     // `effort` is a `turn/start` parameter and `turn/steer` has none.
     codex: "next-turn",
-    // No embedded driver at all - `SdkSessionHandle.setEffort` is null.
-    pi: null,
+    // `AgentSession.setThinkingLevel` writes the agent's state and Pi clamps it to the
+    // model, but the request already in flight was built with the old level.
+    pi: "next-turn",
   });
 });
 
@@ -511,15 +513,16 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
   for (const agent of has) assert.equal(workQueueUnsupportedWhy(agent), null);
 });
 
-test("Pi's queue names extension installation as the remedy while lifecycle hooks are absent", () => {
+test("Pi declares machine instrumentation and explains a session with no lifecycle hooks", () => {
   const session = mkSession({ agent: "pi", runtime: "terminal", hooksSeen: false });
   const queue = capabilitiesFor("pi").workQueue;
   assert.ok(queue);
-  assert.equal(HARNESSES.pi.hooks, null);
-  assert.equal(foremanAutomationAuthorized(session), false);
+  assert.equal(HARNESSES.pi.hooks?.scope, "machine");
+  assert.equal(foremanAutomationAuthorized(session), true);
   assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
-  assert.match(queue.uninstrumentedWhy, /Install the Mission Control extension for Pi to enable Foreman's work queue/);
-  assert.match(queue.uninstrumentedWhy, /hasn't reported lifecycle hooks/);
+  assert.match(queue.uninstrumentedWhy, /has not loaded.*lifecycle hooks/);
+  assert.match(queue.uninstrumentedWhy, /Settings > Setup > Agent extensions/);
+  assert.doesNotMatch(queue.uninstrumentedWhy, /PUT \/api/);
 });
 
 // ---- clearing context: the defect this item fixes ----
@@ -608,4 +611,10 @@ test("Mission tools declare a route independently of a vendor MCP client", async
     });
     assert.match(missionToolsUnavailableWhy("codex")!, /Codex has no integration/);
   });
+});
+
+test("extensions fold skips a harness whose capability is null", async () => {
+  const { extensionsDirs } = await import("../src/server/skills/reconcile.ts");
+  assert.equal(extensionsDirs().length, 1);
+  await withCapabilityNull("pi", "extensions", () => assert.deepEqual(extensionsDirs(), []));
 });

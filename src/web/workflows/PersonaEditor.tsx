@@ -279,7 +279,7 @@ export function PersonaProviderControl({
   return (
     <label className="persona-chip-field">
       <span>Provider override</span>
-      <Tooltip label="Which model provider runs this Persona, overriding the app default">
+      <Tooltip label="Which model provider this Persona recommends, in place of the app default. A workflow may override it for one reviewer node.">
         <select
           value={value ?? ""}
           disabled={disabled}
@@ -753,8 +753,8 @@ export function PersonaEditor({
           value={effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}
           state={draft.runner === null ? "inherited" : "overridden"}
           tooltip={draft.runner === null
-            ? "Inherited from the app default provider - open to override it for this Persona"
-            : "This Persona overrides the app default provider"}
+            ? "Inherited from the app default provider - open to recommend one for this Persona"
+            : "This Persona recommends a provider instead of the app default. A workflow can override it for one reviewer node."}
           controlLabel="Provider override"
         >
           <PersonaProviderControl
@@ -770,8 +770,8 @@ export function PersonaEditor({
           mono
           state={draft.model === null ? "inherited" : "overridden"}
           tooltip={draft.model === null
-            ? "Inherited from the app default model - open to override it for this Persona"
-            : "This Persona overrides the app default model"}
+            ? "Inherited from the app default model - open to recommend one for this Persona"
+            : "This Persona recommends a model instead of the app default. A workflow can override it for one reviewer node."}
           controlLabel="Model override"
         >
           <PersonaModelControl

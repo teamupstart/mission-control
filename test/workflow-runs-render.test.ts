@@ -16,21 +16,29 @@ import { createElement } from "react";
 import type {
   PersonaSnapshot,
   WorkflowBinding,
+  WorkflowEvidenceImage,
   WorkflowNodeAttempt,
   WorkflowJson,
   WorkflowRunDetail,
   WorkflowSubmission,
   WorkflowVersion,
 } from "../src/shared/workflow.ts";
+import { classifyWorkflowGoalProvenance } from "../src/server/workflows/goal-provenance.ts";
 import { RunPipeline } from "../src/web/workflows/RunPipeline.tsx";
 import { PersonaDirectiveEditor } from "../src/web/workflows/PersonaDirectiveEditor.tsx";
 import type { ChangeWorklistRow } from "../src/web/workflows/run-model.ts";
 import type { WorklistItem, WorklistSegment } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
+  FrozenImageFrame,
+  FrozenImagePreview,
   WorkflowRunView,
   WorkflowRunsEmpty,
   followSelection,
   worklistSelectionForNode,
+} from "../src/web/workflows/WorkflowRuns.tsx";
+import type {
+  FrozenImageBody,
+  RestageControl,
 } from "../src/web/workflows/WorkflowRuns.tsx";
 import {
   carriedStatus,
@@ -412,6 +420,14 @@ const render = (
   ...props,
 }));
 
+test("evidence recovery is offered only when the view has a recovery handler", () => {
+  const detail = { ...runningDetail(), evidenceRecovery: {
+    submissionId: "submission-1", kind: "mapping" as const, label: "Retry criterion mapping",
+  } };
+  assert.doesNotMatch(render(detail, { pane: "evidence" }), /Retry criterion mapping/);
+  assert.match(render(detail, { pane: "evidence", onRecoverEvidence: async () => {} }), /Retry criterion mapping/);
+});
+
 /**
  * The run header alone - the identity block and both action rows.
  *
@@ -424,6 +440,70 @@ const headerOf = (html: string): string => {
   const end = html.indexOf("</header>");
   assert.notEqual(end, -1, "the run view rendered no header");
   return html.slice(0, end);
+};
+
+/**
+ * The OPEN pane alone, for a claim about where something now lives.
+ *
+ * The Timeline draws every durable event, so "the Foreman claim left the deliveries surface"
+ * cannot be asserted against the whole markup: the claim's own event line is still down there
+ * and always was. Scoping to the tab panel is what makes the move provable rather than
+ * approximate, the same call `headerOf` makes about the action rows.
+ */
+const paneOf = (html: string): string => {
+  const start = html.indexOf('<div class="wf-run-pane" role="tabpanel"');
+  assert.notEqual(start, -1, "the run view rendered no run-record pane");
+  // The model calls section is the next sibling of the tab container, so it bounds the pane
+  // without this having to balance nested divs.
+  const end = html.indexOf("Workflow-owned model calls", start);
+  return html.slice(start, end === -1 ? undefined : end);
+};
+
+/**
+ * A gate ledger's fields, asserted as `<dt>`-and-`<dd>` PAIRS.
+ *
+ * Pairs rather than "the word is on the page somewhere", because every fallback in this ledger
+ * is one of a handful of phrases - "not observed", "not reviewed", "none" - and half a dozen
+ * fields share them. A fallback landing under the wrong label would pass every looser check.
+ */
+const assertLedgerFacts = (pane: string, facts: readonly (readonly [string, string])[]): void => {
+  for (const [label, value] of facts) {
+    assert.match(
+      pane,
+      new RegExp(`<dt>${label}</dt><dd>${value}`),
+      `the ledger did not print ${label} as ${value}`,
+    );
+  }
+};
+
+/**
+ * Where the element opened at `start` closes, found by balancing its own tag.
+ *
+ * `lastIndexOf("</tag>", …)` cannot answer this and fails in the one direction that matters:
+ * on a document where a sibling has been inserted after the element, the nearest closing tag
+ * searched backwards belongs to the INSERTED sibling, so a caller using it to prove "nothing
+ * was inserted here" measures an empty span and passes. Counting opens and closes is immune to
+ * that, and to the nesting the run record's panes already contain.
+ */
+const endOfElement = (html: string, start: number, tag: string): number => {
+  const opens = new RegExp(`<${tag}[\\s>]`, "g");
+  const close = `</${tag}>`;
+  let depth = 0;
+  let at = start;
+  for (;;) {
+    opens.lastIndex = at;
+    const next = opens.exec(html);
+    const shut = html.indexOf(close, at);
+    assert.notEqual(shut, -1, `the <${tag}> at ${start} is never closed`);
+    if (next !== null && next.index < shut) {
+      depth += 1;
+      at = next.index + 1;
+      continue;
+    }
+    depth -= 1;
+    at = shut + close.length;
+    if (depth === 0) return at;
+  }
 };
 
 /** Every identity the published graph carries. None of them may reach the screen. */
@@ -620,59 +700,715 @@ test("a waiting run offers ONE primary move, the context controls, and cancel", 
   assertNoGraphIds(html);
 });
 
-test("image evidence is an auditable per-submission ledger with retained and pruned states", () => {
+/**
+ * The Evidence pane: the readiness verdict, the pictures, and the claims they prove.
+ *
+ * Two sections became one and nothing was dropped, which is the only claim markup can settle.
+ * The picture itself is a browser fact - the fetch, the lazy load, the preview, the focus
+ * return - and lives in `e2e/specs/workflow-evidence-pane.spec.ts`. What is pinned here is the
+ * inventory: every field the two old sections printed still reaches the markup, and the counts
+ * on the strip are the ones `runRecordSummary` derived rather than something the view recounted.
+ */
+const IMAGES: WorkflowRunDetail["evidenceImages"] = [{
+  submissionId: "submission-2",
+  images: [
+    {
+      id: "image-retained",
+      ordinal: 0,
+      displayName: "dashboard.png",
+      caption: "Composer with caption and repository scope",
+      repositoryScope: "repo-01",
+      mimeType: "image/png",
+      bytes: 2048,
+      sha256: "a".repeat(64),
+      availability: "retained",
+      prunedAt: null,
+      createdAt: 8,
+    },
+    {
+      id: "image-pruned",
+      ordinal: 1,
+      displayName: "old-dashboard.webp",
+      caption: "Historical evidence whose body aged out",
+      repositoryScope: "all",
+      mimeType: "image/webp",
+      bytes: 4096,
+      sha256: "b".repeat(64),
+      availability: "pruned",
+      prunedAt: 9,
+      createdAt: 7,
+    },
+  ],
+}];
+
+const SCOPES = [
+  { value: "all", label: "All repositories" },
+  { value: "repo-01", label: "app (primary)" },
+];
+
+/** A coverage claim citing the retained image by its public item id. */
+const CLAIM = {
+  clientCriterionId: "claim-visual",
+  criterion: "The composer renders its caption and scope fields",
+  proofClass: "rendered_artifact",
+  repositoryScope: "repo-01",
+  links: [{ clientItemId: "item-dashboard", role: "rendered_output" }],
+} as NonNullable<WorkflowRunDetail["evidenceCoverage"]>[number]["coverage"][number];
+
+/**
+ * A readiness result with one matched criterion and one the reconciliation could not match.
+ *
+ * The matched criterion's link is also the ONE bridge the browser has between a claim's public
+ * `clientItemId` and a frozen image's row id, which is what lets a claim row carry a copy of
+ * the picture it cites.
+ */
+const READINESS = {
+  evaluatorVersion: "criterion_mapped_v1",
+  status: "gaps",
+  criteria: [
+    {
+      criterionId: "canon-visual",
+      criterion: "The composer renders its caption and scope fields",
+      material: true,
+      matchedClientCriterionId: "claim-visual",
+      authorProofClass: "rendered_artifact",
+      suggestedProofClass: "rendered_artifact",
+      links: [{
+        clientItemId: "item-dashboard",
+        evidenceId: "image-retained",
+        role: "rendered_output",
+      }],
+      gaps: [],
+      warnings: ["model_proof_class_disagreement"],
+    },
+    {
+      criterionId: "canon-e2e",
+      criterion: "A Playwright spec covers the composer end to end",
+      material: true,
+      matchedClientCriterionId: null,
+      authorProofClass: null,
+      suggestedProofClass: null,
+      links: [],
+      gaps: ["missing_coverage"],
+      warnings: [],
+    },
+  ],
+  gapCodes: ["missing_coverage"],
+  warningCodes: ["model_proof_class_disagreement"],
+  unavailableReason: null,
+} as NonNullable<WorkflowSubmission["readiness"]>;
+
+function evidenceDetail(): WorkflowRunDetail {
   const base = runningDetail();
-  const html = render({
+  return {
     ...base,
+    submissions: base.submissions.map((entry) =>
+      entry.id === "submission-2" ? { ...entry, readiness: READINESS } : entry),
+    evidenceImages: IMAGES,
+    evidenceCoverage: [{ submissionId: "submission-2", coverage: [CLAIM] }],
+  } as WorkflowRunDetail;
+}
+
+const evidencePane = (detail: WorkflowRunDetail, props: Record<string, unknown> = {}): string =>
+  render(detail, {
+    pane: "evidence",
+    evidenceScopeOptions: SCOPES,
+    onRestageImage: async () => {},
+    ...props,
+  });
+
+test("the Evidence pane merges the image ledger and the readiness result without dropping a field", () => {
+  const html = evidencePane(evidenceDetail());
+
+  // The strip's numbers come from `runRecordSummary`, so a wrong one is a failing unit case
+  // there rather than a digit nobody checked here. What this pins is that they are PRINTED.
+  assert.match(html, /Readiness<\/span><strong class="wf-run-stat-value is-alert">gaps/);
+  assert.match(html, /Author claims<\/span><strong[^>]*>1</);
+  assert.match(html, /Gaps<\/span><strong class="wf-run-stat-value is-alert">1</);
+  assert.match(html, /Warnings<\/span><strong[^>]*>1</);
+  assert.match(html, /Images<\/span><strong class="wf-run-stat-value is-ok">2</);
+
+  // The image cards: display name, the item id the record bridged, the scope in the operator's
+  // own words, the size, and who cites it - instead of a bare id a reader had to match by eye.
+  assert.match(html, /dashboard\.png/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /item-dashboard/);
+  assert.match(html, /app \(primary\)/);
+  assert.match(html, /Cited by 1 claim as rendered output/);
+  // A pruned record keeps its card, its every audit field, and says what happened to the bytes
+  // rather than rendering as a broken image.
+  assert.match(html, /Historical evidence whose body aged out/);
+  assert.match(html, /old-dashboard\.webp body pruned/);
+  assert.match(html, /class="wf-evidence-card is-pruned"/);
+  // The whole card is the control that opens the preview, and it has an accessible name.
+  assert.match(html, /aria-label="Preview dashboard\.png"/);
+  assert.match(html, /aria-label="Preview old-dashboard\.webp"/);
+
+  // The claim row, with the small copy of the picture it cites beside it. The reconciliation
+  // said `model_proof_class_disagreement`, so the row says warning rather than linked.
+  assert.match(html, /The composer renders its caption and scope fields/);
+  assert.match(html, /rendered artifact/);
+  assert.match(html, /model proof class disagreement/);
+  assert.match(html, /class="workflow-chip workflow-waiting">warning<\/span>/);
+  assert.equal((html.match(/class="wf-evidence-mini"/g) ?? []).length, 1);
+
+  // The gap block, named as what it is: a CANONICAL criterion with no author claim to sit under.
+  assert.match(html, /aria-label="Unmatched canonical criteria"/);
+  assert.match(html, /A Playwright spec covers the composer end to end/);
+  assert.match(html, /These are canonical criteria, not author claims/);
+  assert.match(html, /class="workflow-chip workflow-failed">missing coverage<\/span>/);
+
+  // The reconciliation keeps a block of its own rather than being folded into the rows.
+  assert.match(html, /Canonical reconciliation/);
+  assert.match(html, /2 criteria · criterion_mapped_v1/);
+
+  // Static rendering never fetches bodies: the authenticated route is reached lazily in view,
+  // and the preview is closed until a thumbnail is clicked.
+  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
+  assert.doesNotMatch(html, /modal-backdrop/);
+  assertNoGraphIds(html);
+});
+
+test("a submission that froze no images says so instead of drawing an empty strip", () => {
+  const base = runningDetail();
+  const html = evidencePane({
+    ...base,
+    evidenceImages: [{ submissionId: "submission-2", images: [] }],
+  } as WorkflowRunDetail);
+  assert.match(html, /No image evidence was attached to this submission/);
+  assert.match(html, /No acceptance criterion coverage was frozen for this submission/);
+  assert.doesNotMatch(html, /class="wf-evidence-strip"/);
+  // Advisory rather than structural: this fixture's version does not enforce the preflight.
+  assert.match(html, /Advisory only\. This result did not block workflow execution/);
+});
+
+/**
+ * The block, and the two controls it does and does not withdraw.
+ *
+ * A parked run is the one case the plan's "a blocking state cannot hide" is about, and the pane
+ * says `blocking` only here - not on any submission that merely has gaps. The refinement cap
+ * withdraws the button that asks for another refinement and keeps the one that records the
+ * operator's decision, because that decision is exactly what the block exists to ask for.
+ */
+test("a run parked on readiness opens the Evidence pane with its override in reach", () => {
+  const base = runningDetail();
+  const parked = (phase: string | null): WorkflowRunDetail => ({
+    ...base,
+    // No reviewer has run yet, so the worklist is clean - which is the fixture this case needs.
+    // A run with BOTH an open change and a readiness block opens on the worklist, correctly,
+    // and would prove nothing about whether the block can hide.
+    attempts: [],
+    receipts: [],
+    run: {
+      ...base.run,
+      status: phase === null ? "waiting_for_evidence_readiness" : "blocked",
+      currentPhase: phase ?? "evidence_readiness",
+    },
+    submissions: base.submissions.map((entry) =>
+      entry.id === "submission-2"
+        ? { ...entry, status: "waiting_for_evidence_readiness", readiness: READINESS }
+        : entry),
+    evidenceCoverage: [{ submissionId: "submission-2", coverage: [CLAIM] }],
+  } as WorkflowRunDetail);
+
+  // No `pane` prop: the container has to select this itself, through Phase 1's order.
+  const waiting = render(parked(null), { evidenceScopeOptions: SCOPES });
+  assert.match(
+    waiting,
+    /id="run-record-tab-evidence" aria-selected="true"[^>]*>Evidence<span class="workflow-tab-badge">1<\/span>/,
+  );
+  assert.match(waiting, /aria-label="Evidence readiness override"/);
+  assert.match(waiting, /Retry evidence preflight/);
+  assert.match(waiting, /Continue despite gaps/);
+  assert.doesNotMatch(waiting, /has spent its evidence preflight refinements/);
+
+  const exhausted = render(parked("preflight_refinement_exhausted"), {
+    evidenceScopeOptions: SCOPES,
+  });
+  assert.match(exhausted, /has spent its evidence preflight refinements/);
+  assert.doesNotMatch(exhausted, /Retry evidence preflight/);
+  assert.match(exhausted, /Continue despite gaps/);
+});
+
+
+/**
+ * The preview and the frame, rendered directly.
+ *
+ * Both are reachable through `WorkflowRunView` only from a browser: the preview needs state a
+ * click sets, and the frame's loaded and failed arms need a fetch to have resolved. So the
+ * merge criterion this phase is held to - every field the image ledger printed today is present
+ * in the preview footer - had no assertion at this layer at all, and the four frame arms were
+ * pinned only where a spec happened to produce them. Rendering the two components against their
+ * own props is what makes each arm a case rather than a coincidence.
+ */
+const PREVIEW_IMAGE: WorkflowEvidenceImage = {
+  id: "img_dd49eefd31a09e3a4dddb06dff610e12",
+  ordinal: 0,
+  displayName: "pane-alpha.png",
+  caption: "The Evidence pane strip renders a frozen thumbnail above the claims",
+  repositoryScope: "repo-01",
+  mimeType: "image/png",
+  bytes: 73,
+  sha256: "3a9dcaaec7dc4095f04276eec0610f95dd13ffb244e092b164454a95909bba33",
+  availability: "retained",
+  prunedAt: null,
+  createdAt: 12,
+};
+
+const restageControl = (over: Partial<RestageControl> = {}): RestageControl => ({
+  offered: () => true,
+  busy: new Set<string>(),
+  settled: new Set<string>(),
+  run: () => {},
+  failures: new Map<string, string>(),
+  ...over,
+});
+
+const previewMarkup = (
+  image: WorkflowEvidenceImage,
+  over: {
+    body?: FrozenImageBody;
+    clientItemId?: string | null;
+    citation?: string | null;
+    restage?: RestageControl;
+  } = {},
+): string => renderToStaticMarkup(withOverlayHost(createElement(FrozenImagePreview, {
+  image,
+  // `in`, not `??`: "no body yet" is a state of its own here, and a default that swallowed an
+  // explicit `undefined` would make the waiting arm untestable.
+  body: "body" in over ? over.body : { url: "blob:pane-alpha", error: null },
+  scopeLabel: "demo-repo (primary)",
+  clientItemId: over.clientItemId === undefined ? "item-alpha" : over.clientItemId,
+  citation: over.citation === undefined ? "Cited by 1 claim as rendered output" : over.citation,
+  restage: over.restage ?? restageControl(),
+  onClose: () => {},
+})));
+
+test("the preview footer carries every field the image ledger printed", () => {
+  const html = previewMarkup(PREVIEW_IMAGE);
+
+  // The dispatch modal's own shape, which is what the plan asked the preview to be modelled on.
+  assert.match(html, /class="modal attach-preview wf-image-preview"/);
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /aria-modal="true"/);
+  assert.match(html, /aria-label="Preview of pane-alpha\.png"/);
+  assert.match(html, /<header class="modal-head">/);
+  assert.match(html, /class="attach-preview-name">pane-alpha\.png/);
+  assert.match(html, /aria-label="Close"/);
+  // Named, not decorative: in the strip the picture sits beside a caption that reads it out,
+  // and here it IS the content of the dialog.
+  assert.match(html, /class="modal-body attach-preview-body"/);
+  assert.match(
+    html,
+    /<img class="attach-preview-image" src="blob:pane-alpha" alt="The Evidence pane strip renders a frozen thumbnail above the claims"\/>/,
+  );
+
+  // EVERY FIELD. This is the criterion the merge is held to, and each one is named rather than
+  // asserted as a substring of the whole dialog, so a footer that dropped one fails here.
+  assert.match(html, /<dt>Item<\/dt><dd><code>item-alpha<\/code><\/dd>/);
+  assert.match(html, /<dt>Evidence id<\/dt><dd><code>img_dd49eefd31a09e3a4dddb06dff610e12<\/code>/);
+  assert.match(html, /<dt>Scope<\/dt><dd>demo-repo \(primary\)<\/dd>/);
+  assert.match(html, /<dt>Type<\/dt><dd>image\/png<\/dd>/);
+  assert.match(html, /<dt>Size<\/dt><dd>73 B<\/dd>/);
+  assert.match(html, /<dt>Availability<\/dt><dd>retained<\/dd>/);
+  assert.match(html, new RegExp(`<dt>Digest</dt><dd><code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.match(html, /The Evidence pane strip renders a frozen thumbnail above the claims/);
+  assert.match(html, /Use in next review/);
+  assert.match(html, /Cited by 1 claim as rendered output\./);
+  // The footer is a `.modal-foot`, so it inherits the shell's inset rather than declaring one.
+  assert.match(html, /<footer class="modal-foot">/);
+  assert.doesNotMatch(html, /padding-inline/);
+
+  // An image the reconciliation could not bridge to a claim says so rather than printing a
+  // blank id, and offers no citation sentence at all - "cited by 0 claims" is a much stronger
+  // statement than "this build cannot tell".
+  const unbridged = previewMarkup(PREVIEW_IMAGE, { clientItemId: null, citation: null });
+  assert.match(unbridged, /<dt>Item<\/dt><dd>not resolved to a claim<\/dd>/);
+  assert.doesNotMatch(unbridged, /Cited by/);
+});
+
+test("a pruned or carried image keeps its audit record and loses only the reuse action", () => {
+  const pruned = previewMarkup(
+    { ...PREVIEW_IMAGE, availability: "pruned", prunedAt: 1_700_000_000_000 },
+    { body: undefined, restage: restageControl({ offered: () => false }) },
+  );
+  // The frame says why there is no picture; the footer says what survives pruning.
+  assert.match(pruned, /class="wf-image-pruned" role="status">Body pruned/);
+  assert.match(pruned, /Raw body pruned/);
+  assert.match(pruned, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
+  assert.match(pruned, /<dt>Availability<\/dt><dd>pruned<\/dd>/);
+  assert.match(pruned, new RegExp(`<code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.doesNotMatch(pruned, /Use in next review/);
+
+  // A carried record offers no restage of its own: the same digest is already offered by the
+  // submission that captured it, and a second button would imply this one captured it too.
+  const carried = previewMarkup(
+    {
+      ...PREVIEW_IMAGE,
+      inheritedFrom: { submissionId: "s1", round: 1, repositoryFingerprint: null },
+    },
+    { restage: restageControl({ offered: (image) => !image.inheritedFrom }) },
+  );
+  assert.match(carried, /Carried forward from round 1/);
+  assert.doesNotMatch(carried, /Use in next review/);
+
+  // Settled, which is a claim about the daemon rather than about the click.
+  const settled = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({ settled: new Set([PREVIEW_IMAGE.id]) }),
+  });
+  assert.match(settled, /Ready for next review/);
+  assert.match(settled, /disabled=""/);
+  // And in flight, which must not read as settled.
+  const busy = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({ busy: new Set([PREVIEW_IMAGE.id]) }),
+  });
+  assert.match(busy, /Use in next review/);
+  assert.match(busy, /disabled=""/);
+});
+
+test("the image frame draws one of four arms and never a broken picture", () => {
+  const frame = (
+    image: WorkflowEvidenceImage,
+    body: FrozenImageBody | undefined,
+    alt = "",
+  ): string => renderToStaticMarkup(createElement(FrozenImageFrame, {
+    image,
+    body,
+    className: "wf-image-frame",
+    alt,
+  }));
+
+  // Loaded. `alt=""` where the picture sits beside a caption that already reads it out.
+  assert.match(
+    frame(PREVIEW_IMAGE, { url: "blob:alpha", error: null }),
+    /<span class="wf-image-frame"><img src="blob:alpha" alt=""\/><\/span>/,
+  );
+  // Refused. The daemon's own reason, announced, rather than the browser's broken-image glyph -
+  // which would read as "the page is broken" beside a record whose every field is intact.
+  const failed = frame(PREVIEW_IMAGE, { url: null, error: "Image body could not be read" });
+  assert.match(failed, /class="wf-image-error" role="alert">Image body could not be read/);
+  assert.doesNotMatch(failed, /<img/);
+  // Not answered yet.
+  assert.match(frame(PREVIEW_IMAGE, undefined), /class="wf-image-loading">Loading image…/);
+  // Pruned, which is not a failure and asks the daemon for nothing.
+  const pruned = frame({ ...PREVIEW_IMAGE, availability: "pruned" }, undefined);
+  assert.match(pruned, /aria-label="pane-alpha\.png body pruned">Body pruned/);
+  assert.doesNotMatch(pruned, /<img/);
+  assert.doesNotMatch(pruned, /Loading image/);
+});
+
+/**
+ * A refused re-stage, said where the operator is standing.
+ *
+ * The button that stages retained bytes exists only in this dialog, and this dialog draws a
+ * backdrop over the pane. An explanation painted onto the pane behind it is one the operator
+ * cannot read without first closing the thing they were acting in, so the reason belongs in the
+ * footer beside the button, and the button stays pressable because the daemon refused.
+ */
+test("a refused re-stage explains itself inside the dialog that asked for it", () => {
+  const refused = previewMarkup(PREVIEW_IMAGE, {
+    restage: restageControl({
+      failures: new Map([[PREVIEW_IMAGE.id, "Retained bytes could not be staged"]]),
+    }),
+  });
+
+  assert.match(
+    refused,
+    /<p class="wf-run-error" role="alert">Retained bytes could not be staged<\/p>/,
+  );
+  // Inside the footer, which is inside the dialog, and before the action it explains.
+  const footer = refused.slice(refused.indexOf("<footer"));
+  assert.match(footer, /Retained bytes could not be staged/);
+  assert.ok(
+    footer.indexOf("Retained bytes could not be staged") < footer.indexOf("Use in next review"),
+    "the reason reads before the button it is about",
+  );
+  // NOT settled: "Ready for next review" is a claim about the daemon, and the daemon refused.
+  assert.match(refused, /Use in next review/);
+  assert.doesNotMatch(refused, /Ready for next review/);
+
+  // And nothing is announced when nothing failed.
+  assert.doesNotMatch(previewMarkup(PREVIEW_IMAGE), /role="alert"/);
+});
+
+/**
+ * The preview opened before its body arrived, which is the ordinary case rather than an edge.
+ *
+ * A thumbnail is clickable the moment the record renders, and the body is a second request. So
+ * the dialog opens on a record with no picture in it more often than not, and it has to be
+ * readable in that state: every audit field came with the record and is on screen already, and
+ * the space the picture will fill says which of "not yet" and "not ever" it is.
+ */
+test("the preview reads without a body, whether the body is late or refused", () => {
+  const waiting = previewMarkup(PREVIEW_IMAGE, { body: undefined });
+  assert.match(waiting, /class="wf-image-loading">Loading image…/);
+  assert.doesNotMatch(waiting, /<img class="attach-preview-image"/);
+  // The record's own fields do not wait on the body, because they never came from it.
+  assert.match(waiting, new RegExp(`<dt>Digest</dt><dd><code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.match(waiting, /<dt>Size<\/dt><dd>73 B<\/dd>/);
+  assert.match(waiting, /Use in next review/);
+
+  // Refused, which is a different sentence from "not yet" and is announced rather than drawn as
+  // the browser's broken-image glyph.
+  const refused = previewMarkup(PREVIEW_IMAGE, {
+    body: { url: null, error: "Image body could not be read" },
+  });
+  assert.match(refused, /class="wf-image-error" role="alert">Image body could not be read/);
+  assert.doesNotMatch(refused, /<img class="attach-preview-image"/);
+  assert.doesNotMatch(refused, /Loading image/);
+});
+
+/**
+ * The pane's alternate arms, each one a state a person can actually land on.
+ *
+ * A conditional has two outcomes and a suite that only ever renders one of them has tested half
+ * the code. These are the halves the common fixture never reaches: an enforcing policy, a
+ * reconciliation that came back unavailable with no reason to give, a criterion that is
+ * supporting rather than material, a claim that linked nothing, a carried image, and a pruned
+ * body whose prune time was never recorded.
+ */
+test("the Evidence pane draws the other side of each of its conditionals", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    version: { ...version, evidenceReadinessPolicy: "criterion_mapped_v1" },
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          status: "unavailable",
+          // No reason given, which is the arm the `??` fallback exists for.
+          unavailableReason: null,
+          criteria: [
+            { ...READINESS.criteria[0]!, material: false },
+            READINESS.criteria[1]!,
+          ],
+        },
+      }
+      : entry),
+    evidenceCoverage: [{
+      submissionId: "submission-2",
+      // A claim that linked nothing at all, which the row states rather than leaving blank.
+      coverage: [{ ...CLAIM, links: [] }],
+    }],
     evidenceImages: [{
       submissionId: "submission-2",
       images: [
         {
-          id: "image-retained",
-          ordinal: 0,
-          displayName: "dashboard.png",
-          caption: "Composer with caption and repository scope",
-          repositoryScope: "repo-01",
-          mimeType: "image/png",
-          bytes: 2048,
-          sha256: "a".repeat(64),
-          availability: "retained",
-          prunedAt: null,
-          createdAt: 8,
+          ...IMAGES[0]!.images[0]!,
+          inheritedFrom: { submissionId: "submission-1", round: 1, repositoryFingerprint: null },
         },
+        // Pruned, with no prune time recorded: the sentence still has to read.
+        { ...IMAGES[0]!.images[1]!, prunedAt: null },
+      ],
+    }],
+  } as WorkflowRunDetail);
+
+  // The enforcing arm of the policy sentence, not the advisory one the other cases render.
+  assert.match(html, /Structural only\. Test Evidence Auditor still judges/);
+  assert.doesNotMatch(html, /Advisory only/);
+  // An unavailable reconciliation with nothing to say still says why it is unavailable.
+  assert.match(html, /Unavailable: Context compaction did not return canonical criteria\./);
+  // Supporting rather than material.
+  assert.match(html, /<span>supporting<\/span>/);
+  // A claim with no links says so on the row.
+  assert.match(html, /no evidence linked/);
+  // A carried image names the round it came from rather than offering to stage it again.
+  assert.match(html, /from round 1/);
+});
+
+/**
+ * A gap the reconciliation recorded against a criterion it DID match to a claim.
+ *
+ * This reads as two findings if the pane is careless: the criterion is gapped, so the block of
+ * unmatched criteria would list it, and the claim it matched is gapped too, so the claim row
+ * prints it as well. The block's own sentence says these criteria have no row below to sit
+ * under, and for this one that is false. The row is the right place, because the gap is
+ * something the author's claim failed to satisfy rather than something nobody claimed.
+ */
+test("a gap against a matched criterion is stated on the claim row, not in the block", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [
+            // Matched to the author's claim AND gapped: the proof class did not satisfy it.
+            { ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] },
+            READINESS.criteria[1]!,
+          ],
+        },
+      }
+      : entry),
+  } as WorkflowRunDetail);
+
+  /*
+   * On the CLAIM ROW's own note, not merely somewhere in the document.
+   *
+   * The canonical reconciliation disclosure below renders `Gaps: missing execution` for the same
+   * criterion whether it is open or closed, so a search of the whole markup would still pass for
+   * a row that had dropped the code entirely - which is the half of this the pane has to get
+   * right. The note element is the thing a reader sees beside the claim.
+   */
+  assert.match(html, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
+  // The block names only the criterion that has no claim row at all.
+  const block = html.slice(
+    html.indexOf("Unmatched canonical criteria"),
+    html.indexOf("wf-evidence-head"),
+  );
+  assert.match(block, /A Playwright spec covers the composer end to end/);
+  assert.doesNotMatch(block, /The composer renders its caption and scope fields/);
+  assert.doesNotMatch(block, /missing execution/);
+  // The count is unchanged: the finding is real, only its place on the page is decided.
+  assert.match(html, /Gaps<\/span><strong class="wf-run-stat-value is-alert">2</);
+
+  // And when every gapped criterion is matched, the block is not drawn at all rather than
+  // drawn empty under a heading that would then describe nothing.
+  const allMatched = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [{ ...READINESS.criteria[0]!, gaps: ["missing_execution"], warnings: [] }],
+        },
+      }
+      : entry),
+  } as WorkflowRunDetail);
+  assert.doesNotMatch(allMatched, /Unmatched canonical criteria/);
+  // And the finding is still on the row, which is the whole reason dropping the block is safe.
+  assert.match(allMatched, /<span class="wf-evidence-claim-note">missing execution<\/span>/);
+});
+
+/**
+ * A round with no submission, where the Evidence tab is not offered at all.
+ *
+ * The pane reports on ONE submission - its claims, its frozen pictures, its reconciliation - so
+ * a round that has none has no evidence record rather than an empty one. `render` returning null
+ * is what withholds the tab, and the tab bar has to come back without it rather than with a tab
+ * that opens on nothing.
+ */
+test("a round with no submission is offered no Evidence tab", () => {
+  const html = render({ ...evidenceDetail(), submissions: [] } as WorkflowRunDetail, {
+    evidenceScopeOptions: SCOPES,
+    onRestageImage: async () => {},
+  });
+
+  assert.doesNotMatch(html, /id="run-record-tab-evidence"/);
+  assert.doesNotMatch(html, /Frozen images/);
+  // The bar itself is intact and lands the reader on a pane that does have something to say.
+  assert.match(html, /role="tablist" aria-label="Run record"/);
+  assert.match(html, /id="run-record-tab-worklist"[^>]*aria-selected="true"/);
+});
+
+/**
+ * A record no session can stage from, which is most of the history in the runs list.
+ *
+ * The re-stage action belongs to a live binding: it copies retained bytes into the composer of
+ * the session that would submit them. Opened on a run whose session is gone, every audit field
+ * still has to read, and the one control that would act on a session must not be offered.
+ */
+test("the Evidence pane drops only the re-stage action when no session can act", () => {
+  const html = evidencePane(evidenceDetail(), { onRestageImage: undefined });
+
+  // The strip's hint names the fields the dialog carries, and stops there: no control is
+  // promised that the dialog will not offer.
+  assert.match(html, /availability and SHA-256 are in that dialog\./);
+  assert.doesNotMatch(html, /Use in next review/);
+  // Everything else is intact: the strip, the cards and the claim rows are a record, not an
+  // interface to a session.
+  assert.match(html, /dashboard\.png/);
+  assert.match(html, /Composer with caption and repository scope/);
+  assert.match(html, /Images<\/span><strong class="wf-run-stat-value is-ok">2</);
+
+  // And with a session behind it, the same sentence names the action the dialog does offer.
+  const live = evidencePane(evidenceDetail());
+  assert.match(live, /availability and SHA-256 are in that dialog, with Use in next review\./);
+});
+
+/**
+ * The remaining alternates, each one a record the daemon can really send.
+ *
+ * A reconciliation that came back unavailable usually says why, and printing the fallback
+ * sentence over a reason it was given would hide the only useful thing in the record. A frozen
+ * image can also arrive scoped to a repository this binding no longer offers - a scope removed
+ * between rounds - and cited by nothing at all, and neither may collapse the card that carries
+ * every other audit field.
+ */
+test("the Evidence pane keeps a reason it was given, and a card no claim and no scope names", () => {
+  const base = evidenceDetail();
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          status: "unavailable",
+          unavailableReason: "The transcript was compacted before the criteria were read",
+        },
+      }
+      : entry),
+    evidenceImages: [{
+      submissionId: "submission-2",
+      images: [
+        ...IMAGES[0]!.images,
         {
-          id: "image-pruned",
-          ordinal: 1,
-          displayName: "old-dashboard.webp",
-          caption: "Historical evidence whose body aged out",
-          repositoryScope: "all",
-          mimeType: "image/webp",
-          bytes: 4096,
-          sha256: "b".repeat(64),
-          availability: "pruned",
-          prunedAt: 9,
-          createdAt: 7,
+          ...IMAGES[0]!.images[0]!,
+          id: "image-orphan",
+          ordinal: 2,
+          displayName: "orphan.png",
+          caption: "Frozen against a scope this binding no longer offers",
+          repositoryScope: "repo-retired",
         },
       ],
     }],
-  }, {
-    evidenceScopeOptions: [
-      { value: "all", label: "All repositories" },
-      { value: "repo-01", label: "app (primary)" },
-    ],
-    onRestageImage: async () => {},
+  } as WorkflowRunDetail);
+
+  // The daemon's own reason, not the sentence that stands in for one.
+  assert.match(html, /Unavailable: The transcript was compacted before the criteria were read/);
+  assert.doesNotMatch(html, /Context compaction did not return canonical criteria/);
+  // A scope the options no longer name prints the raw scope rather than nothing.
+  assert.match(html, /repo-retired/);
+  // And the card is whole: an image nothing cites keeps its name, caption and size, and carries
+  // neither an item id it never had nor a "cited by" line that would be a guess.
+  assert.match(html, /orphan\.png/);
+  assert.match(html, /Frozen against a scope this binding no longer offers/);
+  const orphan = html.slice(html.indexOf("orphan.png"));
+  assert.doesNotMatch(orphan.slice(0, 400), /wf-evidence-card-cite/);
+});
+
+test("a pruned image with no recorded prune time still reads", () => {
+  const image = {
+    ...PREVIEW_IMAGE,
+    availability: "pruned" as const,
+    prunedAt: null,
+  };
+  const html = previewMarkup(image, {
+    body: undefined,
+    restage: restageControl({ offered: () => false }),
   });
-  assert.match(html, /2 images frozen for this submission/);
-  assert.match(html, /Composer with caption and repository scope/);
-  assert.match(html, /app \(primary\)/);
-  assert.match(html, new RegExp("a{64}"));
-  assert.match(html, /Use in next review/);
-  assert.match(html, /Historical evidence whose body aged out/);
-  assert.match(html, /Raw body pruned/);
+  // The `prunedAt ? when(prunedAt) : "by retention policy"` fallback, which the dated case hides.
+  assert.match(html, /Raw body pruned by retention policy\./);
   assert.match(html, /Caption, scope, MIME, size, and SHA-256 remain auditable/);
-  assert.equal((html.match(/Use in next review/g) ?? []).length, 1);
-  // Static rendering never fetches bodies: the authenticated route is reached lazily in view.
-  assert.doesNotMatch(html, /src="\/api\/workflow-runs/);
+});
+
+test("the preview says why there is no picture when the body was refused", () => {
+  // The preview's own error arm. The strip frame's is covered elsewhere; this is the dialog's,
+  // and it is what a reader sees after clicking a thumbnail whose body the route refused.
+  const html = previewMarkup(PREVIEW_IMAGE, {
+    body: { url: null, error: "Image body could not be read" },
+  });
+  assert.match(html, /class="wf-image-error" role="alert">Image body could not be read/);
+  assert.doesNotMatch(html, /class="attach-preview-image"/);
+  // Every audit field survives a refused body: the dialog is still the record.
+  assert.match(html, new RegExp(`<code>${PREVIEW_IMAGE.sha256}</code>`));
+  assert.match(html, /<dt>Availability<\/dt><dd>retained<\/dd>/);
 });
 
 /**
@@ -873,7 +1609,7 @@ test("a blocked run out of repair rounds offers the grant in the header", () => 
  *
  * An uncertain delivery has two mutually exclusive resolutions and choosing between them needs
  * the operator's eyes on the session's pane. So the header does not hoist a fake primary; it
- * names the section that owns the choice, which is the same closing move `runRemedy` makes for
+ * names the tab that owns the choice, which is the same closing move `runRemedy` makes for
  * the triage row.
  */
 test("a run blocked on a delivery decision points at the section that owns it", () => {
@@ -885,7 +1621,7 @@ test("a run blocked on a delivery decision points at the section that owns it", 
   });
   const header = headerOf(html);
   assert.match(header, /<b>A repair packet may or may not have reached the session\.<\/b>/);
-  assert.match(header, /Confirm or discard it in Deliveries below/);
+  assert.match(header, /Confirm or discard it in the run record.{0,8}s Deliveries tab/);
   assert.doesNotMatch(header, /btn-primary/);
   assert.match(header, /Cancel run/);
 });
@@ -895,7 +1631,7 @@ test("a run blocked on a delivery decision points at the section that owns it", 
  *
  * `inspector_disabled` is the state that tempts a "Turn Inspector on" primary. Inspector
  * settings open through a callback prop, so a POST descriptor could not express one - and the
- * gate section below already renders the button. If somebody reintroduces it as a primary, this
+ * Completion pane already renders the button. If somebody reintroduces it as a primary, this
  * fails.
  */
 test("an Inspector-disabled block has no primary and names the gate section instead", () => {
@@ -907,7 +1643,10 @@ test("an Inspector-disabled block has no primary and names the gate section inst
   });
   const header = headerOf(html);
   assert.match(header, /<b>GitHub Inspector is switched off, so the gate cannot be evaluated\.<\/b>/);
-  assert.match(header, /Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below/);
+  assert.match(
+    header,
+    /Turn it back on from Open GitHub Inspector settings, in the run record.{0,8}s Completion tab/,
+  );
   assert.doesNotMatch(header, /btn-primary/);
   assert.doesNotMatch(header, /Turn Inspector on/);
 });
@@ -969,7 +1708,7 @@ test("a finished run whose binding was orphaned explains itself instead", () => 
 
 test("a live delivery keeps every recovery control and says what each state means", () => {
   const base = runningDetail();
-  const html = render({
+  const detail = {
     ...base,
     binding: { ...base.binding, deliveryMode: "live" },
     deliveries: [
@@ -1017,7 +1756,8 @@ test("a live delivery keeps every recovery control and says what each state mean
         state: "resubmitted",
       },
     }],
-  } as WorkflowRunDetail, { pane: "deliveries" });
+  } as WorkflowRunDetail;
+  const html = render(detail, { pane: "deliveries" });
   // The tab reports without being opened: two blocking packets, in amber. This fixture's
   // worklist is blocking too and wins the initial selection - it is the primary object, and a
   // run with both an open change and a refused packet must not bury the change - so the pane
@@ -1042,9 +1782,24 @@ test("a live delivery keeps every recovery control and says what each state mean
   // and the control that opens it is on every row.
   assert.doesNotMatch(html, /EXACT REPAIR PACKET/);
   assert.match(html, /Show packet/);
-  assert.match(html, /drain completion/);
-  assert.match(html, /Foreman proved the queue complete/);
   assertNoGraphIds(html);
+
+  // The Foreman claim on this same run is a Completion row, not a Deliveries one. Both panes
+  // are asserted from one detail so the split is visible rather than implied: the claim left
+  // the deliveries surface entirely, and it is intact on the pane that owns it.
+  assert.doesNotMatch(paneOf(html), /Foreman proved the queue complete/);
+  const completion = paneOf(render(detail, { pane: "completion" }));
+  assert.match(completion, /Foreman completion claims/);
+  assert.match(completion, /Foreman proved the queue complete/);
+  assert.match(completion, /once-only guard/);
+  // The chip, the counting sentence and the state's own sentence all say the SAME words,
+  // because all three read them from `completionClaimOutcome`.
+  assert.match(completion, /<span class="workflow-chip workflow-passed">opened the next round<\/span>/);
+  assert.match(completion, /1 claim on this run: 1 opened the next round\./);
+  assert.match(
+    completion,
+    /opened the next round: This claim opened the next repair round against freshly captured evidence\./,
+  );
 });
 
 test("an orphaned binding refuses the send-side recoveries instead of failing at the daemon", () => {
@@ -1205,7 +1960,7 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
     status: "completed" as const,
     completedAt: 8,
   };
-  const html = render({
+  const gated = {
     ...base,
     summary: {
       ...base.summary,
@@ -1287,18 +2042,40 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
         updatedAt: 9,
       }],
     },
-  } as WorkflowRunDetail);
-  assert.match(html, /GitHub Inspector final gate/);
-  assert.match(html, /GitHub Inspector left findings that have to be resolved/);
-  assert.match(html, /#91/);
-  assert.match(html, /legacy import/);
-  assert.match(html, /Target head/);
-  assert.match(html, /Observed head/);
-  assert.match(html, /Reviewed head/);
-  assert.match(html, /inspector only/);
-  assert.match(html, /offer prepare pr/);
-  assert.match(html, /Preserve provenance/);
-  assert.match(html, /Legacy finding: detail was not persisted/);
+  } as WorkflowRunDetail;
+  // The gate is a PANE now, so the tab is named rather than relied on: this run's Completion
+  // pane blocks on an open finding, which is exactly the initial selection the container makes,
+  // but a test that depends on that is testing the selector rather than the gate.
+  const html = render(gated, { pane: "completion" });
+  const pane = paneOf(html);
+  // The gate's own heading is gone with the section; the tab carries the name, and it carries
+  // the one open finding as an amber badge without anybody opening it.
+  assert.match(
+    html,
+    /id="run-record-tab-completion"[^>]*>Completion<span class="workflow-tab-badge">1<\/span>/,
+  );
+  assert.doesNotMatch(html, /<h4>GitHub Inspector final gate<\/h4>/);
+  assert.match(pane, /GitHub Inspector left findings that have to be resolved/);
+  assert.match(pane, /#91/);
+  assert.match(pane, /legacy import/);
+  assert.match(pane, /Target head/);
+  assert.match(pane, /Observed head/);
+  assert.match(pane, /Reviewed head/);
+  assert.match(pane, /inspector only/);
+  assert.match(pane, /offer prepare pr/);
+  // The findings TABLE: one row carrying severity, title, path:line, round and status, in
+  // place of the card that carried the same five facts over 200px.
+  assert.match(pane, /<th>Severity<\/th><th>Finding<\/th><th>Where<\/th><th>Round<\/th><th>Status<\/th>/);
+  assert.match(pane, /wf-run-finding-row is-major/);
+  assert.match(pane, /<span class="workflow-chip workflow-failed">major<\/span>/);
+  assert.match(pane, /<td>Preserve provenance<\/td>/);
+  assert.match(pane, /<code>src\/gate\.ts:42<\/code>/);
+  assert.match(pane, /<span class="workflow-chip workflow-failed">open<\/span>/);
+  // The LEGACY arm, and it is not behind the row's disclosure: an unresolved finding is why
+  // the gate has not passed, so its body sits open exactly as a refused packet's does.
+  assert.match(pane, /Legacy finding: detail was not persisted/);
+  assert.match(pane, /wf-run-ledger-alert/);
+  assert.match(pane, /Show finding/);
   assert.match(html, /Persona review bypassed for GitHub Inspector repair/);
   assert.match(html, /moved from oldhead01234 to newhead01234/);
   // The gate's recheck IS this run's next move, so it is the header's primary and wears the
@@ -1317,10 +2094,17 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
    * than on two empty panes. "This Inspector repair round ran no Personas" is scoped to
    * `Passed`, where it is true; it was never true of the agenda, which is exactly why it may
    * not describe the whole section.
+   *
+   * Read from ITS OWN pane, because a finding is not a worklist row and never was:
+   * `runChangeWorklist` is built from Persona verdicts only, so the two lists answer different
+   * questions and only one of them is drawn at a time.
    */
-  assert.match(html, /Blocking 0/);
-  assert.match(html, /Archive 1/);
-  assert.match(html, /Resolved in round 2/);
+  const worklist = paneOf(render(gated, { pane: "worklist" }));
+  assert.match(worklist, /Blocking 0/);
+  assert.match(worklist, /Archive 1/);
+  assert.match(worklist, /Resolved in round 2/);
+  // And the finding stayed out of it, which is the whole reason the Completion pane exists.
+  assert.doesNotMatch(worklist, /Preserve provenance/);
   // A stage this round did not run reads NEUTRAL, never green: the chip speaks for the round
   // on screen, where nothing executed. The pass it is carrying is claimed by the provenance
   // line instead, which names the round that earned it and links straight to the proof.
@@ -1329,6 +2113,243 @@ test("the Inspector gate keeps its state, findings, actions, and bypass audit", 
   assert.ok(tooltipLabels(html).includes(carriedStatus("Round 2").tooltip!));
   assert.match(html, /Passed in Round 2\. Show that round\./);
   assertNoGraphIds(html);
+});
+
+/**
+ * What the page IS, after three phases of consolidation, in order.
+ *
+ * This is the one claim no other test makes and the one a reader actually experiences: below
+ * the round scrubber the run detail page is the scrubber, the notice band, the session actions
+ * section, the tab container, the workflow-owned model calls and the Timeline - and nothing
+ * else. Seven stacked sections became one bar with five panes, so the failure this guards
+ * against is a later change quietly reintroducing a sibling section instead of extending the
+ * registry.
+ *
+ * Asserted as INDICES rather than as a list of strings that all happen to be present: "the
+ * Timeline is somewhere in the markup" was already true when the gate sat between it and the
+ * tabs, and it is precisely the between-ness that changed.
+ */
+test("below the round scrubber the page is the scrubber, the bands, the tabs, the calls and the Timeline", () => {
+  const base = runningDetail();
+  const action = attempt(
+    "session-action",
+    base.submissions[1]!.id,
+    NODE.quality,
+    snapshot("p-action", "Pull Request"),
+    {
+      persona: null,
+      sessionAction: {
+        sourceSessionActionId: "action-1",
+        sourceRevision: 1,
+        name: "Pull Request",
+        description: "",
+        promptMarkdown: "# Pull Request\n\nOpen one.\n",
+        requiredSkillId: "pull-request",
+        completion: { kind: "pull_request" },
+      },
+    },
+  );
+  const html = render({
+    ...base,
+    attempts: [...base.attempts, action],
+    events: [...base.events, {
+      id: 11,
+      runId: "run",
+      timestamp: 11,
+      kind: "workflow_completion_claimed",
+      payload: {
+        completionKind: "prompted",
+        marker: "abcdef0123456789",
+        summary: "Foreman claimed this run finished.",
+        state: "started",
+      },
+    }],
+  } as WorkflowRunDetail);
+
+  const at = (needle: string): number => {
+    const index = html.indexOf(needle);
+    assert.notEqual(index, -1, `the run view rendered nothing matching ${needle}`);
+    return index;
+  };
+  const order = [
+    at('<section class="wf-run-rounds" aria-label="Rounds">'),
+    at("<h4>Session actions</h4>"),
+    at('class="wf-run-section wf-run-record"'),
+    at("<h4>Workflow-owned model calls</h4>"),
+    at("<h4>Timeline</h4>"),
+  ];
+  assert.deepEqual(
+    [...order].sort((left, right) => left - right),
+    order,
+    "the sections below the round scrubber are out of order",
+  );
+
+  /*
+   * And the two sections this phase folded in are GONE rather than duplicated. Both records
+   * are still on the page - the run has a completion claim, and the tab bar offers Completion
+   * for it - but neither has a section of its own any more.
+   */
+  assert.doesNotMatch(html, /<h4>GitHub Inspector final gate<\/h4>/);
+  assert.doesNotMatch(html, /<h4>Foreman completion claim<\/h4>/);
+  assert.match(html, /id="run-record-tab-completion"[^>]*>Completion</);
+  /*
+   * NOTHING between the tab container and the model calls, which is what "the page below the
+   * scrubber is exactly these" means.
+   *
+   * The container's close is found by BALANCING its own tag rather than by searching backwards
+   * from the model calls. A backwards search lands on the nearest `</section>`, which on the
+   * regression this guards against - a new sibling section inserted between the two - is that
+   * new section's own closing tag. The span then shrinks to the very thing it was supposed to
+   * catch, and the assertion passes. Balancing also survives the panes, which nest sections of
+   * their own: the Evidence pane carries an Evidence recovery section, ledger regions are
+   * sections, and the worklist pane is one.
+   */
+  const tabs = at('<section class="wf-run-section wf-run-record">');
+  const calls = at("<h4>Workflow-owned model calls</h4>");
+  const callsSection = html.lastIndexOf("<section", calls);
+  const tabsEnd = endOfElement(html, tabs, "section");
+  assert.ok(tabs < callsSection, "the model calls section does not follow the run record");
+  assert.equal(
+    html.slice(tabsEnd, callsSection).trim(),
+    "",
+    "a sibling was inserted between the run record and the model calls",
+  );
+});
+
+/**
+ * The gate BEFORE anything has been adopted, which is most of a gated run's life.
+ *
+ * Every field in this ledger is a `??` away from a sentence saying the fact is not known yet,
+ * and until now not one of those arms had a test: the fixtures all carried a fully adopted pull
+ * request, so the pane was only ever asserted in its best case. A gate is entered before a pull
+ * request exists, and what it prints then is the thing an operator reads while they wait.
+ */
+test("a gate with nothing adopted names every fact it does not have yet", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "waiting_for_pr", gate: "waiting_pr", gatePrNumber: null },
+    run: { ...base.run, status: "waiting_for_pr", currentPhase: "waiting_for_pr" },
+    inspectorGate: {
+      state: {
+        prKey: null,
+        prUrl: null,
+        targetHeadSha: null,
+        failedHeadSha: null,
+        enteredAt: 5,
+        lastObservedAt: null,
+        observedHeadSha: null,
+        reviewPosture: null,
+        waitReason: "missing_pr",
+        findingFingerprints: [],
+      },
+      inspector: { enabled: false, mode: "live", posture: null },
+      inspection: null,
+      findings: [],
+    },
+  } as WorkflowRunDetail, { pane: "completion" });
+  const pane = paneOf(html);
+
+  // The strip says what it does not know rather than printing a zero that reads as a fact.
+  assert.match(pane, /<span class="wf-run-stat-key">Pull request<\/span><strong class="wf-run-stat-value">not resolved<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Inspector round<\/span><strong class="wf-run-stat-value">not adopted<\/strong>/);
+  // Waiting is neither ok nor alert: the gate has not failed, it has not been reached.
+  assert.match(pane, /<span class="wf-run-stat-key">Gate<\/span><strong class="wf-run-stat-value">Waiting for a PR<\/strong>/);
+  assert.doesNotMatch(pane, /wf-run-stat-value is-alert/);
+
+  // And the ledger, field by field. `<dt>` and `<dd>` together, so a fallback landing under the
+  // wrong label would fail rather than pass on the word being somewhere on the page.
+  assertLedgerFacts(pane, [
+    ["Pull request", "not resolved"],
+    ["Adopted provenance", "not adopted"],
+    ["GitHub Inspector", "disabled · unknown posture"],
+    ["Review round", "0"],
+    ["Target head", "<code>not pinned</code>"],
+    ["Observed head", "<code>not observed</code>"],
+    ["Reviewed head", "<code>not reviewed</code>"],
+    ["Observed", "waiting for post-entry observation"],
+    ["Backoff", "none"],
+  ]);
+  // No adopted pull request means no link to one, and no findings means the empty sentence
+  // rather than a table with no rows in it.
+  assert.doesNotMatch(pane, /<a href[^>]*>#/);
+  // "No findings" without claiming a pull request that does not exist: the strip on the same
+  // pane prints "not resolved", and the two may not contradict each other.
+  assert.match(pane, /No pull request is adopted yet, so no findings are recorded\./);
+  assert.doesNotMatch(pane, /for this adopted pull request/);
+  assert.doesNotMatch(pane, /wf-run-finding-row/);
+  // A version with no Inspector completion policy still states the policy, as its defaults.
+  assert.match(pane, /Findings policy: <strong>none<\/strong> · Missing PR: <strong>wait<\/strong>/);
+});
+
+/** A gate that PASSED reads green, which is the one arm the failing fixtures cannot reach. */
+test("a clean gate reads green in the strip and carries the observed pull request state", () => {
+  const base = runningDetail();
+  const html = render({
+    ...base,
+    summary: { ...base.summary, status: "completed", gate: "clean", gatePrNumber: 91 },
+    run: { ...base.run, status: "completed", currentPhase: "completed" },
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: "https://github.com/owner/repo/pull/91",
+        targetHeadSha: "cleanhead0123456789",
+        failedHeadSha: null,
+        enteredAt: 5,
+        lastObservedAt: 6,
+        observedHeadSha: "cleanhead0123456789",
+        reviewPosture: "live",
+        waitReason: null,
+        findingFingerprints: [],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: {
+        key: "owner/repo#91",
+        number: 91,
+        source: "pipeline",
+        state: "open",
+        observedState: "MERGED",
+        observedHeadSha: "cleanhead0123456789",
+        headSha: "cleanhead0123456789",
+        reviewPosture: "live",
+        round: 2,
+        lastError: null,
+        nextAttemptAt: null,
+        openFindings: 0,
+        resolvedFindings: 0,
+      } as never,
+      findings: [{
+        id: "resolved-only",
+        prKey: "owner/repo#91",
+        fingerprint: "resolved-only",
+        path: null,
+        line: null,
+        title: "Everything here was answered",
+        body: "Resolved before the gate passed.",
+        severity: "nit",
+        round: 1,
+        status: "resolved",
+        replies: 0,
+        answeredCommentId: null,
+        createdAt: 5,
+        updatedAt: 6,
+      }],
+    },
+  } as WorkflowRunDetail, { pane: "completion" });
+  const pane = paneOf(html);
+
+  assert.match(pane, /<span class="wf-run-stat-key">Gate<\/span><strong class="wf-run-stat-value is-ok">Clean<\/strong>/);
+  // The pull request carries the state the Inspector OBSERVED, lowercased beside its number.
+  assert.match(pane, /<span class="wf-run-stat-key">Pull request<\/span><strong class="wf-run-stat-value">#91 merged<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Inspector round<\/span><strong class="wf-run-stat-value">2<\/strong>/);
+  assert.match(pane, /<dt>Adopted provenance<\/dt><dd>pipeline/);
+  // A finding with no path is "general" rather than an empty cell, and nothing is blocking, so
+  // its body stays behind the row's own control.
+  assert.match(pane, /<code>general<\/code>/);
+  assert.doesNotMatch(pane, /wf-run-ledger-alert/);
+  assert.doesNotMatch(pane, /Resolved before the gate passed\./);
+  // Nothing stops this run, so the tab carries no badge at all.
+  assert.doesNotMatch(html, /id="run-record-tab-completion"[^>]*>Completion<span class="workflow-tab-badge"/);
 });
 
 test("a spent gate separates its historical observation from a clean current Inspector ledger", () => {
@@ -1341,7 +2362,7 @@ test("a spent gate separates its historical observation from a clean current Ins
     status: "completed",
     completedAt: 8,
   });
-  const html = render({
+  const spent = {
     ...base,
     summary: {
       ...base.summary,
@@ -1416,20 +2437,133 @@ test("a spent gate separates its historical observation from a clean current Ins
         updatedAt: 9,
       }],
     },
-  } as WorkflowRunDetail);
+  } as WorkflowRunDetail;
+  const html = render(spent, { pane: "completion" });
+  const pane = paneOf(html);
 
-  assert.match(html, /Last workflow observation/);
-  assert.match(html, /Current Inspector/);
-  assert.match(html, /Failed head/);
-  assert.match(html, /failedhead01/);
-  assert.match(html, /cleanhead012/);
-  assert.match(html, /Historical workflow finding/);
-  assert.match(html, /Historical findings<\/dt><dd>1/);
-  assert.match(html, /Open findings<\/dt><dd>0/);
-  assert.match(html, /Resolved findings<\/dt><dd>1/);
-  assert.match(html, /Clean head ready/);
+  // Both ledgers survive the consolidation INSIDE ONE DISCLOSURE, under the accessible names
+  // the specs already reach them by. A `<details>` renders its body either way, so a markup
+  // test sees the sixteen facts whether or not a person has opened it - which is exactly the
+  // claim worth pinning here: the disclosure moved them, it did not drop them.
+  assert.match(pane, /<details class="wf-run-disclosure">/);
+  assert.match(pane, /last workflow observation and current Inspector, 16 facts/);
+  assert.match(pane, /aria-label="Last workflow observation"/);
+  assert.match(pane, /aria-label="Current Inspector"/);
+  assert.match(pane, /Last workflow observation/);
+  assert.match(pane, /Current Inspector/);
+  assert.match(pane, /Failed head/);
+  assert.match(pane, /failedhead01/);
+  assert.match(pane, /cleanhead012/);
+  assert.match(pane, /aria-label="Historical finding fingerprints"/);
+  assert.match(pane, /Historical workflow finding/);
+  assert.match(pane, /Historical findings<\/dt><dd>1/);
+  assert.match(pane, /Open findings<\/dt><dd>0/);
+  assert.match(pane, /Resolved findings<\/dt><dd>1/);
+  // The strip states the SAME numbers the table under it draws, counted from the rows rather
+  // than from the Inspector's own tallies - a strip that disagreed with its table is the one
+  // lie a collapsed summary exists to prevent. The Inspector's tallies keep their own two
+  // fields in the ledger above.
+  assert.match(pane, /<span class="wf-run-stat-key">Open findings<\/span><strong class="wf-run-stat-value">0<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Resolved<\/span><strong class="wf-run-stat-value is-ok">1<\/strong>/);
+  assert.match(pane, /<span class="wf-run-stat-key">Inspector round<\/span><strong class="wf-run-stat-value">5<\/strong>/);
+  assert.match(pane, /#91 open/);
+  // A resolved finding's body IS behind its disclosure: nothing about it stops the run.
+  assert.doesNotMatch(pane, /This was the finding that stopped the workflow/);
+  assert.doesNotMatch(pane, /wf-run-ledger-alert/);
+  assert.match(pane, /Clean head ready/);
   assert.match(headerOf(html), /class="btn btn-primary"[^>]*>Adopt clean Inspector head</);
   assert.doesNotMatch(html, /Recheck GitHub Inspector/);
+});
+
+/**
+ * The spent gate's OTHER half: a workflow that stopped and a current ledger that cannot answer.
+ *
+ * `spentInspectorGateCondition` fails closed on missing or contradictory evidence, and the
+ * two-ledger shape is what it fails closed INTO - so the historical card is drawn beside a
+ * current card whose every field is unknown. That is the case an operator sees when the
+ * Inspector never adopted the pull request the workflow stopped on, and every sentence in it
+ * was previously untested: the fixtures all carried a complete inspection.
+ *
+ * The historical fingerprint here deliberately names no row in the current ledger, which is the
+ * one thing that list exists to survive: a finding the workflow stopped on can be gone from the
+ * Inspector's own records, and the ledger says so instead of rendering an empty line.
+ */
+test("a spent gate with no current inspection says so in every field rather than going blank", () => {
+  const base = runningDetail();
+  const inspectorOnly = submission("submission-unavailable", 4, {
+    mode: "inspector_only",
+    prHeadSha: "failedhead0123456789",
+    status: "completed",
+    completedAt: 8,
+  });
+  const html = render({
+    ...base,
+    summary: {
+      ...base.summary,
+      status: "blocked",
+      round: 4,
+      maxRepairRounds: 3,
+      gate: "blocked",
+      gatePrNumber: null,
+    },
+    run: { ...base.run, status: "blocked", currentPhase: "round_limit", maxRepairRounds: 3 },
+    submissions: [...base.submissions, inspectorOnly],
+    inspectorGate: {
+      state: {
+        prKey: "owner/repo#91",
+        prUrl: null,
+        targetHeadSha: "failedhead0123456789",
+        failedHeadSha: null,
+        enteredAt: 7,
+        lastObservedAt: null,
+        observedHeadSha: null,
+        reviewPosture: "live",
+        waitReason: "review_pending",
+        findingFingerprints: ["fingerprint-the-inspector-forgot"],
+      },
+      inspector: { enabled: true, mode: "live", posture: "live" },
+      inspection: null,
+      findings: [],
+    },
+  } as WorkflowRunDetail, { pane: "completion" });
+  const pane = paneOf(html);
+
+  // Both cards are drawn, because the reconciliation failed closed rather than being absent.
+  assert.match(pane, /aria-label="Last workflow observation"/);
+  assert.match(pane, /aria-label="Current Inspector"/);
+  assert.match(pane, /last workflow observation and current Inspector, 16 facts/);
+  assert.match(pane, /Current Inspector evidence is unavailable for this stopped workflow\./);
+
+  // The historical card: no link without a url, the TARGET head standing in for a failed head
+  // that was never pinned, and no observation yet.
+  assert.match(pane, /<dt>Pull request<\/dt><dd>not resolved/);
+  assert.doesNotMatch(pane, /<a href[^>]*>#/);
+  assert.match(pane, /<dt>Failed head<\/dt><dd><code>failedhead01<\/code>/);
+  assert.match(pane, /<dt>Observed head<\/dt><dd><code>not observed<\/code>/);
+  assert.match(pane, /<dt>Observed<\/dt><dd>waiting for post-entry observation/);
+  // The fingerprint the workflow stopped on is no longer a row the Inspector holds, and the
+  // ledger keeps the fingerprint and says what happened to it.
+  assert.match(pane, /aria-label="Historical finding fingerprints"/);
+  assert.match(pane, /Finding not present in current ledger/);
+  assert.match(pane, /fingerprint-the-inspector-forgot/);
+
+  // The current card: every field unknown, and each one says which kind of unknown it is.
+  assertLedgerFacts(pane, [
+    ["Adopted provenance", "not adopted"],
+    ["Review posture", "not reviewed"],
+    ["Review round", "0"],
+    ["Observed head", "<code>not observed</code>"],
+    ["Reviewed head", "<code>not reviewed</code>"],
+    ["Pull request state", "not observed"],
+    ["Open findings", "unknown"],
+    ["Resolved findings", "unknown"],
+    ["Backoff", "none"],
+  ]);
+  // The strip counts the ROWS, and there are none - not the tallies, which are unknown here.
+  assert.match(pane, /<span class="wf-run-stat-key">Open findings<\/span><strong class="wf-run-stat-value">0<\/strong>/);
+  // Nothing was adopted here either, so the empty sentence says that rather than inventing a
+  // pull request for the reader to go looking for.
+  assert.match(pane, /No pull request is adopted yet, so no findings are recorded\./);
 });
 
 test("scrubbing to an earlier round never withdraws a live recovery action", () => {
@@ -2962,6 +4096,9 @@ test("the run record offers its panes with the counts and the badge on their lab
     html,
     /id="run-record-tab-deliveries" aria-selected="false"[^>]*>Deliveries<span class="wf-run-tab-count">2<\/span>/,
   );
+  // The Evidence pane's count is its frozen author claims, and this fixture froze none - so the
+  // label carries no count rather than reading "Evidence 0" over a pane that has plenty to say.
+  assert.match(html, /id="run-record-tab-evidence" aria-selected="false"[^>]*>Evidence<\/button>/);
   // One captured decision on the fixture's snapshot.
   assert.match(
     html,
@@ -2973,13 +4110,13 @@ test("the run record offers its panes with the counts and the badge on their lab
     html,
     /<div class="wf-run-pane" role="tabpanel" id="run-record-pane-worklist" aria-labelledby="run-record-tab-worklist">/,
   );
-  assert.equal((html.match(/role="tab" /g) ?? []).length, 3);
+  assert.equal((html.match(/role="tab" /g) ?? []).length, 4);
   assert.equal((html.match(/role="tabpanel"/g) ?? []).length, 1);
   // A roving tabindex: one stop for the whole bar, so Tab reaches the tabs once and the arrows
   // move within them. Scoped to the bar, because the panel below has its own focusables.
   const bar = html.slice(html.indexOf('aria-label="Run record"'), html.indexOf("wf-run-pane"));
   assert.equal((bar.match(/tabindex="0"/g) ?? []).length, 1);
-  assert.equal((bar.match(/tabindex="-1"/g) ?? []).length, 2);
+  assert.equal((bar.match(/tabindex="-1"/g) ?? []).length, 3);
   // ONE pane's content exists at a time. That is where the 5,100px went: the deliveries and the
   // captured intent are a click away rather than eight screens down.
   assert.doesNotMatch(html, /RAW GOAL/);
@@ -2994,8 +4131,9 @@ test("a run that sent nothing is offered no Deliveries tab at all", () => {
   // answering a question nobody asked, and Phase 3's Completion pane depends on this rule.
   const html = render(runningDetail());
   assert.doesNotMatch(html, /run-record-tab-deliveries/);
-  assert.equal((html.match(/role="tab" /g) ?? []).length, 2);
+  assert.equal((html.match(/role="tab" /g) ?? []).length, 3);
   assert.match(html, /run-record-tab-worklist/);
+  assert.match(html, /run-record-tab-evidence/);
   assert.match(html, /run-record-tab-intent/);
 });
 
@@ -3202,4 +4340,89 @@ test("run detail labels unresolved intent provenance explicitly", () => {
   const html = render(updated, { pane: "intent" });
   const provenance = html.match(/<p class="wf-run-meta">(Objective version[^<]*)<\/p>/)?.[1];
   assert.equal(provenance, "Objective version 2 · prompt revision 4 · resolved revision 3 · unresolved");
+});
+
+/**
+ * The goal-provenance badge, which draws exactly when there is something to say.
+ *
+ * The markup shape is pinned here because the accessible name is the whole reason, and the
+ * chip's own text is only the one-word verdict - a browser assertion on the visible label
+ * would pass with the reason silently missing. `e2e/specs/workflow-run-intent-provenance.spec.ts`
+ * is what proves a real freeze reaches this at all.
+ */
+test("a suspicious frozen ask is badged, and a healthy one draws nothing", () => {
+  const base = runningDetail();
+  const badged = {
+    ...base,
+    run: {
+      ...base.run,
+      intentProvenance: {
+        verdict: "automation" as const,
+        signals: ["automation" as const],
+        reason: "The frozen ask matches a workflow repair packet, which Mission Control types"
+          + " itself.",
+        classifiedAt: 10,
+      },
+    },
+  } as WorkflowRunDetail;
+  const html = render(badged, { pane: "intent" });
+  assert.match(html, /Ask looks machine-authored/);
+  assert.match(
+    html,
+    /role="note" aria-label="The frozen ask matches a workflow repair packet, which Mission Control types itself\."/,
+  );
+
+  // Healthy, and measured: the run says `objective` and the pane still draws no chip, because
+  // a badge on every run is a badge nobody reads.
+  const healthy = {
+    ...base,
+    run: {
+      ...base.run,
+      intentProvenance: {
+        verdict: "objective" as const,
+        signals: [],
+        reason: "The frozen ask is the session's durable objective and tripped no provenance check.",
+        classifiedAt: 10,
+      },
+    },
+  } as WorkflowRunDetail;
+  assert.doesNotMatch(render(healthy, { pane: "intent" }), /role="note"/);
+  // And a run created before there was anything to measure it with says nothing either.
+  assert.doesNotMatch(render(base, { pane: "intent" }), /role="note"/);
+});
+
+/**
+ * The third verdict, wired end to end rather than hand-written.
+ *
+ * The provenance here is what the REAL classifier returns for a real short ask, not a literal
+ * a test author chose - which is the only way this pins the thing it claims to. A label map
+ * that drifted from the verdict it is keyed on, or a reason the pane dropped on the floor,
+ * would both pass against a fixture written to match the pane.
+ *
+ * `implausible` is the one verdict with no browser case: `automation`, `objective` and
+ * `unreconciled` are all reachable by driving a real session, while getting a sub-24-character
+ * ask frozen as a session's durable objective means dispatching a task whose whole stated
+ * intent is "create pr". That is worth asserting and not worth a dispatch, so it is asserted
+ * at the layer that can see the markup exactly.
+ */
+test("a frozen ask too short to be a contract is badged with the classifier's own reason", () => {
+  const base = runningDetail();
+  const provenance = classifyWorkflowGoalProvenance({
+    rawGoal: "create pr",
+    intentSource: null,
+    now: 10,
+  });
+  // The classifier's own answer, restated so a change to either side of the wiring is visible
+  // here rather than only in the markup below.
+  assert.equal(provenance.verdict, "implausible");
+  assert.match(provenance.reason, /9 characters long, under the 24/);
+
+  const html = render(
+    { ...base, run: { ...base.run, intentProvenance: provenance } } as WorkflowRunDetail,
+    { pane: "intent" },
+  );
+  assert.match(html, /Ask looks too short to review against/);
+  // The reason travels as the accessible name, which is the whole point of the split: the chip
+  // shows one phrase and a screen reader gets the sentence explaining it.
+  assert.match(html, new RegExp(`role="note" aria-label="${provenance.reason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
 });

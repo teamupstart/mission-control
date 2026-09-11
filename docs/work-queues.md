@@ -256,7 +256,19 @@ popover's **Pull requests** section has two independent, default-on controls:
   GitHub Inspector comments already posted on its PR.
 - **Keep sessions on track with CI** nudges the parked session to fix failing checks. It
   never creates a PR; an existing open PR is a required input, and every fix stays on that
-  PR's branch.
+  PR's branch. It also adds CI follow-through instructions when a workflow prepares a Pull
+  Request action: wait for checks, make scoped repairs with focused tests, push to the same
+  branch, and verify CI for the new head before ending the turn.
+
+Workflow PR instructions read the CI preference at packet preparation, independently of the
+review-comment preference and the Foreman worker's mode or enabled state. The workflow's own
+delivery authorization still controls whether the packet may be sent. Prepared and delivered
+packets keep their exact instructions across setting changes and retries; the next newly
+prepared action uses the new setting. Other action completion kinds receive no CI policy.
+
+This instruction does not replace the workflow's reviewed-content check. A CI repair or rebase
+that changes the published tree can still block the PR action pending a fresh review. It does
+not grant merge authority or move Inspector review ownership into the CI turn.
 
 Each control can be disabled without disabling the other. A later GitHub Inspector round or a new
 CI failure episode re-arms only the corresponding follow-through.

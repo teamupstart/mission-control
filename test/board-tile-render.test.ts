@@ -7,7 +7,8 @@ import type { SessionViewProps } from "../src/web/components/layouts/types.ts";
 import type { Session } from "../src/shared/types.ts";
 import { pipelineRunKeyOf, type PipelineRun } from "../src/shared/pipeline.ts";
 import type { WorkflowRunSummary } from "../src/shared/workflow.ts";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { RuntimeMetaRow } from "../src/web/components/session-bits.tsx";
 import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 
 // The board tile is meant to be triaged WITHOUT opening it, so what's worth testing is the
@@ -182,6 +183,18 @@ test("the runtime row carries the context percentage, not just a bare meter", ()
   assert.match(html, /card-runtime/);
   assert.match(html, /Opus 4\.8/);
   assert.match(html, /62%/);
+});
+
+for (const nativeEffort of ["minimal", "off"]) test(`Pi's native ${nativeEffort} effort remains a reading on the tile and standalone runtime row`, () => {
+  const reading = meta({ thinkingLevel: null, nativeEffort, thinkingEnabled: nativeEffort !== "off" });
+  const tile = render(mkSession({ agent: "pi", meta: reading }));
+  assert.match(tile, new RegExp(`<span[^>]*aria-label="Reasoning effort: ${nativeEffort}"[^>]*>${nativeEffort}</span>`));
+  assert.doesNotMatch(tile, /<button[^>]*aria-label="Reasoning effort:/);
+  const standalone = renderToStaticMarkup(createElement(RuntimeMetaRow, { meta: reading }));
+  assert.match(standalone, new RegExp(`rt-think-${nativeEffort}`));
+  assert.doesNotMatch(standalone, /rt-think-null/);
+  assert.match(standalone, new RegExp(`>${nativeEffort}</span>`));
+  assert.doesNotMatch(standalone, /<button/);
 });
 
 test("a session with no meta simply omits the runtime row", () => {

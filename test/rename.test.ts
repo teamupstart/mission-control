@@ -10,10 +10,11 @@ import {
   fakeEmulator,
   fakeMultiplexer,
   fakeTerminals,
+  muxPane,
 } from "./helpers/terminal-fakes.ts";
 import type { TerminalDeps } from "../src/server/terminal/registry.ts";
-import type { EmulatorPane, MuxClient, TerminalResult } from "../src/server/terminal/types.ts";
-import { emulatorHandle, muxHandle, terminalResourceId } from "../src/shared/pane.ts";
+import type { EmulatorPane, MuxClient, MuxPane, TerminalResult } from "../src/server/terminal/types.ts";
+import { canRename, emulatorHandle, muxHandle, terminalResourceId } from "../src/shared/pane.ts";
 import type { Session, SessionState, Task } from "../src/shared/types.ts";
 
 // Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
@@ -24,6 +25,9 @@ const { rename, validateSessionName, validateSessionNameAgainstTasks } = await i
   "../src/server/actions.ts"
 );
 const { Registry } = await import("../src/server/registry.ts");
+const { correlate } = await import("../src/server/discovery/correlate.ts");
+const { homeNameRules, launchHome } = await import("../src/server/terminal/home.ts");
+const { MULTIPLEXERS } = await import("../src/server/terminal/registry.ts");
 const { openScoutPromptContext, scoutPromptContext } = await import(
   "../src/server/scouts/prompt-context.ts"
 );
@@ -416,6 +420,14 @@ test("rename: an emulator that can't retitle refuses by name instead of silently
   assert.match(r.error ?? "", /WezTerm/);
 });
 
+test("Rename validation reads adapter capabilities instead of trusting the wire projection", () => {
+  const { deps } = spyDeps({ retitle: false });
+  assert.equal(validateSessionName(mkSession({ ...onEmu, renameable: true }), "new name", deps).ok, false);
+  assert.equal(validateSessionName(onBoth, "new name", deps).ok, true, "the inner multiplexer owns Rename");
+  deps.multiplexers.tmux = fakeMultiplexer();
+  assert.equal(validateSessionName(onBoth, "new name", deps).ok, false);
+});
+
 test("rename: a handle-less session is an error, not a crash", async () => {
   const { deps, muxCalls, retitled } = spyDeps();
   const r = await rename(mkSession(), "renamed", deps);
@@ -590,6 +602,103 @@ const mkTask = (over: Partial<Task> = {}): Task =>
 
 function taskOf(r: InstanceType<typeof Registry>, id = "t1"): Task | undefined {
   return r.snapshot().tasks.find((t) => t.id === id);
+}
+
+for (const backend of ["ghostty", "wezterm", "iterm"] as const) {
+  test(`${backend}: dispatched names survive title rewrites and registry restart`, () => {
+    const id = `launched-${backend}`;
+    const tab = mkEmuHandle({ backend, paneId: id, tabTitle: "shell title" });
+    const observed = disco({ syntheticId: id, name: tab.tabTitle, nameSource: backend, terminals: [tab] });
+    const r = new Registry();
+    r.applyDiscovery([observed]);
+    assert.equal(r.getSession(id)?.name, "shell title");
+    assert.equal(canRename(r.getSession(id)!), backend !== "ghostty");
+    const task = mkTask({ id, sessionId: id, homeName: "Fix the parser", homeBackend: backend,
+      terminalResourceId: terminalResourceId(tab) });
+    r.upsertTask(task);
+    assert.equal(r.getSession(id)?.name, "Fix the parser", "binding publishes the launch name immediately");
+    const rewritten = { ...observed, name: "agent title", terminals: [{ ...tab, tabTitle: "agent title" }] };
+    r.applyDiscovery([rewritten]);
+    assert.equal(r.getSession(id)?.name, "Fix the parser");
+    assert.equal(emulatorHandle(r.getSession(id)!)?.tabTitle, "agent title", "the observed handle stays truthful");
+    const restarted = new Registry();
+    restarted.applyDiscovery([rewritten]);
+    assert.equal(restarted.getSession(id)?.name, "Fix the parser");
+    if (backend !== "ghostty") {
+      restarted.renameSession(id, "Operator's label");
+      restarted.applyDiscovery([rewritten]);
+      assert.equal(restarted.getSession(id)?.name, "Operator's label");
+      const afterRenameRestart = new Registry();
+      afterRenameRestart.applyDiscovery([rewritten]);
+      assert.equal(afterRenameRestart.getSession(id)?.name, "Operator's label");
+    }
+    restarted.upsertTask({ ...task, sessionId: null });
+    assert.equal(restarted.getSession(id)?.name, "agent title", "unbinding restores terminal naming");
+  });
+}
+
+test("an assigned or resource-mismatched Ghostty session keeps its discovered name", () => {
+  const id = "discovered-ghostty";
+  const tab = mkEmuHandle({ backend: "ghostty", paneId: id, tabTitle: "Personal shell" });
+  const r = new Registry();
+  r.applyDiscovery([disco({ syntheticId: id, name: tab.tabTitle, nameSource: "ghostty", terminals: [tab] })]);
+  const task = mkTask({ id, sessionId: id, homeName: null, terminalResourceId: null });
+  r.upsertTask(task);
+  assert.equal(r.getSession(id)?.name, tab.tabTitle);
+  r.upsertTask({ ...task, homeName: "Another launch", terminalResourceId: "ghostty:other" });
+  assert.equal(r.getSession(id)?.name, tab.tabTitle);
+});
+
+test("a Ghostty-hosted multiplexer retains Rename and its own session name", () => {
+  const r = new Registry();
+  const tab = mkEmuHandle({ backend: "ghostty", tabTitle: "shell title" });
+  r.applyDiscovery([disco({ terminals: [PANE, tab] })]);
+  assert.equal(canRename(r.getSession("s1")!), true);
+  r.upsertTask(mkTask({ homeName: "Dispatch label", terminalResourceId: terminalResourceId(PANE) }));
+  assert.equal(r.getSession("s1")?.name, "work");
+});
+
+for (const backend of ["tmux", "herdr", "cmux"] as const) {
+  test(`${backend}: dispatched task names pass through home launch, discovery and Registry unchanged`, async () => {
+    const task = mkTask({ id: `dispatch-name-${backend}`, title: "Fix the Parser", homeBackend: backend });
+    const panes: MuxPane[] = [];
+    const terminal = fakeMultiplexer({ id: backend, list: async () => panes, sessions: {
+      names: MULTIPLEXERS[backend].sessions!.names,
+      attachArgv: null, rename: async () => OK, kill: null,
+      spawnDetached: async (spec) => {
+        assert.equal(spec.name, task.title);
+        panes.push(muxPane({
+          session: backend === "tmux" ? spec.name : `${backend}-workspace-id`,
+          sessionName: spec.name, cwd: spec.cwd,
+        }));
+        return OK;
+      },
+    } });
+    const deps = { ...fakeTerminals(fakeMultiplexer(), fakeEmulator()), installed: () => true };
+    deps.multiplexers[backend] = terminal;
+    const name = homeNameRules(deps, backend).sanitize(task.title);
+    const launched = await launchHome({
+      name, cwd: task.worktreePath!, argv: ["fake-agent"], sidePane: true,
+    }, deps, backend);
+    assert.equal(launched.ok, true);
+    assert.equal(panes.length, 1);
+    const observed = correlate({
+      procs: [{ pid: 42, ppid: 1, tty: "ttys028", command: "claude", agent: "claude",
+        agentNative: true, startRaw: "fixture", startMs: 1 }],
+      terminals: [{ kind: "multiplexer", backend, panes: await terminal.list() }],
+    });
+    assert.equal(observed.length, 1);
+    const r = new Registry();
+    r.applyDiscovery(observed);
+    const session = r.getSession(observed[0]!.syntheticId)!;
+    r.upsertTask({ ...task, sessionId: session.id, homeName: name,
+      terminalResourceId: terminalResourceId(session.terminals[0]!) });
+    assert.equal(r.getSession(session.id)?.name, task.title);
+    assert.equal(r.getSession(session.id)?.nameSource, backend);
+    assert.equal(muxHandle(r.getSession(session.id)!)?.sessionName, task.title);
+    r.applyDiscovery(observed);
+    assert.equal(r.getSession(session.id)?.name, task.title, "the next sweep retains the task name");
+  });
 }
 
 // A dispatched agent runs inside its own worktree, so its card's cwd is the

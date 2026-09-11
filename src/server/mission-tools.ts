@@ -1,8 +1,9 @@
+import { piExtensionHealthyForDispatch } from "./environment/pi-extension.ts";
 import { capabilitiesFor, missionToolsUnavailableWhy } from "@shared/harness-capabilities.ts";
 import type { AgentType } from "@shared/types.ts";
 
-/** Phase 4 supplies the install probe; Phase 6 replaces it with the environment reading. */
-export const piExtensionInstalled = (): boolean => false;
+/** The same reading Setup uses, including the installed link and bridged tools. */
+export const piExtensionInstalled = piExtensionHealthyForDispatch;
 
 /**
  * Resolve machine availability once before provisioning. Launch-scoped tools still need

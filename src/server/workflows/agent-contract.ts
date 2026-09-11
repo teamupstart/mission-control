@@ -1,6 +1,19 @@
 import { SUBMIT_WORKFLOW_EVIDENCE_TOOL } from "./evidence-tool.ts";
 import { workflowEvidenceAuthorizationContract } from "../execution-authorization.ts";
 
+/** Runtime preference policy; the delivery ledger freezes it with the authored action. */
+export function workflowPullRequestCiContract(): string {
+  return [
+    "## Workflow pull request CI follow-through",
+    "Foreman's Keep sessions on track with CI option was selected when this packet was prepared. This policy extends the Pull Request action's stopping point through CI, including when the frozen instruction below says opening the PR is the whole job. Preserve all other task and repository restrictions.",
+    "After opening or updating the PR, keep watching its checks. Wait for pending checks and inspect failing check logs. Follow only this action's PR and repository, on the same branch.",
+    "Repair actionable CI failures within the authorized scope. Run tests specific to the failure; when they pass, commit and push the repair. Do not rerun the full local test suite before each repair commit.",
+    "After every repair push, verify checks for the newly pushed head. Do not rely on an earlier green result. Continue until CI passes or a concrete external blocker prevents authorized progress; distinguish absent or unavailable checks from passing CI and report the blocker rather than retrying indefinitely.",
+    "Report the PR, checked head, final CI outcome, and any blocker. Register useful new verification evidence when this workflow supports it, then end the turn so Mission Control can continue the workflow.",
+    "This policy does not authorize merge, CI infrastructure changes, bypassing checks, or broader repository scope. Inspector review comments remain with the existing review workflow and Foreman review-comment policy. The workflow still validates published content against its reviewed snapshot.",
+  ].join("\n");
+}
+
 export function workflowEvidenceContractAppendix(): string {
   return [
     "## Workflow evidence readiness",

@@ -6,7 +6,7 @@ import { mkSession } from "../../test/helpers/session-fixture.ts";
 
 // The usage-poller integration test proves JSONL -> ledger -> session cost. Here the
 // browser receives that projection through SSE and proves the Pi card and queue UI.
-test("Pi renders reported spend while its queue names the extension installation remedy", async ({ dashboard, daemon }) => {
+test("Pi renders reported spend while its queue explains the missing lifecycle hooks", async ({ dashboard, daemon }) => {
   const stream = await fetch(`${daemon.baseURL}/events`);
   expect(stream.ok).toBe(true);
   const reader = stream.body!.getReader();
@@ -40,15 +40,13 @@ test("Pi renders reported spend while its queue names the extension installation
   await expect(detail.locator(".cost-chip")).toHaveText("≈$0.01");
   await dashboard.getByRole("tab", { name: "Work queue" }).click();
   await expect(detail.locator(".wq-blocked")).toHaveText(
-    "Install the Mission Control extension for Pi to enable Foreman's work queue. This session hasn't reported lifecycle hooks, so Foreman can't tell when work starts or finishes.",
+    "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes. Open Settings > Setup > Agent extensions to install the Pi integration or follow the Pi extension warning, then start a fresh Pi session.",
   );
   await expect(detail.getByPlaceholder(/Queue work for this session/)).toHaveCount(0);
-  if (process.env.MC_E2E_EVIDENCE === "1") {
-    const dir = artifactsDir("pi-cost-capabilities");
-    mkdirSync(dir, { recursive: true });
-    await detail.screenshot({ path: join(dir, "pi-cost-and-queue.png") });
-  }
-  // A hand-run Pi has no proven identity or priced projection. The very same card must
+  const dir = artifactsDir("pi-cost-capabilities");
+  mkdirSync(dir, { recursive: true });
+  await detail.screenshot({ path: join(dir, "pi-cost-and-queue.png") });
+  // An uninstrumented hand-run Pi has no proven identity or priced projection. This card must
   // stop showing dollars, rather than turning absence into an invented zero-dollar cost.
   session.agentSessionId = null;
   session.cost = null;

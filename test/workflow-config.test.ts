@@ -399,3 +399,14 @@ test("the migration parser keeps every valid legacy row and drops only the inval
   assert.deepEqual(legacyCheckCommandsToImport({ liveEnabled: true }), []);
   setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [] });
 });
+
+test("judge passes default on for old policies, preserve explicit off and reject invalid writes", () => {
+  setAppConfig(APP_CONFIG_ENTRIES.workflows, { liveEnabled: true, repoAllowlist: [] });
+  assert.equal(getWorkflowPolicy().skipPassedJudges, true);
+  assert.equal(WorkflowConfigSchema.parse({}).skipPassedJudges, true);
+  setWorkflowPolicy({ skipPassedJudges: false });
+  assert.equal(getWorkflowPolicy().skipPassedJudges, false);
+  assert.equal(WorkflowConfigSchema.safeParse({ skipPassedJudges: "yes" }).success, false);
+  setWorkflowPolicy({ skipPassedJudges: true });
+  assert.equal(getWorkflowPolicy().skipPassedJudges, true);
+});

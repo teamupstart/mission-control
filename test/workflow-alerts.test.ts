@@ -223,3 +223,53 @@ test("the repeat-offender digest names the loop rather than counting workflow up
   );
   assert.match(rollupLine(folded), /1 review loop/);
 });
+
+/*
+ * The notification fired at the MOMENT a run blocks, and whether it names the cause.
+ *
+ * This is the surface the reported incident was invisible on. A No-Mistakes run stopped 1.27
+ * seconds in on `image_evidence_capture`, the daemon wrote an exact human sentence into the
+ * run's gate state, and the alert that fired said "image evidence capture" - a pipeline stage,
+ * not a reason. It printed the phase through its own hand-rolled `replaceAll` because the
+ * clause map lived in `src/web/` and `alerts.ts` runs in the daemon too.
+ *
+ * Asserted here rather than only through `blockedPhaseClause`'s own test because the defect
+ * was never in the map: it was that this reader did not consult it.
+ */
+test("a blocked run's alert body is the cause, not the phase code", () => {
+  const blocked = detectAlerts(
+    scope(run()),
+    scope(run({ status: "blocked", phase: "image_evidence_capture" })),
+  );
+  assert.equal(blocked[0]?.title, "Security review blocked");
+  assert.equal(blocked[0]?.body, "registered evidence refused");
+  assert.notEqual(blocked[0]?.body, "image evidence capture");
+
+  // The live example from the operator's own state database, and the second surface this
+  // vocabulary reaches: a run parked on the evidence-preflight cap.
+  const exhausted = detectAlerts(
+    scope(run()),
+    scope(run({ status: "blocked", phase: "preflight_refinement_exhausted" })),
+  );
+  assert.equal(exhausted[0]?.body, "out of evidence refinements");
+
+  // A phase this build has never heard of still degrades to readable text rather than to
+  // `undefined`, which is the property the triage column depends on too - and now the same
+  // function produces it for both, so they cannot drift apart again.
+  const unknown = detectAlerts(
+    scope(run()),
+    scope(run({ status: "failed", phase: "a_phase_from_a_newer_daemon" })),
+  );
+  assert.equal(unknown[0]?.body, "a phase from a newer daemon");
+
+  // Leaving a block reads the same map. Most phases reachable on the way out are running ones
+  // with no entry, so the text is unchanged - `inspector_head_mismatch` is the exception,
+  // because it declares `waiting_for_inspector` alongside `blocked` and a run can leave the
+  // block still parked on it.
+  const resumed = detectAlerts(
+    scope(run({ status: "blocked", phase: "inspector_head_mismatch" })),
+    scope(run({ status: "waiting_for_inspector", phase: "inspector_head_mismatch" })),
+  );
+  assert.equal(resumed[0]?.id, "workflow:run-1:resumed");
+  assert.equal(resumed[0]?.body, "head moved");
+});

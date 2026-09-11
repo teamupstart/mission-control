@@ -13,9 +13,12 @@ import type {
 import {
   capabilitiesFor,
   skillCommand,
-  supportsSdkSkillInvocation,
 } from "@shared/harness-capabilities.ts";
-import { pipelineRunKeyOf } from "@shared/pipeline.ts";
+import {
+  PIPELINE_ENGINEER_SKILL,
+  pipelineRunKeyOf,
+  supportsManagedPipelineHost,
+} from "@shared/pipeline.ts";
 import { innermostTerminalResourceId } from "@shared/pane.ts";
 import {
   dispatchHasNoProvisionedResources,
@@ -880,7 +883,7 @@ export class Dispatcher {
       // and the wrong reason - and reclaim a worktree an embedded agent is working in.
       const embedded = this.deps.supervisor?.taskLiveness(taskId) ?? null;
       const alive = embedded ?? (
-        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null) : false
+        cur.homeName ? await homeAlive(cur.homeName, undefined, cur.homeBackend ?? null, cur.terminalResourceId) : false
       );
       if (alive !== false) {
         this.patch(taskId, {
@@ -1214,12 +1217,12 @@ export class Dispatcher {
     }
 
     if (launch.launchRuntime === "agent-sdk") {
-      if (!supportsSdkSkillInvocation(task.agent, "engineer")) {
+      if (!supportsManagedPipelineHost(task.agent)) {
         throw new Error(
-          `agent "${task.agent}" cannot host this managed Pipeline; choose an agent with Agent SDK support and a typed engineer skill invocation`,
+          `agent "${task.agent}" cannot host this managed Pipeline; choose an agent with Agent SDK support, a typed engineer skill invocation, and an MCP client`,
         );
       }
-      const engineerCommand = skillCommand(task.agent, "engineer");
+      const engineerCommand = skillCommand(task.agent, PIPELINE_ENGINEER_SKILL);
       if (engineerCommand === null) {
         throw new Error(
           `agent "${task.agent}" has no typed engineer skill invocation; choose a supported Pipeline agent`,
@@ -1554,10 +1557,28 @@ export class Dispatcher {
     const stateHome = createDisposableAgentStateHome();
     let supervisorOwnsStateHome = false;
     try {
-    const mcp = await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(
-      wt.path,
-      stateHome,
-    );
+    // Asked of the HARNESS before anything is rendered, because a descriptor is only worth
+    // composing for an agent that has an MCP client to register it with. Pi has none - it
+    // extends itself with in-process TypeScript rather than side processes - so handing it
+    // one would be a launch option nothing could honour, and its driver refuses rather than
+    // dropping it. The terminal arm reaches the same conclusion by a different road: no ask
+    // channel means no registration, and `missionMcpRegistered` is false.
+    //
+    // Read through the capability rather than by agent name, so a fourth harness answers
+    // for itself.
+    // Whether REQUIRED tools can be carried at all is not asked here: `missionToolsAvailability`
+    // owns that, and `dispatch` spends it before a worktree exists. Two answers to one
+    // question is how they drift - and this one would go wrong first, because a harness can
+    // gain Mission tools without gaining an MCP client, which is precisely Pi's route.
+    //
+    // What remains is narrower and still this function's own: whether to compose a
+    // DESCRIPTOR. Only a harness with an MCP client can register one, and Pi's driver refuses
+    // a descriptor rather than dropping it, so handing it one would be a launch option
+    // nothing could honour.
+    const harnessMcp = capabilitiesFor(task.agent).mcp;
+    const mcp = harnessMcp
+      ? await (this.deps.missionMcpDescriptor ?? missionMcpDescriptor)(wt.path, stateHome)
+      : null;
     // Same rule the terminal path applies to its argv, asked of the thing that actually
     // reaches the child: a caller passing `missionMcp` declared those tools REQUIRED, and a
     // session that cannot call them would run to completion unable to report it.

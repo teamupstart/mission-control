@@ -12,12 +12,17 @@ import assert from "node:assert/strict";
 import { WORKFLOW_CHECK_STATUSES, WORKFLOW_GATE_WAIT_REASONS } from "../src/shared/workflow.ts";
 import type {
   WorkflowDelivery,
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceImage,
+  WorkflowEvidenceReadinessCriterion,
+  WorkflowEvidenceReadinessResult,
   WorkflowNodeAttempt,
   WorkflowRunDetail,
   WorkflowSubmission,
 } from "../src/shared/workflow.ts";
 import {
   carriedStageStatus,
+  completionClaimOutcome,
   carriedStatus,
   checkOutcomeOf,
   checkStatus,
@@ -26,6 +31,9 @@ import {
   disabledStatusFor,
   endStatus,
   errorView,
+  evidenceActionError,
+  evidenceCitationSentence,
+  evidenceClaimStatus,
   eventLine,
   eventsByRound,
   firstLineOf,
@@ -33,6 +41,9 @@ import {
   humanDecisionSummary,
   humanDecisionsSummary,
   initialRunRecordPane,
+  inspectorFindingLocation,
+  inspectorFindingSeverityStatus,
+  inspectorFindingStatusStatus,
   inheritedAttempts,
   inheritedPasses,
   priorAttemptPassed,
@@ -40,6 +51,13 @@ import {
   newestInheritedSource,
   nodeStatusesForSubmission,
   readCapturedContext,
+  readinessActionLabel,
+  readinessGapCriteria,
+  readinessOverrideDisabled,
+  restageClientItemId,
+  restageDisabled,
+  restageLabel,
+  restageOffered,
   reviewerStatus,
   evidenceChipLabel,
   openEvidenceTray,
@@ -48,7 +66,13 @@ import {
   roundFailedCaptureLabel,
   roundHoldsViewedSubmission,
   roundOpensEvidenceTray,
+  completionClaimOutcomeSentences,
+  completionClaimStatus,
+  runCompletionClaims,
+  runEvidenceCitations,
   runRecordSummary,
+  runRefusedCompletionSentence,
+  runRefusedSentence,
   runRoundGroups,
   runRounds,
   selectedSubmission,
@@ -591,10 +615,9 @@ test("a carried stage reads as neutral and names the round its pass came from", 
   assert.equal(carriedStageStatus(["Round 1", "Round 2"]).skipKind, "carried_pass");
 });
 
-test("an ordinary repair round carries nothing, because it re-runs everything", () => {
-  // The guard that matters most. A repair restarts the graph at Session and queues every node
-  // again, so a node with no attempt YET is genuinely not started - borrowing round 1's pass
-  // for it would report a review as done while it is still being re-run.
+test("a repair round claims no inherited pass until the engine records reuse", () => {
+  // A repair queues the graph again. Before claim time it may still run a judge, depending
+  // on policy, so an absent attempt alone is never proof that an earlier pass stands.
   const first = submission("full-1", 1);
   const repair = submission("full-2", 2);
   const run = detail([first, repair], [passed("a", first.id, "persona-node")], PIPELINE);
@@ -1319,6 +1342,655 @@ test("a decision row summarises its size and its first line without truncating t
 });
 
 /**
+ * The Evidence pane's numbers, its claim-to-criterion match, and its picture-to-claim relation.
+ *
+ * All three are cases the browser cannot check cheaply and a wrong answer in any of them is
+ * invisible: a claim row that says "linked" over a criterion the reconciliation refused, a
+ * thumbnail sitting beside a claim that never cited it, and a tab reading "Evidence 6" over a
+ * pane holding seven are each the surface lying rather than the surface being long.
+ */
+const claim = (
+  clientCriterionId: string,
+  overrides: Partial<WorkflowEvidenceCoverageClaim> = {},
+): WorkflowEvidenceCoverageClaim => ({
+  clientCriterionId,
+  criterion: `Criterion ${clientCriterionId}`,
+  proofClass: "focused_execution",
+  repositoryScope: "repo-01",
+  links: [],
+  ...overrides,
+});
+
+const criterion = (
+  criterionId: string,
+  overrides: Partial<WorkflowEvidenceReadinessCriterion> = {},
+): WorkflowEvidenceReadinessCriterion => ({
+  criterionId,
+  criterion: `Canonical ${criterionId}`,
+  material: true,
+  matchedClientCriterionId: null,
+  authorProofClass: null,
+  suggestedProofClass: null,
+  links: [],
+  gaps: [],
+  warnings: [],
+  ...overrides,
+});
+
+const readinessOf = (
+  criteria: WorkflowEvidenceReadinessCriterion[],
+): WorkflowEvidenceReadinessResult => ({
+  evaluatorVersion: "criterion_mapped_v1",
+  status: criteria.some((entry) => entry.gaps.length > 0) ? "gaps" : "ready",
+  criteria,
+  gapCodes: [...new Set(criteria.flatMap((entry) => entry.gaps))],
+  warningCodes: [...new Set(criteria.flatMap((entry) => entry.warnings))],
+  unavailableReason: null,
+});
+
+/** The two run fields the readiness block is read from, and nothing else. */
+const runOn = (status: string, currentPhase: string): WorkflowRunDetail["run"] =>
+  ({ status, currentPhase }) as unknown as WorkflowRunDetail["run"];
+
+const image = (
+  id: string,
+  overrides: Partial<WorkflowEvidenceImage> = {},
+): WorkflowEvidenceImage => ({
+  id,
+  ordinal: 0,
+  displayName: `${id}.png`,
+  caption: `Caption for ${id}`,
+  repositoryScope: "repo-01",
+  mimeType: "image/png",
+  bytes: 1024,
+  sha256: "c".repeat(64),
+  availability: "retained",
+  prunedAt: null,
+  createdAt: 1,
+  ...overrides,
+});
+
+test("runRecordSummary counts the evidence record and blocks only on a parked run", () => {
+  const gaps = readinessOf([
+    criterion("canon-1", { matchedClientCriterionId: "c1", warnings: ["model_proof_class_disagreement"] }),
+    criterion("canon-2", { gaps: ["missing_coverage"] }),
+    // Two codes on ONE criterion is one thing a reader has to answer for, not two.
+    criterion("canon-3", { gaps: ["ambiguous_mapping", "missing_rendered_output"] }),
+  ]);
+  const base = detail([submission("s1", 1, { readiness: gaps })], [], {
+    evidenceCoverage: [{ submissionId: "s1", coverage: [claim("c1"), claim("c2")] }],
+    evidenceImages: [{ submissionId: "s1", images: [image("i1"), image("i2")] }],
+  });
+  const evidence = runRecordSummary(base, base.submissions[0]!).evidence;
+  assert.equal(evidence.status, "gaps");
+  assert.equal(evidence.claimCount, 2);
+  assert.equal(evidence.gapCount, 2);
+  assert.equal(evidence.warningCount, 1);
+  assert.equal(evidence.imageCount, 2);
+  // GAPS ARE NOT A BLOCK. This run is still moving, so the count and the gap block report them
+  // and the tab does not seize the initial selection over them.
+  assert.equal(evidence.blocking, false);
+  assert.equal(evidence.refinementsExhausted, false);
+
+  // A submission that was never evaluated says so rather than reporting a verdict.
+  const unevaluated = detail([submission("s1", 1)], []);
+  const none = runRecordSummary(unevaluated, unevaluated.submissions[0]!).evidence;
+  assert.equal(none.status, null);
+  assert.equal(none.claimCount, 0);
+  assert.equal(none.imageCount, 0);
+  assert.equal(none.blocking, false);
+
+  // Parked: the run is waiting on readiness, the newest submission is the one waiting, and the
+  // reader is on it. All three have to hold.
+  const parkedSubmission = submission("s2", 2, {
+    status: "waiting_for_evidence_readiness",
+    readiness: gaps,
+  });
+  const parked = detail([submission("s1", 1), parkedSubmission], [], {
+    run: runOn("waiting_for_evidence_readiness", "evidence_readiness"),
+  });
+  assert.equal(runRecordSummary(parked, parkedSubmission).evidence.blocking, true);
+  // Scrubbed back to round 1: the block belongs to round 2 and is not reported against a round
+  // that is not the thing being decided.
+  assert.equal(runRecordSummary(parked, parked.submissions[0]!).evidence.blocking, false);
+  // The run has moved on: an old waiting submission is history, not a live decision.
+  const moved = detail([submission("s1", 1), parkedSubmission], [], {
+    run: runOn("running", "persona_review"),
+  });
+  assert.equal(runRecordSummary(moved, parkedSubmission).evidence.blocking, false);
+
+  // The refinement cap is a narrower fact than the block, and it is what withdraws the retry.
+  const exhausted = detail([parkedSubmission], [], {
+    run: runOn("blocked", "preflight_refinement_exhausted"),
+  });
+  const spent = runRecordSummary(exhausted, parkedSubmission).evidence;
+  assert.equal(spent.blocking, true);
+  assert.equal(spent.refinementsExhausted, true);
+});
+
+/**
+ * The Completion pane's facts, which are the numbers a reader trusts without opening the tab.
+ *
+ * The gate section used to print its findings as one card each and the Foreman claims as one
+ * paragraph each, so no number in either was derived at all - a reader counted the cards. In a
+ * stat strip over a table, a wrong count is the collapsed summary telling the one lie this
+ * consolidation exists to prevent, so every one of these is pinned directly.
+ */
+const finding = (
+  id: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id,
+  prKey: "owner/repo#91",
+  fingerprint: id,
+  path: "src/gate.ts",
+  line: 42,
+  title: `Finding ${id}`,
+  body: "The body the row opens.",
+  severity: "major",
+  round: 2,
+  status: "open",
+  replies: 0,
+  answeredCommentId: null,
+  createdAt: 5,
+  updatedAt: 6,
+  ...overrides,
+});
+
+const claimEvent = (
+  id: number,
+  state: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
+  id,
+  kind: "workflow_completion_claimed",
+  payload: {
+    completionKind: "prompted",
+    marker: `${id}`.repeat(24),
+    summary: `Claim ${id} says the work is finished.`,
+    state,
+    ...overrides,
+  },
+});
+
+const gatedDetail = (
+  findings: Record<string, unknown>[],
+  overrides: Record<string, unknown> = {},
+): WorkflowRunDetail => detail([submission("s1", 1)], [], {
+  summary: { gate: "findings", gatePrNumber: 91, round: 1 },
+  run: { status: "waiting_for_new_head", currentPhase: "inspector_findings" },
+  inspectorGate: {
+    state: {
+      prKey: "owner/repo#91",
+      prUrl: "https://github.com/owner/repo/pull/91",
+      targetHeadSha: "head-123456789",
+      failedHeadSha: null,
+      enteredAt: 1,
+      lastObservedAt: 2,
+      observedHeadSha: "head-123456789",
+      reviewPosture: "live",
+      waitReason: "findings",
+      findingFingerprints: [],
+    },
+    inspector: { enabled: true, mode: "live", posture: "live" },
+    inspection: {
+      key: "owner/repo#91",
+      number: 91,
+      source: "hook",
+      state: "open",
+      observedState: "OPEN",
+      observedHeadSha: "head-123456789",
+      headSha: "head-123456789",
+      reviewPosture: "live",
+      round: 8,
+      lastError: null,
+      nextAttemptAt: null,
+      openFindings: 1,
+      resolvedFindings: 9,
+    },
+    findings,
+  },
+  ...overrides,
+} as unknown as Partial<WorkflowRunDetail>);
+
+test("runRecordSummary counts the completion record from the rows the table draws", () => {
+  const gated = gatedDetail([
+    finding("f1", { status: "resolved" }),
+    finding("f2", { status: "resolved", severity: "minor" }),
+    finding("f3", { status: "drafted", severity: "nit" }),
+  ]);
+  const completion = runRecordSummary(gated, gated.submissions[0]!).completion;
+  assert.equal(completion.present, true);
+  assert.equal(completion.hasGate, true);
+  assert.equal(completion.findingCount, 3);
+  assert.equal(completion.openFindings, 1);
+  assert.equal(completion.resolvedFindings, 2);
+  assert.deepEqual(completion.pullRequest, {
+    number: 91,
+    url: "https://github.com/owner/repo/pull/91",
+    state: "OPEN",
+  });
+  assert.equal(completion.inspectorRound, 8);
+  assert.equal(completion.gate?.label, "Findings");
+  assert.equal(completion.blocking, true);
+  // No claims on this run, so the sentence counting them says nothing rather than "0 claims".
+  assert.equal(completion.claimCount, 0);
+  assert.equal(completion.claimSentence, null);
+});
+
+test("runRecordSummary offers no Completion record for a run with neither gate nor claim", () => {
+  const plain = detail([submission("s1", 1)], []);
+  const completion = runRecordSummary(plain, plain.submissions[0]!).completion;
+  assert.equal(completion.present, false);
+  assert.equal(completion.hasGate, false);
+  assert.equal(completion.gate, null);
+  assert.equal(completion.pullRequest, null);
+  assert.equal(completion.inspectorRound, null);
+  assert.equal(completion.blocking, false);
+});
+
+test("a gate with no findings is still a Completion record, and a claim with no gate is too", () => {
+  // A clean gate: present, countable, and not blocking. This is the case the phase document's
+  // "blocking when the gate has not passed" would have got wrong - `gate: "none"` is most of a
+  // gated run's life, and a badge there would drag every reader off the worklist.
+  const clean = gatedDetail([], {
+    summary: { gate: "none", gatePrNumber: 91, round: 1 },
+    run: { status: "running", currentPhase: null },
+  });
+  const cleanCompletion = runRecordSummary(clean, clean.submissions[0]!).completion;
+  assert.equal(cleanCompletion.present, true);
+  assert.equal(cleanCompletion.findingCount, 0);
+  assert.equal(cleanCompletion.openFindings, 0);
+  assert.equal(cleanCompletion.resolvedFindings, 0);
+  assert.equal(cleanCompletion.blocking, false);
+
+  // Claims with no gate at all: the pane exists for them alone, and nothing about them blocks.
+  const claimed = detail([submission("s1", 1)], [], {
+    events: [claimEvent(1, "started"), claimEvent(2, "already_claimed")],
+  } as unknown as Partial<WorkflowRunDetail>);
+  const claimedCompletion = runRecordSummary(claimed, claimed.submissions[0]!).completion;
+  assert.equal(claimedCompletion.present, true);
+  assert.equal(claimedCompletion.hasGate, false);
+  assert.equal(claimedCompletion.claimCount, 2);
+  assert.equal(claimedCompletion.blocking, false);
+});
+
+test("five claims restating one completion are counted into one sentence", () => {
+  const run = detail([submission("s1", 1)], [], {
+    events: [
+      claimEvent(1, "already_claimed"),
+      claimEvent(2, "already_claimed"),
+      claimEvent(3, "started"),
+      claimEvent(4, "already_claimed"),
+      claimEvent(5, "already_claimed"),
+    ],
+  } as unknown as Partial<WorkflowRunDetail>);
+  const completion = runRecordSummary(run, run.submissions[0]!).completion;
+  assert.equal(completion.claimCount, 5);
+  // The dominant state leads, so the sentence answers "did anything actually start" first, and
+  // it counts in `completionClaimOutcome`'s own words rather than in the raw persisted state -
+  // the chip on each row says the same thing, and two vocabularies for one record is the drift
+  // this consolidation is most able to introduce.
+  assert.equal(
+    completion.claimSentence,
+    "5 claims on this run: 4 already counted, 1 started the run.",
+  );
+
+  /*
+   * And each state's SENTENCE, once. `completionClaimOutcome` gives every claim a sentence and
+   * the card printed it per claim, so four claims sharing a state printed one identical
+   * sentence four times. Nothing is dropped: the sentence is a fact about the state.
+   */
+  assert.deepEqual(completionClaimOutcomeSentences(runCompletionClaims(run)), [
+    `already counted: ${completionClaimOutcome("already_claimed").sentence}`,
+    `started the run: ${completionClaimOutcome("started").sentence}`,
+  ]);
+  // A state with no sentence contributes none rather than an empty line.
+  assert.deepEqual(
+    completionClaimOutcomeSentences([
+      { id: 1, completionKind: "prompted", marker: "m", summary: "s", state: "withdrawn" },
+    ]),
+    [],
+  );
+
+  const one = detail([submission("s1", 1)], [], {
+    events: [claimEvent(1, "started")],
+  } as unknown as Partial<WorkflowRunDetail>);
+  assert.equal(
+    runRecordSummary(one, one.submissions[0]!).completion.claimSentence,
+    "1 claim on this run: 1 started the run.",
+  );
+});
+
+test("a completion claim event with a payload this build cannot read is skipped", () => {
+  const run = detail([submission("s1", 1)], [], {
+    events: [
+      claimEvent(1, "started"),
+      { id: 2, kind: "workflow_completion_claimed", payload: null },
+      { id: 3, kind: "workflow_completion_claimed", payload: ["not", "an", "object"] },
+      { id: 4, kind: "workflow_completion_claimed", payload: { completionKind: "prompted" } },
+      { id: 5, kind: "workflow_round_opened", payload: { state: "started" } },
+    ],
+  } as unknown as Partial<WorkflowRunDetail>);
+  const claims = runCompletionClaims(run);
+  assert.equal(claims.length, 1);
+  assert.equal(claims[0]!.state, "started");
+});
+
+test("a spent gate is blocking because its reconciliation is the decision left to make", () => {
+  const spent = spentGateDetail();
+  const completion = runRecordSummary(spent, spent.submissions[0]!).completion;
+  assert.equal(completion.blocking, true);
+  // The spent-gate reconciliation supplies the chip, not the raw gate summary: "Blocked" is
+  // what the workflow recorded when it stopped, and "Clean head ready" is what is true now.
+  assert.equal(completion.gate?.label, "Clean head ready");
+});
+
+test("a completion claim state is never green by accident, and never invents its own words", () => {
+  // The LABEL is `completionClaimOutcome`'s, always. This adds a tone and nothing else, so the
+  // chip on a row and the sentence counting the rows cannot say two different things.
+  for (const state of ["started", "resubmitted", "already_claimed", "blocked", "withdrawn"]) {
+    assert.equal(completionClaimStatus(state).label, completionClaimOutcome(state).label);
+  }
+  assert.equal(completionClaimStatus("started").tone, "passed");
+  assert.equal(completionClaimStatus("resubmitted").tone, "passed");
+  // Amber, not red: a second claim of one completion is the ordinary, correct answer.
+  assert.equal(completionClaimStatus("already_claimed").tone, "waiting");
+  // Red: the run turned this claim away and the session was told it had completed anyway.
+  assert.equal(completionClaimStatus("blocked").tone, "failed");
+  // A state a later daemon writes reads NEUTRAL rather than falling through to the pass tone.
+  assert.deepEqual(completionClaimStatus("withdrawn"), { tone: "stopped", label: "withdrawn" });
+});
+
+test("a finding's severity, status and location are spelled once", () => {
+  assert.deepEqual(inspectorFindingSeverityStatus("blocker"), { tone: "failed", label: "blocker" });
+  assert.deepEqual(inspectorFindingSeverityStatus("major"), { tone: "failed", label: "major" });
+  assert.deepEqual(inspectorFindingSeverityStatus("minor"), { tone: "waiting", label: "minor" });
+  assert.deepEqual(inspectorFindingSeverityStatus("nit"), { tone: "waiting", label: "nit" });
+  assert.deepEqual(inspectorFindingStatusStatus("resolved"), { tone: "passed", label: "resolved" });
+  assert.deepEqual(inspectorFindingStatusStatus("posting"), { tone: "waiting", label: "posting" });
+  assert.deepEqual(inspectorFindingStatusStatus("drafted"), { tone: "failed", label: "drafted" });
+  assert.deepEqual(inspectorFindingStatusStatus("open"), { tone: "failed", label: "open" });
+  const located = finding("f1") as unknown as Parameters<typeof inspectorFindingLocation>[0];
+  assert.equal(inspectorFindingLocation(located), "src/gate.ts:42");
+  assert.equal(
+    inspectorFindingLocation({ ...located, line: null }),
+    "src/gate.ts",
+  );
+  // A finding with no path is "general", which is the word the card already used.
+  assert.equal(inspectorFindingLocation({ ...located, path: null, line: null }), "general");
+});
+
+test("a claim row matches its canonical criterion by id, never by the criterion text", () => {
+  const linked = claim("c1", { links: [{ clientItemId: "item-a", role: "execution" }] });
+  // The author's wording and the canonical wording differ, which is the ordinary case and
+  // exactly what matching on text would get wrong.
+  const matched = readinessOf([criterion("canon-1", {
+    criterion: "The suite passes on a clean checkout",
+    matchedClientCriterionId: "c1",
+  })]);
+  assert.deepEqual(evidenceClaimStatus(linked, matched), {
+    label: "linked",
+    tone: "completed",
+    notes: [],
+  });
+
+  const withGaps = readinessOf([criterion("canon-1", {
+    matchedClientCriterionId: "c1",
+    gaps: ["missing_execution"],
+  })]);
+  assert.deepEqual(evidenceClaimStatus(linked, withGaps), {
+    label: "gaps",
+    tone: "failed",
+    notes: ["missing execution"],
+  });
+
+  const withWarning = readinessOf([criterion("canon-1", {
+    matchedClientCriterionId: "c1",
+    warnings: ["model_proof_class_disagreement"],
+  })]);
+  assert.deepEqual(evidenceClaimStatus(linked, withWarning), {
+    label: "warning",
+    tone: "waiting",
+    notes: ["model proof class disagreement"],
+  });
+
+  // No criterion accepted this claim, though a reconciliation ran and named the same words. The
+  // row states that rather than dressing an unreconciled claim up as a pass.
+  const unmatched = readinessOf([criterion("canon-1", {
+    criterion: "Criterion c1",
+    matchedClientCriterionId: null,
+    gaps: ["missing_coverage"],
+  })]);
+  assert.equal(evidenceClaimStatus(linked, unmatched).label, "not reconciled");
+  assert.equal(evidenceClaimStatus(linked, unmatched).tone, "waiting");
+
+  // No reconciliation at all: there is nothing to be unmatched by, and the claim stands.
+  assert.equal(evidenceClaimStatus(linked, null).label, "linked");
+  // A claim that linked nothing says so whether or not anything reconciled it.
+  assert.equal(evidenceClaimStatus(claim("c2"), null).label, "no evidence linked");
+  assert.equal(evidenceClaimStatus(claim("c2"), matched).label, "no evidence linked");
+
+  // The gap block is the gapped criteria with no author claim at all, which are the ones with
+  // no claim row to sit under.
+  assert.deepEqual(
+    readinessGapCriteria(unmatched).map((entry) => entry.criterionId),
+    ["canon-1"],
+  );
+  assert.deepEqual(readinessGapCriteria(matched), []);
+  assert.deepEqual(readinessGapCriteria(null), []);
+
+  /*
+   * MATCHED AND GAPPED, which is the case the block must not claim.
+   *
+   * The reconciliation can accept a claim for a criterion and still record a gap against it -
+   * a proof class that does not satisfy the requirement does exactly that. The claim's own row
+   * already prints the gap, so naming the criterion in a block headed "a criterion with no
+   * claim at all has no row below to sit under" would state it twice, the second time with a
+   * rationale that is false for it. The run's gap COUNT still counts it: the finding is real,
+   * only its place on the page is decided here.
+   */
+  assert.deepEqual(evidenceClaimStatus(linked, withGaps), {
+    label: "gaps",
+    tone: "failed",
+    notes: ["missing execution"],
+  });
+  assert.deepEqual(readinessGapCriteria(withGaps), []);
+  const mixed = readinessOf([
+    criterion("canon-1", { matchedClientCriterionId: "c1", gaps: ["missing_execution"] }),
+    criterion("canon-2", { matchedClientCriterionId: null, gaps: ["missing_coverage"] }),
+  ]);
+  assert.deepEqual(
+    readinessGapCriteria(mixed).map((entry) => entry.criterionId),
+    ["canon-2"],
+  );
+  const mixedDetail = detail([submission("s1", 1, { readiness: mixed })], [], {
+    evidenceCoverage: [{ submissionId: "s1", coverage: [claim("c1")] }],
+  });
+  assert.equal(
+    runRecordSummary(mixedDetail, mixedDetail.submissions[0]!).evidence.gapCount,
+    2,
+    "both gapped criteria are still counted; only the unmatched one gets a named block",
+  );
+});
+
+test("frozen images and the claims citing them are matched through the readiness links", () => {
+  const images = [image("img-queue"), image("img-switch"), image("img-orphan")];
+  const coverage = [
+    claim("c1", { links: [{ clientItemId: "item-queue", role: "rendered_output" }] }),
+    claim("c2", {
+      links: [
+        { clientItemId: "item-queue", role: "rendered_output" },
+        { clientItemId: "item-switch", role: "state_snapshot" },
+      ],
+    }),
+    // The same picture in two roles from ONE claim is one citation, not two.
+    claim("c3", {
+      links: [
+        { clientItemId: "item-queue", role: "rendered_output" },
+        { clientItemId: "item-queue", role: "deliverable" },
+      ],
+    }),
+  ];
+  const readiness = readinessOf([
+    criterion("canon-1", {
+      matchedClientCriterionId: "c1",
+      links: [{ clientItemId: "item-queue", evidenceId: "img-queue", role: "rendered_output" }],
+    }),
+    criterion("canon-2", {
+      matchedClientCriterionId: "c2",
+      links: [{ clientItemId: "item-switch", evidenceId: "img-switch", role: "state_snapshot" }],
+    }),
+  ]);
+  const citations = runEvidenceCitations({ images, coverage, readiness });
+
+  const queue = citations.citationFor("img-queue");
+  assert.equal(queue.clientItemId, "item-queue");
+  assert.equal(queue.claims, 3);
+  assert.deepEqual(queue.roles, ["rendered_output", "deliverable"]);
+  assert.equal(evidenceCitationSentence(queue), "Cited by 3 claims as rendered output and deliverable");
+
+  const switched = citations.citationFor("img-switch");
+  assert.equal(switched.claims, 1);
+  assert.equal(evidenceCitationSentence(switched), "Cited by 1 claim as state snapshot");
+
+  // An image the readiness result never resolved cannot be tied to a claim by this build, and
+  // saying "cited by 0 claims" would be a much stronger statement than "this cannot tell".
+  const orphan = citations.citationFor("img-orphan");
+  assert.equal(orphan.clientItemId, null);
+  assert.equal(orphan.claims, 0);
+  assert.equal(evidenceCitationSentence(orphan), null);
+
+  // The other direction: which pictures a claim row carries a copy of.
+  assert.deepEqual(citations.byClaim.get("c1")!.map((entry) => entry.id), ["img-queue"]);
+  assert.deepEqual(
+    citations.byClaim.get("c2")!.map((entry) => entry.id),
+    ["img-queue", "img-switch"],
+  );
+  assert.deepEqual(citations.byClaim.get("c3")!.map((entry) => entry.id), ["img-queue"]);
+
+  // A claim citing nothing this submission froze has no row of thumbnails at all.
+  const bare = runEvidenceCitations({
+    images,
+    coverage: [claim("c4", { links: [{ clientItemId: "item-gone", role: "execution" }] })],
+    readiness,
+  });
+  assert.equal(bare.byClaim.get("c4"), undefined);
+  assert.equal(bare.citationFor("img-queue").claims, 0);
+  assert.equal(
+    evidenceCitationSentence(bare.citationFor("img-queue")),
+    "Cited by no frozen claim",
+  );
+
+  // Without a reconciliation there is no bridge, and nothing is guessed at.
+  const unbridged = runEvidenceCitations({ images, coverage, readiness: null });
+  assert.equal(unbridged.byClaim.size, 0);
+  assert.equal(unbridged.citationFor("img-queue").clientItemId, null);
+
+  // Total, so a caller never has to decide what an absent entry would have meant: an id this
+  // submission froze no image for answers with the uncited record rather than with nothing.
+  assert.deepEqual(citations.citationFor("img-never-frozen"), {
+    clientItemId: null,
+    claims: 0,
+    roles: [],
+  });
+  assert.equal(evidenceCitationSentence(citations.citationFor("img-never-frozen")), null);
+});
+
+
+/**
+ * The Evidence pane's decisions, checked without rendering.
+ *
+ * These rules used to live in arrow functions inline in the pane's JSX, where a coverage report
+ * calls them `anonymous_N` and nothing can say whether they were ever exercised. They are the
+ * conditions behind four controls a person presses - re-stage, retry, continue despite gaps -
+ * and one route a body is fetched from, so each one is a case here rather than a line somebody
+ * hopes a browser walked.
+ */
+test("a re-stage is offered only on bytes this submission captured and still holds", () => {
+  const retained = { availability: "retained" as const, inheritedFrom: null };
+  assert.equal(restageOffered(retained, true, true), true);
+  // No handler, or a binding that can no longer stage, withdraws it.
+  assert.equal(restageOffered(retained, true, false), false);
+  assert.equal(restageOffered(retained, false, true), false);
+  // A pruned body has nothing to stage.
+  assert.equal(
+    restageOffered({ availability: "pruned", inheritedFrom: null }, true, true),
+    false,
+  );
+  // A carried record is the same digest the capturing submission already offers, so a second
+  // button would stage the same bytes twice over and imply this submission captured them.
+  assert.equal(
+    restageOffered(
+      {
+        availability: "retained",
+        inheritedFrom: { submissionId: "s1", round: 1, repositoryFingerprint: null },
+      },
+      true,
+      true,
+    ),
+    false,
+  );
+});
+
+test("a re-stage mints one client item id per image and then reuses it", () => {
+  const minted = new Map<string, string>();
+  let n = 0;
+  const first = restageClientItemId(minted, "image-a", () => `uuid-${++n}`);
+  assert.equal(first, "history-uuid-1");
+  // Pressed again: the same id, because a second id for the same bytes is a second staged row
+  // pointing at one picture.
+  assert.equal(restageClientItemId(minted, "image-a", () => `uuid-${++n}`), "history-uuid-1");
+  assert.equal(n, 1);
+  // A different image gets its own.
+  assert.equal(restageClientItemId(minted, "image-b", () => `uuid-${++n}`), "history-uuid-2");
+  assert.deepEqual([...minted.keys()], ["image-a", "image-b"]);
+});
+
+test("the re-stage control never reads as settled while it is in flight or idle", () => {
+  assert.equal(restageLabel(false), "Use in next review");
+  assert.equal(restageLabel(true), "Ready for next review");
+  // In flight, so not pressable again. Which image is in flight is decided by the caller, which
+  // holds a set of them: two staging requests can overlap and neither disables the other.
+  assert.equal(restageDisabled(true, false), true);
+  // Settled: the daemon accepted it, so there is nothing left to ask for.
+  assert.equal(restageDisabled(false, true), true);
+  assert.equal(restageDisabled(false, false), false);
+});
+
+test("continue despite gaps needs an acknowledgement and a reason that is not blank", () => {
+  assert.equal(readinessOverrideDisabled(null, true, "The mapping is right"), false);
+  // An unexplained override is an unexplained decision in the durable log.
+  assert.equal(readinessOverrideDisabled(null, true, ""), true);
+  assert.equal(readinessOverrideDisabled(null, true, "   \n  "), true);
+  assert.equal(readinessOverrideDisabled(null, false, "The mapping is right"), true);
+  // Nothing is pressable while either action is in flight.
+  assert.equal(readinessOverrideDisabled("retry", true, "The mapping is right"), true);
+  assert.equal(readinessOverrideDisabled("override", true, "The mapping is right"), true);
+});
+
+test("each readiness control says which of the two is in flight, not merely that one is", () => {
+  assert.equal(readinessActionLabel("retry", null), "Retry evidence preflight");
+  assert.equal(readinessActionLabel("retry", "retry"), "Retrying…");
+  // The other action being in flight must not relabel this one.
+  assert.equal(readinessActionLabel("retry", "override"), "Retry evidence preflight");
+  assert.equal(readinessActionLabel("override", null), "Continue despite gaps");
+  assert.equal(readinessActionLabel("override", "override"), "Continuing…");
+  assert.equal(readinessActionLabel("override", "retry"), "Continue despite gaps");
+});
+
+test("a failed action reports the daemon's own reason, or one that is still true", () => {
+  assert.equal(
+    evidenceActionError(new Error("Retained bytes could not be staged"), "fallback"),
+    "Retained bytes could not be staged",
+  );
+  // A rejection with nothing readable in it gets the sentence that still holds.
+  assert.equal(evidenceActionError("boom", "Could not stage retained image"), "Could not stage retained image");
+  assert.equal(evidenceActionError(undefined, "Image body could not be loaded"), "Image body could not be loaded");
+});
+
+
+/**
  * Which pane opens, and what may never move a reader off the one they are on.
  *
  * The amber badge alone does not satisfy "a blocking state cannot hide": a badge on a tab
@@ -1353,4 +2025,161 @@ test("the run record opens on the route's pane, then on a blocking one, then on 
     "deliveries",
     "worklist",
   ), "worklist");
+});
+
+const captureBlockedDetail = (
+  gateState: unknown,
+  overrides: Partial<WorkflowRunDetail> = {},
+): WorkflowRunDetail => detail([submission("s1", 1)], [], {
+  summary: { round: 1, maxRepairRounds: 3, gate: "none" },
+  run: {
+    id: "run",
+    status: "blocked",
+    currentPhase: "image_evidence_capture",
+    gateState,
+  },
+  ...overrides,
+} as unknown as Partial<WorkflowRunDetail>);
+
+test("a capture-blocked run names the item, the cost, and the recovery that works", () => {
+  const sentence = runRefusedSentence(captureBlockedDetail({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+    itemName: "steering-context.png",
+    itemClientId: "phase2-steering-disclosure",
+  }));
+  assert.ok(sentence);
+  assert.match(sentence, /steering-context\.png \(registered as phase2-steering-disclosure\)/);
+  assert.match(sentence, /Evidence image changed after it was staged; register it again\./);
+  assert.match(sentence, /nothing was reviewed and no repair round was spent/);
+  assert.match(sentence, /picked up by the next round and not by a resume/);
+  assert.match(sentence, /resuming replays the same frozen reservation/);
+});
+
+test("a capture phase whose reservation did not fail does not claim resume is futile", () => {
+  // `resumeCapture` revives the same submission for all four capture phases; only
+  // `image_evidence_capture` refused because of the frozen bytes.
+  const sentence = runRefusedSentence(detail([submission("s1", 1)], [], {
+    summary: { round: 1, maxRepairRounds: 3 },
+    run: {
+      status: "blocked",
+      currentPhase: "capture_interrupted",
+      gateState: { error: "The conversation changed while evidence was being captured" },
+    },
+  } as unknown as Partial<WorkflowRunDetail>));
+  assert.ok(sentence);
+  assert.match(sentence, /The conversation changed while evidence was being captured\./);
+  assert.match(sentence, /no repair round was spent/);
+  assert.match(sentence, /Starting the next round re-reads the session/);
+  assert.doesNotMatch(sentence, /frozen reservation/);
+});
+
+test("a capture failure with no recorded item degrades to the general sentence", () => {
+  // The row a build predating the identity wrote.
+  const sentence = runRefusedSentence(captureBlockedDetail({
+    error: "Evidence image changed after it was staged; register it again",
+    code: "image_changed",
+  }));
+  assert.ok(sentence);
+  assert.doesNotMatch(sentence, /registered as/);
+  assert.doesNotMatch(sentence, /It stopped on/);
+  assert.match(sentence, /Evidence image changed after it was staged; register it again\./);
+  assert.match(sentence, /no repair round was spent/);
+  assert.match(sentence, /picked up by the next round and not by a resume/);
+
+  const idOnly = runRefusedSentence(captureBlockedDetail({
+    error: "Reserved workflow upload is missing or expired",
+    code: "upload_unavailable",
+    itemClientId: "att-1",
+  }));
+  assert.ok(idOnly);
+  assert.match(idOnly, /It stopped on att-1: Reserved workflow upload is missing or expired\./);
+  assert.match(idOnly, /picked up by the next round and not by a resume/);
+});
+
+test("a capture phase with nothing to say stays silent rather than claiming a reason", () => {
+  assert.equal(runRefusedSentence(captureBlockedDetail(null)), null);
+  assert.equal(runRefusedSentence(captureBlockedDetail({ code: "image_changed" })), null);
+  assert.equal(
+    runRefusedSentence(detail([submission("s1", 1)], [], {
+      summary: { round: 1, maxRepairRounds: 3 },
+      run: { status: "blocked", currentPhase: "session_disappeared", gateState: null },
+    } as unknown as Partial<WorkflowRunDetail>)),
+    null,
+  );
+});
+
+test("a refused completion claim is promoted only while the run is still blocked", () => {
+  const refused = { at: 1_000_000, completionKind: "prompted", summary: "Fixed the diff link" };
+  const blocked = captureBlockedDetail(
+    { error: "Evidence image changed after it was staged", code: "image_changed" },
+    { refusedCompletion: refused },
+  );
+  const sentence = runRefusedCompletionSentence(blocked, 1_000_000 + 3_600_000);
+  assert.ok(sentence);
+  assert.match(sentence, /This session finished again 1h ago/);
+  assert.match(sentence, /the run was already blocked, so it opened no round/);
+  assert.match(sentence, /starting the next round is what picks it up/);
+
+  assert.equal(runRefusedCompletionSentence(captureBlockedDetail({ error: "e" })), null);
+  assert.equal(
+    runRefusedCompletionSentence(detail([submission("s1", 1)], [], {
+      summary: { round: 1, maxRepairRounds: 3 },
+      run: { status: "running", currentPhase: "persona_review", gateState: null },
+      refusedCompletion: refused,
+    } as unknown as Partial<WorkflowRunDetail>)),
+    null,
+  );
+});
+
+test("the header and the claim card cannot disagree about a refused claim", () => {
+  // Two surfaces, one daemon behaviour. They frame it differently and only the header carries
+  // an age, but what the refusal cost and what clears it belong to `claimForemanCompletion`,
+  // so a change there must not be able to reach one surface and miss the other.
+  const card = completionClaimOutcome("blocked").sentence ?? "";
+  const header = runRefusedCompletionSentence(captureBlockedDetail(
+    { error: "Evidence image changed after it was staged", code: "image_changed" },
+    { refusedCompletion: { at: 1_000, completionKind: "prompted", summary: "done" } },
+  ), 1_000) ?? "";
+  for (const shared of [
+    "it opened no round and produced no submission",
+    "Whatever evidence that turn registered is staged and waiting,"
+      + " and starting the next round is what picks it up.",
+  ]) {
+    assert.ok(card.includes(shared), `the claim card dropped: ${shared}`);
+    assert.ok(header.includes(shared), `the header dropped: ${shared}`);
+  }
+});
+
+test("a completion claim card says what the claim did, not which enum it was stored as", () => {
+  const refused = completionClaimOutcome("blocked");
+  assert.equal(refused.label, "refused");
+  assert.match(refused.sentence ?? "", /opened no round and produced no submission/);
+  assert.match(refused.sentence ?? "", /the session was told it had completed anyway/);
+
+  assert.equal(completionClaimOutcome("started").label, "started the run");
+  assert.equal(completionClaimOutcome("resubmitted").label, "opened the next round");
+  assert.equal(completionClaimOutcome("already_claimed").label, "already counted");
+
+  const unknown = completionClaimOutcome("some_newer_state");
+  assert.equal(unknown.label, "some newer state");
+  assert.equal(unknown.sentence, null);
+});
+
+test("a repair's reused judge pass links to the original round, including through continuation", () => {
+  const first = submission("earned-round", 1);
+  const repair = submission("reused-round", 2);
+  const child = submission("reused-child", 2, { segment: 1, parentSubmissionId: repair.id });
+  const earned = passed("earned-attempt", first.id, "persona-node");
+  const reused = passed("reused-attempt", repair.id, "persona-node");
+  reused.output = { outcome: "pass", reusedPassAttemptId: earned.id };
+  const run = detail([first, repair, child], [earned, reused], PIPELINE);
+  for (const current of [repair, child]) {
+    const pass = inheritedPasses(run, current).get("persona-node")!;
+    assert.equal(pass.attempt.id, earned.id);
+    assert.equal(pass.submission.id, first.id);
+    assert.match(pass.roundLabel, /Round 1/);
+  }
+  reused.output = { reusedPassAttemptId: "missing" };
+  assert.equal(inheritedPasses(run, repair).size, 0);
 });

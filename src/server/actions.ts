@@ -16,13 +16,14 @@ import {
 } from "./discovery/pane-dialog.ts";
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
-import { canRename, emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
+import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
 import { sessionEffortLevels, supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
   bindSession,
+  canRenameTerminal,
   defaultTerminalDeps,
   hostPanesFor,
   type BoundPane,
@@ -1039,7 +1040,9 @@ export async function paneAcceptsPrompt(
  * The Enter is NOT sent on the paste's heels, and that is load-bearing: an agent that
  * coalesces input for a window afterwards absorbs an Enter that arrives inside it, which
  * used to leave every multi-line prompt pasted-but-unsubmitted. So the sequence is paste,
- * settle, READ, Enter, read back. The settle outlasts that window (`ControlSpec.settleMs`);
+ * settle, READ, Enter, read back - unless the paste already SUBMITTED (`PasteResult`), in
+ * which case there is no Enter to place and the whole tail is skipped. The settle outlasts
+ * that window (`ControlSpec.settleMs`);
  * the read before the Enter catches the paste while it is still definitively in the
  * composer (`pasteIsCollapsed`), which is the half that makes a confirmation a fact rather
  * than a race with the TUI's redraw; the reads after it watch the paste leave
@@ -1118,6 +1121,15 @@ async function injectPromptLocked(
     return { ...fromTerminal(pasted), pasted: pasted.outcomeUnknown, submitVerified: false };
   }
   // Past this point the text IS in the pane, submitted or not.
+  //
+  // Literally either, on one backend: cmux's only working paste verb appends a CR of its
+  // own (see `PasteResult`), so this delivery's Enter has already been spent. Sending a
+  // second would be the ungated keystroke `awaitPasteSubmitted` warns about, aimed at
+  // whatever the turn it just started has put on screen - a permission dialog answered on
+  // the operator's behalf. Reported unverified because it is: the backend's word that it
+  // wrote a CR is the same class of evidence as `ok`, and nothing here watched the paste
+  // leave the composer.
+  if (pasted.submitted) return { ok: true, pasted: true, submitVerified: false };
   await deps.sleep(settleMs);
   const wasPending = await pasteIsCollapsed(session, text, control, deps);
   // Re-probed per Enter rather than trusting the pre-paste check: the settle window and
@@ -1920,8 +1932,8 @@ export function nameRulesFor(
  * submits, splits or truncates depending on which surface reads it first - is the shared
  * half every backend's rules are built on (`plainValidate`), not a check restated here.
  *
- * "Somewhere for a name to live" is `canRename`, not the handle list, and the difference is a
- * whole runtime: an embedded session keeps its name on the durable row the supervisor holds
+ * "Somewhere for a name to live" is the backend Rename capability, not the handle list.
+ * An embedded session keeps its name on the durable row the supervisor holds
  * for it, so refusing it here for having no pane refused the only sessions a dispatch now
  * produces. Its grammar is `PLAIN_NAMES` - `nameRulesFor` already answers that for a
  * handleless session, because a name with no target to be parsed as has no target grammar,
@@ -1934,8 +1946,8 @@ export function validateSessionName(
 ): { ok: true; name: string } | { ok: false; error: string } {
   const name = rawName.trim();
   if (!name) return { ok: false, error: "name can't be empty" };
-  if (!canRename(session)) {
-    return { ok: false, error: "this session has no terminal pane to rename" };
+  if (session.runtime !== "sdk" && !canRenameTerminal(session, deps)) {
+    return { ok: false, error: "this session's terminal does not support Rename" };
   }
   const why = nameRulesFor(session, deps).validate(name);
   return why ? { ok: false, error: why } : { ok: true, name };
@@ -2039,7 +2051,7 @@ async function hostTabs(
  * Rename a session's terminal home so the next discovery sweep reads the new name back onto
  * its card, and so the terminal tab the user is looking at agrees.
  *
- * An emulator-hosted session is one call: its tab title IS its card name. A
+ * An emulator-hosted session is one call; its launched card also retains the new name. A
  * multiplexer-hosted one takes two, because its name lives in two places the harness has to
  * keep in step:
  *

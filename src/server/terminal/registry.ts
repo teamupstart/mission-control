@@ -21,6 +21,7 @@ import type {
   Multiplexer,
   MuxClient,
   MuxTarget,
+  PasteResult,
   TerminalEmulator,
   TerminalResult,
 } from "./types.ts";
@@ -124,11 +125,23 @@ export const defaultTerminalDeps: TerminalDeps = {
   emulators: EMULATORS,
 };
 
+/** The same innermost backend that Rename addresses, projected without subprocess I/O. */
+export function canRenameTerminal(
+  session: { terminals: readonly TerminalHandle[] },
+  deps: TerminalDeps = defaultTerminalDeps,
+): boolean {
+  const pane = innermostPane(session);
+  if (!pane) return false;
+  return pane.kind === "multiplexer"
+    ? deps.multiplexers[pane.backend].sessions !== null
+    : deps.emulators[pane.backend].retitle !== null;
+}
+
 /** The three write verbs, already aimed at one pane. See `PaneWrite` for their contract. */
 export interface BoundWrite {
   text(text: string): Promise<TerminalResult>;
   keys(keys: readonly Key[]): Promise<TerminalResult>;
-  paste: ((text: string) => Promise<TerminalResult>) | null;
+  paste: ((text: string) => Promise<PasteResult>) | null;
 }
 
 /**

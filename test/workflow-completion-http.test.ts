@@ -619,7 +619,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
       standardsTruncated: false,
     },
   }, "test");
-  const { workflowContextFingerprint } = await import("../src/server/workflows/context.ts");
+  const { workflowContextFingerprint, workflowRepositoryFingerprint } = await import("../src/server/workflows/context.ts");
   const seeded = workflows.store.createInitialSubmission(
     {
       id: "repair-run",
@@ -642,6 +642,7 @@ test("completion HTTP claims server-owned identity once and atomically retires t
     context: repairContext as never,
     evidence: repairContext.evidence as never,
     fingerprint: workflowContextFingerprint(repairContext),
+    repositoryFingerprint: workflowRepositoryFingerprint(repairContext),
     status: "waiting_for_session",
   }, 21);
   workflows.store.setRunState(seeded.run.id, "waiting_for_session", "persona_feedback", null, 21);

@@ -241,3 +241,8 @@ from the levels every harness offers, because the harness it will get is not kno
 A [Persona's](workflows.md) model, and an Ensemble judge's, stay on the Persona. There is one per
 row and no fixed number of them, so they are a field on a definition rather than an app setting
 with a place on a settings page - which is the same reason they were never moved.
+
+A workflow may override the Persona's pair for one reviewer node, and that lives on the
+workflow node for the same reason: there is one per occurrence. It wins over the Persona, the
+app-wide provider and `MISSION_WORKFLOW_PERSONA_MODEL` when the attempt resolves. See
+[per-node provider and model](workflows.md#per-node-provider-and-model).

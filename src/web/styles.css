@@ -1428,6 +1428,18 @@ html[data-mc-tour-dispatch-surface="true"] .driver-overlay path {
   overflow-wrap: anywhere;
 }
 
+/* Why a parked run stopped, under its status chip.
+   Carries the row's own alarm colour rather than `--muted`, for the reason the Review
+   drawer's state column does: this is the line a reader is scanning the rail FOR, and a
+   reason set in the same grey as the note key beneath it is a reason nobody's eye stops on.
+   `anywhere` rather than `nowrap`, because the rail is a fixed-width column and a clause
+   clipped mid-word says less than the same clause on two lines. */
+.wf-run-row-why {
+  color: color-mix(in srgb, var(--danger) 82%, var(--fg));
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
 /* One run is one repository. On the run page it sits beside the session for the same reason
    the row shows it under the note key: a multi-repo task's two runs share a conversation, a
    workflow and a version, and this is the only fact that tells them apart. */
@@ -1758,6 +1770,7 @@ button.wf-run-version:focus-visible {
    because it reports something that is not happening. */
 .wf-run-granted,
 .wf-run-refused,
+.wf-run-refused-claim,
 .wf-run-parked {
   font-size: 12px;
   line-height: 1.5;
@@ -1775,6 +1788,14 @@ button.wf-run-version:focus-visible {
    is the override for it. */
 .wf-run-refused {
   color: var(--attention);
+}
+
+/* The session finished again and was turned away. Muted rather than attention-coloured, and
+   its own class rather than a second `.wf-run-refused`: the line above is the problem, this
+   one is a thing that happened while the problem stood, and a page shouting twice in the same
+   colour makes the reader work out which of the two is the one to act on. */
+.wf-run-refused-claim {
+  color: var(--muted);
 }
 
 .wf-run-parked {
@@ -2269,6 +2290,334 @@ button.wf-run-version:focus-visible {
   align-items: center;
 }
 
+/* ---- the Evidence pane ----
+
+   Two sections became one, and the part that is new rather than rewritten is the pictures. A
+   frozen image used to be reachable only by scrolling past the deliveries into a section of its
+   own; here it is a thumbnail above the claims, a small copy on every claim row citing it, and
+   one click from full size. */
+
+/* A subhead inside a pane. The pane's container already carries the section heading, so these
+   are the bands within it rather than sections of their own. */
+.wf-evidence-head,
+.wf-run-subhead {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* The canonical criteria the reconciliation could not match. Given a frame of its own because
+   the rows in it belong to nothing else on the pane: a criterion with no author claim has no
+   claim row below to sit under, which is the whole reason the reconciliation survived the
+   merge. */
+.wf-evidence-gaps {
+  padding: 4px 12px 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--panel-2));
+}
+
+.wf-evidence-gaps h5 {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+}
+
+.wf-evidence-gap-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.wf-evidence-gap-row:last-child {
+  border-bottom: 0;
+}
+
+.wf-evidence-gap-text {
+  font-size: 12.5px;
+}
+
+.wf-evidence-gap-codes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.wf-evidence-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 9px;
+}
+
+/* The whole card is the control that opens the preview, so it is a real <button> with an
+   accessible name - not a div with a click handler beside a picture nothing can reach. */
+.wf-evidence-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.wf-evidence-card:hover {
+  border-color: var(--working);
+}
+
+.wf-evidence-card:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+/* A pruned record keeps its card and its every audit field. The dashed edge is what says the
+   bytes are gone without the frame having to pretend it holds a picture. */
+.wf-evidence-card.is-pruned {
+  border-style: dashed;
+}
+
+.wf-image-frame {
+  display: grid;
+  place-items: center;
+  min-height: 132px;
+  color: var(--dim);
+  /* A checkerboard, so a transparent PNG reads as transparent rather than as the panel. */
+  background:
+    linear-gradient(45deg, color-mix(in oklab, var(--panel-2) 85%, transparent) 25%, transparent 25%) 0 0 / 16px 16px,
+    linear-gradient(-45deg, color-mix(in oklab, var(--panel-2) 85%, transparent) 25%, transparent 25%) 0 8px / 16px 16px,
+    var(--panel);
+}
+
+.wf-image-frame img {
+  width: 100%;
+  height: 132px;
+  /* `contain`, never `cover`: a cropped thumbnail of a screenshot hides the part someone
+     attached it for, and the card is a way of telling one screenshot from another. */
+  object-fit: contain;
+}
+
+.wf-image-pruned,
+.wf-image-error,
+.wf-image-loading {
+  padding: 10px;
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.wf-image-pruned { color: var(--attention); }
+.wf-image-error { color: var(--danger); }
+.wf-image-loading { color: var(--dim); }
+
+.wf-evidence-card-meta {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.wf-evidence-card-meta strong {
+  overflow: hidden;
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Clamped rather than hidden: the caption is the human sentence about what the picture shows,
+   and it is what makes the thumbnail's empty `alt` honest - the description is right there in
+   text beside it. The whole of it is in the preview footer. */
+.wf-evidence-card-caption {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.wf-evidence-card-facts,
+.wf-evidence-card-cite {
+  color: var(--dim);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.wf-evidence-card-facts code {
+  font-size: 9.5px;
+}
+
+.wf-evidence-card-cite {
+  color: var(--muted);
+}
+
+/* A re-stage outcome on the card, which is where a reader who closed the preview is looking.
+   Neutral while the request is in flight and alarming once it has been refused: "still going"
+   and "it did not happen" are different facts and only one of them needs acting on. */
+.wf-evidence-card-restage {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.wf-evidence-card-restage.is-alert {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.wf-evidence-claims,
+.wf-run-rowlist {
+  display: grid;
+  gap: 4px;
+}
+
+/* One claim per row rather than per card. Six claims were 621px of cards on the run this was
+   measured against, saying what six lines say. */
+.wf-evidence-claim,
+.wf-run-rowlist-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.wf-evidence-claim-body,
+.wf-run-rowlist-body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.wf-evidence-claim-text,
+.wf-run-rowlist-title {
+  font-size: 12.5px;
+}
+
+.wf-evidence-claim-facts,
+.wf-run-rowlist-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--dim);
+  font-size: 10.5px;
+}
+
+.wf-evidence-claim-facts code,
+.wf-run-rowlist-facts code {
+  font-size: 9.5px;
+  overflow-wrap: anywhere;
+}
+
+.wf-evidence-claim-note {
+  color: var(--attention);
+}
+
+.wf-evidence-claim-side {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+/* The picture beside the claim it proves. Small enough that a row stays a row, large enough to
+   tell one screenshot from another and to say "this claim has a picture behind it". */
+.wf-evidence-mini {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: var(--panel);
+}
+
+.wf-evidence-mini img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wf-evidence-mini .wf-image-pruned,
+.wf-evidence-mini .wf-image-error,
+.wf-evidence-mini .wf-image-loading {
+  padding: 0;
+  font-size: 0;
+}
+
+/* ---- the frozen image preview ----
+
+   `AttachmentPreview`'s shape with a footer. Nothing here re-declares a horizontal inset:
+   `.modal` owns `--modal-inset` and `.modal-head`, `.modal-body` and `.modal-foot` apply it,
+   so every field below clears the panel border without knowing what the inset is. */
+.wf-image-preview {
+  width: min(840px, 100%);
+}
+
+/* The frozen image at a size a person can actually read.
+   `.attach-preview-image` only CAPS its picture - `max-width` and `max-height` scale a large
+   screenshot down and leave a small one alone. That is right for the dispatch strip, where the
+   image is whatever a person just dragged in and its natural size is the truth. It is wrong
+   here: a frozen submission may hold a small image, and "click a thumbnail to open it full
+   size" then produced a two-pixel dot centred in an otherwise empty panel.
+   So the body gets a real area and the image fills it, `contain` keeping the aspect ratio so a
+   wide screenshot is letterboxed rather than stretched and nothing is cropped away. */
+.wf-image-preview .attach-preview-body {
+  min-height: min(52vh, 460px);
+}
+
+.wf-image-preview .attach-preview-image {
+  width: 100%;
+  height: min(52vh, 460px);
+  max-height: none;
+  object-fit: contain;
+}
+
+/* Descendant-scoped rather than a bare class, because `.modal-foot` is declared later in this
+   stylesheet and would otherwise win the tie: it is a centered flex ROW for a pair of buttons,
+   and this footer is a ledger. Only the axis changes - the padding, and with it the modal's
+   inset, is inherited untouched. */
+.wf-image-preview .modal-foot {
+  display: grid;
+  gap: 9px;
+  align-items: start;
+}
+
+.wf-image-preview-caption {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.wf-image-preview .wf-run-facts-list {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.wf-image-preview .modal-foot code {
+  overflow-wrap: anywhere;
+}
+
+.wf-image-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: center;
+}
+
 /* ---- the Blocker Worklist (the agenda on the left, one item in full on the right) ----
 
    The split is BOUNDED rather than full-height, and that is the one decision this block is
@@ -2620,18 +2969,21 @@ button.wf-run-version:focus-visible {
 .wf-run-delivery.is-delivered { border-left-color: var(--idle); }
 .wf-run-delivery.is-uncertain,
 .wf-run-delivery.is-refused { border-left-color: var(--danger); }
-.wf-run-finding.is-blocker,
-.wf-run-finding.is-major { border-left-color: var(--danger); }
-.wf-run-finding.is-minor,
-.wf-run-finding.is-nit { border-left-color: var(--attention); }
-
-.wf-run-gate {
-  border-left: 4px solid var(--working);
+/* A findings ROW carries the severity edge the finding CARD used to draw, on its first cell.
+   Ten of those cards were the whole height of the gate section on the run this was measured
+   against; the two-tone split they drew - blocker and major against minor and nit - is the one
+   a reader already knows, so the row keeps it rather than inventing a four-tone scale nobody
+   has seen. The severity word is on the chip beside it, so the colour only has to say which
+   half of the split the row is in. */
+.wf-run-finding-row > td:first-child {
+  border-left: 3px solid transparent;
+  padding-left: 7px;
 }
 
-.wf-run-gate.is-findings,
-.wf-run-gate.is-blocked { border-left-color: var(--danger); }
-.wf-run-gate.is-clean { border-left-color: var(--idle); }
+.wf-run-finding-row.is-blocker > td:first-child,
+.wf-run-finding-row.is-major > td:first-child { border-left-color: var(--danger); }
+.wf-run-finding-row.is-minor > td:first-child,
+.wf-run-finding-row.is-nit > td:first-child { border-left-color: var(--attention); }
 
 /* A spent gate contains two records with different owners. The split is semantic before it is
    decorative: the dashed historical card is the workflow's immutable stop, while the solid
@@ -2689,12 +3041,6 @@ button.wf-run-version:focus-visible {
   color: var(--dim);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.wf-run-findings,
-.wf-run-recovery {
-  display: grid;
-  gap: 9px;
 }
 
 .wf-run-recovery {
@@ -5411,8 +5757,11 @@ body.is-pane-resizing {
 /* The panel's outer spacing is the HOST's padding, never the panel's margin. CodeMirror
    measures a block widget with `offsetHeight`, which excludes margins, so a margin here
    makes the content taller than the gutter thinks it is and every line below the panel
-   drifts out of step with its own line number. */
-.file-comment-host { display: block; padding: 6px 10px 10px; }
+   drifts out of step with its own line number.
+
+   Sticky HORIZONTALLY only: `width` and `left` are measured, and `fitPanelHost` in
+   `FileEditor.tsx` is where both and their reasons live. */
+.file-comment-host { display: block; position: sticky; padding: 6px 10px 10px; }
 .file-comment-panel {
   display: flex;
   flex-direction: column;
@@ -5543,10 +5892,24 @@ body.is-pane-resizing {
   opacity: 0;
   pointer-events: none;
 }
+/*
+ * The control is in the gutter, outside its block's box, so the block's hover cannot be what
+ * reaches it: for all of comment mode it stays hit-testable and reveals itself on its own
+ * hover. Safe only here - that gutter holds no text, and the control paints the moment a
+ * pointer is on it.
+ */
+.file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment { pointer-events: auto; }
 .file-markdown-preview.is-commenting .md-block-anchor:hover:not(:has(.md-block-anchor:hover)) > .md-block-comment,
+.file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment:hover,
 .file-markdown-preview.is-commenting .md-block-anchor > .md-block-comment:focus-visible {
   opacity: 1;
   pointer-events: auto;
+}
+/* The gutter strip, hit-tested as part of the control so the two hover regions touch. */
+.md-block-comment::after {
+  content: "";
+  position: absolute;
+  inset: -4px -7px -4px -4px;
 }
 .md-block-comment:hover { filter: brightness(1.15); }
 .file-image-preview {
@@ -17263,6 +17626,11 @@ td.wf-command-rule-action {
 .workflow-version-detail dt { color: var(--dim); }
 .workflow-version-detail dd { margin: 0; }
 .workflow-version-persona summary { cursor: pointer; font-size: 11px; color: var(--attention); }
+/* The frozen Persona default and the workflow's own choice, as one block: they are two
+   halves of one answer, and a reader comparing them should not have to decide whether two
+   loose paragraphs are related. */
+.workflow-version-routing { display: grid; gap: 2px; margin: 4px 0; }
+.workflow-version-routing p { margin: 0; font-size: 10.5px; color: var(--dim); }
 .workflow-version-persona pre { max-height: 220px; overflow: auto; padding: 8px; white-space: pre-wrap; font: 10px/1.45 var(--mono); background: var(--bg); border-radius: 6px; }
 
 /* ---- pipeline editor (Pipeline view of a workflow) ----
@@ -17579,6 +17947,32 @@ td.wf-command-rule-action {
 }
 .wf-pipeline-reviewer-actions button,
 .wf-pipeline-stage-actions button { padding: 4px 7px; font-size: 10px; }
+
+/* One reviewer occurrence's provider and model, drawn under its row in the Pipeline view and
+   inside the selected-node rail in the Graph view. `grid-column: 1 / -1` because the row is a
+   two-column grid whose second column is its trailing actions: a form left in column one
+   would be squeezed to the label's width beside a button. The rail is an ordinary block, so
+   the span is inert there and the two mounts stay one component. */
+.wf-node-execution {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.wf-node-execution-field { display: grid; gap: 3px; font-size: 10.5px; color: var(--dim); }
+.wf-node-execution-field select { font-size: 11px; }
+.wf-node-execution-effective { margin: 0; font-size: 10px; color: var(--dim); }
+/* Attention, not danger: an unfinished override is a sentence the operator is still writing,
+   and nothing is broken until they leave it that way. */
+.wf-node-execution-incomplete {
+  margin: 0;
+  font-size: 10px;
+  color: var(--attention);
+}
 .wf-pipeline-item-menu { position: relative; }
 .wf-pipeline-item-menu > summary {
   min-width: 28px;
@@ -17813,8 +18207,7 @@ button.wf-carried.is-link:focus-visible {
 }
 .workflow-evidence-heading,
 .workflow-evidence-registered-head,
-.workflow-evidence-fileline,
-.wf-image-record-head {
+.workflow-evidence-fileline {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -17852,8 +18245,7 @@ button.wf-carried.is-link:focus-visible {
   background: color-mix(in oklab, var(--working) 10%, transparent);
 }
 .workflow-evidence-drop:disabled { opacity: .55; cursor: not-allowed; }
-.workflow-evidence-draft-list,
-.wf-image-ledger {
+.workflow-evidence-draft-list {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -17969,10 +18361,7 @@ button.wf-carried.is-link:focus-visible {
 .workflow-coverage-hint { margin: 0; color: var(--muted); font-size: 10px; }
 .workflow-coverage-actions { display: flex; align-items: center; gap: 9px; }
 .workflow-coverage-actions small { color: var(--dim); font-size: 9.5px; line-height: 1.4; }
-.wf-coverage-ledger { display: grid; gap: 8px; }
-.wf-coverage-ledger h5 { margin: 0; }
 .wf-evidence-links { display: flex; flex-wrap: wrap; gap: 5px; }
-.wf-evidence-readiness .wf-run-card { gap: 6px; }
 
 .wf-readiness-override {
   display: grid;
@@ -17990,42 +18379,6 @@ button.wf-carried.is-link:focus-visible {
   align-items: start;
 }
 
-.wf-image-ledger { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-.wf-image-record {
-  display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-}
-.wf-image-record.is-pruned { border-style: dashed; }
-.wf-image-frame {
-  display: grid;
-  place-items: center;
-  min-height: 148px;
-  color: var(--dim);
-  background:
-    linear-gradient(45deg, color-mix(in oklab, var(--panel-2) 85%, transparent) 25%, transparent 25%) 0 0 / 16px 16px,
-    linear-gradient(-45deg, color-mix(in oklab, var(--panel-2) 85%, transparent) 25%, transparent 25%) 0 8px / 16px 16px,
-    var(--panel);
-}
-.wf-image-frame img { width: 100%; height: 100%; min-height: 148px; object-fit: contain; }
-.wf-image-pruned,
-.wf-image-error { padding: 10px; font-size: 10.5px; text-align: center; }
-.wf-image-pruned { color: var(--attention); }
-.wf-image-error { color: var(--danger); }
-.wf-image-record-body { display: grid; align-content: start; gap: 7px; min-width: 0; padding: 10px; }
-.wf-image-record-body > p { margin: 0; color: var(--muted); font-size: 10.5px; overflow-wrap: anywhere; }
-.wf-image-record-head strong { font-size: 12px; line-height: 1.4; }
-.wf-image-record-body dl { display: grid; gap: 4px; margin: 0; }
-.wf-image-record-body dl div { display: grid; grid-template-columns: 45px minmax(0, 1fr); gap: 6px; }
-.wf-image-record-body dt { color: var(--dim); font-size: 9.5px; }
-.wf-image-record-body dd { min-width: 0; margin: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
-.wf-image-record-body code { font-size: 9px; word-break: break-all; }
-.wf-image-record-body .wf-run-pruned { white-space: normal; line-height: 1.4; }
-.wf-image-record-body .btn { justify-self: start; }
 
 @media (max-width: 620px) {
   .workflow-evidence-heading { align-items: flex-start; flex-direction: column; }
@@ -18034,7 +18387,6 @@ button.wf-carried.is-link:focus-visible {
   .workflow-coverage-fields { grid-template-columns: 1fr; }
   .workflow-coverage-fields label:first-child { grid-column: 1; }
   .workflow-coverage-actions { align-items: flex-start; flex-direction: column; }
-  .wf-image-record { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 1180px) {
@@ -19375,7 +19727,9 @@ button.wf-carried.is-link:focus-visible {
 /* The harness-default pickers. Matches `.alert-row select` - the app's existing inline
    select - but without its `margin-left: auto`, since `.kb-row-controls` already
    parks it at the end of the row. Sized to fit the longest catalog entry so swapping
-   models can't jog the row width. */
+   models can't jog the row width - which holds only because the harness card renders bare
+   model labels. Never let a hint into this select: they are free text from each harness's
+   own model list, so no cap chosen here can survive the next catalog. */
 .harnesses-select {
   font: inherit;
   font-size: 12px;
@@ -20453,6 +20807,16 @@ select.foreman-model-input {
    that no longer exists. `TrustGrantSummary` draws the count now. */
 .wf-settings-empty {
   color: var(--dim);
+}
+.wf-judge-passes {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wf-judge-passes input {
+  accent-color: var(--working);
 }
 .wf-default-row {
   display: flex;
@@ -32553,7 +32917,7 @@ body.foreman-sidecar-open .modal-backdrop {
   white-space: nowrap;
 }
 
-.si-chip-override {
+.si-chip-appended {
   border-color: color-mix(in oklab, var(--select) 34%, var(--border));
   color: var(--select);
   background: color-mix(in oklab, var(--select) 9%, transparent);

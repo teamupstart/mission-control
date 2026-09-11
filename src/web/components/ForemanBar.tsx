@@ -605,7 +605,8 @@ export function ForemanPopover({
       {/*
         What happens after a PR exists. Review comments and CI are separate permissions: an
         operator may automate either one without granting the other. Neither setting creates
-        the PR. Like direct wrap-up, both only TYPE in live mode on an allowlisted repo.
+        the PR. Foreman's nudges require live mode and an allowlisted repo; workflow PR
+        instructions also read the CI preference under their own delivery authorization.
       */}
       <fieldset className="foreman-modes" disabled={!enabled}>
         <legend>Pull requests</legend>
@@ -639,7 +640,7 @@ export function ForemanPopover({
             Keep sessions on track with review comments
           </label>
         </Tooltip>
-        <Tooltip label="Once a pull request exists, nudge its parked session to fix failing CI on the same branch">
+        <Tooltip label="Nudge parked PR sessions to fix CI, and include CI follow-through in newly prepared workflow PR instructions">
           <label className="alert-row">
             <input
               type="checkbox"
@@ -651,6 +652,7 @@ export function ForemanPopover({
         </Tooltip>
         <p className="alert-hint dim">
           Does not create a PR. Once one exists, sends failing CI back to its session.
+          {" "}New workflow PR instructions also ask the session to follow CI through completion.
         </p>
         {enabled && config.keepShipTasksMoving !== false && mode !== "live" && (
           <p className="alert-hint dim">
@@ -661,7 +663,7 @@ export function ForemanPopover({
           (config.trackReviewFeedback !== false || config.trackCiFailures !== false) &&
           mode !== "live" && (
             <p className="alert-hint dim">
-              Only types in Live mode on an allowlisted repo - until then a parked PR is left
+              Foreman's nudges only type in Live mode on an allowlisted repo - until then a parked PR is left
               for you.
             </p>
           )}

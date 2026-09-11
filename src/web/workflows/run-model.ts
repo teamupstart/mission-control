@@ -8,8 +8,15 @@ import type {
   WorkflowContextSnapshot,
   WorkflowDeliveryKind,
   WorkflowDeliveryState,
+  WorkflowEvidenceCoverageClaim,
+  WorkflowEvidenceImage,
+  WorkflowEvidenceProofRole,
+  WorkflowEvidenceReadinessCriterion,
+  WorkflowEvidenceReadinessResult,
+  WorkflowEvidenceReadinessStatus,
   WorkflowGateSummary,
   WorkflowEvent,
+  WorkflowGoalProvenanceVerdict,
   WorkflowGateWaitReason,
   WorkflowLlmCall,
   WorkflowNodeAttempt,
@@ -24,6 +31,8 @@ import type {
   WorkflowRunSummary,
   WorkflowSubmission,
 } from "@shared/workflow.ts";
+import type { InspectorComment, InspectorCommentStatus, InspectorSeverity } from "@shared/types.ts";
+import { WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE } from "@shared/workflow-lifecycle.ts";
 import {
   WORKFLOW_RUN_SPENT_PHASES,
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
@@ -33,6 +42,8 @@ import {
   workflowRunGaveUp,
   sessionActionContinuationReachesOnlyEnd,
 } from "@shared/workflow.ts";
+import type { WorkflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause, workflowCaptureFailure } from "@shared/workflow-lifecycle.ts";
 import type { Stage } from "@shared/workflow-stages.ts";
 import {
   PersonaVerdictSchema,
@@ -40,6 +51,7 @@ import {
   SessionActionCompletedOutputSchema,
   WorkflowCheckOutcomeSchema,
 } from "@shared/protocol.ts";
+import { relativeTime } from "../lib/format.ts";
 import type { PipelineStatus } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmDescriptor } from "./run-actions.ts";
 import { WorkflowApiError } from "./workflowApi.ts";
@@ -58,6 +70,13 @@ import { WorkflowApiError } from "./workflowApi.ts";
  * fails typecheck until someone says what it means to a human. The machine code is kept
  * beside the sentence as a detail affordance rather than thrown away: it is what an
  * operator quotes into a bug report.
+ *
+ * One axis is deliberately NOT here. `BLOCKED_PHASE_CLAUSES` and `blockedPhaseClause` live in
+ * `@shared/workflow-lifecycle.ts`, beside the phase registry they have to stay exhaustive
+ * over - and, more to the point, somewhere the DAEMON can read. `alerts.ts` fires the
+ * notification at the moment a run blocks and runs in both processes; while the map was here
+ * that notification printed the raw phase through its own copy of the fallback, so the two
+ * surfaces disagreed about one field by construction.
  */
 
 export function workflowRunLoadError(caught: unknown): string {
@@ -315,6 +334,25 @@ export function inheritedPasses(
     const kind = kinds.get(nodeId);
     if (kind !== "persona" && kind !== "check") continue;
     if (priorAttemptPassed(kind, inherited.attempt)) passes.set(nodeId, inherited);
+  }
+  // A repair round records its own receipt-bearing attempt while naming the earned pass.
+  // Resolve that provenance even when a later action segment inherited the reused attempt.
+  const candidates = new Map([
+    ...[...passes].map(([nodeId, pass]) => [nodeId, pass.attempt] as const),
+    ...latestAttemptsFor(detail, submission?.id ?? ""),
+  ]);
+  for (const [nodeId, candidate] of candidates) {
+    const output = candidate.output;
+    if (candidate.state !== "completed" || !output || typeof output !== "object" || Array.isArray(output)) continue;
+    const source = detail.attempts.find((attempt) => attempt.id === output.reusedPassAttemptId);
+    const sourceSubmission = source && detail.submissions.find((item) => item.id === source.submissionId);
+    if (kinds.get(nodeId) !== "persona" || source?.nodeId !== nodeId || !sourceSubmission
+      || !priorAttemptPassed("persona", source)) continue;
+    passes.set(nodeId, {
+      attempt: source,
+      submission: sourceSubmission,
+      roundLabel: submissionRoundLabel(detail, sourceSubmission),
+    });
   }
   return passes;
 }
@@ -1045,57 +1083,6 @@ export function runStatusLabel(status: WorkflowRunStatus): string {
   return RUN_STATUS_LABELS[status];
 }
 
-/**
- * Why a stopped run stopped, as a short clause to hang off its status word.
- *
- * The sibling of `GATE_WAIT_SENTENCES` below, and deliberately a different grain: those are
- * whole sentences for a run's own page, these are three or four words for a triage column
- * that is 240px of 10px mono. "Blocked" alone is the complaint this map answers - it is true
- * of thirty rows at once and actionable on none of them.
- *
- * `phase` is a free `string` and NOT a union: `orphanBinding` and every `setRunState` caller
- * write their own reason code into it, and new ones appear without this map hearing about
- * it. So the lookup FALLS BACK to `phase.replaceAll("_", " ")`, which is the same fallback
- * `alerts.ts` already prints reasons with - two surfaces reading one field must not disagree
- * about what an unmapped code looks like, and an unmapped code has to degrade to readable
- * text rather than to `undefined`.
- */
-const BLOCKED_PHASE_CLAUSES: Record<string, string> = {
-  session_disappeared: "session gone",
-  round_limit: "out of rounds",
-  // Written by the gate as an EVENT kind today rather than as a phase (the phase it sets is
-  // `round_limit`), so this entry is insurance rather than a live case. It costs one line and
-  // it means a later code change cannot silently produce "inspector round limit" prose.
-  inspector_round_limit: "out of GitHub Inspector rounds",
-  infrastructure_error: "provider call failed",
-  inspector_findings: "GitHub Inspector findings",
-  inspector_disabled: "GitHub Inspector off",
-  inspector_pr_closed: "PR closed",
-  inspector_head_mismatch: "head moved",
-  inspector_gate_context_invalid: "gate context lost",
-  delivery_uncertain: "delivery unconfirmed",
-  delivery_refused: "delivery refused",
-  delivery_blocked: "delivery blocked",
-  stale_capture: "evidence went stale",
-  capture_error: "capture failed",
-  // The manager's two refusals for an evidence snapshot that did not move between rounds. Both
-  // were missing, so a run parked on either printed the raw phase code through the fallback
-  // below - "unchanged evidence exhausted" - in the one column whose whole job is being read.
-  unchanged_evidence: "evidence unchanged",
-  unchanged_evidence_exhausted: "evidence never changed",
-  // Not a block at all: the binding was reattached to a live session and the run is parked
-  // until somebody opens the next round. The clause says what HAPPENED; the remedy button
-  // beside it says what to do about it, which is why this is not "reattached, needs
-  // resubmit" - the second half would be the button repeating itself into a column that
-  // cannot hold it.
-  reattached_resubmit_required: "reattached",
-};
-
-/** The short cause for `phase`, or the phase code made readable when it is unmapped. */
-export function blockedPhaseClause(phase: string): string {
-  return BLOCKED_PHASE_CLAUSES[phase] ?? phase.replaceAll("_", " ");
-}
-
 const GATE_WAIT_SENTENCES: Record<WorkflowGateWaitReason, string> = {
   missing_pr: "No pull request has been opened for this work yet.",
   unadopted_pr: "A pull request exists, but GitHub Inspector has not adopted it as one we opened.",
@@ -1386,6 +1373,17 @@ export interface RunRecordIntentSummary {
   rawGoalCharacters: number;
   hasOpeningAsk: boolean;
   openingAskCharacters: number;
+  /**
+   * The freeze-time goal-provenance verdict, or null for a run nobody classified.
+   *
+   * Null and `objective` are different answers and the pane draws neither, so the distinction
+   * only matters to a reader of this model - but it is the distinction the column exists to
+   * keep: `objective` is a run that was measured and found healthy, null is a run created
+   * before there was anything to measure it with.
+   */
+  provenanceVerdict: WorkflowGoalProvenanceVerdict | null;
+  /** The sentence naming every check that matched, shown as the badge's accessible name. */
+  provenanceReason: string | null;
   decisionCount: number;
   /** Total characters across every decision body and rationale - the block this phase bounds. */
   decisionCharacters: number;
@@ -1398,9 +1396,296 @@ export interface RunRecordIntentSummary {
   blocking: boolean;
 }
 
+/**
+ * What the Evidence pane is, before a claim row or a thumbnail is drawn.
+ *
+ * `blocking` is deliberately NARROWER than "this submission has gaps". A gap on a run that is
+ * still moving is a fact the strip counts and the gap block names; it has not stopped anything,
+ * and a pane that seized the initial selection over it would drag every reader off the worklist
+ * on a run that is working perfectly well. `blocking` here means the readiness result has PARKED
+ * the run - the operator's decision is the only thing that moves it - which is the one case the
+ * plan's "a blocking state cannot hide" is about.
+ */
+export interface RunRecordEvidenceSummary {
+  /** The readiness verdict, or null when this submission was never evaluated. */
+  status: WorkflowEvidenceReadinessStatus | null;
+  /** Frozen author claims on the viewed submission. */
+  claimCount: number;
+  /** Canonical criteria the reconciliation could not satisfy. */
+  gapCount: number;
+  /** Canonical criteria carrying an advisory warning. */
+  warningCount: number;
+  /** Frozen images on the viewed submission, carried ones included. */
+  imageCount: number;
+  /** The run is parked on this submission's readiness result and waiting for a decision. */
+  blocking: boolean;
+  /**
+   * The round spent its evidence preflight refinements, so the retry button is withdrawn and
+   * the override is the only way through. A narrower fact than `blocking`, and both are read
+   * from the RUN rather than from the submission.
+   */
+  refinementsExhausted: boolean;
+}
+
+/**
+ * One Foreman completion claim, validated off the durable event rather than cast.
+ *
+ * Derived here rather than in the view because the pane's counting sentence is the thing a
+ * reader trusts without expanding five near-identical rows: on the run this was measured
+ * against, four of the five claims were `already_claimed` restating the same completion, and
+ * "4 already claimed, 1 started" is the whole of what those five paragraphs said.
+ */
+export interface RunCompletionClaim {
+  id: number;
+  completionKind: string;
+  marker: string;
+  summary: string;
+  state: string;
+}
+
+export function runCompletionClaims(detail: WorkflowRunDetail): RunCompletionClaim[] {
+  return detail.events.flatMap((event) => {
+    if (
+      event.kind !== "workflow_completion_claimed"
+      || !event.payload
+      || Array.isArray(event.payload)
+      || typeof event.payload !== "object"
+    ) return [];
+    const { completionKind, marker, summary, state } = event.payload;
+    if (
+      typeof completionKind !== "string"
+      || typeof marker !== "string"
+      || typeof summary !== "string"
+      || typeof state !== "string"
+    ) return [];
+    return [{ id: event.id, completionKind, marker, summary, state }];
+  });
+}
+
+/**
+ * What the Completion pane is, before a finding row or a claim row is drawn.
+ *
+ * `present` is what decides whether the tab exists AT ALL, and it is the only conditional pane
+ * in the bar: a run with no Inspector gate and no Foreman completion claim has no record of how
+ * it finishes, so it is offered no tab rather than an empty one.
+ *
+ * `blocking` is NARROWER than the phase document's "the gate has not passed", and the
+ * repository is why. `summary.gate` is `none` for most of a gated run's life - the run has not
+ * reached the gate yet - so "has not passed" would raise the badge, and with it the initial
+ * selection, on every gated run from its first round. That would drag a reader off the worklist
+ * on a run that is working perfectly well, which is exactly what the registry's `blocking`
+ * contract forbids. So it means what it says everywhere else in this bar: the run is STANDING
+ * STILL and the gate is why - open findings, a failed gate summary, one of the three gate
+ * waits, or a spent gate whose reconciliation is the decision left to make.
+ */
+export interface RunRecordCompletionSummary {
+  /** The run has an Inspector gate or at least one completion claim. No tab without it. */
+  present: boolean;
+  hasGate: boolean;
+  /** The gate chip, spent-gate reconciliation included, or null when there is no gate. */
+  gate: PipelineStatus | null;
+  /**
+   * Findings counted from the ROWS the table draws, never from `inspection.openFindings`.
+   * The Inspector's own tallies are a separate fact and keep their place in the ledger
+   * disclosure; a strip that disagreed with the table under it would be the collapsed summary
+   * telling the one lie this consolidation exists to prevent.
+   */
+  findingCount: number;
+  openFindings: number;
+  resolvedFindings: number;
+  /** The adopted pull request as the strip states it, or null when none was resolved. */
+  pullRequest: { number: number | null; url: string | null; state: string | null } | null;
+  /** The Inspector's review round, or null when nothing has been adopted. */
+  inspectorRound: number | null;
+  claimCount: number;
+  /** One sentence counting the claim states, or null when no claim was recorded. */
+  claimSentence: string | null;
+  blocking: boolean;
+}
+
 export interface RunRecordSummary {
   deliveries: RunRecordDeliverySummary;
+  evidence: RunRecordEvidenceSummary;
   intent: RunRecordIntentSummary;
+  completion: RunRecordCompletionSummary;
+}
+
+/**
+ * A finding's severity as a chip, on the tone mapping the finding CARD already used.
+ *
+ * The card split blocker and major (a danger edge) from minor and nit (an attention one). The
+ * table keeps exactly that split rather than inventing a four-tone scale: the severity word
+ * itself is on the chip, so the colour only has to say which half it is in.
+ */
+export function inspectorFindingSeverityStatus(severity: InspectorSeverity): PipelineStatus {
+  return severity === "blocker" || severity === "major"
+    ? { tone: "failed", label: severity }
+    : { tone: "waiting", label: severity };
+}
+
+/** A finding's status as a chip. Only `resolved` is a finished fact. */
+export function inspectorFindingStatusStatus(status: InspectorCommentStatus): PipelineStatus {
+  if (status === "resolved") return { tone: "passed", label: status };
+  return status === "posting"
+    ? { tone: "waiting", label: status }
+    : { tone: "failed", label: status };
+}
+
+/** Where a finding is, as the table prints it. `general` for a finding with no path. */
+export function inspectorFindingLocation(finding: InspectorComment): string {
+  if (!finding.path) return "general";
+  return finding.line ? `${finding.path}:${finding.line}` : finding.path;
+}
+
+/**
+ * A finding whose detail predates body persistence, said once.
+ *
+ * The card printed this sentence in place of the body; the row keeps it rather than drawing an
+ * empty panel, because "this build has no body for this row" and "this finding had nothing to
+ * say" are different claims and only one of them is true.
+ */
+export const LEGACY_FINDING_SENTENCE =
+  "Legacy finding: detail was not persisted by the GitHub Inspector version that created this row.";
+
+/**
+ * A Foreman completion claim's outcome, as a chip.
+ *
+ * The WORDS come from `completionClaimOutcome`, which is the one place this page says what a
+ * claim state means; only the tone is added here, so the chip and the sentence under the rows
+ * cannot drift into two vocabularies for one record.
+ *
+ * The state is an unvalidated string off a durable event, so this is a switch with a NEUTRAL
+ * default rather than a `Record` over a union: a state a later daemon writes must not fall
+ * through to green. `already_claimed` is amber rather than red - a second claim of one
+ * completion is the ordinary, correct answer, not a failure - and `blocked` IS red, because the
+ * run turned that claim away and the session was told it had completed anyway.
+ */
+export function completionClaimStatus(state: string): PipelineStatus {
+  const label = completionClaimOutcome(state).label;
+  switch (state) {
+    case "started":
+    case "resubmitted":
+      return { tone: "passed", label };
+    case "already_claimed":
+      return { tone: "waiting", label };
+    case "blocked":
+      return { tone: "failed", label };
+    default:
+      return { tone: "stopped", label };
+  }
+}
+
+/** What a finding's row prints as its body, legacy arm included. */
+export function inspectorFindingBody(finding: InspectorComment): string {
+  return finding.body ?? LEGACY_FINDING_SENTENCE;
+}
+
+/** The three statuses in which the run itself is halted on the gate rather than moving. */
+const GATE_WAIT_STATUSES: readonly WorkflowRunStatus[] = [
+  "waiting_for_pr",
+  "waiting_for_inspector",
+  "waiting_for_new_head",
+];
+
+/**
+ * Five claims that say the same thing, as one sentence.
+ *
+ * Ordered by count and then by first appearance rather than alphabetically, so the state that
+ * dominates the record leads the sentence - which is the fact a reader is after when a run
+ * recorded the same completion five times.
+ */
+function completionClaimSentence(claims: readonly RunCompletionClaim[]): string | null {
+  if (claims.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const claim of claims) counts.set(claim.state, (counts.get(claim.state) ?? 0) + 1);
+  const parts = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([state, count]) => `${count} ${completionClaimOutcome(state).label}`);
+  return `${claims.length} claim${claims.length === 1 ? "" : "s"} on this run: ${parts.join(", ")}.`;
+}
+
+/**
+ * What each state PRESENT on this run means, once each, in the order the sentence counts them.
+ *
+ * `completionClaimOutcome` gives every claim a sentence, and the card printed it per claim.
+ * That is the thing this pane exists to stop: on the run this was measured against four claims
+ * shared one state, so the card printed one identical sentence four times. The sentence is a
+ * fact about the STATE rather than about the claim, so it is stated once and the rows carry the
+ * chip that points at it. Nothing is dropped - every sentence a card could have shown is here.
+ */
+export function completionClaimOutcomeSentences(
+  claims: readonly RunCompletionClaim[],
+): string[] {
+  const counts = new Map<string, number>();
+  for (const claim of claims) counts.set(claim.state, (counts.get(claim.state) ?? 0) + 1);
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .flatMap(([state]) => {
+      const outcome = completionClaimOutcome(state);
+      return outcome.sentence ? [`${outcome.label}: ${outcome.sentence}`] : [];
+    });
+}
+
+function runRecordCompletionSummary(detail: WorkflowRunDetail): RunRecordCompletionSummary {
+  const gate = detail.inspectorGate;
+  const claims = runCompletionClaims(detail);
+  const findings = gate?.findings ?? [];
+  const openFindings = findings.filter((finding) => finding.status !== "resolved").length;
+  const number = gate?.inspection?.number ?? detail.summary.gatePrNumber ?? null;
+  const blocking = Boolean(gate) && (
+    openFindings > 0
+    || detail.summary.gate === "findings"
+    || detail.summary.gate === "blocked"
+    || GATE_WAIT_STATUSES.includes(detail.run.status)
+    // A spent gate is a stopped run whose only remaining move is a decision about the gate,
+    // and the two ledgers under it are the evidence for that decision.
+    || spentInspectorGateCondition(detail) !== null
+  );
+  return {
+    present: Boolean(gate) || claims.length > 0,
+    hasGate: Boolean(gate),
+    gate: gate
+      ? spentInspectorGateStatus(detail) ?? gateSummaryStatus(detail.summary.gate)
+      : null,
+    findingCount: findings.length,
+    openFindings,
+    resolvedFindings: findings.length - openFindings,
+    pullRequest: gate && (number !== null || gate.state.prUrl)
+      ? {
+          number,
+          url: gate.state.prUrl,
+          state: gate.inspection?.observedState ?? gate.inspection?.state ?? null,
+        }
+      : null,
+    inspectorRound: gate?.inspection?.round ?? null,
+    claimCount: claims.length,
+    claimSentence: completionClaimSentence(claims),
+    blocking,
+  };
+}
+
+
+/**
+ * Whether the run is standing still on THIS submission's readiness result.
+ *
+ * Three facts have to agree, and each one is load-bearing: the run itself is parked on
+ * readiness (either waiting, or blocked because the refinement cap was spent), the submission
+ * being read is the newest one, and that submission is itself still waiting. Scrubbing back to
+ * round 1 of a parked run must not report round 1 as the thing being decided, and a run that
+ * has since moved on must not keep an old round's block on screen.
+ */
+function readinessParked(
+  detail: WorkflowRunDetail,
+  viewed: WorkflowSubmission | null,
+): { blocking: boolean; refinementsExhausted: boolean } {
+  const refinementsExhausted = detail.run.status === "blocked"
+    && detail.run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE;
+  const runParked = detail.run.status === "waiting_for_evidence_readiness" || refinementsExhausted;
+  const latest = orderedSubmissions(detail).at(-1) ?? null;
+  const onLatest = viewed === null || (latest !== null && viewed.id === latest.id);
+  const submissionWaiting = viewed?.status === "waiting_for_evidence_readiness";
+  const blocking = runParked && onLatest && submissionWaiting;
+  return { blocking, refinementsExhausted: blocking && refinementsExhausted };
 }
 
 /**
@@ -1440,6 +1725,8 @@ export function runRecordSummary(
     detail.submissions.find((submission) => submission.id === submissionId)?.round ?? null;
   const { state, context } = runRecordIntentState(detail, viewed);
   const decisions = context?.humanDecisions ?? [];
+  const readiness = viewed?.readiness ?? null;
+  const parked = readinessParked(detail, viewed);
   return {
     deliveries: {
       total: deliveries.length,
@@ -1462,12 +1749,36 @@ export function runRecordSummary(
         : deliveries.filter((delivery) => roundOf(delivery.submissionId) === viewedRound).length,
       blocking: refused > 0 || uncertain > 0,
     },
+    evidence: {
+      status: readiness?.status ?? null,
+      claimCount: viewed
+        ? detail.evidenceCoverage
+          ?.find((group) => group.submissionId === viewed.id)?.coverage.length ?? 0
+        : 0,
+      // Criteria, not codes. Five criteria each missing coverage is five things a reader has to
+      // answer for; the two distinct codes behind them are not, and "Gaps 2" would understate
+      // the work by more than half on exactly the submission that needs the number.
+      gapCount: readiness?.criteria.filter((criterion) => criterion.gaps.length > 0).length ?? 0,
+      warningCount: readiness?.criteria
+        .filter((criterion) => criterion.warnings.length > 0).length ?? 0,
+      imageCount: viewed
+        ? detail.evidenceImages?.find((group) => group.submissionId === viewed.id)?.images.length
+          ?? 0
+        : 0,
+      blocking: parked.blocking,
+      refinementsExhausted: parked.refinementsExhausted,
+    },
     intent: {
       state,
       refinedGoal: context?.primaryGoal.refined ?? null,
       rawGoalCharacters: context?.primaryGoal.rawPrompt.length ?? 0,
       hasOpeningAsk: Boolean(context?.primaryGoal.openingAsk),
       openingAskCharacters: context?.primaryGoal.openingAsk?.length ?? 0,
+      // Off the RUN, not off the round's captured context. The verdict describes one freeze at
+      // run creation, so every round of the run reports the same one and a scrubbed-to round
+      // does not appear to have been classified separately.
+      provenanceVerdict: detail.run.intentProvenance?.verdict ?? null,
+      provenanceReason: detail.run.intentProvenance?.reason ?? null,
       decisionCount: decisions.length,
       decisionCharacters: decisions.reduce(
         (total, decision) => total + decision.decision.length + (decision.rationale?.length ?? 0),
@@ -1489,8 +1800,285 @@ export function runRecordSummary(
       // cannot audit, which is the thing that stops a reader dead.
       blocking: state === "corrupt" || state === "unreadable",
     },
+    completion: runRecordCompletionSummary(detail),
   };
 }
+
+/**
+ * A persisted gap, warning or role code, spelled for a person.
+ *
+ * One place, because these codes reach three surfaces in the Evidence pane - the gap block's
+ * chip, a claim row's inline note and an image card's "cited as" line - and a reader who saw
+ * `missing_rendered_output` on one and "missing rendered output" on another would reasonably
+ * think they were different findings.
+ */
+export function evidenceCodeLabel(code: string): string {
+  return code.replaceAll("_", " ");
+}
+
+/**
+ * The gapped canonical criteria with NO author claim to sit a row under, in the record's order.
+ *
+ * These get a block of their own rather than being folded into the claim rows, and that is the
+ * whole reason the reconciliation survives this consolidation. A gap belongs to a CANONICAL
+ * criterion, and on the submission this was measured against five of the six had
+ * `matchedClientCriterionId: null` - no author claim at all to sit a row under. Merging the two
+ * lists would have deleted exactly the finding a reader came for.
+ *
+ * Matched-AND-gapped is the case the filter exists for, and it is not rare: the reconciliation
+ * accepts a claim for a criterion and still records a gap against it, which is what happens when
+ * the proof class does not satisfy the requirement. `evidenceClaimStatus` already prints that
+ * gap on the claim's own row. Listing it here as well would say it twice, the second time under
+ * a heading that tells the reader it has no row below - which is false for exactly these.
+ */
+export function readinessGapCriteria(
+  readiness: WorkflowEvidenceReadinessResult | null | undefined,
+): WorkflowEvidenceReadinessCriterion[] {
+  return (readiness?.criteria ?? [])
+    .filter((criterion) => criterion.gaps.length > 0 && criterion.matchedClientCriterionId === null);
+}
+
+/** What a frozen author claim's row says about itself, once the reconciliation has spoken. */
+export interface RunEvidenceClaimStatus {
+  label: string;
+  /** The `workflow-` chip tone this maps onto. */
+  tone: "completed" | "waiting" | "failed";
+  /** Gap or warning codes to print inline, already spelled. */
+  notes: string[];
+}
+
+/**
+ * Match a claim to its canonical criterion BY ID, never by the criterion text.
+ *
+ * `matchedClientCriterionId` is the reconciliation's own answer to "which author claim did I
+ * accept for this criterion". Matching on the wording instead works only where the author's
+ * phrasing and the compacted canonical phrasing happen to be identical - which is precisely the
+ * submission that has no gaps to report - and silently reports every real mismatch as unlinked.
+ */
+export function evidenceClaimStatus(
+  claim: WorkflowEvidenceCoverageClaim,
+  readiness: WorkflowEvidenceReadinessResult | null | undefined,
+): RunEvidenceClaimStatus {
+  const criterion = (readiness?.criteria ?? [])
+    .find((entry) => entry.matchedClientCriterionId === claim.clientCriterionId) ?? null;
+  if (criterion?.gaps.length) {
+    return { label: "gaps", tone: "failed", notes: criterion.gaps.map(evidenceCodeLabel) };
+  }
+  if (criterion?.warnings.length) {
+    return { label: "warning", tone: "waiting", notes: criterion.warnings.map(evidenceCodeLabel) };
+  }
+  if (criterion) return { label: "linked", tone: "completed", notes: [] };
+  if (claim.links.length === 0) {
+    return { label: "no evidence linked", tone: "waiting", notes: [] };
+  }
+  // No criterion answers for this claim. When a reconciliation ran, that is a fact about the
+  // claim - the author proved something nobody asked for - and it is stated rather than dressed
+  // up as a pass. When none ran there is nothing to reconcile against and the claim stands.
+  return readiness && readiness.criteria.length > 0
+    ? { label: "not reconciled", tone: "waiting", notes: [] }
+    : { label: "linked", tone: "completed", notes: [] };
+}
+
+/** Who cites one frozen image, and as what. */
+export interface RunEvidenceImageCitation {
+  /**
+   * The public item id the author's claims cite this image by, or null when this build cannot
+   * bridge the two - see `runEvidenceCitations`.
+   */
+  clientItemId: string | null;
+  /** How many frozen author claims cite it. */
+  claims: number;
+  /** The roles it is cited as, deduplicated, in first-seen order. */
+  roles: WorkflowEvidenceProofRole[];
+}
+
+export interface RunEvidenceCitations {
+  /**
+   * The citation for one frozen image, cited or not.
+   *
+   * A function rather than the map it reads, because the answer is TOTAL over the images this
+   * was built from: an uncited image has a citation of no claims, which is a different record
+   * from an absent one. Exposed as a map, every caller wrote `get(id)?.` or `get(id)!` around
+   * an `undefined` no run can produce - a branch that cannot be tested because it cannot happen.
+   */
+  citationFor: (imageId: string) => RunEvidenceImageCitation;
+  /** Keyed by `clientCriterionId`. Only claims that cite at least one image appear. */
+  byClaim: ReadonlyMap<string, WorkflowEvidenceImage[]>;
+}
+
+/** What an id this run froze no image for answers, so the lookup never returns nothing. */
+const UNCITED: RunEvidenceImageCitation = { clientItemId: null, claims: 0, roles: [] };
+
+/**
+ * Which claims cite which frozen images, both ways round.
+ *
+ * The bridge is the readiness result and it has to be, which is worth stating because it is the
+ * one thing here that is a limitation rather than a choice. A coverage claim links evidence by
+ * the author's public `clientItemId`; a frozen image is identified by the daemon's own row id
+ * and `WorkflowEvidenceImage` deliberately carries no client id at all. The one place the two
+ * appear together in anything the browser is sent is `WorkflowEvidenceReadinessLink`, which
+ * pairs `clientItemId` with the `evidenceId` the reconciliation resolved it to.
+ *
+ * So an image whose id never appears in a readiness link cannot be tied to a claim here, and it
+ * renders with no item id and no "cited by" line rather than with a guess. Closing that needs a
+ * client id on the frozen image record, which is a wire-contract change this work explicitly
+ * does not make.
+ */
+export function runEvidenceCitations(input: {
+  images: readonly WorkflowEvidenceImage[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  readiness: WorkflowEvidenceReadinessResult | null | undefined;
+}): RunEvidenceCitations {
+  const itemIdOf = new Map<string, string>();
+  const imageIdOf = new Map<string, string>();
+  const frozen = new Set(input.images.map((image) => image.id));
+  for (const criterion of input.readiness?.criteria ?? []) {
+    for (const link of criterion.links) {
+      if (!frozen.has(link.evidenceId)) continue;
+      itemIdOf.set(link.evidenceId, link.clientItemId);
+      imageIdOf.set(link.clientItemId, link.evidenceId);
+    }
+  }
+  const byImage = new Map<string, RunEvidenceImageCitation>(input.images.map((image) => [
+    image.id,
+    { clientItemId: itemIdOf.get(image.id) ?? null, claims: 0, roles: [] },
+  ]));
+  const byClaim = new Map<string, WorkflowEvidenceImage[]>();
+  for (const claim of input.coverage) {
+    const cited: WorkflowEvidenceImage[] = [];
+    // One count per CLAIM, not per link: a claim citing the same image as two roles cites it
+    // once, and "cited by 2 claims" over a list of one would be the surface lying about how
+    // much of the packet rests on that picture.
+    const seen = new Set<string>();
+    for (const link of claim.links) {
+      const imageId = imageIdOf.get(link.clientItemId);
+      if (!imageId) continue;
+      const citation = byImage.get(imageId);
+      if (!citation) continue;
+      if (!citation.roles.includes(link.role)) citation.roles.push(link.role);
+      if (seen.has(imageId)) continue;
+      seen.add(imageId);
+      citation.claims += 1;
+      const image = input.images.find((entry) => entry.id === imageId);
+      if (image) cited.push(image);
+    }
+    if (cited.length > 0) byClaim.set(claim.clientCriterionId, cited);
+  }
+  return { citationFor: (imageId) => byImage.get(imageId) ?? UNCITED, byClaim };
+}
+
+/**
+ * "cited by 3 claims as rendered output", or nothing at all.
+ *
+ * Nothing at all is the honest answer where the record could not bridge the image to a claim
+ * id: "cited by 0 claims" would read as "the author proved nothing with this", which is a
+ * different and much stronger statement than "this build cannot tell".
+ */
+export function evidenceCitationSentence(citation: RunEvidenceImageCitation): string | null {
+  if (citation.clientItemId === null) return null;
+  if (citation.claims === 0) return "Cited by no frozen claim";
+  const roles = citation.roles.map(evidenceCodeLabel);
+  const as = roles.length === 0
+    ? ""
+    : ` as ${roles.length === 1 ? roles[0] : `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}`}`;
+  return `Cited by ${citation.claims} claim${citation.claims === 1 ? "" : "s"}${as}`;
+}
+
+/**
+ * The Evidence pane's decisions, out of the JSX and into the file that owns decisions.
+ *
+ * These were arrow functions inline in `WorkflowRuns.tsx`, and inline is where a decision goes
+ * to hide: an arrow passed to `onClick` or assigned into a control object is `anonymous_N` in a
+ * coverage report and cannot be told from anyone else's, so nothing could say whether the rule
+ * inside it had ever been exercised. That is this file's stated job - "decision rules live in
+ * `run-model.ts` so they can be checked without rendering" - and the pane's rules had been
+ * written past it.
+ *
+ * Each one is a question with an answer, not a handler: the view still owns the state setters
+ * and the request, and calls these to decide what to show and what to send.
+ */
+
+/**
+ * Whether this image may be staged again for the next fresh review.
+ *
+ * A carried record is deliberately excluded. It is the same digest the capturing submission
+ * already offers, so a second button would stage the same bytes twice over and imply this
+ * submission captured them itself.
+ */
+export function restageOffered(
+  image: Pick<WorkflowEvidenceImage, "availability" | "inheritedFrom">,
+  canRestage: boolean,
+  hasHandler: boolean,
+): boolean {
+  return canRestage
+    && hasHandler
+    && !image.inheritedFrom
+    && image.availability === "retained";
+}
+
+/**
+ * The client item id this image will be re-staged under, minted once and then reused.
+ *
+ * Reused rather than re-minted because a second id for the same bytes is a second staged item:
+ * the daemon deduplicates by digest, but the tray would carry two rows pointing at one picture,
+ * and an operator pressing the button twice has asked for one thing.
+ */
+export function restageClientItemId(
+  minted: Map<string, string>,
+  imageId: string,
+  newId: () => string = () => crypto.randomUUID(),
+): string {
+  const existing = minted.get(imageId);
+  if (existing) return existing;
+  const clientItemId = `history-${newId()}`;
+  minted.set(imageId, clientItemId);
+  return clientItemId;
+}
+
+/** What the re-stage control says, which is a claim about the daemon rather than the click. */
+export function restageLabel(settled: boolean): string {
+  return settled ? "Ready for next review" : "Use in next review";
+}
+
+/** Pressable only while nothing is in flight and the daemon has not already accepted it. */
+export function restageDisabled(inFlight: boolean, settled: boolean): boolean {
+  return inFlight || settled;
+}
+
+/**
+ * Any thrown value as a sentence, for a surface that has to say what went wrong.
+ *
+ * A rejected request carries the daemon's own reason and that is what an operator needs; a
+ * non-Error rejection has nothing to read, so it gets the one sentence that is still true.
+ */
+export function evidenceActionError(caught: unknown, fallback: string): string {
+  return caught instanceof Error ? caught.message : fallback;
+}
+
+/**
+ * Whether "Continue despite gaps" may be pressed.
+ *
+ * Three conditions, and the reason is the one that carries the record: an override with an
+ * empty reason is an unexplained decision in the durable log, which is the thing the field
+ * exists to prevent.
+ */
+export function readinessOverrideDisabled(
+  busy: "retry" | "override" | null,
+  acknowledged: boolean,
+  reason: string,
+): boolean {
+  return busy !== null || !acknowledged || reason.trim().length === 0;
+}
+
+/** The two readiness controls' labels, so an in-flight press cannot read as a settled one. */
+export function readinessActionLabel(
+  action: "retry" | "override",
+  busy: "retry" | "override" | null,
+): string {
+  if (action === "retry") return busy === "retry" ? "Retrying…" : "Retry evidence preflight";
+  return busy === "override" ? "Continuing…" : "Continue despite gaps";
+}
+
 
 /**
  * How many decisions, and how much prose, the collapsed list is standing in for.
@@ -1623,8 +2211,107 @@ export function runRefusedSentence(detail: WorkflowRunDetail): string | null {
       return `The evidence captured for round ${round} is identical to the round before it,`
         + " so the reviewers were not run against it.";
     default:
-      return null;
+      // No `case` per capture phase: the decoder owns that set, and a copy here would drift.
+      return captureRefusedSentence(detail);
   }
+}
+
+/** The failing item, as a reader names it, or null when the row never recorded one. */
+function captureFailureItem(failure: WorkflowCaptureFailure): string | null {
+  // An id with no name is still what a re-registration replaces.
+  if (!failure.itemName) return failure.itemClientId;
+  return failure.itemClientId
+    ? `${failure.itemName} (registered as ${failure.itemClientId})`
+    : failure.itemName;
+}
+
+/**
+ * Why evidence capture refused this round, and which of the two recoveries works.
+ *
+ * The cause is the daemon's own message, not a clause composed from `failure.code`: a dozen
+ * codes reach these phases, so a code map would need the silent fallback being repaired here.
+ */
+function captureRefusedSentence(detail: WorkflowRunDetail): string | null {
+  const failure = workflowCaptureFailure({
+    status: detail.run.status,
+    phase: detail.run.currentPhase,
+    gateState: detail.run.gateState ?? null,
+  });
+  if (!failure) return null;
+  const item = captureFailureItem(failure);
+  const reason = failure.error.replace(/[.\s]+$/, "");
+  /*
+   * `resumeCapture` revives the same submission and therefore the same immutable reservation,
+   * so under `image_evidence_capture` resuming re-checks the very bytes that were refused.
+   * Under the other three the reservation is not what failed, and saying so would be untrue.
+   */
+  const remedy = detail.run.currentPhase === "image_evidence_capture"
+    ? " A re-registered item is picked up by the next round and not by a resume: resuming"
+      + " replays the same frozen reservation, so it re-checks the very bytes that were just"
+      + " refused."
+    : " Starting the next round re-reads the session and captures its evidence again.";
+  return "Evidence capture refused this round, so nothing was reviewed and no repair round was"
+    + " spent."
+    + (item ? ` It stopped on ${item}: ${reason}.` : ` ${reason}.`)
+    + remedy;
+}
+
+/**
+ * What the daemon did with a refused completion claim, and how it is recovered - stated once.
+ *
+ * Two surfaces say both of these: the run header and the *Foreman completion claim* card. They
+ * frame it differently and only one of them has a timestamp, but they must not be able to
+ * disagree about what the refusal COST or what clears it, because that is a property of the
+ * daemon rather than of either view. Owning the clauses here is what makes a change to
+ * `claimForemanCompletion` a one-line edit instead of two that can be made separately.
+ */
+const REFUSED_CLAIM_CONSEQUENCE = "it opened no round and produced no submission";
+const REFUSED_CLAIM_RECOVERY = "Whatever evidence that turn registered is staged and waiting,"
+  + " and starting the next round is what picks it up.";
+
+/** Open rather than closed: these are persisted strings, so an unknown state must not throw. */
+const COMPLETION_CLAIM_OUTCOMES: Record<string, { label: string; sentence: string }> = {
+  started: {
+    label: "started the run",
+    sentence: "This claim created the run and the first submission it reviewed.",
+  },
+  resubmitted: {
+    label: "opened the next round",
+    sentence: "This claim opened the next repair round against freshly captured evidence.",
+  },
+  already_claimed: {
+    label: "already counted",
+    sentence: "A claim for this same turn had already been accepted, so this one opened no"
+      + " round of its own.",
+  },
+  blocked: {
+    label: "refused",
+    sentence: `The run was already blocked when this claim arrived, so ${REFUSED_CLAIM_CONSEQUENCE}`
+      + ` - and the session was told it had completed anyway. ${REFUSED_CLAIM_RECOVERY}`,
+  },
+};
+
+export function completionClaimOutcome(state: string): { label: string; sentence: string | null } {
+  const known = COMPLETION_CLAIM_OUTCOMES[state];
+  return known ?? { label: state.replaceAll("_", " "), sentence: null };
+}
+
+/**
+ * That the session finished again and the daemon would not take it, for a blocked run.
+ *
+ * Display only: the store still refuses the claim and still retires the prompted guard.
+ * Making a blocked run accept a fresh claim is a behavioural fix and a separate plan.
+ */
+export function runRefusedCompletionSentence(
+  detail: WorkflowRunDetail,
+  now = Date.now(),
+): string | null {
+  // Scoped to a run that is still blocked; on one that took another round the claim is history.
+  const refused = detail.refusedCompletion;
+  if (!refused || detail.run.status !== "blocked") return null;
+  return `This session finished again ${relativeTime(refused.at, now)} and the review could not`
+    + ` accept it: the run was already blocked, so ${REFUSED_CLAIM_CONSEQUENCE}.`
+    + ` ${REFUSED_CLAIM_RECOVERY}`;
 }
 
 /**
@@ -2725,7 +3412,7 @@ export function runTriageRound(summary: WorkflowRunSummary): string {
  * a reviewer, Inspector's next sweep, a pushed head - and calling those parked would put a
  * cause and a control on rows that need neither.
  */
-function runIsParked(summary: Pick<WorkflowRunSummary, "status" | "phase">): boolean {
+export function runIsParked(summary: Pick<WorkflowRunSummary, "status" | "phase">): boolean {
   return summary.status === "blocked"
     || (summary.status === "waiting_for_session"
       && summary.phase === "reattached_resubmit_required");

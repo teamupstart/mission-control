@@ -35,14 +35,16 @@ hook, and SDK adapters. Callers ask for a capability instead of branching on an 
 `missionTools` describes how Mission Control's own tools reach a model, independently of
 `mcp`, which describes the vendor's MCP client. Claude and Codex use launch-scoped MCP
 registrations reported by their launch builders. Pi declares a machine-scoped installed
-extension route and keeps `mcp: null`. That extension is not available in this phase, so Pi
-plan and scout requests are refused during repository preparation. Existing backlog tasks,
+extension route and keeps `mcp: null`. The [Pi extension](pi-extension.md) bridges the built
+MCP server and reports machine-scoped hooks. When the availability probe fails, Pi plan and
+scout requests are refused during repository preparation. Existing backlog tasks,
 workflow evidence requirements, and caller-required tools are checked again before dispatch
 acquires any worktree. The task keeps the integration refusal in its error field.
 
 The installation decision lives in [`mission-tools.ts`](../src/server/mission-tools.ts).
-Its `piExtensionInstalled` probe currently answers false; the extension phase supplies the
-probe, and the later Setup phase owns the environment reading. A launch that carries tools
+Its `piExtensionInstalled` probe temporarily checks `piExtensionPath()` for the built artifact.
+The installer remains a separate phase, and the later Setup phase replaces this probe with
+the authoritative environment reading. A launch that carries tools
 still passes the separate MCP bundle `initialize` and `tools/list` verification.
 
 Terminal mechanics are similarly collected in the [terminal registry](../src/server/terminal/registry.ts).
@@ -53,6 +55,16 @@ application that can show it to the operator.
 The multiplexer registry contains tmux, Herdr, and cmux in that order. The order preserves an
 inner tmux pane as the most specific identity, then prefers a persistent Herdr workspace over the
 outer self-hosting cmux surface when more than one backend can describe a process.
+
+cmux needs two things from the machine beyond its CLI, both checked and repairable in
+**Settings > Setup**: its app has to be running, since the control socket exists only while it
+is, and `automation.socketControlMode` has to be `allowAll` rather than the shipped `cmuxOnly`,
+which admits only processes cmux started itself. It is also the one backend whose paste submits.
+cmux's typing method writes a leading ESC in a terminal write of its own, so bracketed-paste
+markers written by hand reach the agent as an Escape keypress and the literal text `[200~`; its
+real paste verb delivers them correctly and appends a carriage return that no parameter
+suppresses. The adapter reports that the paste submitted and prompt delivery skips its own
+Enter, which is why the paste result carries the fact rather than the caller assuming it.
 
 ## Dispatch terminal preference
 
@@ -163,6 +175,14 @@ model provider. The browser preserves Pi's order and groups every returned row b
 provider. The selected value remains one exact provider-qualified string such as
 `anthropic/claude-sonnet-5`; no separate provider field is stored.
 
+**Amazon Bedrock is one of those providers, not a Mission Control feature.** Sign in to it from a
+Pi session with `/login amazon-bedrock`, and Pi's next catalog answer lists whatever models that
+account offers - `amazon-bedrock/deepseek.v3.2`, `amazon-bedrock/anthropic.claude-sonnet-4-5`, and
+so on - grouped under `amazon-bedrock` like any other provider. Mission Control keeps no allowlist
+of Bedrock models, no region, no profile name, and no AWS credential of any kind: the id is passed
+through to Pi unchanged on both runtimes, and Pi makes the call. Refreshing an expired AWS session
+is a Pi login, not a Mission Control setting.
+
 Codex's rows come from the configured local Codex installation and account, resolved the same way
 a Codex launch resolves it, including `MISSION_CODEX_BIN`. The daemon runs `codex app-server`,
 completes the handshake, asks `model/list`, and exits. **It starts no thread and no turn**, so the
@@ -187,9 +207,11 @@ too old to know `model/list` reports the same fallback as any other failure rath
 One degraded state is not a failure at all and is named separately: both harnesses answer with the
 models the account they are **signed in to** offers, so a signed-out installation replies
 successfully with an empty list. The notice says the harness reported no available models and that
-it is probably not signed in, and then names the step - open a Pi session and run `/login` to
-connect an Anthropic or Claude account (or set that provider's API key), or run `codex login` in a
-terminal. Retry alone cannot resolve it, which is why the notice no longer offers only that.
+it is probably not signed in, and then names the step - open a Pi session and run
+`/login <provider>` (`/login amazon-bedrock` for Amazon Bedrock), or set that provider's API key,
+or run `codex login` in a terminal. Pi's sentence names the command rather than one vendor's
+account, because Pi's catalog is whatever provider the operator configured. Retry alone cannot
+resolve it, which is why the notice no longer offers only that.
 
 A saved model absent from the current response is appended once as **not currently reported**. It
 remains selected and submit-safe in Harnesses Settings, ordinary and guided dispatch, recurring

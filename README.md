@@ -114,8 +114,9 @@ Some repository rules belong on your machine, not in every teammate's committed 
 those rules once in Mission Control and every new session it launches into that repository receives
 them before work starts.
 
-Instructions can be global or repository-specific, use longest-path matching for monorepos, and
-state exactly how they reach each harness and runtime. Running sessions keep the instructions they
+Global instructions are sent first, with repository instructions appended after them.
+The longest matching path selects a monorepo's repository addition. Settings explains how the
+instructions reach each harness and runtime. Running sessions keep the instructions they
 received at launch, so the UI shows the immutable snapshot rather than pretending a live system
 prompt changed.
 
@@ -170,10 +171,15 @@ Workflows turn a team's definition of done into reusable, inspectable automation
 before model reviewers, independent Personas review the same immutable evidence snapshot in
 parallel, and failed stages return one focused repair list to the agent before the workflow tries
 again. Published definitions are frozen, so a later edit cannot rewrite what an earlier run meant.
+By default, judges that have passed are skipped on later repair rounds of that run. Turn off
+**Skip judges that already passed** in Settings > Workflows to require fresh reviews each round.
 
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
+
+When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
+Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
 
 ![Mission Control workflow run](docs/images/workflows.png)
 
@@ -286,6 +292,61 @@ setting in the app or use the environment variable as a process-level fallback:
 
 See [Configuration](docs/configuration.md) for the complete precedence rules and transport
 tradeoffs.
+
+## Pi session integration
+
+The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
+attributed usage for hand-run Pi sessions. For a first installation, open **Settings > Setup >
+Agent extensions > Install Pi integration**. You can also enable it from a durable built checkout:
+
+```sh
+npm run build
+npm run install-pi-extension
+```
+
+This installs a machine-wide symlink at `~/.pi/agent/extensions/mission-control.js` and leaves
+the integration enabled. Start a fresh Pi session normally; it loads the extension without
+being launched through Mission Control or passing `-e`. Building alone installs nothing.
+Keep the built checkout available because the installed link points to its extension artifact.
+The standalone installer also works when the running app predates the configuration API.
+
+Setup reports dangling or deleted links, load failures, stale extension builds, and stale MCP
+tools. Pi itself says nothing about a dangling link; a bundle that throws while loading can
+prevent every Pi session from starting. The warning is report-only and offers a copyable manual
+installer command. Rebuild and run it from a durable clone, then press **Re-check**. Setup
+never repairs an existing integration.
+
+To disable the integration and remove its managed link durably:
+
+```sh
+npm run install-pi-extension -- --uninstall
+```
+
+A daemon with Pi extension configuration support also accepts HTTP requests:
+
+```sh
+curl --fail-with-body -sS -X PUT http://127.0.0.1:7317/api/extensions/pi/config \
+  -H 'Content-Type: application/json' -d '{"enabled":true}'
+curl -fsS http://127.0.0.1:7317/api/extensions/pi/config
+```
+
+Send `{"enabled":false}` with the same PUT request to disable it; GET returns the persisted
+intent. Use the daemon's configured port if different from 7317. Start a fresh Pi after either
+change; an already loaded extension stays in that process until it exits. A conflict returns
+HTTP 409 with the saved intent and reconciliation problems; unrelated files are left untouched.
+
+An explicit `MISSION_HOME` (or supported legacy alias) scopes installation to that state's
+`pi-extensions` directory instead of the machine-wide location. `PI_EXTENSIONS_DIR` overrides
+the destination directory. For a custom Pi home, point it at the `extensions` directory of the
+home Pi actually uses: Pi's `PI_CODING_AGENT_DIR` must agree. `PI_EXTENSIONS_DIR` controls the
+Mission Control installer, not Pi's loader.
+
+`npm run install-hooks -- --uninstall` also removes the managed extension link, but leaves its
+saved intent unchanged. Disable Pi integration first if the daemon may start again. Installing
+Claude hooks never enables Pi integration.
+
+See the [Pi extension reference](docs/pi-extension.md) for reconciliation, isolation, lifecycle,
+and build contracts.
 
 ## Community participation
 

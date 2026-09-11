@@ -42,9 +42,13 @@ const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
 const { withTaskKindContract } = await import("../src/server/task-contract.ts");
 const { WorktreeManager } = await import("../src/server/worktrees/manager.ts");
 const { HarnessesConfigSchema } = await import("../src/shared/protocol.ts");
+const { HARNESS_CAPABILITIES, resolveSessionRuntime } = await import(
+  "../src/shared/harness-capabilities.ts"
+);
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 type Session = import("../src/shared/types.ts").Session;
+type SessionRuntime = import("../src/shared/types.ts").SessionRuntime;
 
 after(() => {
   rmSync(home, { recursive: true, force: true });
@@ -112,11 +116,49 @@ test("the resolver reads the stored choice, and falls back rather than guessing"
     .run("harnesses", JSON.stringify({ sessionRuntime: { claude: "quantum" } }));
   assert.equal(resolveDispatchRuntime("claude"), "terminal");
 
-  // A runtime this build knows but this harness declares no driver for: pi. Stored while a
-  // driver existed and read back after it was removed is the same shape, and dispatching
-  // into it anyway would launch something the operator's last instruction did not describe.
+  // Pi's managed driver is REACHED through the stored choice, exactly like the other two.
+  // It is not the shipped default (see `DEFAULT_HARNESSES_SESSION_RUNTIMES`), so this is
+  // the only way an operator gets it - and a resolver that ignored the toggle would leave
+  // the runtime unreachable no matter what the panel showed.
   setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  assert.equal(resolveDispatchRuntime("pi"), "sdk");
+  setHarnessesConfig({ sessionRuntime: { pi: "terminal" } });
   assert.equal(resolveDispatchRuntime("pi"), "terminal");
+
+});
+
+test("a runtime the harness does not offer still falls back, and says which one", () => {
+  // The UNSUPPORTED branch, which no shipped harness can reach any more: all three now
+  // declare both runtimes. It still has to work, because it is what a DOWNGRADE reads - a
+  // toggle stored while a driver existed, read back by a build that no longer has it, must
+  // dispatch into a terminal and SAY so rather than launch something the operator's last
+  // instruction did not describe.
+  //
+  // The capability's `runtimes` PROPERTY is swapped rather than its array mutated, so
+  // `HARNESSES.pi.runtimes` - which holds the original array by reference from the spread
+  // in the registry - is untouched, and the swap is undone before anything else reads it.
+  const capabilities = HARNESS_CAPABILITIES.pi as { runtimes: readonly SessionRuntime[] };
+  const declared = capabilities.runtimes;
+  try {
+    capabilities.runtimes = ["terminal"];
+    assert.deepEqual(resolveSessionRuntime("pi", "sdk"), {
+      runtime: "terminal",
+      unknown: null,
+      unsupported: "sdk",
+    });
+    assert.deepEqual(resolveSessionRuntime("pi", "quantum"), {
+      runtime: "terminal",
+      unknown: "quantum",
+      unsupported: null,
+    });
+  } finally {
+    capabilities.runtimes = declared;
+  }
+  assert.deepEqual(resolveSessionRuntime("pi", "sdk"), {
+    runtime: "sdk",
+    unknown: null,
+    unsupported: null,
+  });
 });
 
 test("a fresh config uses the Agent SDK for harnesses that declare an embedded driver", () => {

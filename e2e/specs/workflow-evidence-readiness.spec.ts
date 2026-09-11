@@ -8,6 +8,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { workflowCommandEvidenceContent } from "../../src/shared/workflow.ts";
+import { WorkflowContextSnapshotSchema } from "../../src/shared/protocol.ts";
 import type {
   WorkflowEvidenceCoverageClaim,
   WorkflowEvidenceReadinessResult,
@@ -19,6 +20,21 @@ import {
 } from "../../src/server/workflows/test-evidence-audit.ts";
 
 const EVIDENCE = artifactsDir("workflow-evidence-readiness");
+
+/**
+ * The Evidence pane, which is where readiness lives now that the run record is a tab bar.
+ *
+ * Reached rather than assumed. A run parked on readiness selects this pane by itself - the
+ * block is what stopped the run, and a badge on a tab nobody clicks would leave it one click
+ * away - but a run that has since completed sits on the worklist, and this spec asserts the
+ * same controls in both states.
+ */
+async function evidencePane(page: Page): Promise<Locator> {
+  const tab = page.getByRole("tab", { name: /^Evidence/ });
+  await expect(tab).toBeVisible({ timeout: 30_000 });
+  if (await tab.getAttribute("aria-selected") !== "true") await tab.click();
+  return page.getByRole("tabpanel", { name: /^Evidence/ });
+}
 
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
@@ -503,13 +519,47 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${accepted.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("waiting_for_evidence_readiness");
 
-  let readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  /*
+   * FIRST PAINT, with nothing clicked. A readiness block has parked this run, so the run record
+   * opens on the pane holding it - the amber badge alone would leave the thing that stopped the
+   * run one click away, which is the constraint the tab design had to answer.
+   *
+   * Reloaded first, because the browser landed here while the round was still capturing and the
+   * initial pane is resolved ONCE per run on purpose: a state that turns blocking under a reader
+   * raises the badge and does not yank them off the pane they chose. This is the arriving case.
+   */
+  await dashboard.reload();
+  await expect(dashboard.getByRole("tab", { name: /^Evidence/ }))
+    .toHaveAttribute("aria-selected", "true", { timeout: 30_000 });
+  let readiness = await evidencePane(dashboard);
   await expect(readiness).toBeVisible();
   await expect(readiness).toContainText(
     "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient.",
   );
   await expect(readiness).toContainText("The dashboard result is visually correct");
-  await expect(readiness).toContainText("missing rendered output");
+  /*
+   * The gap is reported ONCE, on the row of the claim it was recorded against.
+   *
+   * The reconciliation matched this author claim to a canonical criterion and still recorded
+   * `missing_rendered_output` against it, because a focused command does not satisfy a visual
+   * requirement. That criterion therefore HAS a row below, so it is not named in the block of
+   * unmatched criteria - whose own sentence tells the reader those have no row to sit under.
+   * The canonical wording is still a disclosure away, under Canonical reconciliation.
+   */
+  // Exactly the claim row's own note: the disclosure below carries the same code prefixed with
+  // "Gaps:", and matching both would not prove which of them the reader actually sees.
+  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
+  await expect(readiness.getByRole("region", { name: "Unmatched canonical criteria" }))
+    .toHaveCount(0);
+  // By its title text: the control is a `<summary>`, which carries no implicit ARIA role for
+  // `getByRole` to select on.
+  const reconciliation = readiness.getByText("Canonical reconciliation", { exact: true });
+  await reconciliation.click();
+  await expect(readiness).toContainText(
+    "Keep focused execution green and retain inspectable acceptance evidence",
+  );
+  await expect(readiness).toContainText("Gaps: missing rendered output");
+  await reconciliation.click();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   await expect(readiness.getByRole("button", { name: "Continue despite gaps" })).toBeDisabled();
   await readiness.scrollIntoViewIfNeeded();
@@ -527,7 +577,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await expect(dashboard.locator("header.detail-head")
     .getByRole("button", { name: "Evidence preflight" })).toBeVisible();
   await dashboard.goto(`${daemon.baseURL}/#/runs/${accepted.run.id}`);
-  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  readiness = await evidencePane(dashboard);
 
   const submissionsBeforeUnchangedRetry = (await api<{ submissions: Array<{ id: string }> }>(
     daemon,
@@ -555,7 +605,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${accepted.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("completed");
   await dashboard.reload();
-  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  readiness = await evidencePane(dashboard);
   await expect(readiness).toContainText("ready");
   await expect(dashboard.getByRole("region", { name: "Rounds" })
     .getByText("captured to repair evidence preflight gaps", { exact: false })).toBeVisible();
@@ -572,7 +622,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${overrideRun.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("waiting_for_evidence_readiness");
   await dashboard.goto(`${daemon.baseURL}/#/runs/${overrideRun.run.id}`);
-  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  readiness = await evidencePane(dashboard);
   const overrideBox = readiness.getByRole("region", { name: "Evidence readiness override" });
   await overrideBox.getByLabel("Reason").fill("Operator accepts the missing rendered output for this run.");
   await overrideBox.getByLabel("Test Evidence Auditor may still reject this packet.").check();
@@ -691,24 +741,32 @@ test("a round's spent preflight refinements block the run and hand the decision 
   await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
     .toBe("waiting_for_evidence_readiness");
 
-  // The two refinements the cap leaves room for, taken through the daemon's own route.
+  // The sweep and the explicit retry share one reservation. Either can capture the newly
+  // staged packet first, so await the resulting child instead of requiring this request to win.
   let parentId = created.submission.id;
   for (const ordinal of [1, 2]) {
     stageLaterPacket(daemon, noteKey, session!.cwd, ordinal + 1, `cap-refine-${ordinal}`, false);
-    const refined = await api<{ submission: { id: string } }>(
-      daemon,
-      `/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
-      { requestId: `cap-refine-${ordinal}-${Date.now()}` },
+    const response = await fetch(
+      `${daemon.baseURL}/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
+      {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: `cap-refine-${ordinal}-${Date.now()}` }),
+      },
     );
-    parentId = refined.submission.id;
-    await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
-      .toBe("waiting_for_evidence_readiness");
+    expect([200, 409]).toContain(response.status);
+    await expect.poll(async () => {
+      const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`);
+      return { count: detail.submissions.length, parentId: detail.submissions.at(-1)?.parentSubmissionId,
+        status: detail.submissions.at(-1)?.status };
+    }, { timeout: 60_000 }).toEqual({ count: ordinal + 1, parentId, status: "waiting_for_evidence_readiness" });
+    const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`);
+    parentId = detail.submissions.at(-1)!.id;
   }
 
   // The healthy waiting round first, so the two controls the block changes are known to have
   // been there: this is the state every earlier segment of this round rendered in.
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
-  const readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  const readiness = await evidencePane(dashboard);
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   await expect(readiness.getByRole("region", { name: "Evidence readiness override" }))
     .not.toContainText("This round has spent its evidence preflight refinements");
@@ -764,7 +822,7 @@ test("a round's spent preflight refinements block the run and hand the decision 
   );
 });
 
-test("a Persona failing a packet the preflight passed shows the disagreement on the run timeline", async ({
+for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as const) test(`Persona readiness shows ${reviewCase} review and its recovery`, async ({
   dashboard,
   daemon,
 }) => {
@@ -774,7 +832,7 @@ test("a Persona failing a packet the preflight passed shows the disagreement on 
   // `e2e/fixtures/fake-claude.mjs` answers with a fixed, schema-valid fail verdict.
   const persona = await api<{ id: string }>(daemon, "/api/personas", {
     name: "Disagreement reviewer",
-    guidanceMarkdown: "# Disagreement reviewer\n\nE2E_FAIL_VERDICT",
+    guidanceMarkdown: `# Disagreement reviewer\n\n${reviewCase === "corrected" ? "E2E_CONTRACT_REVIEW E2E_CORRECT_REVIEW" : reviewCase === "exhausted" ? "E2E_CONTRACT_REVIEW" : "E2E_FAIL_VERDICT"}`,
   });
   const workflow = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E readiness disagreement",
@@ -839,9 +897,41 @@ test("a Persona failing a packet the preflight passed shows the disagreement on 
   ).submissions[0]?.readiness?.status, { timeout: 60_000 }).toBe("ready");
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)
-  ).run.status, { timeout: 60_000 }).toBe("waiting_for_session");
+  ).run.status, { timeout: 60_000 }).toBe(reviewCase === "corrected" ? "completed" : reviewCase === "exhausted" ? "blocked" : "waiting_for_session");
 
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  if (reviewCase === "corrected" || reviewCase === "exhausted") {
+    const detail = await api<{ attempts: Array<{ reviewRejections?: unknown[] }>; events: Array<{ kind: string }> }>(daemon, `/api/workflow-runs/${runId}`);
+    expect(detail.attempts.some((attempt) => (attempt.reviewRejections?.length ?? 0) > 0)).toBe(true);
+    const timeline = dashboard.locator("section.wf-run-timeline");
+    await expect(timeline).toContainText("Persona contract violation");
+    await expect(timeline).toContainText(reviewCase === "corrected" ? "accepted" : "exhausted");
+    if (reviewCase === "exhausted") {
+      await expect(dashboard.getByText(/Persona review contract error/).first()).toBeVisible();
+      await expect(dashboard.getByText("Rejected review responses", { exact: true })).toBeVisible();
+      await expect(dashboard.getByText("Rejected review responses", { exact: true }))
+        .toHaveAccessibleDescription("Show the review responses rejected by the review contract");
+      await capture(dashboard, "13-review-contract-recovery", dashboard.locator("article.wf-run-attempt").first());
+    }
+    await capture(dashboard, `11-contract-${reviewCase}`, timeline);
+    return;
+  }
+  if (reviewCase === "legacy") {
+    withDaemonDb(daemon, (db) => {
+      const row = db.prepare("SELECT id, verdict_json FROM workflow_node_attempts WHERE submission_id = ? AND persona_snapshot_json IS NOT NULL").get(created.submission.id) as { id: string; verdict_json: string };
+      const verdict = JSON.parse(row.verdict_json);
+      for (const change of verdict.requestedChanges) delete change.basis;
+      db.prepare("UPDATE workflow_node_attempts SET verdict_json = ?, review_input_json = NULL WHERE id = ?").run(JSON.stringify(verdict), row.id);
+    });
+    await dashboard.reload();
+    await evidencePane(dashboard);
+    const recovery = dashboard.getByRole("region", { name: "Evidence recovery", exact: true });
+    await expect(recovery).toContainText("legacy finding reasons may be unknown");
+    await capture(dashboard, "12-legacy-review-recovery", recovery);
+    await recovery.getByRole("button", { name: "Re-review evidence decision" }).click();
+    await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`)).submissions.length).toBe(2);
+    return;
+  }
   const timeline = dashboard.locator("section.wf-run-timeline");
   await expect(timeline.getByRole("heading", { name: "Timeline" })).toBeVisible();
   const disagreement = timeline.getByRole("listitem")
@@ -858,6 +948,92 @@ test("a Persona failing a packet the preflight passed shows the disagreement on 
   await expect(timeline.getByRole("heading", { name: "Round 1" })).toBeVisible();
   await expect(timeline.getByRole("listitem").filter({ hasText: "Persona verdict" }))
     .toContainText("verdict fail");
+  await expect(dashboard.getByText(/Structural readiness at review: ready/)).toBeVisible();
+  await capture(dashboard, "14-structural-and-substantive-review", dashboard.locator("article.wf-run-change").first());
   await disagreement.scrollIntoViewIfNeeded();
   await capture(dashboard, "09-readiness-review-disagreement", timeline);
+});
+
+test("mapping infrastructure recovery reuses frozen evidence and stops at its run budget", async ({ dashboard, daemon }) => {
+  test.setTimeout(180_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const versionId = await createWorkflow(daemon);
+  const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(daemon, "/api/sessions"))
+    .find((item) => item.id === sessionId)!;
+  const noteKey = session.agentSessionId ?? session.id;
+  withDaemonDb(daemon, (db) => {
+    db.prepare("INSERT INTO workflow_evidence_owners (note_key, generation, all_generation, updated_at) VALUES (?, 0, 0, ?)")
+      .run(noteKey, Date.now());
+  });
+  stageLaterPacket(daemon, noteKey, session.cwd, 1, "mapping-recovery", false);
+  const binding = await api<{ id: string }>(daemon, "/api/workflow-bindings", { workflowVersionId: versionId, sessionId, deliveryMode: "preview" });
+  const created = await api<{ run: { id: string }; submission: { id: string } }>(daemon,
+    `/api/workflow-bindings/${binding.id}/submit`, { requestId: "mapping-root" });
+  await expect.poll(async () => (await api<{ run: { status: string } }>(daemon,
+    `/api/workflow-runs/${created.run.id}`)).run.status).toBe("waiting_for_evidence_readiness");
+  // Reproduce a persisted failed mapping operation without launching a real model.
+  const failMapping = (submissionId: string): void => withDaemonDb(daemon, (db) => {
+    const row = db.prepare("SELECT context_json FROM workflow_submissions WHERE id = ?").get(submissionId) as { context_json: string };
+    const context = JSON.parse(row.context_json);
+    context.criterionMappings = [];
+    context.reconciliation = { version: 1, fingerprint: "a".repeat(64), status: "failed", method: "semantic", attempts: 2, error: "mapping timeout", cause: "transport" };
+    delete context.coverageSelection;
+    db.prepare("UPDATE workflow_submissions SET context_json = ?, status = 'failed' WHERE id = ?").run(JSON.stringify(context), submissionId);
+    db.prepare("UPDATE workflow_runs SET status = 'blocked', current_phase = 'evidence_reconciliation_error', gate_state_json = ? WHERE id = ?")
+      .run(JSON.stringify({ submissionId, error: "mapping timeout" }), created.run.id);
+  });
+  failMapping(created.submission.id);
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${created.run.id}`);
+  await evidencePane(dashboard);
+  const recovery = dashboard.getByRole("region", { name: "Evidence recovery", exact: true });
+  await expect(recovery).toContainText("frozen evidence");
+  await expect(recovery.getByRole("button", { name: "Retry criterion mapping" })).toBeVisible();
+  await expect(recovery.getByRole("button", { name: "Retry criterion mapping" }))
+    .toHaveAccessibleDescription("Retry with the frozen evidence in a new segment without spending an author repair");
+  await capture(dashboard, "10-mapping-recovery", recovery);
+  await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
+  await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon,
+    `/api/workflow-runs/${created.run.id}`)).submissions.length).toBe(2);
+  await expect.poll(async () => (await api<{ submissions: WorkflowSubmission[] }>(daemon,
+    `/api/workflow-runs/${created.run.id}`)).submissions[1]?.status).not.toBe("capturing");
+  const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
+  expect(detail.submissions.map((item) => item.round)).toEqual([1, 1]);
+  expect(detail.submissions[1]!.parentSubmissionId).toBe(created.submission.id);
+  expect(detail.submissions[0]!.status).toBe("failed");
+  // Recovery gives inherited records new row ids and provenance, while their proof stays frozen.
+  const frozenContent = (submission: WorkflowSubmission) => {
+    const { images, artifacts, ...repository } = WorkflowContextSnapshotSchema.parse(submission.context).evidence;
+    return {
+      ...repository,
+      images: images?.map(({ id: _id, createdAt: _createdAt, inheritedFrom: _inheritedFrom, ...proof }) => proof),
+      artifacts: artifacts?.map(({ id: _id, createdAt: _createdAt, inheritedFrom: _inheritedFrom, ...proof }) => proof),
+    };
+  };
+  expect(frozenContent(detail.submissions[1]!)).toEqual(frozenContent(detail.submissions[0]!));
+  let latest = detail.submissions[1]!;
+  for (let recoveryNumber = 2; recoveryNumber <= 3; recoveryNumber++) {
+    failMapping(latest.id);
+    await dashboard.reload();
+    await evidencePane(dashboard);
+    await recovery.getByRole("button", { name: "Retry criterion mapping" }).click();
+    await expect.poll(async () => {
+      const next = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
+      latest = next.submissions.at(-1)!;
+      return next.submissions.length === recoveryNumber + 1 && latest.status !== "capturing";
+    }).toBe(true);
+  }
+  failMapping(latest.id);
+  await dashboard.reload();
+  const pane = await evidencePane(dashboard);
+  await expect(recovery).toHaveCount(0);
+  await expect(dashboard.getByRole("button", { name: "Retry criterion mapping" })).toHaveCount(0);
+  await capture(dashboard, "15-recovery-budget-exhausted", pane);
+  const refused = await fetch(`${daemon.baseURL}/api/workflow-runs/${created.run.id}/submissions/${latest.id}/evidence-recovery`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: "over-budget" }),
+  });
+  expect(refused.status).toBe(409);
+  expect(await refused.text()).toContain("Evidence recovery limit reached");
+  const blocked = await api<{ run: { status: string }; submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${created.run.id}`);
+  expect(blocked.run.status).toBe("blocked");
+  expect(blocked.submissions).toHaveLength(4);
 });

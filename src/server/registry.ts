@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import { canRenameTerminal } from "./terminal/registry.ts";
+import { WORKFLOW_STEERING_LIMITS, type WorkflowSteeringNote } from "@shared/workflow.ts";
 import { PERMISSION_MODES } from "@shared/types.ts";
 import type {
   AgentType,
@@ -86,7 +89,7 @@ import { fullTaskTitle } from "@shared/title.ts";
 import { taskHasWorktrees, taskRepoPrSummaries, taskRepoRefs } from "@shared/task-repos.ts";
 import { isTerminalTask } from "@shared/task-status.ts";
 import { capabilitiesFor, workQueueBlockedReason } from "@shared/harness-capabilities.ts";
-import { canWriteTo, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import { canWriteTo, innermostPane, itermPaneToken, muxHandle, paneToken, terminalHomeNames, terminalResourceId, terminalResourceIds, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import type {
   PersonaView,
@@ -232,6 +235,10 @@ import {
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
+  upsertSessionGoalWithSteering,
+  readSessionGoalSteering,
+  isSessionGoalSteering,
+  pruneSessionGoalSteering,
   upsertSessionLaunchTurn,
   deleteSessionLaunchTurn,
   moveSessionLaunchTurn,
@@ -2263,6 +2270,7 @@ export class Registry extends EventEmitter {
       foremanInvite: null,
       name: d.name,
       nameSource: d.nameSource,
+      renameable: canRenameTerminal(d),
       state: "working",
       cwd: d.cwd,
       workspaceRoot: d.cwd,
@@ -2449,6 +2457,7 @@ export class Registry extends EventEmitter {
     );
     base.pipeline = this.pipelineLinkFor(base.cwd);
     base.task = this.taskSummaryFor(base.id, base.cwd, base.pipeline);
+    base.name = this.emulatorDisplayName(base);
     return base;
   }
 
@@ -7002,14 +7011,43 @@ export class Registry extends EventEmitter {
     if (!s) return;
     const summary = this.taskSummaryFor(id, s.cwd);
     const workspace = this.workspaceFor(id, s.cwd, s.runtime);
+    const name = this.emulatorDisplayName(s);
     if (
+      s.name === name &&
       JSON.stringify(s.task) === JSON.stringify(summary) &&
       s.workspaceRoot === workspace.root &&
       JSON.stringify(s.workspace ?? null) === JSON.stringify(workspace.view)
     ) return;
-    const next = { ...s, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
+    const next = { ...s, name, task: summary, workspaceRoot: workspace.root, workspace: workspace.view };
     this.sessions.set(id, next);
     this.emitSession(next);
+  }
+
+  /** A launch name belongs only to the task's bound session on its exact emulator resource. */
+  private dispatchedEmulatorTask(s: Session): Task | undefined {
+    const pane = innermostPane(s);
+    if (s.runtime !== "terminal" || pane?.kind !== "emulator") return undefined;
+    const resource = terminalResourceId(pane);
+    return this.listTasks().find((task) =>
+      task.sessionId === s.id && task.homeName && task.terminalResourceId === resource,
+    );
+  }
+
+  private emulatorDisplayName(s: Session): string {
+    const pane = innermostPane(s);
+    if (s.runtime !== "terminal" || pane?.kind !== "emulator") return s.name;
+    return this.dispatchedEmulatorTask(s)?.homeName ??
+      (pane.tabTitle || (s.cwd ? basename(s.cwd) : "") || `${s.agent} ${s.pid}`);
+  }
+
+  /** Update a launched card when its backend cannot retitle. Handles stay observed facts. */
+  nameDispatchedEmulatorSession(sessionId: string, name: string): boolean {
+    const session = this.sessions.get(sessionId);
+    const task = session && this.dispatchedEmulatorTask(session);
+    if (!task) return false;
+    this.upsertTask({ ...task, homeName: name, updatedAt: Date.now() });
+    refreshScoutPromptTitle(sessionId, sessionWorkEpisodeFor(sessionId)?.episodeId ?? null, name);
+    return true;
   }
 
   // ---- Foreman notes (auto-responder) ----
@@ -7749,11 +7787,37 @@ export class Registry extends EventEmitter {
     return this.mergeGoal(id, patch, now);
   }
 
+  /** The refiner's successful classification, still under its synchronous revision guard. */
+  resolveGoal(id: string, patch: SetGoal, instruction: string, now = Date.now()): SessionGoal | null {
+    const session = this.sessions.get(id);
+    if (!session) return null;
+    const revision = patch.resolvedPromptRevision;
+    // Accepted revisions already passed the Goal pipeline's consuming authorship guard.
+    // A permanent transcript label would wrongly suppress a later human retype here.
+    const steering: WorkflowSteeringNote | undefined = patch.relationship === "steer"
+      && revision !== undefined
+      ? { revision, instruction: clampPrompt(instruction.trim()), relationship: "steer",
+          rationale: (patch.rationale ?? "").slice(0, WORKFLOW_STEERING_LIMITS.rationale), timestamp: now }
+      : undefined;
+    return this.mergeGoal(id, patch, now, steering);
+  }
+
+  getGoalSteering(id: string, resolvedRevision: number): WorkflowSteeringNote[] {
+    const session = this.sessions.get(id);
+    return session ? readSessionGoalSteering(noteKeyFor(session), resolvedRevision) : [];
+  }
+
+  isGoalSteering(id: string, resolvedRevision: number, text: string): boolean {
+    const session = this.sessions.get(id);
+    return !!session && isSessionGoalSteering(noteKeyFor(session), resolvedRevision, clampPrompt(text.trim()));
+  }
+
   /** Opening provenance is private to accepted-prompt capture, not part of SetGoal. */
   private mergeGoal(
     id: string,
     patch: SetGoal & { openingPrompt?: string },
     now: number,
+    steering?: WorkflowSteeringNote,
   ): SessionGoal | null {
     const s = this.sessions.get(id);
     if (!s) return null;
@@ -7789,8 +7853,9 @@ export class Registry extends EventEmitter {
           : prev?.pendingPrompts ?? [],
       updatedAt: changed ? now : prev?.updatedAt ?? now,
     };
+    if (steering) upsertSessionGoalWithSteering(next, steering);
+    else upsertSessionGoal(next);
     this.goals.set(key, next);
-    upsertSessionGoal(next);
     this.syncSessionsForGoal(key);
     return next;
   }
@@ -7818,6 +7883,7 @@ export class Registry extends EventEmitter {
   pruneGoals(olderThan: number): number {
     if (!this.sweptSessions) return 0;
     const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    pruneSessionGoalSteering(liveKeys, olderThan);
     const removed = pruneSessionGoals(liveKeys, olderThan);
     if (!removed) return 0;
     for (const [key, g] of this.goals) {
@@ -9091,6 +9157,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   foremanInvite: byValue,
   name: byValue,
   nameSource: byValue,
+  renameable: byValue,
   state: byValue,
   cwd: byValue,
   workspaceRoot: byValue,
@@ -9276,6 +9343,7 @@ function metaDisplayEqual(a: SessionMeta | null, b: SessionMeta | null): boolean
     a.modelId === b.modelId &&
     a.longContext === b.longContext &&
     a.thinkingLevel === b.thinkingLevel &&
+    a.nativeEffort === b.nativeEffort &&
     a.thinkingEnabled === b.thinkingEnabled &&
     a.contextPct === b.contextPct
   );
@@ -9319,6 +9387,7 @@ function metaFromStatusLine(ingest: StatusLineIngest, now: number): SessionMeta 
     // so it governs the 1M badge directly (an explicit 200k must not be overridden).
     longContext: isLongContext(window),
     thinkingLevel: ingest.effort ?? null,
+    nativeEffort: ingest.nativeEffort ?? null,
     thinkingEnabled: ingest.thinkingEnabled ?? null,
     contextPct,
     contextTokens: contextPct !== null ? tokens : null,

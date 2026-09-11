@@ -521,6 +521,16 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     risky: true,
   },
   {
+    id: "workflow-judge-passes",
+    label: "Skip judges that already passed",
+    description: "Keep earned judge passes across repair rounds of the same workflow run.",
+    category: "workflows",
+    anchor: "workflows/judge-passes",
+    keywords: ["judge", "persona", "pass", "skip", "round", "repair"],
+    kind: "jump",
+    backup: backupDomains("workflow-policy"),
+  },
+  {
     id: "workflow-allowlist",
     label: "Workflow allowed repositories",
     // Still a `workflows` row, and it still lands on `workflows/allowlist`, because that is

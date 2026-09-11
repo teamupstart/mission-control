@@ -10,10 +10,10 @@ import {
   workflowRunGaveUp,
   workflowRunIsOpen,
 } from "@shared/workflow.ts";
+import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
 // One-directional: this module reads `run-model`'s derivations at runtime, and `run-model` takes
 // only a TYPE from here, so there is no cycle to resolve at load.
 import {
-  blockedPhaseClause,
   cancelGateSentence,
   cancelReleasesGate,
   gateWaitSentence,
@@ -805,31 +805,31 @@ const NO_MOVE_SENTENCES: Record<string, RunNoMoveReason> = {
   },
   inspector_findings: {
     cause: "GitHub Inspector left findings that have to be resolved.",
-    consequence: "Fix them in the session and push - they are listed under GitHub Inspector final gate"
-      + " below, and no button up here can settle them.",
+    consequence: "Fix them in the session and push - they are listed in the run record's"
+      + " Completion tab, and no button up here can settle them.",
   },
   inspector_pr_closed: {
     cause: "The adopted pull request was closed or switched.",
-    consequence: "Reopen it or adopt the replacement; GitHub Inspector final gate below carries the"
-      + " pull request this run was pinned to.",
+    consequence: "Reopen it or adopt the replacement; the run record's Completion tab carries"
+      + " the pull request this run was pinned to.",
   },
   inspector_disabled: {
     cause: "GitHub Inspector is switched off, so the gate cannot be evaluated.",
-    consequence: "Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below.",
+    consequence: "Turn it back on from Open GitHub Inspector settings, in the run record's Completion tab.",
   },
   delivery_uncertain: {
     cause: "A repair packet may or may not have reached the session.",
-    consequence: "Confirm or discard it in Deliveries below - the choice needs your eyes on the"
-      + " pane, so no button up here can settle it.",
+    consequence: "Confirm or discard it in the run record's Deliveries tab - the choice needs"
+      + " your eyes on the pane, so no button up here can settle it.",
   },
   delivery_refused: {
     cause: "The session refused this run's repair packet.",
-    consequence: "Retry or resolve it in Deliveries below, which carries the packet and the"
-      + " refusal.",
+    consequence: "Retry or resolve it in the run record's Deliveries tab, which carries the"
+      + " packet and the refusal.",
   },
   delivery_blocked: {
     cause: "This run's repair packet cannot be delivered.",
-    consequence: "Deliveries below carries the packet and why it is held.",
+    consequence: "The run record's Deliveries tab carries the packet and why it is held.",
   },
 };
 
@@ -973,13 +973,13 @@ export function runNoMoveReason(detail: WorkflowRunDetail): RunNoMoveReason | nu
   ) {
     return {
       cause: gateWaitSentence(detail.inspectorGate?.state.waitReason ?? null),
-      consequence: "GitHub Inspector final gate below carries the heads and the review round.",
+      consequence: "The run record's Completion tab carries the heads and the review round.",
     };
   }
 
   return {
     cause: `This run is blocked - ${blockedPhaseClause(currentPhase)}.`,
-    consequence: "Nothing up here settles it; the sections below carry what happened.",
+    consequence: "Nothing up here settles it; the run record carries what happened.",
   };
 }
 

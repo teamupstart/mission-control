@@ -1,9 +1,5 @@
-// Phase 5 acceptance: the `pi` harness, added only against the `Harness` interface. What is
-// at stake here is that the interface's capability-null design is REAL - that a third harness
-// can declare what it has and honestly disable what it lacks, without a code change - and,
-// specifically, that pi is the MIRROR of Codex on this axis (Codex: hooks non-null, messages
-// null; pi: hooks null, messages non-null). The transcript parsing is pinned against a
-// verbatim capture, `test/fixtures/pi-sessions.ts`.
+// Pi declares machine lifecycle hooks and readable transcripts while keeping unsupported
+// native capabilities null. Transcript parsing uses captured Pi session records.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -31,9 +27,9 @@ import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
 
 // ---- the capability shape: what pi declares vs what it disables ----
 
-test("pi is the mirror of Codex - hooks null, but transcript reads back as messages", () => {
+test("Pi reports machine hooks and readable transcript messages", () => {
   const pi = harnessFor("pi");
-  assert.equal(pi.hooks, null, "pi pushes nothing: its extensions are in-process, not a hook");
+  assert.equal(pi.hooks?.scope, "machine");
   assert.ok(pi.transcript, "pi records a readable transcript");
   assert.ok(
     pi.transcript?.messages,
@@ -46,7 +42,7 @@ test("pi's unsupported capabilities are DECLARED null, not stubbed", () => {
   // Genuinely absent, each with its own reason (see `todo/pi-harness.md`).
   assert.equal(pi.permissionModes, null, "pi's manual/auto/readonly don't fit PermissionMode");
   assert.equal(pi.mcp, null, "pi has no MCP client");
-  assert.equal(pi.hooks, null, "the Mission lifecycle integration has not shipped");
+  assert.equal(pi.hooks?.scope, "machine", "the extension owns lifecycle reporting");
   assert.ok(pi.workQueue, "Pi exposes lifecycle events; the missing integration is per-session");
   assert.ok(pi.usage, "dispatched Pi usage is readable without the extension");
   // Present, and driving real behaviour.
@@ -224,6 +220,75 @@ test("a newer session file invalidates an exact binding without replacing it", (
   }
 });
 
+test("a managed session's driver-reported transcript is accepted on its header, not its runtime", () => {
+  // This branch originally gated the driver-reported path on `runtime === "sdk"`, because a
+  // terminal session's `transcriptPath` is observed from outside and the search's
+  // newer-file rule was the only thing that could catch a stale one. #1003 replaced that
+  // with a stronger check available to BOTH runtimes: read the file's own header and
+  // require it to name this conversation and this checkout. A path that validates that way
+  // cannot belong to another session, so the runtime it came from stopped mattering and the
+  // gate is gone. What this test still owns is the managed half - that the exact file the
+  // driver was handed resolves, and that one naming a different conversation does not.
+  const root = mkdtempSync(join(tmpdir(), "pi-locate-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-managed-cwd-"));
+  const dir = piProjectDir(cwd, root);
+  mkdirSync(dir, { recursive: true });
+  const sessionId = "019f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const otherId = "119f7d35-beb8-7ae4-8b33-049e4f65cacd";
+  const write = (id: string, headerId = id, headerCwd = cwd) => {
+    const path = join(dir, `2026-07-20T10-00-00-000Z_${id}.jsonl`);
+    writeFileSync(path, `${JSON.stringify({ type: "session", version: 3, id: headerId, cwd: headerCwd })}\n`);
+    return path;
+  };
+  try {
+    const path = write(sessionId);
+    const managed = {
+      ...locateSession("pi-managed", cwd, sessionId),
+      runtime: "sdk",
+      transcriptPath: path,
+    } as Session;
+    assert.equal(locatePiTranscript(managed, root), path, "the driver's own file resolves");
+
+    // A driver path naming a DIFFERENT conversation is refused rather than attributed here.
+    const mismatched = {
+      ...locateSession("pi-mismatch", cwd, sessionId),
+      runtime: "sdk",
+      transcriptPath: write(otherId),
+    } as Session;
+    assert.equal(locatePiTranscript(mismatched, root), null);
+
+    // And one whose header names another checkout, which is the cost-attribution case.
+    const elsewhere = {
+      ...locateSession("pi-elsewhere", cwd, sessionId),
+      runtime: "sdk",
+      transcriptPath: write(sessionId, sessionId, join(cwd, "nope")),
+    } as Session;
+    assert.equal(locatePiTranscript(elsewhere, root), null);
+  } finally {
+    piTranscript.retain?.(new Set());
+    rmSync(root, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("pi's session store follows PI_CODING_AGENT_DIR, the way pi's own resolver does", () => {
+  // `getAgentDir()` reads that variable before falling back to `~/.pi/agent`. A module-level
+  // constant built from `homedir()` alone reported the wrong directory for every operator
+  // who had set it - on both runtimes, silently, as "no transcript for this session".
+  const before = process.env.PI_CODING_AGENT_DIR;
+  const root = mkdtempSync(join(tmpdir(), "pi-agent-dir-"));
+  try {
+    process.env.PI_CODING_AGENT_DIR = root;
+    assert.equal(piProjectDir("/repo"), join(root, "sessions", "--repo--"));
+    delete process.env.PI_CODING_AGENT_DIR;
+    assert.notEqual(piProjectDir("/repo"), join(root, "sessions", "--repo--"));
+  } finally {
+    if (before === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- messages: parse the verbatim capture ----
 
 test("text turns parse; thinking is dropped; the aborted turn falls out", () => {
@@ -301,4 +366,17 @@ test("idle only on a clean stop; an aborted tail reads working", () => {
   // The same session without that aborted tail ends on a clean `stop` - idle.
   const clean = computePiSessionActivity(PI_SESSION_LINES.slice(0, 7));
   assert.equal(clean?.state, "idle");
+});
+
+test("a reported custom-home transcript requires the exact session header and cwd", () => {
+  const root = mkdtempSync(join(tmpdir(), "pi-reported-transcript-"));
+  const path = join(root, "session.jsonl");
+  const session = { ...locateSession("pi-hand-run", root, "hand-run-id"), transcriptPath: path };
+  const header = (id: string, cwd = root) => writeFileSync(path, JSON.stringify({ type: "session", version: 3, id, cwd }) + "\n");
+  try {
+    header("hand-run-id"); assert.equal(locatePiTranscript(session), path);
+    header("another-id"); assert.equal(locatePiTranscript(session), null);
+    header("hand-run-id", join(root, "wrong")); assert.equal(locatePiTranscript(session), null);
+    writeFileSync(path, '{"type":"session"'); assert.equal(locatePiTranscript(session), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

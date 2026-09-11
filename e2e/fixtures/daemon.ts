@@ -23,7 +23,9 @@ import {
   writeProductAuthorizationBin,
   ghPullRequestsPath,
   codexCatalogControlPath,
+  fakePiSdkModulePath,
   piCatalogControlPath,
+  piSdkModelsPath,
   writeFakeAgents,
 } from "./fake-agents.ts";
 import {
@@ -247,6 +249,8 @@ export function seedRepo(workspace: string, name: string): string {
  * anyway - there is no version of this suite that does not require a build first. That is
  * also why this suite lives outside `test/`: everything in `test/` must pass on a fresh
  * checkout without one, and `scripts/smoke-bundles.mjs` already draws that same line.
+ * The terminal-boundary opt-in builds this same entry with scripted OS/terminal I/O;
+ * dispatch, discovery correlation, Registry, routes and SSE stay production code.
  */
 export async function startDaemon(extraEnv: Record<string, string> = {}): Promise<DaemonHandle> {
   // `realpathSync` because macOS resolves /var -> /private/var, and the daemon reports the
@@ -413,12 +417,29 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
     MISSION_CLAUDE_BIN: bins.claude,
     MISSION_CODEX_BIN: codexOnDaemonPathOnly ? "codex" : bins.codex,
     MISSION_PI_BIN: bins.pi,
+    // Catalog-only fake has no installed extension unless a spec explicitly supplies one.
+    MISSION_PI_EXTENSION: join(home, "missing-pi-extension.js"),
+    // Pi's MANAGED runtime has no subprocess - its SDK is imported into the daemon - so the
+    // binary override above cannot reach it. This is the same redirection at the only other
+    // seam Pi has, and it is set unconditionally for the reason the bins are: a daemon that
+    // missed it would load the real `@earendil-works/pi-coding-agent` and could reach a
+    // provider. See `fake-pi-sdk.mjs`.
+    MISSION_PI_SDK_MODULE: fakePiSdkModulePath(),
+    MC_E2E_PI_SDK_MODELS: piSdkModelsPath(home),
+    // Pi's own configuration directory, inside the disposable home. The fake refuses to run
+    // without it, so nothing here can read or write the operator's real `~/.pi` - which is
+    // also where its session transcripts would otherwise land.
+    PI_CODING_AGENT_DIR: join(home, "pi-agent"),
     // The one terminal backend this suite installs, so continue-in-terminal is drivable on
     // a machine with no terminal: cmux resolves through this env override, needs no
     // emulator to raise its workspaces, and the fake records the `new-workspace --command`
     // it was handed - the exact command line a click asked a terminal to run. See
     // `FAKE_CMUX` in fake-agents.ts for why the other backends cannot play this role.
     CMUX_BIN: bins.cmux,
+    // cmux's own config file, redirected into the disposable home. The Setup repair button
+    // edits this for real, and without the redirect one browser test would rewrite the
+    // config of whichever cmux the machine running it happens to have installed.
+    MISSION_CMUX_CONFIG_PATH: join(home, "cmux-config", "cmux.json"),
     // Herdr is opt-in because its fake owns a real disposable Unix socket and process tree.
     // Every other spec sees a known missing path, never the operator's installed Herdr.
     HERDR_BIN: herdrEnabled ? bins.herdr : join(home, "missing-herdr"),
@@ -556,11 +577,16 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
 
   let log = "";
   let exited: { code: number | null; signal: string | null } | null = null;
+  const daemonBundle = extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1"
+    ? await (await import("./terminal-boundary-build.ts")).buildTerminalBoundaryDaemon(
+        REPO_ROOT, `${process.pid}-${Date.now()}`,
+      )
+    : join(REPO_ROOT, "dist/server/index.mjs");
 
   /** Spawn the daemon bundle and wire its log and exit tracking to the shared state. */
   const spawnDaemon = (): ChildProcess => {
     exited = null;
-    const spawned = spawn(process.execPath, [join(REPO_ROOT, "dist/server/index.mjs")], {
+    const spawned = spawn(process.execPath, [daemonBundle], {
       cwd: REPO_ROOT,
       env: isolatedEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -635,6 +661,7 @@ export async function startDaemon(extraEnv: Record<string, string> = {}): Promis
       await new Promise((r) => setTimeout(r, 200));
       if (!exited) child.kill("SIGKILL");
     }
+    if (extraEnv.MC_E2E_TERMINAL_BOUNDARY === "1") rmSync(daemonBundle, { force: true });
     /*
      * Retried, because the daemon is not the only writer under `home`.
      *

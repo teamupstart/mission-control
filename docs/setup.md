@@ -7,7 +7,7 @@ its full verification suite. For the contributor expectations and test policy, s
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of
-agent CLIs, terminal backends, GitHub CLI authentication, Claude Code extensions,
+agent CLIs, terminal backends, GitHub CLI authentication, agent extensions,
 ai-conductor, and the system Node.js runtime.
 
 The panel opens with a verdict for the whole machine - whether it can run sessions, how many
@@ -24,6 +24,14 @@ choose an available backend and Mission Control opens a visible terminal running
 fixed command. The daemon owns the argv, working directory, title, and hold-open shell; the
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
+
+The **Agent extensions** family offers **Install Pi integration** only when its persisted
+intent is off and no extension entry exists. This action verifies the bundle in a bounded,
+child process before installing the integration, and refuses pooled checkouts.
+A successful installation asks you to start a fresh Pi session. Existing or broken integrations
+have no install or repair button: their **Pi extension** warning supplies a manual installer
+command, with durable-clone and desktop guidance. The warning disappears after a healthy
+**Re-check**. A machine that never installed Pi integration has no required Pi warning.
 
 The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
 installer and update preflight (currently Node.js 24). It reports a missing or older runtime as
@@ -45,6 +53,21 @@ manual **Re-check**. A Herdr older than the supported release is reported with i
 reason and is not offered a start, because starting it repairs nothing. While the server is down,
 discovery simply sees no Herdr workspaces and logs nothing.
 
+The cmux row reports three facts for the same reason, and two of them are not installation.
+cmux's control socket exists only while its **app is running**, and cmux ships
+`automation.socketControlMode: "cmuxOnly"`, which admits only processes started inside cmux -
+the daemon is not one, so with the default every call it makes is denied. Under either fault the
+adapter simply sees no cmux workspaces, which is why the row used to read Ready on the strength
+of the binary alone while every dispatch to cmux failed. A closed app is **Needs setup** and
+offers **Open cmux**, which opens the app and waits for its socket to answer. A refusing socket
+is **Needs setup** and offers **Allow Mission Control to drive cmux**, which sets that one value
+to `allowAll`, copying `~/.config/cmux/cmux.json` to a timestamped `.bak` first when there is
+already a file to copy - a machine with no cmux config yet gets one written and nothing is backed
+up. Your comments and every other setting are left alone, and a file that does not parse is
+refused rather than replaced. No reload is needed - cmux watches the file - and no reload would be
+possible anyway, since `cmux reload-config` is one of the calls the default refuses. A satisfied
+row reports the mode it read, as `(socket control allowAll)`.
+
 The optional iTerm2 row uses the same `/Applications/iTerm.app`, `~/Applications/iTerm.app`, or
 configured `ITERM_BIN` filesystem
 check as launch targeting. It never starts iTerm2 while reading Setup. The copyable remedy is
@@ -52,7 +75,7 @@ check as launch targeting. It never starts iTerm2 while reading Setup. The copya
 iTerm2 is controlled or when you explicitly launch through it. See
 [iTerm2 Automation and permission recovery](sessions.md#iterm2-automation-and-permission-recovery).
 
-Mission Control never runs the installer inside the daemon. Provider installers such as
+Package installers never run inside the daemon. Provider installers such as
 ai-conductor additionally require the daemon to resolve exactly one checkout from its verified
 workspace candidates, then reverify that candidate when the button is pressed. If there is no
 verified checkout, or more than one, Setup links to **Settings → Conductor** instead of offering

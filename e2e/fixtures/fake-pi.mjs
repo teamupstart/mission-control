@@ -10,6 +10,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
+
+if (process.argv[2] === "--mission-extension-test" && process.env.MC_E2E_PI_SESSION_FIXTURE) {
+  const { runExtensionSession } = await import(pathToFileURL(process.env.MC_E2E_PI_SESSION_FIXTURE).href);
+  await runExtensionSession();
+  // Keep the catalog-only parser out of this deliberately selected session fixture.
+  await new Promise(() => {});
+}
 
 const EXPECTED_ARGS = [
   "--mode",
@@ -145,6 +153,27 @@ input.on("line", (line) => {
           name: "Llama 4 Maverick",
           contextWindow: 1_000_000,
           reasoning: false,
+          input: ["text", "image"],
+        },
+        // Amazon Bedrock, exactly as a signed-in Pi reports it: a provider like any other,
+        // with ids that carry dots. Mission Control never translates one - see
+        // `pi-bedrock-managed-runtime.spec.ts`, which selects this row and dispatches it.
+        {
+          provider: "amazon-bedrock",
+          id: "deepseek.v3.2",
+          name: "DeepSeek V3.2",
+          contextWindow: 163_840,
+          reasoning: true,
+          input: ["text"],
+        },
+        {
+          provider: "amazon-bedrock",
+          // The colon-bearing shape, verbatim: 41 of the 121 models pi lists for
+          // `amazon-bedrock` carry the provider's own `-v1:0` version suffix.
+          id: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+          name: "Claude Sonnet 4.5 (Bedrock)",
+          contextWindow: 200_000,
+          reasoning: true,
           input: ["text", "image"],
         },
       ],

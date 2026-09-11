@@ -6,6 +6,7 @@ import type { SetupBannerDismissal, SetupRemedy, SetupStatus } from "@shared/set
 import type { ExecutableId } from "@shared/executables.ts";
 
 import type { EnvironmentDeps } from "../environment/types.ts";
+import type { CmuxControl } from "../terminal/cmux.ts";
 import type { HerdrProbe } from "../terminal/herdr-client.ts";
 import type { InstalledPluginsRead } from "../plugins/installed-plugins.ts";
 import type { RunResult } from "../util/exec.ts";
@@ -34,6 +35,7 @@ export interface SetupSkillsRead {
 
 /** Read-only seams used by the uncached Setup snapshot. */
 export interface SetupDeps {
+  canInstallPiExtension?(): boolean;
   /** One fresh login-shell PATH snapshot for this explicit machine inspection. */
   refreshPath?(): Promise<void>;
   executableDiagnostic?(id: ExecutableId): Promise<{ path: string; source: string } | null>;
@@ -44,6 +46,8 @@ export interface SetupDeps {
   backendUnsupported?(id: TerminalBackendId): string | null;
   /** Whether Herdr's default server is up, which installation alone does not answer. */
   herdrServer(): Promise<HerdrProbe>;
+  /** Whether the cmux app is open AND admitting the daemon, neither of which installation answers. */
+  cmuxControl(): Promise<CmuxControl>;
   ghBin(): string;
   resolveBinPath(bin: string): Promise<string | null>;
   runCommand(bin: string, argv: string[]): Promise<RunResult>;

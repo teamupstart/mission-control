@@ -281,10 +281,18 @@ test("the run record pane round-trips in the hash, and an unknown one takes the 
     }),
     "#/runs/r1?pane=intent&status=running",
   );
-  // A name this build does not offer is DROPPED, not carried: the container would otherwise
-  // select a tab that is not in its own bar and draw nothing.
-  assert.deepEqual(parseMissionRoute("#/runs/r1?pane=completion"), { page: "runs", runId: "r1" });
+  // A SPELLING this build does not know is DROPPED, not carried, the same way an unknown run
+  // status is. `completion` used to be one of these and is now a real pane, which is the shape
+  // of every future addition: the route learns the spelling here, and whether the tab exists on
+  // a given run is the container's decision rather than the parser's. A link naming a pane the
+  // run does not offer survives the round trip and is ignored for selection.
+  assert.deepEqual(parseMissionRoute("#/runs/r1?pane=verdicts"), { page: "runs", runId: "r1" });
   assert.deepEqual(parseMissionRoute("#/runs/r1?pane="), { page: "runs", runId: "r1" });
+  assert.deepEqual(parseMissionRoute("#/runs/r1?pane=completion"), {
+    page: "runs",
+    runId: "r1",
+    pane: "completion",
+  });
   // And a pane with no run to name is not an address. The rail has no record to open a pane of.
   assert.deepEqual(parseMissionRoute("#/runs?pane=intent"), { page: "runs" });
   assert.equal(missionRouteHash({ page: "runs", pane: "intent" }), "#/runs");

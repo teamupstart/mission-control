@@ -64,13 +64,14 @@ export const WORKFLOW_LIMITS = {
   sessionActionPromptBytes: 58_000,
   /**
    * Headroom for everything the packet wraps the prompt in: the skill invocation, the action
-   * and workflow names, the version and the run id.
+   * and workflow names, the repository root, the version, the run id, execution authorization
+   * and optional CI policy. Character-bounded metadata reserves three UTF-8 bytes per UTF-16
+   * code unit, including the 4,096-character repository root.
    *
-   * Every one of those is separately bounded and their sum is well under a kilobyte, so this
-   * is deliberately generous - it is a guarantee, not a measurement, and the cost of being
-   * generous is prompt bytes nobody was going to use.
+   * Action deliveries have their own read bound so a long repository root does not consume
+   * the existing 58,000-byte authored and published prompt allowance.
    */
-  sessionActionEnvelopeBytes: 2_000,
+  sessionActionEnvelopeBytes: 18_000,
   /**
    * What may be STORED, which is looser than what may be authored or published.
    *
@@ -93,10 +94,11 @@ export const WORKFLOW_LIMITS = {
    * from verdicts, so eight kilobytes is a design budget; an action packet carries the
    * operator's own authored instruction, and clipping that at the review budget would
    * silently deliver a different instruction from the one the version was published with.
-   * The ceiling is instead the delivery row's own bound (`eventPayloadBytes`) less headroom,
-   * and `sessionActionPromptBytes` is derived FROM this so the two cannot drift apart.
+   * This is also the read bound for action delivery rows; other delivery kinds retain
+   * `eventPayloadBytes`. `sessionActionPromptBytes` is derived FROM this budget so the two
+   * cannot drift apart.
    */
-  sessionActionPacketBytes: 60_000,
+  sessionActionPacketBytes: 76_000,
   workflowName: 120,
   graphNodes: 100,
   graphEdges: 300,
@@ -209,15 +211,14 @@ export const WORKFLOW_IMAGE_LIMITS = {
 /**
  * Bounded text or log evidence registered beside workflow screenshots.
  *
- * The aggregate stays below one model-facing review section, even before the manifest and
- * fence framing are added. A focused test transcript is normally a few kilobytes; 64 KiB per
- * item leaves room for a useful failure tail without allowing one log to dominate the immutable
- * 2 MB workflow context.
+ * Each artifact gets its own model-facing review section. The 64 KiB item bound leaves room
+ * for a useful failure tail; the aggregate bounds the combined evidence alongside the rest
+ * of the immutable 2 MB workflow context, whose serialized byte limit is checked separately.
  */
 export const WORKFLOW_TEXT_EVIDENCE_LIMITS = {
   maxCount: 8,
   maxBytesPerArtifact: 64 * 1_024,
-  maxAggregateBytes: 192 * 1_024,
+  maxAggregateBytes: 384 * 1_024,
   captionChars: 1_000,
   displayNameChars: 200,
   clientItemIdChars: 200,
@@ -356,6 +357,49 @@ export interface WorkflowCriterionMapping {
   matchedClientCriterionIds: string[];
 }
 
+export interface WorkflowCriterionReconciliation {
+  version: 1;
+  fingerprint: string;
+  status: "pending" | "complete" | "failed";
+  method: "deterministic" | "semantic";
+  attempts: number;
+  error: string | null;
+  cause: "transport" | "parse" | "cancelled" | null;
+}
+
+/** Daemon-owned declaration selection; absent claims stay selected so history cannot revive them. */
+export interface WorkflowCoverageSelection {
+  version: 1;
+  sourceSubmissionId: string | null;
+  criteria: WorkflowCriterionMapping[];
+}
+
+export function selectWorkflowCoverageClaims(input: {
+  canonicalCriteria: readonly WorkflowCanonicalCriterion[];
+  criterionMappings: readonly WorkflowCriterionMapping[];
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  previous?: WorkflowCoverageSelection;
+  sourceSubmissionId?: string | null;
+}): WorkflowCoverageSelection {
+  const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
+  return {
+    version: 1,
+    sourceSubmissionId: input.sourceSubmissionId ?? null,
+    criteria: input.canonicalCriteria.map((criterion) => {
+      const mapped = [...new Set(input.criterionMappings
+        .filter((mapping) => mapping.criterionId === criterion.id)
+        .flatMap((mapping) => mapping.matchedClientCriterionIds))].filter((id) => claims.has(id));
+      const declared = mapped.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
+      const previous = input.previous?.criteria.find((row) => row.criterionId === criterion.id);
+      return {
+        criterionId: criterion.id,
+        matchedClientCriterionIds: [...new Set(declared.length > 0
+          ? declared : previous?.matchedClientCriterionIds.length ? previous.matchedClientCriterionIds : mapped)].sort(),
+      };
+    }),
+  };
+}
+
 export interface WorkflowEvidenceReadinessLink {
   clientItemId: string;
   evidenceId: string;
@@ -466,6 +510,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
   coverage: readonly WorkflowEvidenceCoverageClaim[];
   evidence: readonly WorkflowFrozenEvidenceIdentity[];
   unavailableReason?: string | null;
+  selection?: WorkflowCoverageSelection;
   enforceCoverage?: boolean;
 }): WorkflowEvidenceReadinessResult {
   const unavailableReason = input.unavailableReason
@@ -505,30 +550,17 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       .flatMap((mapping) => mapping.matchedClientCriterionIds))]
       .filter((id) => claims.has(id))
       .sort();
-    /*
-     * A claim the author declared HERE answers for the criterion; a carried one only stands in.
-     *
-     * Evidence carry-forward retains every frozen claim of the previous submission, so a
-     * criterion an author keeps re-proving accumulates its own ancestry. Reading that ancestry
-     * as competing declarations would report `ambiguous_mapping` on a submission whose current
-     * claim is perfectly clear, and a mapping repair that re-declares the criterion it was sent
-     * back to repair could never become ready again.
-     *
-     * Ambiguity is a question about what the AUTHOR is asserting now. Two claims they wrote for
-     * one criterion is exactly that and still reports; their own claim standing in front of the
-     * copies it descends from is not. Where no claim was declared here, the carried ones answer
-     * and are judged among themselves exactly as before - which is what makes inheritance worth
-     * anything, since that is the case where the criterion would otherwise have no claim at all.
-     */
     const declaredIds = mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
-    const matchedIds = declaredIds.length > 0 ? declaredIds : mappedIds;
+    const selected = input.selection?.criteria.find((row) => row.criterionId === canonical.id);
+    const matchedIds = declaredIds.length > 0 ? declaredIds
+      : selected ? selected.matchedClientCriterionIds : mappedIds;
     const crossCriterionAmbiguity = matchedIds.some((id) => crossCriterionClaimIds.has(id));
-    const claim = matchedIds.length === 1 && !crossCriterionAmbiguity
+    const claim = matchedIds.length === 1 && mappedIds.includes(matchedIds[0]!) && !crossCriterionAmbiguity
       ? claims.get(matchedIds[0]!)!
       : null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
-    if (canonical.material && matchedIds.length === 0) gaps.push("missing_coverage");
+    if (canonical.material && !crossCriterionAmbiguity && (matchedIds.length === 0 || (matchedIds.length === 1 && !claim))) gaps.push("missing_coverage");
     if (matchedIds.length > 1 || crossCriterionAmbiguity) gaps.push("ambiguous_mapping");
     const links = claim?.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
       const item = evidence.get(link.clientItemId);
@@ -1759,9 +1791,40 @@ export type WorkflowTargetPort = (typeof WORKFLOW_TARGET_PORTS)[number];
 export const WORKFLOW_CHECK_SLOTS = ["test", "lint", "typecheck", "build"] as const;
 export type WorkflowCheckSlot = (typeof WORKFLOW_CHECK_SLOTS)[number];
 
+/**
+ * The provider and model ONE Persona occurrence runs under, chosen by the workflow.
+ *
+ * A PAIR rather than two independently inherited fields, and that is the whole point of the
+ * type existing at all. A workflow that overrode only the model would keep resolving its
+ * provider from the Persona, so the day someone repointed that Persona at another provider
+ * the node would spawn a model id that provider has never heard of - a failure the author
+ * of the workflow neither made nor can see. Both halves travel together or neither does.
+ *
+ * `model` is free text under `ModelIdSchema`'s vocabulary, exactly like every other model id
+ * this app persists: the CLIs accept ids this repository has no business enumerating, so
+ * absence from the browser's suggestion catalog is not a validation failure. `runner` is the
+ * headless `LlmRunnerId` registry and not the interactive harness catalog - a Persona is run
+ * by an LLM runner, and naming a harness here would offer providers nothing can spawn.
+ *
+ * OPTIONAL on the node, and omission is the persisted spelling of "inherit". A graph written
+ * before this field existed carries no key and must keep resolving exactly as it did; nothing
+ * may backfill one onto an old graph merely by reading it.
+ */
+export interface WorkflowNodeExecutionOverride {
+  runner: LlmRunnerId;
+  /** Never empty. An empty box is an INCOMPLETE override, never a silent fallback. */
+  model: string;
+}
+
 export type WorkflowDraftNode =
   | { id: string; kind: "session"; position: Point }
-  | { id: string; kind: "persona"; personaId: PersonaId; position: Point }
+  | {
+      id: string;
+      kind: "persona";
+      personaId: PersonaId;
+      position: Point;
+      executionOverride?: WorkflowNodeExecutionOverride;
+    }
   | { id: string; kind: "all_pass"; position: Point }
   | { id: string; kind: "check"; slot: WorkflowCheckSlot; position: Point }
   // A draft names the LIVE action; Publish resolves it to a snapshot. Same split as
@@ -1830,7 +1893,19 @@ export function personaSnapshotIsOutdated(
  */
 export type PublishedWorkflowNode =
   | Exclude<WorkflowDraftNode, { kind: "persona" | "session_action" }>
-  | { id: string; kind: "persona"; persona: PersonaSnapshot; position: Point }
+  | {
+      id: string;
+      kind: "persona";
+      persona: PersonaSnapshot;
+      position: Point;
+      /**
+       * Frozen SEPARATELY from the snapshot beside it, never folded into it. The snapshot is
+       * what the Persona recommended at publish time; this is what this workflow chose. A
+       * version that flattened the two could never answer "did the author pick this, or did
+       * the Persona?" again, and the published detail has to.
+       */
+      executionOverride?: WorkflowNodeExecutionOverride;
+    }
   | { id: string; kind: "session_action"; action: SessionActionSnapshot; position: Point };
 
 /**
@@ -1842,6 +1917,52 @@ export type WorkflowVerdictNode = Extract<PublishedWorkflowNode, { kind: "person
 
 export function isVerdictNode(node: PublishedWorkflowNode): node is WorkflowVerdictNode {
   return node.kind === "persona" || node.kind === "check";
+}
+
+/**
+ * The execution pair a Persona node carries, or null when it inherits the Persona's own.
+ *
+ * One reader for the draft arm and the published arm, because the field is deliberately
+ * spelled the same on both: the projections between them - stage members, the canvas, the
+ * publisher - would otherwise each have to know which shape they were holding to ask the
+ * same question of it.
+ */
+export function nodeExecutionOverride(
+  node: { executionOverride?: WorkflowNodeExecutionOverride },
+): WorkflowNodeExecutionOverride | null {
+  return node.executionOverride ?? null;
+}
+
+/**
+ * The override as a SPREAD, for every place that rebuilds a Persona node from parts.
+ *
+ * Absent stays absent. Written this way rather than as `executionOverride: override ?? undefined`
+ * because those two are not the same object: the second plants an own property whose value is
+ * `undefined`, which survives `deepEqual` comparisons as a difference, changes what
+ * `JSON.stringify` emits for the surrounding graph in some shapes, and turns "this graph was
+ * written before the field existed" into "this graph declined the field". The stage compiler's
+ * round-trip equality and the draft fingerprint autosave diffs against both read that
+ * distinction.
+ */
+export function withExecutionOverride(
+  override: WorkflowNodeExecutionOverride | null | undefined,
+): { executionOverride?: WorkflowNodeExecutionOverride } {
+  return override ? { executionOverride: override } : {};
+}
+
+/**
+ * The same node with a different choice, or with none.
+ *
+ * A spread cannot do this job on its own: `{ ...node, ...withExecutionOverride(null) }` leaves
+ * whatever the node already carried, so clearing a choice through a spread is a no-op that
+ * looks correct at the call site. Every caller that can CLEAR one - the Graph rail's routing
+ * control, and Persona replacement, which resets a node to inheritance - goes through here.
+ */
+export function withNodeExecutionOverride<
+  T extends { executionOverride?: WorkflowNodeExecutionOverride },
+>(node: T, override: WorkflowNodeExecutionOverride | null): T {
+  const { executionOverride: _cleared, ...rest } = node;
+  return { ...rest, ...withExecutionOverride(override) } as T;
 }
 
 export function verdictAuthor(node: WorkflowVerdictNode): string {
@@ -2342,6 +2463,7 @@ export type WorkflowSubmissionStatus = (typeof WORKFLOW_SUBMISSION_STATUSES)[num
 export const WORKFLOW_SUBMISSION_REFINEMENT_REASONS = [
   "session_action",
   "evidence_preflight",
+  "evidence_recovery",
 ] as const;
 export type WorkflowSubmissionRefinementReason =
   (typeof WORKFLOW_SUBMISSION_REFINEMENT_REASONS)[number];
@@ -2795,6 +2917,8 @@ export function legacyCheckCommands(
  * is what keeps authorization a separate question from resolution.
  */
 export interface WorkflowPolicy {
+  /** Keep each Persona node's earned pass across later repair rounds of the same run. */
+  skipPassedJudges: boolean;
   /**
    * Machine-wide authorisation to TYPE a repair packet into a session's pane.
    *
@@ -2880,6 +3004,7 @@ export interface WorkflowRetentionConfig {
 }
 
 export const DEFAULT_WORKFLOW_POLICY: WorkflowPolicy = {
+  skipPassedJudges: true,
   // Authorised, and gated on `repoAllowlist` being non-empty. See the field's docstring: an
   // empty allowlist authorises nothing, so this changes nothing for a repository nobody named.
   liveEnabled: true,
@@ -3561,6 +3686,27 @@ export interface WorkflowBindingSummary {
  */
 export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
 
+/** Classified human method, sequence or priority context, never acceptance criteria. */
+export interface WorkflowSteeringNote {
+  revision: number;
+  instruction: string;
+  relationship: "steer";
+  rationale: string;
+  timestamp: number;
+}
+
+/** Frozen steering is absent on historical snapshots, or present with its revision cutoff. */
+export type WorkflowSteeringContext =
+  | { steering?: never; steeringResolvedRevision?: never }
+  | {
+      steering: WorkflowSteeringNote[];
+      /** Goal revision read alongside the objective; later classifications belong to a new run. */
+      steeringResolvedRevision: number;
+    };
+
+// Goal capture keeps 4,000 prompt characters plus the five-character " […] " marker.
+export const WORKFLOW_STEERING_LIMITS = { count: 50, bytes: 32_000, instruction: 4_005, rationale: 2_000 } as const;
+
 /**
  * The human's ask, frozen onto a run the moment the run exists.
  *
@@ -3580,7 +3726,7 @@ export type WorkflowRunIntentState = "frozen" | "never_frozen" | "unreadable";
  * Repository state, evidence, coverage and Persona feedback stay out, exactly as the intent
  * fingerprint documents - those are live per-submission reads, and only intent is frozen.
  */
-export interface WorkflowRunIntentSnapshot {
+export type WorkflowRunIntentSnapshot = WorkflowSteeringContext & {
   /** Durable objective at run creation; historical snapshots retain their captured prompt. */
   rawGoal: string;
   /** Verbatim opening request, absent on older snapshots and null when unknown. */
@@ -3607,6 +3753,57 @@ export interface WorkflowRunIntentSnapshot {
    */
   fingerprint: string;
   frozenAt: number;
+};
+
+/**
+ * The three ways a frozen ask can look wrong, in the order the classifier resolves them.
+ *
+ * The order IS the contract. The checks overlap - a repair packet frozen at an unreconciled
+ * revision matches two of them - so a classifier that answered whichever check ran first
+ * would report differently on the same input from build to build, which is the one thing an
+ * instrument must not do. `automation` outranks the rest because it is the actionable fact:
+ * text Mission Control typed itself is never a completion contract, whatever else is true of
+ * it. Every check that matched is still reported in `signals`, so precedence discards nothing.
+ */
+export const WORKFLOW_GOAL_PROVENANCE_SIGNALS = [
+  "automation",
+  "implausible",
+  "unreconciled",
+] as const;
+
+export type WorkflowGoalProvenanceSignal = (typeof WORKFLOW_GOAL_PROVENANCE_SIGNALS)[number];
+
+/** A signal, or `objective` for the ask that tripped none of them. */
+export const WORKFLOW_GOAL_PROVENANCE_VERDICTS = [
+  ...WORKFLOW_GOAL_PROVENANCE_SIGNALS,
+  "objective",
+] as const;
+
+export type WorkflowGoalProvenanceVerdict = (typeof WORKFLOW_GOAL_PROVENANCE_VERDICTS)[number];
+
+/**
+ * What KIND of ask a run froze, decided once at the freeze and never revisited.
+ *
+ * This reports; it never blocks. A run whose ask looks wrong still starts, still reviews and
+ * still finishes - the operator decides what to do about it. The defect this exists to make
+ * visible ran for months in the operator's own state, and the only reason nobody caught it is
+ * that finding it meant knowing to query SQLite for it.
+ *
+ * A different axis from `WorkflowRunIntentState` and deliberately not folded into it:
+ * `unreadable` means the row is damaged, this means the row is intact and suspicious.
+ *
+ * Absent on every run frozen before the column existed. That absence reads as "not
+ * classified" rather than as `objective`: nobody measured those runs, and a record that
+ * claimed otherwise would be the same silence wearing a verdict.
+ */
+export interface WorkflowRunIntentProvenance {
+  /** The highest-precedence signal that matched, or `objective` when none did. */
+  verdict: WorkflowGoalProvenanceVerdict;
+  /** EVERY signal that matched, in precedence order. Empty exactly when `objective`. */
+  signals: WorkflowGoalProvenanceSignal[];
+  /** One sentence naming each matched check and the evidence for it. */
+  reason: string;
+  classifiedAt: number;
 }
 
 /**
@@ -3691,6 +3888,14 @@ export interface WorkflowRun {
    * from the snapshot alone.
    */
   intentState?: WorkflowRunIntentState;
+  /**
+   * What kind of ask this run froze, classified inside the transaction that created it.
+   *
+   * Optional, and absent means NOT CLASSIFIED rather than healthy - a run created before this
+   * column existed was never measured, and no verdict invented now could describe a freeze
+   * that already happened. See `WorkflowRunIntentProvenance`.
+   */
+  intentProvenance?: WorkflowRunIntentProvenance | null;
   /**
    * The canonical criteria compacted once from `intent`, or null until that first compaction
    * succeeds.
@@ -3823,6 +4028,25 @@ export function manualWorkflowTriggerRequestId(
   return requestId.length > 0 && !requestId.includes(":") ? requestId : null;
 }
 
+/** Daemon-owned structural facts frozen with a Persona attempt, without authored prose. */
+export interface WorkflowPersonaReviewInput {
+  version: 1;
+  operationId: string;
+  submissionId: string;
+  round: number;
+  segment: number;
+  policy: WorkflowEvidenceReadinessPolicy;
+  status: WorkflowEvidenceReadinessStatus | "unknown";
+  evaluatorVersion: "criterion_mapped_v1" | null;
+  criteria: Array<{
+    criterionId: string;
+    material: boolean;
+    claimId: string | null;
+    evidenceIds: string[];
+    gaps: WorkflowEvidenceReadinessGapCode[];
+  }>;
+}
+
 export interface WorkflowNodeAttempt {
   id: WorkflowNodeAttemptId;
   submissionId: WorkflowSubmissionId;
@@ -3846,6 +4070,8 @@ export interface WorkflowNodeAttempt {
    * Absent on historical attempts and every non-Persona attempt.
    */
   checkEvidence?: WorkflowCheckEvidence[];
+  reviewInput?: WorkflowPersonaReviewInput;
+  reviewRejections?: Array<{ execution: number; basis: string; raw: string }>;
   /** Actual provider/model resolved at attempt start. */
   runner: LlmRunnerId | null;
   model: string | null;
@@ -3936,6 +4162,8 @@ export interface WorkflowHumanDecision {
 }
 
 export interface PersonaFeedbackSummary {
+  omittedBefore?: number;
+  origin?: { submissionId: string; round: number; segment: number; attemptId: string; createdAt: number };
   personaName: string;
   summary: string;
   requestedChanges: string[];
@@ -3988,7 +4216,7 @@ export interface WorkflowCheckEvidence {
   note: string;
 }
 
-export interface WorkflowContextSnapshot {
+export type WorkflowContextSnapshot = WorkflowSteeringContext & {
   primaryGoal: {
     rawPrompt: string;
     openingAsk?: string | null;
@@ -4008,6 +4236,8 @@ export interface WorkflowContextSnapshot {
   canonicalCriteria?: WorkflowCanonicalCriterion[];
   /** Per-submission author claim matches, separate from stable canonical criterion identity. */
   criterionMappings?: WorkflowCriterionMapping[];
+  coverageSelection?: WorkflowCoverageSelection;
+  reconciliation?: WorkflowCriterionReconciliation;
   priorPersonaFeedback: PersonaFeedbackSummary[];
   session: {
     agent: string;
@@ -4063,7 +4293,7 @@ export interface WorkflowContextSnapshot {
     /** Original submission whose stable criterion extraction this snapshot reused. */
     reusedFromSubmissionId?: WorkflowSubmissionId | null;
   };
-}
+};
 
 /**
  * Where a claim in a verdict came from, so a human can trace it to its source.
@@ -4102,7 +4332,10 @@ export interface EvidenceRef {
   line?: number;
 }
 
+export const PERSONA_FINDING_BASES = ["substantive", "coverage_registration", "evidence_access"] as const;
+
 export interface RequestedChange {
+  basis?: (typeof PERSONA_FINDING_BASES)[number];
   title: string;
   rationale: string;
   evidence: EvidenceRef[];
@@ -4292,6 +4525,7 @@ export interface WorkflowInspectorGateDetail {
 }
 
 export interface WorkflowRunDetail {
+  evidenceRecovery?: { submissionId: string; kind: "mapping" | "selection" | "review"; label: string } | null;
   summary: WorkflowRunSummary;
   binding: WorkflowBinding;
   version: WorkflowVersion | null;
@@ -4345,6 +4579,16 @@ export interface WorkflowRunDetail {
    */
   resumption?: WorkflowRunResumptionState | null;
   /**
+   * The Foreman completion claim this run refused, when that was the last thing it did with
+   * one, or null once a later claim was accepted.
+   *
+   * Its own field for the reason `repairGrant` and `resumption` have one: `events` is a PAGE
+   * of the OLDEST two hundred rows, and a refused claim is late by construction - the run must
+   * already be blocked for one to bounce off it - so a browser-side derivation would answer on
+   * short runs and go quiet on long ones. Detail-only and optional, like its neighbours.
+   */
+  refusedCompletion?: WorkflowRunRefusedCompletion | null;
+  /**
    * Provenance for a run an external orchestrator started. Optional and detail-only: run
    * SUMMARIES travel over SSE for every run in the fleet and must stay compact.
    */
@@ -4374,6 +4618,19 @@ export interface WorkflowRunRepairGrant {
   round: number;
   from: number;
   to: number;
+}
+
+/**
+ * A Foreman completion claim the daemon would not act on.
+ *
+ * The claim was made and the once-only guard WAS spent - the store logs
+ * `workflow_completion_blocked`, retires the guard and answers `claimed: true` with no
+ * submission - so this records work that finished and went nowhere, not a call that failed.
+ */
+export interface WorkflowRunRefusedCompletion {
+  at: number;
+  completionKind: string | null;
+  summary: string | null;
 }
 
 /**

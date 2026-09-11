@@ -460,7 +460,7 @@ function saidOnStderr(bytes: number): string {
  * malformed answer, a hang - comes back as `{ ok: false, reason }` so the caller decides what a
  * launch does about it.
  */
-async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedTools> {
+async function handshake(descriptor: MissionMcpDescriptor, isolated = false): Promise<PublishedTools> {
   return await new Promise<PublishedTools>((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
@@ -469,7 +469,7 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
         // The descriptor's env is an OVERLAY on the inherited environment, which is how
         // Claude and Codex both apply an `env` block. Probing with a bare `descriptor.env`
         // would strip PATH and HOME and fail for a reason the real launch never hits.
-        env: { ...executableChildEnv(), ...descriptor.env },
+        env: isolated ? descriptor.env : { ...executableChildEnv(), ...descriptor.env },
       });
     } catch (err) {
       resolve({ ok: false, reason: `it could not be started (${errText(err)})` });
@@ -669,6 +669,16 @@ async function handshake(descriptor: MissionMcpDescriptor): Promise<PublishedToo
       },
     });
   });
+}
+
+/** Inspect an extension's actual bridge without lending it daemon credentials or state. */
+export async function inspectMissionMcpTools(path: string): Promise<boolean> {
+  const runtime = await resolveRuntime();
+  const env = agentSubprocessEnv({ ...process.env, ...runtime.env });
+  try {
+    const result = await handshake({ serverName: MISSION_MCP_SERVER_NAME, command: runtime.command, args: [path], env }, true);
+    return result.ok && MISSION_MCP_TOOLS.every((name) => result.tools.has(name));
+  } finally { cleanupAgentSubprocessEnv(env); }
 }
 
 /** The published tool names for the bundle we would register right now, handshaking at most once per build. */

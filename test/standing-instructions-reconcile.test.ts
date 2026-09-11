@@ -7,7 +7,7 @@ import {
   dirtyCards,
   draftValue,
   isDirty,
-  isOverride,
+  hasRepositoryEntry,
   keepMine,
   reconcileRefresh,
   reconcileSaved,
@@ -44,19 +44,19 @@ function stateOf(
 
 test("an absent key is not the same value as a key stored empty", () => {
   const view = viewOf({ [A]: "" });
-  assert.equal(storedValue(view, A), "", "a stored empty string is a real override");
+  assert.equal(storedValue(view, A), "", "a stored empty string is a real entry");
   assert.equal(storedValue(view, B), null, "an absent key is absent, not empty");
-  assert.equal(isOverride(view, A), true);
-  assert.equal(isOverride(view, B), false);
+  assert.equal(hasRepositoryEntry(view, A), true);
+  assert.equal(hasRepositoryEntry(view, B), false);
 });
 
-test("the default card reads the document's default and is never an override", () => {
+test("the default card reads the document's default and is not a repository entry", () => {
   const view = viewOf({}, "e1", "house rules");
   assert.equal(storedValue(view, DEFAULT_CARD), "house rules");
-  assert.equal(isOverride(view, DEFAULT_CARD), false);
+  assert.equal(hasRepositoryEntry(view, DEFAULT_CARD), false);
 });
 
-test("clearing an inherited box is a dirty change, so send-nothing is reachable", () => {
+test("clearing an unconfigured box is a dirty change, so an empty entry is reachable", () => {
   // Compare a draft against `stored ?? ""` instead of `stored` and this gesture becomes a
   // silent no-op - and the empty-versus-absent distinction the whole store is built on
   // would have no spelling the operator could actually produce.
@@ -79,7 +79,7 @@ test("a card with no draft shows what is stored", () => {
 test("staged repositories appear as cards without being stored", () => {
   const state = { ...stateOf(viewOf({ [A]: "x" })), staged: [B] };
   assert.deepEqual(cardsOf(state), [A, B]);
-  assert.equal(isOverride(state.loaded, B), false);
+  assert.equal(hasRepositoryEntry(state.loaded, B), false);
 });
 
 // ---- The poll-versus-edit rule ----
@@ -193,9 +193,9 @@ test("a save goes clean only if the draft still holds what was sent", () => {
   assert.equal(isDirty(dirtyAfter, A), true);
 });
 
-test("removing an override always goes clean and returns the card to inheriting", () => {
+test("removing a repository entry always goes clean", () => {
   const state = stateOf(viewOf({ [A]: "a" }, "e1", "house"), { [A]: "a" });
   const saved = reconcileSaved(state, viewOf({}, "e2", "house"), { [A]: null });
-  assert.equal(isOverride(saved.loaded, A), false);
+  assert.equal(hasRepositoryEntry(saved.loaded, A), false);
   assert.equal(isDirty(saved, A), false);
 });

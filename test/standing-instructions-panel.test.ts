@@ -4,7 +4,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { StandingInstructionsView } from "../src/shared/protocol.ts";
 import type { StandingInstructionsDelivery } from "../src/shared/standing-instructions.ts";
-import { StandingInstructionsPanel } from "../src/web/components/StandingInstructionsPanel.tsx";
+import {
+  StandingInstructionsPanel,
+  StandingInstructionsRepositoryCard,
+} from "../src/web/components/StandingInstructionsPanel.tsx";
 import { StandingInstructionsDeliveryView } from "../src/web/components/StandingInstructionsDelivery.tsx";
 import { DEFAULT_CARD } from "../src/web/standing-instructions-reconcile.ts";
 import type {
@@ -20,9 +23,8 @@ import type {
 //    worse than none: it is trusted and wrong. The reach block is the answer, and it is
 //    asserted row by row below - a generic "the reach block renders" assertion passes
 //    while a row is missing, which is exactly the case that matters.
-//  - WHETHER A REPOSITORY HAS ONE. `inherited` and `override` are not decoration: a key
-//    stored EMPTY means "send nothing here" and beats the machine-wide default, while an
-//    absent key inherits it. The two render identically if nobody insists otherwise.
+//  - HOW THE TEXT COMBINES. Repository instructions append to the default. An empty
+//    repository entry adds nothing and leaves the default in place.
 //
 // Rendered rather than driven through a browser, for the reason every other settings test
 // is: static markup runs no effects, so nothing fetches and the pre-poll state is what
@@ -37,11 +39,11 @@ function viewOf(
 
 function cardsFrom(view: StandingInstructionsView | null): StandingInstructionsCard[] {
   if (!view) return [];
-  const mk = (key: string, value: string, override: boolean): StandingInstructionsCard => ({
+  const mk = (key: string, value: string, configured: boolean): StandingInstructionsCard => ({
     key,
     value,
     dirty: false,
-    override,
+    configured,
     theirs: null,
   });
   return [
@@ -60,7 +62,7 @@ function mkState(
     edit: () => {},
     save: async () => true,
     revert: () => {},
-    useGlobalDefault: async () => true,
+    removeRepository: async () => true,
     addRepository: async () => null,
     conflictCards: [],
     keepMine: () => {},
@@ -110,34 +112,76 @@ test("both anchored sections exist before the daemon has answered", () => {
   }
 });
 
-// ---- override versus inherited ----
+// ---- additions to the default ----
 
-test("a repository with a stored rule is an override, and the count follows", () => {
+test("a repository with a stored rule is appended, and the count follows", () => {
   const html = render(viewOf({ "/ws/alpha": "never run E2E locally" }));
-  assert.match(html, /si-chip-override/);
+  assert.match(html, /si-chip-appended/);
+  assert.match(html, /Repository instructions are appended after the default/);
+  assert.match(html, /Sent first to every new session, including repositories with their own instructions/);
   assert.match(html, /1 configured/);
 });
 
-test("a repository stored EMPTY is still an override, not an inherited card", () => {
-  // The distinction the whole store is built on: "" means send nothing HERE and beats the
-  // machine-wide default, while an absent key inherits it. Collapse the two and clearing a
-  // box quietly reinstates the default text.
+test("an empty repository entry keeps the default and still counts as configured", () => {
   const html = render(viewOf({ "/ws/alpha": "" }, "house rules"));
-  assert.match(html, /si-chip-override/);
-  assert.doesNotMatch(html, /si-chip-inherited/);
+  assert.match(html, /si-chip-default/);
+  assert.match(html, /1 configured/);
+  assert.doesNotMatch(html, /si-chip-appended/);
 });
 
-test("Use global default is disabled when there is no override to remove", () => {
+test("an unsaved repository card shows the default state", () => {
   const state = mkState(viewOf({ "/ws/alpha": "x" }));
   const inherited = state.cards.map((c) =>
-    c.key === "/ws/alpha" ? { ...c, override: false } : c
+    c.key === "/ws/alpha" ? { ...c, configured: false } : c
   );
   const html = renderToStaticMarkup(
     createElement(StandingInstructionsPanel, { state: { ...state, cards: inherited } }),
   );
-  // The card is collapsed in a static render, so assert through the button's own tooltip
-  // text, which the Tooltip renders into a visually-hidden node either way.
-  assert.doesNotMatch(html, /Remove this repository's rule/);
+  assert.match(html, /si-chip-default/);
+  assert.match(html, /0 configured/);
+});
+
+test("a conflicted repository card shows the absent remote entry without losing the local draft", () => {
+  const card: StandingInstructionsCard = {
+    key: "/ws/alpha",
+    value: "keep my local instructions",
+    dirty: true,
+    configured: true,
+    theirs: null,
+  };
+  const state = mkState(viewOf({ [card.key]: "previous instructions" }), {
+    cards: [card],
+    conflictCards: [card.key],
+  });
+  const html = renderToStaticMarkup(createElement(StandingInstructionsRepositoryCard, {
+    card,
+    state,
+    open: true,
+    onToggle: () => {},
+  }));
+  assert.match(html, /class="si-card si-card-conflict"/);
+  assert.match(html, /<pre class="si-conflict-theirs">\(no repository instructions\)<\/pre>/);
+  assert.match(html, /<textarea[^>]*>keep my local instructions<\/textarea>/);
+  assert.match(html, />Keep mine<\/button>/);
+  assert.match(html, />Take theirs<\/button>/);
+});
+
+test("an empty remote conflict value stays empty rather than using the absent-entry fallback", () => {
+  const card: StandingInstructionsCard = {
+    key: "/ws/alpha",
+    value: "keep my local instructions",
+    dirty: true,
+    configured: true,
+    theirs: "",
+  };
+  const html = renderToStaticMarkup(createElement(StandingInstructionsRepositoryCard, {
+    card,
+    state: mkState(viewOf({ [card.key]: "previous instructions" }), { conflictCards: [card.key] }),
+    open: true,
+    onToggle: () => {},
+  }));
+  assert.match(html, /<pre class="si-conflict-theirs"><\/pre>/);
+  assert.doesNotMatch(html, /\(no repository instructions\)/);
 });
 
 test("the counter names the daemon's own ceiling rather than a number typed here", () => {
@@ -151,19 +195,21 @@ test("the counter names the daemon's own ceiling rather than a number typed here
 // rows are asserted against the DERIVATION the card renders from. That is the stronger
 // assertion anyway: it pins the five pairs and their exact mechanisms, where a markup match
 // would only pin that some rows drew.
-test("the reach block states all five harness and runtime pairs with their mechanisms", async () => {
+test("the reach block states every harness and runtime pair with its mechanism", async () => {
   const { reachPairs } = await import("../src/web/lib/standing-instructions-view.ts");
   const rows = reachPairs();
   const labels = rows.map((r) => r.label);
 
   // Derived from the harness registry rather than typed out, so this asserts the DERIVATION
-  // produces exactly the five pairs the plan promises - and would fail loudly on the day a
-  // harness ships without the reach block being reconsidered.
+  // produces exactly the pairs that exist - and would fail loudly on the day a harness ships
+  // without the reach block being reconsidered. It went from five to six when Pi gained a
+  // managed runtime, which is the edit this assertion exists to force someone to make.
   assert.deepEqual(labels.sort(), [
     "claude · sdk",
     "claude · terminal",
     "codex · sdk",
     "codex · terminal",
+    "pi · sdk",
     "pi · terminal",
   ]);
 
@@ -177,6 +223,9 @@ test("the reach block states all five harness and runtime pairs with their mecha
   assert.equal(by("codex · terminal").prose.channel, "prompt text");
   assert.equal(by("codex · terminal").prose.detail, "composed above turn one");
   assert.equal(by("pi · terminal").prose.channel, "system prompt");
+  // The managed runtime reaches the SAME channel by the same name - `--append-system-prompt`
+  // is the CLI spelling of the resource-loader option the driver passes directly.
+  assert.equal(by("pi · sdk").prose.channel, "system prompt");
 });
 
 test("the mechanism prose says which channels never enter the transcript", async () => {

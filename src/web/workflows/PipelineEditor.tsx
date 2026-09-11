@@ -8,6 +8,7 @@ import {
   sessionActionSkillLabel,
   WORKFLOW_CHECK_SLOTS,
 } from "@shared/workflow.ts";
+import type { LlmProviderView } from "@shared/types.ts";
 import type {
   PersonaId,
   PersonaView,
@@ -17,6 +18,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowCompletionPolicy,
   WorkflowDraftGraph,
+  WorkflowNodeExecutionOverride,
 } from "@shared/workflow.ts";
 import {
   checkLabel,
@@ -42,6 +44,8 @@ import {
   type PipelineItemState,
 } from "./pipeline-bits.tsx";
 import type { WorkflowConfirmRequest } from "./WorkflowConfirmModal.tsx";
+import { NodeExecutionEditor } from "./NodeExecutionEditor.tsx";
+import { nodeRoutingLabel, personaNodeRouting } from "./node-execution.ts";
 import { Tooltip } from "../components/Tooltip.tsx";
 import { personaRoutingLabel } from "../library/library-model.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
@@ -176,6 +180,36 @@ export function replaceStageAction(
   return withStages(pipeline, pipeline.stages.map((candidate, index) => index === stageIndex
     ? { kind: "session_action", member: { ...stage.member, sessionActionId } }
     : candidate));
+}
+
+/**
+ * Point one reviewer occurrence at its own provider and model, or back at its Persona's.
+ *
+ * Addressed by `MemberRef` - a stage index and a position inside it - and never by Persona id,
+ * which is the whole reason this is a function rather than a map lookup: a pipeline may hold
+ * the same Persona twice, and `stageMemberKey` falls back to the Persona id, so anything
+ * keyed that way would rewrite both occurrences from one operator's click.
+ *
+ * `null` REMOVES the field rather than storing an empty one. `compileStages` spreads the
+ * member's override onto the node it emits, so a member carrying `executionOverride: undefined`
+ * would emit a node with an own key whose value is undefined - and the round-trip equality the
+ * stage tests pin, along with the draft fingerprint autosave diffs against, both read that as
+ * a change nobody made.
+ */
+export function setMemberExecutionOverride(
+  pipeline: StagePipeline,
+  ref: MemberRef,
+  override: WorkflowNodeExecutionOverride | null,
+): StagePipeline {
+  const target = evaluationStage(pipeline, ref.stage);
+  const member = target?.members[ref.member];
+  if (!target || member?.kind !== "persona") return pipeline;
+  const { executionOverride: _cleared, ...rest } = member;
+  const next: StageMember = { ...rest, ...(override ? { executionOverride: override } : {}) };
+  return withStages(pipeline, pipeline.stages.map((stage, index) => index === ref.stage
+    ? { ...target, members: target.members.map((candidate, position) =>
+        position === ref.member ? next : candidate) }
+    : stage));
 }
 
 export function removeMember(pipeline: StagePipeline, ref: MemberRef): StagePipeline {
@@ -372,9 +406,13 @@ const EMPTY_COMPLETIONS: ReadonlySet<SessionActionCompletionKind> = new Set();
 /** The same reason, for the policy: a stable identity, and the honest default of no footer. */
 const NO_COMPLETION_POLICY: WorkflowCompletionPolicy = { kind: "none" };
 
+/** And for the provider list, which a render test and the version viewer both omit. */
+const EMPTY_PROVIDERS: readonly LlmProviderView[] = [];
+
 export function PipelineEditor({
   graph,
   personas,
+  providers = EMPTY_PROVIDERS,
   sessionActions = [],
   availableCompletions = EMPTY_COMPLETIONS,
   completionPolicy = NO_COMPLETION_POLICY,
@@ -385,6 +423,8 @@ export function PipelineEditor({
 }: {
   graph: WorkflowDraftGraph;
   personas: PersonaView[];
+  /** Headless providers a reviewer override may name. Empty until the daemon has answered. */
+  providers?: readonly LlmProviderView[];
   /**
    * The whole action catalog, archived rows included, for two jobs: naming whatever a stage
    * already points at, and populating the pickers. The pickers narrow it themselves - a row
@@ -420,6 +460,15 @@ export function PipelineEditor({
   );
   const [focusKey, setFocusKey] = useState("session");
   const [insertAt, setInsertAt] = useState<number | null>(null);
+  /**
+   * Which reviewer occurrence has its routing form open, by NODE id.
+   *
+   * By node rather than by `MemberRef`, because the indices a ref carries move: reordering a
+   * stage or removing a member above this one would leave the disclosure open over a
+   * different reviewer. A node id survives every edit that does not delete the node, which is
+   * exactly when the form should close.
+   */
+  const [openRouting, setOpenRouting] = useState<string | null>(null);
   const [dragging, setDragging] = useState<
     { kind: "member"; ref: MemberRef } | { kind: "stage"; index: number } | null
   >(null);
@@ -876,10 +925,10 @@ export function PipelineEditor({
           // the two things a stage can do to the run are DIFFERENT: a fail spends a repair
           // round and restarts from Session, while an action captures fresh evidence and
           // carries on downstream without spending one.
-          ? "Any fail returns the submission to Session for repair, then the whole pipeline"
-            + " runs again. A session action finishing is not a repair: it captures fresh"
+          ? "Any fail returns the submission to Session for repair, then a new round"
+            + " starts. A session action finishing is not a repair: it captures fresh"
             + " evidence and only the stages after it run again, against the new evidence."
-          : "Any fail returns the submission to Session for repair, then the whole pipeline runs again."}
+          : "Any fail returns the submission to Session for repair, then a new round starts."}
       >
         <TerminusCard
           kind="session"
@@ -1028,11 +1077,38 @@ export function PipelineEditor({
                     const persona = member.kind === "persona"
                       ? personaById.get(member.personaId)
                       : undefined;
+                    const override = member.kind === "persona"
+                      ? member.executionOverride ?? null
+                      : null;
+                    // The routing line says WHICH object decided it, because the same
+                    // reviewer can be routed two ways in two stages of one pipeline and the
+                    // provider and model alone no longer identify where that came from.
                     const meta = member.kind === "check"
                       ? "Deterministic gate · passes when no command is configured here"
                       : persona
-                        ? `${personaRoutingLabel(persona)}${persona.archivedAt === null ? "" : " · archived"}`
-                        : "This Persona no longer exists";
+                        ? `${nodeRoutingLabel(override, personaRoutingLabel(persona))}${persona.archivedAt === null ? "" : " · archived"}`
+                        : override
+                          ? `${nodeRoutingLabel(override, null)} · this Persona no longer exists`
+                          : "This Persona no longer exists";
+                    // A routing disclosure needs a node to address; a check has no routing at
+                    // all. Both conditions are read once here so the actions slot can stay
+                    // NULL when neither control renders - an empty `<span>` in the row's
+                    // second grid column is a layout change, not an absence.
+                    /**
+                     * WHICH member this row is, as one phrase its row and both of its
+                     * buttons share.
+                     *
+                     * The position is the identity, not decoration. A stage may hold the
+                     * same Persona twice - that is the whole point of a per-node override -
+                     * so a name built from the reviewer and the stage alone gives two rows
+                     * one accessible name and leaves a screen-reader user unable to tell
+                     * their Routing and Remove buttons apart. Composed once so the row and
+                     * the buttons cannot drift into naming the same thing two ways.
+                     */
+                    const memberRef =
+                      `${label}, ${noun} ${memberIndex + 1} of ${stage.members.length} in ${stageRef}`;
+                    const routable = member.kind === "persona" && member.nodeId !== null;
+                    const routingOpen = routable && openRouting === member.nodeId;
                     return (
                       <ReviewerRow
                         key={key}
@@ -1043,7 +1119,7 @@ export function PipelineEditor({
                         item={{
                           tabIndex: current === key ? 0 : -1,
                           focusKey: key,
-                          ariaLabel: `${label}, ${noun} ${memberIndex + 1} of ${stage.members.length} in ${stageRef}`,
+                          ariaLabel: memberRef,
                           draggable: !readOnly,
                           onFocus: () => setFocusKey(key),
                           onDragStart: (event) => {
@@ -1067,17 +1143,55 @@ export function PipelineEditor({
                             }
                           },
                         }}
-                        actions={!readOnly && (
-                          <Tooltip label={`Remove ${label} from ${stageRef}`}>
-                            <button
-                              type="button"
-                              className="btn btn-ghost"
-                              aria-label={`Remove ${label} from ${stageRef}`}
-                              onClick={() => confirmRemoveMember(ref)}
-                            >
-                              ✕
-                            </button>
-                          </Tooltip>
+                        actions={(routable || !readOnly) && (
+                          <>
+                            {routable && (
+                              <Tooltip label={readOnly
+                                ? `Show the provider and model ${label} runs on in this workflow`
+                                : `Choose the provider and model ${label} runs on in this workflow`}>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost"
+                                  aria-label={`Model routing for ${memberRef}`}
+                                  aria-expanded={routingOpen}
+                                  onClick={() => setOpenRouting(
+                                    routingOpen ? null : member.nodeId,
+                                  )}
+                                >
+                                  Routing
+                                </button>
+                              </Tooltip>
+                            )}
+                            {!readOnly && (
+                              <Tooltip label={`Remove ${label} from ${stageRef}`}>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost"
+                                  aria-label={`Remove ${memberRef}`}
+                                  onClick={() => confirmRemoveMember(ref)}
+                                >
+                                  ✕
+                                </button>
+                              </Tooltip>
+                            )}
+                          </>
+                        )}
+                        panel={routingOpen && member.kind === "persona" && (
+                          <NodeExecutionEditor
+                            subject={{ nodeId: member.nodeId, personaId: member.personaId }}
+                            name={label}
+                            override={override}
+                            seed={personaNodeRouting(persona)}
+                            inherited={persona ? personaRoutingLabel(persona) : null}
+                            providers={providers}
+                            readOnly={readOnly}
+                            onChange={(next) => apply(
+                              setMemberExecutionOverride(pipeline, ref, next),
+                              next
+                                ? `${label} runs on ${next.runner} · ${next.model} in this workflow`
+                                : `${label} follows its Persona default again`,
+                            )}
+                          />
                         )}
                       />
                     );

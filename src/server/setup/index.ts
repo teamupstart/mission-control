@@ -1,3 +1,4 @@
+import { canInstallPiExtension } from "../environment/pi-extension.ts";
 import type { AgentType } from "@shared/types.ts";
 import { EXECUTABLE_SOURCE_LABELS, type ExecutableId } from "@shared/executables.ts";
 import {
@@ -5,6 +6,8 @@ import {
   type EnvironmentCheckView,
 } from "@shared/environment-checks.ts";
 import {
+  CMUX_APP_REMEDY,
+  CMUX_SOCKET_CONTROL_REMEDY,
   ENVIRONMENT_ROW_METADATA,
   HERDR_SERVER_REMEDY,
   SETUP_DEPENDENCY_IDS,
@@ -27,6 +30,7 @@ import { readCatalog } from "../skills/catalog.ts";
 import { getSkillsConfig } from "../skills/config.ts";
 import { desiredSkillIds, skillDrift, skillsDirs } from "../skills/reconcile.ts";
 import { binUnsupportedReason, resolveBin } from "../terminal/bin.ts";
+import { cmuxControlProbe } from "../terminal/cmux.ts";
 import { herdrServerProbe } from "../terminal/herdr.ts";
 import { terminalBackendBin } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
@@ -243,12 +247,61 @@ async function herdrStatus(deps: SetupDeps): Promise<SetupProbeResult> {
   };
 }
 
+/**
+ * cmux, which installation alone answers for even less than Herdr's does.
+ *
+ * Two facts stand between an installed cmux and a working one, and neither is guessable.
+ * The control socket exists only while the app is RUNNING; and cmux ships
+ * `automation.socketControlMode: "cmuxOnly"`, which admits only processes started inside
+ * cmux - the daemon is not one, so every call it makes is denied. Under either, the adapter
+ * degrades to an empty pane list without a word (see `terminal/cmux.ts`), and this row used
+ * to report "satisfied" on the strength of the binary being on PATH while every dispatch to
+ * cmux failed. That is the reading this exists to stop.
+ *
+ * The two get DIFFERENT remedies because they are different repairs, and offering the wrong
+ * one is worse than offering none: opening an app that is already open fixes nothing, and
+ * editing a config file for an app that is closed repairs a fault the operator does not have.
+ */
+async function cmuxStatus(deps: SetupDeps): Promise<SetupProbeResult> {
+  const installed = await terminalStatus("cmux", deps);
+  if (installed.state !== "satisfied") return { status: installed };
+  const control = await deps.cmuxControl();
+  if (control.state === "ready") {
+    return {
+      status: { ...installed, evidence: `${installed.evidence} (socket control ${control.accessMode})` },
+    };
+  }
+  if (control.state === "stopped") {
+    return {
+      status: {
+        state: "needs-setup",
+        why: "cmux is installed but not running. Its control socket exists only while the app is open, so Mission Control cannot list, create, or type into cmux workspaces until it is.",
+        evidence: installed.evidence,
+      },
+      remedy: CMUX_APP_REMEDY,
+    };
+  }
+  if (control.state === "refused") {
+    return {
+      status: {
+        state: "needs-setup",
+        why: "cmux is running but its control socket only admits processes started inside cmux. Mission Control's daemon is not one, so every call it makes is denied until automation.socketControlMode is allowAll.",
+        evidence: installed.evidence,
+      },
+      remedy: CMUX_SOCKET_CONTROL_REMEDY,
+    };
+  }
+  // A socket that answered something else is not a repair either button performs, so the
+  // catalog's install guide stays the offer and the row reports what cmux actually said.
+  return { status: { state: "needs-setup", why: control.error, evidence: installed.evidence } };
+}
+
 export const SETUP_PROBES: Record<SetupDependencyId, SetupProbe> = {
   "claude-cli": (deps) => agentStatus("claude-cli", deps),
   "codex-cli": (deps) => agentStatus("codex-cli", deps),
   "pi-cli": (deps) => agentStatus("pi-cli", deps),
   tmux: (deps) => terminalStatus("tmux", deps),
-  cmux: (deps) => terminalStatus("cmux", deps),
+  cmux: cmuxStatus,
   herdr: herdrStatus,
   wezterm: (deps) => terminalStatus("wezterm", deps),
   ghostty: (deps) => terminalStatus("ghostty", deps),
@@ -290,6 +343,7 @@ export function defaultSetupDeps(): SetupDeps {
   const environment = defaultEnvironmentDeps();
   return {
     environment,
+    canInstallPiExtension,
     refreshPath: async () => { await refreshProcessPathFromLoginShell({ force: true }); },
     executableDiagnostic: async (id) => {
       const resolved = await locateExecutable(id);
@@ -304,6 +358,7 @@ export function defaultSetupDeps(): SetupDeps {
     },
     backendUnsupported: (id) => binUnsupportedReason(terminalBackendBin(id)),
     herdrServer: () => herdrServerProbe(),
+    cmuxControl: () => cmuxControlProbe(),
     ghBin,
     resolveBinPath,
     runCommand: (bin, argv) => run(bin, argv, { timeoutMs: 5000 }),
@@ -370,6 +425,7 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    piExtensionInstallAvailable: deps.canInstallPiExtension?.() ?? false,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
   };

@@ -68,6 +68,8 @@ export interface StructuredJobRunOptions extends JobRunOptions {
   schema?: Record<string, unknown>;
   /** Trim the syntax retry only when this call site's rendered schema is faithful. */
   shapeGuaranteed?: boolean;
+  /** Limit executions independently of provider schema support when the caller owns retries. */
+  maxAttempts?: 1 | 2;
   /**
    * Told the resolved pair ONCE, before the first attempt spends anything.
    *
@@ -140,6 +142,7 @@ export async function runJobStructured<S extends ZodTypeAny>(
     label,
     opts.observer,
     {
+      maxAttempts: opts.maxAttempts,
       shapeGuaranteed:
         opts.shapeGuaranteed && runner.structuredOutput?.guaranteesInputShape === true,
     },

@@ -32,7 +32,7 @@ import {
 } from "@shared/pipeline.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { capabilitiesFor, supportsEffort } from "@shared/harness-capabilities.ts";
-import { canMessage } from "@shared/pane.ts";
+import { canMessage, canRename } from "@shared/pane.ts";
 import { foremanConcludedMission } from "@shared/schedules.ts";
 import { declaredBlockers, type BacklogBlocker } from "@shared/backlog.ts";
 import {
@@ -943,7 +943,7 @@ export class TaskManager {
     });
     // A restart severs the in-flight dispatch promises but leaves worktrees + terminal
     // homes on disk. Reconcile every task that still holds resources by checking
-    // whether its agent's terminal home survived (any backend, resolved by name).
+    // whether its agent's terminal home survived (emulator pane identity or mux name).
     for (const t of registry.listTasks()) {
       const recovery = t.pipelineCommissionId
         ? registry.pipelineCommission(t.pipelineCommissionId)?.recovery
@@ -4213,6 +4213,10 @@ export class TaskManager {
     // could have kept - or keeps ones it cannot.
     const label = nameRulesFor(s).sanitize(t.title);
     if (s.name === label) return;
+    if (!canRename(s)) {
+      this.registry.nameDispatchedEmulatorSession(s.id, label);
+      return;
+    }
     for (const candidate of [label, `${label}-${t.id.slice(0, 6)}`]) {
       // `sanitize` already strips what this backend's names cannot hold, so this normally
       // only refuses a session with nowhere for a name to live at all - a terminal session
@@ -4263,7 +4267,7 @@ export class TaskManager {
       if (!stopped.ok) throw new Error(stopped.error ?? "could not stop the task agent");
       return;
     }
-    const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null);
+    const alive = await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId);
     if (alive === false) return;
     const stopped = await killHome(t.homeName, undefined, t.homeBackend ?? null);
     if (!stopped.asked || !stopped.ok) {
@@ -5521,7 +5525,7 @@ export class TaskManager {
       }
     }
     const alive = embedded ?? (
-      t.homeName ? await homeAlive(t.homeName, undefined, t.homeBackend ?? null) : null
+      t.homeName ? await homeAlive(t.homeName, undefined, t.homeBackend ?? null, t.terminalResourceId) : null
     );
     if (alive !== false) {
       if (t.status === "dispatching") {

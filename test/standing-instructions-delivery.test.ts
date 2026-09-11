@@ -52,14 +52,15 @@ const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { standingInstructionsView, updateStandingInstructions } = await import(
   "../src/server/instructions/config.ts"
 );
-const { STANDING_INSTRUCTIONS_HEADING } = await import("../src/server/instructions/compose.ts");
+const { STANDING_INSTRUCTIONS_HEADING, STANDING_INSTRUCTIONS_MULTI_HEADING } = await import("../src/server/instructions/compose.ts");
 const { SdkSupervisor } = await import("../src/server/sdk/supervisor.ts");
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 
 type SdkSupervisor = import("../src/server/sdk/supervisor.ts").SdkSupervisor;
 
 const RULE = "Never run the E2E suite locally. It only runs in CI.";
-const BLOCK = `${STANDING_INSTRUCTIONS_HEADING}\n\n${RULE}`;
+const DEFAULT_RULE = "Preserve unrelated work.";
+const BLOCK = `${STANDING_INSTRUCTIONS_HEADING}\n\n${DEFAULT_RULE}\n\n${RULE}`;
 
 const clones: string[] = [];
 
@@ -93,10 +94,11 @@ function seedRepo(name: string): string {
   return realpathSync(repo);
 }
 
-/** Store one repository's standing instructions, through the same door the route uses. */
+/** Store a default and repository addition through the same door the route uses. */
 function setRule(repoPath: string, text: string): void {
   const result = updateStandingInstructions({
     expectedEtag: standingInstructionsView().etag,
+    default: DEFAULT_RULE,
     repositories: { [repoPath]: text },
   });
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -353,6 +355,7 @@ test("codex · terminal carries it in turn one, and nowhere else", async () => {
       intent: "THE-OPERATOR-REQUEST",
     });
     assert.match(run.prompt, /Never run the E2E suite locally/, `${agent} turn one`);
+    assert.ok(run.prompt.includes(BLOCK), "the default precedes the repository addition");
     // Above the request it governs.
     assert.ok(
       run.prompt.indexOf(RULE) < run.prompt.indexOf("THE-OPERATOR-REQUEST"),
@@ -500,6 +503,8 @@ test("a multi-repo dispatch's row holds the WHOLE composed block and one source 
   // One row, holding the whole labelled block - not one repository's share, which could not
   // represent what the agent actually read.
   assert.match(snapshot.text, /primary rule[\s\S]*secondary rule/);
+  assert.equal(snapshot.text.split(DEFAULT_RULE).length - 1, 1);
+  assert.ok(snapshot.text.indexOf(DEFAULT_RULE) < snapshot.text.indexOf("primary rule"));
   assert.deepEqual(snapshot.sources, [
     { repoPath: primary, matchedKey: primary },
     { repoPath: secondary, matchedKey: secondary },
@@ -559,14 +564,15 @@ test("the out-of-band fallback turn one keeps manifest -> instructions -> intent
   assert.equal(start.prompt.includes(RULE), false);
   const fallback = start.standingInstructions!.fallbackPrompt;
   const manifest = fallback.indexOf("## Repositories for this task");
-  const block = fallback.indexOf(STANDING_INSTRUCTIONS_HEADING);
+  const block = fallback.indexOf(STANDING_INSTRUCTIONS_MULTI_HEADING);
   const intent = fallback.indexOf("THE-OPERATOR-REQUEST");
   assert.ok(manifest >= 0 && block >= 0 && intent >= 0, "all three are present");
   assert.ok(manifest < block, "the manifest comes first");
   assert.ok(block < intent, "and the operator's rules sit above the request they govern");
   // Byte-identical, either side of the block, to the prompt that would have been sent had
   // this pair had no channel at all. Two compositions of one ordering is how they drift.
-  assert.equal(fallback, start.prompt.replace("THE-OPERATOR-REQUEST", `${BLOCK}\n\n---\n\nTHE-OPERATOR-REQUEST`));
+  const multiBlock = `${STANDING_INSTRUCTIONS_MULTI_HEADING}\n\n${DEFAULT_RULE}\n\n### ${primary}\n\n${RULE}`;
+  assert.equal(fallback, start.prompt.replace("THE-OPERATOR-REQUEST", `${multiBlock}\n\n---\n\nTHE-OPERATOR-REQUEST`));
 });
 
 test("a pair with NO out-of-band channel is given no fallback to compose twice", async () => {
@@ -583,6 +589,10 @@ test("a pair with NO out-of-band channel is given no fallback to compose twice",
   // claude - sdk HAS a channel, so it does get one.
   assert.notEqual(run.start.standingInstructions?.fallbackPrompt, "");
 
+  assert.ok(updateStandingInstructions({
+    expectedEtag: standingInstructionsView().etag,
+    default: "",
+  }).ok);
   const bare = seedRepo("no-rules");
   const none = await sdkDispatch({
     agent: "claude",
@@ -607,6 +617,7 @@ test("the snapshot records the channel the DRIVER used, not the one the launch a
   const real = HARNESSES.codex.sdk;
   const launched: unknown[] = [];
   HARNESSES.codex.sdk = {
+    answersRequests: true,
     async launch(opts) {
       launched.push(opts);
       // A driver that found its channel unusable and fell back, exactly as the Codex adapter
@@ -683,6 +694,7 @@ test("a RESUME that falls back to prose corrects the snapshot, so the next assig
   const real = HARNESSES.codex.sdk;
   const launched: { standingInstructions: string; standingInstructionsPrompt: string }[] = [];
   HARNESSES.codex.sdk = {
+    answersRequests: true,
     async launch(opts) {
       launched.push(opts as never);
       // A driver that found the channel unusable on THIS connection and sent the block as

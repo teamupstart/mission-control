@@ -28,7 +28,7 @@ const { WORKFLOW_DELIVERY_KINDS } = await import("../src/shared/workflow.ts");
 const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.name === "No-Mistakes Review")!;
 
 before(() => {
-  assert.equal(noMistakes().versions.length, 15, "this file is written against fifteen versions");
+  assert.equal(noMistakes().versions.length, 16, "this file is written against sixteen versions");
 });
 
 test("both delivery kinds remain in the durable vocabulary, and neither replaced the other", () => {
@@ -54,6 +54,7 @@ test("legacy versions keep their post-End handoff policies while versions 9 onwa
     "prepare_pr",
     "prepare_pr",
     "wait",
+    null,
     null,
     null,
     null,

@@ -88,6 +88,28 @@ Video is off. Recording it cost 16s of every CI shard whether or not anything fa
 showed nothing the trace does not already replay. A failure still leaves a trace and a
 screenshot; open the trace with `npx playwright show-trace`.
 
+### Dispatched Ghostty names
+
+`terminal-session-name.spec.ts` selects Ghostty and submits a dispatch through the dashboard.
+The task cuts a real worktree, opens a scripted terminal, passes through the real discovery
+correlator and Registry, and reaches the browser through the real SSE connection. The spec
+changes the terminal's reported title, waits until discovery observes it, and restarts the
+daemon before checking the retained name on the Board. It also checks that Rename is absent.
+
+This spec opts into `MC_E2E_TERMINAL_BOUNDARY=1`. `terminal-boundary-build.ts` builds the
+production daemon entry into a private, gitignored sibling of `dist/server/index.mjs`,
+replacing only process/cwd observations and terminal I/O. The fixture preserves Ghostty's
+real name rules, host-process correlation and capability nulls. Its spawn records the title
+it was asked for but reports a different shell title; it never creates a Session or writes
+the name to the Registry, task store or SSE snapshot. All other terminal adapters are made
+unavailable, and discovery reads only the fixture's process table, so this spec cannot adopt
+or manipulate the operator's terminals. Other specs keep the ordinary daemon bundle.
+
+Run it after `npm run build` with
+`MC_E2E_EVIDENCE=1 npm run test:e2e -- e2e/specs/terminal-session-name.spec.ts --workers=1`.
+The successful Board screenshot is `e2e/.artifacts/terminal-session-name/ghostty-dispatch.png`.
+The Console screenshot beside it is `ghostty-dispatch-console.png`.
+
 ### Dispatch over a large comment index
 
 `file-comment-dispatch-performance.spec.ts` keeps its CPU assertion opt-in because a browser
@@ -1687,14 +1709,14 @@ Attach the generated frames to the pull request; they are never committed.
 
 ### A standing instruction, and the sessions it does and does not reach
 
-`e2e/.artifacts/settings-standing-instructions/` carries five frames from
+`e2e/.artifacts/settings-standing-instructions/` carries frames from
 `specs/settings-standing-instructions.spec.ts`. The feature writes a rule an agent will
 **obey**, so the pictures are of the two claims a person has to be able to check: that the
 rule is where they put it, and that the panel is honest about who gets it.
 
 `empty.png` is the shipped state - nothing configured, and the panel saying so rather than
 looking broken. `rule-saved.png` is a rule stored against one repository, with the
-`override` chip that separates it from a checkout inheriting the machine-wide default.
+`appended` chip that identifies its addition to the machine-wide default.
 `reach-block.png` is the one worth the most: all eight rows at once, the five harness ·
 runtime pairs with the exact mechanism each uses, both deliberate exclusions, and the line
 saying a running session keeps what it launched with. It is a column-aligned claim no DOM
@@ -1713,6 +1735,12 @@ primary would say nothing is coming while the launch sends the block.
 
 No model tokens are spent: every agent binary is redirected at a fake, and the delivery is
 read back from the session's launch snapshot rather than from any model output.
+
+`additive-settings.png` shows both saved blocks and the copy explaining their order.
+`additive-preview.png` and `additive-session.png` show the same default followed by the
+repository addition before and after launch. `empty-repository-keeps-default.png` shows a
+cleared repository entry retaining the default. The spec verifies that removing that entry
+also preserves the default for the next session.
 
 Regenerate them with:
 
@@ -2020,3 +2048,14 @@ depend on running before the spec that dispatches a second.
 Playwright drives web contents. Native Electron shell behaviour - drag regions, traffic
 lights, window chrome, vibrancy - is invisible to CDP and to synthetic clicks, and stays a
 manual check.
+
+## Pi installation and terminal dispatch
+
+`specs/pi-extension-setup.spec.ts` exercises the first-install action and report-only warning
+row. Its terminal proof enables discovery but addresses only its own dispatched task and tmux
+home. `fixtures/fake-pi-plan.mjs` retains the catalog fake, then runs the pinned Pi CLI against
+a local deterministic provider for the dispatched turn. The provider records the actual model
+tool list, including the planning tools; no external provider or account is used. The test maps
+Pi's isolated extensions directory to the installer's isolated directory, proves automatic
+symlink discovery, and tears down only that task's tmux session. Screenshots are written to
+`e2e/.artifacts/pi-extension-setup/` and remain uncommitted.

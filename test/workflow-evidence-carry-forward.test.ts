@@ -865,7 +865,9 @@ test("a byte-capped carry stops at the first refusal instead of packing smaller 
     // newer one; the rule is that the first refusal ends the carry.
     store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 7);
     store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 7);
-    stage("own", [60, 60, 60], 8);
+    const ownCount = Math.floor(WORKFLOW_TEXT_EVIDENCE_LIMITS.maxAggregateBytes / (60 * 1024));
+    assert.ok(ownCount + 2 <= WORKFLOW_TEXT_EVIDENCE_LIMITS.maxCount, "both ancestors fit the item-count limit");
+    stage("own", Array.from({ length: ownCount }, () => 60), 8);
     const child = store.reserveEvidenceReadinessRefinement({
       id: "bytecap-child", runId, waitingSubmissionId: parent.submission.id,
       triggerKey: "bytecap-refine-2", manualRetry: true, now: 8,

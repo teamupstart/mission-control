@@ -8,6 +8,7 @@ import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), "mission-tools-dispatch-")));
 process.env.MISSION_HOME = home;
+process.env.MISSION_PI_EXTENSION = join(home, "missing-extension.js");
 process.env.MISSION_PORT = "7317";
 process.env.MISSION_PRODUCT_ISSUE_CLIENT = "browser";
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";

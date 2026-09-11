@@ -7,7 +7,7 @@ import {
   type HerdrPaneRequests,
   type HerdrProbe,
 } from "./herdr-client.ts";
-import { defaultExec, type TerminalExec } from "./exec.ts";
+import { defaultExec, heldInComposer, type TerminalExec } from "./exec.ts";
 import { PLAIN_NAMES } from "./names.ts";
 import { shellCommand } from "./shell.ts";
 import type {
@@ -211,8 +211,10 @@ export function herdrMultiplexer(
       keys: async (target, keys) =>
         unsupported() ?? client.sendKeys(target.paneId, keys.map((key) => KEY_NAMES[key])),
       // `pane.send_input` observes the pane's live bracketed-paste mode. No synthetic
-      // markers are added, and no Enter key is included on this composer path.
-      paste: async (target, text) => unsupported() ?? client.sendInput(target.paneId, text),
+      // markers are added, and no Enter key is included on this composer path - which is
+      // the whole of what `heldInComposer` claims.
+      paste: async (target, text) =>
+        heldInComposer(unsupported() ?? (await client.sendInput(target.paneId, text))),
     },
 
     capture: async (target) => {

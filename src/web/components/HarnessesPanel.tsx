@@ -205,7 +205,13 @@ function HarnessCard({
             aria-label={`Default model for dispatched ${label} sessions`}
           >
             <option value="">Harness default</option>
-            <ModelCatalogOptions catalog={models} />
+            {/* No hints here. A harness card is a 250px column, and Codex's hints are whole
+                sentences off its own model list, so composing `label - hint` printed the
+                option straight through the chevron. The roomier pickers - Dispatch, the
+                schedule editor, the task-kind defaults - still show them. A retained model
+                keeps its own hint regardless, because "not currently reported" is the only
+                thing explaining why that row is there. */}
+            <ModelCatalogOptions catalog={models} includeHints={false} />
           </select>
         </Tooltip>
         <label className="harness-card-field-label" htmlFor={effortId}>

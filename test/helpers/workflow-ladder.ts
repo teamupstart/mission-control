@@ -176,6 +176,7 @@ const FAIL = {
   verdict: "fail",
   summary: OBJECTION,
   requestedChanges: [{
+    basis: "substantive",
     title: "Render the away state",
     rationale: "The reducer assertion does not prove the visible card.",
     evidence: [{ kind: "diff", quote: "reducer only" }],

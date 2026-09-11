@@ -52,7 +52,7 @@ test("workflow limits are finite front-door contracts", () => {
     // set independently, and the gap between them was a published action that types only a
     // prefix of its immutable instruction.
     sessionActionPromptBytes: 58_000,
-    sessionActionEnvelopeBytes: 2_000,
+    sessionActionEnvelopeBytes: 18_000,
     // Looser than the authoring bound on purpose, so a row written before the ceiling was
     // tied to the packet budget stays readable and therefore fixable. It still cannot be
     // published - the snapshot schema holds it to `sessionActionPromptBytes`.
@@ -60,9 +60,8 @@ test("workflow limits are finite front-door contracts", () => {
     sessionActionSkillId: 200,
     // Deliberately NOT `feedbackPayloadBytes`. That budget bounds prose the daemon composes
     // from verdicts; this bounds the operator's own authored instruction, so it is the
-    // delivery row's own ceiling less envelope headroom - the widest prompt that can be
-    // stored is the widest that can be sent.
-    sessionActionPacketBytes: 60_000,
+    // action delivery row's own ceiling, with enough room for the complete repository root.
+    sessionActionPacketBytes: 76_000,
     workflowName: 120,
     graphNodes: 100,
     graphEdges: 300,

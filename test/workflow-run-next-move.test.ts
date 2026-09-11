@@ -40,6 +40,7 @@ import {
   runNextMove,
   runNoMoveReason,
 } from "../src/web/workflows/run-actions.ts";
+import { runRefusedSentence } from "../src/web/workflows/run-model.ts";
 
 interface Shape {
   status: WorkflowRunStatus;
@@ -68,6 +69,8 @@ interface Shape {
   triggerSource?: string;
   triggerKey?: string;
   gate?: { waitReason: WorkflowGateWaitReason | null; prUrl?: string | null } | null;
+  /** The phase's own detail, for the states whose sentence is composed from it. */
+  gateState?: unknown;
   policy?: "none" | "inspector";
   missingPrAction?: "offer_prepare_pr" | "wait";
 }
@@ -91,6 +94,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
     triggerKey = manualWorkflowTriggerKey("binding", "request-1"),
     boundVersionId = "version",
     gatePrNumber = null,
+    gateState = null,
   } = shape;
   const inspectorGate: WorkflowInspectorGateDetail | null = gate
     ? {
@@ -135,7 +139,7 @@ function detailFor(shape: Shape): WorkflowRunDetail {
         ? { kind: "inspector", onFindings: "restart_workflow", missingPrAction }
         : { kind: "none" },
     } as WorkflowVersion,
-    run: { id: "run", status, currentPhase: phase, workflowVersionId: "version" },
+    run: { id: "run", status, currentPhase: phase, workflowVersionId: "version", gateState },
     submissions: [{
       id: "submission",
       round,
@@ -593,12 +597,12 @@ test("a blocked fault that a fresh capture can clear still offers the resubmissi
 
 test("a block whose recovery is a decision offers no move and names the owner", () => {
   const rows: [string, string][] = [
-    ["inspector_findings", "they are listed under GitHub Inspector final gate below"],
-    ["inspector_pr_closed", "GitHub Inspector final gate below carries the pull request"],
-    ["inspector_disabled", "Turn it back on from Open GitHub Inspector settings, in GitHub Inspector final gate below."],
-    ["delivery_uncertain", "Confirm or discard it in Deliveries below"],
-    ["delivery_refused", "Retry or resolve it in Deliveries below"],
-    ["delivery_blocked", "Deliveries below carries the packet and why it is held."],
+    ["inspector_findings", "they are listed in the run record's Completion tab"],
+    ["inspector_pr_closed", "the run record's Completion tab carries the pull request"],
+    ["inspector_disabled", "Turn it back on from Open GitHub Inspector settings, in the run record's Completion tab."],
+    ["delivery_uncertain", "Confirm or discard it in the run record's Deliveries tab"],
+    ["delivery_refused", "Retry or resolve it in the run record's Deliveries tab"],
+    ["delivery_blocked", "The run record's Deliveries tab carries the packet and why it is held."],
   ];
   for (const [phase, owner] of rows) {
     const detail = detailFor({ status: "blocked", phase });
@@ -931,4 +935,34 @@ test("the captured-snapshot refusal keeps its own sentence", () => {
   }));
   assert.equal(move?.label, "Review this snapshot anyway");
   assert.match(move?.confirm?.body ?? "", /snapshot already taken/);
+});
+
+/*
+ * `runNoMoveReason` is withheld whenever a move exists, which is right, and is NOT a rule that
+ * a run with a move has nothing to explain. `runRefusedSentence` is the slot that renders
+ * alongside a move; this pins that the two arrive together.
+ */
+test("a capture-blocked run gets the resubmit move AND the sentence, not one or the other", () => {
+  const detail = detailFor({
+    status: "blocked",
+    phase: "image_evidence_capture",
+    live: true,
+    round: 1,
+    gateState: {
+      error: "Evidence image changed after it was staged; register it again",
+      code: "image_changed",
+      itemName: "steering-context.png",
+      itemClientId: "phase2-steering-disclosure",
+    },
+  });
+
+  const move = runNextMove(detail);
+  assert.equal(move?.kind, "resubmit", "the daemon accepts a resubmission here, so the page offers one");
+  assert.equal(move?.label, "Start repair round 2");
+  assert.equal(runNoMoveReason(detail), null);
+  const sentence = runRefusedSentence(detail);
+  assert.ok(sentence, "a blocked capture run must say why, button or no button");
+  assert.match(sentence, /steering-context\.png/);
+  assert.match(sentence, /no repair round was spent/);
+  assert.match(sentence, /resuming replays the same frozen reservation/);
 });

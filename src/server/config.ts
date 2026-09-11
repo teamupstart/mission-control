@@ -172,6 +172,12 @@ export function codexHookPath(): string {
   return envVar("CODEX_HOOK") ?? fileURLToPath(new URL("../../dist/satellites/codex-hook.mjs", import.meta.url));
 }
 
+/** Single self-contained Pi extension. Pi discovers only filenames ending in .js. */
+export function piExtensionPath(output = envVar("PI_EXTENSION") ?? fileURLToPath(new URL("../../dist/pi-extension/index.js", import.meta.url))): string {
+  if (!output.endsWith(".js")) throw new Error("Pi extension output (MISSION_PI_EXTENSION) must end in .js for Pi discovery");
+  return output;
+}
+
 // Which binary each harness launches moved to the harness registry as `BinSpec`
 // (`harness/types.ts`), with `resolveAgentBin` in `harness/index.ts`. It was a
 // `Record<AgentType, AgentBin>` here, which forced the decision but left the resolution

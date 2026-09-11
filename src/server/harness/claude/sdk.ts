@@ -1229,8 +1229,15 @@ function assistantActivity(message: ClaudeSdkMessage): string | null {
  * code with no `claude` on the machine. Production takes the default, which is the only
  * importer of the vendor package.
  */
+/**
+ * True: Claude's driver projects permission prompts, plan approvals and `AskUserQuestion`
+ * into `SessionRequest`, and `answer()` resolves the callback the CLI is blocked on.
+ */
+const CLAUDE_ANSWERS_REQUESTS = true;
+
 export function claudeSdkSpec(deps: ClaudeSdkDeps = defaultClaudeSdkDeps): SdkSpec {
   return {
+    answersRequests: CLAUDE_ANSWERS_REQUESTS,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       const session = new ClaudeSdkSession(opts.cwd);
       // Turn one is queued before the query is constructed, so the first thing the CLI

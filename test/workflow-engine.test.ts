@@ -246,7 +246,7 @@ test("concurrent provider-neutral Personas share one snapshot and Join aggregate
         ? JSON.stringify({
             verdict: "fail",
             summary: "Needs repair",
-            requestedChanges: [{
+            requestedChanges: [{ basis: "substantive",
               title: "Fix it",
               rationale: "Intent is not met",
               evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
@@ -687,11 +687,10 @@ test("SDK failures keep the existing persona_infrastructure vocabulary and durab
   assert.deepEqual(calls, [
     { state: "failed", error_code: "persona_infrastructure" },
     { state: "failed", error_code: "persona_infrastructure" },
-    { state: "failed", error_code: "persona_infrastructure" },
   ]);
 
   const attempts = store.listAttempts("submission-infra").filter((attempt) => attempt.nodeId === "p");
-  assert.deepEqual(attempts.map((attempt) => attempt.attempt), [1, 2, 3]);
+  assert.deepEqual(attempts.map((attempt) => attempt.attempt), [1]);
   assert.ok(attempts.every((attempt) => attempt.state === "error"));
   assert.equal(store.listReceipts("submission-infra").some((receipt) => receipt.edgeId === "p-fail"), false);
   assert.equal(store.getRun("run-infra")?.currentPhase, "infrastructure_error");
@@ -721,7 +720,7 @@ test("SDK failures keep the existing persona_infrastructure vocabulary and durab
       .filter((attempt) => attempt.nodeId === "p")
       .map((attempt) => attempt.attempt)
       .sort((a, b) => a - b),
-    [1, 2, 3, 4],
+    [1, 2],
   );
   assert.equal(store.addReceipt("submission-infra", "p-pass", failed.id, { outcome: "pass" }, 22), true);
   assert.equal(
@@ -1100,6 +1099,7 @@ const passingExecution = (snapshot: { runner: LlmRunnerId | null; model: string 
  * the commands live in the Global Command catalog, so an engine fixture supplies both.
  */
 const checkPolicy = (over: Record<string, unknown> = {}) => ({
+  skipPassedJudges: true,
   liveEnabled: false,
   repoAllowlist: ["/repo"],
   defaultWorkflowId: null,
@@ -1732,7 +1732,7 @@ function verdictRunner(reviewed: string[]) {
         ? JSON.stringify({
             verdict: "fail",
             summary: "Needs repair",
-            requestedChanges: [{
+            requestedChanges: [{ basis: "substantive",
               title: "Fix it",
               rationale: "Intent is not met",
               evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
@@ -1820,7 +1820,7 @@ test("disabling a reviewer after a failed round makes the repair round auto-pass
   await waitFor(() => store.getRun("run-disable-rerun")?.status === "completed");
   await engine.stop();
 
-  assert.deepEqual([...reviewed].sort(), ["blocking", "honest", "honest"]);
+  assert.deepEqual([...reviewed].sort(), ["blocking", "honest"]);
   const skipped = store.listAttempts("submission-disable-rerun-2")
     .find((attempt) => attempt.nodeId === "p2")!;
   assert.equal(skipped.state, "completed");
@@ -1844,6 +1844,7 @@ test("Persona feedback stays scoped to one reviewer and persists into repair rou
   const prompts: Array<{ persona: "honest" | "blocking"; prompt: string }> = [];
   const engine = new WorkflowEngine(store, () => {}, {
     concurrency: 3,
+    workflowPolicy: () => checkPolicy({ skipPassedJudges: false }),
     runnerFor: (id) => ({
       ...passingRunner(id),
       async run(prompt: string) {
@@ -1853,7 +1854,7 @@ test("Persona feedback stays scoped to one reviewer and persists into repair rou
           ? JSON.stringify({
               verdict: "fail",
               summary: "Needs repair",
-              requestedChanges: [{
+              requestedChanges: [{ basis: "substantive",
                 title: "Fix it",
                 rationale: "Intent is not met",
                 evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }],
@@ -2008,4 +2009,426 @@ test("stop() cancels a live check group instead of waiting out its command", {
   const attempt = store.listAttempts("submission-check-stop").find((item) => item.nodeId === "gate")!;
   assert.equal(attempt.state, "error");
   assert.equal(attempt.verdict, null);
+});
+
+// A pass is earned per node and run, and survives later evidence and daemon instances.
+for (const skipPassedJudges of [true, false]) {
+  test(`repair rounds ${skipPassedJudges ? "reuse" : "repeat"} judges according to workflow policy`, async () => {
+    const id = `judge-passes-${skipPassedJudges}`;
+    const store = seedSubmission(id, disableGraph());
+    const calls = { claude: 0, codex: 0 };
+    const options = {
+      concurrency: 3,
+      workflowPolicy: () => ({ ...checkPolicy(), skipPassedJudges }),
+      resolveExecution: passingExecution,
+      runnerFor: (runner: LlmRunnerId): LlmRunner => ({
+        ...passingRunner(runner),
+        async run() {
+          const count = ++calls[runner as keyof typeof calls];
+          const pass = runner === "claude" ? count === 1 : count >= 3;
+          return JSON.stringify(pass
+            ? { verdict: "pass", summary: "Approved", approvalDetails: { reason: "Met", evidence: [] }, confidence: 1 }
+            : { verdict: "fail", summary: "Repair", requestedChanges: [{ basis: "substantive", title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
+        },
+      }),
+    };
+    let engine = new WorkflowEngine(store, () => {}, options);
+    try {
+      engine.start();
+      engine.activateSubmission(`submission-${id}`);
+      await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+      const earned = store.latestAttemptForNode(`submission-${id}`, "p1")!;
+      assert.equal(earned.state, "completed");
+      for (const round of [2, 3]) {
+        // Recovery starts with a fresh engine and uses only durable attempts.
+        await engine.stop();
+        engine = new WorkflowEngine(store, () => {}, options);
+        const repair = store.createRepairSubmission({
+          id: `submission-${id}-${round}`, runId: `run-${id}`, round,
+          triggerSource: "manual", triggerKey: `manual:${id}:${round}`,
+          context: {}, evidence: {}, now: 20 + round,
+        });
+        store.updateSubmissionCapture(repair.submission.id, {
+          context: workflowJson(context), evidence: workflowJson(context.evidence),
+          fingerprint: `changed-evidence-${round}`, status: "running",
+        }, 30 + round);
+        engine.start();
+        engine.activateSubmission(repair.submission.id);
+        await waitFor(() => store.getRun(`run-${id}`)?.status ===
+          (skipPassedJudges && round === 3 ? "completed" : "waiting_for_session"));
+        const attempt = store.latestAttemptForNode(repair.submission.id, "p1")!;
+        assert.equal(attempt.runner, skipPassedJudges ? null : "claude");
+        if (skipPassedJudges) {
+          assert.deepEqual(attempt.output, { outcome: "pass", reusedPassAttemptId: earned.id });
+          assert.ok(store.listReceipts(repair.submission.id).some((receipt) =>
+            receipt.edgeId === "p1-pass" && receipt.sourceAttemptId === attempt.id));
+        }
+      }
+      assert.deepEqual(calls, { claude: skipPassedJudges ? 1 : 3, codex: 3 });
+      assert.deepEqual(store.getAttempt(earned.id)?.verdict, earned.verdict);
+      assert.equal(store.priorPassedJudge(`run-${id}`, "p1", 1), null, "not within the same round");
+      assert.equal(store.priorPassedJudge("another-run", "p1", 4), null, "not across runs");
+      assert.equal(store.priorPassedJudge(`run-${id}`, "another-node", 4), null, "not across nodes");
+    } finally {
+      await engine.stop();
+    }
+  });
+}
+
+test("explicit rechecks supersede older passes when judge reuse is reenabled", async () => {
+  const id = "judge-pass-recheck";
+  const store = seedSubmission(id, disableGraph());
+  const calls = { claude: 0, codex: 0 };
+  let skipPassedJudges = true;
+  const options = {
+    concurrency: 3,
+    workflowPolicy: () => checkPolicy({ skipPassedJudges }),
+    resolveExecution: passingExecution,
+    runnerFor: (runner: LlmRunnerId): LlmRunner => ({
+      ...passingRunner(runner),
+      async run() {
+        const count = ++calls[runner as keyof typeof calls];
+        const pass = runner === "claude" ? count !== 2 : count === 4;
+        return JSON.stringify(pass
+          ? { verdict: "pass", summary: "Approved", approvalDetails: { reason: "Met", evidence: [] }, confidence: 1 }
+          : { verdict: "fail", summary: "Regression", requestedChanges: [{ basis: "substantive", title: "Fix", rationale: "Not met", evidence: [{ kind: "goal", quote: "ONE IMMUTABLE SNAPSHOT" }] }], confidence: 1 });
+      },
+    }),
+  };
+  let latestPassId = "";
+  for (const round of [1, 2, 3, 4]) {
+    skipPassedJudges = round !== 2;
+    const submissionId = round === 1 ? `submission-${id}` : `submission-${id}-${round}`;
+    if (round > 1) {
+      store.createRepairSubmission({
+        id: submissionId, runId: `run-${id}`, round,
+        triggerSource: "manual", triggerKey: `manual:${id}:${round}`,
+        context: {}, evidence: {}, now: 20 + round,
+      });
+      store.updateSubmissionCapture(submissionId, {
+        context: workflowJson(context), evidence: workflowJson(context.evidence),
+        fingerprint: `changed-evidence-${round}`, status: "running",
+      }, 30 + round);
+    }
+    // Reopening the engine must retain the superseding verdict as well as earned passes.
+    const engine = new WorkflowEngine(store, () => {}, options);
+    try {
+      engine.start();
+      engine.activateSubmission(submissionId);
+      await waitFor(() => store.getRun(`run-${id}`)?.status ===
+        (round === 4 ? "completed" : "waiting_for_session"));
+      const attempt = store.latestAttemptForNode(submissionId, "p1")!;
+      assert.equal(attempt.runner, round === 4 ? null : "claude", `round ${round}`);
+      if (round === 2) assert.equal(store.priorPassedJudge(`run-${id}`, "p1", 3), null);
+      if (round === 3) latestPassId = attempt.id;
+      if (round === 4) {
+        assert.deepEqual(attempt.output, { outcome: "pass", reusedPassAttemptId: latestPassId });
+      }
+    } finally {
+      await engine.stop();
+    }
+  }
+  assert.deepEqual(calls, { claude: 3, codex: 4 });
+});
+
+for (const change of ["added", "edited", "removed", "recreated"] as const) {
+  test(`directive changes invalidate a prior judge pass: ${change}`, async () => {
+    const id = `judge-pass-directive-${change}`;
+    const store = seedSubmission(id, disableGraph());
+    const reviewed: string[] = [];
+    const prompts: string[] = [];
+    const setDirective = (feedback: string, now: number) => store.setRunPersonaDirective(
+      `run-${id}`, "p1", feedback,
+      { kind: "persona_directive_set", payload: { nodeId: "p1" } }, now,
+    );
+    const removeDirective = () => store.removeRunPersonaDirective(
+      `run-${id}`, "p1",
+      { kind: "persona_directive_removed", payload: { nodeId: "p1" } }, 10,
+    );
+    if (change !== "added") setDirective("FIRST_OPERATOR_DIRECTIVE", 4);
+    let earnedPassId = "";
+    for (const round of [1, 2, 3]) {
+      if (round === 2) {
+        if (change === "removed" || change === "recreated") removeDirective();
+        if (change !== "removed") {
+          // Recreating identical text resets revision to 1, but is still a new instruction.
+          setDirective(change === "recreated" ? "FIRST_OPERATOR_DIRECTIVE" : "NEW_OPERATOR_DIRECTIVE", 11);
+        }
+      }
+      const submissionId = round === 1 ? `submission-${id}` : `submission-${id}-${round}`;
+      if (round > 1) {
+        store.createRepairSubmission({
+          id: submissionId, runId: `run-${id}`, round,
+          triggerSource: "manual", triggerKey: `manual:${id}:${round}`,
+          context: {}, evidence: {}, now: 20 + round,
+        });
+        store.updateSubmissionCapture(submissionId, {
+          context: workflowJson(context), evidence: workflowJson(context.evidence),
+          fingerprint: `changed-evidence-${round}`, status: "running",
+        }, 30 + round);
+      }
+      const engine = new WorkflowEngine(store, () => {}, {
+        concurrency: 3,
+        workflowPolicy: () => checkPolicy(),
+        resolveExecution: passingExecution,
+        runnerFor: (runner) => {
+          const delegate = verdictRunner(reviewed)(runner);
+          return { ...delegate, async run(prompt, ...args) {
+            if (runner === "claude") prompts.push(prompt);
+            return delegate.run(prompt, ...args);
+          } };
+        },
+      });
+      try {
+        engine.start();
+        engine.activateSubmission(submissionId);
+        await waitFor(() => store.getRun(`run-${id}`)?.status === "waiting_for_session");
+        const attempt = store.latestAttemptForNode(submissionId, "p1")!;
+        assert.equal(attempt.runner, round === 3 ? null : "claude", `round ${round}`);
+        if (round === 2) {
+          earnedPassId = attempt.id;
+          if (change === "removed") assert.doesNotMatch(prompts[1]!, /OPERATOR_DIRECTIVE/);
+          else assert.match(prompts[1]!, change === "recreated" ? /FIRST_OPERATOR_DIRECTIVE/ : /NEW_OPERATOR_DIRECTIVE/);
+        }
+        if (round === 3) assert.deepEqual(attempt.output, { outcome: "pass", reusedPassAttemptId: earnedPassId });
+      } finally {
+        await engine.stop();
+      }
+    }
+    assert.equal(prompts.length, 2, "unchanged feedback can reuse the newly earned pass");
+    assert.equal(reviewed.filter((item) => item === "blocking").length, 3);
+  });
+}
+
+test("cancelled, failed, disabled and unexecuted judges do not earn a reusable pass", () => {
+  const store = seedSubmission("judge-pass-exclusions", disableGraph());
+  for (const [index, state] of ["cancelled", "error", "completed", "completed"].entries()) {
+    const attempt = store.insertAttempt({
+      id: `excluded-pass-${index}`, submissionId: "submission-judge-pass-exclusions",
+      nodeId: "p1", attempt: index + 1, state: "queued", persona: persona("p1", "Judge", "claude", "review"),
+      inputFingerprint: `exclusion-${index}`, now: 50 + index,
+    });
+    store.claimAttempt(attempt.id, index < 3 ? "claude" : null, null, 60 + index);
+    store.finishAttempt(attempt.id, {
+      state: state as "cancelled" | "error" | "completed",
+      verdict: { verdict: index === 2 ? "fail" : "pass" },
+      output: index === 3 ? { outcome: "pass", disabled: true } : null,
+    }, 70 + index);
+    assert.equal(store.priorPassedJudge("run-judge-pass-exclusions", "p1", 2), null);
+  }
+});
+
+test("rejected Persona responses retain a UTF-8 byte bound without splitting characters", () => {
+  const store = seedSubmission("rejection-byte-bound", disableGraph());
+  const attempt = store.insertAttempt({ id: "unicode-rejection", submissionId: "submission-rejection-byte-bound",
+    nodeId: "p1", attempt: 1, state: "running", persona: persona("p1", "Judge", "claude", "review"),
+    inputFingerprint: "unicode-rejection", now: 5 });
+  for (const [index, raw] of ["a" + "界".repeat(64_000), "a" + "😀".repeat(64_000)].entries()) {
+    store.retainRejectedPersonaVerdict(attempt.id, index + 1, "parse", raw);
+    const retained = store.getAttempt(attempt.id)!.reviewRejections!.find((item) => item.execution === index + 1)!.raw;
+    assert.ok(Buffer.byteLength(retained, "utf8") <= 64_000);
+    assert.ok(Buffer.byteLength(retained, "utf8") >= 63_997);
+    assert.ok(raw.startsWith(retained));
+    assert.equal(Buffer.from(retained, "utf8").toString("utf8"), retained);
+  }
+  assert.equal(store.getAttempt(attempt.id)!.reviewRejections!.length, 2);
+});
+
+for (const priorBasis of [null, "coverage_registration", "evidence_access", "parse"])
+for (const priorCalls of [1, 2]) test(`restart retains Persona input and ${priorBasis ?? "transport"} correction with ${priorCalls} prior executions`, async () => {
+  const id = `contract-restart-${priorCalls}-${priorBasis ?? "transport"}`;
+  const reviewer = persona("p", "Contract reviewer", "claude", "Review");
+  const executionGraph: PublishedWorkflowGraph = {
+    nodes: [{ id: "session", kind: "session", position: { x: 0, y: 0 } }, { id: "p", kind: "persona", persona: reviewer, position: { x: 100, y: 0 } }, { id: "end", kind: "end", outcome: "Done", position: { x: 200, y: 0 } }],
+    edges: [{ id: "start", source: "session", sourcePort: "submitted", target: "p", targetPort: "activate" }, { id: "pass", source: "p", sourcePort: "pass", target: "end", targetPort: "terminal" }, { id: "fail", source: "p", sourcePort: "fail", target: "session", targetPort: "return_for_changes" }],
+  };
+  const store = seedSubmission(id, executionGraph);
+  const { personaReviewInput, personaReviewInputDigest } = await import("../src/server/workflows/persona-contract.ts");
+  const input = personaReviewInput(store.getSubmission(`submission-${id}`)!, store.getWorkflowVersionById(`version-${id}`)!);
+  const fingerprint = personaReviewInputDigest(input);
+  store.insertAttempt({ id: `attempt-${id}`, submissionId: `submission-${id}`, nodeId: "p", attempt: 1, state: "running", persona: reviewer, reviewInput: input, inputFingerprint: fingerprint, now: 4 });
+  if (priorBasis) store.retainRejectedPersonaVerdict(`attempt-${id}`, 1, priorBasis, "rejected review");
+  for (let i = 1; i <= priorCalls; i++) store.insertLlmCall({ id: `call-${id}-${i}`, runId: `run-${id}`, submissionId: `submission-${id}`, nodeAttemptId: `attempt-${id}`, purpose: "persona_review", runner: "claude", model: "fake", attempt: i, state: "running", startedAt: 5, finishedAt: null, durationMs: null, inputBytes: 100, outputBytes: 0, costUsd: null, errorCode: null });
+  store.setRunState(`run-${id}`, "running", "persona_review", null, 6);
+  store.updateSubmissionCapture(`submission-${id}`, { context: workflowJson(context), evidence: workflowJson(context.evidence), readiness: { evaluatorVersion: "criterion_mapped_v1", status: "unavailable", criteria: [], gapCodes: [], warningCodes: [], unavailableReason: "Changed after attempt creation" } }, 6);
+  let calls = 0;
+  const fake: LlmRunner = { id: "claude", label: "fake", runInThread: null, structuredOutput: null, sandbox: null, price: () => null, litter: null, killLiveRuns() {}, async run(prompt) {
+    calls++; assert.match(prompt, /"status":"unknown"/); assert.doesNotMatch(prompt, /Changed after attempt creation/);
+    assert.ok(prompt.includes(`Correction required: ${priorBasis && priorBasis !== "parse" ? priorBasis : "the prior reply could not be executed or parsed"}.`));
+    return JSON.stringify({ verdict: "pass", summary: "Pass", approvalDetails: { reason: "Proven", evidence: [] }, confidence: 1 });
+  } };
+  const engine = new WorkflowEngine(store, () => {}, { runnerFor: () => fake, resolveExecution: () => ({ runner: { id: "claude", source: "config", unknown: null }, model: { id: "fake", source: "config" } }), retryBaseMs: 1 });
+  engine.start();
+  try { await waitFor(() => ["completed", "blocked"].includes(store.getRun(`run-${id}`)?.status ?? "")); }
+  finally { await engine.stop(); }
+  assert.equal(calls, 2 - priorCalls);
+  assert.equal(store.getRun(`run-${id}`)?.status, priorCalls === 1 ? "completed" : "blocked");
+  assert.equal(store.personaOperationCalls(input.operationId), 2);
+  assert.deepEqual(store.getAttempt(`attempt-${id}`)?.reviewInput, input);
+  for (const row of store.listAttempts(`submission-${id}`).filter((a) => a.persona)) {
+    assert.deepEqual(row.reviewInput, input); assert.equal(row.inputFingerprint, fingerprint);
+  }
+  assert.equal(store.listReceipts(`submission-${id}`).some((receipt) => receipt.edgeId === "fail"), false);
+});
+
+// --- Per-node execution overrides: the workflow's own provider and model ---
+
+/**
+ * ONE Persona, used twice, where only the second node carries a workflow override.
+ *
+ * Both nodes name the same source Persona on purpose: an implementation that resolved routing
+ * by Persona id rather than by node would give these two the same answer and still pass every
+ * single-occurrence test.
+ */
+function overrideGraph(): PublishedWorkflowGraph {
+  const shared = persona("shared", "Shared reviewer", "codex", "PASS_PERSONA");
+  return {
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "inherits", kind: "persona", persona: shared, position: { x: 100, y: 0 } },
+      {
+        id: "overrides",
+        kind: "persona",
+        persona: shared,
+        position: { x: 100, y: 170 },
+        executionOverride: { runner: "claude", model: "claude-opus-4-8" },
+      },
+      { id: "join", kind: "all_pass", position: { x: 200, y: 85 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 300, y: 85 } },
+    ],
+    edges: [
+      { id: "s-a", source: "session", sourcePort: "submitted", target: "inherits", targetPort: "activate" },
+      { id: "s-b", source: "session", sourcePort: "submitted", target: "overrides", targetPort: "activate" },
+      { id: "a-pass", source: "inherits", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "a-fail", source: "inherits", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "b-pass", source: "overrides", sourcePort: "pass", target: "join", targetPort: "result" },
+      { id: "b-fail", source: "overrides", sourcePort: "fail", target: "join", targetPort: "result" },
+      { id: "join-pass", source: "join", sourcePort: "pass", target: "end", targetPort: "terminal" },
+      { id: "join-fail", source: "join", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+    ],
+  };
+}
+
+/** Every launch the engine actually made, as the provider it asked and the model it named. */
+function capturingRunner(launches: Array<{ runner: LlmRunnerId; model: string | undefined }>) {
+  return (id: LlmRunnerId): LlmRunner => ({
+    ...passingRunner(id),
+    async run(_prompt: string, options?: { model?: string }) {
+      launches.push({ runner: id, model: options?.model });
+      return JSON.stringify({
+        verdict: "pass",
+        summary: "Approved",
+        approvalDetails: { reason: "Intent is met", evidence: [] },
+        confidence: 0.9,
+      });
+    },
+  });
+}
+
+test("an overridden node launches, records and bills its own provider and model", async () => {
+  const store = seedSubmission("node-override", overrideGraph());
+  const launches: Array<{ runner: LlmRunnerId; model: string | undefined }> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: capturingRunner(launches),
+    // The Persona resolver the node WITHOUT an override inherits. It deliberately answers a
+    // different provider and model, so a node that ignored its own pair would be visible.
+    resolveExecution: () => ({
+      runner: { id: "codex", source: "config", unknown: null },
+      model: { id: "gpt-5.6-terra", source: "config" },
+    }),
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-node-override");
+  await waitFor(() => store.getRun("run-node-override")?.status === "completed");
+  await engine.stop();
+
+  assert.deepEqual(launches.slice().sort((a, b) => a.runner.localeCompare(b.runner)), [
+    { runner: "claude", model: "claude-opus-4-8" },
+    { runner: "codex", model: "gpt-5.6-terra" },
+  ]);
+
+  const attempts = store.listAttempts("submission-node-override");
+  const inherited = attempts.find((attempt) => attempt.nodeId === "inherits")!;
+  const overridden = attempts.find((attempt) => attempt.nodeId === "overrides")!;
+  assert.deepEqual([inherited.runner, inherited.model], ["codex", "gpt-5.6-terra"]);
+  assert.deepEqual([overridden.runner, overridden.model], ["claude", "claude-opus-4-8"]);
+
+  // Accounting reads the same resolution the launch did: a call billed against a provider the
+  // attempt never used would make every per-provider cost report wrong by exactly one review.
+  const calls = store.runExportDetail("run-node-override")!.llmCalls!;
+  const billed = new Map(calls.map((call) => [call.nodeAttemptId, `${call.runner} · ${call.model}`]));
+  assert.equal(billed.get(inherited.id), "codex · gpt-5.6-terra");
+  assert.equal(billed.get(overridden.id), "claude · claude-opus-4-8");
+});
+
+test("a retry re-resolves to the same explicit pair rather than to the live default", async () => {
+  const store = seedSubmission("node-override-retry", overrideGraph());
+  const launches: Array<{ runner: LlmRunnerId; model: string | undefined }> = [];
+  let overriddenAttempts = 0;
+  // The inheriting node's resolver CHANGES between attempts, standing in for an operator
+  // repointing the app default mid-run. The overridden node must not move with it.
+  let inheritedModel = "gpt-5.6-terra";
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: (id: LlmRunnerId): LlmRunner => ({
+      ...passingRunner(id),
+      async run(_prompt: string, options?: { model?: string }) {
+        launches.push({ runner: id, model: options?.model });
+        if (options?.model === "claude-opus-4-8") {
+          overriddenAttempts += 1;
+          inheritedModel = "gpt-5.6-luna";
+          // One structured failure, then a pass. `runStructured` retries in place.
+          if (overriddenAttempts === 1) return "not json at all";
+        }
+        return JSON.stringify({
+          verdict: "pass",
+          summary: "Approved",
+          approvalDetails: { reason: "Intent is met", evidence: [] },
+          confidence: 0.9,
+        });
+      },
+    }),
+    resolveExecution: () => ({
+      runner: { id: "codex", source: "config", unknown: null },
+      model: { id: inheritedModel, source: "config" },
+    }),
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-node-override-retry");
+  await waitFor(() => store.getRun("run-node-override-retry")?.status === "completed");
+  await engine.stop();
+
+  assert.ok(overriddenAttempts >= 2, "the overridden node should have been retried");
+  for (const launch of launches.filter((entry) => entry.runner === "claude")) {
+    assert.deepEqual(launch, { runner: "claude", model: "claude-opus-4-8" });
+  }
+  const overridden = store.listAttempts("submission-node-override-retry")
+    .find((attempt) => attempt.nodeId === "overrides")!;
+  assert.deepEqual([overridden.runner, overridden.model], ["claude", "claude-opus-4-8"]);
+});
+
+test("a disabled node with an override still launches nothing and stamps no provider", async () => {
+  const store = seedSubmission("node-override-disabled", overrideGraph());
+  store.setRunDisabledNodes("run-node-override-disabled", ["overrides"], [], 4);
+  const launches: Array<{ runner: LlmRunnerId; model: string | undefined }> = [];
+  const engine = new WorkflowEngine(store, () => {}, {
+    concurrency: 3,
+    runnerFor: capturingRunner(launches),
+    resolveExecution: passingExecution,
+    retryBaseMs: 1,
+  });
+  engine.start();
+  engine.activateSubmission("submission-node-override-disabled");
+  await waitFor(() => store.getRun("run-node-override-disabled")?.status === "completed");
+  await engine.stop();
+
+  assert.equal(launches.some((launch) => launch.model === "claude-opus-4-8"), false);
+  const skipped = store.listAttempts("submission-node-override-disabled")
+    .find((attempt) => attempt.nodeId === "overrides")!;
+  // A stamped provider here would claim an expensive model ran when nothing did.
+  assert.equal(skipped.runner, null);
+  assert.equal(skipped.model, null);
 });

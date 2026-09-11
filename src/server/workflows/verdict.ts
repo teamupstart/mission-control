@@ -2,6 +2,7 @@ import { z } from "zod";
 import { PersonaVerdictSchema } from "@shared/protocol.ts";
 import {
   EVIDENCE_REF_KINDS,
+  PERSONA_FINDING_BASES,
   WORKFLOW_EXECUTION_LIMITS,
   type EvidenceRef,
   type PersonaVerdict,
@@ -19,6 +20,7 @@ const EvidenceInputSchema = z.object({
   line: z.number().finite().optional(),
 });
 const RequestedChangeInputSchema = z.object({
+  basis: z.enum(PERSONA_FINDING_BASES).optional(),
   title: z.string(),
   rationale: z.string(),
   evidence: z.array(EvidenceInputSchema).min(1),
@@ -67,6 +69,7 @@ function evidenceRef(value: z.infer<typeof EvidenceInputSchema>): EvidenceRef {
 
 function requestedChange(value: z.infer<typeof RequestedChangeInputSchema>): RequestedChange {
   return {
+    ...(value.basis ? { basis: value.basis } : {}),
     title: clipped(value.title, WORKFLOW_EXECUTION_LIMITS.verdictSummary),
     rationale: clipped(value.rationale, WORKFLOW_EXECUTION_LIMITS.verdictReason),
     evidence: value.evidence

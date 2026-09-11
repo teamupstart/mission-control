@@ -72,8 +72,8 @@ export const SETUP_FAMILY_INFO: Record<SetupFamilyId, SetupFamilyInfo> = {
   },
   extensions: {
     id: "extensions",
-    label: "Claude Code extensions",
-    description: "Plugins add external capabilities; Mission Control skills add reusable session workflows.",
+    label: "Agent extensions",
+    description: "Extensions connect agents to Mission Control; plugins and skills add capabilities and reusable workflows.",
   },
   pipelines: {
     id: "pipelines",
@@ -102,12 +102,43 @@ export type SetupRequirement = "required" | "recommended" | "optional";
  * fact about this machine right now, and it is the one an operator with Herdr installed is
  * far more likely to be missing.
  */
-export const SETUP_SERVICE_IDS = ["herdr-server"] as const;
+export const SETUP_SERVICE_IDS = ["herdr-server", "cmux-app", "cmux-socket-control"] as const;
 
 export type SetupServiceId = (typeof SETUP_SERVICE_IDS)[number];
 
-export const SETUP_SERVICE_INFO: Record<SetupServiceId, { id: SetupServiceId; label: string }> = {
-  "herdr-server": { id: "herdr-server", label: "Herdr server" },
+/**
+ * Each service says what its own success and failure read like, rather than being described
+ * by a sentence built around its label.
+ *
+ * `The ${label} is running.` is true of a server and false of everything else. It produced
+ * "The cmux socket control is running." for a repair that writes one value into a config
+ * file and starts no process at all, which tells an operator nothing they can check.
+ */
+export const SETUP_SERVICE_INFO: Record<
+  SetupServiceId,
+  { id: SetupServiceId; label: string; started: string; refused: string }
+> = {
+  "herdr-server": {
+    id: "herdr-server",
+    label: "Herdr server",
+    started: "The Herdr server is running.",
+    refused: "The Herdr server could not be started.",
+  },
+  "cmux-app": {
+    id: "cmux-app",
+    label: "cmux app",
+    started: "cmux is open, and its control socket is answering.",
+    refused: "cmux could not be opened.",
+  },
+  // Not a process, and the only entry here that is not. It is in this union because it is
+  // the same shape of promise: a named repair the daemon owns end to end, carrying no argv
+  // and no path the browser could influence. See `CMUX_SOCKET_CONTROL_REMEDY`.
+  "cmux-socket-control": {
+    id: "cmux-socket-control",
+    label: "cmux socket control",
+    started: "cmux socket control is set to allowAll. cmux applies it without a restart.",
+    refused: "The cmux configuration could not be written.",
+  },
 };
 
 /**
@@ -142,6 +173,41 @@ export const HERDR_SERVER_REMEDY: SetupRemedy = {
   service: "herdr-server",
   label: "Start the Herdr server",
   note: "Start Herdr's default server now, the same way a dispatch to Herdr would.",
+};
+
+/**
+ * Open cmux, offered while the CLI is installed and the app is closed.
+ *
+ * cmux's control socket exists only while its app is running, and the adapter degrades to an
+ * empty pane list rather than saying so once a tick. Installing again repairs nothing, so
+ * this stands in for the install link on that one reading - the same trade `HERDR_SERVER_REMEDY`
+ * makes.
+ */
+export const CMUX_APP_REMEDY: SetupRemedy = {
+  kind: "service",
+  service: "cmux-app",
+  label: "Open cmux",
+  note: "Open the cmux app and wait for its control socket, which is how Mission Control reaches it.",
+};
+
+/**
+ * Let Mission Control's daemon drive cmux, offered while the socket is answering and
+ * refusing.
+ *
+ * The one remedy here that edits an operator's own configuration, and it exists because
+ * nothing else can: cmux ships `automation.socketControlMode: "cmuxOnly"`, which admits only
+ * processes started inside cmux, and under it EVERY socket call is denied - including the
+ * reload that would pick a repair up. So Setup used to report cmux as satisfied on the
+ * strength of the binary existing while every dispatch to it failed.
+ *
+ * The write is one value, the previous file is copied to a timestamped `.bak` first, and a
+ * file that will not parse is refused rather than replaced. See `setup/cmux-config.ts`.
+ */
+export const CMUX_SOCKET_CONTROL_REMEDY: SetupRemedy = {
+  kind: "service",
+  service: "cmux-socket-control",
+  label: "Allow Mission Control to drive cmux",
+  note: "Set automation.socketControlMode to allowAll in ~/.config/cmux/cmux.json, keeping a timestamped backup of the current file.",
 };
 
 export interface SetupDependencyInfo {
@@ -378,6 +444,8 @@ export interface SetupRowView {
 }
 
 export interface SetupChecksView {
+  /** First installation only, never a repair of an existing or enabled integration. */
+  piExtensionInstallAvailable?: boolean;
   rows: SetupRowView[];
   banner: SetupBannerView;
   /**
@@ -429,6 +497,16 @@ export const ENVIRONMENT_ROW_METADATA: Record<
     remedy: SetupRemedy;
   }
 > = {
+  "pi-extension": {
+    family: "extensions",
+    requirement: "required",
+    enables: "A broken Pi extension can silently lose Mission Control integration or prevent every Pi session from starting.",
+    remedy: {
+      kind: "command",
+      argv: ["npm", "run", "install-pi-extension"],
+      note: "Build first with npm run build in a durable Mission Control clone, then run this installer. For a desktop install, update or reinstall the integration from a durable app installation. This row never repairs it automatically.",
+    },
+  },
   "upstartclaw-core-setup": {
     family: "extensions",
     requirement: "optional",

@@ -1,3 +1,4 @@
+import { personaReviewInput, personaReviewInputDigest, personaContractViolation } from "./persona-contract.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
   PersonaVerdictSchema,
@@ -46,7 +47,7 @@ import type { StructuredAttemptObserver } from "../llm/structured.ts";
 import { DEFAULT_REVIEW_CONCURRENCY, createReviewScheduler } from "../llm/review-scheduler.ts";
 import type { ReviewScheduler } from "../llm/review-scheduler.ts";
 import { buildPersonaPrompt } from "./prompt.ts";
-import { resolvePersonaExecution } from "./personas.ts";
+import { resolvePersonaExecution, resolveWorkflowNodeExecution } from "./personas.ts";
 import { type WorkflowStore, workflowJson } from "./store.ts";
 import { readinessReviewDisagreementEvent } from "./readiness-disagreement.ts";
 import { normalizePersonaVerdict, parsePersonaVerdict, verdictRequestedChanges } from "./verdict.ts";
@@ -117,6 +118,16 @@ export interface WorkflowEngineOptions {
   now?: () => number;
   retryBaseMs?: number;
   runnerFor?: (id: LlmRunner["id"]) => LlmRunner;
+  /**
+   * How a Persona SNAPSHOT resolves to a provider and model, for tests that pin a runner.
+   *
+   * Deliberately still takes the snapshot alone rather than the whole node. A node carrying an
+   * explicit `executionOverride` has already answered this question, and routing that answer
+   * back through an injected seam would let a fixture silently overrule the published pair -
+   * which is the one thing an override exists to make impossible. The engine composes the two
+   * through `resolveWorkflowNodeExecution`: the seam owns inheritance, the node owns its own
+   * choice.
+   */
   resolveExecution?: (persona: Extract<PublishedWorkflowNode, { kind: "persona" }>["persona"]) => PersonaExecutionView;
   /** Called after the wait boundary is durable and before any later graph work can advance. */
   onSubmissionWaiting?: (submissionId: string) => void;
@@ -165,7 +176,7 @@ export interface WorkflowEngineOptions {
    * every persona node in every build.
    */
   unresolvedCheckLease?: (submissionId: string, nodeId: string) => boolean;
-  /** Read per attempt, never cached, so a Settings edit lands on the next check. */
+  /** Read per attempt, so a Settings edit lands on the next check or judge. */
   workflowPolicy?: () => WorkflowPolicy;
   /**
    * This machine's Command catalog entry for one slot, read per attempt for the same reason.
@@ -482,7 +493,8 @@ export class WorkflowEngine {
     // is different: it is a same-round replacement packet and must run the graph from Session
     // once its structure is ready.
     const seedSession = submission.segment === 0
-      || submission.refinementReason === "evidence_preflight";
+      || submission.refinementReason === "evidence_preflight"
+      || submission.refinementReason === "evidence_recovery";
     let changed = true;
     while (changed) {
       changed = false;
@@ -576,6 +588,16 @@ export class WorkflowEngine {
                   submission.prHeadSha ?? captured.data.evidence.headSha,
                 )
               : [];
+            let reviewInput: WorkflowNodeAttempt["reviewInput"];
+            try {
+              reviewInput = target.kind === "persona" ? personaReviewInput(this.store.getSubmission(submission.id) ?? submission, version) : undefined;
+            } catch (error) {
+              this.store.setSubmissionState(submission.id, "failed", this.now());
+              this.store.setRunState(submission.runId, "blocked", "infrastructure_error", {
+                nodeId: target.id, error: `Invalid frozen Persona readiness input: ${String(error)}`,
+              }, this.now());
+              return;
+            }
             const fingerprint = checkEvidence.length > 0
               ? `${submission.evidenceFingerprint}:${target.id}:${checkEvidenceFingerprint(checkEvidence)}`
               : `${submission.evidenceFingerprint}:${target.id}`;
@@ -587,7 +609,8 @@ export class WorkflowEngine {
               state: "queued",
               persona: target.kind === "persona" ? target.persona : null,
               checkEvidence: checkEvidence.length > 0 ? checkEvidence : undefined,
-              inputFingerprint: fingerprint,
+              reviewInput,
+              inputFingerprint: reviewInput ? `${fingerprint}:${personaReviewInputDigest(reviewInput)}` : fingerprint,
               now: this.now(),
             });
             changed = true;
@@ -954,7 +977,7 @@ export class WorkflowEngine {
     if (isVerdictNode(node) && disabledNodes(run).includes(node.id)) {
       const verdict = disabledVerdict(node);
       if (verdict) {
-        this.runDisabledAttempt(initial, submission, run, version, node, verdict);
+        this.runSkippedAttempt(initial, submission, run, version, node, verdict);
         return;
       }
     }
@@ -963,7 +986,36 @@ export class WorkflowEngine {
       return;
     }
     if (!isPersona(node)) return;
-    const execution = this.resolveExecution(node.persona);
+    if (this.workflowPolicy().skipPassedJudges) {
+      const prior = this.store.priorPassedJudge(run.id, node.id, submission.round);
+      const parsed = PersonaVerdictSchema.safeParse(prior?.verdict);
+      const directive = initial.operatorDirective
+        ?? run.personaDirectives?.find((item) => item.nodeId === node.id);
+      const previous = prior?.operatorDirective;
+      // New, edited, removed, or recreated feedback must reach a real provider call once.
+      // An unchanged directive can retain the pass that was earned under that instruction.
+      const sameDirective = directive?.revision === previous?.revision
+        && directive?.feedback === previous?.feedback
+        && directive?.createdAt === previous?.createdAt
+        && directive?.updatedAt === previous?.updatedAt;
+      if (prior && parsed.success && parsed.data.verdict === "pass" && sameDirective) {
+        const source = this.store.getSubmission(prior.submissionId)!;
+        const reason = `${node.persona.name} passed in Round ${source.round}. That pass still stands, so this judge was not re-run.`;
+        this.runSkippedAttempt(initial, submission, run, version, node, {
+          verdict: "pass",
+          summary: reason,
+          approvalDetails: { reason, evidence: [] },
+          confidence: parsed.data.confidence,
+        }, prior);
+        return;
+      }
+    }
+    // ONE resolution, read before the claim and reused for the claim record, the runner
+    // lookup, the launch and every LLM call this attempt bills. A second call here would be a
+    // second chance for a live default to change between the record and the spawn. It is
+    // reached only once the skip above has declined to reuse an earned pass: a skipped judge
+    // spawns nothing, so it must resolve nothing.
+    const execution = resolveWorkflowNodeExecution(node, this.resolveExecution);
     const claimed = this.store.claimAttempt(initial.id, execution.runner.id, execution.model.id, this.now());
     if (!claimed) return;
     const context = WorkflowContextSnapshotSchema.safeParse(submission.context);
@@ -976,6 +1028,7 @@ export class WorkflowEngine {
       context.data,
       claimed.operatorDirective ?? null,
       claimed.checkEvidence ?? [],
+      claimed.reviewInput,
     );
     let images: readonly LlmImageInput[];
     try {
@@ -1042,27 +1095,48 @@ export class WorkflowEngine {
         );
       },
     };
-    const result = await runStructured(
-      (request) => runner.run(request, {
-        model: execution.model.id,
-        timeoutMs: PERSONA_TIMEOUT_MS,
-        images,
-      }),
-      prompt,
-      (raw) => parsePersonaVerdict(
-        raw,
-        currentImageIds,
-        currentArtifactIds,
-        currentCheckAttemptIds,
-      ),
-      `${node.persona.name} Persona`,
-      observer,
-    );
-    if (result.kind === "failed") {
-      this.handleInfrastructureFailure(claimed, run.id, result.reason);
+    // One durable budget covers parsing, transport and contract correction. Restart copies
+    // the operation identity; only an explicit operator retry starts another operation.
+    const consumed = claimed.reviewInput ? this.store.personaOperationCalls(claimed.reviewInput.operationId) : 0;
+    let verdict: PersonaVerdict | null = null;
+    let failure = "Persona review execution budget exhausted";
+    const priorRejection = claimed.reviewInput
+      ? this.store.personaOperationRejectionBasis(claimed.reviewInput.operationId) : null;
+    let violation = priorRejection === "parse" ? null : priorRejection;
+    for (let index = consumed; index < (claimed.reviewInput ? 2 : 1); index++) {
+      const result = await runStructured(
+        (request) => runner.run(request, { model: execution.model.id, timeoutMs: PERSONA_TIMEOUT_MS, images }),
+        index === 0 ? prompt : `${prompt}\n\nCorrection required: ${violation ?? "the prior reply could not be executed or parsed"}. Return a complete valid review. Classify substantive findings honestly; registration and access issues cannot become author repairs.`,
+        (raw) => {
+          const parsed = parsePersonaVerdict(raw, currentImageIds, currentArtifactIds, currentCheckAttemptIds);
+          violation = parsed && claimed.reviewInput ? personaContractViolation(parsed) : null;
+          if (violation) {
+            this.store.appendEvent(run.id, "persona_contract_violation", {
+              attemptId: claimed.id, contractVersion: 1, execution: index + 1, basis: violation,
+            }, this.now(), `persona-contract:${claimed.id}:${index + 1}`);
+            // Keep the full normalized rejected verdict on the attempt, not in telemetry.
+            this.store.retainRejectedPersonaVerdict(claimed.id, index + 1, violation, raw);
+            return null;
+          }
+          if (!parsed && claimed.reviewInput) this.store.retainRejectedPersonaVerdict(claimed.id, index + 1, "parse", raw);
+          return parsed;
+        },
+        `${node.persona.name} Persona`,
+        { start: (_attempt, request) => observer.start(index + 1, request), finish: (_attempt, result) => observer.finish(index + 1, result) },
+        claimed.reviewInput ? { shapeGuaranteed: true } : undefined,
+      );
+      if (result.kind === "ok") { verdict = result.value; break; }
+      failure = violation ? `Persona review contract error: ${violation}. Inspect the rejected response and retry the review.` : result.reason;
+      if (result.cause === "cancelled") break;
+    }
+    if (claimed.reviewInput) this.store.appendEvent(run.id, "persona_contract_outcome", {
+      attemptId: claimed.id, contractVersion: 1, outcome: verdict ? "accepted" : "exhausted",
+      basis: violation, executions: this.store.personaOperationCalls(claimed.reviewInput.operationId),
+    }, this.now(), `persona-contract-outcome:${claimed.id}`);
+    if (!verdict) {
+      this.handleInfrastructureFailure(claimed, run.id, failure, !!claimed.reviewInput);
       return;
     }
-    const verdict = result.value;
     const latestRun = this.store.getRun(run.id);
     const latestSubmission = this.store.getSubmission(submission.id);
     const packet = requestedChangePacket(verdict, node.persona.name);
@@ -1143,21 +1217,21 @@ export class WorkflowEngine {
   }
 
   /**
-   * Record the auto-pass for an operator-disabled node without running anything.
+   * Record a disabled node or a previously passed judge without running anything.
    *
    * The same claim -> stopped-submission guard -> atomic verdict-plus-receipts sequence a
    * real attempt follows, so recovery, the round scrubber, and the repair packet read a
-   * disabled gate exactly the way they read every other finished attempt. `output_json`
-   * carries `disabled: true` beside the outcome so run detail can say why this "pass"
-   * exists without parsing the verdict's prose back apart.
+   * skipped gate exactly the way they read every other finished attempt. The output records
+   * either the operator disable or the original earned pass, so history can explain it.
    */
-  private runDisabledAttempt(
+  private runSkippedAttempt(
     initial: WorkflowNodeAttempt,
     submission: WorkflowSubmission,
     run: WorkflowRun,
     version: WorkflowVersion,
     node: WorkflowVerdictNode,
     verdict: PersonaVerdict,
+    priorPass?: WorkflowNodeAttempt,
   ): void {
     // Null runner and model, as a Check records: no provider was ever asked.
     const claimed = this.store.claimAttempt(initial.id, null, null, this.now());
@@ -1181,13 +1255,15 @@ export class WorkflowEngine {
     });
     this.store.finishAttemptWithReceipts(claimed.id, {
       verdict: jsonValue(verdict),
-      output: jsonValue({ outcome: verdict.verdict, disabled: true }),
+      output: jsonValue(priorPass
+        ? { outcome: verdict.verdict, reusedPassAttemptId: priorPass.id }
+        : { outcome: verdict.verdict, disabled: true }),
       receipts: edgesFrom(version.graph, node.id, verdict.verdict).map((edge) => ({
         edgeId: edge.id,
         payload: receiptPayload,
       })),
     }, this.now());
-    this.store.appendEvent(run.id, "disabled_node_auto_passed", {
+    this.store.appendEvent(run.id, priorPass ? "judge_pass_reused" : "disabled_node_auto_passed", {
       nodeId: node.id,
       persona: author,
       submissionId: submission.id,
@@ -1338,6 +1414,7 @@ export class WorkflowEngine {
     attempt: WorkflowNodeAttempt,
     runId: string,
     reason: string,
+    exhausted = false,
   ): void {
     const currentRun = this.store.getRun(runId);
     const currentSubmission = this.store.getSubmission(attempt.submissionId);
@@ -1354,7 +1431,7 @@ export class WorkflowEngine {
       error: reason,
     }, this.now());
     if (this.blockedByUnresolvedLease(attempt, runId, reason)) return;
-    if (attempt.attempt < MAX_INFRA_ATTEMPTS) {
+    if (!exhausted && attempt.attempt < MAX_INFRA_ATTEMPTS) {
       const retryAt = this.now() + this.retryBaseMs * 4 ** (attempt.attempt - 1);
       this.store.insertAttempt({
         id: randomUUID(),
@@ -1364,6 +1441,7 @@ export class WorkflowEngine {
         state: "retry_wait",
         persona: attempt.persona,
         checkEvidence: attempt.checkEvidence,
+        reviewInput: attempt.reviewInput,
         inputFingerprint: attempt.inputFingerprint,
         retryAt,
         error: `Retry scheduled after infrastructure failure: ${reason}`,
@@ -1499,6 +1577,7 @@ export class WorkflowEngine {
       state: "retry_wait",
       persona: failed.persona,
       checkEvidence: failed.checkEvidence,
+      reviewInput: failed.reviewInput ? { ...failed.reviewInput, operationId: randomUUID() } : undefined,
       inputFingerprint: failed.inputFingerprint,
       retryAt,
       error: `Retry scheduled after the check cleanup resolved: ${gate.error}`,
@@ -1565,7 +1644,7 @@ export class WorkflowEngine {
           if (this.blockedByUnresolvedLease(attempt, run.id, "Interrupted by daemon restart")) {
             continue;
           }
-          if (attempt.attempt < MAX_INFRA_ATTEMPTS) {
+          if (attempt.reviewInput ? this.store.personaOperationCalls(attempt.reviewInput.operationId) < 2 : attempt.attempt < MAX_INFRA_ATTEMPTS) {
             this.store.insertAttempt({
               id: randomUUID(),
               submissionId: attempt.submissionId,
@@ -1574,6 +1653,7 @@ export class WorkflowEngine {
               state: "retry_wait",
               persona: attempt.persona,
               checkEvidence: attempt.checkEvidence,
+              reviewInput: attempt.reviewInput,
               inputFingerprint: attempt.inputFingerprint,
               retryAt: this.now(),
               error: "Retrying interrupted tool-less call",
@@ -1596,7 +1676,8 @@ export class WorkflowEngine {
           const attempt = this.store.latestAttemptForNode(submission.id, node.id);
           return attempt?.state === "error" ? [attempt] : [];
         });
-        const exhausted = errored.find((attempt) => attempt.attempt >= MAX_INFRA_ATTEMPTS);
+        const exhausted = errored.find((attempt) => attempt.reviewInput
+          ? this.store.personaOperationCalls(attempt.reviewInput.operationId) >= 2 : attempt.attempt >= MAX_INFRA_ATTEMPTS);
         if (exhausted) {
           const error = exhausted.error ?? "Infrastructure failure exhausted its retry budget";
           const now = this.now();
@@ -1626,6 +1707,7 @@ export class WorkflowEngine {
             state: "retry_wait",
             persona: attempt.persona,
             checkEvidence: attempt.checkEvidence,
+            reviewInput: attempt.reviewInput,
             inputFingerprint: attempt.inputFingerprint,
             retryAt: now,
             error: "Retrying recovered infrastructure failure",

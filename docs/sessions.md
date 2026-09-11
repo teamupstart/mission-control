@@ -108,11 +108,13 @@ hold a handle from each - a tmux pane lives *inside* a WezTerm pane - and both a
 because writes go to the innermost while raising a window is the outer one's job.
 
 **Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, and WezTerm,
-Ghostty, and iTerm2 on the emulator axis. cmux needs one setting before the daemon can see it - it ships
-refusing socket connections from processes it did not start itself, so set
-`"automation": { "socketControlMode": "allowAll" }` in `~/.config/cmux/cmux.json` and
-restart cmux. Without it your cmux sessions still appear, named `<agent> <pid>` like any
-other unrecognised terminal.
+Ghostty, and iTerm2 on the emulator axis. cmux needs two things beyond installation, and
+**Settings -> Setup** now checks for both and offers to repair each: its app has to be running,
+because the control socket exists only while it is, and `automation.socketControlMode` in
+`~/.config/cmux/cmux.json` has to be `allowAll`. cmux ships `cmuxOnly`, which admits only
+processes it started itself, and the daemon is not one. cmux applies a change to that file
+without a restart. Without both your cmux sessions still appear, named `<agent> <pid>` like any
+other unrecognised terminal. See [Setup](setup.md).
 
 The two axes are separate for that reason. A **multiplexer** has named sessions that
 outlive any window and a copy-mode that can swallow keystrokes; a **terminal emulator**
@@ -209,9 +211,15 @@ wrong match would raise someone else's tab and type your next prompt into it.
 
 A matched Ghostty session is discovered, named, **typed into** and **focused** - replies,
 queued prompts, the send chord and Focus all reach the surface. Two things it cannot do, and
-both are Ghostty's own limits rather than missing plumbing. **Rename** refuses, saying so
-("Ghostty can't retitle a tab"): its titles are read-only on every window, tab and surface,
-so a tab it opens carries whatever the shell reports. And its **screen cannot be read**, so
+both are Ghostty's own limits rather than missing plumbing. **Rename** is not offered on a
+Ghostty-only session because its titles are read-only on every window, tab and surface.
+A dispatched card retains the task's launch name, including a later generated task title,
+while the actual tab carries whatever the shell reports. Dispatched WezTerm and iTerm2
+cards also retain their launch names across terminal-title changes and daemon restarts;
+startup checks the recorded emulator pane identity instead of looking for the launch name
+among tab titles. Successful dashboard renames update that retained name. Sessions Mission Control merely
+discovers continue to follow the terminal title. A multiplexer inside Ghostty keeps its
+own Rename capability. Ghostty's **screen cannot be read**, so
 anything built on reading a pane back is unavailable on a Ghostty session rather than quietly
 wrong: the permission-mode chip, dialog detection, and the read-back that confirms a pasted
 prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
@@ -260,11 +268,18 @@ Everything above answers "which terminal holds this session". A separate questio
 Mission Control *talks* to it at all. That is a session's **runtime**, and there are two.
 
 - **Terminal** - what every session you start yourself always is, and the default for Pi.
-  It remains an explicit choice for dispatched Claude and Codex sessions. Delivery is a
-  bracketed paste and an Enter; a permission prompt is a menu read off the screen.
+  It remains an explicit choice for dispatched Claude, Codex and Pi sessions. Delivery is a
+  bracketed paste and an Enter; a permission prompt is a menu read off the screen. cmux is
+  the one backend where the paste carries its own Enter - its typing method writes a leading
+  ESC in a terminal write of its own, so hand-written paste markers arrive as an Escape
+  keypress followed by the literal text `[200~`, and its real paste verb appends a carriage
+  return that cannot be suppressed. Mission Control uses that verb and skips the Enter it
+  would otherwise send, rather than spending a second keystroke on whatever the agent's turn
+  has already put on screen.
 - **Agent SDK** - the daemon runs the agent itself: Claude Code through
-  `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio).
-  There is no pane. A permission prompt or an approval arrives as data, including what is
+  `@anthropic-ai/claude-agent-sdk`, Codex through `codex app-server` (JSON-RPC over stdio),
+  and Pi through `@earendil-works/pi-coding-agent`'s own session runtime. There is no pane.
+  On Claude and Codex a permission prompt or an approval arrives as data, including what is
   being asked and the exact rows to offer, which the session detail renders directly.
 
 Human messages from either conversation composer first enter Mission Control's **editable
@@ -316,7 +331,13 @@ replaces probabilistic paste-and-Enter delivery and screen-scraped questions wit
 acknowledged turns and structured requests. Terminal is not a deprecated operator surface:
 sessions you start yourself are always terminal-backed, and terminal-runtime dispatch
 remains an explicit per-harness choice. New installations default dispatched Claude and
-Codex sessions to Agent SDK; Pi remains terminal-backed until it has an embedded driver.
+Codex sessions to Agent SDK.
+
+Pi offers both runtimes and **still ships on Terminal**, which is now a decision rather than
+a gap: its managed runtime brings its own credential, project-trust and shell-isolation
+posture, and moving every existing Pi dispatch onto it without anyone looking would not be a
+kindness. Turn it on per harness when you want it. [What a managed Pi session does
+differently](#what-a-managed-pi-session-does-differently) is below.
 
 The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
 time, so flipping it mid-batch reaches the next session you launch. New installations use
@@ -429,19 +450,87 @@ the installed binary and committed (`src/server/harness/codex/app-server/protoco
 regenerated with `node scripts/codex-app-server-bindings.mjs`); a Codex upgrade that moves a
 field is a regenerate-and-read-the-diff, not a hunt.
 
+#### What a managed Pi session does differently
+
+Pi is the third harness with a managed runtime and the first with **no subprocess at all**:
+Mission Control imports `@earendil-works/pi-coding-agent` and drives Pi's own
+`AgentSessionRuntime` inside the daemon. The session card therefore shows no pid worth
+looking up, and everything below follows from that or from what Pi itself has.
+
+- **Pi owns every credential.** Mission Control never reads, copies, stores or displays a
+  provider secret, and there is no form here to paste one into. Sign in from a Pi session -
+  `/login amazon-bedrock` for Amazon Bedrock, `/login <provider>` for anything else - and
+  the managed runtime uses Pi's ordinary agent directory (`$PI_CODING_AGENT_DIR`, or
+  `~/.pi/agent`). When a credential expires the session says so and names the login that
+  repairs it; nothing is refreshed or rewritten on your behalf.
+- **The model id reaches Pi unchanged.** A provider-qualified id such as
+  `amazon-bedrock/deepseek.v3.2` is stored, dispatched and displayed verbatim on both
+  runtimes. It is split exactly once, at its first `/`, only to ask Pi's own catalog for the
+  model - so an id whose model half carries slashes keeps them. A model Pi does not offer is
+  a launch failure with the id in it, never a quiet substitution onto a model nobody chose.
+- **No permission modes, and no questions to answer.** Pi's `manual`/`auto`/`readonly`
+  vocabulary is not Mission Control's, so no mode chip is drawn and none can be set. Pi's
+  structured extension prompts (`select`, `confirm`, `input`, `editor`) are not projected
+  onto the card yet either: a session that reaches one is waiting on a surface that does not
+  exist. Foreman is therefore withheld from a managed Pi session entirely rather than being
+  allowed to queue work it could not unblock: the driver declares `answersRequests: false`,
+  which is the same gate the Claude and Codex drivers pass, and it flips once those prompts
+  reach the card. Project-local extensions are excluded by default (below), so a session
+  reaches one of these prompts only through a globally installed extension.
+- **No Mission Control MCP tools.** Pi has no MCP client at all, so a managed Pi session
+  cannot call `report_status`, `request_input` or their siblings - exactly as a terminal Pi
+  session cannot. A dispatch that *requires* those tools is refused before it starts.
+- **Multi-repository tasks stay on the terminal runtime.** Pi has no write boundary to grant
+  at all, but that was measured against the terminal path; the managed one declares `sdk:
+  false` rather than inheriting the answer, and the driver refuses secondary worktrees to
+  match. A dispatch that *requires* those tools (an ensemble member, a scout, a
+  managed Pipeline host) is refused before it starts rather than left unable to report.
+- **Project-local Pi resources stay out unless Pi already trusts the checkout.** Pi gates
+  project-local extensions, packages and `SYSTEM.md` behind a trust decision, and Mission
+  Control has no surface to ask for one. So an undecided or refused checkout runs without
+  them - being attached to Mission Control is not a trust decision - while your global Pi
+  configuration and Pi's built-in coding tools are unaffected. A checkout Pi already trusts
+  runs with everything, and nothing prompts.
+- **Its shell tools are isolated anyway.** With no subprocess there is no spawn boundary to
+  scrub, so the driver applies the same environment isolation itself: Pi's `bash` tool runs
+  with Mission Control's disposable state home and without the daemon's loopback bearer or
+  terminal identity, exactly as a Claude or Codex child does. Five variables cross back on
+  purpose - `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL` and
+  `PI_REASONING_LEVEL` - because Pi populates them per turn and its own tooling reads them.
+  They are carried by name, so nothing else the daemon happens to have exported under a
+  `PI_` prefix reaches the shell your agent is directing.
+- **Your repository standing instructions ride Pi's own system-prompt append**, the same
+  channel `pi --append-system-prompt` spends on the terminal runtime - so the rules reach a
+  Pi session the same way whichever runtime you dispatch it on, and they survive a Reset.
+- **Reasoning effort applies from the next turn**, the same as Codex, and the effort badge
+  [says so on its face](#levels-that-apply-on-the-next-turn).
+- **Cost is reported per turn but not aggregated.** Pi prices every request and the figure
+  reaches the turn, but Pi mints no turn identity that survives a restart - so recording it
+  in the spend ledger would double-count a resumed conversation. Session cost stays the
+  neutral absence it already is for Pi.
+- **The transcript, the resume and the handoff are the same file.** Pi writes one JSONL
+  session per conversation under its agent directory, and a managed session writes exactly
+  the file `pi --session <id>` reopens. That is what makes **Continue in terminal** a
+  handoff, and what lets a restart reopen the exact conversation rather than a look-alike.
+
+(The full design is in `docs/plans/pi-bedrock-models/plan.md`. Structured Pi questions and
+Work Queue eligibility are Phase 2 and are not in this release.)
+
 #### Continue in terminal
 
 `⇧T`, or the button where **Focus** sits on a pane-backed session detail. It stops the driver and
 reopens **the same conversation** in a terminal home in the same checkout -
-`claude --resume <session id>` or `codex resume <thread id>`, whichever harness the session detail is.
-Both vendors keep one session store across their programmatic and interactive surfaces,
-which is what makes this a handoff rather than a lost conversation. Discovery adopts the new
+`claude --resume <session id>`, `codex resume <thread id>`, or `pi --session <session id>`,
+whichever harness the session detail is. All three vendors keep one session store across
+their programmatic and interactive surfaces, which is what makes this a handoff rather than
+a lost conversation. Discovery adopts the new
 process, and the task's binding follows it across even when discovery takes longer than the
 handoff request waits.
 
-The permission mode crosses with it. An embedded session's mode lives in the driver's own
-options - nothing on disk records it - so a bare resume would reopen a session you were
-running in auto back in the CLI's default mode. The handoff therefore re-asserts the stored
+The permission mode crosses with it, where the harness has one - Pi does not, so nothing
+rides along on its resume. An embedded session's mode lives in the driver's own options -
+nothing on disk records it - so a bare resume would reopen a session you were running in
+auto back in the CLI's default mode. The handoff therefore re-asserts the stored
 mode on the command line: `--permission-mode` for Claude, and `--sandbox` /
 `--ask-for-approval` (plus the approvals-reviewer override that separates **Ask for
 approval** from **Approve for me**) for Codex. The same carry applies when an exited
@@ -1598,8 +1687,25 @@ is exactly when the record starts being interesting.
 
 Codex ingestion covers the main rollout only. Separate subagent rollouts are not assigned
 to a parent by cwd or timing because that relationship is not proven. The standard-price
-snapshot currently recognizes `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
-`gpt-5.5`; a new model intentionally stays unpriced until its official rate is added.
+snapshot includes `gpt-6-astra`, all shipped Codex choices, and older OpenAI text/code
+models (GPT-5, GPT-4.1, GPT-4o, and o-series). The exact supported ids and rates live in
+`src/server/harness/codex/pricing.ts`, verified against [OpenAI pricing](https://developers.openai.com/api/docs/pricing)
+and the linked model reference pages on September 11, 2026. Astra includes cached input,
+cache writes, and the surcharge above 272,000 input tokens. GPT-5.6 rates reflect the current
+published prices, including Sol's promotional rate, available at least through November 21,
+2026. These are Standard rates; Fast, Batch, Flex, and regional uplifts are not applied.
+Unknown model variants remain unpriced until their official rates are verified.
+On daemon startup, previously unpriced rollout and automation rows are valued when the
+installed snapshot now recognizes their model. Already-priced history keeps its original
+snapshot and amount, and token counts and ingestion cursors do not change. Recovery failures
+are logged and retried after one minute; live usage ingestion continues after the failed pass.
+Each harness's recovery pass is synchronous and atomic: a large historical backlog can delay HTTP, SSE, and
+live ingestion until that pass finishes. Batching is not implemented; introducing it would
+require a resumable partial-commit contract in place of whole-pass rollback. Models without
+a published cache rate remain unpriced when either cache reads or cache writes are reported.
+Claude models,
+including dated ids and long-context variants, use Claude Code's reported cost without a
+model allowlist; a missing reported cost is never guessed.
 Claude's estimate can include provider-priced server tools such as web search; Codex
 rollouts do not currently expose every separately billed hosted-tool fee.
 

@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
-import type { TerminalResult } from "../src/server/terminal/types.ts";
+import type { PasteResult, TerminalResult } from "../src/server/terminal/types.ts";
 import { meta, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 
 // The launch default is persisted in SQLite, so isolate it before importing either
@@ -17,6 +17,8 @@ const { setSessionEffort } = await import("../src/server/actions.ts");
 openDb();
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
+/** A paste from a backend that holds the composer, which every fake here stands in for. */
+const held = (): PasteResult => ({ ok: true, outcomeUnknown: false, submitted: false });
 
 test("a successful live effort change leaves the future-session default untouched", async () => {
   setHarnessesConfig({ defaultEffort: { codex: "medium" } });
@@ -34,7 +36,7 @@ test("a successful live effort change leaves the future-session default untouche
         screen = "\n› Ask Codex to do anything\n\n  gpt-5.6-sol xhigh · /work/project\n";
         return ok();
       },
-      paste: async () => ok(),
+      paste: async () => held(),
     },
   };
   const session = mkSession({

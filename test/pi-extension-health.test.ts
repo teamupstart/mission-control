@@ -301,3 +301,38 @@ test("post-publication failure retains explicit intent and reports manual recove
   assert.equal(canInstallPiExtension(), false);
   assert.match((await inspectPiExtension()).warning!, /Every Pi session.*may refuse/);
 });
+
+
+test("a slower earlier dispatch probe cannot overwrite a newer completed health reading", async () => {
+  // Warm runtime environment setup so it cannot independently invalidate the older probe.
+  await loadPiExtensionMetadata(realpathSync(installed));
+  const started = join(root, "first-bridge-started");
+  const release = join(root, "release-first-bridge");
+  const probes = join(root, "bridge-probes");
+  writeFileSync(bridge, `import {createInterface} from 'node:readline';
+    import {existsSync,writeFileSync,appendFileSync} from 'node:fs';
+    const first = !existsSync(${JSON.stringify(started)});
+    appendFileSync(${JSON.stringify(probes)}, 'x');
+    writeFileSync(${JSON.stringify(started)}, 'started');
+    const tools = ${JSON.stringify(MISSION_MCP_TOOLS.map(name => ({ name })))};
+    createInterface({input:process.stdin}).on('line', async line => {
+      const m=JSON.parse(line); if (!m.id) return;
+      if (first && m.method==='tools/list') {
+        while (!existsSync(${JSON.stringify(release)})) await new Promise(done => setTimeout(done, 10));
+      }
+      console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:m.method==='tools/list'
+        ? {tools:first?[]:tools}
+        : {protocolVersion:'2025-06-18',capabilities:{},serverInfo:{name:'fixture',version:'1'}}}));
+    });`);
+  symlinkSync(installed, link);
+  const older = missionToolsAvailability("pi");
+  try {
+    const deadline = Date.now() + 5000;
+    while (!existsSync(started) && Date.now() < deadline) await new Promise(done => setTimeout(done, 10));
+    assert.ok(existsSync(started), "the older probe reached its bridge before the newer one starts");
+    assert.equal((await missionToolsAvailability("pi")).available, true);
+  } finally { writeFileSync(release, "released"); }
+  assert.equal((await older).available, false);
+  assert.equal((await missionToolsAvailability("pi")).available, true, "the newer healthy reading remains cached");
+  assert.equal(readFileSync(probes, "utf8"), "xx", "the final dispatch reused the newer completed probe");
+});

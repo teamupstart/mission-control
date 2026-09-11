@@ -93,7 +93,8 @@ export async function piExtensionHealthyForDispatch(): Promise<boolean> {
   try { key = availabilityKey(); } catch { return (await inspectPiExtension()).healthy; }
   if (cached?.key === key && cached.expires > Date.now()
     && [...cached.paths].every(([path, identity]) => pathIdentity(path) === identity)) return cached.healthy;
-  const generation = cacheGeneration;
+  // Only the newest-started probe may publish, regardless of completion order.
+  const generation = ++cacheGeneration;
   const paths = new Map<string, string>();
   const reading = await inspect(undefined, path => { if (!paths.has(path)) paths.set(path, pathIdentity(path)); });
   try {

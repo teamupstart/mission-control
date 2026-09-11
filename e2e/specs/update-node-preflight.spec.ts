@@ -82,18 +82,34 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     await capture("retry-tooltip.png");
     await dashboard.mouse.move(1, 1);
     await capture("blocked.png");
-    const previousProbes = probes;
-    await status.getByRole("button", { name: "Check again" }).click();
-    await expect.poll(() => probes).toBeGreaterThan(previousProbes);
-    // The probe count advances before its subprocess finishes. Wait for that check
-    // to settle before changing the fixture; another click during it shares its result.
-    await expect.poll(() => controller.getSnapshot().phase).toBe("available");
+    /**
+     * Press Check again, and wait for the check to FINISH rather than to start.
+     *
+     * `probes` rises at the top of the runtime port, before the three subprocess probes
+     * `inspectUpdateRuntime` runs have returned - so a wait on the counter alone leaves the
+     * check in flight. `UpdateController.check` coalesces onto `this.checkPromise` while one
+     * is running, which means a second press during that window is answered by the probe the
+     * FIRST one already took. On a quiet machine the probes finish inside the gap between two
+     * statements; on a busy one the fixture flips `compatible` for a check that never re-reads
+     * it.
+     *
+     * `available` rather than merely "not checking": both presses here end on a release offer
+     * - the first with a blocker, the second without - so naming the terminal phase says what
+     * settling MEANS instead of only that it happened.
+     */
+    const checkAgain = async (): Promise<void> => {
+      const before = probes;
+      await status.getByRole("button", { name: "Check again" }).click();
+      await expect.poll(() => probes).toBeGreaterThan(before);
+      await expect.poll(() => controller.getSnapshot().phase).toBe("available");
+    };
+    await checkAgain();
     await expect(update).toBeDisabled();
     await expect(status).toContainText("If this warning persists after changing Node in another terminal, restart Mission Control with the corrected Node.js environment.");
     expect(builds).toBe(0);
     await capture("retry-still-blocked.png");
     compatible = true;
-    await status.getByRole("button", { name: "Check again" }).click();
+    await checkAgain();
     await expect(update).toBeEnabled();
     await expect(status).not.toContainText("found 22.0.0");
     await capture("compatible.png");

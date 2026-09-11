@@ -10,6 +10,7 @@ import { providerModelDefault } from "@shared/model.ts";
 import {
   WORKFLOW_PERSONA_MODEL_ENV,
   WORKFLOW_PERSONA_MODEL_SPEC,
+  nodeExecutionOverride,
   normalizePersonaName,
   personaDescriptionFromDocument,
   personaNameFromDocument,
@@ -21,6 +22,7 @@ import type {
   PersonaDriftView,
   PersonaExecutionView,
   PersonaView,
+  WorkflowNodeExecutionOverride,
 } from "@shared/workflow.ts";
 import type { Registry } from "../registry.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
@@ -96,6 +98,36 @@ export function resolvePersonaExecution(
       : resolveLlmRunner(persona.runner as string, undefined);
   const model = resolvePersonaModel(runner.id, persona.model, envModel);
   return { runner, model };
+}
+
+/**
+ * The provider and model ONE published Persona node runs under.
+ *
+ * A narrow composition over `resolvePersonaExecution` rather than a second ladder. Without an
+ * override this delegates verbatim, so the app/environment fallback ranking keeps its single
+ * owner and every non-workflow caller of that function is untouched. With one, the node's
+ * explicit pair wins outright - over the Persona, over app config, and over the environment -
+ * because that is the only reading of "this workflow chose this model" that survives someone
+ * else editing the Persona afterwards.
+ *
+ * Both halves are reported as `config`, which is honest: they came from stored configuration
+ * an operator wrote, exactly like a Persona's own override does. The distinction the UI draws
+ * - Persona default versus workflow override - is a question about which OBJECT holds the
+ * value, not about which layer of the fallback ladder won, and the version already answers it
+ * by carrying the two separately.
+ *
+ * `resolvePersona` is injectable so the engine can keep passing its own test seam through.
+ */
+export function resolveWorkflowNodeExecution<P extends Pick<Persona, "runner" | "model">>(
+  node: { persona: P; executionOverride?: WorkflowNodeExecutionOverride },
+  resolvePersona: (persona: P) => PersonaExecutionView = resolvePersonaExecution,
+): PersonaExecutionView {
+  const override = nodeExecutionOverride(node);
+  if (!override) return resolvePersona(node.persona);
+  return {
+    runner: { id: override.runner, source: "config", unknown: null },
+    model: { id: override.model, source: "config" },
+  };
 }
 
 export function resolvePersonaDefaults(

@@ -1,3 +1,4 @@
+import { withExecutionOverride } from "./workflow.ts";
 import type {
   Persona,
   PersonaId,
@@ -8,6 +9,7 @@ import type {
   WorkflowCheckSlot,
   WorkflowDraftNode,
   WorkflowEdge,
+  WorkflowNodeExecutionOverride,
 } from "./workflow.ts";
 
 // Stages are a PROJECTION of the graph, never a second persisted model. The daemon stores and
@@ -47,7 +49,22 @@ export type StageSessionActionNames = readonly Pick<SessionAction, "id" | "name"
  * everywhere and be silently wrong in each place nobody revisited.
  */
 export type StageMember =
-  | { nodeId: string | null; kind: "persona"; personaId: PersonaId }
+  | {
+      nodeId: string | null;
+      kind: "persona";
+      personaId: PersonaId;
+      /**
+       * The occurrence's own provider/model choice, carried through the projection so a
+       * Pipeline edit cannot lose it.
+       *
+       * It rides on the MEMBER rather than being looked up from the graph by Persona id at
+       * compile time, because a pipeline is allowed to hold the same Persona twice and those
+       * two occurrences are allowed to disagree. Anything keyed on `personaId` would give
+       * both of them whichever answer it found first - and `stageMemberKey` falls back to
+       * exactly that key, which is why every edit below addresses `nodeId` or an index.
+       */
+      executionOverride?: WorkflowNodeExecutionOverride;
+    }
   | { nodeId: string | null; kind: "check"; slot: WorkflowCheckSlot };
 
 /**
@@ -77,7 +94,12 @@ const isMemberKind = (kind: StageNode["kind"]): kind is "persona" | "check" =>
 function memberOf(node: StageMemberNode): StageMember {
   return node.kind === "check"
     ? { nodeId: node.id, kind: "check", slot: node.slot }
-    : { nodeId: node.id, kind: "persona", personaId: personaIdOf(node) };
+    : {
+        nodeId: node.id,
+        kind: "persona",
+        personaId: personaIdOf(node),
+        ...withExecutionOverride(node.executionOverride),
+      };
 }
 
 function actionMemberOf(node: SessionActionStageNode): SessionActionStageMember {
@@ -689,7 +711,13 @@ export function compileStages(
       // what lets the compiler treat a mixed stage as one stage.
       nodes.push(member.kind === "check"
         ? { id, kind: "check", slot: member.slot, position }
-        : { id, kind: "persona", personaId: member.personaId, position });
+        : {
+            id,
+            kind: "persona",
+            personaId: member.personaId,
+            position,
+            ...withExecutionOverride(member.executionOverride),
+          });
       return id;
     });
     // A join exists exactly when the stage has to agree with itself before moving on.

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Conditional CI follow-through for workflow Pull Request actions</title><style>:root{color-scheme:dark;--page:#10141b;--panel:#1a2230;--ink:#f0f4fa;--muted:#becadd;--line:#52627a;--accent:#a6ceff}@media(prefers-color-scheme:light){:root{color-scheme:light;--page:#f6f8fc;--panel:#fff;--ink:#152033;--muted:#40516b;--line:#8594aa;--accent:#164e92}}*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:16px/1.65 system-ui,-apple-system,sans-serif}main{max-width:1080px;margin:auto;padding:44px 28px 80px}h1{font-size:clamp(29px,4vw,42px);line-height:1.15}h2{font-size:25px;margin-top:40px;border-top:1px solid var(--line);padding-top:18px}h3{font-size:19px;margin-top:28px}p{max-width:90ch}a{color:var(--accent)}code{font:0.89em ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}pre,.scroll{overflow:auto}table{min-width:730px;width:100%;border-collapse:collapse;background:var(--panel)}th,td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--accent)}li{margin:9px 0}.diagram{color:var(--accent);padding:18px 0}.diagram svg{display:block;width:100%;min-width:900px}strong{font-weight:700}</style></head><body><main><h1>Conditional CI follow-through for workflow Pull Request actions</h1>
+<p>Status: implemented and verified in this session. Focused tests, typecheck, lint, build, smoke, and the checkbox-to-packet browser checks pass. Implementation evidence is registered with Mission Control.</p>
+<h2>Goal</h2>
+<p>When Foreman&#39;s <strong>Keep sessions on track with CI</strong> setting is selected, a workflow&#39;s Pull Request action should tell its session to follow the existing PR&#39;s CI through completion, repair actionable failures on the same branch, and keep watching after a repair push. When the setting is off, Mission Control must add no CI follow-through instruction.</p>
+<p>Use the existing <code>ForemanConfig.trackCiFailures</code> preference as the single source of truth. This is a conditional instruction change, not a new CI gate or scheduler.</p>
+<h2>Scope and the incident boundary</h2>
+<p>The accepted scope is one implementation in this checkout: runtime prompt policy, the built-in action&#39;s stopping language, the existing setting&#39;s explanation, documentation, and focused tests.</p>
+<p>The Phase 2 investigation established a separate failure: CI was already passing, while a post-review rebase caused <code>published_content_changed</code>. The blocked workflow retained session ownership and sent no recovery instruction, so Foreman suppressed Inspector follow-through.</p>
+<p><strong>This CI instruction change alone will not recover that blocked run or resolve its Inspector finding.</strong> CI repairs can also change the reviewed content tree and encounter the same existing guard after the agent finishes. Automatically routing changed published content through a fresh review is a separate workflow lifecycle change. The accepted scope keeps that recovery work separate.</p>
+<h2>Expected behavior</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>Situation when the action packet is prepared</th>
+<th>Mission Control instruction</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Workflow action has <code>completion.kind = pull_request</code>, CI setting on</td>
+<td>Add the bounded CI follow-through policy.</td>
+</tr>
+<tr>
+<td>Same action, CI setting off</td>
+<td>Add no CI policy; preserve the normal PR handoff.</td>
+</tr>
+<tr>
+<td>Any other completion kind, or an action outside a workflow</td>
+<td>Add no CI policy.</td>
+</tr>
+<tr>
+<td>Review-comment setting on or off</td>
+<td>Do not use it to decide CI instructions.</td>
+</tr>
+<tr>
+<td>Foreman worker disabled, stopped, dry-run, or outside its allowlist</td>
+<td>The CI preference still determines prompt content; existing workflow delivery authorization independently determines whether the packet may be sent.</td>
+</tr>
+<tr>
+<td>Setting changes after the packet is prepared</td>
+<td>Preserve the recorded packet for preview, retry, and restart. Newly prepared action attempts use the new setting.</td>
+</tr>
+</tbody></table></div>
+<p>The preparation-time boundary is intentional: the existing delivery ledger preserves the exact payload and digest. This work will not rewrite a queued or delivered instruction after an operator has inspected it.</p>
+<h2>The instruction to add when enabled</h2>
+<p>The runtime policy should communicate these requirements in plain language:</p>
+<ol>
+<li>Opening or updating the PR starts the CI follow-through portion of this action. Do not report the action complete solely because the PR exists.</li>
+<li>Observe checks on the PR and repository this action owns. Wait for pending checks, inspect failing check logs, and distinguish passing checks from unavailable or absent CI results.</li>
+<li>Repair actionable failures within the task&#39;s scope on the same branch. Run tests specific to the issue, then commit and push the repair. Do not rerun the full local test suite before every repair commit.</li>
+<li>Observe checks for the newly pushed head, rather than relying on an earlier green result. Repeat until the checks pass or a concrete external blocker prevents authorized progress.</li>
+<li>Report the PR, checked head, final CI outcome, and any blocker accurately. Register useful new verification evidence when the workflow supports it, then end the turn so the workflow can continue.</li>
+<li>Leave Inspector review ownership and merge authority with their existing owners. CI tracking does not authorize merging, changing CI infrastructure, bypassing checks, expanding repository scope, or automatically handling review comments.</li>
+</ol>
+<p>If a genuine blocker requires operator action, the instruction should identify it rather than promise unbounded retries. No new timeout setting is proposed.</p>
+<h2>Implementation approach</h2>
+<h3>Read the existing preference at the daemon boundary</h3>
+<p>Add a narrow injected preference reader to <code>WorkflowManagerOptions</code>, wired from the daemon&#39;s existing Foreman configuration getter in <a href="../../../src/server/index.ts">src/server/index.ts</a>. Read it while <a href="../../../src/server/workflows/manager.ts">prepareSessionAction</a> prepares a new packet. Tests can supply the value without contacting the Foreman worker or operator state.</p>
+<p>Classify applicability through the action&#39;s existing completion contract, not its display name or workflow title. This covers the built-in Pull Request action and custom or duplicated actions with the same completion kind, including already-published workflow versions when they prepare a new delivery.</p>
+<h3>Compose trusted runtime policy without editing frozen instructions</h3>
+<p>Extend <a href="../../../src/server/workflows/feedback.ts">renderSessionAction</a> with explicit, typed policy input. Render the CI section in the runtime envelope before the exact frozen authored prompt, alongside the existing authorization contract. Preserve the skill invocation&#39;s first-line position, sanitization, whole-packet size refusal, and payload digest.</p>
+<p>The enabled policy must explicitly extend the post-publication stopping boundary even if a historical built-in snapshot says that opening the PR is the whole job. It must not replace or rewrite the snapshot&#39;s authored content. The runtime policy changes CI follow-through only; unrelated authored restrictions retain their meaning.</p>
+<p>Update <a href="../../../actions/pull-request.md">actions/pull-request.md</a> so newly published snapshots defer to a supplied runtime CI policy and otherwise retain their existing stopping point. Regenerate <code>src/server/workflows/builtin-session-actions.generated.ts</code> with <code>npm run session-actions</code>. Do not hand-edit generated output or mutate existing workflow versions.</p>
+<h3>Preserve delivery durability</h3>
+<p>Continue to use the existing <code>prepareDelivery</code> payload and digest as the record of what was instructed. Preview must show the same bytes that a later send uses. A retry or daemon restart reuses the stored packet instead of rereading the preference and silently changing the action. No new database column, completion kind, workflow state, event type, or configuration field is introduced. The packet envelope reserves 18,000 bytes for CI policy and metadata, including the full 4,096-character repository root at its maximum UTF-8 size. Action packets and their delivery rows use a 76,000-byte limit; other delivery kinds retain the existing 64,000-byte read bound. The authored and published prompt ceiling remains 58,000 bytes, preserving existing snapshots. A regression test proves maximum-size authored prompts remain deliverable with CI policy.</p>
+<h3>Explain the behavior where the setting lives</h3>
+<p>Keep the checkbox label and persistence key. Update its tooltip in <a href="../../../src/web/components/ForemanBar.tsx">ForemanBar.tsx</a> to explain both existing idle-session nudges and CI instructions for newly prepared workflow PR actions. Update <a href="../../work-queues.md">work-queues.md</a> and <a href="../../workflows.md">workflows.md</a> with the timing, independent delivery authorization, and unchanged reviewed-content guard.</p>
+<h2>Data and instruction flow</h2>
+<p>Before: Foreman&#39;s stored CI preference is consumed by the Foreman worker to nudge eligible idle sessions; a workflow independently delivers its frozen Pull Request prompt, which tells the agent to stop after publishing.</p>
+<p>After: the daemon also reads the stored CI preference when preparing a workflow PR action. The renderer conditionally adds CI policy, the delivery ledger freezes the exact packet, and the existing workflow delivery path sends it to the session. The session observes GitHub checks and performs scoped CI repairs when instructed. When the turn ends, the existing workflow capture and content-tree validation still decide whether the run can advance.</p>
+<div class="scroll diagram"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 260" role="img" aria-label="Stored CI setting reaches workflow action preparation, durable delivery, the session, and GitHub checks; workflow content validation remains after the turn">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+<g fill="none" stroke="currentColor"><rect x="10" y="20" width="195" height="78" rx="8"/><rect x="255" y="20" width="225" height="78" rx="8"/><rect x="530" y="20" width="180" height="78" rx="8"/><rect x="760" y="20" width="190" height="78" rx="8"/><rect x="760" y="165" width="190" height="75" rx="8"/><rect x="255" y="165" width="455" height="75" rx="8"/></g>
+<g fill="currentColor" font-family="system-ui,sans-serif" font-size="15"><text x="25" y="50">Stored Foreman setting</text><text x="25" y="76">trackCiFailures</text><text x="270" y="50">Workflow preparation</text><text x="270" y="76">Conditional CI policy</text><text x="545" y="50">Delivery ledger</text><text x="545" y="76">Frozen exact packet</text><text x="775" y="50">Session runs action</text><text x="775" y="76">Scoped CI follow-through</text><text x="775" y="195">GitHub checks</text><text x="775" y="221">Current PR head</text><text x="270" y="195">After the turn: existing workflow capture</text><text x="270" y="221">Published content still requires matching review proof</text></g>
+<g fill="none" stroke="currentColor" stroke-width="2" marker-end="url(#arrow)"><path d="M205 59H250"/><path d="M480 59H525"/><path d="M710 59H755"/><path d="M855 98V160"/><path d="M760 202H715"/></g>
+</svg></div>
+
+<h2>Acceptance criteria and verification</h2>
+<div class="scroll"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Criterion</th>
+<th>Proof</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>ci-policy-on</td>
+<td>Enabled PR actions carry actionable CI waiting, focused repair, same-branch push, and current-head verification instructions.</td>
+<td>Renderer tests and captured runtime delivery.</td>
+</tr>
+<tr>
+<td>ci-policy-off</td>
+<td>Disabled PR actions and all non-PR actions receive no injected CI tracking requirement.</td>
+<td>On/off and completion-kind matrix; review-setting independence.</td>
+</tr>
+<tr>
+<td>immutable-delivery</td>
+<td>Old frozen action text remains intact; prepared payloads survive preference changes, retries, previews, and restart unchanged.</td>
+<td>Focused manager/durability tests using the persisted delivery.</td>
+</tr>
+<tr>
+<td>policy-boundaries</td>
+<td>Existing workflow authorization, repository scope, packet size refusal, merge restrictions, and content-tree validation remain effective.</td>
+<td>Runtime and adapter regression tests.</td>
+</tr>
+<tr>
+<td>setting-to-prompt</td>
+<td>Changing the existing checkbox affects the next prepared workflow PR action and its visible packet; the explanation describes the new behavior.</td>
+<td>Playwright against fake agents and fake GitHub only.</td>
+</tr>
+</tbody></table></div>
+<p>Extend the existing focused suites around <code>session-action-durability</code>, <code>session-action-runtime</code>, <code>builtin-session-actions</code>, and <code>foreman-settings-render</code>, and use an existing PR-action E2E fixture for the checkbox-to-packet regression. Cover true and false settings, old built-in stopping language, unrelated action kinds, review-setting independence, and a toggle after preparation. No real model calls or GitHub writes are needed.</p>
+<p>Run the affected unit files with the repository&#39;s required test preload, <code>npm run typecheck</code>, and <code>npm run lint</code>. Regenerate action sources, run <code>npm run build</code> and <code>npm run smoke</code>, and run the affected Playwright specs against the built daemon. Capture the user-visible tooltip/packet evidence and register focused outputs, image evidence, and criterion coverage through Mission Control. Full-suite repair reruns are not part of this plan.</p>
+<h2>Accepted scope and handoff</h2>
+<p>The operator&#39;s completion-review instruction authorizes implementing the conditional CI policy in this session. Published-content recovery remains outside this change. No separate phase tasks are needed, and no scope decision remains open.</p>
+<p>After focused verification, register evidence and hand completion back to Mission Control. Commit, push, PR creation, merge, and repository scope expansion are excluded from this implementation turn.</p>
+<h2>Verification result</h2>
+<ul>
+<li>136 focused unit tests passed, including preference gating, frozen historical instructions, retry/restart durability, the existing PR proof boundaries, and maximum authored prompt delivery.</li>
+<li>Three focused Playwright tests passed against the built daemon with fake agents. Both checkbox states change the next visible PR-action packet, and subsequent setting changes preserve the prepared packet.</li>
+<li>Typecheck, lint, build, and bundle smoke passed. Lint reports existing warnings.</li>
+<li>Focused command evidence and four inspected dashboard screenshots are registered with Mission Control, covering all five implementation acceptance criteria.</li>
+</ul>
+</main></body></html>

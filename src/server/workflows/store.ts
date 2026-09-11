@@ -75,6 +75,7 @@ import {
   workflowRunResumesItself,
   personaOriginRank,
   personaSnapshotOf,
+  withExecutionOverride,
   personasForDisplay,
   sessionActionSnapshotOf,
   sessionActionsForDisplay,
@@ -2068,7 +2069,10 @@ const DELIVERY_RUN_STATUS: Partial<Record<WorkflowDeliveryKind, WorkflowRun["sta
 
 export function parseWorkflowDeliveryRow(value: unknown): WorkflowDelivery {
   const row = parseShape("workflow_deliveries", WorkflowDeliveryRowSchema, value);
-  if (utf8.encode(row.payload).byteLength > WORKFLOW_LIMITS.eventPayloadBytes) {
+  const payloadLimit = row.kind === "session_action"
+    ? WORKFLOW_LIMITS.sessionActionPacketBytes
+    : WORKFLOW_LIMITS.eventPayloadBytes;
+  if (utf8.encode(row.payload).byteLength > payloadLimit) {
     throw new WorkflowRowError("workflow_deliveries", row.id, "payload exceeds the delivery limit");
   }
   // The link is required for an action and refused for everything else. Stated as one
@@ -4418,6 +4422,13 @@ export class WorkflowStore {
             kind: "persona" as const,
             position: node.position,
             persona: personaSnapshotOf(persona),
+            // Copied BESIDE the snapshot, from the draft node rather than from the Persona
+            // row, and only when the draft had one. That separation is what a published
+            // version needs to keep answering: the snapshot says what the Persona
+            // recommended when this version was cut, this says what the workflow chose, and
+            // a version that merged them could never tell an operator which of the two they
+            // are looking at.
+            ...withExecutionOverride(node.executionOverride),
           };
         }),
         edges: workflow.draft.edges,

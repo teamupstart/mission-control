@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { LlmProviderView } from "../src/shared/types.ts";
+import { NodeExecutionEditor } from "../src/web/workflows/NodeExecutionEditor.tsx";
 import {
   addMember,
   insertStage,
@@ -12,7 +16,18 @@ import {
   removeMember,
   removeStage,
   seamGate,
+  setMemberExecutionOverride,
 } from "../src/web/workflows/PipelineEditor.tsx";
+import {
+  nodeExecutionCommit,
+  nodeExecutionFormState,
+  nodeRoutingLabel,
+  personaNodeRouting,
+  sameNodeExecutionOverride,
+  snapshotRoutingLabel,
+  withNodeExecutionMode,
+  withNodeExecutionRunner,
+} from "../src/web/workflows/node-execution.ts";
 import { workflowEditorMode } from "../src/web/workflows/WorkflowLibrary.tsx";
 import { pipelineValidationSentences } from "../src/web/workflows/WorkflowProperties.tsx";
 import { compileStages, projectStages, stageBlockers } from "../src/shared/workflow-stages.ts";
@@ -355,4 +370,198 @@ test("the member picker round-trips both kinds and refuses a value it cannot rea
   assert.equal(parseMemberOption(P1), null, "a bare id is not a member option");
   // Prefixed so a Persona whose id spelled a slot could never be read as a check.
   assert.notEqual(memberOptionValue(R("test")), memberOptionValue(C("test")));
+});
+
+// --- Per-node provider and model ---
+//
+// What is at stake here is different from every case above. The editor is stateless over
+// `projectStages(draft)`, so a routing edit is an edit to a MEMBER - and a pipeline may hold
+// the same Persona in two stages. Anything that addressed the change by Persona would rewrite
+// both from one click and pass every single-occurrence test ever written.
+
+const OVERRIDE = { runner: "codex" as const, model: "gpt-5.6-sol" };
+
+const overridesOf = (pipeline: StagePipeline): Array<unknown> =>
+  pipeline.stages.flatMap((stage) => evaluation(stage).members.map((member) =>
+    member.kind === "persona" ? member.executionOverride ?? null : null));
+
+test("a routing edit changes one occurrence and keeps every id around it", () => {
+  const base = edit(
+    edit(FRESH, (p) => insertStage(p, 0, R(P1))).graph,
+    (p) => insertStage(p, 1, R(P1)),
+  );
+  assert.deepEqual(memberIdsOf(base.pipeline), [[P1], [P1]]);
+
+  const routed = edit(base.graph, (p) =>
+    setMemberExecutionOverride(p, { stage: 1, member: 0 }, OVERRIDE));
+  assert.deepEqual(validate(routed.graph), { valid: true, diagnostics: [] });
+  assert.deepEqual(overridesOf(routed.pipeline), [null, OVERRIDE]);
+  // Same nodes, same edges: routing is a property of a node, not a reshaping of the graph.
+  assert.deepEqual(
+    routed.graph.nodes.map((node) => node.id),
+    base.graph.nodes.map((node) => node.id),
+  );
+  assert.deepEqual(
+    routed.graph.edges.map((edge) => edge.id),
+    base.graph.edges.map((edge) => edge.id),
+  );
+
+  // Clearing removes the key rather than storing an empty one, so an inheriting node in an
+  // upgraded database is spelled exactly like one written before the field existed.
+  const cleared = edit(routed.graph, (p) =>
+    setMemberExecutionOverride(p, { stage: 1, member: 0 }, null));
+  assert.deepEqual(overridesOf(cleared.pipeline), [null, null]);
+  const node = cleared.graph.nodes.find((candidate) => candidate.kind === "persona"
+    && candidate.id === evaluation(cleared.pipeline.stages[1]).members[0]!.nodeId)!;
+  assert.equal(Object.hasOwn(node, "executionOverride"), false);
+});
+
+test("a routing edit is a no-op on a member that cannot carry one", () => {
+  const withCheck = edit(FRESH, (p) => insertStage(p, 0, C("test")));
+  assert.deepEqual(
+    setMemberExecutionOverride(withCheck.pipeline, { stage: 0, member: 0 }, OVERRIDE),
+    withCheck.pipeline,
+  );
+  // And an index nothing occupies, which is what a stale ref from a concurrent edit looks like.
+  assert.deepEqual(
+    setMemberExecutionOverride(withCheck.pipeline, { stage: 4, member: 0 }, OVERRIDE),
+    withCheck.pipeline,
+  );
+});
+
+test("moving a routed member carries its choice to its new stage", () => {
+  const base = edit(
+    edit(
+      edit(FRESH, (p) => insertStage(p, 0, R(P1))).graph,
+      (p) => insertStage(p, 1, R(P2)),
+    ).graph,
+    (p) => setMemberExecutionOverride(p, { stage: 0, member: 0 }, OVERRIDE),
+  );
+  const moved = edit(base.graph, (p) =>
+    moveMember(p, { stage: 0, member: 0 }, { stage: 1, member: 1 }));
+  assert.deepEqual(memberIdsOf(moved.pipeline), [[P2, P1]]);
+  assert.deepEqual(overridesOf(moved.pipeline), [null, OVERRIDE]);
+  assert.deepEqual(validate(moved.graph), { valid: true, diagnostics: [] });
+});
+
+test("the routing form seeds a complete pair, clears the model on a provider change, and never commits half of one", () => {
+  const seed = { runner: "claude" as const, model: "claude-sonnet-5" };
+  const fresh = nodeExecutionFormState(null, seed);
+  assert.deepEqual(fresh, { mode: "inherit", runner: "claude", model: "claude-sonnet-5" });
+  assert.deepEqual(nodeExecutionCommit(fresh), { kind: "inherit" });
+
+  // Turning it on produces something committable immediately, so enabling the override is a
+  // visible change rather than an empty form.
+  const enabled = withNodeExecutionMode(fresh, "override", seed);
+  assert.deepEqual(nodeExecutionCommit(enabled), {
+    kind: "override",
+    override: { runner: "claude", model: "claude-sonnet-5" },
+  });
+
+  // Changing the provider empties the model, and the half-pair is NOT written: a model chosen
+  // for Claude is not a model Codex has.
+  const switched = withNodeExecutionRunner(enabled, "codex");
+  assert.deepEqual(switched, { mode: "override", runner: "codex", model: "" });
+  assert.deepEqual(nodeExecutionCommit(switched), { kind: "incomplete" });
+  assert.deepEqual(nodeExecutionCommit({ ...switched, model: "   " }), { kind: "incomplete" });
+  assert.deepEqual(nodeExecutionCommit({ ...switched, model: " gpt-5.6-sol " }), {
+    kind: "override",
+    override: { runner: "codex", model: "gpt-5.6-sol" },
+  });
+
+  // Turning it off is committable at once, whatever the form was holding.
+  assert.deepEqual(
+    nodeExecutionCommit(withNodeExecutionMode(switched, "inherit", seed)),
+    { kind: "inherit" },
+  );
+  // A saved pair reopens on itself rather than on the seed.
+  assert.deepEqual(nodeExecutionFormState(OVERRIDE, seed), {
+    mode: "override",
+    runner: "codex",
+    model: "gpt-5.6-sol",
+  });
+  // The form resyncs when its saved choice CHANGES, so "the same choice" has to be a value
+  // comparison: a draft is reparsed from JSON on every reload, so the object identity is new
+  // every time and a reference check would reset the form under an operator mid-edit.
+  assert.equal(sameNodeExecutionOverride(null, null), true);
+  assert.equal(sameNodeExecutionOverride(OVERRIDE, { ...OVERRIDE }), true);
+  assert.equal(sameNodeExecutionOverride(OVERRIDE, null), false);
+  assert.equal(sameNodeExecutionOverride(null, OVERRIDE), false);
+  assert.equal(sameNodeExecutionOverride(OVERRIDE, { ...OVERRIDE, model: "gpt-5.6-terra" }), false);
+  assert.equal(
+    sameNodeExecutionOverride(OVERRIDE, { runner: "claude", model: OVERRIDE.model }),
+    false,
+  );
+
+  // A node whose Persona has gone opens with nothing committable.
+  assert.deepEqual(nodeExecutionCommit(nodeExecutionFormState(null, null)), { kind: "inherit" });
+  assert.deepEqual(
+    nodeExecutionCommit(withNodeExecutionMode(nodeExecutionFormState(null, null), "override", null)),
+    { kind: "incomplete" },
+  );
+});
+
+test("every routing readout names the object that decided it", () => {
+  assert.equal(
+    nodeRoutingLabel(OVERRIDE, "claude · claude-sonnet-5"),
+    "codex · gpt-5.6-sol · this workflow",
+  );
+  assert.equal(
+    nodeRoutingLabel(null, "claude · claude-sonnet-5"),
+    "claude · claude-sonnet-5 · Persona default",
+  );
+  // A published snapshot's nulls are named, never resolved: what the app default will be at
+  // attempt time is not a fact a version can know.
+  assert.equal(
+    snapshotRoutingLabel({ runner: null, model: null }),
+    "App provider · Provider default",
+  );
+  assert.equal(
+    snapshotRoutingLabel({ runner: "codex", model: "gpt-5.6-sol" }),
+    "codex · gpt-5.6-sol",
+  );
+  // A node whose Persona is gone has nothing to inherit, and says so rather than printing the
+  // app default as though it were this reviewer's.
+  assert.equal(nodeRoutingLabel(null, null), "no reviewer this build can resolve");
+  assert.equal(
+    nodeRoutingLabel(OVERRIDE, null),
+    "codex · gpt-5.6-sol · this workflow",
+  );
+  assert.deepEqual(personaNodeRouting(personas[0]), {
+    runner: "claude",
+    model: "claude-haiku-4-5",
+  });
+  assert.equal(personaNodeRouting(undefined), null);
+});
+
+// The provider select is CONTROLLED on the saved runner, and `providers` arrives from the
+// daemon a moment after first paint. A select whose value matches no option renders blank,
+// so the one moment a reviewer most needs to see what it runs on - the first frame after a
+// reload - is the moment it would stop saying. Raised by CodeRabbit on #1008.
+test("the routing form always offers an option for the runner it is bound to", () => {
+  const render = (providers: LlmProviderView[]): string => renderToStaticMarkup(
+    createElement(NodeExecutionEditor, {
+      subject: { nodeId: "intent", personaId: P1 },
+      name: "Security",
+      override: OVERRIDE,
+      seed: { runner: "claude" as const, model: "claude-sonnet-5" },
+      inherited: "claude · claude-sonnet-5",
+      providers,
+      readOnly: false,
+      onChange: () => {},
+    }),
+  );
+
+  // The catalog has not answered yet: the saved runner is still offered, named by its id,
+  // and still the selected option rather than a blank row.
+  const empty = render([]);
+  assert.match(empty, /<option value="codex" selected="">codex<\/option>/);
+
+  // Once it answers, the catalog's own label wins and no duplicate option is left behind.
+  const loaded = render([
+    { id: "claude", label: "Claude Code" },
+    { id: "codex", label: "Codex" },
+  ]);
+  assert.match(loaded, /<option value="codex" selected="">Codex<\/option>/);
+  assert.equal(loaded.match(/value="codex"/g)?.length, 1, "exactly one option for the runner");
 });

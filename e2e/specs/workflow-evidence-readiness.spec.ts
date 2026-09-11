@@ -20,6 +20,21 @@ import {
 
 const EVIDENCE = artifactsDir("workflow-evidence-readiness");
 
+/**
+ * The Evidence pane, which is where readiness lives now that the run record is a tab bar.
+ *
+ * Reached rather than assumed. A run parked on readiness selects this pane by itself - the
+ * block is what stopped the run, and a badge on a tab nobody clicks would leave it one click
+ * away - but a run that has since completed sits on the worklist, and this spec asserts the
+ * same controls in both states.
+ */
+async function evidencePane(page: Page): Promise<Locator> {
+  const tab = page.getByRole("tab", { name: /^Evidence/ });
+  await expect(tab).toBeVisible({ timeout: 30_000 });
+  if (await tab.getAttribute("aria-selected") !== "true") await tab.click();
+  return page.getByRole("tabpanel", { name: /^Evidence/ });
+}
+
 async function api<T>(daemon: DaemonHandle, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`${daemon.baseURL}${path}`, {
     method: body === undefined ? "GET" : "POST",
@@ -503,13 +518,47 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${accepted.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("waiting_for_evidence_readiness");
 
-  let readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  /*
+   * FIRST PAINT, with nothing clicked. A readiness block has parked this run, so the run record
+   * opens on the pane holding it - the amber badge alone would leave the thing that stopped the
+   * run one click away, which is the constraint the tab design had to answer.
+   *
+   * Reloaded first, because the browser landed here while the round was still capturing and the
+   * initial pane is resolved ONCE per run on purpose: a state that turns blocking under a reader
+   * raises the badge and does not yank them off the pane they chose. This is the arriving case.
+   */
+  await dashboard.reload();
+  await expect(dashboard.getByRole("tab", { name: /^Evidence/ }))
+    .toHaveAttribute("aria-selected", "true", { timeout: 30_000 });
+  let readiness = await evidencePane(dashboard);
   await expect(readiness).toBeVisible();
   await expect(readiness).toContainText(
     "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient.",
   );
   await expect(readiness).toContainText("The dashboard result is visually correct");
-  await expect(readiness).toContainText("missing rendered output");
+  /*
+   * The gap is reported ONCE, on the row of the claim it was recorded against.
+   *
+   * The reconciliation matched this author claim to a canonical criterion and still recorded
+   * `missing_rendered_output` against it, because a focused command does not satisfy a visual
+   * requirement. That criterion therefore HAS a row below, so it is not named in the block of
+   * unmatched criteria - whose own sentence tells the reader those have no row to sit under.
+   * The canonical wording is still a disclosure away, under Canonical reconciliation.
+   */
+  // Exactly the claim row's own note: the disclosure below carries the same code prefixed with
+  // "Gaps:", and matching both would not prove which of them the reader actually sees.
+  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
+  await expect(readiness.getByRole("region", { name: "Unmatched canonical criteria" }))
+    .toHaveCount(0);
+  // By its title text: the control is a `<summary>`, which carries no implicit ARIA role for
+  // `getByRole` to select on.
+  const reconciliation = readiness.getByText("Canonical reconciliation", { exact: true });
+  await reconciliation.click();
+  await expect(readiness).toContainText(
+    "Keep focused execution green and retain inspectable acceptance evidence",
+  );
+  await expect(readiness).toContainText("Gaps: missing rendered output");
+  await reconciliation.click();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   await expect(readiness.getByRole("button", { name: "Continue despite gaps" })).toBeDisabled();
   await readiness.scrollIntoViewIfNeeded();
@@ -527,7 +576,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await expect(dashboard.locator("header.detail-head")
     .getByRole("button", { name: "Evidence preflight" })).toBeVisible();
   await dashboard.goto(`${daemon.baseURL}/#/runs/${accepted.run.id}`);
-  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  readiness = await evidencePane(dashboard);
 
   const submissionsBeforeUnchangedRetry = (await api<{ submissions: Array<{ id: string }> }>(
     daemon,
@@ -555,7 +604,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${accepted.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("completed");
   await dashboard.reload();
-  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  readiness = await evidencePane(dashboard);
   await expect(readiness).toContainText("ready");
   await expect(dashboard.getByRole("region", { name: "Rounds" })
     .getByText("captured to repair evidence preflight gaps", { exact: false })).toBeVisible();
@@ -572,7 +621,7 @@ test("criterion readiness waits, repairs in the same round, and records an opera
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${overrideRun.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("waiting_for_evidence_readiness");
   await dashboard.goto(`${daemon.baseURL}/#/runs/${overrideRun.run.id}`);
-  readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  readiness = await evidencePane(dashboard);
   const overrideBox = readiness.getByRole("region", { name: "Evidence readiness override" });
   await overrideBox.getByLabel("Reason").fill("Operator accepts the missing rendered output for this run.");
   await overrideBox.getByLabel("Test Evidence Auditor may still reject this packet.").check();
@@ -708,7 +757,7 @@ test("a round's spent preflight refinements block the run and hand the decision 
   // The healthy waiting round first, so the two controls the block changes are known to have
   // been there: this is the state every earlier segment of this round rendered in.
   await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
-  const readiness = dashboard.getByRole("region", { name: "Evidence readiness", exact: true });
+  const readiness = await evidencePane(dashboard);
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   await expect(readiness.getByRole("region", { name: "Evidence readiness override" }))
     .not.toContainText("This round has spent its evidence preflight refinements");

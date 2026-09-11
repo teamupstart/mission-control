@@ -784,6 +784,9 @@ A SessionAction is a durable side effect, not an evaluator:
   delivering one would change the requested operation without failing the run. Stored rows keep
   a looser read bound (`sessionActionPromptReadBytes`) so nothing already written becomes
   unreadable; the snapshot schema is what keeps an undeliverable prompt out of every version.
+  Action delivery rows use `sessionActionPacketBytes` as their read bound, with envelope space
+  for the full repository root and multibyte metadata. Other delivery kinds retain
+  `eventPayloadBytes`; increasing action headroom must not loosen their read boundary.
 - Two actions ready at ONCE are refused, not serialized. Running one and holding the other
   looks safe and silently loses it: the continuation seeds the child segment with only the
   completed action's routes, so the held sibling's activating receipt stays behind in the

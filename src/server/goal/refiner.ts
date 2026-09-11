@@ -410,7 +410,7 @@ async function refine(
             ? current.objectiveVersion + (objectiveChanged ? 1 : 0)
             : current.objectiveVersion;
 
-      registry.upsertGoal(s.id, {
+      registry.resolveGoal(s.id, {
         objective,
         text,
         source: "model",
@@ -422,7 +422,7 @@ async function refine(
         objectiveVersion,
         resolvedPromptRevision: prompt.revision,
         pendingPrompts: current.pendingPrompts.slice(1),
-      });
+      }, prompt.prompt);
       failedFor.delete(s.id);
       transportAttempts.delete(s.id);
     });

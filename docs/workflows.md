@@ -763,6 +763,22 @@ a differing opening request as provenance beside the review contract, bounded by
 240,000-character section limit with an explicit truncation marker. That prompt-only bound
 does not alter stored opening requests. These additions do not affect the intent fingerprint.
 
+Resolved human steering is recorded separately and frozen with each new run. The Persona prompt
+and the Intent tab label it as method, sequence and priority context that does not add, remove
+or narrow acceptance criteria. A reviewer can use it to recognize legitimately skipped or
+deferred steps. It never enters criteria compaction or the intent fingerprint, including through
+a matching transcript decision. Capture keeps the newest 50 revisions within 32,000 UTF-8 bytes,
+then drops oldest notes until the entire intent fits its remaining storage budget. Its recorded
+resolved-revision cutoff excludes later classifications. Steering and its cutoff are one optional
+state: both must be present, or both absent for historical snapshots. A present empty list still
+records its cutoff. Existing runs gain no steering retroactively.
+
+The steering log consumes accepted revisions from the Goal pipeline, whose authorship guard
+suppresses daemon-delivered prompt echoes before they enter the pending queue. A later human
+retype remains an accepted instruction even if the transcript still labels the earlier delivery
+as automation. Accepted pending revisions and recorded steering survive restarts. Amendments,
+replacements and unclear instructions are not steering. No historical steering is backfilled.
+
 The session Goal stays live and keeps being displayed as the conversation's current objective.
 Transcript, diff, standards, coverage, and evidence remain live per-submission reads: only intent
 is frozen. Later human input does not amend the frozen ask; an ask that genuinely changed needs

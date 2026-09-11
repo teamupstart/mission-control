@@ -565,6 +565,11 @@ function headlessAnswer(prompt) {
     const objective = prompt.match(
       /## The specific unresolved instruction to classify now\n([\s\S]*?)(?:\n\n## Conversation|\n\nNow output)/,
     )?.[1]?.trim() || "Complete the e2e task";
+    if (objective === "skip the E2E for now, the harness is broken") {
+      return JSON.stringify({ relationship: "steer", objective: "Ship the steering context feature",
+        goal: "Ship the steering context feature", focus: objective,
+        reason: "The human deferred a step while its harness is broken" });
+    }
     return JSON.stringify({
       relationship: "initial",
       objective,

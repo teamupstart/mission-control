@@ -315,7 +315,7 @@ npm run install-pi-extension -- --uninstall
 A daemon with Pi extension configuration support also accepts HTTP requests:
 
 ```sh
-curl -fsS -X PUT http://127.0.0.1:7317/api/extensions/pi/config \
+curl --fail-with-body -sS -X PUT http://127.0.0.1:7317/api/extensions/pi/config \
   -H 'Content-Type: application/json' -d '{"enabled":true}'
 curl -fsS http://127.0.0.1:7317/api/extensions/pi/config
 ```

@@ -95,6 +95,11 @@ export function fakeTerminals(
   return {
     multiplexers: { tmux: mux, herdr: third, cmux: second },
     emulators: { wezterm: emu, ghostty: secondEmu, iterm: thirdEmu },
+    // Everything present and every multiplexer on Automatic, so a test that is not about
+    // availability or the focus preference reads exactly as it did before those two seams
+    // existed. A test that IS about them overrides the field it is asserting on.
+    installed: () => true,
+    focusEmulator: () => null,
   };
 }
 

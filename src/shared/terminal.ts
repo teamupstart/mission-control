@@ -90,6 +90,29 @@ export function resolveTerminalBackend(value: string | null | undefined): {
     : { backend: null, unknown: value };
 }
 
+/** Narrow a stored or wire value to a TERMINAL APP specifically. */
+export function isEmulatorId(value: unknown): value is EmulatorId {
+  return typeof value === "string" && EMULATOR_IDS.includes(value as EmulatorId);
+}
+
+/**
+ * The emulator-only sibling of `resolveTerminalBackend`, for the questions a multiplexer
+ * cannot answer.
+ *
+ * A multiplexer id arriving here is `unknown` on the same terms as a string this build has
+ * never heard of: Automatic, but still reportable, so a row can say it ignored a stored
+ * preference rather than presenting the fallback as the operator's choice.
+ */
+export function resolveEmulatorBackend(value: string | null | undefined): {
+  backend: EmulatorId | null;
+  unknown: string | null;
+} {
+  if (value == null) return { backend: null, unknown: null };
+  return isEmulatorId(value)
+    ? { backend: value, unknown: null }
+    : { backend: null, unknown: value };
+}
+
 /**
  * One backend, as the browser is told about it.
  *
@@ -126,6 +149,17 @@ export interface TerminalTargetView {
    * background dispatch only needs the persistent session itself.
    */
   dispatchUnavailable?: string | null;
+  /**
+   * For a MULTIPLEXER: whether its sessions need a terminal app to be seen at all.
+   * Absent on an emulator row, which is the terminal app.
+   *
+   * An adapter fact, never a name. `attachArgv: null` is how a backend declares that its
+   * sessions are never without a window - cmux draws its own workspace - and the browser
+   * cannot import an adapter to read it. So the daemon reports it here and the Setup panel
+   * offers a terminal chooser to exactly the rows that say `true`, which is what keeps a
+   * future self-hosting multiplexer from needing a UI edit.
+   */
+  needsTerminalApp?: boolean;
 }
 
 /**

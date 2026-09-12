@@ -85,6 +85,34 @@ home name. Liveness checks and cleanup use that durable backend identity, so cha
 later cannot re-aim an already-running task at another terminal. Historical and Automatic tasks
 keep their existing registry-based lookup behavior.
 
+## Multiplexer focus terminal
+
+A session hosted in a multiplexer is detached. It has no window until someone asks for one,
+and **Focus** is the ask. Each multiplexer whose sessions need a window carries its own
+**Opens in** chooser on its row under **Settings > Setup > Terminals**, and Focus opens the
+terminal app chosen there.
+
+This is a different setting from the dispatch preference above, and the two coexist. That one
+answers which backend *hosts* a dispatched session, is keyed per harness, and admits
+multiplexers. This one answers which terminal app *shows* a session already living in a
+multiplexer, is keyed per multiplexer, and offers terminal apps only - attaching tmux inside
+cmux inside tmux is not a preference.
+
+The shipped value is **Automatic** for every multiplexer, which preserves the previous
+behavior exactly: the first terminal app that can open a window, in registry order. An explicit
+choice is tried first and the registry order still follows it, so a chosen terminal that is
+uninstalled or fails to open still ends with a window rather than an error. Focus now also
+checks that a terminal app is installed before spawning it, so a machine with no terminal app
+attempts nothing and reports the existing refusal.
+
+The preference is read at focus time, so a change reaches the next Focus without a daemon
+restart, and it is recorded in settings backups under the `terminals` domain.
+
+Which rows carry a chooser is the adapter's answer, not the panel's: a multiplexer that draws
+its own window declares no attach argv, and its row reads **Needs no terminal** instead. cmux is
+the shipped example. A multiplexer that is not installed keeps the control, disabled, since
+there is nothing to set a preference for yet.
+
 ## Herdr
 
 Mission Control supports stable Herdr 0.8.2 or newer on protocol 20 or newer. A newer protocol

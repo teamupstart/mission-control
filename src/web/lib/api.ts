@@ -55,6 +55,8 @@ import type {
   HarnessesConfig,
   HarnessesConfigPatch,
   HarnessModelCatalogs,
+  TerminalsConfig,
+  TerminalsConfigPatch,
   InspectorConfig,
   InspectorConfigPatch,
   LlmConfig,
@@ -266,6 +268,8 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/** Which terminal app each multiplexer's detached sessions are focused into. */
+export const fetchTerminalsConfig = () => fetchJson<TerminalsConfig>("/api/terminals/config");
 /**
  * The complete dispatch-time model catalog, read once by the root browser provider.
  *
@@ -1889,6 +1893,8 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+  // --- Terminals (which terminal app a multiplexer's sessions are focused into) ---
+  setTerminalsConfig: (cfg: TerminalsConfigPatch) => put(`/api/terminals/config`, cfg),
   setInspectorConfig: (cfg: InspectorConfigPatch) => put(`/api/inspector/config`, cfg),
   /**
    * Close the findings the Inspector is carrying on one pull request.

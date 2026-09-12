@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { EmulatorId } from "@shared/terminal.ts";
 import {
   EMULATOR_IDS,
   MULTIPLEXER_IDS,
@@ -9,29 +10,110 @@ import {
 import { useTerminalTargets } from "../lib/terminalTargets.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
-const GROUPS: ReadonlyArray<{
+/** One group of rows in the open menu. */
+export interface TerminalPreferenceGroup<Id extends TerminalBackendId = TerminalBackendId> {
   label: string;
-  ids: readonly TerminalBackendId[];
-}> = [
+  ids: readonly Id[];
+}
+
+/** Both axes - what the Harnesses card offers. */
+export const DISPATCH_GROUPS: ReadonlyArray<TerminalPreferenceGroup> = [
   { label: "Multiplexers", ids: MULTIPLEXER_IDS },
   { label: "Terminal apps", ids: EMULATOR_IDS },
 ];
 
+/** Terminal apps only - what a multiplexer's Setup row offers. */
+export const EMULATOR_GROUPS: ReadonlyArray<TerminalPreferenceGroup<EmulatorId>> = [
+  { label: "Terminal apps", ids: EMULATOR_IDS },
+];
+
+/**
+ * Every sentence this control says, supplied by the caller.
+ *
+ * Spelled out rather than composed from one noun: the two callers differ by more than a
+ * noun, so a template would produce a sentence for the wrong question.
+ */
+export interface TerminalPreferenceCopy {
+  /** The closed trigger's hover sentence. */
+  tooltip: string;
+  /** The trigger's accessible name. The current value is appended after a colon. */
+  triggerName: string;
+  /** The open menu's accessible name. */
+  menuName: string;
+  /** The menu's heading. */
+  heading: string;
+  /** What Automatic does here. */
+  automaticNote: string;
+  /** Hover on one backend's row. */
+  rowTooltip: (label: string) => string;
+  /**
+   * What choosing this backend produces, and why it cannot be chosen.
+   *
+   * A `TerminalTargetView` answers both twice - once for a dispatch, once for a window a
+   * human is about to look at - and the pairs differ for a detached multiplexer, so a chooser
+   * reading the wrong one greys out a row for a reason that does not apply to it.
+   */
+  rowNote: (target: TerminalTargetView) => string;
+  rowUnavailable: (target: TerminalTargetView) => string | null;
+}
+
+/** The Harnesses card's wording: which terminal a dispatched session of one agent launches in. */
+export function dispatchTerminalCopy(agentLabel: string): TerminalPreferenceCopy {
+  return {
+    tooltip: `Which terminal every dispatched ${agentLabel} session launches in`,
+    triggerName: `Terminal preference for ${agentLabel}`,
+    menuName: `Choose a terminal for dispatched ${agentLabel} sessions`,
+    heading: `Terminal for ${agentLabel}`,
+    automaticNote: "Prefer an available multiplexer, then fall back to a terminal app.",
+    rowTooltip: (label) => `Use ${label} for dispatched terminal sessions`,
+    rowNote: (target) => target.dispatchBlurb ?? target.blurb,
+    // `dispatchUnavailable` is a real answer when present and `null` is one of its values, so
+    // the key's PRESENCE decides rather than its truthiness: a detached tmux refuses the
+    // ordinary open-terminal menu and is perfectly fine for a background dispatch.
+    rowUnavailable: (target) =>
+      Object.hasOwn(target, "dispatchUnavailable")
+        ? (target.dispatchUnavailable ?? null)
+        : target.unavailable,
+  };
+}
+
+/**
+ * A Setup row's wording.
+ *
+ * "Terminal APP" throughout because the Setup panel already labels the installer's
+ * visible-terminal select `Terminal for <row label>` and a row can render both at once: a
+ * name reading `Terminal for tmux sessions` would contain that one as a substring, and every
+ * by-label lookup would find two controls.
+ */
+export function multiplexerTerminalCopy(muxLabel: string): TerminalPreferenceCopy {
+  return {
+    tooltip: `Which terminal app opens a window when you focus a ${muxLabel} session`,
+    triggerName: `Terminal app for ${muxLabel} sessions`,
+    menuName: `Choose a terminal app for ${muxLabel} sessions`,
+    heading: `Terminal app for ${muxLabel} sessions`,
+    automaticNote: "Use the first available terminal app.",
+    rowTooltip: (label) => `Open ${muxLabel} sessions in ${label}`,
+    rowNote: (target) => `Focus opens a new ${target.label} window.`,
+    rowUnavailable: (target) => target.unavailable,
+  };
+}
+
 function PreferenceRow({
   target,
   selected,
+  copy,
   onChoose,
 }: {
   target: TerminalTargetView;
   selected: boolean;
+  copy: TerminalPreferenceCopy;
   onChoose: () => void;
 }): React.JSX.Element {
-  const unavailable = Object.hasOwn(target, "dispatchUnavailable")
-    ? (target.dispatchUnavailable ?? null)
-    : target.unavailable;
-  const blurb = target.dispatchBlurb ?? target.blurb;
+  const unavailable = copy.rowUnavailable(target);
+  const blurb = copy.rowNote(target);
+  const tooltip = copy.rowTooltip(target.label);
   return (
-    <Tooltip label={unavailable ?? `Use ${target.label} for dispatched terminal sessions`}>
+    <Tooltip label={unavailable ?? tooltip}>
       <button
         type="button"
         role="menuitemradio"
@@ -52,30 +134,41 @@ function PreferenceRow({
 }
 
 /**
- * The detailed terminal chooser used by one Harnesses card.
+ * The detailed terminal chooser, used by one Harnesses card and by one multiplexer's Setup row.
  *
  * Backend identity and availability come from the daemon's terminal registry. This component
- * owns only the settings interaction: Automatic, grouping by axis, selection, and keyboard
- * behavior. It deliberately uses the launch menu's row vocabulary so the two terminal
- * choosers look and move like the same product.
+ * owns only the settings interaction: Automatic, grouping, selection, and keyboard behavior.
+ * It deliberately uses the launch menu's row vocabulary so every terminal chooser in the app
+ * looks and moves like the same product.
+ *
+ * `resolve` travels with `groups` rather than being derived from it: a chooser offering
+ * terminal apps only must also READ a stored multiplexer id as unrecognized, or a value from
+ * the other preference would render as a selection this menu cannot show.
  */
-export function TerminalPreferencePicker({
+export function TerminalPreferencePicker<Id extends TerminalBackendId = TerminalBackendId>({
   id,
-  agentLabel,
+  copy,
+  groups = DISPATCH_GROUPS as ReadonlyArray<TerminalPreferenceGroup<Id>>,
+  resolve = resolveTerminalBackend as (value: string | null | undefined) => {
+    backend: Id | null;
+    unknown: string | null;
+  },
   value,
   disabled,
   onChange,
 }: {
   id: string;
-  agentLabel: string;
+  copy: TerminalPreferenceCopy;
+  groups?: ReadonlyArray<TerminalPreferenceGroup<Id>>;
+  resolve?: (value: string | null | undefined) => { backend: Id | null; unknown: string | null };
   value: string | null;
   disabled: boolean;
-  onChange: (backend: TerminalBackendId | null) => void;
+  onChange: (backend: Id | null) => void;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
   const { targets, failed } = useTerminalTargets();
-  const resolved = resolveTerminalBackend(value);
+  const resolved = resolve(value);
   const selectedTarget = targets?.find((target) => target.id === resolved.backend) ?? null;
   const selectedLabel = resolved.backend ? (selectedTarget?.label ?? resolved.backend) : "Automatic";
 
@@ -126,7 +219,7 @@ export function TerminalPreferencePicker({
       ?.focus();
   }, [open, targets]);
 
-  function choose(backend: TerminalBackendId | null): void {
+  function choose(backend: Id | null): void {
     setOpen(false);
     onChange(backend);
     root.current?.querySelector<HTMLButtonElement>(".terminal-pref-trigger")?.focus();
@@ -134,12 +227,12 @@ export function TerminalPreferencePicker({
 
   return (
     <span className="terminal-pref" ref={root}>
-      <Tooltip label={`Which terminal every dispatched ${agentLabel} session launches in`}>
+      <Tooltip label={copy.tooltip}>
         <button
           id={id}
           type="button"
           className="harnesses-select terminal-pref-trigger"
-          aria-label={`Terminal preference for ${agentLabel}: ${selectedLabel}`}
+          aria-label={`${copy.triggerName}: ${selectedLabel}`}
           aria-haspopup="menu"
           aria-expanded={open}
           disabled={disabled}
@@ -153,9 +246,9 @@ export function TerminalPreferencePicker({
         <div
           className="launch-pop terminal-pref-pop"
           role="menu"
-          aria-label={`Choose a terminal for dispatched ${agentLabel} sessions`}
+          aria-label={copy.menuName}
         >
-          <span className="launch-head terminal-pref-head">Terminal for {agentLabel}</span>
+          <span className="launch-head terminal-pref-head">{copy.heading}</span>
           <Tooltip label="Let Mission Control choose the best available terminal for each dispatch">
             <button
               type="button"
@@ -167,9 +260,7 @@ export function TerminalPreferencePicker({
               <span className="launch-glyph terminal-pref-auto-glyph" aria-hidden>◇</span>
               <span className="launch-text">
                 <span className="launch-label">Automatic</span>
-                <span className="launch-note">
-                  Prefer an available multiplexer, then fall back to a terminal app.
-                </span>
+                <span className="launch-note">{copy.automaticNote}</span>
               </span>
               {resolved.backend === null && (
                 <span className="terminal-pref-check" aria-hidden>✓</span>
@@ -186,7 +277,7 @@ export function TerminalPreferencePicker({
           )}
           {targets && (
             <div className="terminal-pref-groups">
-              {GROUPS.map((group) => {
+              {groups.map((group) => {
                 const rows = group.ids
                   .map((backend) => targets.find((target) => target.id === backend))
                   .filter((target): target is TerminalTargetView => Boolean(target));
@@ -203,8 +294,9 @@ export function TerminalPreferencePicker({
                       <PreferenceRow
                         key={target.id}
                         target={target}
+                        copy={copy}
                         selected={resolved.backend === target.id}
-                        onChoose={() => choose(target.id)}
+                        onChoose={() => choose(target.id as Id)}
                       />
                     ))}
                   </div>

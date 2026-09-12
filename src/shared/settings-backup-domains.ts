@@ -20,6 +20,9 @@ export const SETTINGS_BACKUP_DOMAINS = [
   { id: "shipping", surface: "settings" },
   { id: "pipelines", surface: "settings" },
   { id: "repo-index", surface: "settings" },
+  // Which terminal app each multiplexer's sessions open in. Its controls live on the
+  // Setup panel's Terminals rows rather than in a settings card of their own.
+  { id: "terminals", surface: "settings" },
   // Away thresholds and the current away flag are operator configuration, but their controls
   // live in the top bar rather than Settings. They still participate in typed config coverage.
   { id: "away", surface: "runtime" },

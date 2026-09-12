@@ -7,6 +7,7 @@
 // open. The daemon and UI are reused unchanged.
 
 import { app, dialog, ipcMain, session, shell } from "electron";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
@@ -16,12 +17,12 @@ import {
   type BackgroundStartOwnership,
 } from "./daemon-policy.ts";
 import { startForeman, type ForemanController } from "./foreman.ts";
-import { createWindow, getMainWindow, showWindow } from "./window.ts";
+import { createWindow, getMainWindow, onMainWindowClosed, showWindow } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
-import { setQuitting } from "./lifecycle.ts";
+import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
   createDefaultUpdaterPort,
   requestUpdateQuit,
@@ -29,7 +30,9 @@ import {
   type UpdateDialogs,
 } from "./updater.ts";
 import type { UpdateSnapshot } from "../shared/update.ts";
-import { UPDATE_COPY } from "../shared/update-copy.ts";
+import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
+import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
+import { UpdateDialogPresenter } from "./update-dialog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
 
 app.setName("Mission Control");
@@ -60,95 +63,81 @@ function showIntegrationResult(title: string, message: string): void {
   else void dialog.showMessageBox(opts);
 }
 
-async function showNativeMessage(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
-  const win = getMainWindow();
-  return win?.isVisible() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options);
+/**
+ * Every update question, drawn by the dashboard.
+ *
+ * These were seven `dialog.showMessageBox` calls, which is the one surface in the product
+ * that did not look like the product: a grey platform sheet with system buttons, shown for
+ * the one job - the app updating itself - where an operator most needs to recognise who is
+ * asking. The words and the answers now live in `shared/update-dialog.ts` and the drawing
+ * in `web/components/UpdateDialog.tsx`. No platform sheet is left in this path: a second,
+ * unthemed auto-update surface is the thing being removed, not a fallback worth keeping.
+ */
+const updateDialogPresenter = new UpdateDialogPresenter({
+  canPresent: () => {
+    const win = getMainWindow();
+    if (!win || win.isDestroyed() || !win.isVisible()) return false;
+    return !win.webContents.isLoading();
+  },
+  reveal: () => showWindow(paths.preload),
+  send: (request) => {
+    const wc = getMainWindow()?.webContents;
+    if (!wc || wc.isDestroyed() || wc.isLoading()) return false;
+    wc.send("mission:update-dialog", request);
+    return true;
+  },
+  newId: () => randomUUID(),
+  delay: (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  },
+});
+
+/** Ask, and translate the modal's two words back into the updater's own vocabulary. */
+function askUpdate(content: UpdateDialogContent): Promise<UpdateDialogChoice> {
+  return updateDialogPresenter.present(content);
 }
 
 const updateDialogs: UpdateDialogs = {
   async available(release) {
-    const response = await showNativeMessage({
-      type: "info",
-      title: "Mission Control update",
-      message: `Mission Control ${release.newVersion} is available`,
-      detail: [release.name, release.notes].filter(Boolean).join("\n\n"),
-      buttons: ["Update Now", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
-    if (response.response !== 0) return "defer";
-    // The build is about to start, and its progress is drawn in the dashboard. Someone who
-    // accepted from the menu bar with the window hidden would otherwise get no sign at all -
-    // which is the complaint this whole path exists to answer.
+    if ((await askUpdate(UPDATE_DIALOGS.available(release))) !== "confirm") return "defer";
+    // Unchanged from the flow this replaced. The build is about to start, and its progress
+    // is drawn in the dashboard. Someone who accepted from the menu bar with the window
+    // hidden would otherwise get no sign at all - which is the complaint that path exists
+    // to answer.
     showWindow(paths.preload);
     return "apply";
   },
   async upToDate(version) {
-    await showNativeMessage({
-      type: "info",
-      title: "Mission Control update",
-      message: `Mission Control ${version} is up to date`,
-      buttons: ["OK"],
-    });
+    await askUpdate(UPDATE_DIALOGS.upToDate(version));
   },
-  // The three phases below take their words from UPDATE_COPY, which the dashboard banner reads
-  // too. Whichever surface a person meets - this dialog with the window hidden, or the banner
-  // with it up - they are told the same thing.
   async preparing(version, stage) {
+    // Unchanged from the flow this replaced: this phase revealed the window before it said
+    // anything, because the progress it is reporting on is drawn there.
     showWindow(paths.preload);
-    await showNativeMessage({
-      type: "info",
-      title: "Mission Control update",
-      message: UPDATE_COPY.preparing.title(version),
-      detail: `${stage}. ${UPDATE_COPY.preparing.detail}`,
-      buttons: ["OK"],
-    });
+    await askUpdate(UPDATE_DIALOGS.preparing(version, stage));
   },
   async ready(version) {
-    const response = await showNativeMessage({
-      type: "info",
-      title: "Mission Control update",
-      message: UPDATE_COPY.ready.title(version),
-      detail: UPDATE_COPY.ready.detail,
-      buttons: ["Restart and Install", "Later"],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
-    return response.response === 0 ? "install" : "defer";
+    return (await askUpdate(UPDATE_DIALOGS.ready(version))) === "confirm" ? "install" : "defer";
   },
   async applying(version) {
-    await showNativeMessage({
-      type: "info",
-      title: "Mission Control update",
-      message: UPDATE_COPY.applying.title(version),
-      detail: UPDATE_COPY.applying.detail,
-      buttons: ["OK"],
-    });
+    await askUpdate(UPDATE_DIALOGS.applying(version));
   },
   async error(message) {
-    await showNativeMessage({
-      type: "error",
-      title: "Mission Control update",
-      message: "The update could not be completed",
-      detail: message,
-      buttons: ["OK"],
-    });
+    await askUpdate(UPDATE_DIALOGS.error(message));
   },
   async outcome(outcome) {
-    const failed = outcome.result === "failure";
-    await showNativeMessage({
-      type: failed ? "error" : "info",
-      title: "Mission Control update",
-      message: failed
-        ? `Mission Control ${outcome.targetVersion} could not be installed`
-        : `Mission Control was updated to ${outcome.targetVersion}`,
-      ...(failed ? { detail: outcome.message } : {}),
-      buttons: ["OK"],
-    });
+    await askUpdate(UPDATE_DIALOGS.outcome(outcome));
   },
 };
+
+// A destroyed renderer cannot answer, and `checkForUpdates()` is awaiting one. Settle
+// anything outstanding as the dismissal it would have got from "Later", rather than leaving
+// the update wedged on an answer that can never arrive. Skipped during a quit, where the
+// process is going away and nothing is waiting on the result.
+onMainWindowClosed(() => {
+  if (!isQuitting()) updateDialogPresenter.detach();
+});
 
 // Reveal the dashboard and tell the renderer to open the Settings panel. Backs
 // both the native "Settings…" menu item (⌘,) and any future app-level trigger.
@@ -192,6 +181,19 @@ function registerIpc(updateController: UpdateController): void {
   ipcMain.handle("mission:update-install", () => updateController.install());
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
+  // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
+  // pushes an announcement and an answer rather than invoking for a result. Both are
+  // refused from any sender but the dashboard's own contents, the way the product-issue
+  // authorization above is.
+  ipcMain.on("mission:update-dialog-ready", (event) => {
+    if (event.sender !== getMainWindow()?.webContents) return;
+    updateDialogPresenter.attach();
+  });
+  ipcMain.on("mission:update-dialog-choice", (event, payload: unknown) => {
+    if (event.sender !== getMainWindow()?.webContents) return;
+    const answer = payload as { id?: unknown; choice?: unknown } | null;
+    updateDialogPresenter.answer(answer?.id, answer?.choice);
+  });
   // Which of ⌘0/⌘-/⌘= the View menu may keep. The dashboard reports whether it is claiming
   // the number row for the fleet's session jumps; the menu holds those accelerators whenever it is
   // not, so switching the preference off gives the keys back to zoom instead of leaving

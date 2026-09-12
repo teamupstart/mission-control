@@ -3,6 +3,7 @@
 // leaves `window.missionDesktop` undefined, so every caller must guard on it.
 
 import type { UpdateSnapshot } from "@shared/update.ts";
+import type { UpdateDialogChoice, UpdateDialogRequest } from "@shared/update-dialog.ts";
 
 export {};
 
@@ -30,6 +31,21 @@ declare global {
       cancel(): Promise<void>;
       defer(): Promise<void>;
       onState(cb: (snapshot: UpdateSnapshot) => void): () => void;
+      /**
+       * Subscribe to the update questions the shell needs answered, and announce that this
+       * renderer can draw them. Returns an unsubscribe.
+       *
+       * OPTIONAL, for `setCardJumpKeys`'s reason below and with the same teeth: an older
+       * preload beside this bundle - what a partly-applied desktop update looks like - has
+       * no such member, and an unguarded call would throw inside a mount effect and take
+       * the dashboard down. With no member to subscribe through, this renderer never
+       * announces itself, so the shell settles each question as its own dismissal - the
+       * same answer as "Later" - and offers the release again at the next check. Nothing
+       * falls back to a platform sheet; there is none left in the update path.
+       */
+      onDialog?(cb: (request: UpdateDialogRequest) => void): () => void;
+      /** Answer one question by the id it arrived with. */
+      answerDialog?(id: string, choice: UpdateDialogChoice): void;
     };
     /**
      * Tell the shell whether the Board is claiming ⌘0/⌘-/⌘= for its card jump shortcuts.

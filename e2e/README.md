@@ -2060,10 +2060,13 @@ with `MC_E2E_EVIDENCE=1` land in `e2e/.artifacts/pi-interrupt-conversation/`.
 
 `specs/pi-interrupt-herdr.spec.ts` covers the real Pi and Herdr combination. It starts a
 headless Herdr server in a disposable config root, runs the pinned Pi TUI against a local
-provider, interrupts through the dashboard, reloads the conversation, and sends a follow-up.
+provider, interrupts through the dashboard, reloads the conversation, and sends a follow-up through
+the dashboard composer. Both a fresh Stop hook and a daemon restart are covered; each case
+requires one provider request for the follow-up and an empty outbox afterward.
 Opt in with `MC_E2E_REAL_HERDR_BIN=/absolute/path/to/herdr`; the case skips when that variable
 is absent. With `MC_E2E_EVIDENCE=1`, the rendered proof is
-`e2e/.artifacts/pi-interrupt-conversation/real-pi-herdr.png`.
+`e2e/.artifacts/pi-interrupt-conversation/real-pi-herdr.png` and
+`real-pi-herdr-restart.png` beside it.
 
 `specs/pi-extension-setup.spec.ts` exercises the first-install action and report-only warning
 row. Its terminal proof enables discovery but addresses only its own dispatched task and tmux

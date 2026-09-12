@@ -565,7 +565,9 @@ test("hand-run Pi binds through a pane or unique cwd and only settled completes 
   for (const pane of [true, false]) {
     const registry = new Registry();
     const id = `hand-pi-${pane}`;
-    registry.applyDiscovery([mkDiscovered({ syntheticId: id, agent: "pi", agentSessionId: null })]);
+    const discovered = mkDiscovered({ syntheticId: id, agent: "pi", agentSessionId: null,
+      terminals: [mkMuxHandle({ backend: pane ? "tmux" : "herdr", paneId: PANE })] });
+    registry.applyDiscovery([discovered]);
     const base = { agent: "pi" as const, sessionId: `pi-conversation-${pane}`, cwd: "/wt/one", transcriptPath: "/tmp/pi.jsonl", env: pane ? { tmuxPane: PANE } : {} };
     registry.applyHook({ ...base, event: "SessionStart" });
     assert.equal(registry.getSession(id)?.agentSessionId, base.sessionId);
@@ -578,9 +580,33 @@ test("hand-run Pi binds through a pane or unique cwd and only settled completes 
     registry.applyHook({ ...base, event: "Stop" });
     assert.equal(registry.getSession(id)?.state, "idle");
     assert.equal(registry.getSession(id)?.workCycle?.generation, (before ?? 0) + 1);
+    // A Herdr hook has no legacy pane env key. Its resolved session must retain Stop
+    // across discovery, even before the passive reader catches up with the transcript.
+    registry.applyPassiveActivity(registry.getSession(id)!, { state: "working", lastActivity: Date.now() });
+    registry.applyDiscovery([discovered]);
+    assert.equal(registry.getSession(id)?.state, "idle");
+    assert.equal(registry.getSession(id)?.instrumented, true);
   }
 });
 
+
+test("keyless hooks cannot retain an overlay for an ambiguous or conflicting conversation", () => {
+  const first = mkDiscovered({ syntheticId: "keyless-first", agent: "pi", agentSessionId: "first-conversation",
+    terminals: [mkMuxHandle({ backend: "herdr", paneId: "first" })] });
+  const second = mkDiscovered({ syntheticId: "keyless-second", agent: "pi", agentSessionId: "second-conversation",
+    terminals: [mkMuxHandle({ backend: "herdr", paneId: "second" })] });
+  for (const sessions of [[first, second], [first]]) {
+    const registry = new Registry();
+    registry.applyDiscovery(sessions);
+    registry.applyHook({ agent: "pi", event: "Stop", sessionId: "unrelated-conversation",
+      cwd: first.cwd, transcriptPath: null, env: {} });
+    registry.applyDiscovery(sessions);
+    for (const session of sessions) {
+      assert.equal(registry.getSession(session.syntheticId)?.state, "working");
+      assert.equal(registry.getSession(session.syntheticId)?.instrumented, false);
+    }
+  }
+});
 
 test("native Pi effort changes survive the session SSE comparator", () => {
   const registry = new Registry();

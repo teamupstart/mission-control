@@ -738,3 +738,43 @@ test("a claim that cites a criterion id binds to it without a semantic call", as
     [["themed-shell"], ["themed-modals"]],
   );
 });
+
+test("criterion mapping never emits a claim this submission did not declare", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The behaviour is correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  const declared = {
+    clientCriterionId: "declared-claim",
+    criterion: "Wording of its own",
+    criterionId: "criterion-1-aaaa",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [],
+  };
+  /*
+   * `coverage` IS the submission's declared set, and `currentClaimIds` is derived from it, so
+   * every id the cited pass can push was taken from the same array. The filter exists for the
+   * other input: `proposedMappings` arrives from a model reply or a previous submission and may
+   * name claims this packet never declared.
+   */
+  const mappings = reconcileWorkflowCriterionMappings(canonical, [declared], {
+    proposedMappings: [{
+      criterionId: "criterion-1-aaaa",
+      matchedClientCriterionIds: ["declared-claim", "claim-from-another-packet"],
+    }],
+  });
+  assert.deepEqual(
+    mappings.map((mapping) => mapping.matchedClientCriterionIds),
+    [["declared-claim"]],
+    "a proposal naming a claim outside this coverage set is dropped",
+  );
+  const declaredIds = new Set(["declared-claim"]);
+  for (const mapping of mappings) {
+    for (const id of mapping.matchedClientCriterionIds) {
+      assert.ok(declaredIds.has(id), `mapping emitted undeclared claim ${id}`);
+    }
+  }
+});

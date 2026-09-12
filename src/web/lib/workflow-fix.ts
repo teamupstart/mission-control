@@ -29,7 +29,7 @@ export const WORKFLOW_LAUNCH_FIX_DOORS: Record<WorkflowLaunchFix, WorkflowLaunch
   // The machine-wide half, which is a switch and not a grant, so it is a different screen.
   "workflow-live-delivery": {
     label: "Turn on Live delivery",
-    tooltip: "Open Settings, Workflows, where Live delivery is switched on",
+    tooltip: "Open Settings, Workflows, and turn Live delivery on",
     category: "workflows",
     anchor: "workflows/live-delivery",
   },

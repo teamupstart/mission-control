@@ -130,6 +130,16 @@ test("a machine with Live delivery switched off offers the Workflows switch inst
   await expect(door).toBeVisible();
   await shoot(dashboard, dialog, "machine-switch-refusal-with-door");
 
+  // The hover copy is an INSTRUCTION, not a reading of the switch. Phrased as a state
+  // ("where Live delivery is switched on") it contradicted the sentence directly above it,
+  // which is telling the operator the switch is off.
+  await door.focus();
+  await expect(
+    dashboard.locator(".tooltip")
+      .getByText("Open Settings, Workflows, and turn Live delivery on", { exact: true }),
+  ).toBeVisible();
+  await door.blur();
+
   await door.click();
 
   await expect(dialog).toBeHidden();

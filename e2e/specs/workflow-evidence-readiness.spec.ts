@@ -1248,7 +1248,19 @@ test("the preflight packet names contested claims, and a cited criterion id surv
     .getByRole("button", { name: "Show packet" }).click();
   const packet = ledger.locator("tr.wf-run-ledger-detail").last();
   await expect(packet).toContainText(`Criterion id: ${canonical.id}`);
-  await expect(packet).toContainText("Claims currently matched to it: contest-primary, contest-rival");
+  /*
+   * EXACTLY two contestants, asserted as the whole line.
+   *
+   * `stageLaterPacket` also staged `contest-criterion`, worded "The dashboard result is
+   * visually correct", which matches no criterion of this run. It reaches neither the text
+   * owner nor the model: the two citations above already bind the only material criterion, so
+   * reconciliation completes deterministically and never asks. Naming it here would be a third
+   * contestant, and a substring assertion would not notice one.
+   */
+  await expect(packet).toContainText(
+    /Claims currently matched to it: contest-primary, contest-rival\s*\n/,
+  );
+  await expect(packet).not.toContainText("contest-criterion");
   await expect(packet).toContainText("one claim may answer several criteria");
   await expect(packet).toContainText("linked from as many claims as apply");
   await expect(packet).toContainText("Evidence and coverage you already registered are carried");

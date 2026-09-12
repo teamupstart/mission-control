@@ -251,7 +251,7 @@ export const SETUP_DEPENDENCY_INFO: Record<SetupDependencyId, SetupDependencyInf
     label: "Pi",
     family: "agents",
     requirement: "recommended",
-    enables: "Without it, Pi sessions cannot launch or resume.",
+    enables: "Without it, Pi sessions cannot launch or resume, and Pi's Agent SDK runtime stays unavailable.",
     remedy: {
       kind: "command",
       argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"],
@@ -446,6 +446,8 @@ export interface SetupRowView {
 export interface SetupChecksView {
   /** First installation only, never a repair of an existing or enabled integration. */
   piExtensionInstallAvailable?: boolean;
+  /** Positive health from the Pi extension probe; silence alone does not establish this. */
+  piExtensionReady?: boolean;
   rows: SetupRowView[];
   banner: SetupBannerView;
   /**

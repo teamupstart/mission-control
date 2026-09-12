@@ -336,7 +336,11 @@ Codex sessions to Agent SDK.
 Pi offers both runtimes and **still ships on Terminal**, which is now a decision rather than
 a gap: its managed runtime brings its own credential, project-trust and shell-isolation
 posture, and moving every existing Pi dispatch onto it without anyone looking would not be a
-kindness. Turn it on per harness when you want it. [What a managed Pi session does
+kindness. The Pi **Agent SDK** option stays disabled until **Settings → Setup** confirms both
+the global Pi CLI and a healthy Mission Control Pi extension. Setup offers the Pi package
+command and the extension installer; install both and re-check before turning the runtime on.
+Dispatch re-checks both prerequisites and refuses an SDK launch if either one later regresses.
+Turn it on per harness when you want it. [What a managed Pi session does
 differently](#what-a-managed-pi-session-does-differently) is below.
 
 The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch

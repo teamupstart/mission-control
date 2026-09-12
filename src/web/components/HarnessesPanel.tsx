@@ -12,7 +12,9 @@ import {
   resolveSessionRuntime,
   sdkRuntimeUnsupportedWhy,
 } from "@shared/harness-capabilities.ts";
+import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
+import type { SetupChecksView } from "@shared/setup-catalog.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import {
   ModelCatalogNotice,
@@ -147,6 +149,7 @@ function HarnessCard({
   onEffort,
   onRuntime,
   onTerminalBackend,
+  piSdkReady,
 }: {
   agent: AgentType;
   label: string;
@@ -160,6 +163,7 @@ function HarnessCard({
   onEffort: (level: ThinkingLevel | null) => void;
   onRuntime: (runtime: SessionRuntime) => void;
   onTerminalBackend: (backend: TerminalBackendId | null) => void;
+  piSdkReady: boolean;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const models = resolveModels(agent, model);
@@ -174,6 +178,7 @@ function HarnessCard({
   const resolved = runtime === null ? null : resolveSessionRuntime(agent, runtime);
   const resolvedTerminal = resolveTerminalBackend(terminalBackend);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
+  const piSdkBlocked = agent === "pi" && !piSdkReady;
   const runtimeNote =
     runtime === null
       ? `Loading saved runtime default for ${label}.`
@@ -255,7 +260,7 @@ function HarnessCard({
                 {/* The shipped default, and the runtime every in-app affordance is built
                     for. Named as recommended in the option itself because the card note is
                     only read AFTER a choice, so it cannot influence the one being made. */}
-                <option value="sdk">Agent SDK (recommended)</option>
+                <option value="sdk" disabled={piSdkBlocked}>Agent SDK (recommended)</option>
               </select>
             </Tooltip>
           </>
@@ -310,13 +315,37 @@ function HarnessCard({
             </strong>
           </>
         )}
+        {piSdkBlocked && (
+          <>
+            {" "}
+            <strong>
+              Install Pi and the Mission Control Pi extension in <a href="#/settings/setup">Setup</a>,
+              then re-check before enabling Agent SDK.
+            </strong>
+          </>
+        )}
       </p>
     </div>
   );
 }
 
-export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.Element {
+export function HarnessesPanel({
+  state,
+  setup = null,
+}: {
+  state: HarnessesState;
+  setup?: SetupChecksView | null;
+}): React.JSX.Element {
   const { config, update, error } = state;
+  const piSdkReady = piManagedRuntimeReady({
+    piCliInstalled: setup?.rows.some(
+      (row) =>
+        row.rowId.source === "dependency" &&
+        row.rowId.id === "pi-cli" &&
+        row.status.state === "satisfied",
+    ) ?? false,
+    piExtensionInstalled: setup?.piExtensionReady === true,
+  });
   // `config` is null only in the pre-poll instant; the switch reads on (its shipped
   // default) and disables until the first read lands, so a toggle can't race the fetch.
   const autoMode = config?.autoModeOnDispatch ?? true;
@@ -390,6 +419,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             terminalBackend={config?.terminalBackend[card.agent] ?? null}
             autoMode={autoMode}
             disabled={!config}
+            piSdkReady={piSdkReady}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}
             onEffort={(level) => void update({ defaultEffort: { [card.agent]: level } })}
             onRuntime={(runtime) => void update({ sessionRuntime: { [card.agent]: runtime } })}

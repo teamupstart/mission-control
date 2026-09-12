@@ -160,6 +160,7 @@ export async function environmentCheckViews(
         label: impl.label,
         warning: result.warning,
         detail: result.warning === null ? null : result.detail,
+        ...(typeof result.ready === "boolean" ? { ready: result.ready } : {}),
       };
     }),
   );

@@ -25,6 +25,7 @@ process.env.HARNESS_HOME = home;
 // A binary that exists, so bin resolution can never be what fails here.
 process.env.MISSION_CLAUDE_BIN = "/bin/echo";
 process.env.MISSION_CODEX_BIN = "/bin/echo";
+process.env.MISSION_PI_BIN = "/bin/echo";
 // No MCP bundle, which is what lets the terminal case below refuse a dispatch that
 // REQUIRES our tools - and refuse it while assembling the argv, before it would open a
 // terminal home. That matters more than it looks: a test that let the terminal path reach
@@ -54,6 +55,7 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env.MISSION_CLAUDE_BIN;
   delete process.env.MISSION_CODEX_BIN;
+  delete process.env.MISSION_PI_BIN;
   delete process.env.MISSION_MCP_SERVER;
 });
 
@@ -529,6 +531,54 @@ test("a build with no supervisor refuses the runtime rather than silently using 
   // Falling back to a terminal would launch a session whose behaviour is not the one the
   // operator configured, with nothing anywhere saying it happened.
   assert.match(task.error ?? "", /no session supervisor/);
+});
+
+test("a managed Pi dispatch refuses before provisioning when its extension is not ready", async () => {
+  const repo = seedRepo("pi-extension-missing-repo");
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-pi-extension", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+
+  await new Dispatcher(registry, async () => {}, {
+    supervisor,
+    piExtensionInstalled: async () => false,
+  }).dispatch("task-pi-extension");
+
+  const task = registry.getTask("task-pi-extension")!;
+  assert.equal(task.status, "failed");
+  assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi extension.*Settings.*Setup/i);
+  assert.equal(task.worktreePath, null);
+  assert.equal(supervisor.starts.length, 0);
+});
+
+test("a managed Pi dispatch refuses before provisioning when Pi is missing but its extension is ready", async () => {
+  const repo = seedRepo("pi-cli-missing-repo");
+  setHarnessesConfig({ sessionRuntime: { pi: "sdk" } });
+  const registry = new Registry();
+  registry.upsertTask(
+    mkTask({ id: "task-pi-cli", status: "dispatching", repoRoot: repo, agent: "pi", kind: "chat" }),
+  );
+  const supervisor = fakeSupervisor(registry);
+  const installed = process.env.MISSION_PI_BIN;
+  process.env.MISSION_PI_BIN = join(home, "missing-pi");
+
+  try {
+    await new Dispatcher(registry, async () => {}, {
+      supervisor,
+      piExtensionInstalled: async () => true,
+    }).dispatch("task-pi-cli");
+  } finally {
+    process.env.MISSION_PI_BIN = installed;
+  }
+
+  const task = registry.getTask("task-pi-cli")!;
+  assert.equal(task.status, "failed");
+  assert.match(task.error ?? "", /Pi Agent SDK requires.*Pi CLI.*Pi extension.*Settings.*Setup/i);
+  assert.equal(task.worktreePath, null);
+  assert.equal(supervisor.starts.length, 0);
 });
 
 test("a cancel landing mid-launch stops the driver it just started", async () => {

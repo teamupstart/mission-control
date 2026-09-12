@@ -97,6 +97,19 @@ test("one fresh PATH snapshot precedes the concurrent Setup probes", async () =>
   assert.equal(refreshes, 1);
 });
 
+test("Setup exposes positive Pi extension readiness for runtime gating", async () => {
+  const view = await setupChecksView(deps({
+    environmentChecks: async () => [{
+      id: "pi-extension",
+      label: "Pi extension",
+      warning: null,
+      detail: null,
+      ready: true,
+    }],
+  }));
+  assert.equal(view.piExtensionReady, true);
+});
+
 test("Node Setup checks the selected executable, shares the installer floor, and recovers", async () => {
   for (const version of ["18.20.0", "22.0.0", "23.11.0", "24.0.0", "26.0.0"]) {
     const status = await probe("node-runtime", {

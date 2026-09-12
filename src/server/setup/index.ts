@@ -426,6 +426,8 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   return {
     rows,
     piExtensionInstallAvailable: deps.canInstallPiExtension?.() ?? false,
+    piExtensionReady:
+      environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
   };

@@ -24,6 +24,7 @@ import {
   dispatchHasNoProvisionedResources,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
+import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { deriveTitle as deriveTaskTitle } from "@shared/title.ts";
 import { WORKTREES_DIR, envVar } from "./config.ts";
 import { resolveAgentBin } from "./harness/index.ts";
@@ -306,17 +307,28 @@ export class Dispatcher {
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
       const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence);
+      const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
-      const toolsAvailability = missionMcp
+      const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
+      const configured = resolveAgentBin(task.agent);
+      const agentBin = await resolveBinPath(configured);
+      const toolsAvailability = missionMcp || piManagedRuntime
         ? await missionToolsAvailability(task.agent, this.deps.piExtensionInstalled)
         : null;
-      // Before binary resolution, skill checks, base fetches and every worktree acquisition.
-      // This also covers older backlog rows and caller-declared requirements on ship tasks.
+      if (piManagedRuntime && !piManagedRuntimeReady({
+        piCliInstalled: agentBin !== null,
+        piExtensionInstalled: toolsAvailability?.available === true,
+      })) {
+        throw new Error(
+          "Pi Agent SDK requires an installed Pi CLI and a healthy Mission Control Pi extension. Open Settings > Setup, install both, and re-check.",
+        );
+      }
+      // Together with binary resolution, before skill checks, base fetches and every
+      // worktree acquisition. This also covers older backlog rows and caller-declared
+      // requirements on ship tasks.
       if (toolsAvailability && !toolsAvailability.available) {
         throw new Error(toolsAvailability.reason ?? "Required Mission Control tools are unavailable.");
       }
-      const configured = resolveAgentBin(task.agent);
-      const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
 
       // The branch and worktree take the git-safe slug.
@@ -333,7 +345,6 @@ export class Dispatcher {
       // refuse before any worktree exists - the same ordering, and the same reason, as the
       // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
       // session rather than the next restart, which is all the later position bought.
-      const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       // Resolved once beside the runtime, and only on the terminal arm. The exact choice is
       // persisted with the resulting home so a later settings edit cannot re-aim liveness or
       // teardown at a different backend.

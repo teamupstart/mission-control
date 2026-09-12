@@ -6,6 +6,7 @@
 
 import { contextBridge, ipcRenderer } from "electron";
 import type { UpdateSnapshot } from "../shared/update.ts";
+import type { UpdateDialogChoice, UpdateDialogRequest } from "../shared/update-dialog.ts";
 
 interface ProductIssueAuthorizationInput {
   requestId: string;
@@ -52,6 +53,19 @@ contextBridge.exposeInMainWorld("missionDesktop", {
       const listener = (_event: unknown, snapshot: UpdateSnapshot): void => cb(snapshot);
       ipcRenderer.on("mission:update-state", listener);
       return () => ipcRenderer.removeListener("mission:update-state", listener);
+    },
+    // Subscribing IS the announcement, and the order matters: the listener is attached
+    // first, then main is told a renderer can draw these, so anything still unanswered is
+    // re-offered into a listener that already exists. That is what makes a reload - which
+    // loses whatever modal was on screen - recoverable rather than a wedged update.
+    onDialog: (cb: (request: UpdateDialogRequest) => void): (() => void) => {
+      const listener = (_event: unknown, request: UpdateDialogRequest): void => cb(request);
+      ipcRenderer.on("mission:update-dialog", listener);
+      ipcRenderer.send("mission:update-dialog-ready");
+      return () => ipcRenderer.removeListener("mission:update-dialog", listener);
+    },
+    answerDialog: (id: string, choice: UpdateDialogChoice): void => {
+      ipcRenderer.send("mission:update-dialog-choice", { id, choice });
     },
   },
   // Report whether the Board is claiming ⌘0/⌘-/⌘= for its card jump shortcuts, so the

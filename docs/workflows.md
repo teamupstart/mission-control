@@ -1134,9 +1134,11 @@ behaviour: it compacts per submission and a preflight child reuses its parent's 
 when their intent fingerprints match. The LLM ledger records stable extraction as
 `context_compaction`, semantic claim mapping as `context_reconciliation`, and no call for
 deterministic reuse.
-The operator may instead continue through the run detail after entering a reason and acknowledging
-that Test Evidence Auditor can still reject the packet. That append-only override and the original
-gap result remain visible after activation and restart.
+The operator may instead use **Continue to review** in the run detail. The action explains that it
+sends the current packet to reviewers without resolving the evidence preflight gaps and that Test
+Evidence Auditor may still reject it. The click records a standard append-only operator decision;
+no separate reason or acknowledgement input is required. That override and the original gap result
+remain visible after activation and restart.
 
 One round may spend at most two consecutive `evidence_preflight` refinements. A third, whether the
 session staged it or the operator asked for it, is refused rather than reserved: the run blocks in

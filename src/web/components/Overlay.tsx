@@ -69,6 +69,10 @@ export const OVERLAY_IDS = {
   // key to the TOPMOST layer by token, and two surfaces sharing an id makes `onlyOpen` - the
   // "close my own overlay but stand down for everyone else's" guard - unable to tell them apart.
   workflowEvidenceImage: "workflow-evidence-image",
+  // The auto-updater's questions, which used to be drawn by the platform rather than by the
+  // app. Registered like any other confirm: while one is up the fleet's `k` and `r` must not
+  // reach the session behind it, and a native sheet was invisible to that guard entirely.
+  updateDialog: "update-dialog",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

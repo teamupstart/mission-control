@@ -11049,6 +11049,45 @@ select:not([multiple]) option:focus-visible {
   background: var(--panel-2);
 }
 
+/* ---- auto-update dialog ---- */
+/* The updater's seven questions, which the Electron shell used to ask through the platform's
+   own message box. Same measure and rhythm as the per-session confirms above: it is the same
+   kind of object - a confirm the app is waiting on - and a third width would read as a third
+   design. The tone class carries the accent only; the words come from `shared/update-dialog.ts`,
+   which is the one owner this modal and the dashboard banner both read. */
+.update-dialog {
+  width: min(520px, 100%);
+}
+.update-dialog-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+}
+.update-dialog-title {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fg);
+  /* The version number carries the whole headline, and a long release name must not push it
+     out of the panel. */
+  overflow-wrap: anywhere;
+}
+.update-dialog-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+  /* Release notes arrive as the release's own markdown. Keep the author's line breaks rather
+     than folding a changelog into one paragraph; `.modal-body` already scrolls a long one. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.update-dialog-error .update-dialog-title {
+  color: var(--danger);
+}
+.update-dialog-success .update-dialog-title {
+  color: var(--idle);
+}
+
 /* ---- complete-and-close / kill confirms ---- */
 /* Both share the reset dialog's measure and rhythm - they are the same kind of
    object (a per-session confirm), and three widths would read as three designs. */
@@ -18371,12 +18410,6 @@ button.wf-carried.is-link:focus-visible {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: color-mix(in srgb, var(--attention) 7%, transparent);
-}
-.wf-readiness-override label { display: grid; gap: 6px; }
-.wf-readiness-override textarea { min-height: 76px; resize: vertical; }
-.wf-readiness-override .wf-checkbox-label {
-  grid-template-columns: auto 1fr;
-  align-items: start;
 }
 
 

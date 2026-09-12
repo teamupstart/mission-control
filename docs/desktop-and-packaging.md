@@ -165,12 +165,30 @@ new version is built and verified the banner reads **ready to install** and offe
 Install**, which is the only part of an update that needs the app gone. That part takes seconds.
 
 Choose **Check for Updates…** from either the application menu or the tray for an immediate manual
-check. A native dialog reports that the app is current or offers the same **Update Now** and **Later**
-choice, then asks about the restart once the build finishes; accepting from the menu bar also
-reveals the dashboard, because that is where the progress is drawn. A manual check made while a
-build is running reports the stage it has reached rather than starting a second one. This native
-path remains available while the dashboard window is hidden. The app also checks after a short
-startup delay, every six hours with jitter, and once after returning from a long sleep.
+check. The shell reveals the dashboard and asks there, in a Mission Control modal: the app is
+current, or the same **Update Now** and **Later** choice, then the restart question once the build
+finishes. Revealing first is what makes that possible from the menu bar with the window hidden, and
+it is where the build's progress is drawn in any case. A manual check made while a build is running
+reports the stage it has reached rather than starting a second one. The app also checks after a
+short startup delay, every six hours with jitter, and once after returning from a long sleep.
+
+These questions used to be `dialog.showMessageBox` sheets. No platform sheet is left in this
+path: a second, unthemed auto-update surface is the thing this removed, not a fallback worth
+keeping. `src/shared/update-dialog.ts` owns the words, the tone and the buttons for all seven
+conversations, and the shell asks only through it.
+
+A question the dashboard cannot take - the renderer is still loading, or was destroyed while the
+question was on screen - settles as its own dismissal, which is the same answer as pressing
+**Later**. The updater already handles that outcome, so the release is offered again at the next
+check and the snapshot still reaches the banner. Settling rather than waiting is the point:
+`checkForUpdates()` awaits these, and an answer that can never arrive would wedge the update for
+the life of the process.
+
+The window is not moved to ask. Only the two places that moved it before still do: **preparing**
+reveals the dashboard before it reports, and accepting an available update reveals it because the
+build's progress is drawn there. The one addition is for a hidden window, which is where the old
+code showed a parentless sheet - with no sheet left, showing the window is what keeps that person
+asked at all.
 
 A build that has finished is kept if the person chooses **Later**, pinned to the release tag it was
 built from, so accepting it afterwards installs immediately instead of spending those minutes
@@ -212,8 +230,8 @@ failure that will still be there in six hours and that only the operator can cle
 or a lapsed `gh` credential - reaches the banner from a background check as well, because a
 condition nobody is ever told about is a condition nobody fixes. Everything that clears itself
 stays silent: a rate limit (which reads as a rate limit, not as a lapsed credential) and any other
-transient failure return to idle exactly as before. A background check still never opens a native
-dialog; only a manual check does.
+transient failure return to idle exactly as before. A background check still never opens a dialog;
+only a manual check does.
 
 Updates are deliberately inert in development, on Intel Macs, without a managed-install receipt,
 without a system Node.js binary, or when `--from-origin` installed a non-canonical repository. A
@@ -268,7 +286,7 @@ and the failed bundle stays beside the installed app. The operator whose state d
 broken to hold a second copy is exactly the one who must not lose the first.
 
 The result is stored in the versioned `update-outcome.json` marker. On the next launch, the
-native dialog and dashboard banner report a safe success or failure summary; a failure is
+update modal and dashboard banner report a safe success or failure summary; a failure is
 therefore visible without opening the local log. **Retry** runs a fresh check, while **Dismiss**
 hides that result until update state changes. Diagnostic output remains only in the rotating
 `update.log` in the state directory, with credentials, absolute paths, and remote URLs redacted

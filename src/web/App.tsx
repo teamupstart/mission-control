@@ -145,7 +145,9 @@ import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
+import { useUpdateDialog } from "./useUpdateDialog.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
+import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
@@ -310,6 +312,9 @@ interface TourBinding {
 
 export function App(): React.JSX.Element {
   const desktopUpdates = useDesktopUpdates();
+  // The updater's own questions. The banner reports state the operator can act on at their
+  // leisure; this is the shell asking one it is waiting on an answer to.
+  const updateDialog = useUpdateDialog();
   const {
     sessions,
     restoringSessions,
@@ -3558,6 +3563,7 @@ export function App(): React.JSX.Element {
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}
         />
+        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} />
         <SettingsRestoredBanner
           event={settingsRestoreNotice}
           onReload={() => window.location.reload()}

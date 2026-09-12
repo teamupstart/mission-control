@@ -18372,12 +18372,6 @@ button.wf-carried.is-link:focus-visible {
   border-radius: 10px;
   background: color-mix(in srgb, var(--attention) 7%, transparent);
 }
-.wf-readiness-override label { display: grid; gap: 6px; }
-.wf-readiness-override textarea { min-height: 76px; resize: vertical; }
-.wf-readiness-override .wf-checkbox-label {
-  grid-template-columns: auto 1fr;
-  align-items: start;
-}
 
 
 @media (max-width: 620px) {

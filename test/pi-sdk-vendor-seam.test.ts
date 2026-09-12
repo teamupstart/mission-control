@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,6 +35,46 @@ const { piVariables, PI_SESSION_VARIABLES } = await import(
 );
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
+
+test("the real Pi loader cannot execute local extension factories before trust allows them", async () => {
+  const sdk = await defaultPiSdkDeps.load();
+  for (const allow of [false, true]) {
+    const cwd = checkout(`factory-${allow}`, true);
+    const marker = join(cwd, "factory-ran");
+    mkdirSync(join(cwd, ".pi", "extensions"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "extensions", "probe.ts"),
+      `import { writeFileSync } from 'node:fs';\nexport default function(pi) { writeFileSync(${JSON.stringify(marker)}, 'loaded'); pi.on('session_start', async (_event, ctx) => { const value = await ctx.ui.input('startup question'); ctx.ui.notify('answered: ' + value); }); }\n`);
+    let release!: (allow: boolean) => void;
+    let entered!: () => void;
+    const decision = new Promise<boolean>((resolve) => { release = resolve; });
+    const gated = new Promise<void>((resolve) => { entered = resolve; });
+    const creating = sdk.createRuntime({
+      cwd, sessionPath: null, model: null, thinkingLevel: null,
+      appendSystemPrompt: [], toolEnv: { PATH: process.env.PATH ?? "" },
+      projectTrust: () => { entered(); return decision; },
+    });
+    await gated;
+    assert.equal(existsSync(marker), false);
+    sdk.setProjectTrust(cwd, allow);
+    assert.equal(sdk.projectTrust(cwd), allow);
+    release(allow);
+    const runtime = await creating;
+    try {
+      assert.equal(existsSync(marker), allow);
+      const { PiUIBridge } = await import("../src/server/harness/pi/sdk-ui.ts");
+      let requested = false;
+      const ui = new PiUIBridge((event) => {
+        if (event.kind === "request") {
+          requested = true;
+          ui.answer(event.request.id, { kind: "form", answers: [{ question: "startup question", labels: [], text: "safe fixture" }] });
+        }
+      }, () => {});
+      await runtime.session.bindExtensions(ui);
+      assert.equal(requested, allow, "the startup handler receives the host UI before it runs");
+      ui.close();
+    } finally { await runtime.dispose(); }
+  }
+});
 
 /** A checkout the vendor will accept as a cwd. */
 function checkout(name: string, withProjectPi = false): string {
@@ -99,7 +139,7 @@ test("a real runtime is built, writes Pi's own session file, and disposes", asyn
     sessionPath: null,
     model: null,
     thinkingLevel: null,
-    trusted: false,
+    projectTrust: false,
     appendSystemPrompt: ["a standing instruction"],
     toolEnv: { PATH: process.env.PATH ?? "" },
   });
@@ -147,7 +187,7 @@ test("a model Pi does not offer is refused by the seam, before anything is creat
         sessionPath: null,
         model: { provider: "amazon-bedrock", id: "no.such-model-v9:0" },
         thinkingLevel: null,
-        trusted: false,
+        projectTrust: false,
         appendSystemPrompt: [],
         toolEnv: {},
       }),
@@ -185,7 +225,7 @@ test("reopening a stored conversation takes the exact file, and a missing one re
     sessionPath: path,
     model: null,
     thinkingLevel: null,
-    trusted: false,
+    projectTrust: false,
     appendSystemPrompt: [],
     toolEnv: {},
   });
@@ -203,7 +243,7 @@ test("reopening a stored conversation takes the exact file, and a missing one re
         sessionPath: join(cwd, "definitely-not-a-session.jsonl"),
         model: null,
         thinkingLevel: null,
-        trusted: false,
+        projectTrust: false,
         appendSystemPrompt: [],
         toolEnv: {},
       }),

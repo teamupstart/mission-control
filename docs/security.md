@@ -21,6 +21,12 @@ attributes and discards the rest before anything is written, so none of it reach
 database. Session and task
 actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.
 
+Managed Pi project trust uses this same local control boundary. The shared answer flow
+refuses trust answers attributed to Foreman; its `by` field records the cooperating caller,
+not an authenticated human identity. It does not isolate trust from other code running as
+the operator's OS user, which can also modify Pi's own trust store directly. Pi remains the
+sole owner of that store.
+
 Two subsystems act outside this machine, and both are off until you separately arm them
 and name the repositories they may act in: the [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review),
 which comments on pull requests under your GitHub account, and

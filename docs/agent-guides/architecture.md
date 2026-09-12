@@ -83,6 +83,14 @@ their transient lifetime, while `Registry.sessions` remains the sole real-sessio
 
 Discovery's unseen-session loop applies only to `runtime === "terminal"`. A missing terminal process says nothing about an SDK session.
 
+Managed Pi may yield its SDK handle while startup awaits project trust or an extension's
+`session_start` question. The supervisor still owns adoption, event pumping, and eviction.
+Pi's adapter keeps only bounded in-memory question resolvers; shared request ids correlate
+browser and Foreman answers. Replacement retires the old UI context and binds the new one
+before its extensions start. Pi's public trust store owns allow/deny, and its resource loader
+awaits that decision before enabling checkout-local executable resources. No Mission trust
+table or separate Pi question lifecycle exists.
+
 ## A session going away
 
 Both terminal and SDK sessions leave through `Registry.beginEviction`:

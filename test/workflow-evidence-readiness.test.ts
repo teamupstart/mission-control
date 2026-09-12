@@ -18,13 +18,15 @@ const {
 const {
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  classifyWorkflowCoverageCitation,
   evaluateWorkflowEvidenceReadiness,
+  workflowCoverageCitationAllowsText,
   workflowEvidenceReadinessPolicyEnforces,
   workflowEvidenceMissingRoleGaps,
   workflowEvidenceRequiredRoleGroups,
   workflowCommandEvidenceContent,
 } = await import("../src/shared/workflow.ts");
-const { compactWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { compactWorkflowContext, reconcileWorkflowCriterionMappings } = await import("../src/server/workflows/context.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 
 const command = {
@@ -507,7 +509,7 @@ test("source compaction semantically maps differently worded coverage outside st
   }).status, "ready");
 });
 
-test("source compaction fails closed when one claim is proposed for multiple criteria", async () => {
+test("one claim proposed for several criteria covers each of them", async () => {
   const claim = {
     clientCriterionId: "shared-source-claim",
     criterion: "The material workflow outcome is verified",
@@ -585,8 +587,22 @@ test("source compaction fails closed when one claim is proposed for multiple cri
     coverage: [claim],
     evidence,
   });
-  assert.equal(readiness.status, "gaps");
-  assert.deepEqual(readiness.gapCodes, ["ambiguous_mapping"]);
+  /*
+   * One claim answering two criteria is the proof a compliant author would have written as two
+   * claims linking one item, which coverage has always allowed. Discarding it proved nothing
+   * and cost the criterion it did answer every one of its links.
+   */
+  assert.equal(readiness.status, "ready");
+  assert.deepEqual(readiness.gapCodes, []);
+  assert.deepEqual(
+    readiness.criteria.map((criterion) => criterion.matchedClientCriterionId),
+    [claim.clientCriterionId, claim.clientCriterionId],
+  );
+  assert.deepEqual(
+    readiness.criteria.map((criterion) => criterion.links.length),
+    [1, 1],
+    "the claim's evidence reaches both criteria rather than being dropped from both",
+  );
 
   const duplicateMappings = (context.canonicalCriteria ?? []).map((criterion) => ({
     criterionId: criterion.id,
@@ -597,7 +613,27 @@ test("source compaction fails closed when one claim is proposed for multiple cri
     criterionMappings: duplicateMappings,
     coverage: [claim],
     evidence,
-  }).gapCodes, ["ambiguous_mapping"]);
+  }).gapCodes, []);
+
+  /*
+   * The other direction stays a gap, and names what contests the criterion. Two claims on one
+   * criterion cannot both supply its single `authorProofClass`, so there is nothing to pick.
+   */
+  const second = { ...claim, clientCriterionId: "second-claim" };
+  const contested = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    criterionMappings: [{
+      criterionId: (context.canonicalCriteria ?? [])[0]!.id,
+      matchedClientCriterionIds: [claim.clientCriterionId, second.clientCriterionId],
+    }],
+    coverage: [claim, second],
+    evidence,
+  });
+  assert.deepEqual(contested.gapCodes, ["ambiguous_mapping", "missing_coverage"]);
+  assert.deepEqual(
+    contested.criteria[0]?.contestedClientCriterionIds,
+    [claim.clientCriterionId, second.clientCriterionId].sort(),
+  );
 });
 
 test("coverage stages idempotently and freezes with the submission", async () => {
@@ -650,7 +686,14 @@ test("coverage stages idempotently and freezes with the submission", async () =>
     bytes: Buffer.byteLength(inlineContent),
     sha256: (await import("node:crypto")).createHash("sha256").update(inlineContent).digest("hex"),
   };
-  const claim = { ...focusedClaim, id: "staged-claim", sourceRoot: "/repo" };
+  // Carrying the canonical id the author was told, so the whole lifecycle is pinned: staged,
+  // reserved, frozen with the submission, and read back beside the claim it belongs to.
+  const claim = {
+    ...focusedClaim,
+    id: "staged-claim",
+    sourceRoot: "/repo",
+    criterionId: "criterion-1-aaaa",
+  };
   assert.throws(
     () => store.stageWorkflowEvidence("missing-command-status", [{
       ...item,
@@ -683,7 +726,10 @@ test("coverage stages idempotently and freezes with the submission", async () =>
       now: 4,
     },
   );
-  assert.deepEqual(store.listSubmissionCoverage(created.submission.id), [focusedClaim]);
+  assert.deepEqual(
+    store.listSubmissionCoverage(created.submission.id),
+    [{ ...focusedClaim, criterionId: "criterion-1-aaaa" }],
+  );
   assert.equal(
     (store.listReservedWorkflowEvidence(created.submission.id)[0] as { commandExitCode?: number })
       ?.commandExitCode,
@@ -708,4 +754,292 @@ test("coverage stages idempotently and freezes with the submission", async () =>
       .get() as { count: number }).count,
     0,
   );
+});
+
+test("a criterion id that names nothing is refused rather than matched by prose", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The dashboard result is visually correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  const stale = {
+    clientCriterionId: "themed-modals",
+    // Text that WOULD have matched, which is what makes the fallback dangerous rather than
+    // merely useless: prose matching would bind a claim whose author said something else.
+    criterion: "The dashboard result is visually correct",
+    criterionId: "criterion-1-from-another-run",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [{ clientItemId: "run-output", role: "execution" as const }],
+  };
+  const mappings = reconcileWorkflowCriterionMappings(canonical, [stale]);
+  assert.deepEqual(
+    mappings.map((mapping) => mapping.matchedClientCriterionIds),
+    [[]],
+    "a refused citation is not quietly downgraded to the text owner",
+  );
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    criterionMappings: mappings,
+    coverage: [stale],
+    evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
+  });
+  assert.equal(readiness.status, "gaps");
+  assert.deepEqual(readiness.gapCodes, ["missing_coverage", "unknown_criterion_id"]);
+  assert.deepEqual(readiness.rejectedCitations, [{
+    clientCriterionId: "themed-modals",
+    criterionId: "criterion-1-from-another-run",
+  }]);
+
+  // A citation that resolves stays authoritative, and reports nothing.
+  const resolved = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    criterionMappings: reconcileWorkflowCriterionMappings(canonical, [{
+      ...stale,
+      criterionId: "criterion-1-aaaa",
+    }]),
+    coverage: [{ ...stale, criterionId: "criterion-1-aaaa" }],
+    evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
+  });
+  assert.equal(resolved.status, "ready");
+  assert.equal(resolved.rejectedCitations, undefined);
+});
+
+test("a carried claim's stale citation is not a refusal its author cannot withdraw", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The dashboard result is visually correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  // Frozen by an ancestor submission, citing an id this run does not carry. The author of the
+  // repair in front of us never wrote it and has no way to take it back.
+  const carried = {
+    clientCriterionId: "ancestor-claim",
+    criterion: "The dashboard result is visually correct",
+    criterionId: "criterion-1-from-another-run",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [{ clientItemId: "run-output", role: "execution" as const }],
+    inheritedFromSubmissionId: "submission-parent",
+  };
+  const mappings = reconcileWorkflowCriterionMappings(canonical, [carried]);
+  assert.deepEqual(
+    mappings.map((mapping) => mapping.matchedClientCriterionIds),
+    [["ancestor-claim"]],
+    "a carried claim still answers for its criterion through its text",
+  );
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    criterionMappings: mappings,
+    coverage: [carried],
+    evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
+  });
+  assert.equal(readiness.status, "ready");
+  assert.equal(readiness.rejectedCitations, undefined);
+});
+
+test("one classifier owns what a citation means, and every path reads it", () => {
+  const ids = new Set(["criterion-1-aaaa"]);
+  const claim = (
+    criterionId: string | null,
+    inherited?: string,
+  ): Parameters<typeof classifyWorkflowCoverageCitation>[0] => ({
+    ...(criterionId ? { criterionId } : {}),
+    ...(inherited ? { inheritedFromSubmissionId: inherited } : {}),
+  });
+
+  assert.equal(classifyWorkflowCoverageCitation(claim(null), ids), "absent");
+  assert.equal(classifyWorkflowCoverageCitation(claim("criterion-1-aaaa"), ids), "resolved");
+  assert.equal(classifyWorkflowCoverageCitation(claim("criterion-9-zzzz"), ids), "rejected");
+  assert.equal(
+    classifyWorkflowCoverageCitation(claim("criterion-9-zzzz", "submission-parent"), ids),
+    "inherited_unresolved",
+  );
+  // A resolved citation is authoritative wherever it was carried from.
+  assert.equal(
+    classifyWorkflowCoverageCitation(claim("criterion-1-aaaa", "submission-parent"), ids),
+    "resolved",
+  );
+
+  /*
+   * Text matching and the model's question are the same set, which is the invariant that
+   * keeps the three paths from drifting: a claim the mapping refuses can never be handed to
+   * semantic inference, and a claim the mapping binds is never asked about twice.
+   */
+  assert.deepEqual(
+    (["absent", "resolved", "rejected", "inherited_unresolved"] as const)
+      .filter(workflowCoverageCitationAllowsText),
+    ["absent", "inherited_unresolved"],
+  );
+});
+/**
+ * The repair `coverage_reserved` instructs, evaluated.
+ *
+ * A reserved claim cannot be amended, so an author who must add a missing proof role has exactly
+ * one move: re-register under a new criterion id. Both claims then bridge to the same canonical
+ * criterion on identical text, and before this rule that produced `ambiguous_mapping` - a gap no
+ * further registration could close. The instruction wedged the run it was trying to unwedge.
+ */
+const trustCriterion = "Error message includes a direct link to Trust panel settings";
+const trustCanonical = [{
+  id: "ac-trust",
+  text: trustCriterion,
+  material: true,
+  suggestedProofClass: null,
+}];
+const trustEvidence = ["png-r1", "png-r2", "suite-run"].map((id) => ({
+  clientItemId: id,
+  evidenceId: `${id}-evidence`,
+  repositoryScope: "all" as const,
+}));
+function trustClaim(
+  clientCriterionId: string,
+  links: Array<{ clientItemId: string; role: "rendered_output" | "execution" }>,
+  criterion = trustCriterion,
+) {
+  return {
+    clientCriterionId,
+    criterion,
+    proofClass: "visual" as const,
+    repositoryScope: "all" as const,
+    links,
+  };
+}
+type TrustClaim = ReturnType<typeof trustClaim> & { inheritedFromSubmissionId?: string };
+/** Through the real text bridge, so the test proves the path the daemon actually takes. */
+function trustReadiness(coverage: TrustClaim[]) {
+  return evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: trustCanonical,
+    criterionMappings: reconcileWorkflowCriterionMappings(trustCanonical, coverage),
+    coverage,
+    evidence: trustEvidence,
+  });
+}
+
+test("a complete replacement supersedes the incomplete claim it was told to replace", () => {
+  const incomplete = trustClaim("ac-trust-link", [
+    { clientItemId: "png-r1", role: "rendered_output" },
+  ]);
+  const replacement = trustClaim("ac-trust-link-v2", [
+    { clientItemId: "png-r2", role: "rendered_output" },
+    { clientItemId: "suite-run", role: "execution" },
+  ]);
+  assert.deepEqual(
+    trustReadiness([incomplete]).gapCodes,
+    ["missing_execution"],
+    "the reserved claim on its own is one role short of `visual`",
+  );
+  const readiness = trustReadiness([incomplete, replacement]);
+  assert.deepEqual(readiness.gapCodes, [], "and the replacement closes it rather than colliding");
+  assert.equal(readiness.status, "ready");
+  assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "ac-trust-link-v2");
+  assert.deepEqual(
+    readiness.criteria[0]?.links.map((link) => link.role).sort(),
+    ["execution", "rendered_output"],
+    "the selected claim's own proof is what the criterion reports",
+  );
+});
+
+test("supersession never picks between two claims a person has to settle", () => {
+  const complete = (id: string) => trustClaim(id, [
+    { clientItemId: "png-r2", role: "rendered_output" },
+    { clientItemId: "suite-run", role: "execution" },
+  ]);
+  assert.deepEqual(
+    trustReadiness([complete("ac-one"), complete("ac-two")]).gapCodes,
+    ["ambiguous_mapping"],
+    "two claims that both satisfy their class are a real choice between author statements",
+  );
+  assert.deepEqual(
+    trustReadiness([
+      trustClaim("ac-one", [{ clientItemId: "png-r1", role: "rendered_output" }]),
+      trustClaim("ac-two", [{ clientItemId: "png-r2", role: "rendered_output" }]),
+    ]).gapCodes.includes("ambiguous_mapping"),
+    true,
+    "and two incomplete ones resolve nothing, so the mapping stays ambiguous",
+  );
+  const reworded = trustReadiness([
+    trustClaim("ac-one", [{ clientItemId: "png-r1", role: "rendered_output" }]),
+    trustClaim(
+      "ac-two",
+      [
+        { clientItemId: "png-r2", role: "rendered_output" },
+        { clientItemId: "suite-run", role: "execution" },
+      ],
+      "The error message links somewhere useful",
+    ),
+  ]);
+  assert.deepEqual(
+    reworded.criteria[0]?.matchedClientCriterionId,
+    "ac-one",
+    "differing wording is two assertions, so the text bridge never matched the reworded one",
+  );
+  assert.deepEqual(reworded.gapCodes, ["missing_execution"]);
+});
+
+test("a carried claim still loses to a declaration, superseding or not", () => {
+  const readiness = trustReadiness([
+    { ...trustClaim("ac-carried", [{ clientItemId: "png-r1", role: "rendered_output" }]), inheritedFromSubmissionId: "sub-1" },
+    trustClaim("ac-declared", [
+      { clientItemId: "png-r2", role: "rendered_output" },
+      { clientItemId: "suite-run", role: "execution" },
+    ]),
+  ]);
+  assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "ac-declared");
+  assert.deepEqual(readiness.gapCodes, []);
+});
+
+test("a refused citation is a run-level gap, never one a criterion carries", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The behaviour is correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  const evidence = [{
+    clientItemId: "run-output",
+    evidenceId: "evidence-1",
+    repositoryScope: "all" as const,
+  }];
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    // The criterion is answered, so its own gaps are empty and only the citation is wrong.
+    criterionMappings: [{ criterionId: "criterion-1-aaaa", matchedClientCriterionIds: ["good"] }],
+    coverage: [
+      {
+        clientCriterionId: "good",
+        criterion: "The behaviour is correct",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        links: [{ clientItemId: "run-output", role: "execution" as const }],
+      },
+      {
+        clientCriterionId: "stale",
+        criterion: "Cites a criterion of some other run",
+        criterionId: "criterion-1-elsewhere",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        links: [{ clientItemId: "run-output", role: "execution" as const }],
+      },
+    ],
+    evidence,
+  });
+  /*
+   * A refused citation belongs to no criterion, which is what makes it refused, so it is a gap
+   * of the run rather than of a criterion. The repair packet renders it from its own section;
+   * `READINESS_ACTIONS.unknown_criterion_id` is unreachable from the per-criterion loop and
+   * says so. If this ever starts arriving on a criterion's `gaps`, that text becomes live and
+   * has to be wired deliberately rather than inherited.
+   */
+  assert.ok(readiness.gapCodes.includes("unknown_criterion_id"));
+  for (const criterion of readiness.criteria) {
+    assert.ok(
+      !criterion.gaps.includes("unknown_criterion_id"),
+      `criterion ${criterion.criterionId} carried a run-level gap`,
+    );
+  }
+  assert.deepEqual(readiness.criteria[0]?.gaps, []);
+  assert.equal(readiness.status, "gaps");
 });

@@ -318,10 +318,7 @@ test("a provider error is redacted at the vendor seam, before it can be stored a
   assert.equal((message ?? "").split(REDACTED).length - 1, 2);
 });
 
-test("the vendor seam carries no tool OUTPUT, because nothing here reads one", () => {
-  // The projection used to lift a tool's text out for `gh pr create` evidence. That reader
-  // is gone with the provenance it served, so the field is gone too rather than left as an
-  // unread payload crossing the seam every tool call.
+test("the vendor seam carries only parsed PR URLs, never arbitrary tool output", () => {
   const end = narrowPiEvent({
     type: "tool_execution_end",
     toolCallId: "t",
@@ -334,5 +331,6 @@ test("the vendor seam carries no tool OUTPUT, because nothing here reads one", (
     toolCallId: "t",
     toolName: "bash",
     isError: false,
+    prUrls: [],
   });
 });

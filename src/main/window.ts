@@ -12,6 +12,20 @@ import { isQuitting } from "./lifecycle.ts";
 
 let win: BrowserWindow | null = null;
 
+/**
+ * Told when the window - and with it the renderer - is destroyed.
+ *
+ * One subscriber today: the update dialog presenter, which is holding promises the updater
+ * awaits. A renderer that goes away while a question is on screen would otherwise leave
+ * `checkForUpdates()` waiting for an answer that can never arrive, which wedges the update
+ * for the life of the process. Listeners are permanent, because so are their owners.
+ */
+const closedListeners = new Set<() => void>();
+
+export function onMainWindowClosed(listener: () => void): void {
+  closedListeners.add(listener);
+}
+
 // The window has no native title bar, so the topbar doubles as one and gives up
 // its left edge to the traffic lights. Open at a comfortable desktop size; the
 // topbar's container-query ladder handles narrower half-screen windows without
@@ -115,6 +129,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
   });
   win.on("closed", () => {
     win = null;
+    for (const listener of closedListeners) listener();
   });
 
   return win;

@@ -140,15 +140,21 @@ one is `Latest`.
 ### 4. Verify the manual path
 
 **Check for Updates…** from the application menu, and again from the tray. Both call the same
-seam. Confirm the native dialog offers **Update Now** and **Later**, and that **Later** dismisses
-it without applying. Accepting from either place should also reveal the dashboard window, because
-the build's progress is drawn there, and should ask about the restart in a second dialog once the
-build finishes. A **Check for Updates…** issued while that build is running must report the stage
-it has reached rather than starting a second build.
+seam. Both ask in a Mission Control modal on the app's own panel rather than a platform sheet.
+Run it once with the window already up, where it must not move the window, and once with the
+window hidden, where it is revealed because that is the only way the modal reaches anyone.
+Confirm it offers **Update Now** and **Later**,
+that **Later** dismisses it without applying, and that the restart question arrives in a second
+modal once the build finishes. A **Check for Updates…** issued while that build is running must
+report the stage it has reached rather than starting a second build.
 
-This step needs a real click. The dialog is a native `dialog.showMessageBox`, not DOM, so it is
-unreachable from the remote debugging port, and driving the menu with `osascript` requires
-Accessibility permission for the calling process.
+This step still needs a real click, for the menu rather than for the dialog: driving the
+application menu or the tray with `osascript` requires Accessibility permission for the calling
+process. The modal itself is ordinary DOM and can be inspected and clicked through the remote
+debugging port below. There is no platform sheet left in this path, so a grey system dialog
+appearing here is a real finding. No dialog at all, with the window already up, is the other one:
+a question the dashboard cannot take settles as **Later**, so check the update log and whether
+the renderer loaded.
 
 ### 5. Verify the background path
 
@@ -244,9 +250,11 @@ buttons and can be clicked this way, and `Page.captureScreenshot` gives a clean 
 without needing focus - including, now, of the progress bar mid-build, which is the one part of an
 update a person used to have no way to see.
 
-What this cannot reach: the native dialogs, the application menu, and the tray. `updates.check()`
-is *not* the manual path - `mission:update-check` calls `check(true)` only, while the menu item
-calls `checkForUpdates()`, which is what drives the dialogs. Step 4 is a genuine human step.
+What this cannot reach: the application menu and the tray. `updates.check()` is *not* the manual
+path - `mission:update-check` calls `check(true)` only, while the menu item calls
+`checkForUpdates()`, which is what drives the dialogs. Step 4 is a genuine human step for that
+reason; the modal it opens, unlike the platform sheet it replaced, is visible to this port once
+it is up.
 
 Note that the CDP port must be free at launch; a just-killed previous instance can still hold it,
 and Electron logs `bind() failed: Address already in use` and starts with **no** debugging port

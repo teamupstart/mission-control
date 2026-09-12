@@ -979,6 +979,14 @@ server.registerTool(
             `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
           )
           .describe("The material acceptance criterion the linked evidence is intended to prove."),
+        criterionId: z.string().min(1).max(200).optional()
+          .describe(
+            "The workflow's own criterion id, copied exactly from an evidence preflight repair"
+            + " message. Supplying it binds this claim to that criterion with no text matching."
+            + " An id that matches no criterion of the run is refused by name in the next repair"
+            + " message and the claim is matched by nothing, including its own text, so omit the"
+            + " field entirely when no repair message has named the criteria.",
+          ),
         proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES)
           .describe("The author's proof class, which selects deterministic required evidence roles."),
         repositoryScope: z.union([
@@ -987,7 +995,13 @@ server.registerTool(
         ]).describe("An issued repository slot such as repo-01, or all."),
         links: z.array(z.object({
           clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
-            .describe("A staged evidence client item id."),
+            // "Staged" read as a restriction to this call's tray, which it never was: a claim may
+            // cite evidence an earlier round registered, and in a repair round that is usually the
+            // point. Saying so is the difference between re-proving work and re-running a suite.
+            .describe(
+              "An evidence client item id registered in this call or an earlier one, including"
+                + " one an earlier submission already froze.",
+            ),
           role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES)
             .describe("How this evidence item contributes to the criterion."),
         })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim).refine(

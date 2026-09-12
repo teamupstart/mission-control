@@ -1627,6 +1627,7 @@ const WorkflowEvidenceCoverageStagingRowSchema = z.object({
   note_key: nonempty,
   client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
   criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+  criterion_id: nullableText.optional().default(null),
   proof_class: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
   source_root: nonempty,
@@ -1659,13 +1660,16 @@ export function parseWorkflowEvidenceCoverageStagingRow(
     WorkflowEvidenceCoverageStagingRowSchema,
     value,
   );
-  return { ...row, episode_key: row.episode_key ?? null };
+  return { ...row, episode_key: row.episode_key ?? null, criterion_id: row.criterion_id ?? null };
 }
 
 function coverageClaimFromRow(row: WorkflowEvidenceCoverageStagingRow): WorkflowEvidenceCoverageClaim {
   return WorkflowEvidenceCoverageClaimSchema.parse({
     clientCriterionId: row.client_criterion_id,
     criterion: row.criterion,
+    // Spread rather than a null, for the same reason carry provenance is: a claim that cited
+    // no criterion is shaped exactly as it was before this field existed.
+    ...(row.criterion_id ? { criterionId: row.criterion_id } : {}),
     proofClass: row.proof_class,
     repositoryScope: row.repository_scope,
     links: parseJson(
@@ -1685,6 +1689,7 @@ const WorkflowSubmissionCoverageRowSchema = z.object({
   staging_id: nonempty,
   client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
   criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+  criterion_id: nullableText.optional().default(null),
   proof_class: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
   links_json: nonempty,
@@ -1703,6 +1708,7 @@ function submissionCoverageClaimFromRow(value: unknown): WorkflowEvidenceCoverag
   return WorkflowEvidenceCoverageClaimSchema.parse({
     clientCriterionId: row.client_criterion_id,
     criterion: row.criterion,
+    ...(row.criterion_id ? { criterionId: row.criterion_id } : {}),
     proofClass: row.proof_class,
     repositoryScope: row.repository_scope,
     links: parseJson(
@@ -5195,7 +5201,10 @@ export class WorkflowStore {
           throw new WorkflowImageEvidenceError(
             "evidence_reserved",
             `Workflow evidence item ${item.clientItemId} is already reserved`
-              + " and its content changed. Register the new content under a new id.",
+              + " and its content changed. Register the new content under a new id."
+              + " A claim that cited the old id needs re-registering under a new criterion id"
+              + " pointing at the new one; keep its criterion text identical so it supersedes"
+              + " the claim it replaces.",
           );
         }
         changedItems.push(item);
@@ -5221,7 +5230,10 @@ export class WorkflowStore {
           throw new WorkflowImageEvidenceError(
             "coverage_reserved",
             `Workflow coverage claim ${claim.clientCriterionId} is already reserved`
-              + " and its content changed. Register the new claim under a new criterion id.",
+              + " and its content changed. Register the new claim under a new criterion id,"
+              + " keeping its criterion text identical to the reserved one: a replacement whose"
+              + " proof satisfies its declared class supersedes the claim it replaces. Its links"
+              + " may cite evidence an earlier submission already froze.",
           );
         }
         changedCoverage.push(claim);
@@ -5481,12 +5493,13 @@ export class WorkflowStore {
       }
       const writeCoverage = this.db.prepare(
         `INSERT INTO workflow_evidence_coverage_staging (
-           id, note_key, client_criterion_id, criterion, proof_class, repository_scope,
-           source_root, links_json, episode_key, generation, state, reserved_group_key,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+           id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+           repository_scope, source_root, links_json, episode_key, generation, state,
+           reserved_group_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
            criterion = excluded.criterion,
+           criterion_id = excluded.criterion_id,
            proof_class = excluded.proof_class,
            repository_scope = excluded.repository_scope,
            source_root = excluded.source_root,
@@ -5504,6 +5517,7 @@ export class WorkflowStore {
           noteKey,
           claim.clientCriterionId,
           claim.criterion,
+          claim.criterionId ?? null,
           claim.proofClass,
           claim.repositoryScope,
           claim.sourceRoot,
@@ -6133,10 +6147,10 @@ export class WorkflowStore {
     );
     const freezeCoverage = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
-         submission_id, staging_id, client_criterion_id, criterion, proof_class,
+         submission_id, staging_id, client_criterion_id, criterion, criterion_id, proof_class,
          repository_scope, links_json, inherited_from_submission_id, generation,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const coverageRows = this.db.prepare(
       `SELECT * FROM workflow_submission_evidence_coverage WHERE submission_id = ?`,
@@ -6238,6 +6252,7 @@ export class WorkflowStore {
         row.staging_id,
         claim.clientCriterionId,
         claim.criterion,
+        claim.criterionId ?? null,
         claim.proofClass,
         claim.repositoryScope,
         JSON.stringify(links),
@@ -10660,9 +10675,9 @@ export class WorkflowStore {
     );
     const freezeCoverage = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
-         submission_id, staging_id, client_criterion_id, criterion, proof_class,
+         submission_id, staging_id, client_criterion_id, criterion, criterion_id, proof_class,
          repository_scope, links_json, generation, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of coverageRows) {
       const claim = coverageClaimFromRow(row);
@@ -10680,6 +10695,13 @@ export class WorkflowStore {
        * So the claim stays in the tray where it is visible and repairable, and the submission
        * proceeds carrying only the claims whose proof it actually holds. `evaluateWorkflowEvidenceReadiness`
        * reads the frozen set, so an unfrozen claim reads as the uncovered criterion it is.
+       *
+       * This pass is NOT the last word on it. A claim can also reach here citing evidence an
+       * ancestor submission reserved, which is inapplicable now and applicable a moment later,
+       * because `inheritSubmissionEvidence` has not run yet - a refinement child reserves under
+       * its own group key, so nothing its parent holds is applicable until the carry lands.
+       * `freezeDeferredSubmissionCoverage` re-asks this question once it has, and is what stops
+       * a repair the author was explicitly instructed to make from vanishing without a trace.
        */
       const coherent = claim.links.every((link) => {
         const item = applicableItems.get(link.clientItemId);
@@ -10698,6 +10720,7 @@ export class WorkflowStore {
         row.id,
         claim.clientCriterionId,
         claim.criterion,
+        claim.criterionId ?? null,
         claim.proofClass,
         claim.repositoryScope,
         JSON.stringify(claim.links),
@@ -10706,6 +10729,170 @@ export class WorkflowStore {
         row.updated_at,
       );
     }
+  }
+
+  /**
+   * Re-ask the coverage coherence question once the carry has landed, then say what is left.
+   *
+   * `reserveWorkflowEvidenceInTransaction` decides whether a claim's links resolve before
+   * `inheritSubmissionEvidence` has run, so it is answering about an incomplete submission. A
+   * refinement child reserves under its own group key, which makes everything its parent holds
+   * inapplicable, so a replacement claim citing round-1 proof was judged incoherent and left
+   * staged - the exact repair `coverage_reserved` instructs an author to make, refused for a
+   * reason that had already stopped being true by the time anybody could read the result.
+   *
+   * Deliberately a second pass rather than a reordering. A submission's own capture must keep
+   * winning over a carry, and `captureSubmissionImages` returns early once any frozen row of its
+   * kind exists, so carrying first would make freshly staged evidence unreachable. Asking twice
+   * costs one query and leaves that ordering exactly as it was.
+   *
+   * Whatever is still unresolved afterwards is recorded as `evidence_coverage_left_staged`
+   * rather than passed over, because the alternative is the failure this whole method exists to
+   * end: a claim the author registered, was told had registered, and could not find.
+   */
+  freezeDeferredSubmissionCoverage(input: {
+    submissionId: string;
+    now?: number;
+  }): {
+    frozen: string[];
+    unresolved: Array<{ clientCriterionId: string; unresolvedLinks: string[] }>;
+  } {
+    const now = input.now ?? Date.now();
+    return transaction(this.db, () => {
+      const submission = this.getSubmission(input.submissionId);
+      if (!submission) return { frozen: [], unresolved: [] };
+      const owner = this.db.prepare(
+        `SELECT b.note_key,
+                CASE WHEN b.repo_root <> '' THEN b.repo_root ELSE b.session_cwd END AS checkout_root
+           FROM workflow_runs r
+           JOIN workflow_bindings b ON b.id = r.binding_id
+          WHERE r.id = ?`,
+      ).get(submission.runId) as { note_key: string; checkout_root: string | null } | undefined;
+      if (!owner) return { frozen: [], unresolved: [] };
+      /*
+       * No group key, no deferred freeze. Reserving a row means stamping it with the group that
+       * consumed it, and a submission that cannot name its group would have to stamp the empty
+       * string - which every later submission's `reserved_group_key = ?` would then match. A
+       * pre-group submission keeps exactly the behaviour it had rather than being guessed at.
+       */
+      const groupKey = submission.evidenceGroupKey ?? "";
+      if (!groupKey) return { frozen: [], unresolved: [] };
+      /*
+       * Read through the reservations rather than the staging states, because that is what
+       * every other resolver of a public client id reads, and it is the only view that already
+       * includes what the carry just added.
+       */
+      const applicableItems = new Map(
+        (this.db.prepare(
+          `SELECT s.client_item_id, s.repository_scope, s.source_root
+             FROM workflow_evidence_reservations r
+             JOIN workflow_evidence_staging s ON s.id = r.staging_id
+            WHERE r.submission_id = ?`,
+        ).all(input.submissionId) as Array<{
+          client_item_id: string;
+          repository_scope: string;
+          source_root: string;
+        }>).map((row) => [row.client_item_id, {
+          repositoryScope: row.repository_scope,
+          sourceRoot: row.source_root,
+        }] as const),
+      );
+      const candidates = (this.db.prepare(
+        `SELECT * FROM workflow_evidence_coverage_staging
+          WHERE note_key = ?
+            AND (state = 'staged' OR reserved_group_key = ?)
+            AND (repository_scope = 'all' OR source_root = ?)
+          ORDER BY created_at ASC, id ASC`,
+      ).all(owner.note_key, groupKey, owner.checkout_root ?? "") as unknown[])
+        .map(parseWorkflowEvidenceCoverageStagingRow);
+      if (candidates.length === 0) return { frozen: [], unresolved: [] };
+      const held = new Set(
+        this.listSubmissionCoverage(input.submissionId).map((claim) => claim.clientCriterionId),
+      );
+      /*
+       * The frozen-coverage limit is the one bound, for the reason the carry states: a
+       * submission whose coverage no longer parses loses ALL of it, so exceeding the cap would
+       * destroy proof rather than add it. A claim refused for room is reported as unresolved
+       * with no link named, which is true - nothing about its links was the problem.
+       */
+      let budget = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims - held.size;
+      const markCoverage = this.db.prepare(
+        `UPDATE workflow_evidence_coverage_staging
+            SET state = 'reserved', reserved_group_key = ?, updated_at = ?
+          WHERE id = ? AND (reserved_group_key IS NULL OR reserved_group_key = ?)`,
+      );
+      const freezeCoverage = this.db.prepare(
+        `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
+           submission_id, staging_id, client_criterion_id, criterion, proof_class,
+           repository_scope, links_json, generation, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const frozen: string[] = [];
+      const unresolved: Array<{ clientCriterionId: string; unresolvedLinks: string[] }> = [];
+      for (const row of candidates) {
+        if (held.has(row.client_criterion_id)) continue;
+        const claim = coverageClaimFromRow(row);
+        const unresolvedLinks = claim.links
+          .filter((link) => {
+            const item = applicableItems.get(link.clientItemId);
+            return item === undefined
+              || !coverageLinkSatisfiesScope(item, claim.repositoryScope, row.source_root);
+          })
+          .map((link) => link.clientItemId);
+        if (unresolvedLinks.length > 0 || budget <= 0) {
+          unresolved.push({ clientCriterionId: claim.clientCriterionId, unresolvedLinks });
+          continue;
+        }
+        const marked = markCoverage.run(groupKey, now, row.id, groupKey);
+        if (Number(marked.changes) !== 1) {
+          throw new Error(
+            `Workflow coverage claim ${row.client_criterion_id} was reserved concurrently`,
+          );
+        }
+        freezeCoverage.run(
+          input.submissionId,
+          row.id,
+          claim.clientCriterionId,
+          claim.criterion,
+          claim.proofClass,
+          claim.repositoryScope,
+          JSON.stringify(claim.links),
+          row.generation,
+          row.created_at,
+          row.updated_at,
+        );
+        budget -= 1;
+        frozen.push(claim.clientCriterionId);
+      }
+      if (unresolved.length > 0) {
+        /*
+         * Keyed by what it says, not just by the submission.
+         *
+         * `appendEvent` refuses a replayed id whose payload changed, so a submission-only key
+         * would turn a resumed capture that staged one more claim in between into a thrown
+         * capture - trading a duplicated log line for a failed submission. Digesting the claims
+         * dedupes an identical retry and appends a second line when the answer genuinely moved.
+         *
+         * The digest and the payload read the SAME normalized value, which is the point of
+         * normalizing rather than a tidiness preference. Digesting a sorted set while writing the
+         * unsorted one restores the very failure this guards against: the same links in a
+         * different order dedupe to one event id carrying a different payload, which is exactly
+         * what the replay-conflict guard refuses.
+         */
+        const claims = unresolved.map((claim) => ({
+          clientCriterionId: claim.clientCriterionId,
+          unresolvedLinks: [...claim.unresolvedLinks].sort(),
+        }));
+        const digest = createHash("sha256").update(JSON.stringify(claims)).digest("hex").slice(0, 16);
+        this.appendEvent(submission.runId, "evidence_coverage_left_staged", {
+          submissionId: input.submissionId,
+          round: submission.round,
+          segment: submission.segment,
+          claims,
+        }, now, `coverage-left-staged:${input.submissionId}:${digest}`);
+      }
+      return { frozen, unresolved };
+    });
   }
 
   private mustRun(id: string): WorkflowRun {

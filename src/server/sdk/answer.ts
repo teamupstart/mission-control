@@ -45,10 +45,12 @@ const NO_REQUEST = "this session has no pending request to answer";
  */
 export function driverOptionAnswer(
   dialog: PaneDialog | null | undefined,
-  target: { number: number; label: string },
+  target: { number: number; label: string; requestId?: string },
 ): DriverAnswer {
   const requestId = driverRequestId(dialog);
   if (!dialog || !requestId) return { ok: false, error: NO_REQUEST };
+  if (target.requestId !== undefined && target.requestId !== requestId)
+    return { ok: false, error: "this request was replaced; answer the current question" };
   if (dialog.multiSelect) {
     return {
       ok: false,
@@ -76,9 +78,12 @@ export function driverOptionAnswer(
 export function driverFormAnswer(
   dialog: PaneDialog | null | undefined,
   submitted: NonNullable<SubmitOptions["answers"]>,
+  expectedRequestId?: string,
 ): DriverAnswer {
   const requestId = driverRequestId(dialog);
   if (!dialog || !requestId) return { ok: false, error: NO_REQUEST };
+  if (expectedRequestId !== undefined && expectedRequestId !== requestId)
+    return { ok: false, error: "this request was replaced; answer the current question" };
   const questions = dialog.questions ?? [];
   if (questions.length === 0) {
     return { ok: false, error: "this ask is not a form - answer one of its rows instead" };
@@ -98,7 +103,8 @@ export function driverFormAnswer(
       return { ok: false, error: `"${one.question}" was answered twice - send one entry per question` };
     }
     seen.add(one.question);
-    if (!one.text?.trim() && one.labels.length === 0) {
+    const explicitText = question.textInput && typeof one.text === "string";
+    if (!explicitText && !one.text?.trim() && one.labels.length === 0) {
       return { ok: false, error: `"${one.question}" was not answered` };
     }
     // Either/or, and REFUSED rather than reconciled. The harness takes one string per
@@ -107,7 +113,7 @@ export function driverFormAnswer(
     // the agent never hears about. That is the failure this whole shape exists to remove
     // (a menu answering something other than what was clicked), so it cannot be reintroduced
     // as a silent preference.
-    if (one.text?.trim() && one.labels.length > 0) {
+    if ((explicitText || one.text?.trim()) && one.labels.length > 0) {
       return {
         ok: false,
         error: `"${one.question}" has both a chosen option and custom text - send one or the other`,
@@ -135,7 +141,8 @@ export function driverFormAnswer(
       answers: submitted.map((a) => ({
         question: a.question,
         labels: [...a.labels],
-        ...(a.text?.trim() ? { text: a.text.trim() } : {}),
+        ...(questions.find((q) => q.question === a.question)?.textInput && typeof a.text === "string"
+          ? { text: a.text } : a.text?.trim() ? { text: a.text.trim() } : {}),
       })),
     },
   };

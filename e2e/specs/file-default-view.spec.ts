@@ -255,6 +255,10 @@ test("Preview u and d paginate a rendered report by one page", async ({
   const report = dashboard.frameLocator(`iframe[title="Preview of ${REPORT}"]`);
   const body = report.locator("body");
   await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+  // Session chrome can change height while its first updates arrive. Give this report a
+  // fixed viewport so resizing its vh sections cannot add scroll anchoring to the key's
+  // movement. Exercise two heights below to prove pagination uses the current viewport.
+  const frame = dashboard.locator(`iframe[title="Preview of ${REPORT}"]`);
   const pageTargetError = (startY: number, direction: -1 | 1): Promise<number> =>
     body.evaluate((_body, { startY, direction }) => {
       const pageHeight = window.innerHeight;
@@ -266,25 +270,25 @@ test("Preview u and d paginate a rendered report by one page", async ({
       const expectedY = Math.min(maxY, Math.max(0, startY + direction * pageHeight));
       return window.scrollY - expectedY;
     }, { startY, direction });
-  const beforeDownY = await body.evaluate(() => window.scrollY);
-  expect(beforeDownY).toBe(0);
+  for (const height of [240, 360]) {
+    await frame.evaluate((element, height) => { element.style.height = `${height}px`; }, height);
+    await expect.poll(() => body.evaluate(() => window.innerHeight)).toBe(height);
+    const beforeDownY = await body.evaluate(() => window.scrollY);
+    expect(beforeDownY).toBe(0);
 
-  // The file row still owns focus after selection. Preview mode itself claims the key, so
-  // pagination does not require an extra Tab into the rendered document and bare `d` does
-  // not fall through to the dashboard's contextual Delete binding.
-  await dashboard.keyboard.press("d");
-  // Flex layout can resize the iframe by a couple of CSS pixels after it first becomes
-  // visible. Assert against the live page height used at the action boundary, not a stale
-  // height captured before that layout settles.
-  await expect.poll(() => pageTargetError(beforeDownY, 1)).toBe(0);
-  await expect(report.getByRole("heading", { name: "Reconnect details" })).toBeVisible();
-  await shoot(dashboard, "preview-page-down");
+    // The file row still owns focus after selection. Preview mode itself claims the key,
+    // without an extra Tab into the document or falling through to contextual Delete.
+    await dashboard.keyboard.press("d");
+    await expect.poll(() => pageTargetError(beforeDownY, 1)).toBe(0);
+    await expect(report.getByRole("heading", { name: "Reconnect details" })).toBeVisible();
+    await shoot(dashboard, `preview-page-down-${height}`);
 
-  const beforeUpY = await body.evaluate(() => window.scrollY);
-  await dashboard.keyboard.press("u");
-  await expect.poll(() => pageTargetError(beforeUpY, -1)).toBe(0);
-  await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
-  await shoot(dashboard, "preview-page-up");
+    const beforeUpY = await body.evaluate(() => window.scrollY);
+    await dashboard.keyboard.press("u");
+    await expect.poll(() => pageTargetError(beforeUpY, -1)).toBe(0);
+    await expect(report.getByRole("heading", { name: "SSE reconnect audit" })).toBeVisible();
+    await shoot(dashboard, `preview-page-up-${height}`);
+  }
 });
 
 test("Preview page keys stand down in a bare contenteditable field", async ({

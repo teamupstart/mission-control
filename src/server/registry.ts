@@ -2960,11 +2960,17 @@ export class Registry extends EventEmitter {
       (evt.transcriptPath && witnessed.transcriptPath && evt.transcriptPath !== witnessed.transcriptPath)
     )) return;
 
+    // Herdr and other terminals without a legacy hook-env key still resolve through
+    // native conversation identity or a unique cwd. Retain that accepted hook on the
+    // resolved pane, or the next discovery sweep overwrites Stop with passive state.
+    // Resolve only after the witnessed-identity guard above has accepted the target.
+    const retainedKey = key ?? (target ? sessionKey(target) : null);
+
     // Permission mode is sticky: events that omit it keep the last known value
     // (from this pane's prior overlay) rather than clearing the card's chip. Only from
     // an overlay this same harness left - mode vocabularies and controls are harness-owned,
     // and carrying one across an agent change would be a chip nothing can clear.
-    const prior = key ? this.overlays.get(key) : undefined;
+    const prior = retainedKey ? this.overlays.get(retainedKey) : undefined;
     const priorOverlay = prior?.agent === evt.agent ? prior : undefined;
     const permissionMode =
       normalizePermissionMode(evt.permissionMode) ?? priorOverlay?.permissionMode ?? null;
@@ -2979,7 +2985,7 @@ export class Registry extends EventEmitter {
       lastActivity: ts,
       updatedAt: now,
     };
-    if (key) this.overlays.set(key, overlay);
+    if (retainedKey) this.overlays.set(retainedKey, overlay);
 
     // Apply immediately to a matching live session for instant feedback.
     if (target) {
@@ -5897,6 +5903,8 @@ export class Registry extends EventEmitter {
   }
 
   private pruneOverlays(now: number): void {
+    // Hook ingest sweeps every pane key, including sessionKey fallbacks. Cleanup is
+    // TTL-based rather than tied to session eviction, so pre-discovery hooks age out too.
     for (const [k, o] of this.overlays)
       if (now - o.updatedAt > OVERLAY_TTL_MS) this.overlays.delete(k);
     for (const [k, p] of this.passiveStates)

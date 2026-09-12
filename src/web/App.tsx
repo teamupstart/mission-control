@@ -41,6 +41,8 @@ import {
   type SettingsCategoryId,
 } from "./lib/settings-registry.ts";
 import { settingsGearDot } from "./lib/settings-dots.ts";
+import { WORKFLOW_LAUNCH_FIX_DOORS } from "./lib/workflow-fix.ts";
+import type { WorkflowLaunchFix } from "@shared/workflow.ts";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { SpendChip } from "./components/SpendChip.tsx";
 import { KeepAwakeControl } from "./components/KeepAwakeControl.tsx";
@@ -145,7 +147,9 @@ import type { PaletteStores, PaletteTarget } from "./lib/palette-index.ts";
 import { buildSettingsBindings } from "./lib/settings-search.ts";
 import { useRichText } from "./lib/rich-text.ts";
 import { useDesktopUpdates } from "./useDesktopUpdates.ts";
+import { useUpdateDialog } from "./useUpdateDialog.ts";
 import { UpdateBanner } from "./components/UpdateBanner.tsx";
+import { UpdateDialog } from "./components/UpdateDialog.tsx";
 import { SettingsRestoredBanner } from "./components/SettingsRestoredBanner.tsx";
 import { SetupBanner } from "./components/SetupBanner.tsx";
 import { useSetupChecks } from "./useSetupChecks.ts";
@@ -310,6 +314,9 @@ interface TourBinding {
 
 export function App(): React.JSX.Element {
   const desktopUpdates = useDesktopUpdates();
+  // The updater's own questions. The banner reports state the operator can act on at their
+  // leisure; this is the shell asking one it is waiting on an answer to.
+  const updateDialog = useUpdateDialog();
   const {
     sessions,
     restoringSessions,
@@ -555,6 +562,20 @@ export function App(): React.JSX.Element {
   );
   const openForemanTrust = useCallback(
     (): void => openSettingsAnchor("trust", "trust/matrix"),
+    [openSettingsAnchor],
+  );
+  /**
+   * The door a refused launch offered, opened.
+   *
+   * The destination comes from the same record the refusal's label came from, so the control
+   * cannot promise Trust and land on Workflows - and the daemon names which of the two halves
+   * of Live delivery's authorization is missing rather than this guessing.
+   */
+  const openLaunchFix = useCallback(
+    (fix: WorkflowLaunchFix): void => {
+      const door = WORKFLOW_LAUNCH_FIX_DOORS[fix];
+      openSettingsAnchor(door.category, door.anchor);
+    },
     [openSettingsAnchor],
   );
   const [workflowsTabRequest, setWorkflowsTabRequest] = useState<{
@@ -3558,6 +3579,7 @@ export function App(): React.JSX.Element {
           onCheck={desktopUpdates.check}
           onDismiss={desktopUpdates.dismiss}
         />
+        <UpdateDialog request={updateDialog.request} onAnswer={updateDialog.answer} />
         <SettingsRestoredBanner
           event={settingsRestoreNotice}
           onReload={() => window.location.reload()}
@@ -4072,6 +4094,7 @@ export function App(): React.JSX.Element {
                 tourDemo={seeWorkTourDispatchPreview}
                 onClose={closeDispatch}
                 onOpenSchedule={onOpenSchedule}
+                onOpenLaunchFix={openLaunchFix}
                 onEnsembleLaunched={openEnsembleRun}
               />
 

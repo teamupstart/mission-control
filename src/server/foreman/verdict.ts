@@ -518,7 +518,7 @@ export interface ForemanActions {
    * a different act, not a different payload: no text is typed, and the daemon verifies the
    * row against the live screen before confirming it (see `selectPaneOption`).
    */
-  selectOption(sessionId: string, option: { number: number; label: string }): Promise<unknown>;
+  selectOption(sessionId: string, option: { number: number; label: string; requestId?: string }): Promise<unknown>;
   /**
    * Submit a driver form's answers as a whole.
    *
@@ -527,7 +527,7 @@ export interface ForemanActions {
    * together or not at all, and the daemon re-checks the whole submission against the live
    * request before any of it reaches the agent.
    */
-  submitForm(sessionId: string, answers: NonNullable<SubmitOptions["answers"]>): Promise<unknown>;
+  submitForm(sessionId: string, answers: NonNullable<SubmitOptions["answers"]>, requestId?: string): Promise<unknown>;
   resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown>;
 }
 
@@ -556,12 +556,12 @@ export async function applyVerdict(
       // A menu: select the row. This THROWS when the daemon can't confirm the row is the
       // one on screen, which lands in the catch below and leaves the session queued with a
       // `skipped` note - the child untouched, still parked, for the next sweep or a human.
-      await actions.selectOption(ctx.sessionId, plan.send.option);
+      await actions.selectOption(ctx.sessionId, { ...plan.send.option, ...(ctx.menu?.requestId ? { requestId: ctx.menu.requestId } : {}) });
     } else if (plan.send.form) {
       // A driver form: submit every answer at once. Throws on the same terms as the row
       // select above - the daemon refuses a submission the live request no longer matches,
       // and refusing means nothing was delivered, so the session is left exactly as found.
-      await actions.submitForm(ctx.sessionId, plan.send.form);
+      await actions.submitForm(ctx.sessionId, plan.send.form, ctx.menu?.requestId);
     } else {
       await actions.sendText(ctx.sessionId, plan.send.text, plan.send.submit);
     }

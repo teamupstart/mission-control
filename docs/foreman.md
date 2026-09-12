@@ -2,9 +2,10 @@
 
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
-Claude Code or Codex session it has both [been invited
+Claude Code, Codex, or managed Pi session it has both [been invited
 into](#which-sessions-foreman-may-act-in) and can drive, reads the transcript to understand
-the goal **and the session's terminal screen to see the ask itself**. Foreman then:
+the goal and either the structured SDK question or the terminal screen to see the ask.
+Pi project-trust questions require the operator and cannot be answered by Foreman. Foreman then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;

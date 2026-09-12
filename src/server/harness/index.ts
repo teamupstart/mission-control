@@ -361,6 +361,7 @@ export async function resumeArgvFor(
 export function foremanAutomationAuthorized(session: Session): boolean {
   const harness = HARNESSES[session.agent];
   if (!harness.workQueue) return false;
+  if (harness.workQueue.runtimes && !harness.workQueue.runtimes.includes(session.runtime)) return false;
   // An embedded session is instrumented by construction - but Foreman must also be able to
   // ANSWER it, and a driver that cannot surface its harness's questions would hand back a
   // session stopped somewhere nobody can reach. `answersRequests` is where that is declared;

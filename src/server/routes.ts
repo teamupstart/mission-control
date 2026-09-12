@@ -493,7 +493,12 @@ import {
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   legacyCheckCommands,
 } from "@shared/workflow.ts";
-import type { TestEvidenceAuditAggregate, WorkflowConfig } from "@shared/workflow.ts";
+import type {
+  TestEvidenceAuditAggregate,
+  WorkflowConfig,
+  WorkflowLaunchBlock,
+  WorkflowLaunchFix,
+} from "@shared/workflow.ts";
 import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
@@ -521,6 +526,20 @@ import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
 // The one statement of which patch paths are usable, imported rather than restated: a route
 // that spelled the rule itself would drift from the invocation that has to survive it.
 import { SnapshotPathRefused, snapshotPathRefusal } from "./git/ensemble-snapshot.ts";
+
+/**
+ * The wire shape of a refused launch.
+ *
+ * `fix` rides beside the sentence rather than being folded into it, so the form that shows
+ * the refusal can offer the settings screen as a control. Omitted entirely when the refusal
+ * is answered on the form itself - choosing another workflow - because an absent field is
+ * what tells the browser there is no door to draw.
+ */
+function workflowLaunchRefusal(
+  block: WorkflowLaunchBlock,
+): { error: string; fix?: WorkflowLaunchFix } {
+  return block.fix ? { error: block.message, fix: block.fix } : { error: block.message };
+}
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -771,6 +790,8 @@ async function answerDriverRequest(
   // record must describe the ask the caller was actually shown - the same snapshot the
   // projection verified against.
   const asked = session.paneDialog;
+  if (asked?.kind === "trust" && record.by !== "human")
+    return { ok: false, error: "Project trust requires the operator's decision" };
   const projected = project(asked);
   if (!projected.ok) return projected;
   // Read BEFORE the delivery, because it is when the operator spoke. Taken afterwards it
@@ -4693,7 +4714,7 @@ export function buildApp(
       const r = await answerDriverRequest(
         sdkSessions,
         session,
-        (dialog) => driverFormAnswer(dialog, answers),
+        (dialog) => driverFormAnswer(dialog, answers, parsed.data.requestId),
         { reviews, by: parsed.data.by },
       );
       if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
@@ -6703,7 +6724,7 @@ export function buildApp(
       const blocked = parsed.data.backlog
         ? manager.workflowSelectionBlock(workflowId)
         : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
-      if (blocked) return c.json({ error: blocked }, 409);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
     // dispatch that could not invoke them is refused before the task exists - the operator
@@ -6871,7 +6892,7 @@ export function buildApp(
         const manager = workflowManager();
         if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
         const blocked = manager.workflowSelectionBlock(workflowId);
-        if (blocked) return c.json({ error: blocked }, 409);
+        if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
     }
     const r = await tasks.update(id, patch);
@@ -6938,7 +6959,7 @@ export function buildApp(
         task.agent,
         task.repoRoot,
       );
-      if (blocked) return c.json({ error: blocked }, 409);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
     const r = await tasks.dispatch(id, parsed.data);
     if (!r.ok) {
@@ -7045,7 +7066,7 @@ export function buildApp(
           session.agent,
           task.repoRoot,
         );
-        if (blocked) return c.json({ error: blocked }, 409);
+        if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
       // Explicit None is intent too: it must not be assigned onto a conversation whose
       // existing binding would still run a Workflow after this task completes.

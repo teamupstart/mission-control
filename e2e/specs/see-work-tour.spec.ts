@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
+import { artifactsDir } from "../fixtures/artifacts.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 const TOUR_COMMAND = /Start See the work tour, command/;
 
@@ -387,6 +389,42 @@ test("Exit during the live demo leaves the task done and no session behind", asy
   await expect(start).toBeFocused();
 
   await expectTourTasksCleaned(daemon, ["Tour conversation", "Tour demo"]);
+});
+
+test("the dispatch spotlight follows scrolling inside its modal", async ({ dashboard }) => {
+  await dashboard.emulateMedia({ reducedMotion: "reduce" });
+  await dashboard.setViewportSize({ width: 1280, height: 520 });
+  await startTour(dashboard);
+  await reachDispatchInput(dashboard);
+  await step(dashboard, "Brief ready").getByRole("button", { name: "Choose after work" }).click();
+  await step(dashboard, "Choose what follows").getByRole("button", { name: "Review dispatch" }).click();
+  const modal = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
+  const submit = modal.getByRole("button", { name: "Dispatch now" });
+  await expect(step(dashboard, "Dispatch the task")).toBeVisible();
+  await expectContentClearsBorder(modal);
+  const spotlightClearsButton = () => submit.evaluate((button) => {
+    const box = button.getBoundingClientRect();
+    return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === button;
+  });
+  await expect.poll(spotlightClearsButton).toBe(true);
+  const distance = await modal.evaluate((dialog) => {
+    const backdrop = dialog.parentElement!;
+    const before = backdrop.scrollTop;
+    backdrop.scrollTop -= 40;
+    return before - backdrop.scrollTop;
+  });
+  expect(distance, "the modal backdrop actually scrolled").toBe(40);
+  await expect.poll(spotlightClearsButton).toBe(true);
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("pi-phase2-ci");
+    mkdirSync(evidence, { recursive: true });
+    await dashboard.screenshot({ path: join(evidence, "tour-scrolled-dispatch.png") });
+  }
+  await submit.click();
+  const working = step(dashboard, "Working");
+  await expect(working).toBeVisible({ timeout: 30_000 });
+  await working.getByRole("button", { name: "Exit tour" }).click();
+  await expect(working).toBeHidden();
 });
 
 test("an Idle session without a review explains the failure instead of waiting ambiguously", async ({

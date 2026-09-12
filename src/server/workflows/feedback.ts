@@ -294,7 +294,17 @@ const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
   missing_result_measurement: "Register and link the measured result with role result_measurement.",
   missing_deliverable_or_rendered_output: "Register and link the deliverable or its rendered output.",
   missing_state_snapshot: "Register and link a bounded state snapshot with role state_snapshot.",
-  unknown_criterion_id: "Correct or remove the criterionId named below; it matches no criterion of this run.",
+  /*
+   * Run-level, and therefore not reachable from the per-criterion loop below.
+   *
+   * A refused citation belongs to no criterion - that is what makes it refused - so the
+   * evaluator raises this on the top-level `gapCodes` only and never on a criterion's own
+   * `gaps`. The dedicated "Criterion ids that matched nothing" section owns the author-facing
+   * wording. The entry stays because `Record<WorkflowEvidenceReadinessGapCode, string>` is what
+   * forces the NEXT gap code to arrive with real text rather than printing its own name;
+   * editing this string changes nothing a reader sees.
+   */
+  unknown_criterion_id: "Correct or remove the criterionId reported above; it matches no criterion of this run.",
 };
 
 /** Render deterministic structural gaps without exposing internal evidence ids or local paths. */

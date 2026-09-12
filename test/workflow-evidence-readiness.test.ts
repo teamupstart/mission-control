@@ -990,3 +990,56 @@ test("a carried claim still loses to a declaration, superseding or not", () => {
   assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "ac-declared");
   assert.deepEqual(readiness.gapCodes, []);
 });
+
+test("a refused citation is a run-level gap, never one a criterion carries", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The behaviour is correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  const evidence = [{
+    clientItemId: "run-output",
+    evidenceId: "evidence-1",
+    repositoryScope: "all" as const,
+  }];
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    // The criterion is answered, so its own gaps are empty and only the citation is wrong.
+    criterionMappings: [{ criterionId: "criterion-1-aaaa", matchedClientCriterionIds: ["good"] }],
+    coverage: [
+      {
+        clientCriterionId: "good",
+        criterion: "The behaviour is correct",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        links: [{ clientItemId: "run-output", role: "execution" as const }],
+      },
+      {
+        clientCriterionId: "stale",
+        criterion: "Cites a criterion of some other run",
+        criterionId: "criterion-1-elsewhere",
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        links: [{ clientItemId: "run-output", role: "execution" as const }],
+      },
+    ],
+    evidence,
+  });
+  /*
+   * A refused citation belongs to no criterion, which is what makes it refused, so it is a gap
+   * of the run rather than of a criterion. The repair packet renders it from its own section;
+   * `READINESS_ACTIONS.unknown_criterion_id` is unreachable from the per-criterion loop and
+   * says so. If this ever starts arriving on a criterion's `gaps`, that text becomes live and
+   * has to be wired deliberately rather than inherited.
+   */
+  assert.ok(readiness.gapCodes.includes("unknown_criterion_id"));
+  for (const criterion of readiness.criteria) {
+    assert.ok(
+      !criterion.gaps.includes("unknown_criterion_id"),
+      `criterion ${criterion.criterionId} carried a run-level gap`,
+    );
+  }
+  assert.deepEqual(readiness.criteria[0]?.gaps, []);
+  assert.equal(readiness.status, "gaps");
+});

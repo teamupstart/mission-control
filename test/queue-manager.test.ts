@@ -14,7 +14,7 @@ import { mkMuxHandle } from "./helpers/session-fixture.ts";
 const home = mkdtempSync(join(tmpdir(), "mission-queue-manager-"));
 process.env.MISSION_HOME = home;
 
-const { openDb } = await import("../src/server/db.ts");
+const { openDb, getQueueItem } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 
@@ -75,6 +75,43 @@ function paneOf(s: PaneHandles): string {
 }
 
 // ---- sentAt is the SEND's clock, on every round ----
+
+test("an SDK delivery stays acknowledged when its session exits before markSent", () => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  const session = registry.registerSdkSession({
+    id: "sdk:queue-ack-exit", agent: "pi", name: "queue acknowledgement",
+    cwd: "/queue-ack-exit", gitBranch: "feature", now: 1_000,
+  });
+  const item = queues.add(session.id, "accepted SDK work", 1_000)!;
+  assert.ok(item);
+  assert.ok(queues.setState(item.id, { state: "sending" }, 1_001).ok);
+  registry.applyDriverEvent(session.id, { kind: "exited", reason: "done", resumable: false });
+  assert.equal(registry.sessionForNoteKey(item.noteKey), undefined);
+  const sent = queues.markSent(item.id, "base", 0, 1_002);
+  assert.ok(sent.ok);
+  assert.equal(sent.item.state, "in_progress", "accepted work must never wait for a second pickup");
+  assert.equal(getQueueItem(item.id)?.deliveryRuntime, "sdk", "the attempt survives a database reload");
+  assert.equal(queues.markSent(item.id, "base", 0, 1_003).ok, false);
+});
+
+test("a terminal delivery retains pickup verification if its session runtime changes", (t) => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  seedSession(registry, "s-runtime-change", "agent-runtime-change");
+  const item = queues.add("s-runtime-change", "terminal work", 1_000)!;
+  assert.ok(queues.setState(item.id, { state: "sending" }, 1_001).ok);
+  const original = registry.getSession("s-runtime-change")!;
+  t.mock.method(registry, "sessionForNoteKey", () => ({ ...original, runtime: "sdk" }));
+  const sent = queues.markSent(item.id, "base", 0, 1_002);
+  assert.ok(sent.ok);
+  assert.equal(sent.item.state, "awaiting_pickup");
+  assert.ok(queues.setState(item.id, { state: "queued", round: 1 }, 1_003).ok);
+  assert.ok(queues.setState(item.id, { state: "sending" }, 1_004).ok);
+  const retried = queues.markSent(item.id, "base", 0, 1_005);
+  assert.ok(retried.ok);
+  assert.equal(retried.item.state, "in_progress", "a new attempt captures its own runtime");
+});
 
 test("recover adopts a fix round's OWN send time, not the previous round's", () => {
   // The invariant this protects: a crash mid-`sending` never auto-retries and never

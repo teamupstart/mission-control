@@ -516,6 +516,12 @@ export function GuidedTourController<Runtime, Navigation>({
       }
     }
     document.addEventListener("keydown", onKeyDown, true);
+    // Driver listens to window scroll, but modal backdrops scroll independently and their
+    // events do not bubble. Keep the spotlight aligned with its real, clickable target.
+    const onScroll = (): void => {
+      if (tour.isActive() && !stopping && !cleanupBlocked) tour.refresh();
+    };
+    document.addEventListener("scroll", onScroll, true);
 
     actionsRef.current = {
       refresh: () => {
@@ -541,6 +547,7 @@ export function GuidedTourController<Runtime, Navigation>({
       disposed = true;
       actionsRef.current = null;
       document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("scroll", onScroll, true);
       focusRootsRef.current = [];
       clearFlags();
       popoverRef.current = null;

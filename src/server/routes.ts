@@ -790,6 +790,8 @@ async function answerDriverRequest(
   // record must describe the ask the caller was actually shown - the same snapshot the
   // projection verified against.
   const asked = session.paneDialog;
+  if (asked?.kind === "trust" && record.by !== "human")
+    return { ok: false, error: "Project trust requires the operator's decision" };
   const projected = project(asked);
   if (!projected.ok) return projected;
   // Read BEFORE the delivery, because it is when the operator spoke. Taken afterwards it
@@ -4712,7 +4714,7 @@ export function buildApp(
       const r = await answerDriverRequest(
         sdkSessions,
         session,
-        (dialog) => driverFormAnswer(dialog, answers),
+        (dialog) => driverFormAnswer(dialog, answers, parsed.data.requestId),
         { reviews, by: parsed.data.by },
       );
       if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);

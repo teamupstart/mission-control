@@ -661,6 +661,8 @@ export interface SdkSpec {
    * model this build cannot select, a resume id the harness no longer holds - must throw,
    * because the alternative is a card that looks dispatched and is running something else.
    */
+  // A driver may yield at a startup question before native binding. It must retain the
+  // intent, accept answers/stop, and report any subsequent startup failure through exited.
   launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle>;
   /**
    * Whether a session this driver runs can SURFACE the asks a human or Foreman must answer.
@@ -675,8 +677,8 @@ export interface SdkSpec {
    * no one told.
    *
    * `false` is therefore a real answer rather than a stub, exactly like a null capability:
-   * Pi's driver has no `ExtensionUIContext` bridge yet, so its `answer()` refuses and its
-   * extension prompts render nowhere. It becomes `true` when that bridge lands.
+   * A driver with no structured host UI must declare false even when it reports lifecycle
+   * events. The managed Pi bridge now fulfills that contract for blocking extension UI.
    *
    * Not derivable from anything else here: `SdkSessionHandle.answer` exists on every handle
    * (the interface requires it), so the fact that one of them throws is not visible from the

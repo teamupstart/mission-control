@@ -1,3 +1,4 @@
+import type { PiHostUI } from "../../src/server/harness/pi/sdk-ui.ts";
 import type { SdkEvent } from "../../src/server/harness/types.ts";
 import type {
   PiImage,
@@ -53,6 +54,8 @@ export class FakePiSession implements PiSession {
   refusal: Error | null = null;
   /** Set to make the next `setModel` reject, as Pi does for an unauthorized provider. */
   modelRefusal: Error | null = null;
+  ui: PiHostUI | null = null;
+  async bindExtensions(ui: PiHostUI): Promise<void> { this.ui = ui; }
   private readonly listeners = new Set<(event: PiSessionEvent) => void>();
 
   constructor(
@@ -175,13 +178,13 @@ export class FakePiRuntime implements PiRuntime {
   newSessions = 0;
   /** Set to make `newSession` reject, as a model that disappeared mid-session does. */
   newSessionError: Error | null = null;
-  private replaced: ((session: PiSession) => void) | null = null;
+  private replaced: ((session: PiSession) => void | Promise<void>) | null = null;
 
   constructor(session: FakePiSession) {
     this.session = session;
   }
 
-  onSessionReplaced(handler: (session: PiSession) => void): void {
+  onSessionReplaced(handler: (session: PiSession) => void | Promise<void>): void {
     this.replaced = handler;
   }
 
@@ -195,7 +198,8 @@ export class FakePiRuntime implements PiRuntime {
     this.session = new FakePiSession(`replacement-${this.newSessions}`, {
       modelId: this.session.modelId,
     });
-    this.replaced?.(this.session);
+    await this.replaced?.(this.session);
+
   }
 
   async dispose(): Promise<void> {
@@ -211,8 +215,10 @@ export class FakePiSdk implements PiSdk {
   trust: boolean | null = null;
   /** Pi session id -> its file, as Pi's own listing would answer. */
   readonly sessions = new Map<string, string>();
-  /** Every `createRuntime` call, so a test can read what the launch resolved. */
+  /** Every `createRuntime` input, retained without replacing its trust policy. */
   readonly created: PiRuntimeOptions[] = [];
+  /** Decisions observed at the resource-loading boundary, after resolution and abort checks. */
+  readonly trustDecisions: boolean[] = [];
   /** Set to make `createRuntime` reject - a signed-out provider, an unknown model. */
   createError: Error | null = null;
   /** Set to make the session listing throw, as an unreadable session store does. */
@@ -235,6 +241,8 @@ export class FakePiSdk implements PiSdk {
     return this.trust;
   }
 
+  setProjectTrust(_cwd: string, trusted: boolean): void { this.trust = trusted; }
+
   async findSessionFile(_cwd: string, sessionId: string): Promise<string | null> {
     if (this.listError) throw this.listError;
     return this.sessions.get(sessionId) ?? null;
@@ -243,6 +251,10 @@ export class FakePiSdk implements PiSdk {
   async createRuntime(options: PiRuntimeOptions): Promise<PiRuntime> {
     this.created.push(options);
     if (this.createError) throw this.createError;
+    const trusted = typeof options.projectTrust === "function"
+      ? await options.projectTrust() : options.projectTrust;
+    options.signal?.throwIfAborted();
+    this.trustDecisions.push(trusted);
     return this.runtime;
   }
 }
@@ -255,6 +267,7 @@ export function fakePiSdkDeps(sdk: FakePiSdk): PiSdkDeps & { toolEnvCalls: strin
   const toolEnvCalls: string[][] = [];
   return {
     toolEnvCalls,
+    repositories: async () => ["owner/repo"],
     async load() {
       return sdk;
     },

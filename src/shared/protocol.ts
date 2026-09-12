@@ -386,6 +386,7 @@ export type SendText = z.infer<typeof SendTextSchema>;
 const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
 
 export const SelectOptionSchema = z.object({
+  requestId: z.string().min(1).optional(),
   number: z.number().int().min(1).max(99),
   label: z.string().min(1),
   by: AnswerActorSchema,
@@ -407,6 +408,7 @@ export type SelectOption = z.infer<typeof SelectOptionSchema>;
  */
 export const SubmitOptionsSchema = z
   .object({
+    requestId: z.string().min(1).optional(),
     options: z
       .array(
         z.object({

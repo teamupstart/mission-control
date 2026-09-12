@@ -237,6 +237,11 @@ export class QueueManager {
       // The row is written before the tmux write, which makes it the only timestamp
       // a crash is guaranteed to leave behind - and `recover` adjudicates against it.
       sentAt: state === "sending" ? now : item.sentAt,
+      // A later acknowledgement belongs to this attempt even if its session exits or
+      // hands off to another runtime while the worker is awaiting delivery.
+      deliveryRuntime: state === "sending" && item.state !== "sending"
+        ? this.registry.sessionForNoteKey(item.noteKey)?.runtime ?? null
+        : item.deliveryRuntime,
       // The draft belongs to `proposed` and to nothing else, so ANY transition out
       // of it clears the text. Doing that here - the one place every transition
       // lands - is what keeps "there is a drafted payload" and "the card is asking
@@ -303,9 +308,16 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    const acknowledged = item.deliveryRuntime === "sdk";
+    // The worker calls this only after delivery resolves. SDK delivery is an acceptance
+    // acknowledgement, even when the whole turn completed before this HTTP write arrived.
+    // Waiting for a later activity timestamp in that case would resend accepted work.
+    if (acknowledged && item.state !== "sending") {
+      return { ok: false, error: "this acknowledged send is no longer current" };
+    }
     const next: WorkItem = {
       ...item,
-      state: "awaiting_pickup",
+      state: acknowledged ? "in_progress" : "awaiting_pickup",
       baseSha: item.baseSha ?? baseSha,
       // `??` and not `||`: a 0 anchor is a real value (an empty transcript at
       // delivery), and treating it as absent would re-anchor past round 0's turns.

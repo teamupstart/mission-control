@@ -805,6 +805,8 @@ export interface PaneOption {
  * driver-sourced dialog, and its absence is what tells a reader it is looking at a screen.
  */
 export interface SessionRequestQuestion {
+  /** Explicit text entry; unlike a custom choice, empty text and whitespace are values. */
+  textInput?: { multiline: boolean; placeholder?: string; initialValue?: string };
   /** The question itself, in the words the human is shown. */
   question: string;
   /** A short label for the question, when the harness supplies one. */
@@ -1293,6 +1295,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** Runtime captured for this delivery attempt; absent on rows predating this field. */
+  deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;
 }
 

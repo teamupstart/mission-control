@@ -150,7 +150,8 @@ export function answeredQuestion(
         stored.selected = decision.options
           .filter((o) => one.labels.includes(o.label))
           .map((o) => o.id);
-        stored.other = one.text?.trim() ? one.text.trim() : null;
+        stored.other = dialog.questions?.find((q) => q.question === one.question)?.textInput
+          ? one.text ?? null : one.text?.trim() ? one.text.trim() : null;
       }
       break;
     }

@@ -1695,8 +1695,8 @@ export const api = {
    * repainted, Foreman answered first). Nothing was pressed - re-render and let the human
    * look again rather than retrying blind.
    */
-  selectOption: (id: string, number: number, label: string) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label }),
+  selectOption: (id: string, number: number, label: string, requestId?: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label, requestId }),
   /**
    * Fill in and SEND a multi-select `AskUserQuestion`, which `selectOption` cannot do:
    * pressing a row of one ticks its box and answers nothing, so the whole form goes at
@@ -1723,8 +1723,9 @@ export const api = {
   submitAnswers: (
     id: string,
     answers: Array<{ question: string; labels: string[]; text?: string }>,
+    requestId?: string,
   ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
-    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { answers }),
+    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { answers, requestId }),
   /**
    * Hand an embedded session back to a terminal, continuing the same conversation.
    *

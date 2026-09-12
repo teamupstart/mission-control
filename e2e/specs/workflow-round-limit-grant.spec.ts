@@ -499,26 +499,29 @@ test("a clean current Inspector head is adopted through the audited grant evalua
   await expect(confirm).toContainText("existing audited path");
   await expect(confirm).toContainText("browser does not pass the gate");
   await expect(confirm).toContainText("immutable Inspector-only submission");
-  const requestPromise = dashboard.waitForRequest((request) =>
-    request.method() === "POST"
-    && request.url().endsWith(`/api/workflow-runs/${runId}/grant-rounds`));
+  const responsePromise = dashboard.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith(`/api/workflow-runs/${runId}/grant-rounds`));
   await confirm.getByRole("button", { name: "Adopt clean head" }).click();
-  const request = await requestPromise;
-  expect(request.postDataJSON()).toMatchObject({ rounds: 2 });
+  const response = await responsePromise;
+  expect(response.ok()).toBe(true);
+  expect(response.request().postDataJSON()).toMatchObject({ rounds: 2 });
+  // The mutation response records the restored wait even if a daemon event advances the
+  // evaluator before the browser can poll that transient state.
+  expect((await response.json()).run.status).toBe("waiting_for_new_head");
   await expect(confirm).toBeHidden();
 
-  await expect
-    .poll(async () => statusOf(daemon, runId), {
-      message: "the existing grant route should restore the Inspector evaluator wait",
-      timeout: 20_000,
-    })
-    .toBe("waiting_for_new_head");
   observeGrantedHead(daemon, runId, fixture.currentHead);
-  // Once the grant has restored a live evaluator wait, the existing recheck route can wake
-  // the daemon. The spent state above did not offer or accept it; this post-grant state does.
-  await api(daemon, `/api/workflow-runs/${runId}/recheck-inspector`, {
+  // Recheck wakes an evaluator still waiting. A session update may already have evaluated
+  // the observed head; in that ordering only the terminal refusal with completed state is
+  // valid. Both paths must still prove the exact-head submission and single audit events.
+  const recheck = await post(daemon, `/api/workflow-runs/${runId}/recheck-inspector`, {
     requestId: "e2e-adopt-clean-head-recheck",
   });
+  if (recheck.status !== 200) {
+    expect(recheck).toEqual({ status: 409, code: "workflow_run_not_waiting" });
+    expect(await statusOf(daemon, runId)).toBe("completed");
+  }
   try {
     await expect
       .poll(async () => statusOf(daemon, runId), {

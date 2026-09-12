@@ -204,6 +204,8 @@ export interface ExtensionsSpec extends Pick<SkillsSpec, "dirEnvVar" | "homeDir"
  * would ever offer the batch to anyone.
  */
 export interface WorkQueueSpec {
+  /** Omitted preserves both runtimes for existing harnesses. */
+  runtimes?: readonly SessionRuntime[];
   /**
    * What to tell the operator when the harness CAN hold a queue but this particular
    * session has never reported a hook - a fixable install problem, as distinct from the
@@ -840,6 +842,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       linkName: "mission-control.js",
     },
     workQueue: {
+      runtimes: ["sdk"],
       uninstrumentedWhy:
         "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes. Open Settings > Setup > Agent extensions to install the Pi integration or follow the Pi extension warning, then start a fresh Pi session.",
     },
@@ -1159,6 +1162,8 @@ export function workQueueBlockedReason(
 ): string | null {
   const queue = HARNESS_CAPABILITIES[session.agent].workQueue;
   if (!queue) return workQueueUnsupportedWhy(session.agent);
+  if (queue.runtimes && !queue.runtimes.includes(session.runtime))
+    return `${AGENT_IDENTITY[session.agent].label} Work Queue requires a managed Agent SDK session.`;
   if (session.runtime === "sdk") return null;
   return session.hooksSeen ? null : queue.uninstrumentedWhy;
 }

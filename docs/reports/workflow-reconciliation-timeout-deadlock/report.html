@@ -184,8 +184,8 @@
     <code>updated_at</code> and <code>completed_at</code> at <code>2026-09-12T00:15:59.272Z</code>, and
     the event log closes on <code>run_cancelled</code> at that instant. Nothing below is an action to
     take on it, and none of its recovery buttons exist any more. The
-    findings are about the code path, which is unchanged and will do the same thing to the next run that
-    reaches it.
+    findings are about the code path, which is unchanged: the cap, the routing and the carried-forward
+    attempt budget are all still there for the next run that reaches them.
   </p>
 </header>
 
@@ -236,7 +236,9 @@
   Before a submission can be reviewed, capture compacts the session's context into canonical
   acceptance criteria, then <em>reconciles</em> them: an LLM call that matches each coverage claim the
   session registered against each canonical criterion. This run had <strong>13 coverage claims against
-  7 canonical criteria</strong>, a 5,462 character prompt. Reconciliation ran on
+  7 canonical criteria</strong>, a prompt of 5,462 characters. The prompt is pure ASCII (0 non-ASCII
+  characters measured), so its UTF-16 length, its Unicode scalar count and its UTF-8 byte count are all
+  5,462 and the ledger's <code>input_bytes</code> column agrees with the character counts quoted here. Reconciliation ran on
   <code>claude-haiku-4-5</code> and returned nothing within the cap, twice, and
   <code>reconcileWorkflowCoverage</code> allows exactly two attempts
   (<code>src/server/workflows/context.ts:568</code>).
@@ -288,7 +290,8 @@
   </svg>
   <figcaption>
     Durations are the daemon's own <code>workflow_llm_calls</code> rows for run <code>52de186f</code>.
-    Compaction on this run carried a <em>larger</em> prompt (6,460 bytes) than reconciliation (5,462) and
+    Compaction on this run carried a <em>larger</em> prompt (6,460 bytes) than reconciliation (5,462
+    bytes, equal to its character count because the prompt is ASCII) and
     finished in 22.4 s, so prompt size is not what separates them. The measured generation rate
     below is: compaction emitted 2,408 characters, reconciliation has to emit fewer but does so on
     a path that is producing roughly 12 characters per second.
@@ -310,7 +313,7 @@
     <tr><td class="num">00:11:34</td><td><code>evidence_recovery_reserved</code></td><td>operator clicked Retry criterion mapping (round 2, segment 1)</td></tr>
     <tr><td class="num">00:11:35</td><td><code>context_reconciliation</code> a1</td><td class="bad-cell">timed out after 45,003 ms</td></tr>
     <tr><td class="num">00:12:20</td><td><code>context_reconciliation</code> a2</td><td class="bad-cell">timed out after 45,003 ms</td></tr>
-    <tr><td class="num">00:12:21</td><td><code>evidence_reconciliation_error</code></td><td class="bad-cell">back to blocked, unchanged</td></tr>
+    <tr><td class="num">00:13:05</td><td><code>evidence_reconciliation_error</code></td><td class="bad-cell">back to blocked, unchanged. 00:12:20 plus the second attempt's 45,003 ms, which is the arithmetic every other row in this table follows</td></tr>
     <tr><td class="num">00:15:59</td><td><code>run_cancelled</code></td><td>the run was cancelled, which is its terminal state and where it still stands</td></tr>
   </tbody>
 </table>
@@ -406,13 +409,28 @@
 <div class="call warn">
   <p class="ct">The shape of the dead end</p>
   <p>
-    The loop is deterministic, not flaky, and it is closed at three different points rather than one.
-    The repository probe refuses a fresh round outright while nothing has been committed. A round that
-    is forced through anyway cannot retry, because the prompt is a pure function of the criteria and the
-    claims, both frozen in the submission, so its fingerprint is unchanged and the exhausted attempt
+    Two different things are going on here, and only the first is deterministic.
+  </p>
+  <p>
+    <strong>The routing is.</strong> It is closed at three points rather than one, and each is a property
+    of the code. The repository probe refuses a fresh round outright while nothing has been committed. A
+    round forced through anyway cannot retry, because the prompt is a pure function of the criteria and
+    the claims, both frozen in the submission, so its fingerprint is unchanged and the exhausted attempt
     count comes with it. That leaves the recovery segment as the only move that reaches the provider at
-    all, and it re-sends the same bytes to the same model under the same cap and gets the same answer.
-    No route out is left, which is the property that makes this a dead end rather than a slow retry.
+    all, and it re-sends the same bytes to the same model under the same cap.
+  </p>
+  <p>
+    <strong>What the provider then does is not.</strong> Run <code>8584d4ec</code> in the table below is
+    the counterexample: attempt 1 timed out at 45,002 ms and attempt 2 <em>succeeded</em> in 34,269 ms on
+    the same 1,543 byte prompt and the same model. Identical input does not imply identical timing, so
+    nothing here establishes that a repeat is bound to fail.
+  </p>
+  <p>
+    What makes <code>52de186f</code> a dead end is the size of the margin rather than any determinism in
+    the provider. It needs about 62 s against a 45 s cap, which the observed spread does not close, and
+    it did in fact fail on all four attempts. A submission sitting near the line, as
+    <code>8584d4ec</code> was, can flip either way. This section describes the frozen
+    <code>52de186f</code> run; it is not a prediction that every comparable submission blocks.
   </p>
 </div>
 
@@ -442,9 +460,13 @@
 </table>
 </div>
 <p>
-  Successful reconciliations run <strong>14.6 s to 42.8 s</strong>. The cap is 45 s. That is not a budget with
-  headroom, it is a coin flip that this run's payload loses every time, and the five other timeouts in
-  the same window are the same cap biting smaller payloads that happened to be slow.
+  Successful reconciliations run <strong>14.6 s to 42.8 s</strong>. The cap is 45 s, so there is no
+  headroom, and where a payload lands near the line the outcome turns on run-to-run variance:
+  <code>8584d4ec</code> shows both results on one prompt, a 45,002 ms timeout followed by a 34,269 ms
+  success. <code>52de186f</code> is not near the line. Its four attempts all failed, and the measured
+  cost of that payload is about 62 s, well past the cap. The other timeouts in the window are the same
+  cap biting payloads that happened to be slow; whether each of those is variance or a payload genuinely
+  over the line was not examined per run.
 </p>
 
 <h4>Where the time actually goes: not the input</h4>

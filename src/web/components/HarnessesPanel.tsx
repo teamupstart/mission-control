@@ -22,7 +22,10 @@ import {
 import type { HarnessesState } from "../useHarnesses.ts";
 import { AgentDot, agentAccentStyle } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { TerminalPreferencePicker } from "./TerminalPreferencePicker.tsx";
+import {
+  dispatchTerminalCopy,
+  TerminalPreferencePicker,
+} from "./TerminalPreferencePicker.tsx";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
 // launches - the auto-mode master toggle, then ONE CARD PER HARNESS carrying that
@@ -267,7 +270,7 @@ function HarnessCard({
             </label>
             <TerminalPreferencePicker
               id={terminalId}
-              agentLabel={label}
+              copy={dispatchTerminalCopy(label)}
               value={terminalBackend}
               disabled={disabled}
               onChange={onTerminalBackend}

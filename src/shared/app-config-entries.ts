@@ -11,6 +11,7 @@ import {
   SkillsConfigSchema,
   StandingInstructionsConfigSchema,
   StoredWorkflowPolicySchema,
+  TerminalsConfigSchema,
   UiConfigSchema,
   WorktreesConfigSchema,
 } from "./protocol.ts";
@@ -23,6 +24,7 @@ import type {
   LlmConfig,
   ShippingConfig,
   SkillsConfig,
+  TerminalsConfig,
   UiConfig,
   WorktreesConfig,
 } from "./protocol.ts";
@@ -121,6 +123,10 @@ const harnessesFields = {
   terminalBackend: "setting",
   kindDefaults: "setting",
 } satisfies Record<keyof HarnessesConfig, AppConfigValueClass>;
+
+const terminalsFields = {
+  multiplexerTerminal: "setting",
+} satisfies Record<keyof TerminalsConfig, AppConfigValueClass>;
 
 const worktreesFields = {
   enabled: "setting",
@@ -309,6 +315,7 @@ export const APP_CONFIG_ENTRIES = {
   repoIndex: fieldsEntry(
     "repoIndex", RepoIndexConfigSchema, "repo-index", repoIndexFields,
   ),
+  terminals: fieldsEntry("terminals", TerminalsConfigSchema, "terminals", terminalsFields),
 } as const;
 
 export type AppConfigEntry = (typeof APP_CONFIG_ENTRIES)[keyof typeof APP_CONFIG_ENTRIES];

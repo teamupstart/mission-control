@@ -33549,6 +33549,71 @@ body.foreman-sidecar-open .modal-backdrop {
   max-width: 430px;
 }
 
+/* A row that carries a trailing control splits; every other row is unchanged, which is why
+   `.setup-row-main` keeps its own `min-width: 0` rather than gaining a flex rule here. */
+.setup-row-split {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.setup-row-aside {
+  flex: none;
+  padding-top: 2px;
+  text-align: right;
+}
+
+.setup-row-aside .launch-head {
+  display: block;
+  padding: 0 0 3px;
+}
+
+/* The aside's popover is anchored to the right edge it hangs from, so a menu opened on a
+   narrow pane stays inside it instead of pushing the row wider. */
+.setup-row-aside .terminal-pref-pop {
+  left: auto;
+  right: 0;
+  width: min(340px, calc(100vw - 32px));
+}
+
+.setup-row-aside .terminal-pref-groups {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* A multiplexer that draws its own window, and the stored preference this build cannot
+   offer: both are statements rather than controls, and neither should look pressable. */
+.pref-inert {
+  color: var(--dim);
+  font-size: 11px;
+  font-style: italic;
+  padding-top: 4px;
+}
+
+.setup-pref-unknown {
+  color: var(--attention);
+  font-size: 10px;
+  margin: 4px 0 0;
+  max-width: 250px;
+}
+
+/* Stacked rather than side by side once the pane is narrow: the chooser is 250px wide and a
+   row title squeezed beside it wraps to nothing readable. */
+@media (max-width: 900px) {
+  .setup-row-split {
+    flex-wrap: wrap;
+  }
+
+  .setup-row-aside {
+    text-align: left;
+  }
+
+  .setup-row-aside .terminal-pref-pop {
+    left: 0;
+    right: auto;
+  }
+}
+
 .setup-provider-checkout {
   color: var(--dim);
   font-size: 10px;

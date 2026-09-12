@@ -99,6 +99,9 @@ function deps(over: Partial<TerminalTargetDeps> = {}): TerminalTargetDeps {
     emulators: {},
     installed: () => true,
     launchId: () => "abc123",
+    // Automatic unless a test is about the preference, so every existing claim here still
+    // describes the registry-order walk it was written against.
+    focusEmulator: () => null,
     ...over,
   };
 }

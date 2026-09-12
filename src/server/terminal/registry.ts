@@ -1,9 +1,15 @@
 import { backendPaneToken, innermostPane, type PaneHandles } from "@shared/pane.ts";
 import {
+  EMULATOR_IDS,
   MULTIPLEXER_IDS,
   type TerminalBackendId,
   type TerminalHandle,
 } from "@shared/terminal.ts";
+import {
+  binPresent,
+  binUnsupportedReason,
+  type BinAvailabilityDeps,
+} from "./bin.ts";
 import { cmuxMultiplexer } from "./cmux.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
 import { ghosttyEmulator } from "./ghostty.ts";
@@ -115,14 +121,54 @@ export function terminalBackendBin(id: TerminalBackendId): BinSpec {
  * multiplexer whose sessions are not a killable group. Every one of those is a hand-built
  * adapter in a record here, and none of them needs a subprocess.
  */
-export interface TerminalDeps {
+/**
+ * Its own interface because `TerminalDeps` and `TerminalTargetDeps` both need it and are not
+ * related by inheritance. A function rather than a value: a field would be read once, when
+ * the registry was constructed.
+ */
+export interface FocusEmulatorPreference {
+  focusEmulator: (id: MultiplexerId) => EmulatorId | null;
+}
+
+/**
+ * What the defaults in this directory bind, deliberately in place of the real reader:
+ * `focusEmulatorFor` reaches `db.ts`, and importing that here would open the daemon's
+ * persistence on any import of a terminal adapter. `configuredTerminalDeps` composes it in.
+ */
+export const automaticFocusEmulator = (): null => null;
+
+/**
+ * The chosen terminal app first, then the registry order with that id removed.
+ *
+ * Shared by `raiser` and focus step 4, which walk the same order for different operations -
+ * the first that CAN open a window, and the first that DOES. Two copies drift silently: the
+ * Setup row would promise one terminal while Focus opened another.
+ */
+export function emulatorAttemptOrder(
+  mux: MultiplexerId | null,
+  deps: FocusEmulatorPreference,
+): readonly EmulatorId[] {
+  const preferred = mux ? deps.focusEmulator(mux) : null;
+  if (!preferred) return EMULATOR_IDS;
+  return [preferred, ...EMULATOR_IDS.filter((id) => id !== preferred)];
+}
+
+export interface TerminalDeps extends BinAvailabilityDeps, FocusEmulatorPreference {
   multiplexers: Record<MultiplexerId, Multiplexer>;
   emulators: Record<EmulatorId, TerminalEmulator>;
 }
 
+/**
+ * `installed` / `unsupported` are injectable so a test can assert that an absent terminal was
+ * never spawned at all. `focusEmulator` is the one member this object does not resolve for
+ * itself - see `automaticFocusEmulator`.
+ */
 export const defaultTerminalDeps: TerminalDeps = {
   multiplexers: MULTIPLEXERS,
   emulators: EMULATORS,
+  installed: binPresent,
+  unsupported: binUnsupportedReason,
+  focusEmulator: automaticFocusEmulator,
 };
 
 /** The same innermost backend that Rename addresses, projected without subprocess I/O. */

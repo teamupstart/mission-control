@@ -49,6 +49,7 @@ import {
   HarnessesConfigPatchSchema,
   HarnessModelCatalogQuerySchema,
   HarnessModelCatalogsSchema,
+  TerminalsConfigPatchSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
@@ -269,6 +270,13 @@ import {
   HarnessesConfigError,
   setHarnessesConfig,
 } from "./harnesses.ts";
+import type { TerminalDeps } from "./terminal/registry.ts";
+import {
+  configuredTerminalDeps,
+  configuredTerminalTargetDeps,
+  getTerminalsConfig,
+  setTerminalsConfig,
+} from "./terminals-config.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -1063,11 +1071,27 @@ export function buildApp(
   setupDeps?: SetupDeps,
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
   setupInstallDeps?: SetupInstallRouteDeps,
+  /**
+   * The terminal registries Focus drives, for tests that need to watch what a raise DID
+   * without spawning a real terminal on the machine running them.
+   *
+   * Appended last like every optional above it. Default is `configuredTerminalDeps`, so the
+   * daemon is unaffected. A test that overrides this should spread that default rather than
+   * build one from scratch, keeping the production `focusEmulator` - the point of a test at
+   * this level is that the stored preference is read through the real composition.
+   */
+  focusTerminals?: TerminalDeps,
 ): Hono {
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
   const setupSnapshots = createSetupSnapshotTracker(randomUUID);
-  const terminalLauncher = launchSessionTerminal ?? launchTerminal;
+  // Bound to THIS daemon's stored per-multiplexer terminal preference, which is what makes
+  // the terminal a raised multiplexer session opens the one the operator picked. The
+  // mechanism defaults are Automatic on their own - see `automaticFocusEmulator` - so every
+  // production entry point that can raise a window composes them here, in the layer that is
+  // allowed to read settings.
+  const terminalLauncher: typeof launchTerminal = launchSessionTerminal
+    ?? ((backend, spec) => launchTerminal(backend, spec, configuredTerminalTargetDeps));
   const panes = paneDeps ?? defaultPaneDeps;
   // A successful exited-session resume keeps its claim for the life of this lingering
   // session id. Otherwise a double-click before `session_remove` can start two agents on
@@ -3163,7 +3187,8 @@ export function buildApp(
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
-  app.get("/api/terminal-targets", (c) => c.json({ targets: terminalTargetViews() }));
+  app.get("/api/terminal-targets", (c) =>
+    c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
   // Open a terminal on a session's checkout: a shell, or the session's own agent CLI.
   // Both payloads use the backend the operator selected; only their daemon-owned argv differs.
   app.post("/api/sessions/:id/launch", async (c) => {
@@ -4976,7 +5001,7 @@ export function buildApp(
   app.post("/api/sessions/:id/focus", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = await focus(session);
+    const r = await focus(session, focusTerminals ?? configuredTerminalDeps);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -6611,6 +6636,18 @@ export function buildApp(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
     return c.json(costTelemetryStatus());
+  });
+
+  // --- Terminals: which terminal app each multiplexer's sessions are focused into ---
+  //
+  // Its own pair rather than a key on `/api/harnesses/config`, because that object is keyed
+  // and merged per AGENT and this one is keyed and merged per MULTIPLEXER. Folding them
+  // together would give one route two merge rules.
+  app.get("/api/terminals/config", (c) => c.json(getTerminalsConfig()));
+  app.put("/api/terminals/config", async (c) => {
+    const parsed = await parseBody(c, TerminalsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setTerminalsConfig(parsed.data));
   });
 
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---

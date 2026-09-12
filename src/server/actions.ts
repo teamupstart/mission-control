@@ -17,14 +17,19 @@ import {
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
+// Step 1's host-tab walk only. The NAMING precedence, not a preference list - which is the
+// confusion the per-multiplexer preference exists to end, so step 4 takes its order from
+// `emulatorAttemptOrder` instead.
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
 import { sessionEffortLevels, supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
+import { binUnavailableReason } from "./terminal/bin.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
   bindSession,
   canRenameTerminal,
   defaultTerminalDeps,
+  emulatorAttemptOrder,
   hostPanesFor,
   type BoundPane,
   type TerminalDeps,
@@ -2218,10 +2223,15 @@ async function raiseOutward(
   //    counts - `SpawnResult.ok` is "a tab opened", and the human has their window.
   if (attachArgv) {
     const argv = attachArgv(inside.session);
-    for (const id of EMULATOR_IDS) {
-      const spawn = deps.emulators[id].spawn;
-      if (!spawn) continue;
-      const opened = await spawn.tab({ argv, title: inside.session, cwd: null });
+    // `mux` cannot be null by the time step 4 runs - the walk returns above - so the id
+    // lookup is guarded rather than asserted.
+    for (const id of emulatorAttemptOrder(mux?.id ?? null, deps)) {
+      const emulator = deps.emulators[id];
+      if (!emulator.spawn) continue;
+      // `binUnavailableReason` rather than `deps.installed` directly: it owns the
+      // host-support-then-installed precedence, and `raiser` asks it the same way.
+      if (binUnavailableReason(emulator.bin, emulator.label, deps)) continue;
+      const opened = await emulator.spawn.tab({ argv, title: inside.session, cwd: null });
       if (opened.ok) return { ok: true };
     }
   }

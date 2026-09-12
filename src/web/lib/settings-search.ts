@@ -287,6 +287,29 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
     backup: backupNotApplicable("derived-status"),
   },
   {
+    // The setup CHECKS are derived status and back up nothing. This one control on the same
+    // panel is an operator choice that does: which terminal app a multiplexer's sessions are
+    // focused into, set on that multiplexer's Terminals row.
+    id: "multiplexer-terminal",
+    label: "Terminal for multiplexer sessions",
+    description: "Which terminal app opens a window when you focus a tmux or Herdr session.",
+    category: "setup",
+    anchor: "setup/family-terminals",
+    keywords: [
+      "terminal",
+      "multiplexer",
+      "tmux",
+      "herdr",
+      "focus",
+      "opens in",
+      "wezterm",
+      "ghostty",
+      "iterm",
+    ],
+    kind: "jump",
+    backup: backupDomains("terminals"),
+  },
+  {
     id: "auto-mode",
     label: "Auto mode on dispatch",
     description: "Launch every dispatched session in its most autonomous permission mode.",

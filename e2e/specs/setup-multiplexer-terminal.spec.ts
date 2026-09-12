@@ -117,9 +117,11 @@ test("a multiplexer carries its own terminal app, chosen on its Setup row and ke
   for (const name of ["tmux", "Herdr", "cmux"]) {
     await expect(menu.getByRole("menuitemradio", { name })).toHaveCount(0);
   }
-  await expect(menu.getByRole("menuitemradio", { name: /Automatic/ })).toHaveAttribute(
-    "aria-checked",
-    "true",
+  const automatic = menu.getByRole("menuitemradio", { name: /Automatic/ });
+  await expect(automatic).toHaveAttribute("aria-checked", "true");
+  await automatic.hover();
+  await expect(page.locator(".tooltip")).toHaveText(
+    "Let Mission Control choose the terminal app that opens tmux sessions",
   );
   await expect(menu.getByRole("menuitemradio", { name: /Ghostty/ })).toBeDisabled();
   await expect(menu.getByText("Ghostty is not installed", { exact: true })).toBeVisible();
@@ -283,4 +285,41 @@ test("two quick changes reach the daemon in the order they were made", async ({
     })
     .toBe("iterm");
   await expect(trigger).toContainText("iTerm2");
+});
+
+test("a terminal-target read that fails says so, and Re-check retries it", async ({
+  page,
+  daemon,
+}) => {
+  // Refused once, then served. Without the retry the panel would keep the dead reading for
+  // the life of the mount, with every chooser simply absent.
+  let refusals = 0;
+  await page.route("**/api/terminal-targets", async (route) => {
+    if (refusals === 0) {
+      refusals += 1;
+      return route.abort("connectionrefused");
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ targets: TARGETS }),
+    });
+  });
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "terminals");
+
+  const tmux = setupRow(page, "dependency-tmux");
+  const trigger = tmux.getByRole("button", { name: /^Terminal app for tmux sessions/ });
+  await expect(page.getByText("Mission Control could not check terminal availability", {
+    exact: false,
+  })).toBeVisible();
+  await expect(trigger).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+
+  await expect(trigger).toContainText("Automatic");
+  await expect(page.getByText("Mission Control could not check terminal availability", {
+    exact: false,
+  })).toHaveCount(0);
 });

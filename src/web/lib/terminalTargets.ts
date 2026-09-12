@@ -49,19 +49,26 @@ export interface TerminalTargetsState {
   failed: boolean;
 }
 
-export function useTerminalTargets(): TerminalTargetsState {
+/**
+ * @param revision Bumped by a caller that has just asked the machine to be inspected again.
+ * A change drops the memo and re-reads, so a Re-check retries an answer that failed rather
+ * than leaving the caller with a dead reading until it happens to remount. Zero - the
+ * default - reads once and keeps the TTL, which is what every other consumer wants.
+ */
+export function useTerminalTargets(revision = 0): TerminalTargetsState {
   const [state, setState] = useState<TerminalTargetsState>(() => ({
     targets: cached?.targets ?? null,
     failed: false,
   }));
   useEffect(() => {
     let live = true;
+    if (revision > 0) forgetTerminalTargets();
     void loadTerminalTargets().then((targets) => {
       if (live) setState({ targets, failed: targets === null });
     });
     return () => {
       live = false;
     };
-  }, []);
+  }, [revision]);
   return state;
 }

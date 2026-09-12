@@ -37,7 +37,11 @@ import {
   SETTINGS_BACKUP_DOMAIN_IDS,
 } from "../src/shared/settings-backup-domains.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
-import { terminalTargetViews, type TerminalTargetDeps } from "../src/server/terminal/targets.ts";
+import {
+  launchTerminal,
+  terminalTargetViews,
+  type TerminalTargetDeps,
+} from "../src/server/terminal/targets.ts";
 import type { BinSpec, MuxSessions, TabSpec } from "../src/server/terminal/types.ts";
 import {
   EMU_BIN,
@@ -328,6 +332,53 @@ test("Automatic, an absent choice and an unusable one all fall back to registry 
     "tmux sessions open detached - install a terminal that can show one",
   );
   assert.equal(blurb(targetDeps({ ...base, focusEmulator: () => "iterm" })), "New session, raised in WezTerm.");
+});
+
+test("an explicit launch tries every candidate before it tears the session down", async () => {
+  // `raiser` answers "which one CAN open a window"; this walk needs "which one DID". A
+  // chosen terminal that is installed and refuses must not take the detached session with
+  // it while another installed terminal could have shown it.
+  const killed: string[] = [];
+  const wezterm = spawningEmu("wezterm", "WezTerm");
+  const ghostty = spawningEmu("ghostty", "Ghostty", { ...FAIL("no window server"), target: null });
+  const deps = targetDeps({
+    multiplexers: {
+      tmux: fakeMultiplexer({
+        sessions: sessions({ kill: async (name: string) => { killed.push(name); return OK; } }),
+      }),
+    },
+    emulators: { wezterm: wezterm.backend, ghostty: ghostty.backend },
+    focusEmulator: () => "ghostty",
+  });
+
+  const launched = await launchTerminal("tmux", { name: "api", cwd: "/w/api", argv: ["zsh"] }, deps);
+
+  assert.equal(launched.ok, true);
+  assert.equal(ghostty.opened.length, 1, "the choice is attempted first");
+  assert.equal(wezterm.opened.length, 1, "then the registry order resumes");
+  assert.deepEqual(killed, [], "and the session it created is still standing");
+});
+
+test("an explicit launch cleans up only once every candidate has definitively refused", async () => {
+  const killed: string[] = [];
+  const wezterm = spawningEmu("wezterm", "WezTerm", { ...FAIL("no window server"), target: null });
+  const ghostty = spawningEmu("ghostty", "Ghostty", { ...FAIL("refused"), target: null });
+  const deps = targetDeps({
+    multiplexers: {
+      tmux: fakeMultiplexer({
+        sessions: sessions({ kill: async (name: string) => { killed.push(name); return OK; } }),
+      }),
+    },
+    emulators: { wezterm: wezterm.backend, ghostty: ghostty.backend },
+  });
+
+  const launched = await launchTerminal("tmux", { name: "api", cwd: "/w/api", argv: ["zsh"] }, deps);
+
+  assert.equal(launched.ok, false);
+  assert.equal(launched.status, 502);
+  assert.equal(wezterm.opened.length, 1);
+  assert.equal(ghostty.opened.length, 1);
+  assert.equal(killed.length, 1, "the session that can never be seen is torn down");
 });
 
 test("focus opens the terminal this multiplexer was set to, not the registry's first", async () => {

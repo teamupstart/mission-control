@@ -42,7 +42,8 @@ export interface TerminalPreferenceCopy {
   menuName: string;
   /** The menu's heading. */
   heading: string;
-  /** What Automatic does here. */
+  /** What Automatic does here: its hover sentence, and the note under its label. */
+  automaticTooltip: string;
   automaticNote: string;
   /** Hover on one backend's row. */
   rowTooltip: (label: string) => string;
@@ -64,6 +65,7 @@ export function dispatchTerminalCopy(agentLabel: string): TerminalPreferenceCopy
     triggerName: `Terminal preference for ${agentLabel}`,
     menuName: `Choose a terminal for dispatched ${agentLabel} sessions`,
     heading: `Terminal for ${agentLabel}`,
+    automaticTooltip: "Let Mission Control choose the best available terminal for each dispatch",
     automaticNote: "Prefer an available multiplexer, then fall back to a terminal app.",
     rowTooltip: (label) => `Use ${label} for dispatched terminal sessions`,
     rowNote: (target) => target.dispatchBlurb ?? target.blurb,
@@ -91,6 +93,7 @@ export function multiplexerTerminalCopy(muxLabel: string): TerminalPreferenceCop
     triggerName: `Terminal app for ${muxLabel} sessions`,
     menuName: `Choose a terminal app for ${muxLabel} sessions`,
     heading: `Terminal app for ${muxLabel} sessions`,
+    automaticTooltip: `Let Mission Control choose the terminal app that opens ${muxLabel} sessions`,
     automaticNote: "Use the first available terminal app.",
     rowTooltip: (label) => `Open ${muxLabel} sessions in ${label}`,
     rowNote: (target) => `Focus opens a new ${target.label} window.`,
@@ -249,7 +252,7 @@ export function TerminalPreferencePicker<Id extends TerminalBackendId = Terminal
           aria-label={copy.menuName}
         >
           <span className="launch-head terminal-pref-head">{copy.heading}</span>
-          <Tooltip label="Let Mission Control choose the best available terminal for each dispatch">
+          <Tooltip label={copy.automaticTooltip}>
             <button
               type="button"
               role="menuitemradio"

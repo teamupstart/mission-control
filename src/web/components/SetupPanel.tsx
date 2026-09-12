@@ -820,8 +820,16 @@ export function SetupPanel({
   // The Terminals family's per-multiplexer chooser. The targets say WHICH multiplexers need
   // one (`needsTerminalApp`) and the config says what each is set to; both are read here so
   // the rows share one answer rather than each asking the daemon.
-  const terminalTargets = useTerminalTargets();
+  // Re-checked alongside the machine itself: the targets read is the one answer on this panel
+  // that can fail on its own, and without the bump a failed read would leave the Terminals
+  // rows without their choosers until the panel happened to remount.
+  const [terminalRevision, setTerminalRevision] = useState(0);
+  const terminalTargets = useTerminalTargets(terminalRevision);
   const terminals = useTerminalsConfig();
+  const recheck = useCallback((): void => {
+    setTerminalRevision((n) => n + 1);
+    void state.refresh();
+  }, [state]);
 
   // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
   // and a new identity every render makes both of them run every render.
@@ -879,7 +887,7 @@ export function SetupPanel({
       <VerdictHeader
         rows={rows}
         loading={state.loading}
-        onRefresh={() => void state.refresh()}
+        onRefresh={recheck}
         recheckRef={recheckTourRef}
       />
       {state.error && <p className="settings-error">{state.error}</p>}
@@ -942,6 +950,14 @@ export function SetupPanel({
               printed per row would repeat itself on every multiplexer. */}
           {active === "terminals" && terminals.error && (
             <p className="settings-error">{terminals.error}</p>
+          )}
+          {/* A failed targets read leaves every chooser absent, which on its own reads as
+              "this build has no terminal apps". Re-check retries it. */}
+          {active === "terminals" && terminalTargets.failed && (
+            <p className="settings-warn">
+              Mission Control could not check terminal availability, so the per-multiplexer
+              terminal choosers are hidden. Re-check to try again.
+            </p>
           )}
           {activeRows.length > 0
             ? (

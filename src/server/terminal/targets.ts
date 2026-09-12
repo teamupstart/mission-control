@@ -347,23 +347,25 @@ export async function launchTerminal(
       // Detached is not open. A backend whose sessions can exist without a window has only
       // half-finished at this point, and reporting success here would be the exact failure
       // this module's header is about.
-      const raise = raiser(deps, mux);
-      if (!raise?.spawn) {
-        const error = await cleanupDetachedFailure(
-          sessions,
-          name,
-          view.label,
-          `${view.label} session started but no terminal could show it`,
-        );
-        return {
-          ok: false,
-          label: view.label,
-          error,
-          status: 502,
-        };
-      }
-      const shown = await raise.spawn.tab({ argv: sessions.attachArgv(name), title: name, cwd: null });
-      if (!shown.ok) {
+      //
+      // EVERY candidate in `emulatorAttemptOrder`, not just the first. `raiser` answers "which
+      // one can", and a terminal that can still fails: taking the first refusal as final would
+      // tear down a session another installed terminal could have shown, and the preference
+      // makes that reachable by putting the operator's choice at the head of the order.
+      const argv = sessions.attachArgv(name);
+      let refusal: string | null = null;
+      let raised = false;
+      for (const id of emulatorAttemptOrder(mux.id, deps)) {
+        const emulator = deps.emulators[id];
+        const spawn = canRaise(emulator, deps) ? emulator.spawn : null;
+        if (!spawn) continue;
+        const shown = await spawn.tab({ argv, title: name, cwd: null });
+        if (shown.ok) {
+          raised = true;
+          break;
+        }
+        // The window may well be open. Cleaning up on an unknown outcome would close a
+        // session the operator can see, so stop here and leave it standing.
         if (shown.outcomeUnknown) {
           return {
             ok: false,
@@ -373,11 +375,14 @@ export async function launchTerminal(
             status: 504,
           };
         }
+        refusal = shown.error ?? `${emulator?.label ?? id} could not open a window`;
+      }
+      if (!raised) {
         const error = await cleanupDetachedFailure(
           sessions,
           name,
           view.label,
-          shown.error ?? `${raise.label} could not open a window`,
+          refusal ?? `${view.label} session started but no terminal could show it`,
         );
         return {
           ok: false,

@@ -21,7 +21,7 @@ const {
   WORKFLOW_EVIDENCE_DIR,
 } = await import("../src/server/workflows/images.ts");
 const { workflowRepositoryFingerprint, reconcileWorkflowCriterionMappings } = await import("../src/server/workflows/context.ts");
-const { evaluateWorkflowEvidenceReadiness } = await import("../src/shared/workflow.ts");
+const { evaluateWorkflowEvidenceReadiness, WORKFLOW_EVIDENCE_COVERAGE_LIMITS } = await import("../src/shared/workflow.ts");
 const { buildPersonaPrompt } = await import("../src/server/workflows/prompt.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 
@@ -2614,6 +2614,98 @@ test("the left-staged event writes the same normalized claims its id was digeste
       (event?.payload as { claims: Array<{ unresolvedLinks: string[] }> }).claims,
       [{ clientCriterionId: "normalized-criterion", unresolvedLinks: ["alpha-proof", "zeta-proof"] }],
       "the payload carries the sorted set the event id was keyed on, not the registration order",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The deferred pass has a second reason to refuse, and it is not a link problem.
+ *
+ * A submission's coverage is read through a schema capped at `maxClaims`, so freezing past the cap
+ * would not retain more proof - it would make the whole submission's coverage unreadable and lose
+ * all of it. A claim refused for room is therefore reported with NO link named, because nothing
+ * about its links was wrong, and the distinction is the whole value of the report: an author told
+ * a link failed would go looking for evidence that is sitting right there.
+ */
+test("a claim refused for room is reported as room, not as a link that failed", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-capped-")));
+  try {
+    const body = "the suite every criterion here rests on\n";
+    writeFileSync(join(checkout, "capped.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const max = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims;
+
+    // Exactly `maxClaims` claims plus the item a later one will cite, all frozen by the
+    // submission's own reservation, leaving the deferred pass no room at all.
+    store.stageWorkflowEvidence(
+      noteKey,
+      [logWrite({
+        id: "capped-item",
+        clientItemId: "capped-proof",
+        root: checkout,
+        locator: "capped.log",
+        caption: "The suite every criterion here rests on",
+        body,
+      })],
+      2,
+      null,
+      Array.from({ length: max }, (_unused, index) => ({
+        id: `capped-claim-${index}`,
+        clientCriterionId: `capped-criterion-${String(index).padStart(3, "0")}`,
+        criterion: `Filler criterion ${index}`,
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [],
+      })),
+    );
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "capped-root", now: 3 },
+      { id: "capped-first", triggerSource: "manual", triggerKey: "capped-root", context: {}, evidence: {}, now: 3 },
+    );
+    assert.equal(
+      store.listSubmissionCoverage(submission.submission.id).length,
+      max,
+      "the submission starts exactly at the cap",
+    );
+
+    // Registered after the submission, so it is a candidate the deferred pass sees and the
+    // reservation never did. Its link resolves perfectly well; there is simply nowhere to put it.
+    store.stageWorkflowEvidence(noteKey, [], 4, null, [{
+      id: "capped-overflow",
+      clientCriterionId: "overflow-criterion",
+      criterion: "One criterion more than the frozen record can hold",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "capped-proof", role: "execution" as const }],
+    }]);
+
+    const deferred = store.freezeDeferredSubmissionCoverage({ submissionId: submission.submission.id, now: 5 });
+    assert.deepEqual(deferred.frozen, [], "the cap is respected rather than exceeded");
+    assert.deepEqual(
+      deferred.unresolved,
+      [{ clientCriterionId: "overflow-criterion", unresolvedLinks: [] }],
+      "and the refusal names no link, because the links were never the problem",
+    );
+    assert.equal(
+      store.listSubmissionCoverage(submission.submission.id).length,
+      max,
+      "the frozen record still parses, which is what the cap protects",
+    );
+    assert.deepEqual(
+      (store.listWorkflowEvidence(noteKey).coverage ?? []).map((claim) => claim.clientCriterionId),
+      ["overflow-criterion"],
+      "the refused claim stays in the tray, visible and still registerable against a later round",
+    );
+    const event = store.listEvents(runId)
+      .find((row) => row.kind === "evidence_coverage_left_staged");
+    assert.deepEqual(
+      (event?.payload as { claims: unknown }).claims,
+      [{ clientCriterionId: "overflow-criterion", unresolvedLinks: [] }],
+      "and the run log says the same thing the caller was told",
     );
   } finally {
     rmSync(checkout, { recursive: true, force: true });

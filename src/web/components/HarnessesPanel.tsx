@@ -319,8 +319,11 @@ function HarnessCard({
           <>
             {" "}
             <strong>
-              Install Pi and the Mission Control Pi extension in <a href="#/settings/setup">Setup</a>,
-              then re-check before enabling Agent SDK.
+              Install Pi and the Mission Control Pi extension in{" "}
+              <Tooltip label="Open Setup to install the Pi Agent SDK prerequisites">
+                <a href="#/settings/setup">Setup</a>
+              </Tooltip>
+              , then re-check before enabling Agent SDK.
             </strong>
           </>
         )}

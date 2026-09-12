@@ -19,8 +19,11 @@ import {
   confirmPhraseSatisfied,
   type WorkflowConfirmRequest,
 } from "../src/web/workflows/WorkflowConfirmModal.tsx";
+import type { WorkflowEvidenceCoverageClaim } from "../src/shared/workflow.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 import {
+  coverageClaimFromDraft,
+  coverageDraftFromClaim,
   workflowEvidenceSubmission,
   type WorkflowEvidenceDraftController,
 } from "../src/web/workflows/WorkflowEvidenceComposer.tsx";
@@ -163,4 +166,35 @@ test("no workflow surface raises a native dialog", () => {
     }
   }
   assert.deepEqual(offenders, [], `native dialog raised at ${offenders.join(", ")}`);
+});
+
+test("editing a claim in the composer keeps the criterion binding it cannot show", () => {
+  const claim: WorkflowEvidenceCoverageClaim = {
+    clientCriterionId: "themed-modals",
+    criterion: "Every update dialog renders as a themed modal",
+    criterionId: "criterion-2-bbbb",
+    proofClass: "visual",
+    repositoryScope: "repo-01",
+    links: [
+      { clientItemId: "shot-available", role: "rendered_output" },
+      { clientItemId: "e2e-theme", role: "execution" },
+      { clientItemId: "shot-ready", role: "rendered_output" },
+    ],
+  };
+  const draft = coverageDraftFromClaim(claim);
+  assert.equal(draft.criterionId, "criterion-2-bbbb");
+  // The operator corrects the wording. The binding the agent was told to cite is not a visible
+  // field, so only the round trip can keep it.
+  const edited = { ...draft, criterion: "Every update dialog renders as a Mission Control modal" };
+  const saved = coverageClaimFromDraft(edited, claim.links);
+  assert.equal(saved.criterionId, "criterion-2-bbbb");
+  assert.equal(saved.criterion, "Every update dialog renders as a Mission Control modal");
+  assert.deepEqual(saved.links, claim.links);
+
+  // A claim that cites nothing stays shaped exactly as it was before the field existed.
+  const { criterionId: _omitted, ...unbound } = claim;
+  assert.equal(
+    Object.hasOwn(coverageClaimFromDraft(coverageDraftFromClaim(unbound), unbound.links), "criterionId"),
+    false,
+  );
 });

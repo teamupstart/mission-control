@@ -468,13 +468,65 @@ const PROOF_ROLE_LABELS: Record<WorkflowEvidenceProofRole, string> = {
   state_snapshot: "State snapshot",
 };
 
-interface CoverageDraft {
+export interface CoverageDraft {
   clientCriterionId: string;
   criterion: string;
+  /**
+   * The canonical criterion a claim already cites, carried through an operator edit.
+   *
+   * The composer never mints one - it has no run and so no criteria to offer - but an agent
+   * repairing a preflight gap does, and rebuilding the claim from the visible fields alone
+   * would silently unbind it the first time a person corrected its wording.
+   */
+  criterionId?: string;
   proofClass: WorkflowEvidenceProofClass;
   repositoryScope: WorkflowEvidenceRepositoryScope;
   selections: Record<number, string>;
   preservedLinks: WorkflowEvidenceCoverageLink[];
+}
+
+/**
+ * The claim a draft stands for, including the criterion binding the composer cannot show.
+ *
+ * Paired with `coverageDraftFromClaim` so the round trip is one reversible pair rather than two
+ * field lists that have to be kept in step by eye. A field the composer has no control for is
+ * exactly the field a rebuild-from-visible-fields save drops, which is why this is where both
+ * directions live.
+ */
+export function coverageClaimFromDraft(
+  draft: CoverageDraft,
+  links: readonly WorkflowEvidenceCoverageLink[],
+): WorkflowEvidenceCoverageClaim {
+  return {
+    clientCriterionId: draft.clientCriterionId,
+    criterion: draft.criterion.trim(),
+    ...(draft.criterionId ? { criterionId: draft.criterionId } : {}),
+    proofClass: draft.proofClass,
+    repositoryScope: draft.repositoryScope,
+    links: [...links],
+  };
+}
+
+export function coverageDraftFromClaim(claim: WorkflowEvidenceCoverageClaim): CoverageDraft {
+  const groups = workflowEvidenceRequiredRoleGroups(claim.proofClass);
+  const selectedKeys = new Set<string>();
+  const selections = Object.fromEntries(groups.flatMap((roles, index) => {
+    const link = claim.links.find((candidate) => roles.includes(candidate.role));
+    if (!link) return [];
+    selectedKeys.add(`${link.clientItemId}\0${link.role}`);
+    return [[index, `${link.role}:${link.clientItemId}`]];
+  }));
+  return {
+    clientCriterionId: claim.clientCriterionId,
+    criterion: claim.criterion,
+    ...(claim.criterionId ? { criterionId: claim.criterionId } : {}),
+    proofClass: claim.proofClass,
+    repositoryScope: claim.repositoryScope,
+    selections,
+    preservedLinks: claim.links.filter(
+      (link) => !selectedKeys.has(`${link.clientItemId}\0${link.role}`),
+    ),
+  };
 }
 
 function blankCoverageDraft(scope: WorkflowEvidenceRepositoryScope): CoverageDraft {
@@ -528,36 +580,13 @@ function CoverageComposer({
   });
   const gaps = workflowEvidenceMissingRoleGaps(draft.proofClass, links.map((link) => link.role));
   const edit = (claim: WorkflowEvidenceCoverageClaim): void => {
-    const groups = workflowEvidenceRequiredRoleGroups(claim.proofClass);
-    const selectedKeys = new Set<string>();
-    const selections = Object.fromEntries(groups.flatMap((roles, index) => {
-      const link = claim.links.find((candidate) => roles.includes(candidate.role));
-      if (!link) return [];
-      selectedKeys.add(`${link.clientItemId}\0${link.role}`);
-      return [[index, `${link.role}:${link.clientItemId}`]];
-    }));
-    setDraft({
-      clientCriterionId: claim.clientCriterionId,
-      criterion: claim.criterion,
-      proofClass: claim.proofClass,
-      repositoryScope: claim.repositoryScope,
-      selections,
-      preservedLinks: claim.links.filter(
-        (link) => !selectedKeys.has(`${link.clientItemId}\0${link.role}`),
-      ),
-    });
+    setDraft(coverageDraftFromClaim(claim));
   };
   const save = async (): Promise<void> => {
     if (!draft.criterion.trim() || saving) return;
     setSaving(true);
     try {
-      await controller.saveCoverage({
-        clientCriterionId: draft.clientCriterionId,
-        criterion: draft.criterion.trim(),
-        proofClass: draft.proofClass,
-        repositoryScope: draft.repositoryScope,
-        links,
-      });
+      await controller.saveCoverage(coverageClaimFromDraft(draft, links));
       setDraft(blankCoverageDraft(scopes[0]?.value ?? "repo-01"));
     } catch {
       // The controller publishes the bounded daemon error beside the composer.

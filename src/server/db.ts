@@ -1093,6 +1093,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       note_key              TEXT NOT NULL,
       client_criterion_id   TEXT NOT NULL,
       criterion             TEXT NOT NULL,
+      -- The canonical criterion the author cited, or NULL when it was never told one.
+      criterion_id          TEXT,
       proof_class           TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
       source_root           TEXT NOT NULL,
@@ -1153,6 +1155,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       staging_id            TEXT NOT NULL,
       client_criterion_id   TEXT NOT NULL,
       criterion             TEXT NOT NULL,
+      -- The canonical criterion the author cited, frozen with the rest of the claim.
+      criterion_id          TEXT,
       proof_class           TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
       links_json            TEXT NOT NULL,
@@ -3154,6 +3158,11 @@ function migrate(d: DatabaseSync): void {
   // in full, and this column is what lets readiness tell a claim the author declared HERE from
   // the ancestry standing behind it, rather than reading the two as competing declarations.
   addColumn(d, "workflow_submission_evidence_coverage", "inherited_from_submission_id", "TEXT");
+  // A claim may now name the canonical criterion it answers rather than being matched back by
+  // prose. Both halves of the coverage lifecycle carry it, because a staged claim is what a
+  // submission freezes and the mapping has to survive that copy.
+  addColumn(d, "workflow_evidence_coverage_staging", "criterion_id", "TEXT");
+  addColumn(d, "workflow_submission_evidence_coverage", "criterion_id", "TEXT");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what

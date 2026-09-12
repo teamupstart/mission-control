@@ -4957,6 +4957,10 @@ export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCove
       (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
       `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
     ),
+  // Optional on the wire and absent on every historical row. An older daemon strips it and
+  // matches the claim by text exactly as it always did, so a mismatched build degrades to the
+  // previous behaviour rather than refusing the packet.
+  criterionId: z.string().min(1).max(200).nullable().optional(),
   proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
   links: z.array(WorkflowEvidenceCoverageLinkSchema)
@@ -5023,6 +5027,11 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    // Absent on every readiness row written before the repair packet could name a contested
+    // claim, so it defaults rather than failing those rows open.
+    contestedClientCriterionIds: z.array(
+      z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+    ).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional(),
     authorProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
     suggestedProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
     links: z.array(z.object({
@@ -5035,6 +5044,12 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     warnings: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES))
       .max(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES.length),
   })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+  // Absent on every readiness row written before a claim could cite a criterion.
+  rejectedCitations: z.array(z.object({
+    clientCriterionId: z.string().min(1)
+      .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+    criterionId: z.string().min(1).max(200),
+  })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional(),
   gapCodes: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES))
     .max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
   warningCodes: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES))

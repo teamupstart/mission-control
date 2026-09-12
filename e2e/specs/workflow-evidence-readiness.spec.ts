@@ -1037,3 +1037,258 @@ test("mapping infrastructure recovery reuses frozen evidence and stops at its ru
   expect(blocked.run.status).toBe("blocked");
   expect(blocked.submissions).toHaveLength(4);
 });
+
+/**
+ * Stage or restage one coverage claim, optionally citing the criterion it answers.
+ *
+ * `stageLaterPacket` writes the evidence items and one claim; this restates a claim beside
+ * them, which is what a contest needs and what `criterionId` is registered through. It bumps
+ * the owner and scope generations the same way, because a preflight retry refines only from a
+ * strictly newer staging generation.
+ */
+function stageCoverageClaim(
+  daemon: DaemonHandle,
+  noteKey: string,
+  cwd: string,
+  generation: number,
+  claim: {
+    clientCriterionId: string;
+    criterion: string;
+    criterionId: string | null;
+    links: Array<{ clientItemId: string; role: string }>;
+  },
+): void {
+  const now = Date.now();
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `UPDATE workflow_evidence_owners SET generation = ?, updated_at = ? WHERE note_key = ?`,
+    ).run(generation, now, noteKey);
+    db.prepare(
+      `INSERT INTO workflow_evidence_scope_generations (
+         note_key, source_root, generation, updated_at
+       ) VALUES (?, ?, ?, ?)
+       ON CONFLICT(note_key, source_root) DO UPDATE SET
+         generation = excluded.generation, updated_at = excluded.updated_at`,
+    ).run(noteKey, cwd, generation, now);
+    db.prepare(
+      `INSERT INTO workflow_evidence_coverage_staging (
+         id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+         repository_scope, source_root, links_json, episode_key, generation, state,
+         reserved_group_key, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, 'visual', 'repo-01', ?, ?, NULL, ?, 'staged', NULL, ?, ?)
+       ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
+         criterion = excluded.criterion,
+         criterion_id = excluded.criterion_id,
+         links_json = excluded.links_json,
+         generation = excluded.generation,
+         updated_at = excluded.updated_at`,
+    ).run(
+      `e2e-${claim.clientCriterionId}`,
+      noteKey,
+      claim.clientCriterionId,
+      claim.criterion,
+      claim.criterionId,
+      cwd,
+      JSON.stringify(claim.links),
+      generation,
+      now,
+      now,
+    );
+  });
+}
+
+/**
+ * The two halves of criterion binding a person can actually see.
+ *
+ * The criteria are minted during capture, so nothing a session or an operator writes before
+ * the first submission can know them, and the repair packet is the only place they are ever
+ * published. That makes both of these browser-level facts: what the packet SAYS, and whether
+ * a citation taken from it survives the composer that cannot display it.
+ */
+test("the preflight packet names contested claims, and a cited criterion id survives an operator edit", async ({
+  dashboard,
+  daemon,
+}) => {
+  test.setTimeout(180_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const versionId = await createWorkflow(daemon);
+  const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(
+    daemon,
+    "/api/sessions",
+  )).find((candidate) => candidate.id === sessionId)!;
+  const noteKey = session.agentSessionId ?? session.id;
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `INSERT INTO workflow_evidence_owners (note_key, generation, all_generation, updated_at)
+       VALUES (?, 0, 0, ?)`,
+    ).run(noteKey, Date.now());
+  });
+  stageLaterPacket(daemon, noteKey, session.cwd, 1, "cited", true);
+  const citedLinks = [
+    { clientItemId: "cited-execution", role: "execution" },
+    { clientItemId: "cited-rendered", role: "rendered_output" },
+  ];
+  // A citation the composer has no control for, and one this submission's author wrote, so the
+  // evaluator refuses it by name below. It is here to be carried through the operator's edit
+  // first: the edit must preserve a binding the form cannot display, whether that binding
+  // turns out to resolve or not.
+  stageCoverageClaim(daemon, noteKey, session.cwd, 1, {
+    clientCriterionId: "cited-criterion",
+    criterion: "The dashboard result is visually correct",
+    criterionId: "criterion-1-e2eplaceholder",
+    links: citedLinks,
+  });
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs`);
+  await dashboard.reload();
+  await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
+  const dialog = dashboard.getByRole("dialog", { name: "Bind workflow" });
+  await dialog.getByLabel("Session").selectOption(sessionId);
+  await dialog.getByLabel("Published workflow").selectOption(versionId);
+  const composer = dialog.getByRole("region", { name: "Workflow evidence" });
+  await expect(composer).toContainText("1 saved");
+  await composer.locator(".workflow-coverage-claim")
+    .filter({ hasText: "The dashboard result is visually correct" })
+    .getByRole("button", { name: "Edit" })
+    .click();
+  await composer.getByPlaceholder("What must be true for this work to be accepted?")
+    .fill("Operator reworded this claim past every criterion's own words");
+  await composer.getByRole("button", { name: "Save criterion mapping" }).click();
+  await expect(composer).toContainText("Operator reworded this claim past every criterion's own words");
+  // The claim went back to the daemon through the composer's own route, carrying the binding
+  // that has no field on screen. Rebuilding the claim from its visible fields dropped it here.
+  await expect.poll(async () => (
+    await api<{ coverage: Array<{ clientCriterionId: string; criterionId?: string | null }> }>(
+      daemon,
+      `/api/sessions/${sessionId}/workflow-evidence`,
+    )
+  ).coverage.find((claim) => claim.clientCriterionId === "cited-criterion")?.criterionId)
+    .toBe("criterion-1-e2eplaceholder");
+
+  const submitted = dashboard.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && /\/api\/workflow-bindings\/[^/]+\/submit$/.test(new URL(response.url()).pathname));
+  await dialog.getByRole("button", { name: "Bind and submit" }).click();
+  const run = (await (await submitted).json() as { run: { id: string } }).run;
+
+  /*
+   * The placeholder names no criterion, so the claim answers for nothing and the run parks.
+   *
+   * Its text is the criterion's own words, which is what makes a silent fallback dangerous
+   * rather than merely useless: prose matching would have bound a claim whose author said
+   * something else, and the packet would have reported a symptom instead of the typo.
+   */
+  await expect.poll(async () => (
+    await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.id}`)
+  ).run.status, { timeout: 60_000 }).toBe("waiting_for_evidence_readiness");
+  const firstDetail = await api<{ submissions: WorkflowSubmission[] }>(
+    daemon,
+    `/api/workflow-runs/${run.id}`,
+  );
+  const canonical = WorkflowContextSnapshotSchema.parse(firstDetail.submissions[0]!.context)
+    .canonicalCriteria![0]!;
+  expect(canonical.id).toMatch(/^criterion-1-[0-9a-f]{16}$/);
+
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
+  await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+  const refusedLedger = dashboard.getByRole("tabpanel", { name: /^Deliveries/ });
+  await refusedLedger.locator("tr.wf-run-ledger-row").first()
+    .getByRole("button", { name: "Show packet" }).click();
+  const refusedPacket = refusedLedger.locator("tr.wf-run-ledger-detail").first();
+  await expect(refusedPacket).toContainText("Criterion ids that matched nothing");
+  await expect(refusedPacket).toContainText(
+    "Claim cited-criterion cited criterion-1-e2eplaceholder, which is not a criterion of this run",
+  );
+  await expect(refusedPacket).toContainText("matched by nothing, including its own text");
+  await capture(dashboard, "16-refused-citation", refusedPacket);
+
+  /*
+   * Two claims citing ONE criterion: the ambiguity that is still undecidable, because a
+   * criterion carries a single author proof class and there is nothing to choose between them.
+   *
+   * Staged at generation 3, not 2. Saving the claim through the composer above already moved
+   * this scope to 2, and a preflight retry refines only from a strictly newer generation.
+   */
+  stageLaterPacket(daemon, noteKey, session.cwd, 3, "contest", true);
+  const contestLinks = [
+    { clientItemId: "contest-execution", role: "execution" },
+    { clientItemId: "contest-rendered", role: "rendered_output" },
+  ];
+  for (const clientCriterionId of ["contest-primary", "contest-rival"]) {
+    stageCoverageClaim(daemon, noteKey, session.cwd, 3, {
+      clientCriterionId,
+      criterion: `Wording that matches no criterion (${clientCriterionId})`,
+      criterionId: canonical.id,
+      links: contestLinks,
+    });
+  }
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
+  const pane = await evidencePane(dashboard);
+  await pane.getByRole("button", { name: "Retry evidence preflight" }).click();
+  await expect.poll(async () => (
+    await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${run.id}`)
+  ).submissions.length, { timeout: 60_000 }).toBe(2);
+  await expect.poll(async () => (
+    await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.id}`)
+  ).run.status, { timeout: 60_000 }).toBe("waiting_for_evidence_readiness");
+  await dashboard.reload();
+  const contestedPane = await evidencePane(dashboard);
+  await expect(contestedPane).toContainText("ambiguous mapping");
+  await capture(dashboard, "17-contested-criterion", contestedPane);
+
+  // The packet itself, as the session received it, read through the control a person uses.
+  await dashboard.getByRole("tab", { name: /^Deliveries/ }).click();
+  const ledger = dashboard.getByRole("tabpanel", { name: /^Deliveries/ });
+  await expect(ledger).toContainText("Evidence preflight");
+  // The newest packet: the refusal from the first submission is still listed above it.
+  await ledger.locator("tr.wf-run-ledger-row").last()
+    .getByRole("button", { name: "Show packet" }).click();
+  const packet = ledger.locator("tr.wf-run-ledger-detail").last();
+  await expect(packet).toContainText(`Criterion id: ${canonical.id}`);
+  await expect(packet).toContainText("Claims currently matched to it: contest-primary, contest-rival");
+  await expect(packet).toContainText("one claim may answer several criteria");
+  await expect(packet).toContainText("linked from as many claims as apply");
+  await expect(packet).toContainText("Evidence and coverage you already registered are carried");
+  await expect(packet).toContainText(
+    "Leave exactly one of the claims below on this criterion and move or withdraw the rest",
+  );
+  // The instruction that sent authors to capture proof for a mapping fault is gone.
+  await expect(packet).not.toContainText("match exactly one author-controlled coverage claim");
+  await capture(dashboard, "18-preflight-packet-copy", packet);
+
+  /*
+   * The repair: one claim citing the id the packet published, worded like nothing in the run.
+   *
+   * Its evidence has to be staged afresh: the contested submission RESERVED the items it
+   * linked, and a claim whose links no longer resolve inside the submission is left staged
+   * rather than frozen. `stageLaterPacket` also writes a claim of its own, which would be
+   * mapped by prose onto the same criterion and contest it all over again, so that one is
+   * dropped and only the citation is left to bind.
+   */
+  stageLaterPacket(daemon, noteKey, session.cwd, 4, "repair", true);
+  withDaemonDb(daemon, (db) => {
+    db.prepare(
+      `DELETE FROM workflow_evidence_coverage_staging
+        WHERE note_key = ? AND client_criterion_id = 'repair-criterion'`,
+    ).run(noteKey);
+  });
+  stageCoverageClaim(daemon, noteKey, session.cwd, 4, {
+    clientCriterionId: "repair-cited",
+    criterion: "A repair claim that no criterion text would ever match",
+    criterionId: canonical.id,
+    links: [
+      { clientItemId: "repair-execution", role: "execution" },
+      { clientItemId: "repair-rendered", role: "rendered_output" },
+    ],
+  });
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
+  const repairPane = await evidencePane(dashboard);
+  await repairPane.getByRole("button", { name: "Retry evidence preflight" }).click();
+  await expect.poll(async () => (
+    await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.id}`)
+  ).run.status, { timeout: 60_000 }).toBe("completed");
+  await dashboard.reload();
+  const repaired = await evidencePane(dashboard);
+  await expect(repaired).toContainText("ready");
+  await capture(dashboard, "19-cited-criterion-repaired", repaired);
+});

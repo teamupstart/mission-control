@@ -21,6 +21,8 @@ import type {
 import {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
   WORKFLOW_EXECUTION_LIMITS,
+  classifyWorkflowCoverageCitation,
+  workflowCoverageCitationAllowsText,
   workflowCrossCriterionClaimIds,
 } from "@shared/workflow.ts";
 import {
@@ -260,11 +262,48 @@ export function reconcileWorkflowCriterionMappings(
     criterionMappings: proposedMappings,
     coverage,
   });
-  const matches = criteria.map((criterion) => proposedMappings
+  /**
+   * A claim that names its criterion is bound to that criterion and to no other.
+   *
+   * This is the whole point of letting a repair packet publish canonical ids: the author was
+   * told the identity, so nothing has to infer it back out of prose. It outranks both the
+   * text owner below and anything a model proposed, and it removes the claim from every other
+   * criterion's matches - an explicit citation is a statement about WHICH criterion, so
+   * honouring it here and also letting a proposal spread the same claim elsewhere would
+   * answer a question the author already answered.
+   *
+   * An id that names no criterion of this run is not quietly downgraded to a text match. The
+   * field means the author knows which criterion this is, so a stale or mistyped id is a
+   * statement that is WRONG rather than one that was never made, and prose matching would let
+   * it land somewhere nobody chose while the packet reported only the symptom. Such a claim
+   * matches nothing here and `evaluateWorkflowEvidenceReadiness` reports the citation by name.
+   */
+  const canonicalIds = new Set(criteria.map((criterion) => criterion.id));
+  const citedOrdinals = new Map<string, number>();
+  const textMatchable = new Set<string>();
+  for (const claim of coverage) {
+    const citation = classifyWorkflowCoverageCitation(claim, canonicalIds);
+    if (workflowCoverageCitationAllowsText(citation)) {
+      textMatchable.add(claim.clientCriterionId);
+      continue;
+    }
+    if (citation !== "resolved") continue;
+    citedOrdinals.set(
+      claim.clientCriterionId,
+      criteria.findIndex((criterion) => criterion.id === claim.criterionId),
+    );
+  }
+  const matches = criteria.map((criterion, ordinal) => proposedMappings
     .filter((mapping) => mapping.criterionId === criterion.id)
     .flatMap((mapping) => mapping.matchedClientCriterionIds)
-    .filter((id) => currentClaimIds.has(id)));
+    .filter((id) => currentClaimIds.has(id))
+    .filter((id) => citedOrdinals.has(id) || textMatchable.has(id))
+    .filter((id) => (citedOrdinals.get(id) ?? ordinal) === ordinal));
+  for (const [clientCriterionId, ordinal] of citedOrdinals) {
+    matches[ordinal]!.push(clientCriterionId);
+  }
   for (const claim of coverage) {
+    if (!textMatchable.has(claim.clientCriterionId)) continue;
     if (ambiguousProposedIds.has(claim.clientCriterionId)) continue;
     const indexes = owners.get(normalizedCriterionText(claim.criterion));
     if (!indexes || indexes.size !== 1) continue;
@@ -526,7 +565,14 @@ export async function reconcileWorkflowCoverage(
   } = {},
 ): Promise<WorkflowContextSnapshot> {
   const criteria = context.canonicalCriteria ?? [];
-  const fingerprint = sha(criterionReconciliationPrompt(criteria, [...coverage]
+  // The model is asked about exactly the claims that are matched by their prose. A resolved
+  // citation is already mapped and a rejected one is refused by name, and handing either to
+  // inference would give a second, unasked-for answer to a question the author settled.
+  const canonicalIds = new Set(criteria.map((criterion) => criterion.id));
+  const unmapped = coverage.filter((claim) => workflowCoverageCitationAllowsText(
+    classifyWorkflowCoverageCitation(claim, canonicalIds),
+  ));
+  const fingerprint = sha(criterionReconciliationPrompt(criteria, [...unmapped]
     .sort((a, b) => a.clientCriterionId.localeCompare(b.clientCriterionId))));
   const previous = deps.previous?.reconciliation?.fingerprint === fingerprint ? deps.previous : undefined;
   let mappings = reconcileWorkflowCriterionMappings(criteria, coverage, {
@@ -546,7 +592,7 @@ export async function reconcileWorkflowCoverage(
     attempts: previous?.reconciliation?.attempts ?? 0,
     error: previous?.reconciliation?.error ?? "Criterion mapping did not complete", cause: previous?.reconciliation?.cause ?? "transport",
   };
-  const prompt = criterionReconciliationPrompt(criteria, coverage);
+  const prompt = criterionReconciliationPrompt(criteria, unmapped);
   while (state.attempts < 2 && deps.active?.() !== false) {
     state = { ...state, status: "pending", attempts: state.attempts + 1 };
     deps.onProgress?.(complete(state));

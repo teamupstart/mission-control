@@ -1069,10 +1069,38 @@ unchanged-evidence refusal: that comparison reads evidence by digest, caption, a
 than by frozen row id.
 
 Coverage is reserved in the same transaction as its linked evidence and copied to an immutable
-submission table. After evidence bytes are safely captured, mapping first uses normalized exact
-matches and the prior source bridge. Unresolved material criteria use semantic reconciliation.
-Stable canonical identity, text, materiality, and proof suggestion live in `canonicalCriteria`;
-raw matches live in `criterionMappings`, with effective choices in `coverageSelection`.
+submission table. After evidence bytes are safely captured, mapping first honours a claim's own
+`criterionId`, then normalized exact matches and the prior source bridge. Unresolved material
+criteria use semantic reconciliation. Stable canonical identity, text, materiality, and proof
+suggestion live in `canonicalCriteria`; raw matches live in `criterionMappings`, with effective
+choices in `coverageSelection`.
+
+A claim may name the canonical criterion it answers. The criteria are minted during capture, so a
+first submission has nothing to cite and omits the field; an evidence preflight repair packet
+publishes every criterion's id, and a claim carrying one is bound to that criterion and to no
+other, ahead of both the text owner and anything the model proposed. A claim whose citation
+resolves is never sent to semantic reconciliation, so a repair whose every material criterion is
+cited maps deterministically with no provider call. An id this submission's author wrote that
+names no criterion of the run is refused rather than downgraded: the claim is matched by nothing,
+including its own text, readiness records the citation under `rejectedCitations` and raises
+`unknown_criterion_id`, and the repair packet names the claim and the id it cited before listing
+the criteria that went uncovered because of it.
+
+A claim CARRIED from an earlier submission is the one exception. Its cited id may no longer
+resolve, and the author of the repair in front of it cannot withdraw an id they did not write, so
+it keeps the pre-citation behaviour: matched by its own text, and eligible for semantic
+reconciliation like any uncited claim. `classifyWorkflowCoverageCitation` in
+`src/shared/workflow.ts` decides which of those four cases a citation is, and criterion mapping,
+the reconciliation provider filter and readiness all read it rather than re-deriving the rule.
+The field is optional on the wire and absent from every historical row, so an older daemon strips
+it and matches by text as before.
+
+One claim may answer several criteria, and each of them counts it. Linking one evidence item from
+several claims has always been allowed, so a claim covering two criteria is the same proof a
+compliant author would have written as two claims citing one item; discarding it proved nothing
+and cost the criterion it did answer every one of its links. Two claims matched to ONE criterion
+remains `ambiguous_mapping`, because a criterion carries a single author proof class and there is
+nothing to choose between them. The repair packet names the competing claim ids.
 
 Reconciliation records its input fingerprint, completion status, consumed attempts and failure
 cause separately from readiness. Each operation allows two actual provider executions, including
@@ -1102,7 +1130,11 @@ text does not enter fleet summaries.
 Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
 result before the engine creates any Persona or Check attempt. A structural gap parks the run at
 `waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
-original immutable submission inspectable. Newly staged evidence resumes as a child segment in the
+original immutable submission inspectable. That packet carries the whole rubric rather than only
+its holes: the matching rules, every gapped criterion with its id and the claim ids contesting it,
+and a one-line reference list of the criteria that already matched. It is the first and only place
+an author learns the criteria, which are minted during capture and reach no session prompt, so a
+packet that named only the failures left the author to infer the rubric from them. Newly staged evidence resumes as a child segment in the
 same round with `refinementReason: evidence_preflight`; it does not spend a Persona repair round.
 It reuses the run's constraints, acceptance criteria, canonical ids/text, materiality, and
 proof-class suggestions without creating a `context_compaction` call, exactly as every other

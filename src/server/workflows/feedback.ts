@@ -278,7 +278,7 @@ function finalizePacket(
 
 const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
   missing_coverage: "Declare and link an author-controlled coverage claim for this criterion.",
-  ambiguous_mapping: "Make the criterion match exactly one author-controlled coverage claim.",
+  ambiguous_mapping: "Leave exactly one of the claims below on this criterion and move or withdraw the rest.",
   evidence_not_frozen: "Register the linked evidence item again so it freezes with the repair segment.",
   scope_conflict: "Link evidence issued for this repository scope or for all repositories.",
   missing_execution: "Register and link exact completed focused command output with role execution.",
@@ -287,6 +287,7 @@ const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
   missing_result_measurement: "Register and link the measured result with role result_measurement.",
   missing_deliverable_or_rendered_output: "Register and link the deliverable or its rendered output.",
   missing_state_snapshot: "Register and link a bounded state snapshot with role state_snapshot.",
+  unknown_criterion_id: "Correct or remove the criterionId named below; it matches no criterion of this run.",
 };
 
 /** Render deterministic structural gaps without exposing internal evidence ids or local paths. */
@@ -307,9 +308,55 @@ export function renderEvidenceReadinessPacket(
     `Repository: ${bounded(input.repository)}`,
     `Round: ${input.round}, segment: ${input.segment}`,
   ];
+  /*
+   * The rules first, then the criteria, and the criteria include the ones that passed.
+   *
+   * An author cannot repair a mapping it has never been shown. The criteria are minted during
+   * capture from the operator's intent, so a first submission necessarily guesses at how many
+   * there are and how they are worded, and this packet is the first and only place that guess
+   * is corrected. Printing only the failures left the author to infer the rubric from its
+   * holes, and printing no rule at all left the commonest repair - one claim per criterion,
+   * all of them pointing at evidence that is already registered - to be rediscovered.
+   */
+  lines.push(
+    "",
+    "## How a criterion is matched",
+    "- Each criterion below needs exactly one coverage claim of its own. Two claims on one criterion is the only ambiguity left; one claim may answer several criteria.",
+    "- Bind a claim by copying the criterion id into its `criterionId`. Copying the criterion text verbatim into `criterion` also binds it. Either one avoids a guess.",
+    "- One evidence item may be linked from as many claims as apply. Proof you already registered does not need capturing again to cover a second criterion.",
+    "- Evidence and coverage you already registered are carried into this repair segment. Register only what is genuinely missing.",
+  );
+  /*
+   * A refused citation is reported before the criteria, because it EXPLAINS them.
+   *
+   * A claim whose `criterionId` resolved to nothing is matched by nothing at all - not by its
+   * prose either - so whatever criterion it was meant to answer is sitting below saying it has
+   * no coverage. Printing only that would send the author to capture proof for a criterion
+   * whose proof is already registered under a mistyped id.
+   */
+  const rejected = input.readiness.rejectedCitations ?? [];
+  if (rejected.length > 0) {
+    lines.push("", "## Criterion ids that matched nothing");
+    for (const citation of rejected) {
+      lines.push(
+        `- Claim ${bounded(citation.clientCriterionId)} cited ${bounded(citation.criterionId)},`
+        + " which is not a criterion of this run. The claim was matched by nothing, including"
+        + " its own text.",
+      );
+    }
+    lines.push(
+      "Copy an id exactly as it appears under a criterion below, or drop `criterionId` and let"
+      + " the claim be matched by its text.",
+    );
+  }
   for (const criterion of input.readiness.criteria.filter((item) => item.gaps.length > 0)) {
     lines.push("", `## ${bounded(criterion.criterion)}`);
+    lines.push(`Criterion id: ${bounded(criterion.criterionId)}`);
     lines.push(`Author proof class: ${criterion.authorProofClass?.replaceAll("_", " ") ?? "not declared"}`);
+    const contested = criterion.contestedClientCriterionIds ?? [];
+    if (contested.length > 0) {
+      lines.push(`Claims currently matched to it: ${contested.map(bounded).join(", ")}`);
+    }
     if (criterion.links.length > 0) {
       lines.push("Linked evidence:");
       for (const link of criterion.links) {
@@ -322,6 +369,18 @@ export function renderEvidenceReadinessPacket(
     for (const gap of criterion.gaps) lines.push(`- ${READINESS_ACTIONS[gap] ?? gap}`);
     if (criterion.warnings.length > 0) {
       lines.push("Advisory model warning: the suggested proof class differs from the author's declaration. The author declaration controls structural requirements.");
+    }
+  }
+  const satisfied = input.readiness.criteria.filter((item) => item.gaps.length === 0);
+  if (satisfied.length > 0) {
+    lines.push("", "## Criteria already matched, for reference only");
+    for (const criterion of satisfied) {
+      const by = criterion.matchedClientCriterionId
+        ? `covered by ${bounded(criterion.matchedClientCriterionId)}`
+        : criterion.material
+        ? "no claim needed"
+        : "not material";
+      lines.push(`- ${bounded(criterion.criterionId)}: ${bounded(criterion.criterion)} (${by})`);
     }
   }
   lines.push(

@@ -18,13 +18,17 @@ const {
 const {
   WORKFLOW_EVIDENCE_COVERAGE_LIMITS,
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
+  classifyWorkflowCoverageCitation,
   evaluateWorkflowEvidenceReadiness,
+  workflowCoverageCitationAllowsText,
   workflowEvidenceReadinessPolicyEnforces,
   workflowEvidenceMissingRoleGaps,
   workflowEvidenceRequiredRoleGroups,
   workflowCommandEvidenceContent,
 } = await import("../src/shared/workflow.ts");
-const { compactWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { compactWorkflowContext, reconcileWorkflowCriterionMappings } = await import(
+  "../src/server/workflows/context.ts"
+);
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 
 const command = {
@@ -507,7 +511,7 @@ test("source compaction semantically maps differently worded coverage outside st
   }).status, "ready");
 });
 
-test("source compaction fails closed when one claim is proposed for multiple criteria", async () => {
+test("one claim proposed for several criteria covers each of them", async () => {
   const claim = {
     clientCriterionId: "shared-source-claim",
     criterion: "The material workflow outcome is verified",
@@ -585,8 +589,22 @@ test("source compaction fails closed when one claim is proposed for multiple cri
     coverage: [claim],
     evidence,
   });
-  assert.equal(readiness.status, "gaps");
-  assert.deepEqual(readiness.gapCodes, ["ambiguous_mapping"]);
+  /*
+   * One claim answering two criteria is the proof a compliant author would have written as two
+   * claims linking one item, which coverage has always allowed. Discarding it proved nothing
+   * and cost the criterion it did answer every one of its links.
+   */
+  assert.equal(readiness.status, "ready");
+  assert.deepEqual(readiness.gapCodes, []);
+  assert.deepEqual(
+    readiness.criteria.map((criterion) => criterion.matchedClientCriterionId),
+    [claim.clientCriterionId, claim.clientCriterionId],
+  );
+  assert.deepEqual(
+    readiness.criteria.map((criterion) => criterion.links.length),
+    [1, 1],
+    "the claim's evidence reaches both criteria rather than being dropped from both",
+  );
 
   const duplicateMappings = (context.canonicalCriteria ?? []).map((criterion) => ({
     criterionId: criterion.id,
@@ -597,7 +615,27 @@ test("source compaction fails closed when one claim is proposed for multiple cri
     criterionMappings: duplicateMappings,
     coverage: [claim],
     evidence,
-  }).gapCodes, ["ambiguous_mapping"]);
+  }).gapCodes, []);
+
+  /*
+   * The other direction stays a gap, and names what contests the criterion. Two claims on one
+   * criterion cannot both supply its single `authorProofClass`, so there is nothing to pick.
+   */
+  const second = { ...claim, clientCriterionId: "second-claim" };
+  const contested = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: context.canonicalCriteria ?? [],
+    criterionMappings: [{
+      criterionId: (context.canonicalCriteria ?? [])[0]!.id,
+      matchedClientCriterionIds: [claim.clientCriterionId, second.clientCriterionId],
+    }],
+    coverage: [claim, second],
+    evidence,
+  });
+  assert.deepEqual(contested.gapCodes, ["ambiguous_mapping", "missing_coverage"]);
+  assert.deepEqual(
+    contested.criteria[0]?.contestedClientCriterionIds,
+    [claim.clientCriterionId, second.clientCriterionId].sort(),
+  );
 });
 
 test("coverage stages idempotently and freezes with the submission", async () => {
@@ -650,7 +688,14 @@ test("coverage stages idempotently and freezes with the submission", async () =>
     bytes: Buffer.byteLength(inlineContent),
     sha256: (await import("node:crypto")).createHash("sha256").update(inlineContent).digest("hex"),
   };
-  const claim = { ...focusedClaim, id: "staged-claim", sourceRoot: "/repo" };
+  // Carrying the canonical id the author was told, so the whole lifecycle is pinned: staged,
+  // reserved, frozen with the submission, and read back beside the claim it belongs to.
+  const claim = {
+    ...focusedClaim,
+    id: "staged-claim",
+    sourceRoot: "/repo",
+    criterionId: "criterion-1-aaaa",
+  };
   assert.throws(
     () => store.stageWorkflowEvidence("missing-command-status", [{
       ...item,
@@ -683,7 +728,10 @@ test("coverage stages idempotently and freezes with the submission", async () =>
       now: 4,
     },
   );
-  assert.deepEqual(store.listSubmissionCoverage(created.submission.id), [focusedClaim]);
+  assert.deepEqual(
+    store.listSubmissionCoverage(created.submission.id),
+    [{ ...focusedClaim, criterionId: "criterion-1-aaaa" }],
+  );
   assert.equal(
     (store.listReservedWorkflowEvidence(created.submission.id)[0] as { commandExitCode?: number })
       ?.commandExitCode,
@@ -707,5 +755,124 @@ test("coverage stages idempotently and freezes with the submission", async () =>
     (db.prepare(`SELECT COUNT(*) AS count FROM workflow_evidence_coverage_staging`)
       .get() as { count: number }).count,
     0,
+  );
+});
+
+test("a criterion id that names nothing is refused rather than matched by prose", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The dashboard result is visually correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  const stale = {
+    clientCriterionId: "themed-modals",
+    // Text that WOULD have matched, which is what makes the fallback dangerous rather than
+    // merely useless: prose matching would bind a claim whose author said something else.
+    criterion: "The dashboard result is visually correct",
+    criterionId: "criterion-1-from-another-run",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [{ clientItemId: "run-output", role: "execution" as const }],
+  };
+  const mappings = reconcileWorkflowCriterionMappings(canonical, [stale]);
+  assert.deepEqual(
+    mappings.map((mapping) => mapping.matchedClientCriterionIds),
+    [[]],
+    "a refused citation is not quietly downgraded to the text owner",
+  );
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    criterionMappings: mappings,
+    coverage: [stale],
+    evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
+  });
+  assert.equal(readiness.status, "gaps");
+  assert.deepEqual(readiness.gapCodes, ["missing_coverage", "unknown_criterion_id"]);
+  assert.deepEqual(readiness.rejectedCitations, [{
+    clientCriterionId: "themed-modals",
+    criterionId: "criterion-1-from-another-run",
+  }]);
+
+  // A citation that resolves stays authoritative, and reports nothing.
+  const resolved = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    criterionMappings: reconcileWorkflowCriterionMappings(canonical, [{
+      ...stale,
+      criterionId: "criterion-1-aaaa",
+    }]),
+    coverage: [{ ...stale, criterionId: "criterion-1-aaaa" }],
+    evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
+  });
+  assert.equal(resolved.status, "ready");
+  assert.equal(resolved.rejectedCitations, undefined);
+});
+
+test("a carried claim's stale citation is not a refusal its author cannot withdraw", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The dashboard result is visually correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  // Frozen by an ancestor submission, citing an id this run does not carry. The author of the
+  // repair in front of us never wrote it and has no way to take it back.
+  const carried = {
+    clientCriterionId: "ancestor-claim",
+    criterion: "The dashboard result is visually correct",
+    criterionId: "criterion-1-from-another-run",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [{ clientItemId: "run-output", role: "execution" as const }],
+    inheritedFromSubmissionId: "submission-parent",
+  };
+  const mappings = reconcileWorkflowCriterionMappings(canonical, [carried]);
+  assert.deepEqual(
+    mappings.map((mapping) => mapping.matchedClientCriterionIds),
+    [["ancestor-claim"]],
+    "a carried claim still answers for its criterion through its text",
+  );
+  const readiness = evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: canonical,
+    criterionMappings: mappings,
+    coverage: [carried],
+    evidence: [{ clientItemId: "run-output", evidenceId: "evidence-1", repositoryScope: "all" }],
+  });
+  assert.equal(readiness.status, "ready");
+  assert.equal(readiness.rejectedCitations, undefined);
+});
+
+test("one classifier owns what a citation means, and every path reads it", () => {
+  const ids = new Set(["criterion-1-aaaa"]);
+  const claim = (
+    criterionId: string | null,
+    inherited?: string,
+  ): Parameters<typeof classifyWorkflowCoverageCitation>[0] => ({
+    ...(criterionId ? { criterionId } : {}),
+    ...(inherited ? { inheritedFromSubmissionId: inherited } : {}),
+  });
+
+  assert.equal(classifyWorkflowCoverageCitation(claim(null), ids), "absent");
+  assert.equal(classifyWorkflowCoverageCitation(claim("criterion-1-aaaa"), ids), "resolved");
+  assert.equal(classifyWorkflowCoverageCitation(claim("criterion-9-zzzz"), ids), "rejected");
+  assert.equal(
+    classifyWorkflowCoverageCitation(claim("criterion-9-zzzz", "submission-parent"), ids),
+    "inherited_unresolved",
+  );
+  // A resolved citation is authoritative wherever it was carried from.
+  assert.equal(
+    classifyWorkflowCoverageCitation(claim("criterion-1-aaaa", "submission-parent"), ids),
+    "resolved",
+  );
+
+  /*
+   * Text matching and the model's question are the same set, which is the invariant that
+   * keeps the three paths from drifting: a claim the mapping refuses can never be handed to
+   * semantic inference, and a claim the mapping binds is never asked about twice.
+   */
+  assert.deepEqual(
+    (["absent", "resolved", "rejected", "inherited_unresolved"] as const)
+      .filter(workflowCoverageCitationAllowsText),
+    ["absent", "inherited_unresolved"],
   );
 });

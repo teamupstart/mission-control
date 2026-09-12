@@ -29,7 +29,7 @@ import {
   type SetupInstallerLaunchResult,
   type SetupServiceStartResult,
 } from "../lib/api.ts";
-import { useTerminalTargets } from "../lib/terminalTargets.ts";
+import { useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
 import { useTerminalsConfig, type TerminalsConfigState } from "../useTerminalsConfig.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
@@ -508,11 +508,14 @@ function MultiplexerTerminal({
   mux,
   row,
   target,
+  targets,
   terminals,
 }: {
   mux: MultiplexerId;
   row: SetupRowView;
   target: TerminalTargetView | undefined;
+  /** The panel's own reading, so a Re-check reaches the menu's rows too. */
+  targets: TerminalTargetsState;
   terminals: TerminalsConfigState;
 }): React.JSX.Element | null {
   // The daemon has not answered yet. Rendering either branch now would guess.
@@ -539,6 +542,7 @@ function MultiplexerTerminal({
         groups={EMULATOR_GROUPS}
         resolve={resolveEmulatorBackend}
         value={stored}
+        availability={targets}
         disabled={terminals.config === null || row.status.state !== "satisfied"}
         onChange={(backend: EmulatorId | null) => {
           void terminals.update({ multiplexerTerminal: { [mux]: backend } });
@@ -825,7 +829,7 @@ export function SetupPanel({
   // rows without their choosers until the panel happened to remount.
   const [terminalRevision, setTerminalRevision] = useState(0);
   const terminalTargets = useTerminalTargets(terminalRevision);
-  const terminals = useTerminalsConfig();
+  const terminals = useTerminalsConfig(terminalRevision);
   const recheck = useCallback((): void => {
     setTerminalRevision((n) => n + 1);
     void state.refresh();
@@ -974,6 +978,7 @@ export function SetupPanel({
                             mux={mux}
                             row={row}
                             target={terminalTargets.targets?.find((t) => t.id === mux)}
+                            targets={terminalTargets}
                             terminals={terminals}
                           />
                         )}

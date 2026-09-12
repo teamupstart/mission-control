@@ -7,7 +7,7 @@ import {
   type TerminalBackendId,
   type TerminalTargetView,
 } from "@shared/terminal.ts";
-import { useTerminalTargets } from "../lib/terminalTargets.ts";
+import { useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 /** One group of rows in the open menu. */
@@ -159,6 +159,7 @@ export function TerminalPreferencePicker<Id extends TerminalBackendId = Terminal
   value,
   disabled,
   onChange,
+  availability,
 }: {
   id: string;
   copy: TerminalPreferenceCopy;
@@ -167,10 +168,21 @@ export function TerminalPreferencePicker<Id extends TerminalBackendId = Terminal
   value: string | null;
   disabled: boolean;
   onChange: (backend: Id | null) => void;
+  /**
+   * The caller's own reading, when it has one it refreshes.
+   *
+   * The Setup panel re-reads availability on Re-check; a picker holding its own hook would
+   * keep the reading it resolved with and go on greying out an emulator the operator has
+   * just installed. Omitted, this reads for itself, which is what the Harnesses card wants.
+   */
+  availability?: TerminalTargetsState;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
-  const { targets, failed } = useTerminalTargets();
+  // Called unconditionally, as a hook must be. It shares the module memo with the caller's,
+  // so supplying `availability` costs no second request.
+  const own = useTerminalTargets();
+  const { targets, failed } = availability ?? own;
   const resolved = resolve(value);
   const selectedTarget = targets?.find((target) => target.id === resolved.backend) ?? null;
   const selectedLabel = resolved.backend ? (selectedTarget?.label ?? resolved.backend) : "Automatic";

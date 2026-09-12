@@ -49,7 +49,12 @@ export interface TerminalsConfigState {
   error: string | null;
 }
 
-export function useTerminalsConfig(): TerminalsConfigState {
+/**
+ * @param revision Bumped by a caller that has just asked for a re-read. A failed mount read
+ * otherwise leaves `config` null for the life of the mount, which disables every chooser -
+ * so the retry has to come from somewhere.
+ */
+export function useTerminalsConfig(revision = 0): TerminalsConfigState {
   const [config, setConfigState] = useState<TerminalsConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<TerminalsConfig | null>(null);
@@ -83,12 +88,20 @@ export function useTerminalsConfig(): TerminalsConfigState {
     let alive = true;
     const seq = editSeq.current;
     void fetchTerminalsConfig().then((next) => {
-      if (alive && next && readIsCurrent(seq, editSeq.current)) setConfig(next);
+      if (!alive || !readIsCurrent(seq, editSeq.current)) return;
+      // A failed READ is reported like a failed write. Without this the chooser sits disabled
+      // with nothing said, and nothing short of reloading the page would try again.
+      if (!next) {
+        setError("Mission Control could not read the terminal preferences. Re-check to try again.");
+        return;
+      }
+      setError(null);
+      setConfig(next);
     });
     return () => {
       alive = false;
     };
-  }, [setConfig]);
+  }, [setConfig, revision]);
 
   const update = useCallback(
     (patch: TerminalsConfigPatch): Promise<void> => {
@@ -104,7 +117,16 @@ export function useTerminalsConfig(): TerminalsConfigState {
           setError(whyItFailed(res.error));
           // Only while this is still the newest edit - a later one has already replaced what
           // `before` holds, and its own confirming read corrects this one's optimistic value.
-          if (readIsCurrent(seq, editSeq.current)) setConfig(before);
+          //
+          // And the DAEMON's answer rather than `before`, because `before` can itself be an
+          // optimistic value: when two writes fail, the first skips its rollback as stale and
+          // the second restores the snapshot it took mid-flight, leaving the panel showing an
+          // edit the daemon never accepted. Falling back to `before` keeps a failed re-read
+          // no worse than it was.
+          if (readIsCurrent(seq, editSeq.current)) {
+            const confirmed = await fetchTerminalsConfig();
+            if (readIsCurrent(seq, editSeq.current)) setConfig(confirmed ?? before);
+          }
           return;
         }
         setError(null);

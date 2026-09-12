@@ -218,6 +218,17 @@ test("a refused preference write is taken back, and the row says why", async ({
   await expect(trigger).toContainText("iTerm2");
   await expect(trigger).not.toContainText("WezTerm");
 
+  // A SECOND refused write, issued while the first rollback has already run. Its own
+  // `before` is an optimistic value, so restoring that snapshot rather than re-reading the
+  // daemon is how the panel comes to show an edit that was never accepted.
+  await trigger.click();
+  await page
+    .getByRole("menu", { name: "Choose a terminal app for tmux sessions" })
+    .getByRole("menuitemradio", { name: /Ghostty|iTerm2|WezTerm/ })
+    .first()
+    .click();
+  await expect(trigger).toContainText("iTerm2");
+
   // Read back through the GET this spec never intercepted.
   await page.reload();
   await openSetupFamily(page, "terminals");
@@ -322,4 +333,80 @@ test("a terminal-target read that fails says so, and Re-check retries it", async
   await expect(page.getByText("Mission Control could not check terminal availability", {
     exact: false,
   })).toHaveCount(0);
+});
+
+test("Re-check refreshes the rows inside an open chooser, not just the panel", async ({
+  page,
+  daemon,
+}) => {
+  // Ghostty absent on the first read and present on the second. A picker holding its own
+  // reading would keep drawing the disabled row after the operator installed it.
+  let reads = 0;
+  await page.route("**/api/terminal-targets", async (route) => {
+    reads += 1;
+    const targets = reads === 1
+      ? TARGETS
+      : TARGETS.map((t) => (t.id === "ghostty"
+        ? { ...t, unavailable: null, dispatchUnavailable: null, blurb: "New window in the worktree." }
+        : t));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ targets }),
+    });
+  });
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "terminals");
+  const trigger = setupRow(page, "dependency-tmux")
+    .getByRole("button", { name: /^Terminal app for tmux sessions/ });
+  const menu = page.getByRole("menu", { name: "Choose a terminal app for tmux sessions" });
+
+  await trigger.click();
+  await expect(menu.getByRole("menuitemradio", { name: /Ghostty/ })).toBeDisabled();
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+
+  await trigger.click();
+  await expect(menu.getByRole("menuitemradio", { name: /Ghostty/ })).toBeEnabled();
+});
+
+test("a terminal-preferences read that fails says so, and Re-check retries it", async ({
+  page,
+  daemon,
+}) => {
+  let refusals = 0;
+  await page.route("**/api/terminal-targets", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ targets: TARGETS }),
+    });
+  });
+  await page.route("**/api/terminals/config", async (route) => {
+    if (route.request().method() === "GET" && refusals === 0) {
+      refusals += 1;
+      return route.abort("connectionrefused");
+    }
+    await route.continue();
+  });
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "terminals");
+  const trigger = setupRow(page, "dependency-tmux")
+    .getByRole("button", { name: /^Terminal app for tmux sessions/ });
+
+  // The control exists, so the absence of an explanation would leave it inert and unexplained.
+  await expect(trigger).toBeDisabled();
+  await expect(
+    page.getByText("Mission Control could not read the terminal preferences", { exact: false }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Re-check", exact: true }).click();
+
+  await expect(trigger).toBeEnabled();
+  await expect(
+    page.getByText("Mission Control could not read the terminal preferences", { exact: false }),
+  ).toHaveCount(0);
 });

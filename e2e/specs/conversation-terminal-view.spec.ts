@@ -181,7 +181,12 @@ test("u and d paginate the conversation with or without reader focus", async ({
   const overflow = await log.evaluate((element) => element.scrollHeight - element.clientHeight);
   expect(overflow, "the conversation must have enough overflow to paginate").toBeGreaterThan(400);
 
-  await log.evaluate((element) => { element.scrollTop = 0; });
+  await log.evaluate((element) => {
+    element.scrollTop = 0;
+    // Complete this fixture scroll before another session update can follow the tail.
+    // Setting scrollTop alone defers the scroll event to the browser's next frame.
+    element.dispatchEvent(new Event("scroll"));
+  });
   await sessionRow.focus();
   await expect(sessionRow).toBeFocused();
   await dashboard.keyboard.press("d");

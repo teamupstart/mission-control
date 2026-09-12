@@ -2,17 +2,31 @@ import { test, expect } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 
-// Only address the pane this spec owns. Discovery may see other sessions on the host.
-test.use({ daemonEnv: { MISSION_POLL_MS: "300", MISSION_USAGE_POLL_MS: "300" } });
+// A shared tmux server can restart between concurrent fixtures and reuse its pane ids.
+// Give discovery and this test the same private socket so another fixture's retired pane
+// cannot receive this extension's hooks or review before its eviction timer expires.
+test.use({ daemonEnv: async ({}, use) => {
+  const dir = mkdtempSync(join(tmpdir(), "mc-pi-tmux-"));
+  const bin = join(dir, "tmux-private");
+  writeFileSync(bin, `#!/bin/sh\nexec tmux -S ${quote(join(dir, "socket"))} "$@"\n`, { mode: 0o755 });
+  try {
+    await use({ MISSION_TMUX_BIN: bin, MISSION_POLL_MS: "300", MISSION_USAGE_POLL_MS: "300" });
+  } finally {
+    spawnSync(bin, ["kill-server"]);
+    rmSync(dir, { recursive: true, force: true });
+  }
+} });
 const tmuxMissing = spawnSync("tmux", ["-V"], { stdio: "ignore" }).status !== 0;
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
-test("hand-run Pi loads the extension, blocks on a dashboard answer and reports live metadata and cost", async ({ daemon, dashboard }) => {
+test("hand-run Pi loads the extension, blocks on a dashboard answer and reports live metadata and cost", async ({ daemon, daemonEnv, dashboard }) => {
   test.skip(tmuxMissing, "tmux is required for passive terminal discovery");
+  const tmux = daemonEnv.MISSION_TMUX_BIN!;
   const dir = join(daemon.home, "pi-proof"); mkdirSync(dir);
   const agentDir = join(dir, "agent"); mkdirSync(agentDir);
   const session = `mc-pi-proof-${process.pid}-${Date.now()}`;
@@ -61,8 +75,8 @@ test("hand-run Pi loads the extension, blocks on a dashboard answer and reports 
   const redirect = livePi ? "" : ` >${quote(log)} 2>&1`;
   writeFileSync(launch, `#!/bin/sh\nunset MISSION_SESSION_ID MISSION_AGENT_SESSION_ID CLAUDE_SESSION_ID MISSION_API_TOKEN_FILE FLEET_HOME HARNESS_HOME\n${Object.entries(env).map(([key, value]) => `export ${key}=${quote(value)}`).join("\n")}\nexec ${command}${redirect}\n`);
   try {
-    execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "130", "-y", "45", "-c", daemon.repo, `/bin/sh ${quote(launch)}`]);
-    if (livePi) execFileSync("tmux", ["pipe-pane", "-o", "-t", session, `/bin/cat >${quote(log)}`]);
+    execFileSync(tmux, ["new-session", "-d", "-s", session, "-x", "130", "-y", "45", "-c", daemon.repo, `/bin/sh ${quote(launch)}`]);
+    if (livePi) execFileSync(tmux, ["pipe-pane", "-o", "-t", session, `/bin/cat >${quote(log)}`]);
     const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session });
     await expect(row).toHaveCount(1);
     await row.click();
@@ -70,7 +84,7 @@ test("hand-run Pi loads the extension, blocks on a dashboard answer and reports 
     const sessions = async () => await (await fetch(`${daemon.baseURL}/api/sessions`)).json() as Array<{ id: string; name: string; agentSessionId: string | null; state: string; meta: { contextPct: number } | null; estimatedCost?: { costUsd: number } }>;
     await expect.poll(async () => (await sessions()).find((s) => s.name === session)?.agentSessionId).toBeTruthy();
 
-    execFileSync("tmux", ["send-keys", "-t", session, "probe", "Enter"]);
+    execFileSync(tmux, ["send-keys", "-t", session, "probe", "Enter"]);
     const review = detail.getByRole("button", { name: /to review/ });
     await expect(review).toBeVisible();
     await expect(detail).toContainText("Pi Probe");
@@ -98,11 +112,11 @@ test("hand-run Pi loads the extension, blocks on a dashboard answer and reports 
     } else {
       expect(readFileSync(log, "utf8")).toContain("PI_EXTENSION_RESUMED");
       for (const effort of ["minimal", "off"]) {
-        execFileSync("tmux", ["send-keys", "-t", session, effort, "Enter"]);
+        execFileSync(tmux, ["send-keys", "-t", session, effort, "Enter"]);
         await expect(detail.getByLabel(`Reasoning effort: ${effort}`, { exact: true })).toBeVisible();
       }
     }
     await detail.screenshot({ path: join(evidence, livePi ? "live-settled.png" : "fake-settled.png") });
   } catch (error) { console.log(readFileSync(log, "utf8")); throw error; }
-  finally { spawnSync("tmux", ["kill-session", "-t", session]); provider.closeAllConnections(); await new Promise<void>((done) => provider.close(() => done())); }
+  finally { spawnSync(tmux, ["kill-session", "-t", session]); provider.closeAllConnections(); await new Promise<void>((done) => provider.close(() => done())); }
 });

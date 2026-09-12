@@ -150,6 +150,11 @@ test("a spent repair-round Command skips while both execution slots are occupied
     release,
   ];
 
+  // Exercise Command admission with disposable Git worktrees. Native pool return also
+  // requires a host-wide cwd census, which can refuse amid process churn after our Commands
+  // have exited. That separate cleanup contract must not decide this budget assertion.
+  await api(daemon, "/api/worktrees/config", { enabled: false }, "PUT");
+
   await api(daemon, "/api/workflows/config", {
     liveEnabled: true,
     checksEnabled: true,

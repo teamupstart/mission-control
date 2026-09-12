@@ -291,6 +291,10 @@ test.describe("the phase meter on a board card", () => {
     await decide.hover();
     const popover = dashboard.locator(".tooltip.tt-rich");
     await expect(popover).toBeVisible();
+    // Discovery can move a board card after hover. Keep the detailed assertions on the
+    // supported keyboard-focus path so a stationary pointer cannot switch phase targets.
+    await dashboard.mouse.move(0, 0);
+    await decide.focus();
     await expect(popover).toContainText("DECIDE");
     await expect(popover).toContainText("Running");
     // Per-step states, which is the whole reason this has a popover and not a plain title:
@@ -303,11 +307,14 @@ test.describe("the phase meter on a board card", () => {
 
     // The halted run's BUILD popover carries the halt's own sentence, so the reason a feature
     // stopped is readable from the board without opening anything.
-    await dashboard.mouse.move(0, 0);
+    await decide.blur();
     await expect(popover).toHaveCount(0);
-    await haltedMeter.locator(".tpm-seg").nth(3).hover();
+    const haltedBuild = haltedMeter.locator(".tpm-seg").nth(3);
+    await haltedBuild.hover();
     await expect(popover).toBeVisible();
     await expect(popover).toContainText("Failed");
+    await dashboard.mouse.move(0, 0);
+    await haltedBuild.focus();
     await expect(popover.locator(".tpm-pop-foot")).toContainText(
       "Needs a human - the build review found two blocking defects",
     );
@@ -316,6 +323,7 @@ test.describe("the phase meter on a board card", () => {
     // (4) AT A NARROW COLUMN. The bar is the one element on the card with no text to ellipsis,
     // so a width it cannot survive would be a squashed graphic rather than a truncated string.
     await dashboard.mouse.move(0, 0);
+    await haltedBuild.blur();
     await dashboard.setViewportSize({ width: 900, height: 900 });
     await expect(meter.locator(".tpm-seg")).toHaveCount(5);
     // Every segment is still wide enough to aim at, which is what the `min-width` floor is

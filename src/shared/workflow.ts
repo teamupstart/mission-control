@@ -3281,6 +3281,50 @@ export function checkBlockedReason(
 }
 
 /**
+ * Where an operator grants what a refused launch was missing.
+ *
+ * Carried as a DESTINATION rather than spelled into the prose, because a refusal nobody can
+ * act on is a dead end: Live delivery's two halves are granted on two different screens, and
+ * a sentence naming one of them still leaves the reader to go and find it. The surface that
+ * renders the refusal turns this into a control that opens the screen.
+ */
+export type WorkflowLaunchFix = "workflow-live-delivery" | "workflow-repo-trust";
+
+/** A refused launch: the sentence to show, and the screen that grants what it named. */
+export interface WorkflowLaunchBlock {
+  message: string;
+  /** Absent when the refusal is not one a settings grant can clear (pick another workflow). */
+  fix?: WorkflowLaunchFix;
+}
+
+/**
+ * Why Live delivery may not be armed for this checkout, or null when it may.
+ *
+ * The two halves are asked in this order because they are answered in that order: with the
+ * machine-wide switch off nothing delivers anywhere, so naming the repository first would
+ * send the operator to the Trust matrix to make a grant that still would not deliver.
+ */
+export function liveDeliveryLaunchBlock(
+  config: Pick<WorkflowPolicy, "liveEnabled" | "repoAllowlist">,
+  cwd: string | null,
+  repoRoot: string | null,
+): WorkflowLaunchBlock | null {
+  if (!config.liveEnabled) {
+    return {
+      message: "This workflow uses Live delivery, which is switched off for this machine",
+      fix: "workflow-live-delivery",
+    };
+  }
+  if (!repoAllowlisted(cwd, repoRoot, config.repoAllowlist)) {
+    return {
+      message: "This workflow uses Live delivery, which is not granted for this repository",
+      fix: "workflow-repo-trust",
+    };
+  }
+  return null;
+}
+
+/**
  * What a check command DID, once it was allowed to try.
  *
  * APPEND-ONLY: a status reaches durable `output_json`, which run detail reads back.

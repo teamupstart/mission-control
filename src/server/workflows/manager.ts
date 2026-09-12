@@ -85,6 +85,7 @@ import {
   WORKFLOW_UNCHANGED_REPOSITORY_PHASE,
   isSessionActionNode,
   isVerdictNode,
+  liveDeliveryLaunchBlock,
   manualWorkflowTriggerKey,
   normalizeWorkflowName,
   verdictAuthor,
@@ -94,6 +95,7 @@ import {
   selectWorkflowCoverageClaims,
   workflowEvidenceReadinessPolicyEnforces,
   sessionActionContinuationReachesOnlyEnd,
+  type WorkflowLaunchBlock,
   type WorkflowResumptionWithheldReason,
 } from "@shared/workflow.ts";
 import {
@@ -796,13 +798,13 @@ export class WorkflowManager {
    * Backlog tasks intentionally keep this intent before there is a session to bind, so
    * Foreman and harness capability are launch concerns rather than save concerns.
    */
-  workflowSelectionBlock(workflowId: string): string | null {
+  workflowSelectionBlock(workflowId: string): WorkflowLaunchBlock | null {
     const detail = this.get(workflowId);
     if (!detail || !detail.workflow.currentVersionId) {
-      return "Choose a workflow with a published version";
+      return { message: "Choose a workflow with a published version" };
     }
     if (detail.workflow.archivedAt !== null) {
-      return "The selected workflow is archived";
+      return { message: "The selected workflow is archived" };
     }
     return null;
   }
@@ -818,31 +820,33 @@ export class WorkflowManager {
     workflowId: string,
     agent: AgentType,
     repoRoot?: string,
-  ): string | null {
+  ): WorkflowLaunchBlock | null {
     const selectionBlocked = this.workflowSelectionBlock(workflowId);
     if (selectionBlocked) return selectionBlocked;
     const detail = this.get(workflowId);
     // `workflowSelectionBlock` proved both facts; retain the guard so this method stays
     // total if persistence changes between the two reads.
-    if (!detail || !detail.workflow.currentVersionId) return "Choose a published workflow";
+    if (!detail || !detail.workflow.currentVersionId) {
+      return { message: "Choose a published workflow" };
+    }
     const harness = harnessFor(agent);
     if (!getForemanConfig().enabled) {
-      return "Turn on Foreman before dispatching a task with an after-work workflow";
+      return { message: "Turn on Foreman before dispatching a task with an after-work workflow" };
     }
     if (!harness.hooks || !harness.workQueue) {
-      return `${AGENT_IDENTITY[agent].label} cannot detect the Foreman Complete boundary required by after-work workflows`;
+      return {
+        message: `${AGENT_IDENTITY[agent].label} cannot detect the Foreman Complete boundary required by after-work workflows`,
+      };
     }
     const current = detail.versions.find(
       (version) => version.id === detail.workflow.currentVersionId,
     );
+    // Refused WITH the door: the two halves of Live delivery's authorization are granted on
+    // two different settings screens, and an operator who has just been told the launch needs
+    // a grant should not then have to go and find where grants are made.
     if (current?.bindingDefaults.deliveryMode === "live" && repoRoot) {
-      const config = getWorkflowPolicy();
-      if (
-        !config.liveEnabled
-        || !repoAllowlisted(repoRoot, repoRoot, config.repoAllowlist)
-      ) {
-        return "This workflow uses Live delivery, which requires Workflows Live mode and an allowlisted repository";
-      }
+      const block = liveDeliveryLaunchBlock(getWorkflowPolicy(), repoRoot, repoRoot);
+      if (block) return block;
     }
     return null;
   }

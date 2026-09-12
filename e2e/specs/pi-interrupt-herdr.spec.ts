@@ -43,14 +43,18 @@ const test = base.extend<{ realHerdr: HerdrFixture }>({
     }
   },
   daemonEnv: async ({ realHerdr }, use) => {
-    await use({ ...realHerdr.env, MISSION_HERDR_BIN: herdrBin!, MISSION_POLL_MS: "300", MISSION_USAGE_POLL_MS: "300", MISSION_TMUX_BIN: "/nonexistent/mc-herdr-test-tmux" });
+    await use({ ...realHerdr.env, MISSION_HERDR_BIN: herdrBin!, MISSION_POLL_MS: "1500", MISSION_TMUX_BIN: "/nonexistent/mc-herdr-test-tmux" });
   },
 });
 test.skip(!herdrBin, "Set MC_E2E_REAL_HERDR_BIN to exercise the installed Herdr server");
 
-test("real Pi through Herdr retains its interrupt marker after conversation reload", async ({ dashboard, daemon, realHerdr }) => {
+for (const restart of [false, true]) {
+test(`real Pi through Herdr receives a dashboard follow-up after interrupt${restart ? " and daemon restart" : ""}`, async ({ dashboard, daemon, realHerdr }) => {
   const dir = join(daemon.home, "pi-herdr");
-  const agentDir = join(dir, "agent");
+  mkdirSync(dir, { recursive: true });
+  // Use the daemon fixture's Pi home so passive discovery can reopen the transcript
+  // after restart, when the extension's in-memory path report is no longer available.
+  const agentDir = join(daemon.home, "pi-agent");
   mkdirSync(agentDir, { recursive: true });
   let requests = 0;
   const provider = createServer(async (req, res) => {
@@ -126,17 +130,39 @@ test("real Pi through Herdr retains its interrupt marker after conversation relo
     await dashboard.reload();
     await row.click();
     await expect(marker).toBeVisible();
-    await send("Continue after the Herdr interrupt");
+    if (restart) {
+      await daemon.crash();
+      await daemon.restart();
+      await dashboard.reload();
+      await row.click();
+      await expect(marker).toBeVisible();
+    }
+    // Let discovery rebuild the card after Stop. A fleeting idle hook was previously
+    // overwritten before the composer could drain, so a direct pane send hid this bug.
+    const observedAfter = Date.now();
+    const current = async () => {
+      const response = await dashboard.request.get(`${daemon.baseURL}/api/sessions`);
+      return (await response.json() as Session[]).find(session => session.name === name);
+    };
+    await expect.poll(async () => (await current())?.lastSeen ?? 0).toBeGreaterThan(observedAfter);
+    const followup = "Continue after the Herdr interrupt from the dashboard";
+    const composer = detail.getByPlaceholder(/^Reply to this session/);
+    await composer.fill(followup);
+    await composer.press("Enter");
+    await expect.poll(() => requests).toBe(2);
+    await expect.poll(async () => (await current())?.pendingTurns.length).toBe(0);
+    await expect(detail.locator(".turn-user:not(.pending-turn)").getByText(followup, { exact: true })).toBeVisible();
     await expect(detail.getByText("Pi through Herdr continued", { exact: true })).toBeVisible();
     await expect(marker).toHaveCount(1);
-    console.log("PASS: real Pi discovered through Herdr; active turn interrupted from dashboard; marker and partial output retained after reload; follow-up completed.");
+    console.log("PASS: real Pi discovered through Herdr; active turn interrupted from dashboard; marker and partial output retained; dashboard follow-up delivered once with an empty outbox.");
     if (process.env.MC_E2E_EVIDENCE === "1") {
       const evidence = artifactsDir("pi-interrupt-conversation");
       mkdirSync(evidence, { recursive: true });
       await dashboard.mouse.move(0, 0);
-      await detail.screenshot({ path: join(evidence, "real-pi-herdr.png") });
+      await detail.screenshot({ path: join(evidence, restart ? "real-pi-herdr-restart.png" : "real-pi-herdr.png") });
     }
   } catch (error) {
+    console.log(daemon.readLog());
     if (paneId) console.log(realHerdr.cli("pane", "read", paneId, "--format", "text"));
     throw error;
   } finally {
@@ -148,3 +174,5 @@ test("real Pi through Herdr retains its interrupt marker after conversation relo
     }
   }
 });
+
+}

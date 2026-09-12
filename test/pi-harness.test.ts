@@ -177,7 +177,7 @@ test("a launch-identified session binds its transcript and reads runtime state",
     assert.equal(located, path);
     const read = piTranscript.passiveRead?.(located!);
     assert.equal(read?.meta?.modelId, "gpt-5.5");
-    assert.equal(read?.activity?.state, "working");
+    assert.equal(read?.activity?.state, "idle", "the captured transcript ends in an interrupted turn");
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });
@@ -358,13 +358,24 @@ test("a 250k gpt-5.5 turn reports against 272k, not the shared fallback tier", (
   assert.equal(meta?.contextPct, 92);
 });
 
-test("idle only on a clean stop; an aborted tail reads working", () => {
-  // The full capture ends on an aborted turn - ambiguous, so it falls to `working`.
+test("clean and interrupted Pi turns both hand control back to the human", () => {
+  // The full capture ends on the same aborted record the real TUI writes after Escape.
   const full = computePiSessionActivity([...PI_SESSION_LINES]);
-  assert.equal(full?.state, "working");
+  assert.equal(full?.state, "idle");
   // The same session without that aborted tail ends on a clean `stop` - idle.
   const clean = computePiSessionActivity(PI_SESSION_LINES.slice(0, 7));
   assert.equal(clean?.state, "idle");
+});
+
+test("an unfinished Pi turn stays working, including a new prompt after an interrupt", () => {
+  for (const stopReason of ["toolUse", "error", "length", undefined, "unknown"]) {
+    const line = JSON.stringify({ type: "message", timestamp: new Date().toISOString(),
+      message: { role: "assistant", stopReason, content: [] } });
+    assert.equal(computePiSessionActivity([line])?.state, "working", String(stopReason));
+  }
+  const nextPrompt = JSON.stringify({ type: "message", timestamp: new Date().toISOString(),
+    message: { role: "user", content: [{ type: "text", text: "continue" }] } });
+  assert.equal(computePiSessionActivity([...PI_SESSION_LINES, nextPrompt])?.state, "working");
 });
 
 test("a reported custom-home transcript requires the exact session header and cwd", () => {

@@ -125,21 +125,20 @@ export function computePiRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
 
 /**
  * The stop reasons that mean pi handed control back to the human, so the session is genuinely
- * parked. `"stop"` is a clean turn end; `"aborted"` is an interrupt and every other reason
- * (a pending tool call, a bare error) is ambiguous - all fall to `working`, the safe bias a
- * false idle would break by typing into a busy session.
+ * parked. `"stop"` is a clean turn end and `"aborted"` records an interrupted turn.
+ * Other reasons (a pending tool call, a bare error) remain ambiguous and read as working.
  */
-const TURN_DONE = new Set(["stop"]);
+const TURN_DONE = new Set(["stop", "aborted"]);
 
 /**
  * Derive a session's idle/working state from a window of pi transcript lines: scan
  * newest-first for the last `message` record and read `idle` off it only when it is an
- * assistant turn that stopped cleanly. Null when nothing datable is found. Pure, for testing.
+ * assistant turn that finished or was interrupted. Null when nothing datable is found.
+ * Pure, for testing.
  *
- * The hook-free source of state. pi pushes no hooks, so this is the primary signal, not a
- * fallback: it is re-derived every poll tick off the transcript on disk, which is why a
- * quiet or post-restart pi session can still be seen as idle and safely receive a
- * transcript-gated skills reload.
+ * The fallback when Pi's extension has no fresh hook, including after a daemon restart.
+ * Re-reading an interrupted transcript must keep the idle session able to receive a
+ * queued follow-up or a transcript-gated skills reload.
  */
 export function computePiSessionActivity(lines: string[]): SessionActivityRead | null {
   for (let i = lines.length - 1; i >= 0; i--) {

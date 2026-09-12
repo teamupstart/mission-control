@@ -83,7 +83,11 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
  * on, which is the reading the feature is about.
  */
 async function askAndWait(page: Page): Promise<{ card: Locator; form: Locator }> {
-  await page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const row = page.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first();
+  // The first fake turn moves this row from Working to Idle. Wait for that regrouping
+  // before selecting; a slow pointer release pins the race that previously lost the click.
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click({ delay: 1_000 });
   const card = page.locator(".console-detail");
   const composer = card.getByPlaceholder(/^Reply to this session/);
   await expect(composer).toBeEnabled();

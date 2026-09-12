@@ -119,8 +119,8 @@ test("Ctrl+C keeps an interrupted Codex session idle after late child activity",
  *
  * Selection is what mounts the action bar the chord dispatches through - a card that merely
  * rendered has none - so this is a precondition of the gesture rather than setup dressing.
- * Polled around the arrow press because the card arrives on an SSE frame: a press that lands
- * before the fleet has a session selects nothing and the key is spent.
+ * Wait for the initial turn to finish regrouping the row from Working to Idle before a
+ * click. The deliberately slow release catches a row moving between pointer down and up.
  */
 async function selectTheOnlySession(page: Page) {
   const row = page
@@ -128,7 +128,8 @@ async function selectTheOnlySession(page: Page) {
     .locator("button.rail-row")
     .first();
   await expect(row).toBeVisible();
-  await row.click();
+  await expect(row).toHaveClass(/tone-idle/);
+  await row.click({ delay: 1_000 });
   await expect(row).toHaveClass(/selected/);
   return page.locator(".console-detail");
 }

@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why the No-Mistakes Review run could not proceed, and why no button fixed it</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013;
+    --surface-1: #16181c;
+    --surface-2: #1d2026;
+    --surface-3: #262a31;
+    --line:      #2f343c;
+    --line-soft: #23272e;
+    --text-primary:   #f2f3f5;
+    --text-secondary: #b6bcc6;
+    --text-muted:     #8b939d;
+    --series-1: #5b9ded;
+    --series-2: #e2703f;
+    --series-3: #2eb083;
+    --series-4: #d19a1f;
+    --good:     #2eb083;
+    --warn:     #d19a1f;
+    --critical: #e87b7b;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:where(:not([data-theme="dark"])) {
+      color-scheme: light;
+      --surface-0: #f4f4f2;
+      --surface-1: #fcfcfb;
+      --surface-2: #f0f0ed;
+      --surface-3: #e6e6e2;
+      --line:      #d5d5d0;
+      --line-soft: #e4e4e0;
+      --text-primary:   #101114;
+      --text-secondary: #4a4d53;
+      --text-muted:     #63666c;
+      --series-1: #1f63b8;
+      --series-2: #b8481b;
+      --series-3: #107954;
+      --series-4: #8a6300;
+      --good:     #107954;
+      --warn:     #8a6300;
+      --critical: #b32b2a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 28px 120px; }
+  header.mast { padding: 60px 0 38px; border-bottom: 1px solid var(--line); margin-bottom: 42px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-muted); margin: 0 0 14px;
+  }
+  h1 { font-size: 38px; line-height: 1.14; letter-spacing: -0.022em; margin: 0 0 18px; font-weight: 620; }
+  .standfirst { font-size: 18px; line-height: 1.6; color: var(--text-secondary); max-width: 70ch; margin: 0; }
+  .standfirst strong { color: var(--text-primary); font-weight: 600; }
+  h2 {
+    font-size: 24px; letter-spacing: -0.015em; margin: 60px 0 8px;
+    padding-top: 26px; border-top: 1px solid var(--line); font-weight: 620;
+  }
+  h3 { font-size: 17px; margin: 34px 0 10px; font-weight: 620; }
+  h4 {
+    font-size: 12.5px; font-family: var(--mono); letter-spacing: .06em;
+    text-transform: uppercase; color: var(--text-muted); margin: 26px 0 10px; font-weight: 600;
+  }
+  p { margin: 0 0 14px; max-width: 78ch; }
+  .sub { color: var(--text-secondary); margin-top: -2px; margin-bottom: 22px; max-width: 78ch; }
+  ul, ol { max-width: 78ch; padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  code {
+    font-family: var(--mono); font-size: .875em; background: var(--surface-2);
+    border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 5px;
+    color: var(--text-primary);
+  }
+  a { color: var(--series-1); }
+  nav.toc { background: var(--surface-1); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 0 0 8px; }
+  nav.toc ol { margin: 0; padding-left: 20px; }
+  nav.toc li { margin-bottom: 4px; font-size: 14px; }
+  .tiles {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px; margin: 28px 0 8px;
+  }
+  .tile { background: var(--surface-1); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  .tile .label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 9px;
+  }
+  .tile .value {
+    font-size: 29px; font-weight: 620; letter-spacing: -0.028em;
+    line-height: 1.05; font-variant-numeric: tabular-nums;
+  }
+  .tile .value .unit { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin-left: 3px; }
+  .tile .note { font-size: 12.5px; color: var(--text-secondary); margin-top: 7px; line-height: 1.45; }
+  .tile.a1 { border-left: 3px solid var(--series-1); }
+  .tile.a2 { border-left: 3px solid var(--series-2); }
+  .tile.a3 { border-left: 3px solid var(--series-3); }
+  .tile.a4 { border-left: 3px solid var(--series-4); }
+  figure {
+    margin: 30px 0 34px; background: var(--surface-1); border: 1px solid var(--line);
+    border-radius: 10px; padding: 22px 22px 18px; overflow-x: auto;
+  }
+  figcaption {
+    font-size: 12.5px; color: var(--text-secondary); margin-top: 16px;
+    padding-top: 13px; border-top: 1px solid var(--line-soft); line-height: 1.5;
+  }
+  .fig-title { font-size: 15px; font-weight: 620; margin: 0 0 3px; }
+  .fig-sub { font-size: 12.5px; color: var(--text-muted); margin: 0 0 18px; }
+  .tw { overflow-x: auto; margin: 22px 0 28px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-1); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--text-muted); font-weight: 600;
+    background: var(--surface-2); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td code, th code { background: transparent; border: none; padding: 0; white-space: nowrap; }
+  .bad-cell { color: var(--critical); }
+  .ok-cell { color: var(--good); }
+  .call {
+    border-left: 3px solid var(--series-1); background: var(--surface-1);
+    border-radius: 0 8px 8px 0; padding: 15px 18px; margin: 22px 0;
+  }
+  .call.warn { border-left-color: var(--warn); }
+  .call.bad  { border-left-color: var(--critical); }
+  .call.good { border-left-color: var(--good); }
+  .call .ct {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--text-muted); margin-bottom: 7px;
+  }
+  .call p:last-child { margin-bottom: 0; }
+  pre {
+    background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+    line-height: 1.55; color: var(--text-primary); margin: 18px 0 22px;
+  }
+  svg.dia { width: 100%; height: auto; display: block; min-width: 620px; }
+  svg.dia text { font-family: var(--sans); font-size: 11.5px; fill: var(--text-secondary); }
+  svg.dia text.n { font-size: 12.5px; font-weight: 600; fill: var(--text-primary); }
+  svg.dia text.m { font-family: var(--mono); font-size: 10.5px; fill: var(--text-muted); }
+  svg.dia rect.box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; }
+  svg.dia rect.hot { fill: var(--surface-2); stroke: var(--critical); stroke-width: 1.5; }
+  svg.dia path, svg.dia line { stroke: var(--text-muted); stroke-width: 1.4; fill: none; }
+  svg.dia path.loop { stroke: var(--critical); stroke-width: 1.6; stroke-dasharray: 5 4; }
+  .foot { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--text-muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Mission Control &middot; workflow runs &middot; 11 September 2026</p>
+  <h1>The run was not stuck on the repository. It was stuck on a 45 second timeout that nothing could outlast.</h1>
+  <p class="standfirst">
+    Run <code>52de186f</code> (No-Mistakes Review v15) blocked in <code>evidence_reconciliation_error</code>:
+    the Haiku call that maps the session's coverage claims onto the workflow's acceptance criteria
+    <strong>timed out at exactly 45 seconds on four consecutive attempts</strong>, so capture never
+    finished and no reviewer ever started. <strong>Every action the page offered landed back in that same
+    blocked phase, and each failed in a different way</strong>: one was refused before it captured
+    anything, one spent the run's only repair round and could not even reach the provider because it
+    inherited an exhausted attempt budget, and only the third actually called again, straight into the
+    same cap. That is why clicking changed nothing. The red line about the repository was a stale
+    client-side message from a click 31 minutes earlier and had nothing to do with the block. With the cap lifted, the same
+    payload returned a complete mapping in <strong>88.5 seconds</strong>.
+  </p>
+  <p class="standfirst" style="margin-top:14px">
+    <strong>Read this as a post mortem, not a live incident.</strong> That run is over: it was
+    <strong>cancelled at 00:15:59Z</strong>, after this investigation and after its last failed attempt.
+    Its <code>workflow_runs</code> row now reads <code>status: cancelled</code>, with both
+    <code>updated_at</code> and <code>completed_at</code> at <code>2026-09-12T00:15:59.272Z</code>, and
+    the event log closes on <code>run_cancelled</code> at that instant. Nothing below is an action to
+    take on it, and none of its recovery buttons exist any more. The
+    findings are about the code path, which is unchanged and will do the same thing to the next run that
+    reaches it.
+  </p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <ol>
+    <li><a href="#answer">The finding, in four numbers</a></li>
+    <li><a href="#block">What actually blocks the run</a></li>
+    <li><a href="#banner">Why the message on screen is about something else</a></li>
+    <li><a href="#deadlock">Why no action could clear it</a></li>
+    <li><a href="#measure">Measurements</a></li>
+    <li><a href="#fix">What this diagnosis recommends</a></li>
+    <li><a href="#limits">What this did not establish</a></li>
+  </ol>
+</nav>
+
+<h2 id="answer">The finding, in four numbers</h2>
+<div class="tiles">
+  <div class="tile a2">
+    <div class="label">Reconciliation attempts</div>
+    <div class="value">4<span class="unit">/ 4 timed out</span></div>
+    <div class="note">Every one at 45,001&ndash;45,003 ms, with zero output bytes returned.</div>
+  </div>
+  <div class="tile a4">
+    <div class="label">The cap it hit</div>
+    <div class="value">45<span class="unit">s</span></div>
+    <div class="note"><code>WORKFLOW_CONTEXT_TIMEOUT_MS</code>, shared with context compaction.</div>
+  </div>
+  <div class="tile a3">
+    <div class="label">What the call needs</div>
+    <div class="value">88.5<span class="unit">s</span></div>
+    <div class="note">Same prompt, same model, cap lifted: complete on attempt 1.</div>
+  </div>
+  <div class="tile a1">
+    <div class="label">Repair rounds burned</div>
+    <div class="value">1<span class="unit">of 5</span></div>
+    <div class="note">Round 1 was the initial submission, not a repair. The one repair round bought zero
+      new attempts. No reviewer ran in either.</div>
+  </div>
+</div>
+
+<h2 id="block">What actually blocks the run</h2>
+<p class="sub">
+  The run's stages all read &ldquo;Not started&rdquo; because the graph never began. The failure is in
+  capture, upstream of Stage 1.
+</p>
+
+<p>
+  Before a submission can be reviewed, capture compacts the session's context into canonical
+  acceptance criteria, then <em>reconciles</em> them: an LLM call that matches each coverage claim the
+  session registered against each canonical criterion. This run had <strong>13 coverage claims against
+  7 canonical criteria</strong>, a 5,462 character prompt. Reconciliation ran on
+  <code>claude-haiku-4-5</code> and returned nothing within the cap, twice, and
+  <code>reconcileWorkflowCoverage</code> allows exactly two attempts
+  (<code>src/server/workflows/context.ts:568</code>).
+</p>
+<p>
+  With reconciliation incomplete and readiness reporting <code>missing_coverage</code>, capture marks the
+  submission failed and blocks the run (<code>src/server/workflows/manager.ts:6834</code>):
+</p>
+<pre>gate_state_json: {"submissionId":"2cfa9471-…","error":
+  "Workflow criterion reconciliation failed: Error: Claude Agent SDK one-shot timed out"}</pre>
+
+<figure>
+  <p class="fig-title">Where the run dies, and where the operator was looking</p>
+  <p class="fig-sub">Capture never reaches the graph, so every stage stays untouched.</p>
+  <svg class="dia" viewBox="0 0 860 250" role="img" aria-label="Capture compacts context, then reconciliation times out and blocks the run before Stage 1, so no reviewer runs.">
+    <rect class="box" x="8" y="96" width="120" height="54" rx="7"></rect>
+    <text class="n" x="68" y="118" text-anchor="middle">Session</text>
+    <text class="m" x="68" y="135" text-anchor="middle">submits work</text>
+
+    <path d="M132 123 H 178"></path>
+    <path d="M172 118 l 8 5 l -8 5 z" fill="currentColor" stroke="none" style="fill: var(--text-muted)"></path>
+
+    <rect class="box" x="182" y="96" width="132" height="54" rx="7"></rect>
+    <text class="n" x="248" y="118" text-anchor="middle">Compaction</text>
+    <text class="m" x="248" y="135" text-anchor="middle">22.4 s &middot; succeeded</text>
+
+    <path d="M318 123 H 364"></path>
+    <path d="M358 118 l 8 5 l -8 5 z" stroke="none" style="fill: var(--text-muted)"></path>
+
+    <rect class="hot" x="368" y="86" width="168" height="74" rx="7"></rect>
+    <text class="n" x="452" y="110" text-anchor="middle">Reconciliation</text>
+    <text class="m" x="452" y="127" text-anchor="middle">45 s cap &middot; needs 88.5 s</text>
+    <text class="m" x="452" y="144" text-anchor="middle">timed out 4 / 4</text>
+
+    <path d="M540 123 H 586"></path>
+    <path d="M580 118 l 8 5 l -8 5 z" stroke="none" style="fill: var(--text-muted)"></path>
+
+    <rect class="box" x="590" y="96" width="126" height="54" rx="7"></rect>
+    <text class="n" x="653" y="118" text-anchor="middle">Stage 1</text>
+    <text class="m" x="653" y="135" text-anchor="middle">never started</text>
+
+    <rect class="box" x="732" y="96" width="120" height="54" rx="7" stroke-dasharray="4 4"></rect>
+    <text class="n" x="792" y="118" text-anchor="middle">Stages 2&ndash;6</text>
+    <text class="m" x="792" y="135" text-anchor="middle">never started</text>
+
+    <path class="loop" d="M452 168 V 206 H 110 V 152"></path>
+    <path d="M105 158 l 5 -8 l 5 8 z" stroke="none" style="fill: var(--critical)"></path>
+    <text x="452" y="226" text-anchor="middle">every recovery returns here; the one that reaches the provider re-sends the same prompt under the same cap</text>
+  </svg>
+  <figcaption>
+    Durations are the daemon's own <code>workflow_llm_calls</code> rows for run <code>52de186f</code>.
+    Compaction on this run carried a <em>larger</em> prompt (6,460 bytes) than reconciliation (5,462) and
+    finished in 22.4 s, so prompt size is not what separates them. The measured generation rate
+    below is: compaction emitted 2,408 characters, reconciliation has to emit fewer but does so on
+    a path that is producing roughly 12 characters per second.
+  </figcaption>
+</figure>
+
+<h4>Timeline, from the run's own event log</h4>
+<div class="tw">
+<table>
+  <thead><tr><th>Time (UTC)</th><th>Event</th><th>Detail</th></tr></thead>
+  <tbody>
+    <tr><td class="num">19:47:18</td><td><code>context_compaction</code></td><td class="ok-cell">succeeded in 22,388 ms</td></tr>
+    <tr><td class="num">19:47:41</td><td><code>context_reconciliation</code> a1</td><td class="bad-cell">timed out after 45,002 ms</td></tr>
+    <tr><td class="num">19:48:26</td><td><code>context_reconciliation</code> a2</td><td class="bad-cell">timed out after 45,001 ms</td></tr>
+    <tr><td class="num">19:49:11</td><td><code>evidence_reconciliation_error</code></td><td>run blocked in round 1, <code>cause: transport</code>. Round 1 is the initial Foreman-triggered submission, not a repair round</td></tr>
+    <tr><td class="num">23:36:53</td><td><code>resubmit_refused_unchanged_repository</code></td><td>operator clicked Start repair round 2; refused, nothing spent</td></tr>
+    <tr><td class="num">23:36:56</td><td><code>submission_created</code></td><td>round 2 opened by the &ldquo;Review it anyway&rdquo; override</td></tr>
+    <tr><td class="num">23:36:58</td><td><code>evidence_reconciliation_error</code></td><td class="bad-cell">round 2 blocked at the same point. The run's one repair round, and it made no provider call: the prompt fingerprint was unchanged, so round 1's exhausted attempt budget came with it</td></tr>
+    <tr><td class="num">00:11:34</td><td><code>evidence_recovery_reserved</code></td><td>operator clicked Retry criterion mapping (round 2, segment 1)</td></tr>
+    <tr><td class="num">00:11:35</td><td><code>context_reconciliation</code> a1</td><td class="bad-cell">timed out after 45,003 ms</td></tr>
+    <tr><td class="num">00:12:20</td><td><code>context_reconciliation</code> a2</td><td class="bad-cell">timed out after 45,003 ms</td></tr>
+    <tr><td class="num">00:12:21</td><td><code>evidence_reconciliation_error</code></td><td class="bad-cell">back to blocked, unchanged</td></tr>
+    <tr><td class="num">00:15:59</td><td><code>run_cancelled</code></td><td>the run was cancelled, which is its terminal state and where it still stands</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  Local time is UTC&minus;4, so the screenshot's &ldquo;updated 31m ago&rdquo; at 20:08 local points at the
+  23:36:58 block: round 2 failing, not the refusal three seconds before it.
+</p>
+<p>
+  Three different costs are easy to conflate here, so to be exact about what was spent. <strong>Rounds:</strong>
+  round 1 is the initial submission and round 2 is the only repair round the run ever consumed, leaving
+  4 of its 5 unspent. <strong>Segments:</strong> &ldquo;Retry criterion mapping&rdquo; adds a segment inside
+  the round already open, round 2 segment 1, and costs no round. <strong>Provider calls:</strong> four
+  reconciliation attempts in total, two under round 1 and two under that recovery segment. Round 2's own
+  capture made none, because <code>reconcileWorkflowCoverage</code> carries an unchanged prompt
+  fingerprint's attempt count forward and its <code>attempts &lt; 2</code> loop then never runs. Paying a
+  repair round bought no new attempt at all.
+</p>
+
+<h2 id="banner">Why the message on screen is about something else</h2>
+<div class="call bad">
+  <p class="ct">The red line in the screenshot</p>
+  <p>
+    &ldquo;The repository has not changed since round 1; confirm an unchanged resubmission to review it
+    anyway&rdquo; is the <em>rejected response body</em> from the 23:36:53 click, not a description of the
+    run's state. The run's phase at the time of the screenshot was <code>evidence_reconciliation_error</code>,
+    and <code>round 1</code> in that sentence only ever made sense before round 2 existed.
+  </p>
+</div>
+<p>
+  It persisted for 31 minutes because two independent error slots are drawn through one paragraph
+  (<code>src/web/workflows/WorkflowRuns.tsx:5071</code>):
+</p>
+<pre>{(error || actionController.error) &amp;&amp; (
+  &lt;p className="wf-run-error" role="alert"&gt;{error ?? actionController.error}&lt;/p&gt;
+)}</pre>
+<p>
+  <code>error</code> is the page's own slot. <code>actionController.error</code> is held by the shared run
+  action store, which clears a held error only when it <em>dispatches another action</em>
+  (<code>src/web/workflows/run-action-store.ts:52</code>). The refused resubmission arrived through the
+  store. The override that answered it does <strong>not</strong> go through the store, because it replays a
+  request id derived from the refused submission that a fresh dispatch cannot mint, so it posts on its
+  own and cleared only the page slot. A server-pushed state change clears neither. The refusal
+  therefore outlived the move that answered it, and then outlived the round that went on to block for
+  an unrelated reason, sitting above the header as the most prominent thing on the page.
+</p>
+
+<h2 id="deadlock">Why no action could clear it</h2>
+<p class="sub">Three moves are reachable for <em>any</em> run blocked in this phase, and this is what each
+  one did while run <code>52de186f</code> was still open. All three end in the same blocked phase, but
+  they get there by three different routes, and only one of them reaches the provider at all. The run
+  itself has since been cancelled, so none of them is available on it now.</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Action offered</th><th>What it does</th><th>Where it lands</th><th>Cost</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>Start repair round N</b></td>
+      <td>Probes the repository first. Both rounds carry the identical fingerprint
+          <code>83b8b820&hellip;</code>, because the session committed nothing between them, so it is refused
+          before capture (<code>manager.ts:2131</code>).</td>
+      <td>Phase <code>unchanged_repository</code>, which offers &ldquo;Review it anyway&rdquo;</td>
+      <td>Nothing spent</td>
+    </tr>
+    <tr>
+      <td><b>Review it anyway</b></td>
+      <td>Opens the repair round the refusal withheld (round 2, segment 0) and captures. Its
+          reconciliation prompt hashes to <code>dac7b816&hellip;</code>, the same fingerprint round 1
+          produced, so <code>reconcileWorkflowCoverage</code> carries forward that snapshot's
+          <code>attempts: 2</code> and the <code>attempts &lt; 2</code> loop never runs.</td>
+      <td class="bad-cell">Straight to <code>evidence_reconciliation_error</code> on the inherited
+          exhausted budget, with <strong>no provider call at all</strong></td>
+      <td class="bad-cell">The run's one and only repair round, for zero new attempts</td>
+    </tr>
+    <tr>
+      <td><b>Retry criterion mapping</b></td>
+      <td>The evidence recovery for exactly this phase. Reserves a new <em>segment</em> under the round
+          already open (round 2, segment 1), not a new round, and reconciles with a fresh budget.</td>
+      <td class="bad-cell">Same 45 s timeout, twice (00:11:35 and 00:12:20)</td>
+      <td class="bad-cell">No repair round. One extra segment and two provider calls</td>
+    </tr>
+    <tr>
+      <td><b>Retry the failed call</b></td>
+      <td colspan="2">Not offered. It is gated on <code>currentPhase === "infrastructure_error"</code> plus an
+          errored node attempt (<code>src/web/workflows/run-actions.ts:567</code>), and
+          <code>workflow_node_attempts</code> is empty for every submission on this run: the failure is
+          upstream of the graph, so there is no attempt to retry.</td>
+      <td>Nothing to spend</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+<div class="call warn">
+  <p class="ct">The shape of the dead end</p>
+  <p>
+    The loop is deterministic, not flaky, and it is closed at three different points rather than one.
+    The repository probe refuses a fresh round outright while nothing has been committed. A round that
+    is forced through anyway cannot retry, because the prompt is a pure function of the criteria and the
+    claims, both frozen in the submission, so its fingerprint is unchanged and the exhausted attempt
+    count comes with it. That leaves the recovery segment as the only move that reaches the provider at
+    all, and it re-sends the same bytes to the same model under the same cap and gets the same answer.
+    No route out is left, which is the property that makes this a dead end rather than a slow retry.
+  </p>
+</div>
+
+<h2 id="measure">Measurements</h2>
+<h4>Every reconciliation call in the daemon's ledger, most recent first</h4>
+<div class="tw">
+<table>
+  <thead><tr><th>Run</th><th>Attempt</th><th>Prompt bytes</th><th>Duration</th><th>Outcome</th></tr></thead>
+  <tbody>
+    <tr><td><code>52de186f</code></td><td class="num">a2</td><td class="num">5,462</td><td class="num">45,003 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>52de186f</code></td><td class="num">a1</td><td class="num">5,462</td><td class="num">45,003 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>00b09fda</code></td><td class="num">a1</td><td class="num">1,980</td><td class="num">27,226 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>8584d4ec</code></td><td class="num">a2</td><td class="num">1,543</td><td class="num">34,269 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>e9fca708</code></td><td class="num">a1</td><td class="num">3,504</td><td class="num">32,832 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>8584d4ec</code></td><td class="num">a1</td><td class="num">1,543</td><td class="num">45,002 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>2616e5a5</code></td><td class="num">a1</td><td class="num">2,098</td><td class="num">32,429 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>dd4ee40c</code></td><td class="num">a2</td><td class="num">3,642</td><td class="num">45,003 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>dd4ee40c</code></td><td class="num">a1</td><td class="num">3,642</td><td class="num">45,002 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>dd4ee40c</code></td><td class="num">a1</td><td class="num">3,396</td><td class="num">42,775 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>52de186f</code></td><td class="num">a2</td><td class="num">5,462</td><td class="num">45,001 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>52de186f</code></td><td class="num">a1</td><td class="num">5,462</td><td class="num">45,002 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>56d188e3</code></td><td class="num">a1</td><td class="num">2,196</td><td class="num">30,587 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>8075c409</code></td><td class="num">a1</td><td class="num">2,988</td><td class="num">14,628 ms</td><td class="ok-cell">succeeded</td></tr>
+    <tr><td><code>2d2a530c</code></td><td class="num">a1</td><td class="num">1,969</td><td class="num">45,010 ms</td><td class="bad-cell">timed out</td></tr>
+    <tr><td><code>6deb0a87</code></td><td class="num">a1</td><td class="num">3,053</td><td class="num">44,983 ms</td><td class="bad-cell">timed out</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  Successful reconciliations run <strong>14.6 s to 42.8 s</strong>. The cap is 45 s. That is not a budget with
+  headroom, it is a coin flip that this run's payload loses every time, and the five other timeouts in
+  the same window are the same cap biting smaller payloads that happened to be slow.
+</p>
+
+<h4>Where the time actually goes: not the input</h4>
+<p>
+  The obvious reading of the table above is that this run sends too much context for the model to
+  chew through. That reading is wrong, and three timed calls through the identical runner, job id
+  and schema say so.
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Call</th><th>Prompt in</th><th>Model text out</th><th>Elapsed</th><th>Elapsed per output character</th></tr></thead>
+  <tbody>
+    <tr><td>Minimal prompt, fixed-overhead floor</td><td class="num">130 chars</td><td class="num">~60 chars</td><td class="num">5,170 ms</td><td class="num">n/a</td></tr>
+    <tr><td>Same criteria, first 4 of 13 claims</td><td class="num">2,848 chars</td><td class="num">304 chars</td><td class="num">30,887 ms</td><td class="num">~85 ms</td></tr>
+    <tr><td>The real payload, all 13 claims</td><td class="num">5,462 chars</td><td class="num">716 chars</td><td class="num">62,354 ms</td><td class="num">~80 ms</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="call bad">
+  <p class="ct">The number that matters</p>
+  <p>
+    5,462 characters is a trivial prompt. A 130 character prompt through the same path still costs
+    5.2 s, so roughly 5 s is fixed overhead that the input does not move. Subtract that floor and the
+    remaining time tracks <strong>output</strong> almost exactly linearly: 304 characters cost about
+    26 s and 716 characters cost about 57 s, both near 80 ms per output character. That is a
+    generation rate of roughly <strong>12 characters per second</strong>, on the order of 3 tokens per
+    second, which is one to two orders of magnitude slower than this model should generate.
+  </p>
+  <p>
+    So the block was never about sending a lot of data. It happened because this call path emits its
+    answer extremely slowly, and a reconciliation with 13 claims to map simply has more to emit. Input
+    size is a proxy for output size here, not the cause.
+  </p>
+</div>
+
+<h4>Reproduced outside the daemon, on this run's own frozen payload</h4>
+<p>
+  Submission <code>e7f3c0e8</code>'s criteria and coverage were read out of the state database and passed
+  straight to <code>reconcileWorkflowCoverage</code>, which builds the prompt itself. Three runs:
+</p>
+<div class="tw">
+<table>
+  <thead><tr><th>Cap</th><th>Result</th><th>Elapsed</th></tr></thead>
+  <tbody>
+    <tr><td class="num">45 s (as shipped)</td><td class="bad-cell">both attempts timed out</td><td class="num">90,075 ms</td></tr>
+    <tr><td class="num">300 s (probe)</td><td class="ok-cell">complete on attempt 1</td><td class="num">69,046 ms</td></tr>
+    <tr><td class="num">180 s (the fix)</td><td class="ok-cell">complete on attempt 1</td><td class="num">88,477 ms</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  The completed mapping matched 5 of the 7 canonical criteria to a claim. That is a readiness
+  <em>gap</em>, which is a state the operator can act on through the evidence pane, rather than a block
+  with no exit.
+</p>
+
+<h2 id="fix">What this diagnosis recommends</h2>
+<div class="call warn">
+  <p class="ct">Nothing here is applied</p>
+  <p>
+    This turn is diagnosis and handoff, so no fix ships with it. Each change below was written,
+    measured, and then <strong>reverted</strong>, so the working tree carries no source change at all.
+    The measurements are kept because they are what identifies the cause; the patch is kept out of
+    the repository and can be reapplied by the task that owns the fix.
+  </p>
+</div>
+<h3>1. The real defect: the generation rate, not the timeout</h3>
+<p>
+  Roughly 80 ms per output character, about 12 characters per second, is the finding to act on. At
+  that rate any reconciliation with more than a handful of claims exceeds any cap that is reasonable
+  to put on a capture step, so raising the cap buys time without removing the problem. What has not
+  been established is where that time goes inside the Claude Agent SDK one-shot path, and that is the
+  investigation this report recommends first. A fixed overhead near 5 s per call is separately worth
+  knowing about, since capture makes two of these calls in sequence.
+</p>
+<h3>2. The mitigation, measured but not applied</h3>
+<p>
+  Compaction summarises one packet and its cost barely moves with the work under review.
+  Reconciliation is an N&times;M semantic match whose output grows with both the claims and the
+  criteria. Sharing one constant is what turns slow into unreviewable, so giving reconciliation its
+  own budget, <code>WORKFLOW_RECONCILIATION_TIMEOUT_MS</code> beside
+  <code>WORKFLOW_CONTEXT_TIMEOUT_MS</code> in <code>src/server/workflows/context.ts</code>, lets this
+  run finish. Measured at 180 s: the same payload that timed out four times returns a complete mapping
+  on the first attempt. It is a mitigation, and it should not be mistaken for the fix.
+</p>
+<h3>3. A separate, unrelated UI defect found on the way</h3>
+<p>
+  The refusal alert outliving the move that answered it is its own bug and has nothing to do with the
+  timeout. The unchanged resubmission is the one route that answers a refusal without dispatching
+  through the shared run action store (<code>src/web/workflows/WorkflowRuns.tsx</code>), so the store's
+  held error survives it; the store clears a held error only on its next dispatch
+  (<code>src/web/workflows/run-action-store.ts:52</code>). Exporting a clear and calling it from that
+  route fixes it.
+</p>
+<h4>What the prototype measured before it was reverted</h4>
+<ul>
+  <li>A unit case reading <code>timeoutMs</code> off the calls themselves pinned compaction at 45 s
+      against reconciliation's 180 s. 19 tests passed across the two files. With the prototype
+      reverted those files are back to 17 passing tests.</li>
+  <li>A browser spec drove refusal then override in one page life and asserted the alert was gone once
+      the round opened. It <strong>failed with the clear removed</strong> (<code>toHaveCount</code>
+      expected 0, received 1, across 44 resolutions) and passed with it, so it is a real regression
+      test rather than a passing decoration.</li>
+  <li>The stuck run's own payload reconciled in 88,477 ms on the first attempt under a 180 s budget,
+      against two 45 s timeouts under the shipped cap.</li>
+  <li><code>typecheck</code>, <code>lint</code>, <code>build</code> and <code>smoke</code> passed with
+      the prototype applied, and <code>typecheck</code>, <code>build</code> and the two unit files pass
+      again now that it is reverted.</li>
+</ul>
+<div class="call warn">
+  <p class="ct">What this means for the run in the screenshot</p>
+  <p>
+    <strong>That run is closed and has no recovery path.</strong> It was cancelled at 00:15:59Z, after
+    the investigation, and is now terminal: <code>workflow_runs.status</code> is <code>cancelled</code>
+    and <code>completed_at</code> is set to <code>2026-09-12T00:15:59.272Z</code>. A cancelled run offers
+    no actions at all.
+    &ldquo;Retry criterion mapping&rdquo;, the resubmissions and the repair budget it had left are gone
+    with it. Do not go looking for a button on it.
+  </p>
+  <p>
+    What was true up to the cancellation, and is the answer to the question asked, is that while it was
+    open no action on that page could clear it. Its four timed-out reconciliation calls were split
+    across the initial round and one recovery segment; the single repair round it spent in between made
+    no call at all, because an identical prompt fingerprint carried the exhausted attempt budget forward
+    with it. It ended with 4 of its 5 repair rounds unspent and no way to use them.
+  </p>
+  <p>
+    The code path is what carries forward. It is unchanged, so the next submission with a comparable
+    number of coverage claims blocks the same way. On a <em>future</em> run in that state, and only once
+    a build carrying a larger reconciliation budget is actually running, &ldquo;Retry criterion
+    mapping&rdquo; is the cheap move, since it reconciles without opening a repair round.
+  </p>
+</div>
+
+<h2 id="limits">What this did not establish</h2>
+<ul>
+  <li><strong>Where the slow generation comes from.</strong> The rate is now measured, about 12 output
+      characters per second over a fixed overhead near 5 s, but nothing here explains it. Whether it is
+      the Agent SDK one-shot wrapper, the structured-output schema, the provider, or something in
+      between was not traced, and no comparison against a plain API call was run. That trace is the
+      recommended next step, and until it exists the 180 s budget is a number chosen to clear the
+      observed worst case rather than one derived from an understood cost.</li>
+  <li><strong>Where the run-state claims come from.</strong> The cancellation, its timestamp and the
+      <code>completed_at</code> value are read from the complete <code>workflow_runs</code> row, which is
+      printed column by column in the state-snapshot artifact registered with this report rather than
+      summarised from a selected few. The snapshot is a single read taken while writing this; if the run
+      is touched again afterwards, that row is what moves.</li>
+  <li><strong>Whether the rate is constant or was a bad window.</strong> The three scaling calls and the
+      reproductions all ran inside one evening on one machine. A slow provider window would produce the
+      same shape. Re-measuring the floor on another day would separate the two, and was not done.</li>
+  <li><strong>Whether 180 s is enough for every payload.</strong> Three timing samples on one prompt
+      (69.0 s, 88.5 s, and one run that exceeded 45 s twice). The budget scales with nothing, so a
+      submission with substantially more claims could still exceed it. A cap derived from the packet
+      size would remove that risk and was not attempted.</li>
+  <li><strong>The five other timeouts in the window.</strong> Runs <code>dd4ee40c</code>, <code>8584d4ec</code>,
+      <code>2d2a530c</code> and <code>6deb0a87</code> hit the same cap on smaller prompts. They are consistent
+      with a cap that has no headroom, but each was not investigated on its own terms.</li>
+  <li><strong>The exact click sequence in the browser.</strong> The server's event log fixes what was
+      requested and when; which surface each click came from, and whether the page was reloaded in
+      between, is not recorded. The persistence mechanism was established by reading the code and then
+      reproducing it in a browser, not from the operator's session.</li>
+  <li><strong>Why the two unmatched criteria did not match.</strong> The completed mapping leaves criteria
+      1 and 7 with no claim. Whether that is a genuine coverage gap in the session's work or a mapping
+      miss was not examined.</li>
+</ul>
+
+<p class="foot">
+  Evidence: <code>~/.mission-control/harness.db</code> tables <code>workflow_runs</code>,
+  <code>workflow_submissions</code>, <code>workflow_events</code>, <code>workflow_llm_calls</code>,
+  <code>workflow_submission_evidence_coverage</code>, <code>workflow_node_attempts</code>, read read-only at
+  2026-09-12T00:13Z. Run <code>52de186f-d126-4596-8cd3-b66fcefa3379</code>, binding
+  <code>dfbfc94a-2d2f-4c2c-a147-7ccd42141b0f</code>, session <code>sdk:87598060</code> (Codex,
+  <code>gpt-6-astra</code>), workflow <code>builtin-workflow:no-mistakes-review@15</code>.
+</p>
+
+</div>
+</body>
+</html>

@@ -263,14 +263,17 @@ test("a session store that cannot be read is reported as itself", async () => {
 
 // ---- project trust --------------------------------------------------------------------
 
-test("an undecided checkout runs WITHOUT its project-local executable resources", async () => {
-  // Phase 1 has no surface to ask trust on, so it must not silently grant it. Being
-  // attached to Mission Control is not a trust decision.
-  const { sdk } = await launch({}, (sdk) => {
+test("an undecided checkout pauses before its project-local executable resources", async () => {
+  // Attachment alone cannot grant project trust while the shared question is pending.
+  const { sdk, handle } = await launch({}, (sdk) => {
     sdk.trustRequiring = true;
     sdk.trust = null;
   });
-  assert.equal(sdk.created[0]!.trusted, false);
+  assert.equal(typeof sdk.created[0]!.projectTrust, "function");
+  assert.equal("trusted" in sdk.created[0]!, false);
+  assert.equal("resolveTrust" in sdk.created[0]!, false);
+  assert.deepEqual(sdk.trustDecisions, []);
+  await handle.stop();
 });
 
 test("a checkout Pi has already refused stays refused", async () => {
@@ -278,7 +281,7 @@ test("a checkout Pi has already refused stays refused", async () => {
     sdk.trustRequiring = true;
     sdk.trust = false;
   });
-  assert.equal(sdk.created[0]!.trusted, false);
+  assert.deepEqual(sdk.trustDecisions, [false]);
 });
 
 test("a durable trusted decision is consumed without prompting", async () => {
@@ -286,17 +289,17 @@ test("a durable trusted decision is consumed without prompting", async () => {
     sdk.trustRequiring = true;
     sdk.trust = true;
   });
-  assert.equal(sdk.created[0]!.trusted, true);
+  assert.deepEqual(sdk.trustDecisions, [true]);
 });
 
 test("a checkout with no trust-requiring resources needs no decision at all", async () => {
-  // `trusted: true` here is not a grant - there is nothing to gate. Global Pi configuration
+  // A resolved true here is not a grant - there is nothing to gate. Global Pi configuration
   // and the built-in coding tools are unaffected either way.
   const { sdk } = await launch({}, (sdk) => {
     sdk.trustRequiring = false;
     sdk.trust = null;
   });
-  assert.equal(sdk.created[0]!.trusted, true);
+  assert.deepEqual(sdk.trustDecisions, [true]);
 });
 
 // ---- capabilities this harness does not have -------------------------------------------
@@ -336,7 +339,7 @@ test("Pi has no permission modes, so the handle declares none rather than stubbi
 
 test("there is no request to answer in Phase 1, and asking says so", async () => {
   const { handle } = await launch();
-  await assert.rejects(() => handle.answer("req-1", { kind: "text", text: "yes" }), /no pending request/);
+  await assert.rejects(() => handle.answer("req-1", { kind: "text", text: "yes" }), /no longer pending/);
 });
 
 // ---- delivery ---------------------------------------------------------------------------
@@ -621,7 +624,10 @@ function modelRuntime(name: string, offered: string[]) {
  * A vendor stand-in whose services differ per factory invocation, so which one the runtime
  * ended up holding is observable. `newSession` re-enters the factory exactly as Pi's does.
  */
-function standInVendor(runtimes: Array<ReturnType<typeof modelRuntime>>) {
+function standInVendor(
+  runtimes: Array<ReturnType<typeof modelRuntime>>,
+  onTrust?: (trusted: boolean) => void,
+) {
   let call = 0;
   let factory: (target: unknown) => Promise<unknown>;
   const target = {
@@ -631,14 +637,20 @@ function standInVendor(runtimes: Array<ReturnType<typeof modelRuntime>>) {
   };
   const vendor = {
     getAgentDir: () => target.agentDir,
-    createAgentSessionServices: async () => ({
-      cwd: target.cwd,
-      agentDir: target.agentDir,
-      modelRuntime: runtimes[Math.min(call++, runtimes.length - 1)],
-      settingsManager: {},
-      resourceLoader: {},
-      diagnostics: [],
-    }),
+    createAgentSessionServices: async (options: {
+      resourceLoaderReloadOptions: { resolveProjectTrust: () => Promise<boolean> };
+    }) => {
+      const trusted = await options.resourceLoaderReloadOptions.resolveProjectTrust();
+      onTrust?.(trusted);
+      return {
+        cwd: target.cwd,
+        agentDir: target.agentDir,
+        modelRuntime: runtimes[Math.min(call++, runtimes.length - 1)],
+        settingsManager: {},
+        resourceLoader: {},
+        diagnostics: [],
+      };
+    },
     createAgentSessionFromServices: async () => ({ session: {}, events: [] }),
     createBashToolDefinition: () => ({ name: "bash" }),
     SessionManager: { open: () => ({}), create: () => ({}) },
@@ -665,11 +677,70 @@ function runtimeOptions() {
     sessionPath: null,
     model: { provider: "amazon-bedrock", id: "deepseek.v3.2" },
     thinkingLevel: null,
-    trusted: false,
+    projectTrust: false,
     appendSystemPrompt: [],
     toolEnv: {},
   };
 }
+
+test("a resolved project-trust policy preserves allow and deny across replacement", async () => {
+  for (const projectTrust of [false, true]) {
+    const decisions: boolean[] = [];
+    const options = Object.freeze({ ...runtimeOptions(), projectTrust });
+    const runtime = await createRuntime(
+      standInVendor([modelRuntime("trusted", ["deepseek.v3.2"])], (value) => decisions.push(value)),
+      options,
+    );
+    try {
+      assert.deepEqual(decisions, [projectTrust]);
+      await runtime.newSession();
+      assert.deepEqual(decisions, [projectTrust, projectTrust]);
+      assert.equal(options.projectTrust, projectTrust);
+    } finally { await runtime.dispose(); }
+  }
+});
+
+test("a deferred project-trust policy is awaited and re-evaluated before resource loading", async () => {
+  const decisions: boolean[] = [];
+  let resolve!: (trusted: boolean) => void;
+  let entered!: () => void;
+  const decision = new Promise<boolean>((done) => { resolve = done; });
+  const pending = new Promise<void>((done) => { entered = done; });
+  let calls = 0;
+  const projectTrust = async () => {
+    calls += 1;
+    entered();
+    return calls === 1 ? decision : true;
+  };
+  const options = Object.freeze({ ...runtimeOptions(), projectTrust });
+  const creating = createRuntime(
+    standInVendor([modelRuntime("trusted", ["deepseek.v3.2"])], (value) => decisions.push(value)),
+    options,
+  );
+  await Promise.race([
+    pending,
+    creating.then(() => { throw new Error("resource loading bypassed the project-trust policy"); }),
+  ]);
+  assert.deepEqual(decisions, [], "resource loading must wait for the policy's decision");
+  resolve(false);
+  const runtime = await creating;
+  try {
+    assert.deepEqual(decisions, [false]);
+    await runtime.newSession();
+    assert.equal(calls, 2);
+    assert.deepEqual(decisions, [false, true]);
+    assert.equal(options.projectTrust, projectTrust, "a resolved value cannot replace the policy");
+  } finally { await runtime.dispose(); }
+});
+
+test("a rejected project-trust policy prevents resource loading", async () => {
+  const decisions: boolean[] = [];
+  await assert.rejects(createRuntime(
+    standInVendor([modelRuntime("trusted", ["deepseek.v3.2"])], (value) => decisions.push(value)),
+    { ...runtimeOptions(), projectTrust: async () => { throw new Error("trust resolver failed"); } },
+  ), /trust resolver failed/);
+  assert.deepEqual(decisions, []);
+});
 
 test("a clear that fails partway leaves the live session resolving against its OWN services", async () => {
   // First invocation offers the model, second does not: the credential lapsed or the model

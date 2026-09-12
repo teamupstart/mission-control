@@ -6,7 +6,7 @@ import { mkSession } from "../../test/helpers/session-fixture.ts";
 
 // The usage-poller integration test proves JSONL -> ledger -> session cost. Here the
 // browser receives that projection through SSE and proves the Pi card and queue UI.
-test("Pi renders reported spend while its queue explains the missing lifecycle hooks", async ({ dashboard, daemon }) => {
+test("Pi renders reported spend while terminal Work Queue is refused", async ({ dashboard, daemon }) => {
   const stream = await fetch(`${daemon.baseURL}/events`);
   expect(stream.ok).toBe(true);
   const reader = stream.body!.getReader();
@@ -40,7 +40,7 @@ test("Pi renders reported spend while its queue explains the missing lifecycle h
   await expect(detail.locator(".cost-chip")).toHaveText("≈$0.01");
   await dashboard.getByRole("tab", { name: "Work queue" }).click();
   await expect(detail.locator(".wq-blocked")).toHaveText(
-    "This Pi session has not loaded the Mission Control extension's lifecycle hooks, so Foreman cannot tell when work starts or finishes. Open Settings > Setup > Agent extensions to install the Pi integration or follow the Pi extension warning, then start a fresh Pi session.",
+    "Pi Work Queue requires a managed Agent SDK session.",
   );
   await expect(detail.getByPlaceholder(/Queue work for this session/)).toHaveCount(0);
   const dir = artifactsDir("pi-cost-capabilities");

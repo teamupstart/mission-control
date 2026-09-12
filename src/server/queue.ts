@@ -303,9 +303,16 @@ export class QueueManager {
   ): { ok: true; item: WorkItem } | { ok: false; error: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
+    const acknowledged = this.registry.sessionForNoteKey(item.noteKey)?.runtime === "sdk";
+    // The worker calls this only after delivery resolves. SDK delivery is an acceptance
+    // acknowledgement, even when the whole turn completed before this HTTP write arrived.
+    // Waiting for a later activity timestamp in that case would resend accepted work.
+    if (acknowledged && item.state !== "sending") {
+      return { ok: false, error: "this acknowledged send is no longer current" };
+    }
     const next: WorkItem = {
       ...item,
-      state: "awaiting_pickup",
+      state: acknowledged ? "in_progress" : "awaiting_pickup",
       baseSha: item.baseSha ?? baseSha,
       // `??` and not `||`: a 0 anchor is a real value (an empty transcript at
       // delivery), and treating it as absent would re-anchor past round 0's turns.

@@ -295,6 +295,10 @@ tradeoffs.
 
 ## Pi session integration
 
+Managed Pi sessions support structured extension questions, Pi-owned project trust, and
+Work Queue automation. Select an `amazon-bedrock/*` model after signing in through Pi.
+Terminal Pi remains outside Work Queue. See [managed Pi sessions](docs/sessions.md#what-a-managed-pi-session-does-differently).
+
 The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
 attributed usage for hand-run Pi sessions. For a first installation, open **Settings > Setup >
 Agent extensions > Install Pi integration**. You can also enable it from a durable built checkout:

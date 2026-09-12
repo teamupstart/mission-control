@@ -118,6 +118,8 @@ class FakeSession {
     });
   }
 
+  async bindExtensions(ui) { this.ui = ui; }
+
   subscribe(listener) {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -160,7 +162,7 @@ class FakeSession {
     this.writeMessage("user", text);
     return new Promise((resolve) => {
       this.finish = resolve;
-      this.run(text);
+      void this.run(text);
     });
   }
 
@@ -171,11 +173,28 @@ class FakeSession {
    * interrupt case something real to stop; everything else answers on the next tick so a
    * spec spends no wall clock.
    */
-  run(text) {
-    this.turns += 1;
+  async run(text) {
+    const generation = ++this.turns;
     this.emit({ type: "agent_start" });
     this.emit({ type: "turn_start" });
     this.emit({ type: "message_start" });
+    if (text.includes("PI_QUESTIONS")) {
+      const selected = await this.ui.select("Choose a region", ["West", "East"]);
+      const confirmed = await this.ui.confirm("Apply selection?", "Use the selected test region.");
+      const input = await this.ui.input("Deployment name", "name or empty");
+      const edited = await this.ui.editor("Release notes", "First line\nSecond line");
+      record("answers", { selected, confirmed, input, edited });
+    }
+    if (text.includes("PI_TIMEOUT")) {
+      await this.ui.select("Repeated question", ["Continue"], { timeout: 1500 });
+      await this.ui.select("Repeated question", ["Continue"]);
+    }
+    if (text.includes("PI_BLOCK")) await this.ui.input("Blocking extension question");
+    if (generation !== this.turns || !this.streaming) return;
+    if (text.includes("PI_CREATE_PR")) {
+      this.emit({ type: "tool_execution_start", toolCallId: "pr", toolName: "bash", command: "gh pr create", opensPullRequest: true });
+      this.emit({ type: "tool_execution_end", toolCallId: "pr", toolName: "bash", isError: false, prUrls: ["https://github.com/test/pi-fixture/pull/975"] });
+    }
     if (/SLOWLY/.test(text)) {
       this.emit({
         type: "tool_execution_start",
@@ -229,6 +248,7 @@ class FakeSession {
 
   async abort() {
     if (!this.streaming) return;
+    this.turns += 1;
     this.emit({
       type: "tool_execution_end",
       toolCallId: "slow-1",
@@ -270,7 +290,7 @@ class FakeRuntime {
       modelId: this.session.modelId,
     });
     record("new-session", { sessionId: this.session.sessionId });
-    this.replaced?.(this.session);
+    await this.replaced?.(this.session);
   }
 
   async dispose() {
@@ -306,20 +326,33 @@ export async function createPiSdk() {
   return {
     agentDir: () => agentDir,
     // Nothing in the seeded workspace carries project-local Pi resources, so no trust
-    // decision is needed and none is invented. `trusted` still reaches `createRuntime` and
-    // is recorded, which is what a spec reads to prove the decision was made at all.
-    hasTrustRequiringProjectResources: () => existsSync(join(process.cwd(), ".pi")),
-    projectTrust: () => null,
+    // decision is needed and none is invented. The resolved policy result is recorded at
+    // resource loading, which is what a spec reads to prove the decision was made at all.
+    hasTrustRequiringProjectResources: (cwd) => process.env.MC_E2E_PI_TRUST === "1" || existsSync(join(cwd, ".pi")),
+    projectTrust: (cwd) => {
+      const path = join(agentDir, "fake-trust.json");
+      return existsSync(path) ? JSON.parse(readFileSync(path, "utf8"))[cwd] ?? null : null;
+    },
+    setProjectTrust: (cwd, trusted) => {
+      const path = join(agentDir, "fake-trust.json");
+      const values = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+      writeFileSync(path, JSON.stringify({ ...values, [cwd]: trusted }));
+      record("trust", { cwd, trusted });
+    },
     async findSessionFile(cwd, sessionId) {
       return findSessionFile(sessionsDir, cwd, sessionId);
     },
     async createRuntime(options) {
+      const trusted = typeof options.projectTrust === "function"
+        ? await options.projectTrust() : options.projectTrust;
+      options.signal?.throwIfAborted();
+      record("project-resources", { loaded: trusted });
       record("create-runtime", {
         cwd: options.cwd,
         sessionPath: options.sessionPath,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
-        trusted: options.trusted,
+        trusted,
         // The isolation this driver has to apply itself, since Pi runs in-process: a
         // MISSION_HOME here that equals the daemon's own would be the leak.
         toolStateHome: options.toolEnv.MISSION_HOME ?? null,

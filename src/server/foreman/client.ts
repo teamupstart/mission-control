@@ -1485,7 +1485,7 @@ export class ForemanClient implements ForemanActions {
    * the daemon refuses whenever it can't confirm the row against the live screen, and
    * `applyVerdict` turns that throw into "not answered" rather than a false byline.
    */
-  async selectOption(id: string, option: { number: number; label: string }): Promise<unknown> {
+  async selectOption(id: string, option: { number: number; label: string; requestId?: string }): Promise<unknown> {
     // `by` for the same reason `resolveReview` carries it, documented below: answering a
     // driver QUESTION now leaves a record in the session's conversation, and the record
     // must not say the operator chose this.
@@ -1508,9 +1508,11 @@ export class ForemanClient implements ForemanActions {
   async submitForm(
     id: string,
     answers: NonNullable<SubmitOptions["answers"]>,
+    requestId?: string,
   ): Promise<unknown> {
     const res = await send("POST", `/api/sessions/${enc(id)}/submit-options`, {
       answers,
+      requestId,
       by: "foreman",
     });
     if (!res.ok) throw new Error(`submitForm ${id} -> ${res.status}`);

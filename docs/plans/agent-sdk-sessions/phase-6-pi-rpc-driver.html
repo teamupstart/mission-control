@@ -1,0 +1,132 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Superseded Pi RPC proposal</title><style>html{color-scheme:light dark}body{font:16px/1.6 system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 24px}pre,table{display:block;overflow:auto}blockquote{margin:0;padding:16px;border-left:4px solid #bc792e;background:light-dark(#fff4df,#382a18)}a{color:light-dark(#125f9b,#85c7ff)}code{font-size:.9em}</style><main><h1>Phase 6: the pi RPC driver</h1>
+<blockquote>
+<p><strong>Superseded.</strong> The <a href="../pi-bedrock-models/phased-plan.md">Pi Bedrock phases</a> shipped the
+TypeScript SDK transport using Pi&#39;s <code>AgentSessionRuntime</code>, including structured UI and
+managed Work Queue support. There is no production RPC driver. The proposal below is
+retained as historical context; <a href="../../sessions.md#what-a-managed-pi-session-does-differently">managed Pi documentation</a>
+describes the supported behavior and remaining exclusions.</p>
+</blockquote>
+<h2>Historical proposed outcome</h2>
+<p>The Harnesses toggle appears for pi; flipping it makes the next dispatched pi session
+run over <code>pi --mode rpc</code>: streaming state, structured dialogs (whatever pi&#39;s configured
+extensions raise), acked sends, resume, and - for the first time on any pi session -
+work-queue eligibility, because the driver is the pickup/completion channel pi&#39;s
+<code>hooks: null</code> could never provide.</p>
+<h2>Entry criteria and dependencies</h2>
+<ul>
+<li>Direct prerequisite: phase 3 merged (this phase leans on C9&#39;s runtime-aware
+<code>foremanAutomationAuthorized</code> and the runtime-generic Foreman/queue machinery; the
+supervisor and toggle arrive transitively via phase 2).</li>
+<li>Runs concurrently with phases 4 and 5 (disjoint files; README adjacency with 5 only).</li>
+</ul>
+<h2>Scope</h2>
+<p>In: the pi RPC adapter, <code>extension_ui_request</code> projection, capability revisions
+(<code>runtimes</code>, <code>workQueue</code>), clearContext via <code>new_session</code>, resume via <code>--session</code>,
+handoff, tests.</p>
+<p>Non-goals: pi permission-mode modeling (pi&#39;s vocabulary still does not map onto the
+closed <code>PermissionMode</code> union - <code>setPermissionMode</code> stays null, the tested degradation;
+widening the union is out of scope per the source plan&#39;s pi note); building or bundling
+a pi permission extension (we project whatever dialogs the operator&#39;s pi config raises).</p>
+<h2>Repository findings and inherited contracts</h2>
+<p>Inherits C1-C9 (and C11 is owned here). Findings:</p>
+<ul>
+<li><strong>Transport</strong>: <code>pi --mode rpc</code>, strict LF-delimited JSONL over stdio. pi&#39;s own docs
+warn Node <code>readline</code> is non-compliant (it splits on U+2028/U+2029) - frame manually on
+<code>\n</code> bytes. Strip inherited <code>TMUX_PANE</code>, <code>WEZTERM_PANE</code>, and <code>TERM_PROGRAM</code> before
+spawning, matching the first driver&#39;s attribution guard. Commands carry optional <code>id</code>
+for correlation; responses are <code>{type: &quot;response&quot;, command, success, data | error}</code>.</li>
+<li><strong>Command set</strong> (verify against the pinned pi version): <code>prompt</code> (with images and
+<code>streamingBehavior</code>), <code>steer</code>, <code>follow_up</code>, <code>abort</code>, <code>new_session</code>,
+<code>switch_session</code>, <code>fork</code>, <code>get_state</code>, <code>set_model</code>, <code>set_thinking_level</code>, <code>compact</code>,
+<code>set_session_name</code>, <code>get_last_assistant_text</code>.</li>
+<li><strong>Events</strong>: <code>agent_start</code> / <code>agent_end</code> / <code>agent_settled</code>, message/turn/tool streams,
+<code>extension_ui_request</code> (<code>select</code> / <code>confirm</code> / <code>input</code>, answered by
+<code>extension_ui_response</code> matched on <code>id</code>, with optional timeout auto-resolve).</li>
+<li><strong>pi today in this repo</strong>: <code>hooks: null</code>, <code>tui: null</code>, <code>workQueue: null</code>,
+<code>permissionModes: null</code>, transcript non-null with messages, launch-scoped
+<code>--session-id</code> identity (<code>preparePiLaunch</code>, <code>bindLaunchedAgentSession</code>) - the pattern
+the whole SDK design generalized. The current terminal launch contract is owned by the
+<a href="../../dispatch-and-backlog.md#dispatch-an-agent">README</a>; the RPC launch replaces that terminal
+arm for SDK-runtime dispatches.</li>
+<li><strong>Sessions</strong>: <code>~/.pi/agent/sessions/--&lt;cwd&gt;--/&lt;ts&gt;_&lt;uuid&gt;.jsonl</code>; RPC mode still
+writes them, so <code>piTranscript.locate</code> works once <code>bound</code> supplies the session id
+(C5&#39;s read-path guarantee). Resume: <code>--session &lt;path|id&gt;</code>; interactive takeover uses
+the same flag.</li>
+<li><strong>pi is YOLO by default</strong>: no built-in approvals; <code>extension_ui_request</code> is raised by
+extensions (e.g. a permission extension) when the operator has one configured. The
+driver projects whatever arrives and claims nothing more.</li>
+</ul>
+<h2>Implementation steps</h2>
+<ol>
+<li><strong><code>src/server/harness/pi/sdk.ts</code></strong> over the injectable transport seam:<ul>
+<li><code>launch(opts)</code>: spawn <code>resolveAgentBin(&quot;pi&quot;)</code> with
+<code>[&quot;--mode&quot;, &quot;rpc&quot;, ...effort launchArgs]</code> in <code>opts.cwd</code>; on start, <code>get_state</code> →
+<code>bound</code> (session file id as <code>agentSessionId</code>; <code>transcriptPath</code> from
+<code>piSessionFileForIdentity</code>). Deliver <code>opts.prompt</code> as the first <code>prompt</code> command.
+pi has no MCP client (<code>mcp: null</code>) - <code>opts.mcp</code> is refused upstream (the dispatcher
+already never renders MCP for pi).</li>
+<li><code>agent_start</code> / <code>agent_end</code> / <code>agent_settled</code> → <code>state</code> events;
+tool/message streams → activity ticker; <code>agent_end</code> → <code>turn_done</code> (map pi&#39;s
+stats where available, else null usage).</li>
+<li><code>extension_ui_request</code> → C3 projection: <code>select</code> → options list (single-select),
+<code>confirm</code> → two options, <code>input</code> → a free-text question. <code>answer()</code> sends
+<code>extension_ui_response</code> matched on the request id. A timed-out request (pi
+auto-resolved to its default) emits <code>request_resolved</code> so the card clears - never
+answer after timeout.</li>
+<li><code>send()</code> → <code>prompt</code> (or <code>steer</code>/<code>follow_up</code> per <code>streamingBehavior</code> when a turn is
+in flight - pick the measured behavior and record it); <code>interrupt()</code> → <code>abort</code>;
+<code>setModel</code> → <code>set_model</code>; <code>setEffort</code> → <code>set_thinking_level</code>;
+<code>clearContext()</code> → <code>new_session</code> + re-emit <code>bound</code> with the new session file;
+<code>setPermissionMode: null</code>.</li>
+<li><code>pr_created</code>: watch tool-execution events for <code>opensPullRequest</code> command matches.</li>
+<li>Exit → <code>exited { resumable: true }</code>; resume relaunches with
+<code>[&quot;--mode&quot;, &quot;rpc&quot;, &quot;--session&quot;, &lt;id&gt;]</code>.</li>
+</ul>
+</li>
+<li><strong>Capabilities</strong>: pi <code>runtimes: [&quot;terminal&quot;, &quot;sdk&quot;]</code>; <code>HARNESSES.pi.sdk = piSdk</code>
+(C4 contract test moves them together). Revisit <code>workQueue</code>: replace the null with a
+<code>WorkQueueSpec</code> whose <code>uninstrumentedWhy</code> covers terminal pi sessions (&quot;terminal pi
+sessions report no pickup signal; dispatch pi through the Agent SDK runtime to queue
+work&quot;) - C9&#39;s runtime arm authorizes SDK-runtime pi sessions, and terminal pi
+sessions hit the per-session refusal exactly as uninstrumented Codex does. Update
+<code>workQueueUnsupportedWhy</code> expectations in <code>harness-capabilities.test.ts</code>
+(pi moves from harness-refused to session-refused for terminal, allowed for SDK).</li>
+<li><strong>Handoff</strong>: implement <code>Harness.resume.argv(agentSessionId)</code> as
+<code>[&quot;--session&quot;, agentSessionId]</code>; the phase 2 route prepends <code>resolveAgentBin(&quot;pi&quot;)</code>
+without a pi-specific branch.</li>
+<li><strong>Dispatcher</strong>: nothing pi-specific to add - the phase 2 branch covers it; preserve
+the terminal Pi launch contract documented in the
+<a href="../../dispatch-and-backlog.md#dispatch-an-agent">README</a> when the toggle is off.</li>
+<li><strong>Tests</strong>: <code>pi-sdk-adapter.test.ts</code> on scripted JSONL frames (LF framing incl. a
+U+2028-in-content case, ui request/response matching, timeout resolution,
+new_session rotation, resume argv), capability/contract updates, queue authorization
+matrix (terminal pi refused with the sentence; SDK pi authorized), handoff argv.</li>
+</ol>
+<h2>Data and compatibility</h2>
+<p>No schema changes. Terminal Pi dispatch (toggle off) remains byte-identical to the
+contract documented in the <a href="../../dispatch-and-backlog.md#dispatch-an-agent">README</a>.</p>
+<h2>Verification</h2>
+<p>Unit suites, plus E2E: flip the pi toggle, dispatch into an allowlisted repo; card
+streams state; queue an item and watch pickup/verify (the first queued work on a pi
+session ever - confirm the sentence changes in the panel too); <code>set_model</code> and effort
+from the card; daemon restart resumes; handoff opens interactive pi on the same session.
+If a pi permission extension is installed, raise a dialog and answer it from the card;
+otherwise assert the no-dialog path stays quiet.</p>
+<h2>Merge / exit criteria</h2>
+<p>CI green; E2E checklist demonstrated; pi&#39;s capability changes reflected in every
+computed sentence (panel scope lines, <code>workQueueBlockedReason</code>) with no hand-typed
+prose; README pi row updated in this PR.</p>
+<h2>Downstream handoff</h2>
+<p>Terminal (final phase). What the repository may rely on afterward: three
+<code>SdkSpec</code> implementations proving the transport seam (subprocess SDK, JSON-RPC,
+raw JSONL), and the capability doctrine extended with its first runtime-conditional
+work-queue answer.</p>
+<h2>Cross-phase audit record</h2>
+<ul>
+<li>2026-07-24: initial version. Depends on 3 (not just 2) because step 2&#39;s work-queue
+revisit is only sound on top of C9&#39;s runtime arm - moving that arm here was
+considered and rejected (phase 3 owns Foreman contracts; splitting authorization
+across phases is how the two halves drift). Concurrency with 4 and 5 re-checked
+against their file lists; README adjacency with 5 noted in both.</li>
+</ul>
+</main></html>

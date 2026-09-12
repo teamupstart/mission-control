@@ -1,6 +1,12 @@
 # Phase 6: the pi RPC driver
 
-## Outcome
+> **Superseded.** The [Pi Bedrock phases](../pi-bedrock-models/phased-plan.md) shipped the
+> TypeScript SDK transport using Pi's `AgentSessionRuntime`, including structured UI and
+> managed Work Queue support. There is no production RPC driver. The proposal below is
+> retained as historical context; [managed Pi documentation](../../sessions.md#what-a-managed-pi-session-does-differently)
+> describes the supported behavior and remaining exclusions.
+
+## Historical proposed outcome
 
 The Harnesses toggle appears for pi; flipping it makes the next dispatched pi session
 run over `pi --mode rpc`: streaming state, structured dialogs (whatever pi's configured

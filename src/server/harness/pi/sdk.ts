@@ -1,9 +1,12 @@
+import { startPi } from "./sdk-startup.ts";
+import type { PiUIBridge } from "./sdk-ui.ts";
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import type { SdkSendDisposition, ThinkingLevel } from "@shared/types.ts";
 import { EventStream } from "../../sdk/event-stream.ts";
 import type {
   SdkEvent,
+  SessionRequestAnswer,
   SdkLaunchOptions,
   SdkSessionHandle,
   SdkSpec,
@@ -37,20 +40,8 @@ import type {
 // their own - and `pi --session <id>` reopens the very conversation this driver created,
 // which is what makes "continue in terminal" a handoff rather than a fork.
 //
-// ## What it deliberately does NOT do (Phase 1)
-//
-// No Mission MCP (Pi has no MCP client), no multi-repository write grant, no permission
-// modes, and no structured extension questions - Pi's `ExtensionUIContext` bridge is Phase
-// 2. Each of those is REFUSED rather than silently dropped, because a launch that quietly
-// ignores what it was handed is the card that looks dispatched and is running something
-// else.
-//
-// No PULL-REQUEST PROVENANCE either, and that one is an absence rather than a refusal: this
-// driver never emits `pr_created`. Claude's and Codex's drivers do, by watching their tool
-// streams for `gh pr create`, and the same reading is available here - which is exactly why
-// the boundary is written down. Adoption attributes a pull request to a session under the
-// operator's GitHub identity, so it is a claim this phase deliberately does not make yet.
-// See `docs/plans/pi-bedrock-models/phase-1-managed-pi-bedrock-runtime.md`.
+// Mission MCP, managed multi-repository write grants, permission modes, and terminal
+// presentation remain outside this adapter. Pi owns provider credentials and project trust.
 
 /** What a card shows while Pi is between an LLM response and its next request. */
 const ACTIVITY_RESPONDING = "responding";
@@ -150,7 +141,6 @@ async function encodeImage(path: string, mediaType: string | null): Promise<PiIm
  * and re-subscribes through `onSessionReplaced`.
  */
 class PiSdkSession implements SdkSessionHandle {
-  private readonly out = new EventStream();
   private unsubscribe: () => void = () => {};
   private session: PiSession;
   private stopped = false;
@@ -164,14 +154,20 @@ class PiSdkSession implements SdkSessionHandle {
   private activity: string | null = null;
   /** `agent_settled` count, so a delivery can tell whether ITS run produced a completion. */
   private settled = 0;
+  private turnActive = false;
+  private readonly prTools = new Set<string>();
   private modelId: string | null;
 
   constructor(
     private readonly runtime: PiRuntime,
+    private readonly out: EventStream,
+    private readonly ui: PiUIBridge,
+    private readonly repositories: readonly string[],
     private config: { model: string | null; effort: ThinkingLevel | null },
   ) {
     this.session = runtime.session;
     this.modelId = this.session.modelId;
+    this.ui.onDiagnostic((message) => this.note(message));
   }
 
   get events(): AsyncIterable<SdkEvent> {
@@ -188,16 +184,21 @@ class PiSdkSession implements SdkSessionHandle {
    */
   attach(): void {
     this.unsubscribe = this.session.subscribe((event) => this.onEvent(event));
-    this.runtime.onSessionReplaced((session) => {
+    this.runtime.onSessionReplaced(async (session) => {
+      this.ui.invalidate();
+      this.ui.resume();
       this.unsubscribe();
       this.session = session;
       this.modelId = session.modelId;
       this.unsubscribe = session.subscribe((event) => this.onEvent(event));
+      this.turnActive = false;
+      this.prTools.clear();
       this.lastAssistant = null;
       this.activity = null;
       this.published = null;
       this.bind(this.clearing);
       this.clearing = false;
+      await session.bindExtensions(this.ui.context());
     });
   }
 
@@ -221,6 +222,7 @@ class PiSdkSession implements SdkSessionHandle {
 
   /** Turn one, awaited to its acceptance boundary so a refused intent fails the launch. */
   async seed(prompt: string): Promise<void> {
+    this.requireLive();
     await this.deliver({ text: prompt }, "steer");
   }
 
@@ -256,7 +258,7 @@ class PiSdkSession implements SdkSessionHandle {
    */
   async sendIfIdle(turn: SdkTurn): Promise<"started" | null> {
     this.requireLive();
-    if (!this.session.idle) return null;
+    if (!this.session.idle || this.ui.waiting || this.clearing) return null;
     return (await this.deliver(turn, null)) === "refused-busy" ? null : "started";
   }
 
@@ -299,6 +301,11 @@ class PiSdkSession implements SdkSessionHandle {
             if (!ok) return;
             accepted = true;
             steered = session.streaming;
+            if (!steered) {
+              this.turnActive = true;
+              this.activity = null;
+              this.publish("working");
+            }
             resolve();
           },
         })
@@ -338,6 +345,7 @@ class PiSdkSession implements SdkSessionHandle {
             // unless a clear has since replaced the conversation, in which case this is the
             // abort that clear performed and the note belongs to nobody.
             if (this.session !== session) return;
+            if (this.turnActive && this.settled === before) this.completeTurn();
             this.note(classifyPiFailure(err, this.providerOfRecord()).message);
           },
         );
@@ -352,8 +360,16 @@ class PiSdkSession implements SdkSessionHandle {
   async interrupt(): Promise<void> {
     // Nothing running is not a failure: Escape into an idle pane is a no-op too, and a
     // caller interrupting a session that just finished must not see an error for being late.
-    if (this.stopped || this.session.idle) return;
-    await this.session.abort();
+    if (this.stopped) return;
+    // Cancellation resumes extension code. Refuse chained questions until abort has
+    // drained the accepted turn, or that continuation can block abort on a fresh ask.
+    this.ui.suspend();
+    try {
+      if (!this.session.idle) await this.session.abort();
+      this.completeTurn();
+    } finally {
+      this.ui.resume();
+    }
   }
 
   /**
@@ -388,6 +404,7 @@ class PiSdkSession implements SdkSessionHandle {
    */
   clearContext = async (): Promise<void> => {
     this.requireLive();
+    this.ui.suspend();
     this.clearing = true;
     try {
       await this.runtime.newSession();
@@ -398,17 +415,18 @@ class PiSdkSession implements SdkSessionHandle {
       // leave the NEXT ordinary binding claiming to be a clear - which would have the
       // registry move the note, queue and work episode off a conversation nobody replaced.
       this.clearing = false;
+      this.ui.resume();
     }
   };
 
-  /** No driver-answerable requests exist in Phase 1 - Pi's extension UI arrives in Phase 2. */
-  async answer(): Promise<void> {
-    throw new Error("this Pi session has no pending request to answer");
+  async answer(id: string, answer: SessionRequestAnswer): Promise<void> {
+    this.ui.answer(id, answer);
   }
 
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.ui.close();
     this.unsubscribe();
     try {
       // Aborted BEFORE disposal, because `dispose` does not: it emits Pi's shutdown event
@@ -441,6 +459,10 @@ class PiSdkSession implements SdkSessionHandle {
   private onEvent(event: PiSessionEvent): void {
     switch (event.type) {
       case "agent_start":
+        this.turnActive = true;
+        this.activity = null;
+        this.publish("working");
+        return;
       case "turn_start":
         this.activity = null;
         this.publish("working");
@@ -461,16 +483,24 @@ class PiSdkSession implements SdkSessionHandle {
         this.publish("working");
         return;
       case "tool_execution_start":
+        if (event.toolName === "bash" && event.opensPullRequest && this.prTools.size < 128) this.prTools.add(event.toolCallId);
         this.activity = toolActivity(event.toolName, event.command);
         this.publish("working");
         return;
       case "tool_execution_update":
         this.publish("working");
         return;
-      case "tool_execution_end":
+      case "tool_execution_end": {
+        const attempted = this.prTools.delete(event.toolCallId);
+        if (attempted && event.toolName === "bash" && !event.isError) {
+          const urls = (event.prUrls ?? []).filter((url) => this.repositories.some((repo) =>
+            url.toLowerCase().startsWith(`https://github.com/${repo}/pull/`)));
+          if (urls.length) this.out.emit({ kind: "pr_created", urls });
+        }
         this.activity = null;
         this.publish("working");
         return;
+      }
       case "compaction_start":
         this.activity = `compacting context (${event.reason})`;
         this.publish("working");
@@ -515,6 +545,9 @@ class PiSdkSession implements SdkSessionHandle {
    * work still outstanding.
    */
   private completeTurn(): void {
+    if (!this.turnActive || this.stopped || this.clearing) return;
+    this.turnActive = false;
+    this.prTools.clear();
     const failure = this.lastAssistant?.errorMessage ?? null;
     if (this.lastAssistant?.modelId) this.modelId = this.lastAssistant.modelId;
     this.out.emit({ kind: "turn_done", usage: usageFrom(this.lastAssistant) });
@@ -562,12 +595,7 @@ class PiSdkSession implements SdkSessionHandle {
  */
 export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
   return {
-    // FALSE, and it is what keeps a managed Pi session out of the Work Queue. Pi's
-    // structured extension prompts (`select`, `confirm`, `input`, `editor`) have no
-    // `ExtensionUIContext` bridge here yet, so `answer()` refuses and a session that reaches
-    // one stops where nobody can answer from. Foreman may not be handed a session it cannot
-    // unblock. Phase 2 lands the bridge and flips this. See `SdkSpec.answersRequests`.
-    answersRequests: false,
+    answersRequests: true,
     async launch(opts: SdkLaunchOptions): Promise<SdkSessionHandle> {
       // REFUSED rather than dropped. Both are capabilities Pi does not have and nothing
       // declares it does (`mcp: null`, `multiRepoDispatch: null`), so arriving here means a
@@ -595,51 +623,52 @@ export function piSdkSpec(deps: PiSdkDeps = defaultPiSdkDeps): SdkSpec {
           `"${opts.model}" is not a provider-qualified Pi model id`,
         );
       }
-      // Pi's OWN durable decision, consumed without prompting. Phase 1 has no surface to
-      // ask on, so an undecided or refused checkout runs WITHOUT its project-local
-      // executable resources rather than silently trusting a repository for having been
-      // attached to Mission Control. Global Pi configuration and the built-in coding tools
-      // are unaffected. Phase 2 is where the question gets asked.
-      const trusted = sdk.hasTrustRequiringProjectResources(opts.cwd)
-        ? sdk.projectTrust(opts.cwd) === true
-        : true;
       const sessionPath = opts.resume ? await resumeTarget(sdk, opts.cwd, opts.resume) : null;
-      let runtime: PiRuntime;
-      try {
-        runtime = await sdk.createRuntime({
-          cwd: opts.cwd,
-          sessionPath,
-          model: ref,
-          thinkingLevel: piThinkingLevel(opts.effort),
-          trusted,
-          // Pi declares an out-of-band channel on this runtime, so the dispatcher has left
-          // the block OUT of turn one and put it here. A driver that dropped it would
-          // deliver the operator's rules nowhere at all.
-          appendSystemPrompt: opts.standingInstructions ? [opts.standingInstructions] : [],
-          toolEnv: deps.toolEnv(opts.cwd, opts.stateHome),
-        });
-      } catch (err) {
-        throw classifyPiFailure(err, ref?.provider ?? null);
-      }
-      const session = new PiSdkSession(runtime, { model: opts.model, effort: opts.effort });
-      // Subscribed and bound BEFORE turn one, so nothing the first turn emits is lost and
-      // the card has an identity before it has activity.
-      session.attach();
-      session.bind();
-      try {
-        // `standingInstructions` rode the system-prompt append above, so turn one is just
-        // the intent. `standingInstructionsPrompt` is the caller's fallback and is only
-        // reached when there is no intent at all - a resume, where the conversation being
-        // reopened already carries both.
-        const first = opts.prompt || opts.standingInstructionsPrompt;
-        if (first) await session.seed(first);
-      } catch (err) {
-        // Nothing above this line is durable yet - no row, no card, no SSE frame - so the
-        // only thing to unwind is the runtime this launch created.
-        await session.stop().catch(() => {});
-        throw err;
-      }
-      return session;
+      const repositories = await deps.repositories(opts.cwd);
+      return startPi(async (out, ui, signal, own) => {
+        const resolveTrust = async (): Promise<boolean> => {
+          if (!sdk.hasTrustRequiringProjectResources(opts.cwd)) return true;
+          const remembered = sdk.projectTrust(opts.cwd);
+          if (remembered === true || remembered === false) return remembered;
+          if (remembered !== null) throw new Error("Pi returned an invalid project trust decision");
+          const choice = await ui.trust(opts.cwd);
+          signal.throwIfAborted();
+          if (choice === undefined) return false;
+          const trusted = choice === "Trust project";
+          sdk.setProjectTrust(opts.cwd, trusted);
+          return trusted;
+        };
+        let runtime: PiRuntime;
+        try {
+          runtime = await sdk.createRuntime({
+            cwd: opts.cwd,
+            sessionPath,
+            model: ref,
+            thinkingLevel: piThinkingLevel(opts.effort),
+            projectTrust: resolveTrust,
+            signal,
+            appendSystemPrompt: opts.standingInstructions ? [opts.standingInstructions] : [],
+            toolEnv: deps.toolEnv(opts.cwd, opts.stateHome),
+          });
+        } catch (err) {
+          throw classifyPiFailure(err, ref?.provider ?? null);
+        }
+        const session = new PiSdkSession(runtime, out, ui, repositories, { model: opts.model, effort: opts.effort });
+        own(session);
+        session.attach();
+        session.bind();
+        try {
+          signal.throwIfAborted();
+          await runtime.session.bindExtensions(ui.context());
+          signal.throwIfAborted();
+          const first = opts.prompt || opts.standingInstructionsPrompt;
+          if (first) await session.seed(first);
+        } catch (err) {
+          await session.stop();
+          throw err;
+        }
+        return session;
+      });
     },
   };
 }

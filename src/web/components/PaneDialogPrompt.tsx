@@ -54,7 +54,7 @@ export function PaneDialogPrompt({
   const [busy, setBusy] = useState<number | "form" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [typed, setTyped] = useState("");
+  const [typed, setTyped] = useState(dialog.questions?.[0]?.textInput?.initialValue ?? "");
   const [foremanOpen, setForemanOpen] = useState(false);
   const foremanTriggerRef = useRef<HTMLButtonElement>(null);
 
@@ -77,7 +77,7 @@ export function PaneDialogPrompt({
     setPicked(initialPicks(dialog));
     setError(null);
     setNote(null);
-    setTyped("");
+    setTyped(dialog.questions?.[0]?.textInput?.initialValue ?? "");
     setForemanOpen(false);
   }
 
@@ -105,7 +105,7 @@ export function PaneDialogPrompt({
     setNote(null);
     // The label goes back exactly as rendered - it is what the daemon re-checks the pane
     // against, so passing anything reconstructed would be checking our own guess.
-    const r = await api.selectOption(sessionId, option.number, option.label);
+    const r = await api.selectOption(sessionId, option.number, option.label, dialog.requestId);
     setBusy(null);
     // No success branch: the menu closes, the next poll clears `paneDialog`, and this
     // whole component unmounts. Nothing to congratulate the human with.
@@ -142,12 +142,13 @@ export function PaneDialogPrompt({
   }
 
   async function submitDriverText(question: string): Promise<void> {
-    const text = typed.trim();
-    if (busy !== null || !text) return;
+    const explicitText = Boolean(dialog.questions?.[0]?.textInput);
+    const text = explicitText ? typed : typed.trim();
+    if (busy !== null || (!explicitText && !text)) return;
     setBusy("form");
     setError(null);
     setNote(null);
-    const r = await api.submitAnswers(sessionId, [{ question, labels: [], text }]);
+    const r = await api.submitAnswers(sessionId, [{ question, labels: [], text }], dialog.requestId);
     setBusy(null);
     if (!r.ok) setError(failure(r));
   }
@@ -281,21 +282,28 @@ export function PaneDialogPrompt({
             void submitDriverText(driverQuestion.question);
           }}
         >
-          <input
+          {driverQuestion.textInput?.multiline ? <textarea
+            className="pd-text-answer"
+            value={typed}
+            disabled={busy !== null}
+            aria-label={`Custom answer for ${driverQuestion.question}`}
+            rows={5}
+            onChange={(event) => setTyped(event.target.value)}
+          /> : <input
             className="pd-text-answer"
             type="text"
             value={typed}
             disabled={busy !== null}
             aria-label={`Custom answer for ${driverQuestion.question}`}
-            placeholder="Or type a custom answer"
+            placeholder={driverQuestion.textInput?.placeholder ?? "Or type a custom answer"}
             onChange={(event) => setTyped(event.target.value)}
-          />
+          />}
           <div className="pd-actions">
             <Tooltip label="Send this custom answer back to the agent">
               <button
                 type="submit"
                 className="pd-submit"
-                disabled={busy !== null || !typed.trim()}
+                disabled={busy !== null || (!driverQuestion.textInput && !typed.trim())}
               >
                 {busy === "form" ? "Submitting…" : "Submit custom answer"}
               </button>
@@ -418,6 +426,7 @@ function DriverForm({
         labels: picked[q.question] ?? [],
         ...(typed[q.question]?.trim() ? { text: typed[q.question]!.trim() } : {}),
       })),
+      dialog.requestId,
     );
     setBusy(null);
     // No success branch, as above: answering resolves the tool call, the request clears,

@@ -139,6 +139,36 @@ test("a stored id this build does not offer PARSES, and then resolves to Automat
   );
 });
 
+test("a row a newer build wrote survives being read and rewritten by this one", () => {
+  // The key half of the loose-read rule. Values were already loose so a newer emulator id
+  // stays reportable; without a catchall the KEY set is still strict, so a multiplexer this
+  // build has never heard of is stripped on parse - and the next write from this panel
+  // deletes a preference the operator set, silently.
+  const parsed = TerminalsConfigSchema.parse({
+    multiplexerTerminal: { tmux: "ghostty", zellij: "kitty" },
+  });
+  assert.equal(
+    (parsed.multiplexerTerminal as Record<string, string | null>).zellij,
+    "kitty",
+  );
+
+  setTerminalsConfig({ multiplexerTerminal: { tmux: "wezterm" } });
+  const rewritten = TerminalsConfigSchema.parse({
+    ...getTerminalsConfig(),
+    multiplexerTerminal: { ...parsed.multiplexerTerminal, tmux: "wezterm" },
+  });
+  assert.equal(
+    (rewritten.multiplexerTerminal as Record<string, string | null>).zellij,
+    "kitty",
+    "the unknown row is still there after a round trip through this build",
+  );
+  // And this build still cannot create one.
+  assert.equal(
+    TerminalsConfigPatchSchema.safeParse({ multiplexerTerminal: { zellij: "wezterm" } }).success,
+    false,
+  );
+});
+
 test("an empty patch is refused rather than written as a no-op, at both levels", () => {
   assert.equal(TerminalsConfigPatchSchema.safeParse({}).success, false);
   // An outer key count reads this as one key, so only an inner refusal catches it.

@@ -2829,6 +2829,12 @@ export const DEFAULT_MULTIPLEXER_TERMINALS = {
 export const TerminalsConfigSchema = z.object({
   multiplexerTerminal: z
     .object(multiplexerTerminalShape)
+    // Unknown KEYS pass through, for the reason the values are loose: a newer build that
+    // adds a multiplexer writes a row this one has never heard of, and a plain object would
+    // strip it on parse - so the next write from here would delete a preference the operator
+    // set, silently, just by visiting the panel. The patch schema stays `.strict()`, so this
+    // build still cannot create one.
+    .catchall(StoredEmulatorBackendSchema)
     .default(DEFAULT_MULTIPLEXER_TERMINALS),
 });
 export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;

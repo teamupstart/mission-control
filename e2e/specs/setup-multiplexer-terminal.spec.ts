@@ -175,11 +175,17 @@ test("a refused preference write is taken back, and the row says why", async ({
   page,
   daemon,
 }) => {
+  // Ghostty available here, so this test has three selectable apps: it needs two DISTINCT
+  // edits on top of a prior value.
   await page.route("**/api/terminal-targets", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ targets: TARGETS }),
+      body: JSON.stringify({
+        targets: TARGETS.map((t) => (t.id === "ghostty"
+          ? { ...t, unavailable: null, dispatchUnavailable: null, blurb: "New window in the worktree." }
+          : t)),
+      }),
     });
   });
 
@@ -190,10 +196,17 @@ test("a refused preference write is taken back, and the row says why", async ({
   });
   expect(seeded.status()).toBe(200);
 
-  // Only the WRITE is refused. The read has to keep working, or the panel would have no
-  // prior value to put back and this would pass without the rollback existing.
+  // Only the WRITE is refused - the read has to keep working, or the panel would have no
+  // prior value to put back and this would pass without the rollback existing. The FIRST
+  // PUT is also held, so the second edit is made while it is still in the air: that is what
+  // makes the second edit capture the first's optimistic value as its own snapshot.
+  let releaseFirst = (): void => {};
+  const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let puts = 0;
   await page.route("**/api/terminals/config", async (route) => {
     if (route.request().method() !== "PUT") return route.continue();
+    puts += 1;
+    if (puts === 1) await firstHeld;
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -208,26 +221,28 @@ test("a refused preference write is taken back, and the row says why", async ({
   });
   await expect(trigger).toContainText("iTerm2");
 
-  await trigger.click();
-  await page
-    .getByRole("menu", { name: "Choose a terminal app for tmux sessions" })
-    .getByRole("menuitemradio", { name: /WezTerm/ })
-    .click();
+  const choose = async (name: RegExp): Promise<void> => {
+    await trigger.click();
+    await page
+      .getByRole("menu", { name: "Choose a terminal app for tmux sessions" })
+      .getByRole("menuitemradio", { name })
+      .click();
+  };
 
+  // Edit A, whose PUT is now held. Edit B is made on top of A's optimistic value, so B's
+  // own rollback snapshot is WezTerm - a value the daemon never accepted.
+  await choose(/WezTerm/);
+  await expect(trigger).toContainText("WezTerm");
+  await choose(/Ghostty/);
+  await expect(trigger).toContainText("Ghostty");
+
+  releaseFirst();
+
+  // Both are refused. A skips its rollback as stale; B restores - and restoring its own
+  // snapshot would leave WezTerm on screen. The daemon's answer is iTerm2.
   await expect(page.getByText("That change didn't stick: the daemon refused")).toBeVisible();
   await expect(trigger).toContainText("iTerm2");
   await expect(trigger).not.toContainText("WezTerm");
-
-  // A SECOND refused write, issued while the first rollback has already run. Its own
-  // `before` is an optimistic value, so restoring that snapshot rather than re-reading the
-  // daemon is how the panel comes to show an edit that was never accepted.
-  await trigger.click();
-  await page
-    .getByRole("menu", { name: "Choose a terminal app for tmux sessions" })
-    .getByRole("menuitemradio", { name: /Ghostty|iTerm2|WezTerm/ })
-    .first()
-    .click();
-  await expect(trigger).toContainText("iTerm2");
 
   // Read back through the GET this spec never intercepted.
   await page.reload();

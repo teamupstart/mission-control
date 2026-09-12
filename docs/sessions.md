@@ -586,9 +586,9 @@ What Mission Control writes into a pane is <kbd>Esc</kbd>. An Agent SDK session 
 through its driver's own interrupt instead. One gesture, two mechanisms, and the session detail picks
 the right one from the session's runtime.
 
-Both runtimes are covered, on every agent that has them. Pi is terminal-only - it has no
-embedded driver - so the pane keystroke is not one of two options for it but the only one
-there can be.
+Both runtimes are covered for Claude Code, Codex, and Pi. Managed Pi interrupts through
+its Agent SDK driver, cancelling any pending extension question before aborting the turn;
+terminal Pi receives the pane keystroke.
 
 **A terminal interrupt is fire-and-forget.** Nothing on that path reports back that the turn
 actually ended: the keystroke is written and the pane is not asked. The session detail shows an

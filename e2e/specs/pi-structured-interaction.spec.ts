@@ -167,3 +167,15 @@ test("reset cancels an extension question before rebinding the replacement", asy
   await dashboard.getByRole("button", { name: "Submit custom answer" }).click();
   await expect(dashboard.locator(".console-detail span.badge").first()).toHaveText("idle");
 });
+
+test("an unsupported UI method can report after its first diagnostic was throttled", async ({ dashboard, daemon }) => {
+  await dispatch(dashboard, daemon, "PI_UNSUPPORTED");
+  await dashboard.getByRole("button", { name: /Trust project$/ }).click();
+  const detail = dashboard.locator(".console-detail");
+  await expect(detail.getByText("Pi warning: Extension UI setWidget is unavailable in managed sessions", { exact: true })).toBeVisible();
+  await shoot(dashboard, "unsupported-ui-retry");
+  const session = (await live(daemon))[0]!;
+  const interrupted = await fetch(`${daemon.baseURL}/api/sessions/${session.id}/interrupt`, { method: "POST" });
+  expect(interrupted.ok).toBe(true);
+  await expect(detail.locator("span.badge").first()).toHaveText("idle");
+});

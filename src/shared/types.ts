@@ -1295,6 +1295,8 @@ export interface WorkItem {
   createdAt: number;
   updatedAt: number;
   sentAt: number | null;
+  /** Runtime captured for this delivery attempt; absent on rows predating this field. */
+  deliveryRuntime?: SessionRuntime | null;
   completedAt: number | null;
 }
 

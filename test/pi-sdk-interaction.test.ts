@@ -101,7 +101,8 @@ test("concurrent requests serialize on the shared dialog and shutdown never expo
   assert.equal(events.filter((e) => e.kind === "request").length, 2);
 });
 
-test("unsupported TUI factories never run and diagnostics are bounded", async () => {
+test("unsupported TUI factories never run and diagnostics are bounded", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000 });
   const { ui, notes } = bridge();
   const vendor = vendorUI(ui);
   let called = false;
@@ -111,6 +112,14 @@ test("unsupported TUI factories never run and diagnostics are bounded", async ()
   assert.equal(called, false);
   assert.equal(notes.length, 1);
   assert.ok(notes[0]!.length < 550);
+  t.mock.timers.tick(250);
+  vendor.setWidget("widget", () => { called = true; throw new Error("unreachable"); });
+  assert.equal(notes.length, 2, "a suppressed method can report on a later call");
+  assert.match(notes[1]!, /setWidget/);
+  t.mock.timers.tick(250);
+  vendor.setWidget("widget", () => { called = true; throw new Error("unreachable"); });
+  assert.equal(notes.length, 2, "an emitted unsupported diagnostic is deduplicated");
+  assert.equal(called, false);
   ui.close();
 });
 

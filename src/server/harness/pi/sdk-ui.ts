@@ -164,15 +164,17 @@ export class PiUIBridge implements PiHostUI {
 
   close(): void { this.closed = true; this.cancel(); }
 
-  notify(message: string, type: "info" | "warning" | "error" = "info"): void {
-    if (this.closed || Date.now() - this.diagnosticAt < 250) return;
+  notify(message: string, type: "info" | "warning" | "error" = "info"): boolean {
+    if (this.closed || Date.now() - this.diagnosticAt < 250) return false;
     this.diagnosticAt = Date.now();
     this.diagnostic(`Pi ${type}: ${redact(message).slice(0, 500)}`);
+    return true;
   }
 
   unsupported(method: string): void {
     if (this.unsupportedMethods.has(method)) return;
-    this.unsupportedMethods.add(method);
-    this.notify(`Extension UI ${method} is unavailable in managed sessions`, "warning");
+    if (this.notify(`Extension UI ${method} is unavailable in managed sessions`, "warning")) {
+      this.unsupportedMethods.add(method);
+    }
   }
 }

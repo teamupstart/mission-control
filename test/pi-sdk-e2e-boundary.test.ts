@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { PiSdk } from "../src/server/harness/pi/sdk-types.ts";
+import type { PiHostUI } from "../src/server/harness/pi/sdk-ui.ts";
 
 // What is at stake: a browser suite that quietly starts spending money, or reading the
 // operator's real Pi configuration.
@@ -22,6 +24,46 @@ import { join } from "node:path";
 
 const FAKE_SDK = new URL("../e2e/fixtures/fake-pi-sdk.mjs", import.meta.url);
 const DAEMON_FIXTURE = new URL("../e2e/fixtures/daemon.ts", import.meta.url);
+
+for (const blocked of ["select", "confirm", "input", "editor"] as const) {
+  test(`the fake stops its scripted turn after abort during ${blocked}`, async () => {
+    const home = mkdtempSync(join(tmpdir(), "pi-abort-boundary-"));
+    try {
+      writeFileSync(join(home, "models.json"), "[]");
+      await withEnv({ MISSION_HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"),
+        MC_E2E_RECORD_DIR: join(home, "records"), MC_E2E_PI_SDK_MODELS: join(home, "models.json") }, async (module) => {
+        const sdk = await module.createPiSdk() as unknown as PiSdk;
+        const runtime = await sdk.createRuntime({ cwd: home, sessionPath: null, model: null,
+          thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: {} });
+        const calls: string[] = [];
+        let release!: () => void;
+        let waiting!: () => void;
+        const reached = new Promise<void>((resolve) => { waiting = resolve; });
+        const ask = async (method: string) => {
+          calls.push(method);
+          if (method === blocked) {
+            waiting();
+            await new Promise<void>((resolve) => { release = resolve; });
+          }
+          return undefined;
+        };
+        const ui: PiHostUI = { select: () => ask("select"), confirm: async () => {
+          await ask("confirm"); return false;
+        }, input: () => ask("input"), editor: () => ask("editor"), notify() {}, unsupported() {} };
+        await runtime.session.bindExtensions(ui);
+        const turn = runtime.session.prompt("PI_QUESTIONS", { preflightResult() {} });
+        await reached;
+        await runtime.session.abort();
+        release();
+        await turn;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(calls, ["select", "confirm", "input", "editor"].slice(0, ["select", "confirm", "input", "editor"].indexOf(blocked) + 1));
+        assert.equal(readdirSync(join(home, "records", "pi-sdk")).some(name => name.startsWith("answers-")), false);
+        await runtime.dispose();
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+}
 
 /** Load the fixture fresh, with an environment scoped to one case and then restored. */
 async function withEnv<T>(

@@ -175,22 +175,38 @@ class FakeSession {
    */
   async run(text) {
     const generation = ++this.turns;
+    const current = () => generation === this.turns && this.streaming;
     this.emit({ type: "agent_start" });
     this.emit({ type: "turn_start" });
     this.emit({ type: "message_start" });
     if (text.includes("PI_QUESTIONS")) {
       const selected = await this.ui.select("Choose a region", ["West", "East"]);
+      if (!current()) return;
       const confirmed = await this.ui.confirm("Apply selection?", "Use the selected test region.");
+      if (!current()) return;
       const input = await this.ui.input("Deployment name", "name or empty");
+      if (!current()) return;
       const edited = await this.ui.editor("Release notes", "First line\nSecond line");
+      if (!current()) return;
       record("answers", { selected, confirmed, input, edited });
     }
     if (text.includes("PI_TIMEOUT")) {
       await this.ui.select("Repeated question", ["Continue"], { timeout: 1500 });
+      if (!current()) return;
       await this.ui.select("Repeated question", ["Continue"]);
+      if (!current()) return;
     }
     if (text.includes("PI_BLOCK")) await this.ui.input("Blocking extension question");
-    if (generation !== this.turns || !this.streaming) return;
+    if (!current()) return;
+    if (text.includes("PI_UNSUPPORTED")) {
+      this.ui.unsupported("custom");
+      this.ui.unsupported("setWidget");
+      // Repeated use after the host's diagnostic throttle must remain reportable.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!current()) return;
+      this.ui.unsupported("setWidget");
+      return;
+    }
     if (text.includes("PI_CREATE_PR")) {
       this.emit({ type: "tool_execution_start", toolCallId: "pr", toolName: "bash", command: "gh pr create", opensPullRequest: true });
       this.emit({ type: "tool_execution_end", toolCallId: "pr", toolName: "bash", isError: false, prUrls: ["https://github.com/test/pi-fixture/pull/975"] });

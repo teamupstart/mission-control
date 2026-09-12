@@ -20,8 +20,8 @@ const {
   WorkflowImageEvidenceError,
   WORKFLOW_EVIDENCE_DIR,
 } = await import("../src/server/workflows/images.ts");
-const { workflowRepositoryFingerprint } = await import("../src/server/workflows/context.ts");
-const { evaluateWorkflowEvidenceReadiness } = await import("../src/shared/workflow.ts");
+const { workflowRepositoryFingerprint, reconcileWorkflowCriterionMappings } = await import("../src/server/workflows/context.ts");
+const { evaluateWorkflowEvidenceReadiness, WORKFLOW_EVIDENCE_COVERAGE_LIMITS } = await import("../src/shared/workflow.ts");
 const { buildPersonaPrompt } = await import("../src/server/workflows/prompt.ts");
 const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.ts");
 
@@ -2173,6 +2173,539 @@ test("a claim whose link drifted out of scope is left staged rather than frozen 
       (store.listWorkflowEvidence(noteKey).coverage ?? []).map((claim) => claim.clientCriterionId),
       ["drifting-criterion"],
       "and it stays in the tray, visible and repairable, rather than being destroyed",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The observed wedge, end to end.
+ *
+ * Round 1 proves a `visual` criterion one role short, so the preflight reports
+ * `missing_execution`. The repair registers a replacement claim under a new criterion id -
+ * which is what `coverage_reserved` instructs - and that claim cites the command output round 1
+ * already registered. Before the deferred freeze existed, freeze-time coherence ran against the
+ * staged tray plus this submission's own reservations, the parent's command output belonged to
+ * neither, and the replacement was dropped with no row, no event and no error. The criterion was
+ * then answered by the carried incomplete claim for the rest of the run, and the author had no
+ * surface that could tell it why.
+ */
+test("a replacement claim citing the parent's reserved proof is frozen, not silently dropped", async () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-deferred-")));
+  try {
+    const suite = "# both fix doors\nok 1 - trust door refusal\nok 2 - setup door refusal\n";
+    writeFileSync(join(checkout, "refusal.png"), PNG);
+    writeFileSync(join(checkout, "refusal-r2.png"), PNG);
+    writeFileSync(join(checkout, "both-fix-doors.log"), suite);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const criterionText = "Error message includes a direct link to Trust panel settings";
+    const canonicalCriteria = [{
+      id: "ac-trust-link",
+      text: criterionText,
+      material: true,
+      suggestedProofClass: null,
+    }];
+    const readinessOf = (submissionId: string) => {
+      const coverage = store.listSubmissionCoverage(submissionId);
+      return evaluateWorkflowEvidenceReadiness({
+        canonicalCriteria,
+        criterionMappings: reconcileWorkflowCriterionMappings(canonicalCriteria, coverage),
+        coverage,
+        evidence: store.submissionFrozenEvidenceIdentities(submissionId),
+      });
+    };
+
+    store.stageWorkflowEvidence(
+      noteKey,
+      [
+        imageWrite({
+          id: "r1-png",
+          clientItemId: "refusal-with-door-png",
+          root: checkout,
+          locator: "refusal.png",
+          caption: "The refusal carrying the inline Trust control",
+          bytes: PNG,
+        }),
+        logWrite({
+          id: "r1-log",
+          clientItemId: "e2e-both-fix-doors",
+          root: checkout,
+          locator: "both-fix-doors.log",
+          caption: "Both browser cases pass",
+          body: suite,
+        }),
+      ],
+      2,
+      null,
+      [{
+        id: "r1-claim",
+        clientCriterionId: "ac-error-message-includes-trust-link",
+        criterion: criterionText,
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        // One role short of `visual`, which is the gap the repair round exists to close.
+        links: [{ clientItemId: "refusal-with-door-png", role: "rendered_output" }],
+      }],
+    );
+    const parent = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "deferred-root", now: 3 },
+      { id: "deferred-parent", triggerSource: "manual", triggerKey: "deferred-root", context: {}, evidence: {}, now: 3 },
+    );
+    await captureSubmissionImages(store, parent.submission.id, 3);
+    await captureSubmissionTextArtifacts(store, parent.submission.id, 3);
+    store.updateSubmissionCapture(parent.submission.id, {
+      context: {},
+      evidence: {},
+      fingerprint: "deferred-parent-identity",
+      repositoryFingerprint: "tree-at-round-1",
+      status: "running",
+    }, 3);
+    assert.deepEqual(
+      readinessOf(parent.submission.id).gapCodes,
+      ["missing_execution"],
+      "round 1 declares `visual` and links one of its two required roles",
+    );
+
+    store.setSubmissionState(parent.submission.id, "waiting_for_evidence_readiness", 4);
+    store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
+
+    // The repair the refusals leave open: a new evidence id for the re-taken screenshot, and a
+    // new criterion id carrying both roles. The `execution` role cites round 1's registration,
+    // which the author cannot re-register without re-running the suite.
+    store.stageWorkflowEvidence(
+      noteKey,
+      [imageWrite({
+        id: "r2-png",
+        clientItemId: "trust-door-refusal-png-r2",
+        root: checkout,
+        locator: "refusal-r2.png",
+        caption: "The refusal carrying the inline Trust control, re-taken",
+        bytes: PNG,
+      })],
+      5,
+      null,
+      [{
+        id: "r2-claim",
+        clientCriterionId: "ac-error-message-includes-trust-link-v2",
+        criterion: criterionText,
+        proofClass: "visual",
+        repositoryScope: "all",
+        sourceRoot: checkout,
+        links: [
+          { clientItemId: "trust-door-refusal-png-r2", role: "rendered_output" },
+          { clientItemId: "e2e-both-fix-doors", role: "execution" },
+        ],
+      }],
+    );
+    const reserved = store.reserveEvidenceReadinessRefinement({
+      id: "deferred-child",
+      runId,
+      waitingSubmissionId: parent.submission.id,
+      triggerKey: "deferred-refinement",
+      manualRetry: true,
+      now: 5,
+    });
+    assert.equal(reserved.ok, true);
+    if (!reserved.ok) return;
+
+    await captureSubmissionImages(store, reserved.submission.id, 6);
+    await captureSubmissionTextArtifacts(store, reserved.submission.id, 6);
+    assert.deepEqual(
+      store.listSubmissionCoverage(reserved.submission.id).map((claim) => claim.clientCriterionId),
+      [],
+      "at freeze time the replacement's `execution` link is still reserved by the parent",
+    );
+
+    await inheritSubmissionEvidence(store, reserved.submission, 6);
+    const deferred = store.freezeDeferredSubmissionCoverage({ submissionId: reserved.submission.id, now: 6 });
+    assert.deepEqual(
+      deferred.frozen,
+      ["ac-error-message-includes-trust-link-v2"],
+      "the carry made both links resolvable, so the replacement is frozen after it",
+    );
+    assert.deepEqual(deferred.unresolved, []);
+
+    assert.deepEqual(
+      store.listSubmissionCoverage(reserved.submission.id)
+        .map((claim) => claim.clientCriterionId).sort(),
+      ["ac-error-message-includes-trust-link", "ac-error-message-includes-trust-link-v2"],
+      "the replacement stands beside the carried claim it supersedes",
+    );
+    assert.deepEqual(
+      (store.listWorkflowEvidence(noteKey).coverage ?? []).map((claim) => claim.clientCriterionId),
+      [],
+      "and it has left the tray, so the tray no longer reads as an unregistered claim",
+    );
+
+    const readiness = readinessOf(reserved.submission.id);
+    assert.deepEqual(readiness.gapCodes, [], "the repair closes the gap it was raised for");
+    assert.equal(readiness.status, "ready");
+    assert.equal(
+      readiness.criteria[0]?.matchedClientCriterionId,
+      "ac-error-message-includes-trust-link-v2",
+      "the declared replacement answers for the criterion, not the carried original",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a claim the carry cannot rescue is reported as left staged rather than passed over", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-leftstaged-")));
+  try {
+    const body = "the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "drift.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const scoped = {
+      ...logWrite({
+        id: "leftstaged-item",
+        clientItemId: "drifting-proof",
+        root: checkout,
+        locator: "drift.log",
+        caption: "The suite this criterion rests on",
+        body,
+      }),
+      repositoryScope: "repo-01",
+    };
+    store.stageWorkflowEvidence(noteKey, [scoped], 2, null, [{
+      id: "leftstaged-claim",
+      clientCriterionId: "drifting-criterion",
+      criterion: "The primary repository's suite passes",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "repo-01" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "drifting-proof", role: "execution" as const }],
+    }]);
+    // Re-scoped by a later call, which is a drift no carry can undo: the bytes are now a
+    // different repository's proof, so the claim is genuinely unprovable here.
+    store.stageWorkflowEvidence(
+      noteKey,
+      [{ ...scoped, caption: "Actually the second repository's suite", repositoryScope: "repo-02" }],
+      3,
+      null,
+    );
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "leftstaged-root", now: 4 },
+      { id: "leftstaged-first", triggerSource: "manual", triggerKey: "leftstaged-root", context: {}, evidence: {}, now: 4 },
+    );
+
+    const deferred = store.freezeDeferredSubmissionCoverage({ submissionId: submission.submission.id, now: 5 });
+    assert.deepEqual(deferred.frozen, []);
+    assert.deepEqual(
+      deferred.unresolved,
+      [{ clientCriterionId: "drifting-criterion", unresolvedLinks: ["drifting-proof"] }],
+      "the refusal names the claim and the exact link that would not resolve",
+    );
+    const events = store.listEvents(runId).filter((event) => event.kind === "evidence_coverage_left_staged");
+    assert.equal(events.length, 1, "the run log carries the refusal the author could not otherwise see");
+    assert.deepEqual(events[0]?.payload, {
+      submissionId: submission.submission.id,
+      round: 1,
+      segment: 0,
+      claims: [{ clientCriterionId: "drifting-criterion", unresolvedLinks: ["drifting-proof"] }],
+    });
+    assert.deepEqual(
+      store.listSubmissionCoverage(submission.submission.id).map((claim) => claim.clientCriterionId),
+      [],
+      "and the claim is still not frozen, because a repo-01 claim beside repo-02 bytes never may be",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+test("both reservation refusals name the repair that actually works", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-refusals-")));
+  try {
+    writeFileSync(join(checkout, "shot.png"), PNG);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const image = imageWrite({
+      id: "refusal-item",
+      clientItemId: "shot",
+      root: checkout,
+      locator: "shot.png",
+      caption: "The panel as rendered",
+      bytes: PNG,
+    });
+    store.stageWorkflowEvidence(noteKey, [image], 2, null, [{
+      id: "refusal-claim",
+      clientCriterionId: "panel-renders",
+      criterion: "The panel renders",
+      proofClass: "visual" as const,
+      repositoryScope: "all" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "shot", role: "rendered_output" as const }],
+    }]);
+    store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "refusal-root", now: 3 },
+      { id: "refusal-first", triggerSource: "manual", triggerKey: "refusal-root", context: {}, evidence: {}, now: 3 },
+    );
+
+    // Re-running the spec moved the bytes, which is the one thing an author cannot avoid when
+    // the capture renders a path that changes per run.
+    const moved = Buffer.concat([PNG, Buffer.from("re-taken")]);
+    assert.throws(
+      () => store.stageWorkflowEvidence(noteKey, [{ ...image, bytes: moved.byteLength, sha256: sha(moved) }], 4, null),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowImageEvidenceError);
+        assert.equal(error.code, "evidence_reserved");
+        assert.match(error.message, /Register the new content under a new id/);
+        assert.match(error.message, /new criterion id/, "and says what that means for the claim citing it");
+        assert.match(error.message, /criterion text identical/);
+        return true;
+      },
+    );
+    assert.throws(
+      () => store.stageWorkflowEvidence(noteKey, [], 5, null, [{
+        id: "refusal-claim",
+        clientCriterionId: "panel-renders",
+        criterion: "The panel renders",
+        proofClass: "visual" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [
+          { clientItemId: "shot", role: "rendered_output" as const },
+          { clientItemId: "shot", role: "execution" as const },
+        ],
+      }]),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowImageEvidenceError);
+        assert.equal(error.code, "coverage_reserved");
+        assert.match(error.message, /Register the new claim under a new criterion id/);
+        assert.match(
+          error.message,
+          /criterion text identical/,
+          "the instruction has to state the condition that makes the replacement supersede",
+        );
+        assert.match(
+          error.message,
+          /may cite evidence an earlier submission already froze/,
+          "and that citing an earlier round's proof is allowed, which is what was unclear",
+        );
+        return true;
+      },
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A capture can run twice for one submission - `capture_resumed` exists for exactly that - so the
+ * deferred pass has to survive being re-asked, answer the same way, and not log the same refusal
+ * twice. Its event id also carries a digest of what it reported, so a resume whose answer genuinely
+ * moved appends a second line instead of tripping `appendEvent`'s replay-conflict guard and turning
+ * a duplicated log line into a failed capture.
+ */
+test("the deferred pass is safe to re-run and logs one refusal, not one per attempt", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-redeferred-")));
+  try {
+    const body = "the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "resume.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const scoped = {
+      ...logWrite({
+        id: "resume-item",
+        clientItemId: "resume-proof",
+        root: checkout,
+        locator: "resume.log",
+        caption: "The suite this criterion rests on",
+        body,
+      }),
+      repositoryScope: "repo-01",
+    };
+    store.stageWorkflowEvidence(noteKey, [scoped], 2, null, [{
+      id: "staged-resume-claim",
+      clientCriterionId: "resume-criterion",
+      criterion: "The primary repository's suite passes",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "repo-01" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "resume-proof", role: "execution" as const }],
+    }]);
+    store.stageWorkflowEvidence(
+      noteKey,
+      [{ ...scoped, caption: "Actually the second repository's suite", repositoryScope: "repo-02" }],
+      3,
+      null,
+    );
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "resume-root", now: 4 },
+      { id: "resume-first", triggerSource: "manual", triggerKey: "resume-root", context: {}, evidence: {}, now: 4 },
+    );
+    const id = submission.submission.id;
+
+    const first = store.freezeDeferredSubmissionCoverage({ submissionId: id, now: 5 });
+    assert.deepEqual(first.unresolved.map((row) => row.clientCriterionId), ["resume-criterion"]);
+    const again = store.freezeDeferredSubmissionCoverage({ submissionId: id, now: 6 });
+    assert.deepEqual(again, first, "re-asking an unchanged submission answers identically");
+    const third = store.freezeDeferredSubmissionCoverage({ submissionId: id, now: 7 });
+    assert.deepEqual(third, first);
+    assert.equal(
+      store.listEvents(runId).filter((event) => event.kind === "evidence_coverage_left_staged").length,
+      1,
+      "three captures of one submission are one refusal, because it is one refusal",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The event id digests the claims and the payload writes them, so the two have to be the SAME
+ * value. Digesting a sorted set while writing the unsorted one reintroduces the failure the
+ * digest exists to prevent: the same links in a different order collapse to one event id
+ * carrying a different payload, which is what `appendEvent`'s replay-conflict guard refuses.
+ */
+test("the left-staged event writes the same normalized claims its id was digested from", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-normalized-")));
+  try {
+    const body = "the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "zeta.log"), body);
+    writeFileSync(join(checkout, "alpha.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const scoped = (id: string, locator: string, scope: string) => ({
+      ...logWrite({
+        id: `normalized-${id}`,
+        clientItemId: id,
+        root: checkout,
+        locator,
+        caption: `Proof from ${locator}`,
+        body,
+      }),
+      repositoryScope: scope,
+    });
+    store.stageWorkflowEvidence(
+      noteKey,
+      [scoped("zeta-proof", "zeta.log", "repo-01"), scoped("alpha-proof", "alpha.log", "repo-01")],
+      2,
+      null,
+      [{
+        id: "normalized-claim",
+        clientCriterionId: "normalized-criterion",
+        criterion: "The panel renders and its suite passes",
+        proofClass: "visual" as const,
+        repositoryScope: "repo-01" as const,
+        sourceRoot: checkout,
+        // Registered zeta-first on purpose: the payload must not echo this order back.
+        links: [
+          { clientItemId: "zeta-proof", role: "rendered_output" as const },
+          { clientItemId: "alpha-proof", role: "execution" as const },
+        ],
+      }],
+    );
+    store.stageWorkflowEvidence(
+      noteKey,
+      [scoped("zeta-proof", "zeta.log", "repo-02"), scoped("alpha-proof", "alpha.log", "repo-02")],
+      3,
+      null,
+    );
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "normalized-root", now: 4 },
+      { id: "normalized-first", triggerSource: "manual", triggerKey: "normalized-root", context: {}, evidence: {}, now: 4 },
+    );
+
+    store.freezeDeferredSubmissionCoverage({ submissionId: submission.submission.id, now: 5 });
+    const event = store.listEvents(runId)
+      .find((row) => row.kind === "evidence_coverage_left_staged");
+    assert.deepEqual(
+      (event?.payload as { claims: Array<{ unresolvedLinks: string[] }> }).claims,
+      [{ clientCriterionId: "normalized-criterion", unresolvedLinks: ["alpha-proof", "zeta-proof"] }],
+      "the payload carries the sorted set the event id was keyed on, not the registration order",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The deferred pass has a second reason to refuse, and it is not a link problem.
+ *
+ * A submission's coverage is read through a schema capped at `maxClaims`, so freezing past the cap
+ * would not retain more proof - it would make the whole submission's coverage unreadable and lose
+ * all of it. A claim refused for room is therefore reported with NO link named, because nothing
+ * about its links was wrong, and the distinction is the whole value of the report: an author told
+ * a link failed would go looking for evidence that is sitting right there.
+ */
+test("a claim refused for room is reported as room, not as a link that failed", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-capped-")));
+  try {
+    const body = "the suite every criterion here rests on\n";
+    writeFileSync(join(checkout, "capped.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const max = WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims;
+
+    // Exactly `maxClaims` claims plus the item a later one will cite, all frozen by the
+    // submission's own reservation, leaving the deferred pass no room at all.
+    store.stageWorkflowEvidence(
+      noteKey,
+      [logWrite({
+        id: "capped-item",
+        clientItemId: "capped-proof",
+        root: checkout,
+        locator: "capped.log",
+        caption: "The suite every criterion here rests on",
+        body,
+      })],
+      2,
+      null,
+      Array.from({ length: max }, (_unused, index) => ({
+        id: `capped-claim-${index}`,
+        clientCriterionId: `capped-criterion-${String(index).padStart(3, "0")}`,
+        criterion: `Filler criterion ${index}`,
+        proofClass: "focused_execution" as const,
+        repositoryScope: "all" as const,
+        sourceRoot: checkout,
+        links: [],
+      })),
+    );
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "capped-root", now: 3 },
+      { id: "capped-first", triggerSource: "manual", triggerKey: "capped-root", context: {}, evidence: {}, now: 3 },
+    );
+    assert.equal(
+      store.listSubmissionCoverage(submission.submission.id).length,
+      max,
+      "the submission starts exactly at the cap",
+    );
+
+    // Registered after the submission, so it is a candidate the deferred pass sees and the
+    // reservation never did. Its link resolves perfectly well; there is simply nowhere to put it.
+    store.stageWorkflowEvidence(noteKey, [], 4, null, [{
+      id: "capped-overflow",
+      clientCriterionId: "overflow-criterion",
+      criterion: "One criterion more than the frozen record can hold",
+      proofClass: "focused_execution" as const,
+      repositoryScope: "all" as const,
+      sourceRoot: checkout,
+      links: [{ clientItemId: "capped-proof", role: "execution" as const }],
+    }]);
+
+    const deferred = store.freezeDeferredSubmissionCoverage({ submissionId: submission.submission.id, now: 5 });
+    assert.deepEqual(deferred.frozen, [], "the cap is respected rather than exceeded");
+    assert.deepEqual(
+      deferred.unresolved,
+      [{ clientCriterionId: "overflow-criterion", unresolvedLinks: [] }],
+      "and the refusal names no link, because the links were never the problem",
+    );
+    assert.equal(
+      store.listSubmissionCoverage(submission.submission.id).length,
+      max,
+      "the frozen record still parses, which is what the cap protects",
+    );
+    assert.deepEqual(
+      (store.listWorkflowEvidence(noteKey).coverage ?? []).map((claim) => claim.clientCriterionId),
+      ["overflow-criterion"],
+      "the refused claim stays in the tray, visible and still registerable against a later round",
+    );
+    const event = store.listEvents(runId)
+      .find((row) => row.kind === "evidence_coverage_left_staged");
+    assert.deepEqual(
+      (event?.payload as { claims: unknown }).claims,
+      [{ clientCriterionId: "overflow-criterion", unresolvedLinks: [] }],
+      "and the run log says the same thing the caller was told",
     );
   } finally {
     rmSync(checkout, { recursive: true, force: true });

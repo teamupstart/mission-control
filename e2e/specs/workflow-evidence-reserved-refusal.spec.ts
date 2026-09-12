@@ -191,6 +191,11 @@ test("a reserved evidence id refuses by name, so the operator knows which upload
   await expect(alert).toBeVisible();
   await expect(alert).toContainText("att-1");
   await expect(alert).toContainText("Register the new content under a new id");
+  // Naming the reserved id was never the whole repair. A new evidence id orphans every claim
+  // that cited the old one, and re-pointing such a claim is refused in turn, so the refusal has
+  // to carry the second half an operator or agent needs to act on in one read.
+  await expect(alert).toContainText("new criterion id");
+  await expect(alert).toContainText("criterion text identical");
   await expect(alert).not.toContainText("Workflow evidence could not be staged");
   await capture(dashboard, "01-reserved-id-named-in-the-refusal", dialog);
 });

@@ -71,3 +71,46 @@ test("legacy evidence remains usable without probing an unsupported daemon", asy
     coverage: [],
   });
 });
+
+/**
+ * The tray is the wrong number in both directions, and an author acts on this sentence.
+ *
+ * A claim that froze into a submission leaves the tray and stops being counted; a claim the
+ * daemon accepted but could not freeze stays in it and IS counted. Reporting the tray therefore
+ * made the confirmation number rise exactly when registration had least effect, which is how a
+ * silently dropped claim came to be read as a registered one.
+ */
+test("the confirmation counts what this call registered, not what the tray holds", async () => {
+  const calls: Call[] = [];
+  const tray = {
+    // Nothing this call sent: one stale claim left over from an earlier round, and no images.
+    images: [],
+    artifacts: [],
+    coverage: [
+      { clientCriterionId: "stale-one" },
+      { clientCriterionId: "stale-two" },
+      { clientCriterionId: "stale-three" },
+    ],
+    generation: 9,
+  };
+  const request = async (path: string, method: string, body?: unknown) => {
+    calls.push({ path, method, body });
+    if (path === "/api/health") {
+      return Response.json({
+        service: "mission-control",
+        capabilities: ["criterion-mapped-workflow-evidence-v1"],
+      });
+    }
+    return Response.json(tray);
+  };
+  const result = await submitWorkflowEvidenceToDaemon(
+    { artifacts: [artifact], coverage },
+    identity,
+    request,
+  );
+  assert.equal(result.isError, false);
+  assert.equal(
+    result.text,
+    "Registered 0 image(s), 1 text artifact(s), and 1 coverage claim(s) at generation 9.",
+  );
+});

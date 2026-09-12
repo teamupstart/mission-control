@@ -100,17 +100,22 @@ export async function submitWorkflowEvidenceToDaemon(
         isError: true,
       };
     }
-    const body = (await res.json()) as {
-      images?: unknown[];
-      artifacts?: unknown[];
-      coverage?: unknown[];
-      generation?: number;
-    };
+    const body = (await res.json()) as { generation?: number };
+    /*
+     * Count what THIS call registered, never what the tray happens to hold.
+     *
+     * The daemon answers with the staged tray, and the tray is the wrong number in both
+     * directions: an item that froze into a submission leaves it and stops being counted, while
+     * a claim the daemon accepted but could not freeze stays and IS counted. An author reading
+     * the old wording got a confirmation number that rose when registration had least effect,
+     * which is how a dropped claim came to be reported as registered. Staging is one
+     * transaction, so a 2xx means every item in this call was accepted and a non-2xx above
+     * means none were - the submitted lengths are therefore exact.
+     */
     return {
-      text: `Registered ${body.images?.length ?? images?.length ?? 0} image(s), `
-        + `${body.artifacts?.length ?? ((artifacts?.length ?? 0) + (commandOutputs?.length ?? 0))} `
-        + `text artifact(s), and ${body.coverage?.length ?? coverage?.length ?? 0} coverage claim(s) at `
-        + `generation ${body.generation ?? 0}.`,
+      text: `Registered ${images?.length ?? 0} image(s), `
+        + `${(artifacts?.length ?? 0) + (commandOutputs?.length ?? 0)} text artifact(s), `
+        + `and ${coverage?.length ?? 0} coverage claim(s) at generation ${body.generation ?? 0}.`,
       isError: false,
     };
   } catch (error) {

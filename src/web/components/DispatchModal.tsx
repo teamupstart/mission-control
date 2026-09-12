@@ -48,11 +48,13 @@ import {
   fetchRepos,
   fetchTaskSources,
   type ActionResult,
+  type DispatchResult,
 } from "../lib/api.ts";
 import {
   readLastDispatchRepo,
   rememberDispatchRepo,
 } from "../lib/lastRepo.ts";
+import { WORKFLOW_LAUNCH_FIX_DOORS } from "../lib/workflow-fix.ts";
 import {
   EMPTY_DISPATCH_DRAFT,
   draftFromTask,
@@ -106,7 +108,12 @@ import {
   type GuidedPass,
   type GuidedStepId,
 } from "../lib/guided-dispatch-steps.ts";
-import type { PersonaView, WorkflowConfig, WorkflowSummary } from "@shared/workflow.ts";
+import type {
+  PersonaView,
+  WorkflowConfig,
+  WorkflowLaunchFix,
+  WorkflowSummary,
+} from "@shared/workflow.ts";
 import { workflowRequest } from "../workflows/workflowApi.ts";
 import {
   EnsembleDispatch,
@@ -176,6 +183,18 @@ export interface SeeWorkTourDispatchPreview {
   briefReady: boolean;
   repoRoot: string | null;
   dispatch: (repoRoot: string) => Promise<ActionResult & { task?: Task }>;
+}
+
+/**
+ * What the form prints when the daemon refuses, and whether that refusal has a door.
+ *
+ * `fix` is null for every refusal answered on this form - an empty task, a repo that is not a
+ * checkout, a workflow to reselect. It is a settings destination only when the operator has
+ * to grant something somewhere else before this launch can go.
+ */
+interface DispatchRefusal {
+  message: string;
+  fix: WorkflowLaunchFix | null;
 }
 
 interface TourDispatchSlot {
@@ -462,6 +481,7 @@ export function DispatchLayer({
   tourDemo = null,
   onClose,
   onOpenSchedule,
+  onOpenLaunchFix,
   onEnsembleLaunched,
 }: {
   open: boolean;
@@ -497,6 +517,13 @@ export function DispatchLayer({
   onClose: () => void;
   /** Open Recurring Missions from a generated task's read-only provenance in edit mode. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /**
+   * Open the settings screen that grants what a refused launch was missing.
+   *
+   * The modal closes itself first: the destination is a full page under this dialog, and a
+   * form left standing over the screen the operator was just sent to is not an offer.
+   */
+  onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
   /** Navigate to a freshly launched Ensemble run's detail. */
   onEnsembleLaunched?: (runId: string) => void;
 }): React.JSX.Element | null {
@@ -775,6 +802,7 @@ export function DispatchLayer({
         onSubmitted={onEditSubmitted}
         onDeleted={onEditDeleted}
         onOpenSchedule={onOpenSchedule}
+        onOpenLaunchFix={onOpenLaunchFix}
         workflowSummaries={workflowSummaries}
         foremanEnabled={foremanEnabled}
         harnessesRevision={harnessesRevision}
@@ -803,6 +831,7 @@ export function DispatchLayer({
       }) : onNewRevert}
       onClose={onClose}
       onSubmitted={tourDemo ? onTourSubmitted : onSubmitted}
+      onOpenLaunchFix={onOpenLaunchFix}
       guidedPass={tourDemo ? NO_GUIDED_PASS : guidedPass}
       onGuidedPassChange={tourDemo ? undefined : setGuidedPass}
       launchMode={tourDemo ? "single" : launchMode}
@@ -850,6 +879,7 @@ function DispatchModal({
   onGuidedPassChange,
   onDeleted,
   onOpenSchedule,
+  onOpenLaunchFix,
   launchMode = "single",
   onLaunchModeChange,
   ensembleDraft,
@@ -884,6 +914,8 @@ function DispatchModal({
   onDeleted?: () => void;
   /** Open Recurring Missions from a scheduled task's read-only provenance. */
   onOpenSchedule?: (scheduleId: string, occurrenceId?: string, scheduledFor?: number) => void;
+  /** Open the settings screen that grants what a refused launch named as missing. */
+  onOpenLaunchFix?: (fix: WorkflowLaunchFix) => void;
   /** Single vs Ensemble. Only meaningful for a new dispatch; an edit is always Single. */
   launchMode?: "single" | "ensemble";
   onLaunchModeChange?: (mode: "single" | "ensemble") => void;
@@ -988,7 +1020,19 @@ function DispatchModal({
   // daemon, and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch" | "delete" | "push">(null);
   const busy = pending !== null;
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * The refusal printed under the form, and the settings screen that would clear it.
+   *
+   * One state and not two, so a refusal can never be shown beside the previous one's door:
+   * the daemon answers a Workflow block with a `fix` destination, and every other failure
+   * here answers with a sentence alone.
+   */
+  const [error, setError] = useState<DispatchRefusal | null>(null);
+  const fail = (message: string, fix?: WorkflowLaunchFix): void =>
+    setError({ message, fix: fix ?? null });
+  // Read out of state once, so the door's label, its tooltip and what it opens are the same
+  // answer rather than three reads a later refusal could land between.
+  const errorFix = error?.fix ?? null;
   const intentRef = useRef<HTMLTextAreaElement>(null);
   // The primary repo field's input. Held because the Repo question is the one whose control is
   // a text field: the pass has to put the caret in it when the question opens, and has to be
@@ -2072,7 +2116,7 @@ function DispatchModal({
     setError(null);
     const r = await api.deleteTask(editing.id);
     setPending(null);
-    if (!r.ok) setError(r.error ?? "could not delete the task");
+    if (!r.ok) fail(r.error ?? "could not delete the task");
     else (onDeleted ?? onClose)();
   }
 
@@ -2128,7 +2172,10 @@ function DispatchModal({
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
     const patch = editing ? taskUpdatePatch(editing, submitted, intent) : null;
-    const r = editing
+    // Typed as the refusal shape every branch satisfies, so a Workflow block's `fix` survives
+    // whichever call produced it rather than being narrowed away by the branch that cannot
+    // carry one.
+    const r: DispatchResult = editing
       ? patch
         ? await api.updateTask(editing.id, patch)
         : { ok: true }
@@ -2175,8 +2222,10 @@ function DispatchModal({
     // terminal home are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit
     // keeps the modal open with the fields intact so you can retry.
-    if (!r.ok) setError(r.error ?? (editing ? "could not save the task" : "dispatch failed"));
-    else if (launched && !launched.ok) setError(`saved, but ${launched.error ?? "could not dispatch"}`);
+    if (!r.ok) fail(r.error ?? (editing ? "could not save the task" : "dispatch failed"), r.fix);
+    else if (launched && !launched.ok) {
+      fail(`saved, but ${launched.error ?? "could not dispatch"}`, launched.fix);
+    }
     else onSubmitted(submitted);
   }
 
@@ -3102,7 +3151,33 @@ function DispatchModal({
           storedRuntime={defaults?.sessionRuntime?.[draft.agent]}
         />
 
-        {error && <p className="dispatch-error">{error}</p>}
+        {/* The refusal, and - when the daemon named one - the screen that clears it. The door
+            is a control rather than a sentence naming a settings path, because the operator is
+            standing in a modal and the grant is three navigations away; and it closes the form
+            first, since the destination is a full page this dialog would otherwise sit over.
+            The draft survives that close, so coming back finds the launch exactly as typed. */}
+        {error && (
+          <p className="dispatch-error">
+            {error.message}
+            {errorFix && onOpenLaunchFix && (
+              <>
+                {". "}
+                <Tooltip label={WORKFLOW_LAUNCH_FIX_DOORS[errorFix].tooltip}>
+                  <button
+                    type="button"
+                    className="settings-link"
+                    onClick={() => {
+                      onClose();
+                      onOpenLaunchFix(errorFix);
+                    }}
+                  >
+                    {WORKFLOW_LAUNCH_FIX_DOORS[errorFix].label}
+                  </button>
+                </Tooltip>
+              </>
+            )}
+          </p>
+        )}
       </div>
 
       <footer className={`modal-foot${guidedDim}`}>

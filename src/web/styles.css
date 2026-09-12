@@ -11040,6 +11040,11 @@ select:not([multiple]) option:focus-visible {
   font-size: 12.5px;
   color: #e5877f;
 }
+/* The same borrowing `.settings-warn` does: a door offered inside a refusal is part of that
+   sentence, so it takes the refusal's tone rather than the blue it wears in body copy. */
+.dispatch-error .settings-link {
+  color: inherit;
+}
 .modal-foot {
   display: flex;
   align-items: center;
@@ -19279,7 +19284,8 @@ button.wf-carried.is-link:focus-visible {
   color: var(--dim);
 }
 /* The one link style for in-page settings navigation and in-place fixes: the console
-   panels' "Manage in Trust", Shipping's dependency warnings, and Trust's dagger fixes. A
+   panels' "Manage in Trust", Shipping's dependency warnings, Trust's dagger fixes, and the
+   door a refused dispatch offers under the Dispatch form. A
    button, not an `<a>`, because these are `onNavigate` route changes and config writes, not
    hrefs; it wraps on its own so it never widens a warning past the pane. Reads as blue
    inside body copy and inherits the amber inside a `.settings-warn`, since it borrows the

@@ -95,6 +95,7 @@ function setupView(piInstalled: boolean, piExtensionReady: boolean): SetupChecks
   return {
     home: "/home/operator",
     banner: { visible: false, attentionRowIds: [], attentionCount: 0 },
+    piCliReady: piInstalled,
     piExtensionInstallAvailable: !piExtensionReady,
     piExtensionReady,
     rows: [{

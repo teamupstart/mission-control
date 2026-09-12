@@ -97,8 +97,11 @@ test("one fresh PATH snapshot precedes the concurrent Setup probes", async () =>
   assert.equal(refreshes, 1);
 });
 
-test("Setup exposes positive Pi extension readiness for runtime gating", async () => {
+test("Setup exposes positive Pi prerequisite readiness for runtime gating", async () => {
   const view = await setupChecksView(deps({
+    executableDiagnostic: async (id) => id === "pi"
+      ? { path: "/selected/pi", source: "PATH" }
+      : null,
     environmentChecks: async () => [{
       id: "pi-extension",
       label: "Pi extension",
@@ -107,6 +110,7 @@ test("Setup exposes positive Pi extension readiness for runtime gating", async (
       ready: true,
     }],
   }));
+  assert.equal(view.piCliReady, true);
   assert.equal(view.piExtensionReady, true);
 });
 

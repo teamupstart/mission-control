@@ -344,12 +344,7 @@ export function HarnessesPanel({
 }): React.JSX.Element {
   const { config, update, error } = state;
   const piSdkReady = piManagedRuntimeReady({
-    piCliInstalled: setup?.rows.some(
-      (row) =>
-        row.rowId.source === "dependency" &&
-        row.rowId.id === "pi-cli" &&
-        row.status.state === "satisfied",
-    ) ?? false,
+    piCliInstalled: setup?.piCliReady === true,
     piExtensionInstalled: setup?.piExtensionReady === true,
   });
   // `config` is null only in the pre-poll instant; the switch reads on (its shipped

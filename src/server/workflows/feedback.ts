@@ -276,9 +276,16 @@ function finalizePacket(
   };
 }
 
+/**
+ * One line per gap, printed under `Required repair:`.
+ *
+ * That block is rendered LAST for a criterion, after its contested-claim line and its linked
+ * evidence, so any wording that points at them points upward. It read "the claims below" and
+ * sent a reader down the packet past the list it meant.
+ */
 const READINESS_ACTIONS: Record<WorkflowEvidenceReadinessGapCode, string> = {
   missing_coverage: "Declare and link an author-controlled coverage claim for this criterion.",
-  ambiguous_mapping: "Leave exactly one of the claims below on this criterion and move or withdraw the rest.",
+  ambiguous_mapping: "Leave exactly one of the claims listed above on this criterion and move or withdraw the rest.",
   evidence_not_frozen: "Register the linked evidence item again so it freezes with the repair segment.",
   scope_conflict: "Link evidence issued for this repository scope or for all repositories.",
   missing_execution: "Register and link exact completed focused command output with role execution.",

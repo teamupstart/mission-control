@@ -367,7 +367,7 @@ test("a contested criterion tells the author to withdraw, not to capture more pr
       unavailableReason: null,
     },
   });
-  assert.match(packet.payload, /Leave exactly one of the claims below on this criterion/);
+  assert.match(packet.payload, /Leave exactly one of the claims listed above on this criterion/);
   assert.doesNotMatch(packet.payload, /match exactly one author-controlled coverage claim/);
 });
 

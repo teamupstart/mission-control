@@ -1265,7 +1265,7 @@ test("the preflight packet names contested claims, and a cited criterion id surv
   await expect(packet).toContainText("linked from as many claims as apply");
   await expect(packet).toContainText("Evidence and coverage you already registered are carried");
   await expect(packet).toContainText(
-    "Leave exactly one of the claims below on this criterion and move or withdraw the rest",
+    "Leave exactly one of the claims listed above on this criterion and move or withdraw the rest",
   );
   // The instruction that sent authors to capture proof for a mapping fault is gone.
   await expect(packet).not.toContainText("match exactly one author-controlled coverage claim");

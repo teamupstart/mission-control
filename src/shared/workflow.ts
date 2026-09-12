@@ -501,6 +501,70 @@ export function workflowCrossCriterionClaimIds(input: {
 }
 
 /**
+ * The one spelling of a criterion that two independently authored strings are compared on.
+ *
+ * Exported because exact normalized text is the fail-closed bridge between an author's claim and
+ * a daemon-assigned canonical criterion, and a bridge whose two ends normalize differently is a
+ * bridge that silently drops claims. Both ends call this.
+ */
+export function normalizedWorkflowCriterionText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
+}
+
+/** One claim's resolvable links and the proof gaps they leave, with no criterion context. */
+function resolveCoverageClaimProof(
+  claim: WorkflowEvidenceCoverageClaim,
+  evidence: ReadonlyMap<string, WorkflowFrozenEvidenceIdentity>,
+): { links: WorkflowEvidenceReadinessLink[]; gaps: WorkflowEvidenceReadinessGapCode[] } {
+  const gaps: WorkflowEvidenceReadinessGapCode[] = [];
+  const links = claim.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
+    const item = evidence.get(link.clientItemId);
+    if (!item) {
+      gaps.push("evidence_not_frozen");
+      return [];
+    }
+    const scopeMatches = item.repositoryScope === "all"
+      || (claim.repositoryScope !== "all" && item.repositoryScope === claim.repositoryScope);
+    if (!scopeMatches) gaps.push("scope_conflict");
+    return [{ clientItemId: link.clientItemId, evidenceId: item.evidenceId, role: link.role }];
+  });
+  gaps.push(...workflowEvidenceMissingRoleGaps(claim.proofClass, links.map((link) => link.role)));
+  return { links, gaps };
+}
+
+/**
+ * Among declared claims for ONE criterion that share its exact wording, prefer the one that
+ * proves it.
+ *
+ * A reserved claim cannot be amended, so the only repair open to an author is to re-register
+ * under a new criterion id - which `coverage_reserved` instructs and this function honours.
+ * Without it, following that instruction produced two declared claims matched to one criterion
+ * and therefore `ambiguous_mapping`, a gap no further registration could close: the author was
+ * told to do the one thing that wedged the run.
+ *
+ * Narrow on purpose. Identical wording from one author in one conversation is a revision, not a
+ * disagreement, and the complete one is unambiguously the live one. Everything else still reads
+ * as ambiguous: differing wording is two different assertions, and two claims that BOTH satisfy
+ * their class is a genuine choice between author statements that nothing here is entitled to
+ * make. Cross-criterion ambiguity is a separate question and is decided elsewhere.
+ */
+function selectSupersedingDeclaration(
+  declaredIds: readonly string[],
+  claims: ReadonlyMap<string, WorkflowEvidenceCoverageClaim>,
+  evidence: ReadonlyMap<string, WorkflowFrozenEvidenceIdentity>,
+): readonly string[] {
+  if (declaredIds.length < 2) return declaredIds;
+  const wordings = new Set(declaredIds.map(
+    (id) => normalizedWorkflowCriterionText(claims.get(id)!.criterion),
+  ));
+  if (wordings.size !== 1) return declaredIds;
+  const satisfied = declaredIds.filter(
+    (id) => resolveCoverageClaimProof(claims.get(id)!, evidence).gaps.length === 0,
+  );
+  return satisfied.length === 1 ? satisfied : declaredIds;
+}
+
+/**
  * Reconcile one immutable coverage packet with daemon-assigned canonical criteria.
  * Semantic sufficiency remains entirely with the Persona workflow.
  */
@@ -550,7 +614,11 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       .flatMap((mapping) => mapping.matchedClientCriterionIds))]
       .filter((id) => claims.has(id))
       .sort();
-    const declaredIds = mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
+    const declaredIds = selectSupersedingDeclaration(
+      mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId),
+      claims,
+      evidence,
+    );
     const selected = input.selection?.criteria.find((row) => row.criterionId === canonical.id);
     const matchedIds = declaredIds.length > 0 ? declaredIds
       : selected ? selected.matchedClientCriterionIds : mappedIds;
@@ -562,24 +630,9 @@ export function evaluateWorkflowEvidenceReadiness(input: {
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
     if (canonical.material && !crossCriterionAmbiguity && (matchedIds.length === 0 || (matchedIds.length === 1 && !claim))) gaps.push("missing_coverage");
     if (matchedIds.length > 1 || crossCriterionAmbiguity) gaps.push("ambiguous_mapping");
-    const links = claim?.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
-      const item = evidence.get(link.clientItemId);
-      if (!item) {
-        gaps.push("evidence_not_frozen");
-        return [];
-      }
-      const scopeMatches = item.repositoryScope === "all"
-        || (claim.repositoryScope !== "all"
-          && item.repositoryScope === claim.repositoryScope);
-      if (!scopeMatches) {
-        gaps.push("scope_conflict");
-      }
-      return [{ clientItemId: link.clientItemId, evidenceId: item.evidenceId, role: link.role }];
-    }) ?? [];
-    if (claim) gaps.push(...workflowEvidenceMissingRoleGaps(
-      claim.proofClass,
-      links.map((link) => link.role),
-    ));
+    const proof = claim ? resolveCoverageClaimProof(claim, evidence) : null;
+    const links = proof?.links ?? [];
+    if (proof) gaps.push(...proof.gaps);
     if (
       claim
       && canonical.suggestedProofClass

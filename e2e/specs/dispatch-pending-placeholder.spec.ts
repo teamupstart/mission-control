@@ -1,10 +1,43 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Locator, Page } from "@playwright/test";
 
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { expect, test } from "../fixtures/test.ts";
+import { expect, test as base } from "../fixtures/test.ts";
+
+// The placeholder must remain observable until the browser has inspected it. Hold the
+// real worktree setup boundary, then release it to exercise the real session handover.
+const test = base.extend<{ finishSetup: () => void }>({
+  finishSetup: async ({ daemon }, use) => {
+    const released = join(daemon.home, "release-placeholder-setup");
+    const configured = await fetch(`${daemon.baseURL}/api/worktrees/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repositories: {
+          [realpathSync(join(daemon.repo, ".git"))]: {
+            setupArgv: [process.execPath, "-e", `
+              const { existsSync } = require("node:fs");
+              const { setTimeout } = require("node:timers/promises");
+              (async () => {
+                while (!existsSync(process.argv[1])) await setTimeout(25);
+              })();
+            `, released],
+          },
+        },
+      }),
+    });
+    expect(configured.ok).toBe(true);
+    const finish = (): void => writeFileSync(released, "");
+    try {
+      await use(finish);
+    } finally {
+      finish();
+    }
+  },
+});
 
 const EVIDENCE = artifactsDir("dispatch-pending-placeholder");
 
@@ -64,21 +97,15 @@ async function useLayout(
  * null - so the operator pressed Dispatch and watched nothing happen, which reads as a
  * dropped dispatch rather than as work starting.
  *
- * WHY THIS IS NOT RACY, which is the only interesting thing about the timing here. The
- * placeholder is driven by `task_upsert`, and the daemon emits that event BEFORE it writes the HTTP
- * response (`registry.upsertTask` is synchronous and runs inside `tasks.create`, which the
- * route calls before `c.json(task)`). So by the time `waitForResponse` resolves, the browser
- * has already been told about the task. The only thing this races is the session BINDING,
- * which cannot happen until a real worktree has been cut and a real agent process has been
- * spawned and discovered - orders of magnitude longer than one loopback round trip.
- *
- * Only the model is fake, per this suite's standing rule: the dispatch cuts a real worktree
- * and spawns a real (faked) agent binary, so the states asserted here are the real ones.
+ * The setup-command fixture holds provisioning until all placeholder assertions finish.
+ * HTTP response delivery and SSE rendering have no ordering guarantee against session
+ * binding; a fast worktree can otherwise replace the row before the browser observes it.
+ * Releasing setup below still cuts a real worktree and launches the existing fake agent.
  */
 for (const layout of ["console", "board"] as const) {
   test(
     `a dispatched task uses an in-fleet ${layout} placeholder, then hands over`,
-    async ({ dashboard, daemon }) => {
+    async ({ dashboard, daemon, finishSetup }) => {
       await useLayout(dashboard, daemon, layout);
       const intent = "Rename the flexbox helper and update its callers.";
       const title = "Rename the flexbox helper";
@@ -126,13 +153,8 @@ for (const layout of ["console", "board"] as const) {
       await expect(starting).toBeVisible();
       const row = starting.getByRole("listitem").filter({ hasText: title });
       await expect(row).toBeVisible();
-      // The phase, in words, read off the fields the daemon has already broadcast - not a
-      // content-free "Starting…". Which phase depends on how far provisioning has got by the
-      // time this resolves, so the assertion is that it names ONE of them rather than guessing
-      // which: pinning a single phase here would be pinning the speed of a git worktree add.
-      await expect(row).toContainText(
-        /Provisioning its worktree|Launching claude|Waiting for claude to appear|Handing over the task/,
-      );
+      // The real setup command is still held, so this phase is stable and meaningful.
+      await expect(row).toContainText("Provisioning its worktree");
       // And it is inside the chosen fleet layout, not in a band above it.
       if (layout === "console") {
         await expect(
@@ -165,6 +187,7 @@ for (const layout of ["console", "board"] as const) {
       // the session arrives, its own rail row takes the task, and the placeholder withdraws from
       // the same list it was standing in - the list itself leaves the page once its last
       // placeholder is gone.
+      finishSetup();
       const sessionRow = layout === "console"
         ? dashboard
             .getByRole("navigation", { name: "Sessions" })

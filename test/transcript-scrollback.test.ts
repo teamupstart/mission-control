@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { TranscriptMessage } from "../src/shared/types.ts";
 import { claudeTranscript, toMessage } from "../src/server/harness/claude/transcript.ts";
 import { codexTranscript, parseCodexMessages } from "../src/server/harness/codex/transcript.ts";
-import { piMessages, piToMessage } from "../src/server/harness/pi/transcript.ts";
+import { piMessages, piToMessages } from "../src/server/harness/pi/transcript.ts";
 import type { TranscriptForwardPage } from "../src/server/harness/types.ts";
 
 // What is at stake: whether the operator can read a conversation they can see the agent
@@ -228,8 +228,7 @@ function wholePi(path: string): TranscriptMessage[] {
     .split("\n")
     .flatMap((line) => {
       if (!line) return [];
-      const message = piToMessage(JSON.parse(line));
-      return message ? [message] : [];
+      return piToMessages(JSON.parse(line));
     });
 }
 

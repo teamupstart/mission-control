@@ -2055,28 +2055,13 @@ export function evidenceActionError(caught: unknown, fallback: string): string {
   return caught instanceof Error ? caught.message : fallback;
 }
 
-/**
- * Whether "Continue despite gaps" may be pressed.
- *
- * Three conditions, and the reason is the one that carries the record: an override with an
- * empty reason is an unexplained decision in the durable log, which is the thing the field
- * exists to prevent.
- */
-export function readinessOverrideDisabled(
-  busy: "retry" | "override" | null,
-  acknowledged: boolean,
-  reason: string,
-): boolean {
-  return busy !== null || !acknowledged || reason.trim().length === 0;
-}
-
 /** The two readiness controls' labels, so an in-flight press cannot read as a settled one. */
 export function readinessActionLabel(
   action: "retry" | "override",
   busy: "retry" | "override" | null,
 ): string {
   if (action === "retry") return busy === "retry" ? "Retrying…" : "Retry evidence preflight";
-  return busy === "override" ? "Continuing…" : "Continue despite gaps";
+  return busy === "override" ? "Continuing…" : "Continue to review";
 }
 
 

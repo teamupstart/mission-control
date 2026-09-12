@@ -68,6 +68,8 @@ Read more in [The Line and fleet UI](docs/ui.md) and
 Open any card to see the conversation, diff, files, review progress, and controls for that session.
 Read it as a terminal stream or a chat, queue and reorder messages, answer structured questions,
 change permission posture, interrupt a turn, and drop images directly into the composer.
+Interrupted turns retain a visible marker in the conversation across all three harnesses,
+on terminal and Agent SDK runtimes.
 
 The diff is scoped to what that agent changed. Files support pull request-style line comments and a
 guided review that walks the agent through one thread at a time. A terminal in the same working copy
@@ -294,6 +296,10 @@ See [Configuration](docs/configuration.md) for the complete precedence rules and
 tradeoffs.
 
 ## Pi session integration
+
+Managed Pi sessions support structured extension questions, Pi-owned project trust, and
+Work Queue automation. Select an `amazon-bedrock/*` model after signing in through Pi.
+Terminal Pi remains outside Work Queue. See [managed Pi sessions](docs/sessions.md#what-a-managed-pi-session-does-differently).
 
 The Pi extension bridges Mission Control tools, lifecycle, live model, effort, context, and
 attributed usage for hand-run Pi sessions. For a first installation, open **Settings > Setup >

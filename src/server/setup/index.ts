@@ -34,6 +34,7 @@ import { cmuxControlProbe } from "../terminal/cmux.ts";
 import { herdrServerProbe } from "../terminal/herdr.ts";
 import { terminalBackendBin } from "../terminal/registry.ts";
 import { terminalTargetViews } from "../terminal/targets.ts";
+import { configuredTerminalTargetDeps } from "../terminals-config.ts";
 import { refreshProcessPathFromLoginShell, resolveBinPath, run } from "../util/exec.ts";
 import { pruneSetupBannerDismissal, setupBannerView } from "@shared/setup-banner.ts";
 import { getSetupBannerDismissal, setSetupBannerDismissal } from "./banner.ts";
@@ -376,7 +377,9 @@ export function defaultSetupDeps(): SetupDeps {
       };
     },
     conductorProbe: () => PIPELINE_PROVIDERS["ai-conductor"].probe(),
-    terminalTargets: terminalTargetViews,
+    // Composed with the stored preference, so the Terminals rows and the launch menu report
+    // the same raiser Focus will actually use.
+    terminalTargets: () => terminalTargetViews(configuredTerminalTargetDeps),
     environmentChecks: environmentCheckViews,
     readBannerDismissal: getSetupBannerDismissal,
     writeBannerDismissal: setSetupBannerDismissal,
@@ -425,7 +428,10 @@ export async function setupChecksView(deps: SetupDeps = defaultSetupDeps()): Pro
   if (pruned.changed) deps.writeBannerDismissal(pruned.dismissal);
   return {
     rows,
+    piCliReady: probeById.get("pi-cli")?.status.state === "satisfied",
     piExtensionInstallAvailable: deps.canInstallPiExtension?.() ?? false,
+    piExtensionReady:
+      environment.find((check) => check.id === "pi-extension")?.ready === true,
     banner: setupBannerView(rows, pruned.dismissal),
     home: deps.environment.homeDir,
   };

@@ -1,3 +1,4 @@
+import type { PiHostUI } from "./sdk-ui.ts";
 import type { ThinkingLevel } from "@shared/types.ts";
 
 // The ONLY shape of Pi the driver is allowed to know.
@@ -71,9 +72,9 @@ export type PiSessionEvent =
   | { type: "message_start" }
   /** An assistant message is final. Carries the turn's usage and any provider error. */
   | { type: "message_end"; assistant: PiAssistantSummary | null }
-  | { type: "tool_execution_start"; toolCallId: string; toolName: string; command: string | null }
+  | { type: "tool_execution_start"; toolCallId: string; toolName: string; command: string | null; opensPullRequest?: boolean }
   | { type: "tool_execution_update"; toolCallId: string; toolName: string }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; isError: boolean }
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; isError: boolean; prUrls?: string[] }
   | { type: "compaction_start"; reason: string }
   | { type: "compaction_end"; aborted: boolean; willRetry: boolean; errorMessage: string | null }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; errorMessage: string }
@@ -122,6 +123,7 @@ export interface PiSession {
   readonly idle: boolean;
   /** An agent run is in progress. The negation of "a fresh prompt would start a turn". */
   readonly streaming: boolean;
+  bindExtensions(ui: PiHostUI): Promise<void>;
   subscribe(listener: (event: PiSessionEvent) => void): () => void;
   prompt(text: string, options: PiPromptOptions): Promise<void>;
   /** Stop the running turn and wait for the agent to be idle. */
@@ -136,7 +138,7 @@ export interface PiSession {
 export interface PiRuntime {
   readonly session: PiSession;
   /** Called with the REPLACEMENT session after `newSession` swaps it in. */
-  onSessionReplaced(handler: (session: PiSession) => void): void;
+  onSessionReplaced(handler: (session: PiSession) => void | Promise<void>): void;
   /** Pi's `/new`: tear the current session down and start a fresh one in the same cwd. */
   newSession(): Promise<void>;
   dispose(): Promise<void>;
@@ -156,13 +158,13 @@ export interface PiRuntimeOptions {
   model: PiModelRef | null;
   thinkingLevel: PiThinkingLevel | null;
   /**
-   * Whether Pi may load this checkout's project-local executable resources.
-   *
-   * Answered from Pi's OWN durable trust store before the runtime is built, and never by
-   * prompting - Phase 1 has no surface to ask on. False keeps project-local extensions,
-   * packages and `SYSTEM.md` out while user and global configuration still load.
+   * One policy for loading this checkout's project-local executable resources: either a
+   * resolved decision (false keeps resources disabled), or an asynchronous resolver.
+   * Pi awaits the resolver before each resource load, including runtime replacement.
+   * Managed launches resolve through Pi's own store and the operator's trust question.
    */
-  trusted: boolean;
+  readonly projectTrust: boolean | (() => Promise<boolean>);
+  signal?: AbortSignal;
   /**
    * The operator's REPOSITORY STANDING INSTRUCTIONS, as Pi's own system-prompt append.
    *
@@ -193,6 +195,7 @@ export interface PiSdk {
   hasTrustRequiringProjectResources(cwd: string): boolean;
   /** Pi's DURABLE decision for `cwd`: true, false, or null when nobody has decided. */
   projectTrust(cwd: string): boolean | null;
+  setProjectTrust(cwd: string, trusted: boolean): void;
   /** The session file for an exact Pi session id under `cwd`, or null when it is gone. */
   findSessionFile(cwd: string, sessionId: string): Promise<string | null>;
   /** Build the managed runtime. Rejects rather than degrading - see `SdkSpec.launch`. */
@@ -202,6 +205,8 @@ export interface PiSdk {
 export interface PiSdkDeps {
   /** Load the vendor package and project it. Rejects when Pi's SDK cannot be loaded. */
   load(): Promise<PiSdk>;
+  /** Configured GitHub remotes of this checkout, read without contacting GitHub. */
+  repositories(cwd: string): Promise<string[]>;
   /** The environment Pi's in-process shell tools should run under. */
   toolEnv(cwd: string, stateHome: string): Record<string, string>;
 }

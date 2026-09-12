@@ -90,6 +90,8 @@ export interface EnvironmentCheckView extends EnvironmentCheckInfo {
    * when a warning has no single file behind it.
    */
   detail: string | null;
+  /** Positive readiness when this check can prove one. Omitted by warning-only checks. */
+  ready?: boolean;
 }
 
 /** What `GET /api/environment/checks` answers. Always 200; see the route. */

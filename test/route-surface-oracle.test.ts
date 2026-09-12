@@ -102,8 +102,23 @@ function fieldNames(text: string): string {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})/;
 const ABSOLUTE_PATH = /^(~|\/)[^\s]*\//;
-/** Keys whose value is inherently per-process or per-release. */
-const VOLATILE_KEYS = new Set(["pid", "version", "generatedAt", "startedAt", "now"]);
+/**
+ * Keys whose value is inherently per-process, per-release, or per-machine.
+ *
+ * `installed` is the last of those: `/api/cost/config` reports whether the operator's Claude
+ * settings carry the cost exporter, so it answers `true` on a developer's machine and `false`
+ * on a runner - and even differs between a solo run of this file and the full suite, which
+ * hands each worker a different home. Tokenising the one key keeps the rest of that body
+ * asserted rather than exempting the whole route.
+ */
+const VOLATILE_KEYS = new Set([
+  "pid",
+  "version",
+  "generatedAt",
+  "startedAt",
+  "now",
+  "installed",
+]);
 
 function normalize(value: unknown): unknown {
   if (typeof value === "string") {

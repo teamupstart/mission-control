@@ -12,7 +12,7 @@ import { harnessFor } from "../src/server/harness/index.ts";
 import {
   locatePiTranscript,
   piProjectDir,
-  piToMessage,
+  piToMessages,
   piTranscript,
 } from "../src/server/harness/pi/transcript.ts";
 import {
@@ -177,7 +177,7 @@ test("a launch-identified session binds its transcript and reads runtime state",
     assert.equal(located, path);
     const read = piTranscript.passiveRead?.(located!);
     assert.equal(read?.meta?.modelId, "gpt-5.5");
-    assert.equal(read?.activity?.state, "working");
+    assert.equal(read?.activity?.state, "idle", "the captured transcript ends in an interrupted turn");
   } finally {
     piTranscript.retain?.(new Set());
     rmSync(root, { recursive: true, force: true });
@@ -291,32 +291,31 @@ test("pi's session store follows PI_CODING_AGENT_DIR, the way pi's own resolver 
 
 // ---- messages: parse the verbatim capture ----
 
-test("text turns parse; thinking is dropped; the aborted turn falls out", () => {
+test("text turns parse; thinking is dropped; the aborted turn has an interrupt marker", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-transcript-"));
   const path = join(dir, "session.jsonl");
   writeFileSync(path, PI_SESSION_JSONL);
   try {
     const win = piTranscript.messages!.window(path);
-    // 5 renderable turns: exot(user), clarify(asst), exit(user), Goodbye(asst), exit(user).
-    // The `session`/`model_change`/`thinking_level_change` records and the empty aborted turn
-    // are all dropped.
-    assert.equal(win.messages.length, 5, `expected 5 turns, got ${win.messages.length}`);
-    assert.deepEqual(win.messages.map((m) => m.role), ["user", "assistant", "user", "assistant", "user"]);
+    // Five content turns plus the empty aborted turn's visible interrupt marker.
+    assert.equal(win.messages.length, 6, `expected 6 turns, got ${win.messages.length}`);
+    assert.deepEqual(win.messages.map((m) => m.role), ["user", "assistant", "user", "assistant", "user", "user"]);
     assert.equal(win.messages[0]!.text, "exot");
     // The assistant turn keeps its `text` part and drops its `thinking` part.
     assert.equal(win.messages[1]!.text, "Could you clarify what you'd like me to do?");
     assert.equal(win.messages[3]!.text, "Goodbye.");
+    assert.equal(win.messages[5]!.text, "[Request interrupted by user]");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a record that is not a message, or an empty turn, parses to null", () => {
-  assert.equal(piToMessage(JSON.parse(PI_SESSION_LINES[0]!)), null, "the session header is not a turn");
-  assert.equal(piToMessage(JSON.parse(PI_SESSION_LINES[1]!)), null, "a model_change is not a turn");
-  assert.equal(piToMessage(JSON.parse(PI_SESSION_LINES[8]!)), null, "the aborted, empty turn drops");
-  assert.equal(piToMessage("not json"), null);
-  assert.equal(piToMessage(null), null);
+test("bookkeeping and empty non-aborted turns produce no conversation messages", () => {
+  assert.deepEqual(piToMessages(JSON.parse(PI_SESSION_LINES[0]!)), [], "the session header is not a turn");
+  assert.deepEqual(piToMessages(JSON.parse(PI_SESSION_LINES[1]!)), [], "a model_change is not a turn");
+  assert.deepEqual(piToMessages({ type: "message", message: { role: "assistant", content: [], stopReason: "stop" } }), []);
+  assert.deepEqual(piToMessages("not json"), []);
+  assert.deepEqual(piToMessages(null), []);
 });
 
 // ---- passiveRead: runtime metadata and idle/working ----
@@ -359,13 +358,24 @@ test("a 250k gpt-5.5 turn reports against 272k, not the shared fallback tier", (
   assert.equal(meta?.contextPct, 92);
 });
 
-test("idle only on a clean stop; an aborted tail reads working", () => {
-  // The full capture ends on an aborted turn - ambiguous, so it falls to `working`.
+test("clean and interrupted Pi turns both hand control back to the human", () => {
+  // The full capture ends on the same aborted record the real TUI writes after Escape.
   const full = computePiSessionActivity([...PI_SESSION_LINES]);
-  assert.equal(full?.state, "working");
+  assert.equal(full?.state, "idle");
   // The same session without that aborted tail ends on a clean `stop` - idle.
   const clean = computePiSessionActivity(PI_SESSION_LINES.slice(0, 7));
   assert.equal(clean?.state, "idle");
+});
+
+test("an unfinished Pi turn stays working, including a new prompt after an interrupt", () => {
+  for (const stopReason of ["toolUse", "error", "length", undefined, "unknown"]) {
+    const line = JSON.stringify({ type: "message", timestamp: new Date().toISOString(),
+      message: { role: "assistant", stopReason, content: [] } });
+    assert.equal(computePiSessionActivity([line])?.state, "working", String(stopReason));
+  }
+  const nextPrompt = JSON.stringify({ type: "message", timestamp: new Date().toISOString(),
+    message: { role: "user", content: [{ type: "text", text: "continue" }] } });
+  assert.equal(computePiSessionActivity([...PI_SESSION_LINES, nextPrompt])?.state, "working");
 });
 
 test("a reported custom-home transcript requires the exact session header and cwd", () => {

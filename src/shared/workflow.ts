@@ -274,6 +274,20 @@ export interface WorkflowEvidenceCoverageLink {
 export interface WorkflowEvidenceCoverageClaim {
   clientCriterionId: string;
   criterion: string;
+  /**
+   * The canonical criterion this claim answers, when the author was told one.
+   *
+   * Absent on a first submission, because the run's criteria are minted during capture and
+   * there is nothing to cite yet. A repair packet names them, so a repair claim can bind
+   * deterministically instead of being matched back by prose.
+   *
+   * An id this submission's author wrote that names no criterion of the run is REFUSED, not
+   * downgraded: the claim is matched by nothing, including its own text, and readiness reports
+   * the citation by name. A claim carried from an earlier submission is the exception and
+   * keeps the pre-citation behaviour, because its author cannot withdraw the id from here.
+   * `classifyWorkflowCoverageCitation` owns that distinction; nothing else decides it.
+   */
+  criterionId?: string | null;
   proofClass: WorkflowEvidenceProofClass;
   repositoryScope: WorkflowEvidenceRepositoryScope;
   links: WorkflowEvidenceCoverageLink[];
@@ -334,6 +348,7 @@ export const WORKFLOW_EVIDENCE_READINESS_GAP_CODES = [
   "missing_result_measurement",
   "missing_deliverable_or_rendered_output",
   "missing_state_snapshot",
+  "unknown_criterion_id",
 ] as const;
 export type WorkflowEvidenceReadinessGapCode =
   (typeof WORKFLOW_EVIDENCE_READINESS_GAP_CODES)[number];
@@ -411,6 +426,17 @@ export interface WorkflowEvidenceReadinessCriterion {
   criterion: string;
   material: boolean;
   matchedClientCriterionId: string | null;
+  /**
+   * Every claim that matched this criterion, populated only when more than one did.
+   *
+   * `matchedClientCriterionId` is null in exactly that case, so without this the repair
+   * packet could say a criterion was contested but never say by what, and an author cannot
+   * withdraw a claim it was not told about.
+   *
+   * Absent rather than empty when nothing is contested, which is every criterion of every
+   * readiness row written before this field existed.
+   */
+  contestedClientCriterionIds?: string[];
   authorProofClass: WorkflowEvidenceProofClass | null;
   suggestedProofClass: WorkflowEvidenceProofClass | null;
   links: WorkflowEvidenceReadinessLink[];
@@ -418,10 +444,70 @@ export interface WorkflowEvidenceReadinessCriterion {
   warnings: WorkflowEvidenceReadinessWarningCode[];
 }
 
+/**
+ * What a claim's `criterionId` means for this run, decided in one place.
+ *
+ * Three paths act on a citation: mapping binds or refuses it, reconciliation decides whether
+ * the model is even asked about the claim, and readiness reports the refusal. They had the
+ * rule written out three times, including the inherited-claim exemption, and nothing made
+ * them agree - a later edit could have excluded a claim from mapping while leaving it out of
+ * `rejectedCitations`, or sent a citation the author was promised is authoritative to
+ * semantic inference. They consume this instead.
+ *
+ * - `absent`: no citation. Matched by its text, and the model may be asked about it.
+ * - `resolved`: names a criterion of this run. Bound to that criterion and no other, and
+ *   never sent to the model, because the author already answered the question.
+ * - `rejected`: names nothing, and this submission's author wrote it. Matched by nothing,
+ *   including its own text, and reported by name.
+ * - `inherited_unresolved`: names nothing, but was carried from an earlier submission. Its
+ *   author cannot withdraw it from here, so it keeps the pre-citation behaviour and is
+ *   matched by its text rather than parking the run on an impossible correction.
+ */
+export type WorkflowCoverageCitation =
+  | "absent"
+  | "resolved"
+  | "rejected"
+  | "inherited_unresolved";
+
+export function classifyWorkflowCoverageCitation(
+  claim: Pick<WorkflowEvidenceCoverageClaim, "criterionId" | "inheritedFromSubmissionId">,
+  canonicalCriterionIds: ReadonlySet<string>,
+): WorkflowCoverageCitation {
+  if (!claim.criterionId) return "absent";
+  if (canonicalCriterionIds.has(claim.criterionId)) return "resolved";
+  return claim.inheritedFromSubmissionId ? "inherited_unresolved" : "rejected";
+}
+
+/** Whether a claim is matched by its own prose, which is also what the model is asked about. */
+export function workflowCoverageCitationAllowsText(citation: WorkflowCoverageCitation): boolean {
+  return citation === "absent" || citation === "inherited_unresolved";
+}
+
+/** One claim whose `criterionId` names no criterion of this run. */
+export interface WorkflowEvidenceRejectedCitation {
+  clientCriterionId: string;
+  criterionId: string;
+}
+
 export interface WorkflowEvidenceReadinessResult {
   evaluatorVersion: "criterion_mapped_v1";
   status: WorkflowEvidenceReadinessStatus;
   criteria: WorkflowEvidenceReadinessCriterion[];
+  /**
+   * Citations that named nothing, reported rather than quietly ignored.
+   *
+   * A claim carrying `criterionId` is an author stating which criterion it answers, and the
+   * tool contract promises that statement is honoured without text matching. An id that
+   * resolves to no criterion cannot be honoured, and falling back to prose there would give
+   * the field two meanings and hand back exactly the unexplained mapping this gate exists to
+   * end: the claim would bind somewhere nobody asked for, or nowhere at all, and the packet
+   * would name a symptom instead of the typo. So the citation is refused by name, and the
+   * claim is matched by nothing until its author corrects or withdraws the id.
+   *
+   * Absent rather than empty when every citation resolved, which is every readiness row
+   * written before a claim could carry one.
+   */
+  rejectedCitations?: WorkflowEvidenceRejectedCitation[];
   gapCodes: WorkflowEvidenceReadinessGapCode[];
   warningCodes: WorkflowEvidenceReadinessWarningCode[];
   unavailableReason: string | null;
@@ -501,6 +587,70 @@ export function workflowCrossCriterionClaimIds(input: {
 }
 
 /**
+ * The one spelling of a criterion that two independently authored strings are compared on.
+ *
+ * Exported because exact normalized text is the fail-closed bridge between an author's claim and
+ * a daemon-assigned canonical criterion, and a bridge whose two ends normalize differently is a
+ * bridge that silently drops claims. Both ends call this.
+ */
+export function normalizedWorkflowCriterionText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
+}
+
+/** One claim's resolvable links and the proof gaps they leave, with no criterion context. */
+function resolveCoverageClaimProof(
+  claim: WorkflowEvidenceCoverageClaim,
+  evidence: ReadonlyMap<string, WorkflowFrozenEvidenceIdentity>,
+): { links: WorkflowEvidenceReadinessLink[]; gaps: WorkflowEvidenceReadinessGapCode[] } {
+  const gaps: WorkflowEvidenceReadinessGapCode[] = [];
+  const links = claim.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
+    const item = evidence.get(link.clientItemId);
+    if (!item) {
+      gaps.push("evidence_not_frozen");
+      return [];
+    }
+    const scopeMatches = item.repositoryScope === "all"
+      || (claim.repositoryScope !== "all" && item.repositoryScope === claim.repositoryScope);
+    if (!scopeMatches) gaps.push("scope_conflict");
+    return [{ clientItemId: link.clientItemId, evidenceId: item.evidenceId, role: link.role }];
+  });
+  gaps.push(...workflowEvidenceMissingRoleGaps(claim.proofClass, links.map((link) => link.role)));
+  return { links, gaps };
+}
+
+/**
+ * Among declared claims for ONE criterion that share its exact wording, prefer the one that
+ * proves it.
+ *
+ * A reserved claim cannot be amended, so the only repair open to an author is to re-register
+ * under a new criterion id - which `coverage_reserved` instructs and this function honours.
+ * Without it, following that instruction produced two declared claims matched to one criterion
+ * and therefore `ambiguous_mapping`, a gap no further registration could close: the author was
+ * told to do the one thing that wedged the run.
+ *
+ * Narrow on purpose. Identical wording from one author in one conversation is a revision, not a
+ * disagreement, and the complete one is unambiguously the live one. Everything else still reads
+ * as ambiguous: differing wording is two different assertions, and two claims that BOTH satisfy
+ * their class is a genuine choice between author statements that nothing here is entitled to
+ * make. Cross-criterion ambiguity is a separate question and is decided elsewhere.
+ */
+function selectSupersedingDeclaration(
+  declaredIds: readonly string[],
+  claims: ReadonlyMap<string, WorkflowEvidenceCoverageClaim>,
+  evidence: ReadonlyMap<string, WorkflowFrozenEvidenceIdentity>,
+): readonly string[] {
+  if (declaredIds.length < 2) return declaredIds;
+  const wordings = new Set(declaredIds.map(
+    (id) => normalizedWorkflowCriterionText(claims.get(id)!.criterion),
+  ));
+  if (wordings.size !== 1) return declaredIds;
+  const satisfied = declaredIds.filter(
+    (id) => resolveCoverageClaimProof(claims.get(id)!, evidence).gaps.length === 0,
+  );
+  return satisfied.length === 1 ? satisfied : declaredIds;
+}
+
+/**
  * Reconcile one immutable coverage packet with daemon-assigned canonical criteria.
  * Semantic sufficiency remains entirely with the Persona workflow.
  */
@@ -539,47 +689,47 @@ export function evaluateWorkflowEvidenceReadiness(input: {
     : input.canonicalCriteria;
   const claims = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
   const evidence = new Map(input.evidence.map((item) => [item.clientItemId, item]));
-  const crossCriterionClaimIds = workflowCrossCriterionClaimIds({
-    canonicalCriteria,
-    criterionMappings: input.criterionMappings,
-    coverage: input.coverage,
-  });
+  const canonicalIds = new Set(canonicalCriteria.map((criterion) => criterion.id));
+  const rejectedCitations = input.coverage
+    .filter((claim) => classifyWorkflowCoverageCitation(claim, canonicalIds) === "rejected")
+    .map((claim) => ({
+      clientCriterionId: claim.clientCriterionId,
+      criterionId: claim.criterionId!,
+    }));
   const criteria = canonicalCriteria.map((canonical): WorkflowEvidenceReadinessCriterion => {
     const mappedIds = [...new Set(input.criterionMappings
       .filter((mapping) => mapping.criterionId === canonical.id)
       .flatMap((mapping) => mapping.matchedClientCriterionIds))]
       .filter((id) => claims.has(id))
       .sort();
-    const declaredIds = mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId);
+    const declaredIds = selectSupersedingDeclaration(
+      mappedIds.filter((id) => !claims.get(id)!.inheritedFromSubmissionId),
+      claims,
+      evidence,
+    );
     const selected = input.selection?.criteria.find((row) => row.criterionId === canonical.id);
     const matchedIds = declaredIds.length > 0 ? declaredIds
       : selected ? selected.matchedClientCriterionIds : mappedIds;
-    const crossCriterionAmbiguity = matchedIds.some((id) => crossCriterionClaimIds.has(id));
-    const claim = matchedIds.length === 1 && mappedIds.includes(matchedIds[0]!) && !crossCriterionAmbiguity
+    /**
+     * One claim may answer several criteria, and that is not a defect.
+     *
+     * Linking one evidence item from several claims has always been legal and is what the
+     * evidence guidance asks for, so a claim that covers two criteria is the same proof a
+     * compliant author would have written as two claims linking one screenshot. Discarding it
+     * proved nothing and cost its evidence: the criterion it did answer reported no links at
+     * all. What stays undecidable is the other direction - two claims matched to ONE criterion,
+     * where a single `authorProofClass` cannot name both - and that is what remains a gap.
+     */
+    const claim = matchedIds.length === 1 && mappedIds.includes(matchedIds[0]!)
       ? claims.get(matchedIds[0]!)!
       : null;
     const gaps: WorkflowEvidenceReadinessGapCode[] = [];
     const warnings: WorkflowEvidenceReadinessWarningCode[] = [];
-    if (canonical.material && !crossCriterionAmbiguity && (matchedIds.length === 0 || (matchedIds.length === 1 && !claim))) gaps.push("missing_coverage");
-    if (matchedIds.length > 1 || crossCriterionAmbiguity) gaps.push("ambiguous_mapping");
-    const links = claim?.links.flatMap((link): WorkflowEvidenceReadinessLink[] => {
-      const item = evidence.get(link.clientItemId);
-      if (!item) {
-        gaps.push("evidence_not_frozen");
-        return [];
-      }
-      const scopeMatches = item.repositoryScope === "all"
-        || (claim.repositoryScope !== "all"
-          && item.repositoryScope === claim.repositoryScope);
-      if (!scopeMatches) {
-        gaps.push("scope_conflict");
-      }
-      return [{ clientItemId: link.clientItemId, evidenceId: item.evidenceId, role: link.role }];
-    }) ?? [];
-    if (claim) gaps.push(...workflowEvidenceMissingRoleGaps(
-      claim.proofClass,
-      links.map((link) => link.role),
-    ));
+    if (canonical.material && (matchedIds.length === 0 || (matchedIds.length === 1 && !claim))) gaps.push("missing_coverage");
+    if (matchedIds.length > 1) gaps.push("ambiguous_mapping");
+    const proof = claim ? resolveCoverageClaimProof(claim, evidence) : null;
+    const links = proof?.links ?? [];
+    if (proof) gaps.push(...proof.gaps);
     if (
       claim
       && canonical.suggestedProofClass
@@ -590,6 +740,7 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       criterion: canonical.text,
       material: canonical.material,
       matchedClientCriterionId: claim?.clientCriterionId ?? null,
+      ...(matchedIds.length > 1 ? { contestedClientCriterionIds: [...matchedIds].sort() } : {}),
       authorProofClass: claim?.proofClass ?? null,
       suggestedProofClass: canonical.suggestedProofClass,
       links,
@@ -597,12 +748,19 @@ export function evaluateWorkflowEvidenceReadiness(input: {
       warnings,
     };
   });
-  const gapCodes = [...new Set(criteria.flatMap((criterion) => criterion.gaps))].sort();
+  const gapCodes = [...new Set([
+    ...criteria.flatMap((criterion) => criterion.gaps),
+    ...(rejectedCitations.length > 0 ? ["unknown_criterion_id" as const] : []),
+  ])].sort();
   const warningCodes = [...new Set(criteria.flatMap((criterion) => criterion.warnings))].sort();
   return {
     evaluatorVersion: "criterion_mapped_v1",
     status: gapCodes.length > 0 ? "gaps" : "ready",
     criteria,
+    // A rejected citation is a gap of its own, not only of whatever criterion went uncovered
+    // because of it. Every other criterion can be satisfied and the author still needs to hear
+    // that an id they supplied named nothing.
+    ...(rejectedCitations.length > 0 ? { rejectedCitations } : {}),
     gapCodes,
     warningCodes,
     unavailableReason: null,
@@ -3223,6 +3381,50 @@ export function checkBlockedReason(
   }
   if (!repoAllowlisted(cwd, repoRoot, config.repoAllowlist)) {
     return "This repository is not on the workflow allowlist, so no command was run.";
+  }
+  return null;
+}
+
+/**
+ * Where an operator grants what a refused launch was missing.
+ *
+ * Carried as a DESTINATION rather than spelled into the prose, because a refusal nobody can
+ * act on is a dead end: Live delivery's two halves are granted on two different screens, and
+ * a sentence naming one of them still leaves the reader to go and find it. The surface that
+ * renders the refusal turns this into a control that opens the screen.
+ */
+export type WorkflowLaunchFix = "workflow-live-delivery" | "workflow-repo-trust";
+
+/** A refused launch: the sentence to show, and the screen that grants what it named. */
+export interface WorkflowLaunchBlock {
+  message: string;
+  /** Absent when the refusal is not one a settings grant can clear (pick another workflow). */
+  fix?: WorkflowLaunchFix;
+}
+
+/**
+ * Why Live delivery may not be armed for this checkout, or null when it may.
+ *
+ * The two halves are asked in this order because they are answered in that order: with the
+ * machine-wide switch off nothing delivers anywhere, so naming the repository first would
+ * send the operator to the Trust matrix to make a grant that still would not deliver.
+ */
+export function liveDeliveryLaunchBlock(
+  config: Pick<WorkflowPolicy, "liveEnabled" | "repoAllowlist">,
+  cwd: string | null,
+  repoRoot: string | null,
+): WorkflowLaunchBlock | null {
+  if (!config.liveEnabled) {
+    return {
+      message: "This workflow uses Live delivery, which is switched off for this machine",
+      fix: "workflow-live-delivery",
+    };
+  }
+  if (!repoAllowlisted(cwd, repoRoot, config.repoAllowlist)) {
+    return {
+      message: "This workflow uses Live delivery, which is not granted for this repository",
+      fix: "workflow-repo-trust",
+    };
   }
   return null;
 }

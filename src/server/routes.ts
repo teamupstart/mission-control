@@ -49,6 +49,7 @@ import {
   HarnessesConfigPatchSchema,
   HarnessModelCatalogQuerySchema,
   HarnessModelCatalogsSchema,
+  TerminalsConfigPatchSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
@@ -269,6 +270,13 @@ import {
   HarnessesConfigError,
   setHarnessesConfig,
 } from "./harnesses.ts";
+import type { TerminalDeps } from "./terminal/registry.ts";
+import {
+  configuredTerminalDeps,
+  configuredTerminalTargetDeps,
+  getTerminalsConfig,
+  setTerminalsConfig,
+} from "./terminals-config.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import type { HarnessModelCatalogService } from "./harness/model-catalog-service.ts";
 import { FileCommentError, type FileCommentManager } from "./file-comments.ts";
@@ -493,7 +501,12 @@ import {
   WORKFLOW_TEXT_EVIDENCE_LIMITS,
   legacyCheckCommands,
 } from "@shared/workflow.ts";
-import type { TestEvidenceAuditAggregate, WorkflowConfig } from "@shared/workflow.ts";
+import type {
+  TestEvidenceAuditAggregate,
+  WorkflowConfig,
+  WorkflowLaunchBlock,
+  WorkflowLaunchFix,
+} from "@shared/workflow.ts";
 import { TEST_EVIDENCE_AUDIT_SCAN_LIMIT } from "./workflows/test-evidence-audit.ts";
 import { WorkflowCommandManager } from "./workflows/commands.ts";
 import type { WorkflowCommandMutation } from "./workflows/commands.ts";
@@ -521,6 +534,20 @@ import { artifactAdapterFor } from "./ensembles/artifacts/index.ts";
 // The one statement of which patch paths are usable, imported rather than restated: a route
 // that spelled the rule itself would drift from the invocation that has to survive it.
 import { SnapshotPathRefused, snapshotPathRefusal } from "./git/ensemble-snapshot.ts";
+
+/**
+ * The wire shape of a refused launch.
+ *
+ * `fix` rides beside the sentence rather than being folded into it, so the form that shows
+ * the refusal can offer the settings screen as a control. Omitted entirely when the refusal
+ * is answered on the form itself - choosing another workflow - because an absent field is
+ * what tells the browser there is no door to draw.
+ */
+function workflowLaunchRefusal(
+  block: WorkflowLaunchBlock,
+): { error: string; fix?: WorkflowLaunchFix } {
+  return block.fix ? { error: block.message, fix: block.fix } : { error: block.message };
+}
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -771,6 +798,8 @@ async function answerDriverRequest(
   // record must describe the ask the caller was actually shown - the same snapshot the
   // projection verified against.
   const asked = session.paneDialog;
+  if (asked?.kind === "trust" && record.by !== "human")
+    return { ok: false, error: "Project trust requires the operator's decision" };
   const projected = project(asked);
   if (!projected.ok) return projected;
   // Read BEFORE the delivery, because it is when the operator spoke. Taken afterwards it
@@ -1032,6 +1061,16 @@ export interface RouteDeps {
   setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
   setupInstallDeps?: SetupInstallRouteDeps;
+  /**
+   * The terminal registries Focus drives, for tests that need to watch what a raise DID
+   * without spawning a real terminal on the machine running them.
+   *
+   * Default is `configuredTerminalDeps`, so the daemon is unaffected. A test that overrides
+   * this should spread that default rather than build one from scratch, keeping the
+   * production `focusEmulator` - the point of a test at this level is that the stored
+   * preference is read through the real composition.
+   */
+  focusTerminals?: TerminalDeps;
 }
 
 /**
@@ -1071,6 +1110,7 @@ export const ROUTE_DEP_NAMES = [
   "settingsBackups",
   "setupDeps",
   "setupInstallDeps",
+  "focusTerminals",
 ] as const satisfies readonly (keyof RouteDeps)[];
 
 export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
@@ -1344,11 +1384,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     settingsBackups,
     setupDeps,
     setupInstallDeps,
+    focusTerminals,
   } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
   const setupSnapshots = createSetupSnapshotTracker(randomUUID);
-  const terminalLauncher = launchSessionTerminal ?? launchTerminal;
+  // Bound to THIS daemon's stored per-multiplexer terminal preference, which is what makes
+  // the terminal a raised multiplexer session opens the one the operator picked. The
+  // mechanism defaults are Automatic on their own - see `automaticFocusEmulator` - so every
+  // production entry point that can raise a window composes them here, in the layer that is
+  // allowed to read settings.
+  const terminalLauncher: typeof launchTerminal = launchSessionTerminal
+    ?? ((backend, spec) => launchTerminal(backend, spec, configuredTerminalTargetDeps));
   const panes = paneDeps ?? defaultPaneDeps;
   // A successful exited-session resume keeps its claim for the life of this lingering
   // session id. Otherwise a double-click before `session_remove` can start two agents on
@@ -3444,7 +3491,8 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   // it is a question about the daemon's machine, not about the one the dashboard is being
   // viewed from, and unavailable backends are RETURNED with their sentence rather than
   // filtered out - an empty menu cannot distinguish "none installed" from "did not look".
-  app.get("/api/terminal-targets", (c) => c.json({ targets: terminalTargetViews() }));
+  app.get("/api/terminal-targets", (c) =>
+    c.json({ targets: terminalTargetViews(configuredTerminalTargetDeps) }));
   // Open a terminal on a session's checkout: a shell, or the session's own agent CLI.
   // Both payloads use the backend the operator selected; only their daemon-owned argv differs.
   app.post("/api/sessions/:id/launch", async (c) => {
@@ -4995,7 +5043,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const r = await answerDriverRequest(
         sdkSessions,
         session,
-        (dialog) => driverFormAnswer(dialog, answers),
+        (dialog) => driverFormAnswer(dialog, answers, parsed.data.requestId),
         { reviews, by: parsed.data.by },
       );
       if (r.ok) retireForemanNoteForDialog(registry, session, asked, parsed.data.by);
@@ -5257,7 +5305,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
   app.post("/api/sessions/:id/focus", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = await focus(session);
+    const r = await focus(session, focusTerminals ?? configuredTerminalDeps);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -6894,6 +6942,18 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     return c.json(costTelemetryStatus());
   });
 
+  // --- Terminals: which terminal app each multiplexer's sessions are focused into ---
+  //
+  // Its own pair rather than a key on `/api/harnesses/config`, because that object is keyed
+  // and merged per AGENT and this one is keyed and merged per MULTIPLEXER. Folding them
+  // together would give one route two merge rules.
+  app.get("/api/terminals/config", (c) => c.json(getTerminalsConfig()));
+  app.put("/api/terminals/config", async (c) => {
+    const parsed = await parseBody(c, TerminalsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setTerminalsConfig(parsed.data));
+  });
+
   // --- Environment checks: what the MACHINE says about the tooling a dispatch inherits ---
   //
   // Always 200, carrying its own result - the shape `POST /api/ensembles/preview` uses: "your
@@ -7005,7 +7065,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const blocked = parsed.data.backlog
         ? manager.workflowSelectionBlock(workflowId)
         : manager.dispatchWorkflowBlock(workflowId, agent, repoRoot);
-      if (blocked) return c.json({ error: blocked }, 409);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
     // A plan task's intent invokes the planning skills instead of restating them, so a
     // dispatch that could not invoke them is refused before the task exists - the operator
@@ -7173,7 +7233,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         const manager = workflowManager();
         if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
         const blocked = manager.workflowSelectionBlock(workflowId);
-        if (blocked) return c.json({ error: blocked }, 409);
+        if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
     }
     const r = await tasks.update(id, patch);
@@ -7240,7 +7300,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         task.agent,
         task.repoRoot,
       );
-      if (blocked) return c.json({ error: blocked }, 409);
+      if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
     }
     const r = await tasks.dispatch(id, parsed.data);
     if (!r.ok) {
@@ -7347,7 +7407,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
           session.agent,
           task.repoRoot,
         );
-        if (blocked) return c.json({ error: blocked }, 409);
+        if (blocked) return c.json(workflowLaunchRefusal(blocked), 409);
       }
       // Explicit None is intent too: it must not be assigned onto a conversation whose
       // existing binding would still run a Workflow after this task completes.

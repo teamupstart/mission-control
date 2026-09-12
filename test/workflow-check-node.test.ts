@@ -7,6 +7,7 @@ import {
   WORKFLOW_LIMITS,
   checkBlockedReason,
   checkCommandRoot,
+  liveDeliveryLaunchBlock,
   checkCommandSubpath,
   emptyWorkflowCommandView,
   formatCheckCommand,
@@ -490,6 +491,45 @@ test("checkBlockedReason answers with a sentence, and null when both gates are o
     checkBlockedReason(policyWith({ repoAllowlist: [REPO] }), null, REPO),
     checkBlockedReason(policyWith({ checksEnabled: true }), null, REPO),
   );
+});
+
+// What is at stake: a refusal an operator cannot act on. Live delivery is authorized by a
+// machine-wide switch AND a per-repository grant, made on two different settings screens, and
+// the sentence alone used to name neither - which is how an operator who had done nothing
+// wrong ended up reading "requires an allowlisted repository" with no way to find the
+// allowlist. The `fix` is what the Dispatch form turns into a control, so it has to name the
+// half that is actually missing.
+test("a live-delivery refusal names the screen that grants what is missing", () => {
+  const granted = policyWith({ liveEnabled: true, repoAllowlist: [REPO] });
+  assert.equal(liveDeliveryLaunchBlock(granted, null, REPO), null);
+
+  // A fresh install: the switch ships on and the allowlist ships empty, so this is the one
+  // an operator meets, and Trust is where they answer it.
+  assert.equal(
+    liveDeliveryLaunchBlock(DEFAULT_WORKFLOW_POLICY, null, REPO)?.fix,
+    "workflow-repo-trust",
+  );
+
+  // The switch is asked FIRST: with it off, granting the repository in Trust would still
+  // deliver nothing, so sending the operator there would be sending them to the wrong screen.
+  assert.equal(
+    liveDeliveryLaunchBlock(
+      policyWith({ liveEnabled: false, repoAllowlist: [REPO] }),
+      null,
+      REPO,
+    )?.fix,
+    "workflow-live-delivery",
+  );
+  assert.equal(
+    liveDeliveryLaunchBlock(policyWith({ liveEnabled: false }), null, REPO)?.fix,
+    "workflow-live-delivery",
+  );
+
+  // Every refusal still carries a sentence: the door is an addition to the explanation, not
+  // a replacement for it.
+  for (const policy of [DEFAULT_WORKFLOW_POLICY, policyWith({ liveEnabled: false })]) {
+    assert.match(liveDeliveryLaunchBlock(policy, null, REPO)!.message, /Live delivery/);
+  }
 });
 
 test("the argv split is quote-aware, and every ambiguity is an error rather than a guess", () => {

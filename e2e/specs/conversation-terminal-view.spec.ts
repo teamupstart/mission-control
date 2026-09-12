@@ -75,6 +75,12 @@ async function dispatch(
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
+  // A visible row can still move between Working and Idle as the opening turn completes.
+  // Selecting it during that handover can lose the detail selection. These rendering
+  // cases need the completed opener, so wait for that exact goal's displayed idle state.
+  const row = page.getByRole("navigation", { name: "Sessions" })
+    .locator("button.rail-row").filter({ hasText: goal });
+  await expect(row.locator(".rail-state")).toHaveText("idle");
 }
 
 /** Wait until the dispatched fake has a conversation Foreman can address. */
@@ -181,7 +187,12 @@ test("u and d paginate the conversation with or without reader focus", async ({
   const overflow = await log.evaluate((element) => element.scrollHeight - element.clientHeight);
   expect(overflow, "the conversation must have enough overflow to paginate").toBeGreaterThan(400);
 
-  await log.evaluate((element) => { element.scrollTop = 0; });
+  await log.evaluate((element) => {
+    element.scrollTop = 0;
+    // Complete this fixture scroll before another session update can follow the tail.
+    // Setting scrollTop alone defers the scroll event to the browser's next frame.
+    element.dispatchEvent(new Event("scroll"));
+  });
   await sessionRow.focus();
   await expect(sessionRow).toBeFocused();
   await dashboard.keyboard.press("d");

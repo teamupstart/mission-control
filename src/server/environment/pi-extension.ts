@@ -24,6 +24,8 @@ type LoadReading = { loaded: false } | { loaded: true; metadata: Metadata | null
 export interface PiExtensionReading extends EnvironmentCheckResult {
   /** Silence also describes never installed, so it is not availability. */
   healthy: boolean;
+  /** The generic environment-check projection of `healthy`. */
+  ready: boolean;
 }
 
 export function piExtensionLinkPath(): string {
@@ -108,8 +110,8 @@ export async function piExtensionHealthyForDispatch(): Promise<boolean> {
 }
 
 async function inspect(bundleToInstall?: string, observe: (path: string) => void = () => {}): Promise<PiExtensionReading> {
-  const silent: PiExtensionReading = { healthy: false, warning: null, detail: null };
-  const warn = (warning: string, detail: string): PiExtensionReading => ({ healthy: false, warning: `${warning} ${remedy}`, detail: short(detail) });
+  const silent: PiExtensionReading = { healthy: false, ready: false, warning: null, detail: null };
+  const warn = (warning: string, detail: string): PiExtensionReading => ({ healthy: false, ready: false, warning: `${warning} ${remedy}`, detail: short(detail) });
   try {
     const link = bundleToInstall ?? piExtensionLinkPath();
     observe(link);
@@ -160,13 +162,13 @@ async function inspect(bundleToInstall?: string, observe: (path: string) => void
     try { bridge = realpathSync(bridgePath); }
     catch { return warn(`The Pi extension's configured MCP bridge at ${short(bridgePath)} cannot be resolved. Lifecycle reports may still work, but its tools do not.`, bridgePath); }
     if (!await inspectMissionMcpTools(bridge)) return warn(`The Pi extension's MCP bridge at ${short(bridge)} is stale or cannot answer tools/list. Lifecycle reports may still work, but the required Mission Control tools are unavailable.`, bridge);
-    return { healthy: true, warning: null, detail: null };
+    return { healthy: true, ready: true, warning: null, detail: null };
   } catch (error) {
     // Do not log file contents, subprocess output, or arbitrary error messages.
     const diagnostic = error instanceof Error ? error.name : typeof error;
     const code = (error as NodeJS.ErrnoException | null)?.code;
     console.warn("[pi-extension] Health inspection failed", { kind: short(diagnostic), code: typeof code === "string" ? short(code) : null });
-    return { healthy: false, warning: `The Pi extension check could not establish a healthy installation. ${remedy}`, detail: null };
+    return { healthy: false, ready: false, warning: `The Pi extension check could not establish a healthy installation. ${remedy}`, detail: null };
   }
 }
 

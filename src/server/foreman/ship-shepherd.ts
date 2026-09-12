@@ -305,3 +305,65 @@ function escalationSummary(cause: RecoveryCause): string {
 function skip(why: string): ShipShepherdDecision {
   return { kind: "skip", why };
 }
+
+/** The four outcomes a recovery attempt audits, in the words the note and episode print. */
+export type ShipRecoveryDeliveryOutcome =
+  | "delivered"
+  | "delivery unknown"
+  | "confirmed undelivered"
+  | "escalated";
+
+export interface ShipRecoveryBriefInput {
+  /** The instruction Foreman chose, or - on an escalation - why it stopped instead. */
+  detail: string;
+  /** The completion verdict this recovery answers, when one drove it. */
+  decisionSummary: string | null;
+  quietMinutes: number;
+  delivery: ShipRecoveryDeliveryOutcome;
+  /** What happens next, already worded by `recoveryNextLabel`. */
+  next: string;
+  /**
+   * What actually reached the session, exactly as the episode records it.
+   *
+   * Null on every outcome that delivered nothing, which is what lets the omission below
+   * be decided from this one field rather than from the delivery word beside it.
+   */
+  sentText: string | null;
+}
+
+/**
+ * The audit body the recovery note and its episode share.
+ *
+ * `detail` is left out when it is verbatim what reached the session, and that single
+ * subtraction is the whole of the duplicate-post fix. A delivered instruction already has
+ * two homes a reader meets before this one: the conversation, where `ForemanTerminalMessage`
+ * draws it as Foreman's own turn directly beneath this card, and `ForemanEpisode.sentText`,
+ * which the drawer and the decision ledger print under Resolution. Repeating it here put the
+ * same paragraph on screen twice in both places, which reads as Foreman having said the same
+ * thing twice rather than once - and on the transcript the two copies land in the same
+ * minute, so there is nothing in the reading to tell them apart as one act.
+ *
+ * The omission rests on `sentText` and never on the delivery word beside it, because only
+ * `sentText` is evidence that the words survive somewhere else. Every non-delivery - a
+ * released claim, an inject whose outcome was never learned, an escalation that typed
+ * nothing - records none, so this body stays the ONLY copy of what Foreman decided and
+ * keeps it whole. An ambiguous delivery therefore keeps its copy on purpose: a possible
+ * second appearance costs a reader one repeated paragraph, while dropping it on a turn that
+ * never landed would lose the instruction outright.
+ *
+ * The trailing audit line is unconditional, so the body is never empty and the note always
+ * says how long the session had been quiet, what became of the attempt, and what follows it.
+ */
+export function shipRecoveryBrief(input: ShipRecoveryBriefInput): string {
+  const detail = input.detail.trim();
+  const summary = input.decisionSummary?.trim() || null;
+  const recordedElsewhere = input.sentText !== null && input.sentText.trim() === detail;
+  const quiet = Math.max(0, Math.floor(input.quietMinutes));
+  return [
+    recordedElsewhere ? null : detail,
+    // Unchanged in meaning: a summary that IS the detail is one fact, however the detail
+    // above was resolved, so it is printed once or not at all.
+    summary && summary !== detail ? `Completion decision: ${summary}` : null,
+    `Quiet age: ${quiet} minutes. Delivery: ${input.delivery}. Next: ${input.next}.`,
+  ].filter((line): line is string => Boolean(line)).join("\n\n");
+}

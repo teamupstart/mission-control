@@ -22,6 +22,7 @@ const {
   probeMatchesEvidence,
   readWorkflowEvidenceProbe,
   readWorkflowContextRaw,
+  reconcileWorkflowCoverage,
   reconcileWorkflowCriterionMappings,
   workflowReviewDecision,
   workflowContextFingerprint,
@@ -655,4 +656,125 @@ test("compaction preserves raw intent and visibly degrades on infrastructure fai
   assert.deepEqual(fallback.constraints, []);
   assert.deepEqual(fallback.acceptanceCriteria, []);
   assert.deepEqual(fallback.humanDecisions, raw.humanDecisions);
+});
+
+test("a claim that cites a criterion id binds to it without a semantic call", async () => {
+  const canonical = [
+    {
+      id: "criterion-1-aaaa",
+      text: "Update modals match the application theme",
+      material: true,
+      suggestedProofClass: "visual" as const,
+    },
+    {
+      id: "criterion-2-bbbb",
+      text: "Check for updates reflects the theme",
+      material: true,
+      suggestedProofClass: "visual" as const,
+    },
+  ];
+  // Prose that matches neither criterion's text, which is the ordinary first-submission case:
+  // the author was writing before any criterion existed to copy.
+  const cited = {
+    clientCriterionId: "themed-modals",
+    criterion: "Every update dialog renders as a themed modal",
+    criterionId: "criterion-2-bbbb",
+    proofClass: "visual" as const,
+    repositoryScope: "all" as const,
+    links: [],
+  };
+  assert.deepEqual(
+    reconcileWorkflowCriterionMappings(canonical, [cited])
+      .map((mapping) => mapping.matchedClientCriterionIds),
+    [[], ["themed-modals"]],
+    "the cited criterion owns the claim and no other criterion does",
+  );
+
+  // An explicit citation outranks a model proposal for the same claim, rather than the claim
+  // being spread across both answers.
+  assert.deepEqual(
+    reconcileWorkflowCriterionMappings(canonical, [cited], {
+      proposedMappings: [{
+        criterionId: "criterion-1-aaaa",
+        matchedClientCriterionIds: ["themed-modals"],
+      }],
+    }).map((mapping) => mapping.matchedClientCriterionIds),
+    [[], ["themed-modals"]],
+  );
+
+  // An id naming no criterion of this run is refused, not downgraded to a text match. The text
+  // here is a criterion's own words, so the old fallback would have bound a claim whose author
+  // said something else; readiness reports the citation by name instead.
+  assert.deepEqual(
+    reconcileWorkflowCriterionMappings(canonical, [{
+      ...cited,
+      criterion: "Check for updates reflects the theme",
+      criterionId: "criterion-from-another-run",
+    }]).map((mapping) => mapping.matchedClientCriterionIds),
+    [[], []],
+  );
+
+  // Every material criterion cited: the reconciler completes deterministically and never
+  // reaches a provider.
+  const context = {
+    canonicalCriteria: canonical,
+    criterionMappings: [],
+  } as unknown as Parameters<typeof reconcileWorkflowCoverage>[0];
+  const coverage = [cited, {
+    ...cited,
+    clientCriterionId: "themed-shell",
+    criterionId: "criterion-1-aaaa",
+  }];
+  const reconciled = await reconcileWorkflowCoverage(context, coverage, {
+    reconcile: async () => {
+      throw new Error("a cited claim must not reach the reconciliation model");
+    },
+  });
+  assert.equal(reconciled.reconciliation?.status, "complete");
+  assert.equal(reconciled.reconciliation?.method, "deterministic");
+  assert.equal(reconciled.reconciliation?.attempts, 0);
+  assert.deepEqual(
+    reconciled.criterionMappings?.map((mapping) => mapping.matchedClientCriterionIds),
+    [["themed-shell"], ["themed-modals"]],
+  );
+});
+
+test("criterion mapping never emits a claim this submission did not declare", () => {
+  const canonical = [{
+    id: "criterion-1-aaaa",
+    text: "The behaviour is correct",
+    material: true,
+    suggestedProofClass: null,
+  }];
+  const declared = {
+    clientCriterionId: "declared-claim",
+    criterion: "Wording of its own",
+    criterionId: "criterion-1-aaaa",
+    proofClass: "focused_execution" as const,
+    repositoryScope: "all" as const,
+    links: [],
+  };
+  /*
+   * `coverage` IS the submission's declared set, and `currentClaimIds` is derived from it, so
+   * every id the cited pass can push was taken from the same array. The filter exists for the
+   * other input: `proposedMappings` arrives from a model reply or a previous submission and may
+   * name claims this packet never declared.
+   */
+  const mappings = reconcileWorkflowCriterionMappings(canonical, [declared], {
+    proposedMappings: [{
+      criterionId: "criterion-1-aaaa",
+      matchedClientCriterionIds: ["declared-claim", "claim-from-another-packet"],
+    }],
+  });
+  assert.deepEqual(
+    mappings.map((mapping) => mapping.matchedClientCriterionIds),
+    [["declared-claim"]],
+    "a proposal naming a claim outside this coverage set is dropped",
+  );
+  const declaredIds = new Set(["declared-claim"]);
+  for (const mapping of mappings) {
+    for (const id of mapping.matchedClientCriterionIds) {
+      assert.ok(declaredIds.has(id), `mapping emitted undeclared claim ${id}`);
+    }
+  }
 });

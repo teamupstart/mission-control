@@ -58,7 +58,8 @@ import {
   isArchiveRepoSlot,
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
-import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
+import { EMULATOR_IDS, TERMINAL_BACKEND_IDS } from "./terminal.ts";
+import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
 import {
   AGENT_TYPES,
@@ -386,6 +387,7 @@ export type SendText = z.infer<typeof SendTextSchema>;
 const AnswerActorSchema = z.enum(["human", "foreman"]).optional().default("human");
 
 export const SelectOptionSchema = z.object({
+  requestId: z.string().min(1).optional(),
   number: z.number().int().min(1).max(99),
   label: z.string().min(1),
   by: AnswerActorSchema,
@@ -407,6 +409,7 @@ export type SelectOption = z.infer<typeof SelectOptionSchema>;
  */
 export const SubmitOptionsSchema = z
   .object({
+    requestId: z.string().min(1).optional(),
     options: z
       .array(
         z.object({
@@ -2775,6 +2778,91 @@ export const HarnessesConfigPatchSchema = z
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
 
 /**
+ * One stored per-multiplexer terminal preference. Loose for the reason
+ * `StoredTerminalBackendSchema` is, and that reason is load-bearing here: a newer build's
+ * emulator id has to PARSE so the Setup row can report that it ignored a preference it does
+ * not recognise. A strict stored schema would reject that value before
+ * `resolveEmulatorBackend` ever saw it, which is the same as losing it.
+ */
+const StoredEmulatorBackendSchema = z.string().nullable();
+
+/** What the dashboard may set. Strict, and emulators only: a multiplexer is not an answer. */
+const EmulatorBackendSchema = z.enum(EMULATOR_IDS);
+
+/**
+ * Which terminal app each multiplexer's sessions open in, spelled out per multiplexer so
+ * this object stays exhaustive over `MULTIPLEXER_IDS`.
+ *
+ * The `satisfies` is what enforces that: adding a multiplexer fails typecheck here rather
+ * than silently producing a backend with no preference and no control.
+ */
+const multiplexerTerminalShape = {
+  tmux: StoredEmulatorBackendSchema.default(null),
+  herdr: StoredEmulatorBackendSchema.default(null),
+  cmux: StoredEmulatorBackendSchema.default(null),
+} satisfies Record<MultiplexerId, z.ZodTypeAny>;
+
+const multiplexerTerminalPatchShape = {
+  tmux: EmulatorBackendSchema.nullable().optional(),
+  herdr: EmulatorBackendSchema.nullable().optional(),
+  cmux: EmulatorBackendSchema.nullable().optional(),
+} satisfies Record<MultiplexerId, z.ZodTypeAny>;
+
+/** An untouched installation leaves every multiplexer on Automatic. */
+export const DEFAULT_MULTIPLEXER_TERMINALS = {
+  tmux: null,
+  herdr: null,
+  cmux: null,
+} as const satisfies Record<MultiplexerId, EmulatorId | null>;
+
+/**
+ * The "Terminals" settings blob: what a multiplexer's sessions open in.
+ *
+ * Deliberately NOT part of `HarnessesConfig`, which answers a different question with a
+ * different key. That object says which backend hosts a DISPATCHED session, keyed per agent
+ * and admitting multiplexers. This one says which terminal app puts a window in front of a
+ * human when they Focus a session already living in a multiplexer, keyed per multiplexer and
+ * admitting terminal apps only.
+ *
+ * `null` is Automatic and preserves the existing registry-order walk exactly.
+ */
+export const TerminalsConfigSchema = z.object({
+  multiplexerTerminal: z
+    .object(multiplexerTerminalShape)
+    // Unknown KEYS pass through, for the reason the values are loose: a newer build that
+    // adds a multiplexer writes a row this one has never heard of, and a plain object would
+    // strip it on parse - so the next write from here would delete a preference the operator
+    // set, silently, just by visiting the panel. The patch schema stays `.strict()`, so this
+    // build still cannot create one.
+    .catchall(StoredEmulatorBackendSchema)
+    .default(DEFAULT_MULTIPLEXER_TERMINALS),
+});
+export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;
+
+/**
+ * One panel edit. Every key optional, merged per multiplexer by `setTerminalsConfig`, so
+ * setting tmux's terminal cannot blank Herdr's.
+ *
+ * Refused at BOTH levels, because with one nested map an outer count is not the same
+ * question. `{}` and `{ multiplexerTerminal: {} }` are the same no-op write, and the outer
+ * refusal sees one key in the second and lets it through to the merge and a `setAppConfig`
+ * that stores what was already there. A write that changed nothing must not answer 200.
+ */
+export const TerminalsConfigPatchSchema = z
+  .object({
+    multiplexerTerminal: z
+      .object(multiplexerTerminalPatchShape)
+      .strict()
+      .refine((o) => Object.keys(o).length > 0, {
+        message: "empty multiplexer terminal update",
+      })
+      .optional(),
+  })
+  .strict()
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+export type TerminalsConfigPatch = z.infer<typeof TerminalsConfigPatchSchema>;
+
+/**
  * The whole set of configured task sources, as the panel sends it back.
  *
  * A whole-list PUT rather than a per-source PATCH, and the reason is the one that makes
@@ -4957,6 +5045,10 @@ export const WorkflowEvidenceCoverageClaimSchema: z.ZodType<WorkflowEvidenceCove
       (value) => utf8AtMost(value, WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
       `Workflow coverage criterion exceeds ${WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes} UTF-8 bytes`,
     ),
+  // Optional on the wire and absent on every historical row. An older daemon strips it and
+  // matches the claim by text exactly as it always did, so a mismatched build degrades to the
+  // previous behaviour rather than refusing the packet.
+  criterionId: z.string().min(1).max(200).nullable().optional(),
   proofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repositoryScope: WorkflowEvidenceRepositoryScopeSchema,
   links: z.array(WorkflowEvidenceCoverageLinkSchema)
@@ -5023,6 +5115,11 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     material: z.boolean(),
     matchedClientCriterionId: z.string().min(1)
       .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars).nullable(),
+    // Absent on every readiness row written before the repair packet could name a contested
+    // claim, so it defaults rather than failing those rows open.
+    contestedClientCriterionIds: z.array(
+      z.string().min(1).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+    ).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional(),
     authorProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
     suggestedProofClass: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES).nullable(),
     links: z.array(z.object({
@@ -5035,6 +5132,12 @@ export const WorkflowEvidenceReadinessResultSchema: z.ZodType<WorkflowEvidenceRe
     warnings: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES))
       .max(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES.length),
   })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims),
+  // Absent on every readiness row written before a claim could cite a criterion.
+  rejectedCitations: z.array(z.object({
+    clientCriterionId: z.string().min(1)
+      .max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
+    criterionId: z.string().min(1).max(200),
+  })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.maxClaims).optional(),
   gapCodes: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_GAP_CODES))
     .max(WORKFLOW_EVIDENCE_READINESS_GAP_CODES.length),
   warningCodes: z.array(z.enum(WORKFLOW_EVIDENCE_READINESS_WARNING_CODES))

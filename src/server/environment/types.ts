@@ -58,6 +58,8 @@ export interface EnvironmentDeps {
 export interface EnvironmentCheckResult {
   warning: string | null;
   detail: string | null;
+  /** Positive readiness when silence alone cannot distinguish ready from not configured. */
+  ready?: boolean;
 }
 
 /**

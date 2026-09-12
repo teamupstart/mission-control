@@ -207,6 +207,9 @@ test.describe("first-install preflight failure", () => {
     await expect(status).not.toContainText("Every Pi session on this machine may refuse");
     await expect(install).toBeEnabled();
     await page.mouse.move(0, 0);
+    // Focus can survive the failed install even after the pointer leaves its button.
+    await install.focus();
+    await install.blur();
     await expect(page.locator(".tooltip")).toHaveCount(0);
     await page.locator(".setup-panel").screenshot({ path: join(artifactsDir("pi-extension-setup"), "candidate-refused.png") });
     // A manual install must replace the failed attempt's local message with current health.

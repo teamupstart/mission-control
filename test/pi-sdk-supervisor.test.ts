@@ -28,6 +28,11 @@ const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/stor
 const { HARNESSES, resumeArgvFor } = await import("../src/server/harness/index.ts");
 const { piSdkSpec } = await import("../src/server/harness/pi/sdk.ts");
 const { FakePiSdk, FakePiSession, fakePiSdkDeps } = await import("./helpers/pi-sdk-fake.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
+const { applyQueueAction, InjectError } = await import("../src/server/foreman/queue-apply.ts");
+const { decideQueueTick } = await import("../src/server/foreman/queue-machine.ts");
+const { ForemanConfigSchema, SetWorkItemStateSchema } = await import("../src/shared/protocol.ts");
+const { reportBucket } = await import("../src/shared/session.ts");
 
 type LaunchOptions = import("../src/server/harness/types.ts").SdkLaunchOptions;
 
@@ -88,6 +93,84 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+test("Pi queue acceptance survives a fast turn, refusal retries, questions block, and wrap-up is acknowledged", async () => {
+  const sdk = new FakePiSdk();
+  const scripted = withScriptedPi(sdk);
+  const registry = new Registry();
+  const supervisor = new SdkSupervisor(registry);
+  const queues = new QueueManager(registry);
+  const cfg = { maxFixAttempts: 3, maxFixRounds: 10, settleMs: 0, pickupTimeoutMs: 1,
+    wrapupTriggers: ["drain"] as const, wrapup: "ask" as const,
+    skipScoutWrapup: true, skipReviewArtifactWrapup: true };
+  try {
+    const started = await supervisor.start({ ...START, prompt: "" });
+    await drain();
+    const current = () => registry.getSession(started.id)!;
+    const tick = () => decideQueueTick({ session: current(), bucket: reportBucket(current()),
+      queue: queues.get(started.id)!, intent: null, cfg, mayActLive: true, now: Date.now() + 10 });
+    let fast = false;
+    const actions: import("../src/server/foreman/queue-apply.ts").QueueActions = {
+      sessions: async () => [current()],
+      queue: async () => queues.get(started.id),
+      getConfig: async () => ForemanConfigSchema.parse({ enabled: true, mode: "live", repoAllowlist: [START.cwd] }),
+      setItemState: async (_session, item, patch) => {
+        const result = queues.setState(item, SetWorkItemStateSchema.parse(patch));
+        assert.ok(result.ok);
+      },
+      inject: async (_session, text) => {
+        try { await supervisor.send(started.id, { text }); }
+        catch (error) { throw new InjectError(String(error), false); }
+        if (fast) {
+          sdk.runtime.session.finish();
+          sdk.runtime.session.emit({ type: "agent_settled" });
+          await drain();
+        }
+      },
+      markSent: async (_session, item, sha, anchor) => {
+        const result = queues.markSent(item, sha, anchor);
+        assert.ok(result.ok);
+      },
+      recoverItem: async () => {},
+      markWrapupAsked: async () => { queues.markWrapupAsked(queues.get(started.id)!.noteKey); },
+      setWrapupAnswer: async (_session, answer) => { queues.setWrapupAnswer(queues.get(started.id)!.noteKey, answer); },
+      captureScope: async () => ({ baseSha: null, transcriptAnchor: 0 }), holdsLease: () => true,
+    };
+    const item = queues.add(started.id, "first queue item")!;
+    assert.ok(item);
+    const question = sdk.runtime.session.ui!.input("Queue blocked");
+    await drain();
+    assert.notEqual(tick().kind, "send");
+    const dialog = current().paneDialog!;
+    await supervisor.answer(started.id, dialog.requestId!, { kind: "form", answers: [{ question: "Queue blocked", labels: [], text: "continue" }] });
+    await question; await drain();
+    sdk.runtime.session.refusal = new Error("fake provider unavailable");
+    await applyQueueAction(actions, current(), tick(), cfg, Date.now() + 10);
+    assert.equal(queues.getItem(item.id)?.state, "queued", "positive non-delivery is retryable");
+    fast = true;
+    await applyQueueAction(actions, current(), tick(), cfg, Date.now() + 10);
+    assert.equal(queues.getItem(item.id)?.state, "in_progress", "acceptance is pickup even after synchronous completion");
+    assert.equal(tick().kind, "verify");
+    assert.equal(queues.markSent(item.id, null, 0).ok, false, "duplicate acknowledgements are refused");
+    assert.equal(queues.setState(item.id, { state: "verified" }).ok, true);
+    assert.equal(tick().kind, "ask-wrapup");
+    const command = (await import("../src/shared/harness-capabilities.ts")).skillCommand("pi", "pull-request")!;
+    assert.equal(command, "/skill:pull-request");
+    assert.equal(await supervisor.send(started.id, { text: command }), "started");
+    assert.equal(sdk.runtime.session.deliveries.at(-1)?.text, command);
+    await supervisor.interrupt(started.id);
+    await supervisor.clearContext(started.id);
+    await drain();
+    assert.equal(current().agentSessionId, "replacement-1");
+    const generation = current().workCycle?.generation;
+    sdk.runtime.session.emit({ type: "agent_settled" });
+    await drain();
+    assert.equal(current().workCycle?.generation, generation, "an old completion cannot finish replacement work");
+  } finally {
+    await supervisor.stopAll(50);
+    scripted.restore();
+  }
+});
 
 test("a managed Pi launch persists Pi's own session id as the thing a restart resumes", async () => {
   const sdk = new FakePiSdk();

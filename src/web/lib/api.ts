@@ -55,6 +55,8 @@ import type {
   HarnessesConfig,
   HarnessesConfigPatch,
   HarnessModelCatalogs,
+  TerminalsConfig,
+  TerminalsConfigPatch,
   InspectorConfig,
   InspectorConfigPatch,
   LlmConfig,
@@ -154,7 +156,11 @@ import type {
 } from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
-import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
+import type {
+  PersonaDefaultsView,
+  WorkflowLaunchFix,
+  WorkflowUploadEvidenceLocator,
+} from "@shared/workflow.ts";
 import type {
   RepoIndexConfigPatch,
   RepoIndexView,
@@ -193,6 +199,18 @@ export interface SetupServiceStartResult extends ActionResult {
  */
 export interface AssignResult extends ActionResult {
   resetConfirm?: AssignResetConfirm;
+}
+
+/**
+ * A refused launch that names where the grant it was missing is made.
+ *
+ * The daemon answers a Workflow refusal with a settings DESTINATION beside the sentence, so
+ * the form can put that screen one press away instead of asking the reader to go and find
+ * it. Absent when the refusal is answered on the form itself, such as picking another
+ * workflow.
+ */
+export interface DispatchResult extends ActionResult {
+  fix?: WorkflowLaunchFix;
 }
 
 /**
@@ -250,6 +268,8 @@ export const fetchForemanEpisode = (id: number) =>
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/** Which terminal app each multiplexer's detached sessions are focused into. */
+export const fetchTerminalsConfig = () => fetchJson<TerminalsConfig>("/api/terminals/config");
 /**
  * The complete dispatch-time model catalog, read once by the root browser provider.
  *
@@ -1679,8 +1699,8 @@ export const api = {
    * repainted, Foreman answered first). Nothing was pressed - re-render and let the human
    * look again rather than retrying blind.
    */
-  selectOption: (id: string, number: number, label: string) =>
-    post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label }),
+  selectOption: (id: string, number: number, label: string, requestId?: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label, requestId }),
   /**
    * Fill in and SEND a multi-select `AskUserQuestion`, which `selectOption` cannot do:
    * pressing a row of one ticks its box and answers nothing, so the whole form goes at
@@ -1707,8 +1727,9 @@ export const api = {
   submitAnswers: (
     id: string,
     answers: Array<{ question: string; labels: string[]; text?: string }>,
+    requestId?: string,
   ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
-    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { answers }),
+    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { answers, requestId }),
   /**
    * Hand an embedded session back to a terminal, continuing the same conversation.
    *
@@ -1734,7 +1755,7 @@ export const api = {
   ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   // --- dispatch (agents) ---
-  dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
+  dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**
    * A tour's own task family, addressed by tour id.
    *
@@ -1763,7 +1784,7 @@ export const api = {
    * action; without that claim the daemon refuses a parked task.
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>
@@ -1872,6 +1893,8 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+  // --- Terminals (which terminal app a multiplexer's sessions are focused into) ---
+  setTerminalsConfig: (cfg: TerminalsConfigPatch) => put(`/api/terminals/config`, cfg),
   setInspectorConfig: (cfg: InspectorConfigPatch) => put(`/api/inspector/config`, cfg),
   /**
    * Close the findings the Inspector is carrying on one pull request.

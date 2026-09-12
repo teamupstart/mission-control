@@ -17,6 +17,7 @@ import {
   type ThinkingLevel,
 } from "../src/shared/types.ts";
 import type { TerminalBackendId } from "../src/shared/terminal.ts";
+import type { SetupChecksView } from "../src/shared/setup-catalog.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import {
   HARNESS_CAPABILITIES,
@@ -84,9 +85,29 @@ function mkConfig(
 function render(
   config: Parameters<typeof mkConfig>[0] | null,
   over: Partial<HarnessesState> = {},
+  setup: SetupChecksView | null = null,
 ): string {
   const state = mkState(config ? mkConfig(config) : null, over);
-  return renderToStaticMarkup(createElement(HarnessesPanel, { state }));
+  return renderToStaticMarkup(createElement(HarnessesPanel, { state, setup }));
+}
+
+function setupView(piInstalled: boolean, piExtensionReady: boolean): SetupChecksView {
+  return {
+    home: "/home/operator",
+    banner: { visible: false, attentionRowIds: [], attentionCount: 0 },
+    piCliReady: piInstalled,
+    piExtensionInstallAvailable: !piExtensionReady,
+    piExtensionReady,
+    rows: [{
+      rowId: { source: "dependency", id: "pi-cli" },
+      label: "Pi",
+      family: "agents",
+      requirement: "recommended",
+      enables: "Pi sessions",
+      remedy: { kind: "command", argv: ["npm", "install", "-g", "@earendil-works/pi-coding-agent"], note: "Install Pi." },
+      status: piInstalled ? { state: "satisfied", evidence: "/tools/pi" } : { state: "missing" },
+    }],
+  };
 }
 
 test("the panel scopes the toggle to dispatched sessions before you click anything", () => {
@@ -320,6 +341,25 @@ test("the runtime control renders only for a harness that declares a driver", ()
       assert.match(html, new RegExp(reEscape(sdkRuntimeUnsupportedWhy(a)!)), `${a} states why not`);
     }
   }
+});
+
+test("Pi's Agent SDK option stays disabled until both Pi and its extension are ready", () => {
+  for (const setup of [setupView(false, false), setupView(true, false), setupView(false, true)]) {
+    const html = render({}, {}, setup);
+    assert.match(
+      html,
+      /<option value="sdk" disabled="">Agent SDK \(recommended\)<\/option>/,
+    );
+    assert.match(html, /Install Pi and the Mission Control Pi extension in/);
+    assert.match(html, /href="#\/settings\/setup"/);
+  }
+
+  const ready = render({}, {}, setupView(true, true));
+  assert.doesNotMatch(
+    ready,
+    /<option value="sdk" disabled="">Agent SDK \(recommended\)<\/option>/,
+  );
+  assert.doesNotMatch(ready, /Install Pi and the Mission Control Pi extension in/);
 });
 
 test("a fresh card shows the shipped runtime defaults", () => {

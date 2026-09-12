@@ -11040,6 +11040,11 @@ select:not([multiple]) option:focus-visible {
   font-size: 12.5px;
   color: #e5877f;
 }
+/* The same borrowing `.settings-warn` does: a door offered inside a refusal is part of that
+   sentence, so it takes the refusal's tone rather than the blue it wears in body copy. */
+.dispatch-error .settings-link {
+  color: inherit;
+}
 .modal-foot {
   display: flex;
   align-items: center;
@@ -11047,6 +11052,45 @@ select:not([multiple]) option:focus-visible {
   padding: 14px var(--modal-inset, 18px);
   border-top: 1px solid var(--border-soft);
   background: var(--panel-2);
+}
+
+/* ---- auto-update dialog ---- */
+/* The updater's seven questions, which the Electron shell used to ask through the platform's
+   own message box. Same measure and rhythm as the per-session confirms above: it is the same
+   kind of object - a confirm the app is waiting on - and a third width would read as a third
+   design. The tone class carries the accent only; the words come from `shared/update-dialog.ts`,
+   which is the one owner this modal and the dashboard banner both read. */
+.update-dialog {
+  width: min(520px, 100%);
+}
+.update-dialog-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+}
+.update-dialog-title {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fg);
+  /* The version number carries the whole headline, and a long release name must not push it
+     out of the panel. */
+  overflow-wrap: anywhere;
+}
+.update-dialog-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+  /* Release notes arrive as the release's own markdown. Keep the author's line breaks rather
+     than folding a changelog into one paragraph; `.modal-body` already scrolls a long one. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.update-dialog-error .update-dialog-title {
+  color: var(--danger);
+}
+.update-dialog-success .update-dialog-title {
+  color: var(--idle);
 }
 
 /* ---- complete-and-close / kill confirms ---- */
@@ -18372,12 +18416,6 @@ button.wf-carried.is-link:focus-visible {
   border-radius: 10px;
   background: color-mix(in srgb, var(--attention) 7%, transparent);
 }
-.wf-readiness-override label { display: grid; gap: 6px; }
-.wf-readiness-override textarea { min-height: 76px; resize: vertical; }
-.wf-readiness-override .wf-checkbox-label {
-  grid-template-columns: auto 1fr;
-  align-items: start;
-}
 
 
 @media (max-width: 620px) {
@@ -19279,7 +19317,8 @@ button.wf-carried.is-link:focus-visible {
   color: var(--dim);
 }
 /* The one link style for in-page settings navigation and in-place fixes: the console
-   panels' "Manage in Trust", Shipping's dependency warnings, and Trust's dagger fixes. A
+   panels' "Manage in Trust", Shipping's dependency warnings, Trust's dagger fixes, and the
+   door a refused dispatch offers under the Dispatch form. A
    button, not an `<a>`, because these are `onNavigate` route changes and config writes, not
    hrefs; it wraps on its own so it never widens a warning past the pane. Reads as blue
    inside body copy and inherits the amber inside a `.settings-warn`, since it borrows the
@@ -33508,6 +33547,71 @@ body.foreman-sidecar-open .modal-backdrop {
 
 .setup-terminal-choice select {
   max-width: 430px;
+}
+
+/* A row that carries a trailing control splits; every other row is unchanged, which is why
+   `.setup-row-main` keeps its own `min-width: 0` rather than gaining a flex rule here. */
+.setup-row-split {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.setup-row-aside {
+  flex: none;
+  padding-top: 2px;
+  text-align: right;
+}
+
+.setup-row-aside .launch-head {
+  display: block;
+  padding: 0 0 3px;
+}
+
+/* The aside's popover is anchored to the right edge it hangs from, so a menu opened on a
+   narrow pane stays inside it instead of pushing the row wider. */
+.setup-row-aside .terminal-pref-pop {
+  left: auto;
+  right: 0;
+  width: min(340px, calc(100vw - 32px));
+}
+
+.setup-row-aside .terminal-pref-groups {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* A multiplexer that draws its own window, and the stored preference this build cannot
+   offer: both are statements rather than controls, and neither should look pressable. */
+.pref-inert {
+  color: var(--dim);
+  font-size: 11px;
+  font-style: italic;
+  padding-top: 4px;
+}
+
+.setup-pref-unknown {
+  color: var(--attention);
+  font-size: 10px;
+  margin: 4px 0 0;
+  max-width: 250px;
+}
+
+/* Stacked rather than side by side once the pane is narrow: the chooser is 250px wide and a
+   row title squeezed beside it wraps to nothing readable. */
+@media (max-width: 900px) {
+  .setup-row-split {
+    flex-wrap: wrap;
+  }
+
+  .setup-row-aside {
+    text-align: left;
+  }
+
+  .setup-row-aside .terminal-pref-pop {
+    left: 0;
+    right: auto;
+  }
 }
 
 .setup-provider-checkout {

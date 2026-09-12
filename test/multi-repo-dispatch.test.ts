@@ -229,7 +229,10 @@ test("a driver that cannot carry the grant refuses the dispatch instead of dropp
       extraRepos: [entry(web)],
     }),
   );
-  const dispatcher = new Dispatcher(registry, undefined, { resolveRuntime: () => "sdk" });
+  const dispatcher = new Dispatcher(registry, undefined, {
+    resolveRuntime: () => "sdk",
+    piExtensionInstalled: async () => true,
+  });
 
   await dispatcher.dispatch("sdkguard");
 

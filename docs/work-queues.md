@@ -13,11 +13,16 @@ that submission as unverified rather than retrying on evidence Codex cannot prov
 session started without reporting hooks is refused at the composer with instructions to
 launch it through Mission Control, rather than accepting a batch it cannot verify.
 
-Pi supports lifecycle reporting through extensions. Its work-queue refusal names the remedy:
-install the Mission Control extension for Pi. A session without lifecycle reporting remains
-blocked, with no queue composer. This phase declares the capability and installation guidance;
-the extension, lifecycle adapter and installer remain owned by later phases of
-[Pi parity](plans/pi-mission-control-extension/phased-plan.md).
+**Managed Pi sessions are supported.** The SDK reports accepted input, busy/idle state,
+structured questions, and turn completion. An unresolved extension or project-trust question
+blocks pickup. Terminal Pi remains ineligible, even with the Mission Control extension installed.
+Pi skills use `/skill:<name>`; provider credentials and project trust remain Pi-owned.
+
+For every managed harness, successful delivery already acknowledges acceptance. The queue
+records it as `in_progress` rather than waiting for another activity timestamp; even a turn
+that finishes before its acknowledgement is recorded must not be sent twice. The shared
+verifier still decides whether the work satisfies the item. Terminal delivery retains its
+`awaiting_pickup` observation step.
 
 **This is not the Files tab's review queue.** Both hand a session one item at a time, and they
 are otherwise different mechanisms with different owners. A work queue is *work*: Foreman

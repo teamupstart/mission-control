@@ -14,7 +14,7 @@
  * format, and a stream of session events.
  *
  * The transcript matters as much as the events. Mission Control reads a Pi conversation off
- * `~/.pi/agent/sessions/--<encoded cwd>--/<ts>_<uuid>.jsonl` with `piToMessage`, on both
+ * `~/.pi/agent/sessions/--<encoded cwd>--/<ts>_<uuid>.jsonl` with `piToMessages`, on both
  * runtimes, so a fake that emitted events without writing the file would show a card with a
  * working session and an empty conversation - and the spec would be asserting on nothing.
  *
@@ -107,7 +107,7 @@ class FakeSession {
     appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
   }
 
-  /** One conversation turn, in the record shape `piToMessage` reads back. */
+  /** One conversation turn, in the record shape `piToMessages` reads back. */
   writeMessage(role, text, extra = {}) {
     this.append({
       type: "message",
@@ -117,6 +117,8 @@ class FakeSession {
       message: { role, content: [{ type: "text", text }], ...extra },
     });
   }
+
+  async bindExtensions(ui) { this.ui = ui; }
 
   subscribe(listener) {
     this.listeners.add(listener);
@@ -160,7 +162,7 @@ class FakeSession {
     this.writeMessage("user", text);
     return new Promise((resolve) => {
       this.finish = resolve;
-      this.run(text);
+      void this.run(text);
     });
   }
 
@@ -171,28 +173,63 @@ class FakeSession {
    * interrupt case something real to stop; everything else answers on the next tick so a
    * spec spends no wall clock.
    */
-  run(text) {
-    this.turns += 1;
+  async run(text) {
+    const generation = ++this.turns;
+    const current = () => generation === this.turns && this.streaming;
     this.emit({ type: "agent_start" });
     this.emit({ type: "turn_start" });
     this.emit({ type: "message_start" });
-    if (/SLOWLY/.test(text)) {
+    if (text.includes("PI_QUESTIONS")) {
+      const selected = await this.ui.select("Choose a region", ["West", "East"]);
+      if (!current()) return;
+      const confirmed = await this.ui.confirm("Apply selection?", "Use the selected test region.");
+      if (!current()) return;
+      const input = await this.ui.input("Deployment name", "name or empty");
+      if (!current()) return;
+      const edited = await this.ui.editor("Release notes", "First line\nSecond line");
+      if (!current()) return;
+      record("answers", { selected, confirmed, input, edited });
+    }
+    if (text.includes("PI_TIMEOUT")) {
+      await this.ui.select("Repeated question", ["Continue"], { timeout: 1500 });
+      if (!current()) return;
+      await this.ui.select("Repeated question", ["Continue"]);
+      if (!current()) return;
+    }
+    if (text.includes("PI_BLOCK")) await this.ui.input("Blocking extension question");
+    if (!current()) return;
+    if (text.includes("PI_CREATE_PR")) {
+      this.emit({ type: "tool_execution_start", toolCallId: "pr", toolName: "bash", command: "gh pr create", opensPullRequest: true });
+      this.emit({ type: "tool_execution_end", toolCallId: "pr", toolName: "bash", isError: false, prUrls: ["https://github.com/test/pi-fixture/pull/975"] });
+    }
+    const slow = /SLOWLY/.test(text);
+    if (slow) {
+      this.partialReply = /PARTIAL/.test(text) ? "Pi response before interruption" : "";
       this.emit({
         type: "tool_execution_start",
         toolCallId: "slow-1",
         toolName: "bash",
         args: { command: "sleep 600" },
       });
-      return;
     }
+    if (text.includes("PI_UNSUPPORTED")) {
+      this.ui.unsupported("custom");
+      this.ui.unsupported("setWidget");
+      // Repeated use after the host's diagnostic throttle must remain reportable.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!current()) return;
+      this.ui.unsupported("setWidget");
+    }
+    if (slow) return;
     setTimeout(() => this.settleWith(text), 5);
   }
 
   settleWith(text, aborted = false) {
     const reply = aborted
-      ? "Operation aborted"
+      ? this.partialReply ?? ""
       : `pi answered: ${[text, this.steered].filter(Boolean).join(" + ")}`;
     this.steered = undefined;
+    this.partialReply = undefined;
     const usage = {
       input: 120,
       output: 24,
@@ -229,6 +266,7 @@ class FakeSession {
 
   async abort() {
     if (!this.streaming) return;
+    this.turns += 1;
     this.emit({
       type: "tool_execution_end",
       toolCallId: "slow-1",
@@ -270,7 +308,7 @@ class FakeRuntime {
       modelId: this.session.modelId,
     });
     record("new-session", { sessionId: this.session.sessionId });
-    this.replaced?.(this.session);
+    await this.replaced?.(this.session);
   }
 
   async dispose() {
@@ -306,20 +344,33 @@ export async function createPiSdk() {
   return {
     agentDir: () => agentDir,
     // Nothing in the seeded workspace carries project-local Pi resources, so no trust
-    // decision is needed and none is invented. `trusted` still reaches `createRuntime` and
-    // is recorded, which is what a spec reads to prove the decision was made at all.
-    hasTrustRequiringProjectResources: () => existsSync(join(process.cwd(), ".pi")),
-    projectTrust: () => null,
+    // decision is needed and none is invented. The resolved policy result is recorded at
+    // resource loading, which is what a spec reads to prove the decision was made at all.
+    hasTrustRequiringProjectResources: (cwd) => process.env.MC_E2E_PI_TRUST === "1" || existsSync(join(cwd, ".pi")),
+    projectTrust: (cwd) => {
+      const path = join(agentDir, "fake-trust.json");
+      return existsSync(path) ? JSON.parse(readFileSync(path, "utf8"))[cwd] ?? null : null;
+    },
+    setProjectTrust: (cwd, trusted) => {
+      const path = join(agentDir, "fake-trust.json");
+      const values = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+      writeFileSync(path, JSON.stringify({ ...values, [cwd]: trusted }));
+      record("trust", { cwd, trusted });
+    },
     async findSessionFile(cwd, sessionId) {
       return findSessionFile(sessionsDir, cwd, sessionId);
     },
     async createRuntime(options) {
+      const trusted = typeof options.projectTrust === "function"
+        ? await options.projectTrust() : options.projectTrust;
+      options.signal?.throwIfAborted();
+      record("project-resources", { loaded: trusted });
       record("create-runtime", {
         cwd: options.cwd,
         sessionPath: options.sessionPath,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
-        trusted: options.trusted,
+        trusted,
         // The isolation this driver has to apply itself, since Pi runs in-process: a
         // MISSION_HOME here that equals the daemon's own would be the leak.
         toolStateHome: options.toolEnv.MISSION_HOME ?? null,

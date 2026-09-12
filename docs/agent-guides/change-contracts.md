@@ -364,7 +364,21 @@ cross-submission source would let a node activated on one evidence snapshot adva
 running on another.
 
 Criterion coverage follows the same evidence identity. Mutable claims are keyed by
-`(note_key, client_criterion_id)` and carry the staged generation. Submission creation reserves
+`(note_key, client_criterion_id)` and carry the staged generation. A claim's optional
+`criterion_id` is the canonical criterion it cites, not part of its key: both coverage tables
+carry the column and every freeze path copies it. A value THIS submission's author wrote that
+names no criterion of the run is refused by name through `rejectedCitations` and
+`unknown_criterion_id` rather than downgraded to a text match. A claim carried from an earlier
+submission is the exception, and the exception is load-bearing rather than a leniency: its author
+cannot withdraw an id they did not write, so refusing it would park the run on a correction
+nobody present can make. A carried claim whose citation no longer resolves therefore keeps the
+pre-citation behaviour and stays matched by its own text. What a citation MEANS has one owner,
+`classifyWorkflowCoverageCitation` in
+`src/shared/workflow.ts`, and the three paths that act on one - criterion mapping, the
+reconciliation provider filter, and readiness reporting - all read it rather than re-deriving
+the rule. `workflowCoverageCitationAllowsText` is the invariant that keeps them aligned: a claim
+matched by its prose is exactly a claim the model may be asked about, so a citation the mapping
+refuses can never reach semantic inference. Submission creation reserves
 claims and linked evidence together; immutable coverage is keyed by submission plus client
 criterion id. A frozen link resolves only within that submission and repository scope. Never
 join coverage to the newest evidence row by client id, and never rewrite an immutable claim

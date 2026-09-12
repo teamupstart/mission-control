@@ -336,7 +336,11 @@ Codex sessions to Agent SDK.
 Pi offers both runtimes and **still ships on Terminal**, which is now a decision rather than
 a gap: its managed runtime brings its own credential, project-trust and shell-isolation
 posture, and moving every existing Pi dispatch onto it without anyone looking would not be a
-kindness. Turn it on per harness when you want it. [What a managed Pi session does
+kindness. The Pi **Agent SDK** option stays disabled until **Settings → Setup** confirms both
+the global Pi CLI and a healthy Mission Control Pi extension. Setup offers the Pi package
+command and the extension installer; install both and re-check before turning the runtime on.
+Dispatch re-checks both prerequisites and refuses an SDK launch if either one later regresses.
+Turn it on per harness when you want it. [What a managed Pi session does
 differently](#what-a-managed-pi-session-does-differently) is below.
 
 The runtime is chosen **per harness, in Settings → Harnesses**, and it is read at dispatch
@@ -468,29 +472,36 @@ looking up, and everything below follows from that or from what Pi itself has.
   runtimes. It is split exactly once, at its first `/`, only to ask Pi's own catalog for the
   model - so an id whose model half carries slashes keeps them. A model Pi does not offer is
   a launch failure with the id in it, never a quiet substitution onto a model nobody chose.
-- **No permission modes, and no questions to answer.** Pi's `manual`/`auto`/`readonly`
-  vocabulary is not Mission Control's, so no mode chip is drawn and none can be set. Pi's
-  structured extension prompts (`select`, `confirm`, `input`, `editor`) are not projected
-  onto the card yet either: a session that reaches one is waiting on a surface that does not
-  exist. Foreman is therefore withheld from a managed Pi session entirely rather than being
-  allowed to queue work it could not unblock: the driver declares `answersRequests: false`,
-  which is the same gate the Claude and Codex drivers pass, and it flips once those prompts
-  reach the card. Project-local extensions are excluded by default (below), so a session
-  reaches one of these prompts only through a globally installed extension.
-- **No Mission Control MCP tools.** Pi has no MCP client at all, so a managed Pi session
-  cannot call `report_status`, `request_input` or their siblings - exactly as a terminal Pi
-  session cannot. A dispatch that *requires* those tools is refused before it starts.
+- **Structured questions appear on the session card.** Pi's `select`, `confirm`, `input`,
+  and `editor` methods use the shared correlated question flow. Editors preserve initial
+  text, newlines, whitespace and empty answers. Questions cancel on interruption, reset,
+  stop, an extension abort signal, or timeout (at most five minutes). Concurrent questions
+  appear in order. Late answers cannot settle a later request.
+- **Project trust requires the operator.** Before project resources load, an undecided
+  checkout presents a trust question. Allow and deny are remembered only through Pi's
+  `ProjectTrustStore`; cancellation records no decision and skips local resources. Previously
+  recorded decisions are honored. Foreman cannot approve project trust. A session can appear
+  while startup is blocked on this question; a subsequent startup failure exits through the
+  ordinary session lifecycle. A restart before Pi has created a durable conversation cannot
+  resume that unfinished launch.
+- **Work Queue supports managed Pi.** Questions block delivery; accepted sends, busy/idle
+  state and one turn completion drive the shared queue. `/skill:<name>` invokes a Pi skill.
+  Terminal Pi remains ineligible for Work Queue, including sessions reporting extension hooks.
+- **PR attribution requires tool evidence.** A successful, correlated `bash` tool result must
+  follow an observed `gh pr create` command and contain a PR URL for a configured GitHub remote
+  of the checkout. Assistant prose, failed tools and unrelated repositories do not count.
+  No configured GitHub remote means no PR provenance is emitted.
+- **Terminal presentation is unavailable.** Notifications and status text produce bounded
+  diagnostics. Widgets, custom components, terminal input, editor manipulation and themes
+  are not rendered. Unsupported value-returning methods cancel or reject promptly.
+- **No permission modes or managed Mission MCP registration.** Pi's permission vocabulary
+  is not mapped onto Mission Control. Managed launches requiring Mission MCP tools still
+  refuse; the separate terminal Pi extension remains documented in [Pi extension](pi-extension.md).
 - **Multi-repository tasks stay on the terminal runtime.** Pi has no write boundary to grant
   at all, but that was measured against the terminal path; the managed one declares `sdk:
   false` rather than inheriting the answer, and the driver refuses secondary worktrees to
   match. A dispatch that *requires* those tools (an ensemble member, a scout, a
   managed Pipeline host) is refused before it starts rather than left unable to report.
-- **Project-local Pi resources stay out unless Pi already trusts the checkout.** Pi gates
-  project-local extensions, packages and `SYSTEM.md` behind a trust decision, and Mission
-  Control has no surface to ask for one. So an undecided or refused checkout runs without
-  them - being attached to Mission Control is not a trust decision - while your global Pi
-  configuration and Pi's built-in coding tools are unaffected. A checkout Pi already trusts
-  runs with everything, and nothing prompts.
 - **Its shell tools are isolated anyway.** With no subprocess there is no spawn boundary to
   scrub, so the driver applies the same environment isolation itself: Pi's `bash` tool runs
   with Mission Control's disposable state home and without the daemon's loopback bearer or
@@ -504,17 +515,15 @@ looking up, and everything below follows from that or from what Pi itself has.
   Pi session the same way whichever runtime you dispatch it on, and they survive a Reset.
 - **Reasoning effort applies from the next turn**, the same as Codex, and the effort badge
   [says so on its face](#levels-that-apply-on-the-next-turn).
-- **Cost is reported per turn but not aggregated.** Pi prices every request and the figure
-  reaches the turn, but Pi mints no turn identity that survives a restart - so recording it
-  in the spend ledger would double-count a resumed conversation. Session cost stays the
-  neutral absence it already is for Pi.
+- **The transcript reader owns spend accounting.** The driver reports per-turn usage for
+  the card, while the existing Pi JSONL reader is the only writer to the spend ledger.
 - **The transcript, the resume and the handoff are the same file.** Pi writes one JSONL
   session per conversation under its agent directory, and a managed session writes exactly
   the file `pi --session <id>` reopens. That is what makes **Continue in terminal** a
   handoff, and what lets a restart reopen the exact conversation rather than a look-alike.
 
-(The full design is in `docs/plans/pi-bedrock-models/plan.md`. Structured Pi questions and
-Work Queue eligibility are Phase 2 and are not in this release.)
+The managed adapter pins `@earendil-works/pi-coding-agent` **0.85.1**. The
+[Pi Bedrock plan](plans/pi-bedrock-models/plan.md) records the implementation scope.
 
 #### Continue in terminal
 
@@ -552,9 +561,12 @@ task; the conversation, and all the context in it, is gone. Interrupt ends only 
 session, its conversation, its checkout and its task are all still there a moment later, and
 the next thing you type continues from everything the agent already knows.
 
-The conversation records the stop as `[Request interrupted by user]`, including in Codex
-Agent SDK sessions whose native rollout stores the interrupt as lifecycle metadata rather
-than as a message of its own.
+The conversation records the stop as `[Request interrupted by user]` in both Chat and
+Terminal views, across Claude Code, Codex and Pi on terminal and Agent SDK runtimes. Codex
+and Pi store the interrupt as metadata; Mission Control reads that recorded outcome and
+adds the marker after any partial response, including when Pi produced no text. The marker
+survives reloading the conversation and also appears for interrupts made directly in a
+terminal, regardless of the multiplexer or terminal integration.
 
 The queue goes with it, and that is not incidental: a stop that left queued messages armed
 would deliver them the moment the agent reported idle, restarting the work you just stopped.
@@ -578,9 +590,9 @@ What Mission Control writes into a pane is <kbd>Esc</kbd>. An Agent SDK session 
 through its driver's own interrupt instead. One gesture, two mechanisms, and the session detail picks
 the right one from the session's runtime.
 
-Both runtimes are covered, on every agent that has them. Pi is terminal-only - it has no
-embedded driver - so the pane keystroke is not one of two options for it but the only one
-there can be.
+Both runtimes are covered for Claude Code, Codex, and Pi. Managed Pi interrupts through
+its Agent SDK driver, cancelling any pending extension question before aborting the turn;
+terminal Pi receives the pane keystroke.
 
 **A terminal interrupt is fire-and-forget.** Nothing on that path reports back that the turn
 actually ended: the keystroke is written and the pane is not asked. The session detail shows an

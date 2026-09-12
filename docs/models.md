@@ -90,7 +90,11 @@ Workflow-context compaction receives only the raw/refined goal and genuine human
 Repository state, transcript evidence, evidence metadata, prior Persona feedback, automated
 deliveries, and author coverage stay out of stable criterion extraction. A second source-only call
 receives the extracted canonical criteria plus bounded author claim ids and text, and semantically
-reconciles those claims without changing the stable result. Its schema and failure boundary are
+reconciles those claims without changing the stable result. It receives the claims that are matched by their own prose:
+those citing no criterion, and those carried from an earlier submission whose cited id no longer
+resolves. A repair that cites the ids the preflight packet published therefore maps
+deterministically and makes no call, and a citation this submission's author wrote that resolved
+to nothing is refused by name rather than handed back to inference. Its schema and failure boundary are
 independent: an invalid reconciliation leaves the stable extraction intact and yields fail-closed
 claim mappings. The daemon stores those packet-specific mappings outside the stable canonical
 criterion records, deterministically remaps replacement ids by stable normalized criterion text,

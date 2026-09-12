@@ -145,8 +145,8 @@ test("Foreman may only automate an embedded session its driver can unblock", () 
     );
   }
 
-  assert.equal(sdkFor("pi")!.answersRequests, false, "pi cannot surface its asks yet");
-  assert.equal(foremanAutomationAuthorized(sdkSession("pi")), false);
+  assert.equal(sdkFor("pi")!.answersRequests, true, "pi surfaces structured extension questions");
+  assert.equal(foremanAutomationAuthorized(sdkSession("pi")), true);
   assert.equal(foremanAutomationAuthorized(sdkSession("claude")), true);
 });
 

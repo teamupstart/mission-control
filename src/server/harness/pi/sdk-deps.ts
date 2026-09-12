@@ -1,5 +1,7 @@
+import { opensPullRequest, pullRequestUrlsIn } from "@shared/pr-command.mjs";
 import type {
   AgentSessionEvent,
+  ExtensionUIContext,
   CreateAgentSessionFromServicesOptions,
   PromptOptions,
   AgentSessionRuntime,
@@ -13,6 +15,7 @@ import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { sdkSubprocessEnv } from "../claude/sdk-deps.ts";
 import { PiSdkError, redact } from "./sdk-errors.ts";
+import type { PiHostUI } from "./sdk-ui.ts";
 import type {
   PiAssistantSummary,
   PiModelRef,
@@ -152,11 +155,8 @@ function vendorImage(image: { data: string; mimeType: string }): PiVendorImage {
 /**
  * A bash-shaped tool call's command line, when that is what this tool takes.
  *
- * Bounded, because the only thing downstream of it is the card's activity line - which
- * `toolActivity` clips to eighty characters anyway. It briefly carried the WHOLE command so
- * that `opensPullRequest` could not miss a `gh pr create` at the end of a long chain; that
- * reader is gone with the pull-request provenance it served (Phase 1 excludes it), and with
- * it the reason to let an arbitrary vendor string cross this seam unbounded.
+ * This is display-only and bounded. PR command recognition reads the full typed argument
+ * separately and carries only a boolean, so an output URL never becomes command evidence.
  */
 function toolCommand(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
@@ -196,6 +196,7 @@ export function narrowPiEvent(event: AgentSessionEvent): PiSessionEvent | null {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         command: toolCommand(event.args),
+        opensPullRequest: event.toolName === "bash" && opensPullRequest((event.args as { command?: unknown } | null)?.command),
       };
     case "tool_execution_update":
       return {
@@ -209,6 +210,7 @@ export function narrowPiEvent(event: AgentSessionEvent): PiSessionEvent | null {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         isError: event.isError,
+        prUrls: toolResultUrls(event.result),
       };
     case "compaction_start":
       return { type: "compaction_start", reason: event.reason };
@@ -235,6 +237,19 @@ export function narrowPiEvent(event: AgentSessionEvent): PiSessionEvent | null {
   }
 }
 
+/** Only typed text content is evidence; details and object stringification are not output. */
+function toolResultUrls(result: unknown): string[] {
+  if (!result || typeof result !== "object") return [];
+  const content = (result as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  return [...new Set(content.flatMap((part: unknown) => {
+    if (!part || typeof part !== "object") return [];
+    const text = part as { type?: unknown; text?: unknown };
+    return text.type === "text" && typeof text.text === "string"
+      ? pullRequestUrlsIn(text.text) : [];
+  }))].slice(0, 32);
+}
+
 /** Wrap one vendor `AgentSession` in the narrow surface the adapter drives. */
 function projectSession(session: VendorSession, runtime: ModelRuntime): PiSession {
   return {
@@ -252,6 +267,9 @@ function projectSession(session: VendorSession, runtime: ModelRuntime): PiSessio
     },
     get streaming() {
       return session.isStreaming;
+    },
+    bindExtensions(ui) {
+      return session.bindExtensions({ uiContext: vendorUI(ui), mode: "rpc", onError: (error) => ui.notify(error.error, "error") });
     },
     subscribe(listener) {
       return session.subscribe((event) => {
@@ -275,6 +293,51 @@ function projectSession(session: VendorSession, runtime: ModelRuntime): PiSessio
     setThinkingLevel(level) {
       session.setThinkingLevel(level);
     },
+  };
+}
+
+/** Pi calls its non-terminal UI mode `rpc`; this host still uses only the SDK transport. */
+export function vendorUI(ui: PiHostUI): ExtensionUIContext {
+  const unsupported = (name: string) => () => ui.unsupported(name);
+  return {
+    select: (...args) => ui.select(...args),
+    confirm: (...args) => ui.confirm(...args),
+    input: (...args) => ui.input(...args),
+    editor: (...args) => ui.editor(...args),
+    notify: (...args) => ui.notify(...args),
+    setStatus: (_key, text) => { if (text) ui.notify(text); },
+    setWorkingMessage: (text) => { if (text) ui.notify(text); },
+    setWorkingVisible: unsupported("setWorkingVisible"),
+    setWorkingIndicator: unsupported("setWorkingIndicator"),
+    setHiddenThinkingLabel: unsupported("setHiddenThinkingLabel"),
+    setWidget: unsupported("setWidget"),
+    setHeader: unsupported("setHeader"),
+    setFooter: unsupported("setFooter"),
+    setTitle: unsupported("setTitle"),
+    onTerminalInput: () => { ui.unsupported("onTerminalInput"); return () => {}; },
+    custom: async () => {
+      ui.unsupported("custom");
+      throw new Error("Pi custom terminal components are unavailable in managed sessions");
+    },
+    pasteToEditor: unsupported("pasteToEditor"),
+    setEditorText: unsupported("setEditorText"),
+    getEditorText: () => { ui.unsupported("getEditorText"); return ""; },
+    addAutocompleteProvider: unsupported("addAutocompleteProvider"),
+    setEditorComponent: unsupported("setEditorComponent"),
+    getEditorComponent: () => undefined,
+    get theme(): ExtensionUIContext["theme"] {
+      // Pi spreads the context when binding it, so the getter must be inert. Every
+      // operation on this opaque presentation-only value refuses before doing work.
+      return new Proxy({} as ExtensionUIContext["theme"], { get() {
+        ui.unsupported("theme");
+        throw new Error("Pi terminal themes are unavailable in managed sessions");
+      } });
+    },
+    getAllThemes: () => [],
+    getTheme: () => undefined,
+    setTheme: () => ({ success: false, error: "Managed sessions have no Pi terminal theme" }),
+    getToolsExpanded: () => false,
+    setToolsExpanded: unsupported("setToolsExpanded"),
   };
 }
 
@@ -323,7 +386,7 @@ function projectRuntime(runtime: AgentSessionRuntime, models: () => ModelRuntime
       // resolves, which is what lets the adapter re-subscribe and rebind its identity
       // without a window where events from the new conversation reach nobody.
       runtime.setRebindSession(async (session) => {
-        handler(projectSession(session, models()));
+        await handler(projectSession(session, models()));
       });
     },
     async newSession() {
@@ -357,10 +420,15 @@ export async function createRuntime(
     const created = await pi.createAgentSessionServices({
       cwd: target.cwd,
       agentDir: target.agentDir,
-      // Phase 1 has no surface to ask trust on, so this NEVER prompts: it replays a durable
-      // decision Pi already holds, and `false` keeps project-local executable resources out
-      // while user and global configuration still load. See `PiRuntimeOptions.trusted`.
-      resourceLoaderReloadOptions: { resolveProjectTrust: async () => options.trusted },
+      // Pi performs this callback before enabling project-local resources. Replacements
+      // re-enter the same factory, so a prior launch never supplies an implicit trust grant.
+      resourceLoaderReloadOptions: { resolveProjectTrust: async () => {
+        options.signal?.throwIfAborted();
+        const trusted = typeof options.projectTrust === "function"
+          ? await options.projectTrust() : options.projectTrust;
+        options.signal?.throwIfAborted();
+        return trusted;
+      } },
       resourceLoaderOptions: {
         // The operator's standing instructions, through the option `--append-system-prompt`
         // itself routes into (`main.ts` hands the flag straight to this field). Passed on
@@ -371,6 +439,7 @@ export async function createRuntime(
           : {}),
       },
     });
+    options.signal?.throwIfAborted();
     const model = options.model ? await requireModel(created.modelRuntime, options.model) : undefined;
     const session = await pi.createAgentSessionFromServices({
       services: created,
@@ -520,6 +589,10 @@ async function loadOverride(): Promise<PiSdk | null> {
 
 /** What the shipped driver uses. Tests replace the whole object. */
 export const defaultPiSdkDeps: PiSdkDeps = {
+  async repositories(cwd) {
+    const { configuredGitHubRepositories } = await import("../../inspector/github.ts");
+    return (await configuredGitHubRepositories(cwd)).map(({ owner, repo }) => `${owner}/${repo}`.toLowerCase());
+  },
   async load(): Promise<PiSdk> {
     const override = await loadOverride();
     if (override) return override;
@@ -528,6 +601,7 @@ export const defaultPiSdkDeps: PiSdkDeps = {
       agentDir: () => pi.getAgentDir(),
       hasTrustRequiringProjectResources: (cwd) => pi.hasTrustRequiringProjectResources(cwd),
       projectTrust: (cwd) => new pi.ProjectTrustStore(pi.getAgentDir()).get(cwd),
+      setProjectTrust: (cwd, trusted) => new pi.ProjectTrustStore(pi.getAgentDir()).set(cwd, trusted),
       async findSessionFile(cwd, sessionId) {
         // Pi's own listing rather than a directory walk of our own: it honours
         // `$PI_CODING_AGENT_DIR`, its cwd encoding, and its session-file naming, none of

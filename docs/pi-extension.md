@@ -58,6 +58,16 @@ readings report model, context percentage, and effort, including display-only na
 as `off` and `minimal`. Those native readings do not expand the shared effort picker vocabulary.
 Both status classification and ingest validation derive shared effort from `THINKING_LEVELS`.
 
+When a hook omits a terminal pane key, the Registry retains its state on the pane of the
+session already matched by native conversation identity or unique cwd. This lets a Herdr
+session's Stop survive discovery without weakening ambiguous-cwd or conflicting-identity
+refusals. After a daemon restart or hook expiry, Pi's passive transcript reader treats both
+clean completion and an interrupted assistant turn as idle; pending tool calls and errors
+remain working. Dashboard follow-ups can therefore drain after an interrupt on either path.
+Both legacy and resolved pane keys share the existing overlay cleanup: entries older than
+30 minutes are deleted on subsequent hook ingest, including entries whose sessions were
+evicted. Eviction itself does not delete hook overlays.
+
 The existing Pi usage reader prices the exact transcript once the extension supplies identity.
 An explicit transcript path is accepted only when its bounded first-line header agrees with the
 session ID and canonical cwd. Default-home discovery remains the fallback when there is no

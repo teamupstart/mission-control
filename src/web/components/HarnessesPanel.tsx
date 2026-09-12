@@ -12,7 +12,9 @@ import {
   resolveSessionRuntime,
   sdkRuntimeUnsupportedWhy,
 } from "@shared/harness-capabilities.ts";
+import { piManagedRuntimeReady } from "@shared/pi-managed-runtime.ts";
 import { resolveTerminalBackend, type TerminalBackendId } from "@shared/terminal.ts";
+import type { SetupChecksView } from "@shared/setup-catalog.ts";
 import { permissionModeDisplay } from "../lib/format.ts";
 import {
   ModelCatalogNotice,
@@ -22,7 +24,10 @@ import {
 import type { HarnessesState } from "../useHarnesses.ts";
 import { AgentDot, agentAccentStyle } from "./session-bits.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { TerminalPreferencePicker } from "./TerminalPreferencePicker.tsx";
+import {
+  dispatchTerminalCopy,
+  TerminalPreferencePicker,
+} from "./TerminalPreferencePicker.tsx";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
 // launches - the auto-mode master toggle, then ONE CARD PER HARNESS carrying that
@@ -147,6 +152,7 @@ function HarnessCard({
   onEffort,
   onRuntime,
   onTerminalBackend,
+  piSdkReady,
 }: {
   agent: AgentType;
   label: string;
@@ -160,6 +166,7 @@ function HarnessCard({
   onEffort: (level: ThinkingLevel | null) => void;
   onRuntime: (runtime: SessionRuntime) => void;
   onTerminalBackend: (backend: TerminalBackendId | null) => void;
+  piSdkReady: boolean;
 }): React.JSX.Element {
   const { resolve: resolveModels } = useHarnessModelCatalogs();
   const models = resolveModels(agent, model);
@@ -174,6 +181,7 @@ function HarnessCard({
   const resolved = runtime === null ? null : resolveSessionRuntime(agent, runtime);
   const resolvedTerminal = resolveTerminalBackend(terminalBackend);
   const sdkWhy = sdkRuntimeUnsupportedWhy(agent);
+  const piSdkBlocked = agent === "pi" && !piSdkReady;
   const runtimeNote =
     runtime === null
       ? `Loading saved runtime default for ${label}.`
@@ -255,7 +263,7 @@ function HarnessCard({
                 {/* The shipped default, and the runtime every in-app affordance is built
                     for. Named as recommended in the option itself because the card note is
                     only read AFTER a choice, so it cannot influence the one being made. */}
-                <option value="sdk">Agent SDK (recommended)</option>
+                <option value="sdk" disabled={piSdkBlocked}>Agent SDK (recommended)</option>
               </select>
             </Tooltip>
           </>
@@ -267,7 +275,7 @@ function HarnessCard({
             </label>
             <TerminalPreferencePicker
               id={terminalId}
-              agentLabel={label}
+              copy={dispatchTerminalCopy(label)}
               value={terminalBackend}
               disabled={disabled}
               onChange={onTerminalBackend}
@@ -310,13 +318,35 @@ function HarnessCard({
             </strong>
           </>
         )}
+        {piSdkBlocked && (
+          <>
+            {" "}
+            <strong>
+              Install Pi and the Mission Control Pi extension in{" "}
+              <Tooltip label="Open Setup to install the Pi Agent SDK prerequisites">
+                <a href="#/settings/setup">Setup</a>
+              </Tooltip>
+              , then re-check before enabling Agent SDK.
+            </strong>
+          </>
+        )}
       </p>
     </div>
   );
 }
 
-export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.Element {
+export function HarnessesPanel({
+  state,
+  setup = null,
+}: {
+  state: HarnessesState;
+  setup?: SetupChecksView | null;
+}): React.JSX.Element {
   const { config, update, error } = state;
+  const piSdkReady = piManagedRuntimeReady({
+    piCliInstalled: setup?.piCliReady === true,
+    piExtensionInstalled: setup?.piExtensionReady === true,
+  });
   // `config` is null only in the pre-poll instant; the switch reads on (its shipped
   // default) and disables until the first read lands, so a toggle can't race the fetch.
   const autoMode = config?.autoModeOnDispatch ?? true;
@@ -390,6 +420,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
             terminalBackend={config?.terminalBackend[card.agent] ?? null}
             autoMode={autoMode}
             disabled={!config}
+            piSdkReady={piSdkReady}
             onModel={(id) => void update({ defaultModel: { [card.agent]: id } })}
             onEffort={(level) => void update({ defaultEffort: { [card.agent]: level } })}
             onRuntime={(runtime) => void update({ sessionRuntime: { [card.agent]: runtime } })}

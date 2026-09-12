@@ -25,6 +25,13 @@ fixed command. The daemon owns the argv, working directory, title, and hold-open
 browser sends only the dependency id and terminal backend. The terminal remains open after the
 command exits so you can read its exit code, then use **Re-check** to inspect the machine again.
 
+Pi's **Agent SDK** runtime is unlocked only when Setup reports two ready rows: the global Pi
+CLI in **Agent CLIs** and the Mission Control Pi extension in **Agent extensions**. The Pi CLI
+row offers `npm install -g @earendil-works/pi-coding-agent` through **Run in a terminal**; the
+extension row offers **Install Pi integration** on a first install. After both complete, use
+**Re-check**, then choose Agent SDK under **Settings → Harnesses**. If either prerequisite is
+missing or unhealthy, that runtime option remains disabled.
+
 The **Agent extensions** family offers **Install Pi integration** only when its persisted
 intent is off and no extension entry exists. This action verifies the bundle in a bounded,
 child process before installing the integration, and refuses pooled checkouts.

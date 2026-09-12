@@ -15,6 +15,7 @@ process.env.MISSION_HOME = home;
 
 const {
   openDb,
+  upgradeDatabaseToCurrentSchema,
   upsertQueue,
   getQueueRow,
   listQueueRows,
@@ -42,6 +43,18 @@ const {
 after(() => rmSync(home, { recursive: true, force: true }));
 
 openDb();
+
+test("an existing queue database gains delivery runtime without inventing legacy acknowledgement", () => {
+  const db = openDb();
+  const legacy = mkItem({ id: "legacy-delivery-runtime", noteKey: "legacy-runtime", state: "sending" });
+  upsertQueueItem(legacy);
+  db.exec("ALTER TABLE foreman_queue_items DROP COLUMN delivery_runtime");
+  upgradeDatabaseToCurrentSchema(db);
+  assert.deepEqual(getQueueItem(legacy.id), legacy);
+  upsertQueueItem({ ...legacy, deliveryRuntime: "sdk" });
+  assert.equal(getQueueItem(legacy.id)?.deliveryRuntime, "sdk");
+  deleteQueueItem(legacy.id);
+});
 
 let n = 0;
 function mkItem(over: Partial<WorkItem> = {}): WorkItem {

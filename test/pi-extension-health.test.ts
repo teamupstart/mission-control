@@ -92,7 +92,7 @@ test("stale and missing markers warn, a stale bridged tool list warns, rebuildin
   assert.match((await inspectPiExtension()).warning!, /no valid build marker/);
   writeFileSync(installed, metadata()); mcp(["request_input"]);
   assert.match((await inspectPiExtension()).warning!, /stale.*tools\/list/);
-  mcp(); assert.deepEqual(await inspectPiExtension(), { healthy: true, warning: null, detail: null });
+  mcp(); assert.deepEqual(await inspectPiExtension(), { healthy: true, ready: true, warning: null, detail: null });
   assert.equal((await missionToolsAvailability("pi")).available, true);
 });
 test("Setup installs once, verifies health and refuses a second or broken-install repair", async () => {

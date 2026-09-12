@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.16.0](https://github.com/teamupstart/mission-control/compare/v1.15.0...v1.16.0) (2026-09-12)
+
+
+### Features
+
+* **pi:** add structured interaction and managed automation ([#1026](https://github.com/teamupstart/mission-control/issues/1026)) ([97e0f8d](https://github.com/teamupstart/mission-control/commit/97e0f8d9db829bc2eee71077ab68482796e85efc))
+* **terminals:** give each multiplexer its own focus terminal ([#1033](https://github.com/teamupstart/mission-control/issues/1033)) ([6adc958](https://github.com/teamupstart/mission-control/commit/6adc9586306961ee8beaa07a8325fa38d2105196))
+* **update:** draw the auto-update dialogs in the app's own theme ([#1028](https://github.com/teamupstart/mission-control/issues/1028)) ([f405ec1](https://github.com/teamupstart/mission-control/commit/f405ec1d026e53d8c713f61c5f78ec5b74c400cf))
+* **workflows:** make the evidence preflight repairable ([#1031](https://github.com/teamupstart/mission-control/issues/1031)) ([28bfd02](https://github.com/teamupstart/mission-control/commit/28bfd02778d881b0a2c22524e2091f54434d85c4))
+
+
+### Bug Fixes
+
+* **dispatch:** offer the settings screen a Live-delivery refusal names ([#1027](https://github.com/teamupstart/mission-control/issues/1027)) ([97a460b](https://github.com/teamupstart/mission-control/commit/97a460b1bd40720e9d042ae180ab7a2ef1ad3f9b))
+* **foreman:** post a delivered recovery instruction once, not twice ([#1024](https://github.com/teamupstart/mission-control/issues/1024)) ([7fc65c2](https://github.com/teamupstart/mission-control/commit/7fc65c2369d5146ecce29c7bc923b00bb4693d77))
+* **pi:** gate Agent SDK on Setup readiness ([#1034](https://github.com/teamupstart/mission-control/issues/1034)) ([aa45747](https://github.com/teamupstart/mission-control/commit/aa45747f7a2e624f83a50386f936c7f6db743df5))
+* **pi:** show interrupted turns in conversation history ([#1022](https://github.com/teamupstart/mission-control/issues/1022)) ([8473678](https://github.com/teamupstart/mission-control/commit/8473678fc4930977203d74bd6b77e633752e1b90))
+* **sessions:** deliver Pi follow-ups after terminal interrupts ([#1032](https://github.com/teamupstart/mission-control/issues/1032)) ([fa9e0ec](https://github.com/teamupstart/mission-control/commit/fa9e0ecf9b15c6a5b27b5a39d503c10edd5bb921))
+* **workflows:** freeze coverage claims whose proof arrives with the carry ([#1029](https://github.com/teamupstart/mission-control/issues/1029)) ([329f166](https://github.com/teamupstart/mission-control/commit/329f16627bb6fe43108844d036a8fb1fcde7c268))
+* **workflows:** make readiness override one click ([#1025](https://github.com/teamupstart/mission-control/issues/1025)) ([680f079](https://github.com/teamupstart/mission-control/commit/680f079f9c5981ccfb1de6a16307444a01e9c6f8))
+
 ## [1.15.0](https://github.com/teamupstart/mission-control/compare/v1.14.0...v1.15.0) (2026-09-11)
 
 

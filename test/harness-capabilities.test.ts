@@ -457,7 +457,7 @@ test("a harness that can't hold a queue is never selected for a tick, or asked t
   const selected = new Set(tickTargets(sessions, ["drain", "prompted"]).map((s) => s.id));
   for (const agent of hasnt) assert.equal(selected.has(`q-${agent}`), false, `${agent} must not be ticked`);
   for (const agent of has) {
-    assert.equal(selected.has(`q-${agent}`), HARNESSES[agent].hooks !== null,
+    assert.equal(selected.has(`q-${agent}`), foremanAutomationAuthorized(sessions.find((s) => s.agent === agent)!),
       `${agent} also needs installed lifecycle instrumentation to be ticked`);
   }
 
@@ -513,13 +513,13 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
   for (const agent of has) assert.equal(workQueueUnsupportedWhy(agent), null);
 });
 
-test("Pi declares machine instrumentation and explains a session with no lifecycle hooks", () => {
+test("Pi Work Queue is managed-only even when terminal hooks exist", () => {
   const session = mkSession({ agent: "pi", runtime: "terminal", hooksSeen: false });
   const queue = capabilitiesFor("pi").workQueue;
   assert.ok(queue);
   assert.equal(HARNESSES.pi.hooks?.scope, "machine");
-  assert.equal(foremanAutomationAuthorized(session), true);
-  assert.equal(workQueueBlockedReason(session), queue.uninstrumentedWhy);
+  assert.equal(foremanAutomationAuthorized(session), false);
+  assert.match(workQueueBlockedReason(session)!, /managed Agent SDK/);
   assert.match(queue.uninstrumentedWhy, /has not loaded.*lifecycle hooks/);
   assert.match(queue.uninstrumentedWhy, /Settings > Setup > Agent extensions/);
   assert.doesNotMatch(queue.uninstrumentedWhy, /PUT \/api/);

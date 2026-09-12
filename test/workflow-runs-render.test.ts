@@ -919,7 +919,10 @@ test("a run parked on readiness opens the Evidence pane with its override in rea
   );
   assert.match(waiting, /aria-label="Evidence readiness override"/);
   assert.match(waiting, /Retry evidence preflight/);
-  assert.match(waiting, /Continue despite gaps/);
+  assert.match(waiting, /Continue to review despite gaps/);
+  assert.match(waiting, /This sends the current packet to reviewers without resolving/);
+  assert.doesNotMatch(waiting, />Reason</);
+  assert.doesNotMatch(waiting, /type="checkbox"/);
   assert.doesNotMatch(waiting, /has spent its evidence preflight refinements/);
 
   const exhausted = render(parked("preflight_refinement_exhausted"), {
@@ -927,7 +930,7 @@ test("a run parked on readiness opens the Evidence pane with its override in rea
   });
   assert.match(exhausted, /has spent its evidence preflight refinements/);
   assert.doesNotMatch(exhausted, /Retry evidence preflight/);
-  assert.match(exhausted, /Continue despite gaps/);
+  assert.match(exhausted, /Continue to review/);
 });
 
 

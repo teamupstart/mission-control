@@ -1093,6 +1093,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       note_key              TEXT NOT NULL,
       client_criterion_id   TEXT NOT NULL,
       criterion             TEXT NOT NULL,
+      -- The canonical criterion the author cited, or NULL when it was never told one.
+      criterion_id          TEXT,
       proof_class           TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
       source_root           TEXT NOT NULL,
@@ -1153,6 +1155,8 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       staging_id            TEXT NOT NULL,
       client_criterion_id   TEXT NOT NULL,
       criterion             TEXT NOT NULL,
+      -- The canonical criterion the author cited, frozen with the rest of the claim.
+      criterion_id          TEXT,
       proof_class           TEXT NOT NULL,
       repository_scope      TEXT NOT NULL,
       links_json            TEXT NOT NULL,
@@ -1743,6 +1747,7 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL,
       sent_at           INTEGER,
+      delivery_runtime  TEXT,              -- runtime that accepted this delivery attempt
       completed_at      INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_fqi_queue ON foreman_queue_items(note_key, seq);
@@ -3154,6 +3159,11 @@ function migrate(d: DatabaseSync): void {
   // in full, and this column is what lets readiness tell a claim the author declared HERE from
   // the ancestry standing behind it, rather than reading the two as competing declarations.
   addColumn(d, "workflow_submission_evidence_coverage", "inherited_from_submission_id", "TEXT");
+  // A claim may now name the canonical criterion it answers rather than being matched back by
+  // prose. Both halves of the coverage lifecycle carry it, because a staged claim is what a
+  // submission freezes and the mapping has to survive that copy.
+  addColumn(d, "workflow_evidence_coverage_staging", "criterion_id", "TEXT");
+  addColumn(d, "workflow_submission_evidence_coverage", "criterion_id", "TEXT");
   // The one verified index replacement, both halves, in this order and only here.
   //
   // `idx_workflow_submissions_round` was UNIQUE on (run_id, round), and it is precisely what
@@ -3413,6 +3423,10 @@ function migrate(d: DatabaseSync): void {
   // default, so an existing row reads as "never crash-recovered" - which is the
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
+
+  // Capture the attempt's runtime before delivery. Legacy rows have no acknowledgement
+  // evidence and retain the conservative pickup-verification path.
+  addColumn(d, "foreman_queue_items", "delivery_runtime", "TEXT");
 
   // `prompted_goal`: the historical resolved-intent guard used before prompted
   // completion consumed work-cycle generations. It remains readable for one-time
@@ -11843,6 +11857,7 @@ interface QueueItemRow {
   created_at: number;
   updated_at: number;
   sent_at: number | null;
+  delivery_runtime: "terminal" | "sdk" | null;
   completed_at: number | null;
 }
 
@@ -11868,6 +11883,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     sentAt: r.sent_at,
+    ...(r.delivery_runtime ? { deliveryRuntime: r.delivery_runtime } : {}),
     completedAt: r.completed_at,
   };
 }
@@ -12535,8 +12551,8 @@ export function upsertQueueItem(i: WorkItem): void {
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
          proposed_payload, recovered_at, revision, created_at, updated_at, sent_at,
-         completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         completed_at, delivery_runtime
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
@@ -12546,13 +12562,13 @@ export function upsertQueueItem(i: WorkItem): void {
          approved_at=excluded.approved_at, proposed_payload=excluded.proposed_payload,
          recovered_at=excluded.recovered_at, revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
-         completed_at=excluded.completed_at`,
+         completed_at=excluded.completed_at, delivery_runtime=excluded.delivery_runtime`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
       i.lastVerdict, i.approvedAt, i.proposedPayload, i.recoveredAt, i.revision,
-      i.createdAt, i.updatedAt, i.sentAt, i.completedAt,
+      i.createdAt, i.updatedAt, i.sentAt, i.completedAt, i.deliveryRuntime ?? null,
     );
 }
 

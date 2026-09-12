@@ -575,7 +575,7 @@ export function SettingsPage({
       case "skills":
         return <SkillsPanel state={skills} />;
       case "harnesses":
-        return <HarnessesPanel state={harnesses} />;
+        return <HarnessesPanel state={harnesses} setup={setup.view} />;
       case "worktrees":
         return <WorktreeSettingsPanel state={worktrees} />;
       case "repositories":

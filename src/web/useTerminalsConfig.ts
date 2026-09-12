@@ -133,11 +133,15 @@ export function useTerminalsConfig(revision = 0): TerminalsConfigState {
         const next = await fetchTerminalsConfig();
         if (next && readIsCurrent(seq, editSeq.current)) setConfig(next);
       });
-      // The queue survives a link that rejects. `api` reduces a failed request to a result
-      // rather than throwing, so this is for the unforeseen kind - and a broken chain would
-      // mean every later write on this panel never runs at all.
-      writes.current = sent.catch(() => {});
-      return sent;
+      // ONE caught promise, used as both the queue tail and the caller's handle. `api`
+      // reduces a failed request to a result rather than throwing, so this is for the
+      // unforeseen kind - and it has to be absorbed twice over: a rejecting tail would wedge
+      // every later write on this panel, and a rejecting return value would be an unhandled
+      // rejection, since callers read failure off `error` and none of them attaches a
+      // handler to this.
+      const settled = sent.catch(() => {});
+      writes.current = settled;
+      return settled;
     },
     [setConfig],
   );

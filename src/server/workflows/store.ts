@@ -1627,6 +1627,7 @@ const WorkflowEvidenceCoverageStagingRowSchema = z.object({
   note_key: nonempty,
   client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
   criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+  criterion_id: nullableText.optional().default(null),
   proof_class: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
   source_root: nonempty,
@@ -1659,13 +1660,16 @@ export function parseWorkflowEvidenceCoverageStagingRow(
     WorkflowEvidenceCoverageStagingRowSchema,
     value,
   );
-  return { ...row, episode_key: row.episode_key ?? null };
+  return { ...row, episode_key: row.episode_key ?? null, criterion_id: row.criterion_id ?? null };
 }
 
 function coverageClaimFromRow(row: WorkflowEvidenceCoverageStagingRow): WorkflowEvidenceCoverageClaim {
   return WorkflowEvidenceCoverageClaimSchema.parse({
     clientCriterionId: row.client_criterion_id,
     criterion: row.criterion,
+    // Spread rather than a null, for the same reason carry provenance is: a claim that cited
+    // no criterion is shaped exactly as it was before this field existed.
+    ...(row.criterion_id ? { criterionId: row.criterion_id } : {}),
     proofClass: row.proof_class,
     repositoryScope: row.repository_scope,
     links: parseJson(
@@ -1685,6 +1689,7 @@ const WorkflowSubmissionCoverageRowSchema = z.object({
   staging_id: nonempty,
   client_criterion_id: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.clientCriterionIdChars),
   criterion: nonempty.max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.criterionBytes),
+  criterion_id: nullableText.optional().default(null),
   proof_class: z.enum(WORKFLOW_EVIDENCE_PROOF_CLASSES),
   repository_scope: WorkflowEvidenceRepositoryScopeSchema,
   links_json: nonempty,
@@ -1703,6 +1708,7 @@ function submissionCoverageClaimFromRow(value: unknown): WorkflowEvidenceCoverag
   return WorkflowEvidenceCoverageClaimSchema.parse({
     clientCriterionId: row.client_criterion_id,
     criterion: row.criterion,
+    ...(row.criterion_id ? { criterionId: row.criterion_id } : {}),
     proofClass: row.proof_class,
     repositoryScope: row.repository_scope,
     links: parseJson(
@@ -5487,12 +5493,13 @@ export class WorkflowStore {
       }
       const writeCoverage = this.db.prepare(
         `INSERT INTO workflow_evidence_coverage_staging (
-           id, note_key, client_criterion_id, criterion, proof_class, repository_scope,
-           source_root, links_json, episode_key, generation, state, reserved_group_key,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
+           id, note_key, client_criterion_id, criterion, criterion_id, proof_class,
+           repository_scope, source_root, links_json, episode_key, generation, state,
+           reserved_group_key, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staged', NULL, ?, ?)
          ON CONFLICT(note_key, client_criterion_id) DO UPDATE SET
            criterion = excluded.criterion,
+           criterion_id = excluded.criterion_id,
            proof_class = excluded.proof_class,
            repository_scope = excluded.repository_scope,
            source_root = excluded.source_root,
@@ -5510,6 +5517,7 @@ export class WorkflowStore {
           noteKey,
           claim.clientCriterionId,
           claim.criterion,
+          claim.criterionId ?? null,
           claim.proofClass,
           claim.repositoryScope,
           claim.sourceRoot,
@@ -6139,10 +6147,10 @@ export class WorkflowStore {
     );
     const freezeCoverage = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
-         submission_id, staging_id, client_criterion_id, criterion, proof_class,
+         submission_id, staging_id, client_criterion_id, criterion, criterion_id, proof_class,
          repository_scope, links_json, inherited_from_submission_id, generation,
          created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const coverageRows = this.db.prepare(
       `SELECT * FROM workflow_submission_evidence_coverage WHERE submission_id = ?`,
@@ -6244,6 +6252,7 @@ export class WorkflowStore {
         row.staging_id,
         claim.clientCriterionId,
         claim.criterion,
+        claim.criterionId ?? null,
         claim.proofClass,
         claim.repositoryScope,
         JSON.stringify(links),
@@ -10666,9 +10675,9 @@ export class WorkflowStore {
     );
     const freezeCoverage = this.db.prepare(
       `INSERT OR IGNORE INTO workflow_submission_evidence_coverage (
-         submission_id, staging_id, client_criterion_id, criterion, proof_class,
+         submission_id, staging_id, client_criterion_id, criterion, criterion_id, proof_class,
          repository_scope, links_json, generation, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const row of coverageRows) {
       const claim = coverageClaimFromRow(row);
@@ -10711,6 +10720,7 @@ export class WorkflowStore {
         row.id,
         claim.clientCriterionId,
         claim.criterion,
+        claim.criterionId ?? null,
         claim.proofClass,
         claim.repositoryScope,
         JSON.stringify(claim.links),

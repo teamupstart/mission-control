@@ -10,6 +10,7 @@ import type {
 } from "../src/shared/workflow.ts";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import {
+  renderEvidenceReadinessPacket,
   renderPrHandoff,
   renderUnchangedEvidenceNudge,
   renderWorkflowFeedback,
@@ -271,4 +272,143 @@ test("a handoff on the session's own checkout names no repository and keeps its 
   );
   assert.doesNotMatch(rendered.payload, /submit_workflow_evidence/);
   assert.match(rendered.payload, /do not ask the human to resubmit the workflow/);
+});
+
+test("an evidence preflight packet names the criteria, their ids, and what contests one", () => {
+  const packet = renderEvidenceReadinessPacket({
+    workflowName: "No Mistakes",
+    workflowVersion: 16,
+    runId: "run-1",
+    repository: "mission-control",
+    round: 1,
+    segment: 0,
+    workflowEvidence: true,
+    readiness: {
+      evaluatorVersion: "criterion_mapped_v1",
+      status: "gaps",
+      criteria: [
+        {
+          criterionId: "criterion-1-aaaa",
+          criterion: "Update modals match the application theme",
+          material: true,
+          matchedClientCriterionId: null,
+          contestedClientCriterionIds: ["themed-modals", "themed-shell"],
+          authorProofClass: null,
+          suggestedProofClass: "visual",
+          links: [],
+          gaps: ["ambiguous_mapping"],
+          warnings: [],
+        },
+        {
+          criterionId: "criterion-2-bbbb",
+          criterion: "Check for updates reflects the theme",
+          material: true,
+          matchedClientCriterionId: "themed-modals",
+          authorProofClass: "visual",
+          suggestedProofClass: "visual",
+          links: [
+            { clientItemId: "shot-available", evidenceId: "img-1", role: "rendered_output" },
+          ],
+          gaps: [],
+          warnings: [],
+        },
+      ],
+      gapCodes: ["ambiguous_mapping"],
+      warningCodes: [],
+      unavailableReason: null,
+    },
+  });
+
+  // The identity the author is asked to cite, for the criterion that needs repair.
+  assert.match(packet.payload, /Criterion id: criterion-1-aaaa/);
+  // The cause, named. An author cannot withdraw a claim it was never told about.
+  assert.match(
+    packet.payload,
+    /Claims currently matched to it: themed-modals, themed-shell/,
+  );
+  // The two rules that resolve the commonest repair, and the fact evidence is already held.
+  assert.match(packet.payload, /one claim may answer several criteria/);
+  assert.match(packet.payload, /linked from as many claims as apply/);
+  assert.match(packet.payload, /carried into this repair segment/);
+  // The rubric, whole: a criterion that passed is still shown, so the author can see the shape
+  // it was matched against rather than inferring it from the holes.
+  assert.match(
+    packet.payload,
+    /criterion-2-bbbb: Check for updates reflects the theme \(covered by themed-modals\)/,
+  );
+});
+
+test("a contested criterion tells the author to withdraw, not to capture more proof", () => {
+  const packet = renderEvidenceReadinessPacket({
+    workflowName: "No Mistakes",
+    workflowVersion: 16,
+    runId: "run-1",
+    repository: "mission-control",
+    round: 1,
+    segment: 0,
+    workflowEvidence: true,
+    readiness: {
+      evaluatorVersion: "criterion_mapped_v1",
+      status: "gaps",
+      criteria: [{
+        criterionId: "criterion-1-aaaa",
+        criterion: "Update modals match the application theme",
+        material: true,
+        matchedClientCriterionId: null,
+        contestedClientCriterionIds: ["one", "two"],
+        authorProofClass: null,
+        suggestedProofClass: null,
+        links: [],
+        gaps: ["ambiguous_mapping"],
+        warnings: [],
+      }],
+      gapCodes: ["ambiguous_mapping"],
+      warningCodes: [],
+      unavailableReason: null,
+    },
+  });
+  assert.match(packet.payload, /Leave exactly one of the claims listed above on this criterion/);
+  assert.doesNotMatch(packet.payload, /match exactly one author-controlled coverage claim/);
+});
+
+test("a citation that matched nothing is named before the criteria it left uncovered", () => {
+  const packet = renderEvidenceReadinessPacket({
+    workflowName: "No Mistakes",
+    workflowVersion: 16,
+    runId: "run-1",
+    repository: "mission-control",
+    round: 2,
+    segment: 0,
+    workflowEvidence: true,
+    readiness: {
+      evaluatorVersion: "criterion_mapped_v1",
+      status: "gaps",
+      criteria: [{
+        criterionId: "criterion-1-aaaa",
+        criterion: "Update modals match the application theme",
+        material: true,
+        matchedClientCriterionId: null,
+        authorProofClass: null,
+        suggestedProofClass: null,
+        links: [],
+        gaps: ["missing_coverage"],
+        warnings: [],
+      }],
+      rejectedCitations: [{ clientCriterionId: "themed-modals", criterionId: "criterion-1-stale" }],
+      gapCodes: ["missing_coverage", "unknown_criterion_id"],
+      warningCodes: [],
+      unavailableReason: null,
+    },
+  });
+  assert.match(
+    packet.payload,
+    /Claim themed-modals cited criterion-1-stale, which is not a criterion of this run/,
+  );
+  assert.match(packet.payload, /matched by nothing, including its own text/);
+  assert.match(packet.payload, /Copy an id exactly as it appears under a criterion below/);
+  // Before the criteria, because it is the reason one of them reports no coverage.
+  assert.ok(
+    packet.payload.indexOf("Criterion ids that matched nothing")
+      < packet.payload.indexOf("## Update modals match the application theme"),
+  );
 });

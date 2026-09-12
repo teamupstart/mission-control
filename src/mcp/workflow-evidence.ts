@@ -32,6 +32,7 @@ type WorkflowEvidenceToolInput = {
   coverage?: Array<{
     clientCriterionId: string;
     criterion: string;
+    criterionId?: string;
     proofClass: WorkflowEvidenceProofClass;
     repositoryScope: string;
     links: Array<{ clientItemId: string; role: WorkflowEvidenceProofRole }>;

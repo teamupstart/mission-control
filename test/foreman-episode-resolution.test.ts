@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
 import type { ForemanEpisode } from "../src/shared/types.ts";
 import { ForemanEpisodeCard } from "../src/web/components/ForemanEpisodeCard.tsx";
+import { shipRecoveryBrief } from "../src/server/foreman/ship-shepherd.ts";
 
 // The Resolution block: who settled the episode, and with what words.
 //
@@ -112,4 +113,65 @@ test("a ship recovery episode exposes its operator-facing audit category", () =>
     }),
   );
   assert.ok(html.includes("pre-PR ship recovery"), html);
+});
+
+/**
+ * The recovery card, composed by the worker's own brief builder rather than by hand.
+ *
+ * Composing it here is the point: the duplicate the operator reported was not a rendering
+ * bug but the body and the Resolution carrying one paragraph each, and an episode written
+ * by a literal in this file could only ever prove what the literal said. Read together
+ * with `foreman-ship-shepherd.test.ts`, this closes the loop from the rule to the card.
+ */
+const RECOVERY_INSTRUCTION = "Address only these implementation, documentation, test, or evidence gaps.";
+
+test("a delivered recovery prints its instruction once, under Resolution", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ForemanEpisodeCard, {
+      episode: ep({
+        situation: "ship-recovery",
+        disposition: "answered",
+        resolvedBy: "foreman",
+        sentBy: "foreman",
+        purpose: "Pre-PR ship recovery: held completion gaps, attempt 1/3, delivered.",
+        brief: shipRecoveryBrief({
+          detail: RECOVERY_INSTRUCTION,
+          decisionSummary: null,
+          quietMinutes: 0,
+          delivery: "delivered",
+          next: "next attempt after 40 minutes",
+          sentText: RECOVERY_INSTRUCTION,
+        }),
+        sentText: RECOVERY_INSTRUCTION,
+      }),
+      detail: true,
+    }),
+  );
+  assert.equal(occurrences(html, RECOVERY_INSTRUCTION), 1, html);
+  assert.ok(html.includes("Quiet age: 0 minutes."), html);
+});
+
+test("a recovery that reached nobody still prints its instruction, and still only once", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ForemanEpisodeCard, {
+      episode: ep({
+        situation: "ship-recovery",
+        disposition: "skipped",
+        resolvedBy: "foreman",
+        purpose: "Pre-PR ship recovery: held completion gaps, attempt 1/3, confirmed undelivered.",
+        brief: shipRecoveryBrief({
+          detail: RECOVERY_INSTRUCTION,
+          decisionSummary: null,
+          quietMinutes: 41,
+          delivery: "confirmed undelivered",
+          next: "same attempt ready to retry",
+          sentText: null,
+        }),
+        lastAction: "Pre-PR recovery confirmed undelivered",
+        sentText: null,
+      }),
+      detail: true,
+    }),
+  );
+  assert.equal(occurrences(html, RECOVERY_INSTRUCTION), 1, html);
 });

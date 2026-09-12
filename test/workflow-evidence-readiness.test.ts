@@ -24,7 +24,7 @@ const {
   workflowEvidenceRequiredRoleGroups,
   workflowCommandEvidenceContent,
 } = await import("../src/shared/workflow.ts");
-const { compactWorkflowContext } = await import("../src/server/workflows/context.ts");
+const { compactWorkflowContext, reconcileWorkflowCriterionMappings } = await import("../src/server/workflows/context.ts");
 const { WorkflowStore } = await import("../src/server/workflows/store.ts");
 
 const command = {
@@ -708,4 +708,121 @@ test("coverage stages idempotently and freezes with the submission", async () =>
       .get() as { count: number }).count,
     0,
   );
+});
+
+/**
+ * The repair `coverage_reserved` instructs, evaluated.
+ *
+ * A reserved claim cannot be amended, so an author who must add a missing proof role has exactly
+ * one move: re-register under a new criterion id. Both claims then bridge to the same canonical
+ * criterion on identical text, and before this rule that produced `ambiguous_mapping` - a gap no
+ * further registration could close. The instruction wedged the run it was trying to unwedge.
+ */
+const trustCriterion = "Error message includes a direct link to Trust panel settings";
+const trustCanonical = [{
+  id: "ac-trust",
+  text: trustCriterion,
+  material: true,
+  suggestedProofClass: null,
+}];
+const trustEvidence = ["png-r1", "png-r2", "suite-run"].map((id) => ({
+  clientItemId: id,
+  evidenceId: `${id}-evidence`,
+  repositoryScope: "all" as const,
+}));
+function trustClaim(
+  clientCriterionId: string,
+  links: Array<{ clientItemId: string; role: "rendered_output" | "execution" }>,
+  criterion = trustCriterion,
+) {
+  return {
+    clientCriterionId,
+    criterion,
+    proofClass: "visual" as const,
+    repositoryScope: "all" as const,
+    links,
+  };
+}
+type TrustClaim = ReturnType<typeof trustClaim> & { inheritedFromSubmissionId?: string };
+/** Through the real text bridge, so the test proves the path the daemon actually takes. */
+function trustReadiness(coverage: TrustClaim[]) {
+  return evaluateWorkflowEvidenceReadiness({
+    canonicalCriteria: trustCanonical,
+    criterionMappings: reconcileWorkflowCriterionMappings(trustCanonical, coverage),
+    coverage,
+    evidence: trustEvidence,
+  });
+}
+
+test("a complete replacement supersedes the incomplete claim it was told to replace", () => {
+  const incomplete = trustClaim("ac-trust-link", [
+    { clientItemId: "png-r1", role: "rendered_output" },
+  ]);
+  const replacement = trustClaim("ac-trust-link-v2", [
+    { clientItemId: "png-r2", role: "rendered_output" },
+    { clientItemId: "suite-run", role: "execution" },
+  ]);
+  assert.deepEqual(
+    trustReadiness([incomplete]).gapCodes,
+    ["missing_execution"],
+    "the reserved claim on its own is one role short of `visual`",
+  );
+  const readiness = trustReadiness([incomplete, replacement]);
+  assert.deepEqual(readiness.gapCodes, [], "and the replacement closes it rather than colliding");
+  assert.equal(readiness.status, "ready");
+  assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "ac-trust-link-v2");
+  assert.deepEqual(
+    readiness.criteria[0]?.links.map((link) => link.role).sort(),
+    ["execution", "rendered_output"],
+    "the selected claim's own proof is what the criterion reports",
+  );
+});
+
+test("supersession never picks between two claims a person has to settle", () => {
+  const complete = (id: string) => trustClaim(id, [
+    { clientItemId: "png-r2", role: "rendered_output" },
+    { clientItemId: "suite-run", role: "execution" },
+  ]);
+  assert.deepEqual(
+    trustReadiness([complete("ac-one"), complete("ac-two")]).gapCodes,
+    ["ambiguous_mapping"],
+    "two claims that both satisfy their class are a real choice between author statements",
+  );
+  assert.deepEqual(
+    trustReadiness([
+      trustClaim("ac-one", [{ clientItemId: "png-r1", role: "rendered_output" }]),
+      trustClaim("ac-two", [{ clientItemId: "png-r2", role: "rendered_output" }]),
+    ]).gapCodes.includes("ambiguous_mapping"),
+    true,
+    "and two incomplete ones resolve nothing, so the mapping stays ambiguous",
+  );
+  const reworded = trustReadiness([
+    trustClaim("ac-one", [{ clientItemId: "png-r1", role: "rendered_output" }]),
+    trustClaim(
+      "ac-two",
+      [
+        { clientItemId: "png-r2", role: "rendered_output" },
+        { clientItemId: "suite-run", role: "execution" },
+      ],
+      "The error message links somewhere useful",
+    ),
+  ]);
+  assert.deepEqual(
+    reworded.criteria[0]?.matchedClientCriterionId,
+    "ac-one",
+    "differing wording is two assertions, so the text bridge never matched the reworded one",
+  );
+  assert.deepEqual(reworded.gapCodes, ["missing_execution"]);
+});
+
+test("a carried claim still loses to a declaration, superseding or not", () => {
+  const readiness = trustReadiness([
+    { ...trustClaim("ac-carried", [{ clientItemId: "png-r1", role: "rendered_output" }]), inheritedFromSubmissionId: "sub-1" },
+    trustClaim("ac-declared", [
+      { clientItemId: "png-r2", role: "rendered_output" },
+      { clientItemId: "suite-run", role: "execution" },
+    ]),
+  ]);
+  assert.equal(readiness.criteria[0]?.matchedClientCriterionId, "ac-declared");
+  assert.deepEqual(readiness.gapCodes, []);
 });

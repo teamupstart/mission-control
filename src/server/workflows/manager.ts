@@ -6385,6 +6385,18 @@ export class WorkflowManager {
        * criteria exactly as freshly declared ones do.
        */
       await inheritSubmissionEvidence(this.store, submission);
+      /*
+       * Then freeze any claim whose links only became resolvable once that carry landed, and
+       * record whatever is still unresolved.
+       *
+       * Strictly AFTER the carry, and it has to be: the reservation that froze this submission's
+       * own claims ran before any of the three steps above, so it judged a replacement claim
+       * citing an ancestor's proof against a submission that did not hold it yet. Unconditional
+       * rather than gated on whether anything was carried, because the second half of this call
+       * is the report - a run's first submission carries nothing and can still be holding a
+       * claim whose evidence retention deleted, and that is worth one event rather than silence.
+       */
+      this.store.freezeDeferredSubmissionCoverage({ submissionId: submission.id });
       const frozenCoverage = this.store.listSubmissionCoverage(submission.id);
       const reservedEvidence = this.store.listReservedWorkflowEvidence(submission.id);
       const submissionImages = this.store.listSubmissionImages(submission.id);

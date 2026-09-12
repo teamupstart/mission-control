@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { Page } from "@playwright/test";
 
@@ -8,6 +8,9 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { launchedCommand } from "../fixtures/isolated-launch.ts";
+import { openSetupFamily } from "../fixtures/setup-panel.ts";
+
+test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js") } });
 
 /**
  * Pi's managed runtime, on an Amazon Bedrock model, from the picker to the terminal handoff.
@@ -89,7 +92,7 @@ test("a Bedrock model runs on Pi's managed runtime, through every control it off
   dashboard,
   daemon,
 }) => {
-  // ---- 1. Turn the managed runtime on -------------------------------------------------
+  // ---- 1. Install both prerequisites, then turn the managed runtime on ----------------
   //
   // It is not the shipped default (`DEFAULT_HARNESSES_SESSION_RUNTIMES`), which is itself
   // the first thing worth pinning: an operator opts into it, and every existing Pi dispatch
@@ -100,6 +103,16 @@ test("a Bedrock model runs on Pi's managed runtime, through every control it off
     name: "Session runtime for dispatched Pi sessions",
   });
   await expect(runtime).toHaveValue("terminal");
+  await expect(runtime.locator('option[value="sdk"]')).toBeDisabled();
+  const piCard = dashboard.locator(".harness-card").filter({ hasText: /^Pi/ });
+  await expect(piCard).toContainText("Install Pi and the Mission Control Pi extension");
+  await piCard.scrollIntoViewIfNeeded();
+  await shoot(dashboard, "runtime-locked-until-setup");
+  await piCard.getByRole("link", { name: "Setup" }).click();
+  await openSetupFamily(dashboard, "extensions");
+  await dashboard.getByRole("button", { name: "Install Pi integration" }).click();
+  await dashboard.getByRole("tab", { name: /Harnesses/ }).click();
+  await expect(runtime.locator('option[value="sdk"]')).toBeEnabled();
   await runtime.selectOption("sdk");
   await expect(
     dashboard.getByText(/They run inside Mission Control on the Agent SDK/).first(),

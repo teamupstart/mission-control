@@ -1,13 +1,19 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
+
+test.use({ daemonEnv: { MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js") } });
 
 // The real Pi driver writes through the vendor fake, then the real transcript reader and
 // SSE feed both conversation renderings. No provider or operator session is touched.
 for (const view of ["chat", "terminal"] as const) {
   test(`Pi interrupts remain visible in ${view}, with empty and partial responses`, async ({ dashboard, daemon }) => {
+    const installed = await dashboard.request.post(`${daemon.baseURL}/api/setup/install`, {
+      data: { id: "pi-integration" },
+    });
+    expect(installed.ok(), await installed.text()).toBe(true);
     expect((await dashboard.request.put(`${daemon.baseURL}/api/harnesses/config`, {
       data: { sessionRuntime: { pi: "sdk" } },
     })).ok()).toBe(true);

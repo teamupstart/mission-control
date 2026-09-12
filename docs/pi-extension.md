@@ -64,6 +64,9 @@ session's Stop survive discovery without weakening ambiguous-cwd or conflicting-
 refusals. After a daemon restart or hook expiry, Pi's passive transcript reader treats both
 clean completion and an interrupted assistant turn as idle; pending tool calls and errors
 remain working. Dashboard follow-ups can therefore drain after an interrupt on either path.
+Both legacy and resolved pane keys share the existing overlay cleanup: entries older than
+30 minutes are deleted on subsequent hook ingest, including entries whose sessions were
+evicted. Eviction itself does not delete hook overlays.
 
 The existing Pi usage reader prices the exact transcript once the extension supplies identity.
 An explicit transcript path is accepted only when its bounded first-line header agrees with the

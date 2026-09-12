@@ -39,7 +39,7 @@ process.env.HARNESS_DISPATCH_SETTLE_MS = "10";
 const { HARNESSES, hooksFor } = await import("../src/server/harness/index.ts");
 const { claudeHooks } = await import("../src/server/harness/claude/hooks.ts");
 const { CODEX_HOOK_EVENTS, codexHooks } = await import("../src/server/harness/codex/hooks.ts");
-const { Registry, sessionEqual } = await import("../src/server/registry.ts");
+const { Registry, sessionEqual, sessionKey } = await import("../src/server/registry.ts");
 const { Dispatcher } = await import("../src/server/dispatcher.ts");
 const { codexHookOverride, prepareCodexLaunch } = await import("../src/server/harness/codex/launch.ts");
 const { openDb } = await import("../src/server/db.ts");
@@ -589,6 +589,57 @@ test("hand-run Pi binds through a pane or unique cwd and only settled completes 
   }
 });
 
+
+for (const backend of ["tmux", "herdr"] as const) {
+  test(`${backend} hook overlays are pruned after eviction and expiry on later ingest`, (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+    const registry = new Registry();
+    const departed = mkDiscovered({
+      syntheticId: `overlay-departed-${backend}`,
+      agent: "pi",
+      agentSessionId: `overlay-conversation-${backend}`,
+      terminals: [mkMuxHandle({ backend, paneId: "departed" })],
+    });
+    registry.applyDiscovery([departed]);
+    const departedKey = sessionKey(registry.getSession(departed.syntheticId)!);
+    assert.equal(departedKey, `${backend}:departed`);
+    registry.applyHook({
+      agent: "pi", event: "Stop", sessionId: departed.agentSessionId!,
+      cwd: departed.cwd, transcriptPath: null,
+      env: backend === "tmux" ? { tmuxPane: "departed" } : {},
+    });
+    // State alone cannot prove memory cleanup: an expired overlay is ignored even
+    // when it remains in the map. Inspect storage, but exercise only public writers.
+    const overlays = (registry as unknown as { overlays: ReadonlyMap<string, unknown> }).overlays;
+    assert.ok(overlays.has(departedKey));
+    registry.applyDiscovery([]);
+    t.mock.timers.tick(9_000);
+    assert.equal(registry.getSession(departed.syntheticId), undefined, "the normal eviction timer removed the session");
+
+    t.mock.timers.tick(29 * 60_000);
+    const live = mkDiscovered({
+      syntheticId: `overlay-live-${backend}`,
+      agent: "pi",
+      agentSessionId: `overlay-live-conversation-${backend}`,
+      terminals: [mkMuxHandle({ backend, paneId: "live" })],
+    });
+    registry.applyDiscovery([live]);
+    const hook = {
+      agent: "pi" as const, event: "Stop", sessionId: live.agentSessionId!,
+      cwd: live.cwd, transcriptPath: null,
+      env: backend === "tmux" ? { tmuxPane: "live" } : {},
+    };
+    registry.applyHook(hook);
+    assert.equal(overlays.size, 2, "both pane overlays are still inside the 30-minute TTL");
+
+    t.mock.timers.tick(2 * 60_000);
+    registry.applyHook(hook);
+    assert.equal(overlays.has(departedKey), false, "later ingest deletes expired entries regardless of pane-key origin");
+    assert.deepEqual([...overlays.keys()], [`${backend}:live`], "the fresh overlay survives the sweep");
+    registry.applyDiscovery([live]);
+    assert.equal(registry.getSession(live.syntheticId)?.state, "idle");
+  });
+}
 
 test("keyless hooks cannot retain an overlay for an ambiguous or conflicting conversation", () => {
   const first = mkDiscovered({ syntheticId: "keyless-first", agent: "pi", agentSessionId: "first-conversation",

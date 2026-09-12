@@ -5903,6 +5903,8 @@ export class Registry extends EventEmitter {
   }
 
   private pruneOverlays(now: number): void {
+    // Hook ingest sweeps every pane key, including sessionKey fallbacks. Cleanup is
+    // TTL-based rather than tied to session eviction, so pre-discovery hooks age out too.
     for (const [k, o] of this.overlays)
       if (now - o.updatedAt > OVERLAY_TTL_MS) this.overlays.delete(k);
     for (const [k, p] of this.passiveStates)

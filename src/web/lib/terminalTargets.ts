@@ -20,20 +20,39 @@ const TTL_MS = 60_000;
 
 let cached: { at: number; targets: TerminalTargetView[] } | null = null;
 let inFlight: Promise<TerminalTargetView[] | null> | null = null;
+/**
+ * Bumped by every invalidation, and captured by every request.
+ *
+ * Dropping the memo cannot cancel a request already in the air, so without this the loser of
+ * that race still wins: an older read settles after a refresh started, writes its stale
+ * answer into `cached`, and clears the `inFlight` belonging to the newer one.
+ */
+let generation = 0;
 
 /** Drop the memo, so a test - or a manual refresh - starts from nothing. */
 export function forgetTerminalTargets(): void {
+  generation += 1;
   cached = null;
   inFlight = null;
 }
 
-async function loadTerminalTargets(): Promise<TerminalTargetView[] | null> {
+/**
+ * The memo in front of one route read, exported for the generation test - the race it guards
+ * needs two reads in the air at once, which no caller can arrange from outside.
+ */
+export async function loadTerminalTargets(
+  read: typeof fetchTerminalTargets = fetchTerminalTargets,
+): Promise<TerminalTargetView[] | null> {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.targets;
-  inFlight ??= fetchTerminalTargets().then((result) => {
+  const mine = generation;
+  inFlight ??= read().then((result) => {
+    const targets = result ? result.targets : null;
+    // Superseded while in the air: still the honest answer for whoever awaited THIS promise,
+    // but it may not touch the memo a newer request owns.
+    if (mine !== generation) return targets;
     inFlight = null;
-    if (!result) return null;
-    cached = { at: Date.now(), targets: result.targets };
-    return result.targets;
+    if (targets) cached = { at: Date.now(), targets };
+    return targets;
   });
   return inFlight;
 }
@@ -49,19 +68,26 @@ export interface TerminalTargetsState {
   failed: boolean;
 }
 
-export function useTerminalTargets(): TerminalTargetsState {
+/**
+ * @param revision Bumped by a caller that has just asked the machine to be inspected again.
+ * A change drops the memo and re-reads, so a Re-check retries an answer that failed rather
+ * than leaving the caller with a dead reading until it happens to remount. Zero - the
+ * default - reads once and keeps the TTL, which is what every other consumer wants.
+ */
+export function useTerminalTargets(revision = 0): TerminalTargetsState {
   const [state, setState] = useState<TerminalTargetsState>(() => ({
     targets: cached?.targets ?? null,
     failed: false,
   }));
   useEffect(() => {
     let live = true;
+    if (revision > 0) forgetTerminalTargets();
     void loadTerminalTargets().then((targets) => {
       if (live) setState({ targets, failed: targets === null });
     });
     return () => {
       live = false;
     };
-  }, []);
+  }, [revision]);
   return state;
 }

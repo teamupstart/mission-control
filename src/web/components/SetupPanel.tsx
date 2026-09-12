@@ -13,7 +13,14 @@ import type {
   PipelineInstallerCandidatesResult,
   PipelineProviderId,
 } from "@shared/pipeline.ts";
-import type { TerminalBackendId, TerminalTargetView } from "@shared/terminal.ts";
+import {
+  MULTIPLEXER_IDS,
+  resolveEmulatorBackend,
+  type EmulatorId,
+  type MultiplexerId,
+  type TerminalBackendId,
+  type TerminalTargetView,
+} from "@shared/terminal.ts";
 import { COPY_FEEDBACK_LABEL, useCopyFeedback } from "../lib/clipboard.ts";
 import {
   fetchPipelineInstallers,
@@ -22,9 +29,15 @@ import {
   type SetupInstallerLaunchResult,
   type SetupServiceStartResult,
 } from "../lib/api.ts";
-import { useTerminalTargets } from "../lib/terminalTargets.ts";
+import { useTerminalTargets, type TerminalTargetsState } from "../lib/terminalTargets.ts";
+import { useTerminalsConfig, type TerminalsConfigState } from "../useTerminalsConfig.ts";
 import type { SetupChecksState } from "../useSetupChecks.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
+import {
+  EMULATOR_GROUPS,
+  multiplexerTerminalCopy,
+  TerminalPreferencePicker,
+} from "./TerminalPreferencePicker.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 
 function CopyCommand({ argv, note }: { argv: readonly string[]; note: string }): React.JSX.Element {
@@ -467,58 +480,148 @@ function Evidence({ evidence, home }: { evidence: string; home: string }): React
   return shown === evidence ? line : <Tooltip label={evidence}>{line}</Tooltip>;
 }
 
+/**
+ * The multiplexer a Setup row is about, or null when the row is not one.
+ *
+ * No mapping table: `SETUP_DEPENDENCY_IDS` spells its multiplexer values exactly as
+ * `MULTIPLEXER_IDS` does, and this narrows through that shared spelling rather than
+ * restating the list.
+ */
+function multiplexerForRow(row: SetupRowView): MultiplexerId | null {
+  if (row.family !== "terminals" || row.rowId.source !== "dependency") return null;
+  return MULTIPLEXER_IDS.find((id) => id === row.rowId.id) ?? null;
+}
+
+/**
+ * The trailing "Opens in" control on one multiplexer's row.
+ *
+ * WHICH multiplexers get one is the daemon's answer, not this component's: `needsTerminalApp`
+ * is derived from the adapter's `attachArgv`, so a backend that draws its own window says so
+ * itself and a future self-hosting multiplexer needs no edit here. Naming cmux in the browser
+ * would put a second copy of that declaration somewhere nothing can check it against the
+ * adapter.
+ *
+ * A multiplexer that is not installed keeps the control and disables it: there is nothing to
+ * set a preference for yet, and a live control would imply otherwise.
+ */
+function MultiplexerTerminal({
+  mux,
+  row,
+  target,
+  targets,
+  terminals,
+}: {
+  mux: MultiplexerId;
+  row: SetupRowView;
+  target: TerminalTargetView | undefined;
+  /** The panel's own reading, so a Re-check reaches the menu's rows too. */
+  targets: TerminalTargetsState;
+  terminals: TerminalsConfigState;
+}): React.JSX.Element | null {
+  // The daemon has not answered yet. Rendering either branch now would guess.
+  if (target?.needsTerminalApp === undefined) return null;
+  if (!target.needsTerminalApp) {
+    return (
+      <div className="setup-row-aside">
+        <Tooltip label={`${target.label} sessions are drawn in their own window`}>
+          <span className="pref-inert">Needs no terminal</span>
+        </Tooltip>
+      </div>
+    );
+  }
+  const stored = terminals.config?.multiplexerTerminal[mux] ?? null;
+  // The SHARED resolver over the config this browser fetched - never the server-only
+  // `resolveFocusEmulator`, which reads the daemon's own config.
+  const unknown = resolveEmulatorBackend(stored).unknown;
+  return (
+    <div className="setup-row-aside">
+      <span className="launch-head">Opens in</span>
+      <TerminalPreferencePicker
+        id={`setup-terminal-${mux}`}
+        copy={multiplexerTerminalCopy(target.label)}
+        groups={EMULATOR_GROUPS}
+        resolve={resolveEmulatorBackend}
+        value={stored}
+        availability={targets}
+        disabled={terminals.config === null || row.status.state !== "satisfied"}
+        onChange={(backend: EmulatorId | null) => {
+          void terminals.update({ multiplexerTerminal: { [mux]: backend } });
+        }}
+      />
+      {unknown && (
+        <p className="setup-pref-unknown">
+          Ignoring “{unknown}”, which is not a terminal app this build offers here.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SetupRow({
   row,
   home,
+  aside,
   onRepaired,
 }: {
   row: SetupRowView;
   home: string;
+  /** A trailing control belonging to this row, or null. See `MultiplexerTerminal`. */
+  aside?: React.JSX.Element | null;
   onRepaired(): void;
 }): React.JSX.Element {
   const status = row.status;
   const satisfied = status.state === "satisfied";
-  return (
-    <article className={`setup-row setup-row-${status.state}`} data-anchor={setupRowAnchor(row.rowId)}>
-      <div className="setup-row-main">
-        <div className="setup-row-title">
-          {/* Labelled, not decorative. Dropping the pill from a satisfied row left the dot as
-              the only thing saying so, and a dot conveys its meaning entirely through colour -
-              which is no meaning at all to a screen reader, and the one state with no pill,
-              no amber wash and no impact sentence to fall back on. */}
-          <span
-            className={`setup-dot setup-dot-${satisfied ? "ready" : "gap"}`}
-            role="img"
-            aria-label={STATUS_LABEL[status.state]}
-          />
-          <strong>{row.label}</strong>
-          {/* A satisfied row states its status with the dot and its own colour. The pill is
-              kept for the states that need a word, and `required` is the only requirement
-              worth repeating on a row that is already fine - "recommended" on ten healthy
-              rows describes a decision made long ago and says nothing about now. */}
-          {!satisfied && (
-            <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>
-          )}
-          {(!satisfied || row.requirement === "required") && (
-            <span className={`setup-requirement setup-requirement-${row.requirement}`}>{row.requirement}</span>
-          )}
-        </div>
-        {satisfied ? (
-          <>
-            <Evidence evidence={status.evidence} home={home} />
-            {status.source && <p className="setup-source">Source: {status.source}</p>}
-          </>
-        ) : (
-          <>
-            <p className="setup-impact">{row.enables}</p>
-            {status.state !== "missing" && <p className="setup-why">{status.why}</p>}
-            {status.state !== "missing" && status.evidence && (
-              <Evidence evidence={status.evidence} home={home} />
-            )}
-            <Remedy row={row} onRepaired={onRepaired} />
-          </>
+  const main = (
+    <div className="setup-row-main">
+      <div className="setup-row-title">
+        {/* Labelled, not decorative. Dropping the pill from a satisfied row left the dot as
+            the only thing saying so, and a dot conveys its meaning entirely through colour -
+            which is no meaning at all to a screen reader, and the one state with no pill,
+            no amber wash and no impact sentence to fall back on. */}
+        <span
+          className={`setup-dot setup-dot-${satisfied ? "ready" : "gap"}`}
+          role="img"
+          aria-label={STATUS_LABEL[status.state]}
+        />
+        <strong>{row.label}</strong>
+        {/* A satisfied row states its status with the dot and its own colour. The pill is
+            kept for the states that need a word, and `required` is the only requirement
+            worth repeating on a row that is already fine - "recommended" on ten healthy
+            rows describes a decision made long ago and says nothing about now. */}
+        {!satisfied && (
+          <span className={`setup-status setup-status-${status.state}`}>{STATUS_LABEL[status.state]}</span>
+        )}
+        {(!satisfied || row.requirement === "required") && (
+          <span className={`setup-requirement setup-requirement-${row.requirement}`}>{row.requirement}</span>
         )}
       </div>
+      {satisfied ? (
+        <>
+          <Evidence evidence={status.evidence} home={home} />
+          {status.source && <p className="setup-source">Source: {status.source}</p>}
+        </>
+      ) : (
+        <>
+          <p className="setup-impact">{row.enables}</p>
+          {status.state !== "missing" && <p className="setup-why">{status.why}</p>}
+          {status.state !== "missing" && status.evidence && (
+            <Evidence evidence={status.evidence} home={home} />
+          )}
+          <Remedy row={row} onRepaired={onRepaired} />
+        </>
+      )}
+    </div>
+  );
+  return (
+    <article className={`setup-row setup-row-${status.state}`} data-anchor={setupRowAnchor(row.rowId)}>
+      {aside
+        ? (
+            <div className="setup-row-split">
+              {main}
+              {aside}
+            </div>
+          )
+        : main}
     </article>
   );
 }
@@ -718,6 +821,19 @@ export function SetupPanel({
   // depends on what this machine turns out to be missing.
   const dependenciesTourRef = useTourTargetRef<HTMLDivElement>("setup:dependencies");
   const recheckTourRef = useTourTargetRef<HTMLButtonElement>("setup:recheck");
+  // The Terminals family's per-multiplexer chooser. The targets say WHICH multiplexers need
+  // one (`needsTerminalApp`) and the config says what each is set to; both are read here so
+  // the rows share one answer rather than each asking the daemon.
+  // Re-checked alongside the machine itself: the targets read is the one answer on this panel
+  // that can fail on its own, and without the bump a failed read would leave the Terminals
+  // rows without their choosers until the panel happened to remount.
+  const [terminalRevision, setTerminalRevision] = useState(0);
+  const terminalTargets = useTerminalTargets(terminalRevision);
+  const terminals = useTerminalsConfig(terminalRevision);
+  const recheck = useCallback((): void => {
+    setTerminalRevision((n) => n + 1);
+    void state.refresh();
+  }, [state]);
 
   // `NO_ROWS` rather than a fresh `[]`: this array is an effect dependency and a memo input,
   // and a new identity every render makes both of them run every render.
@@ -775,7 +891,7 @@ export function SetupPanel({
       <VerdictHeader
         rows={rows}
         loading={state.loading}
-        onRefresh={() => void state.refresh()}
+        onRefresh={recheck}
         recheckRef={recheckTourRef}
       />
       {state.error && <p className="settings-error">{state.error}</p>}
@@ -834,17 +950,42 @@ export function SetupPanel({
               onInstalled={onRepaired}
             />
           )}
+          {/* One sentence for the whole family: the choosers share one hook, so a refusal
+              printed per row would repeat itself on every multiplexer. */}
+          {active === "terminals" && terminals.error && (
+            <p className="settings-error">{terminals.error}</p>
+          )}
+          {/* A failed targets read leaves every chooser absent, which on its own reads as
+              "this build has no terminal apps". Re-check retries it. */}
+          {active === "terminals" && terminalTargets.failed && (
+            <p className="settings-warn">
+              Mission Control could not check terminal availability, so the per-multiplexer
+              terminal choosers are hidden. Re-check to try again.
+            </p>
+          )}
           {activeRows.length > 0
             ? (
                 <div className="setup-rows">
-                  {activeRows.map((row) => (
-                    <SetupRow
-                      key={setupRowAnchor(row.rowId)}
-                      row={row}
-                      home={home}
-                      onRepaired={onRepaired}
-                    />
-                  ))}
+                  {activeRows.map((row) => {
+                    const mux = multiplexerForRow(row);
+                    return (
+                      <SetupRow
+                        key={setupRowAnchor(row.rowId)}
+                        row={row}
+                        home={home}
+                        aside={mux && (
+                          <MultiplexerTerminal
+                            mux={mux}
+                            row={row}
+                            target={terminalTargets.targets?.find((t) => t.id === mux)}
+                            targets={terminalTargets}
+                            terminals={terminals}
+                          />
+                        )}
+                        onRepaired={onRepaired}
+                      />
+                    );
+                  })}
                 </div>
               )
             : <p className="setup-loading">{state.error ? "No result" : "Checking this machine..."}</p>}

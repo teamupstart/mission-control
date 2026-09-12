@@ -58,7 +58,8 @@ import {
   isArchiveRepoSlot,
 } from "./archives.ts";
 import { SCOUT_REPORT_PATH_SHAPE, SCOUT_SUBMISSION_LIMITS, scoutReportSlug } from "./scouts.ts";
-import { TERMINAL_BACKEND_IDS } from "./terminal.ts";
+import { EMULATOR_IDS, TERMINAL_BACKEND_IDS } from "./terminal.ts";
+import type { EmulatorId, MultiplexerId } from "./terminal.ts";
 import { SetupRowIdSchema } from "./setup-catalog.ts";
 import {
   AGENT_TYPES,
@@ -2775,6 +2776,91 @@ export const HarnessesConfigPatchSchema = z
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
+/**
+ * One stored per-multiplexer terminal preference. Loose for the reason
+ * `StoredTerminalBackendSchema` is, and that reason is load-bearing here: a newer build's
+ * emulator id has to PARSE so the Setup row can report that it ignored a preference it does
+ * not recognise. A strict stored schema would reject that value before
+ * `resolveEmulatorBackend` ever saw it, which is the same as losing it.
+ */
+const StoredEmulatorBackendSchema = z.string().nullable();
+
+/** What the dashboard may set. Strict, and emulators only: a multiplexer is not an answer. */
+const EmulatorBackendSchema = z.enum(EMULATOR_IDS);
+
+/**
+ * Which terminal app each multiplexer's sessions open in, spelled out per multiplexer so
+ * this object stays exhaustive over `MULTIPLEXER_IDS`.
+ *
+ * The `satisfies` is what enforces that: adding a multiplexer fails typecheck here rather
+ * than silently producing a backend with no preference and no control.
+ */
+const multiplexerTerminalShape = {
+  tmux: StoredEmulatorBackendSchema.default(null),
+  herdr: StoredEmulatorBackendSchema.default(null),
+  cmux: StoredEmulatorBackendSchema.default(null),
+} satisfies Record<MultiplexerId, z.ZodTypeAny>;
+
+const multiplexerTerminalPatchShape = {
+  tmux: EmulatorBackendSchema.nullable().optional(),
+  herdr: EmulatorBackendSchema.nullable().optional(),
+  cmux: EmulatorBackendSchema.nullable().optional(),
+} satisfies Record<MultiplexerId, z.ZodTypeAny>;
+
+/** An untouched installation leaves every multiplexer on Automatic. */
+export const DEFAULT_MULTIPLEXER_TERMINALS = {
+  tmux: null,
+  herdr: null,
+  cmux: null,
+} as const satisfies Record<MultiplexerId, EmulatorId | null>;
+
+/**
+ * The "Terminals" settings blob: what a multiplexer's sessions open in.
+ *
+ * Deliberately NOT part of `HarnessesConfig`, which answers a different question with a
+ * different key. That object says which backend hosts a DISPATCHED session, keyed per agent
+ * and admitting multiplexers. This one says which terminal app puts a window in front of a
+ * human when they Focus a session already living in a multiplexer, keyed per multiplexer and
+ * admitting terminal apps only.
+ *
+ * `null` is Automatic and preserves the existing registry-order walk exactly.
+ */
+export const TerminalsConfigSchema = z.object({
+  multiplexerTerminal: z
+    .object(multiplexerTerminalShape)
+    // Unknown KEYS pass through, for the reason the values are loose: a newer build that
+    // adds a multiplexer writes a row this one has never heard of, and a plain object would
+    // strip it on parse - so the next write from here would delete a preference the operator
+    // set, silently, just by visiting the panel. The patch schema stays `.strict()`, so this
+    // build still cannot create one.
+    .catchall(StoredEmulatorBackendSchema)
+    .default(DEFAULT_MULTIPLEXER_TERMINALS),
+});
+export type TerminalsConfig = z.infer<typeof TerminalsConfigSchema>;
+
+/**
+ * One panel edit. Every key optional, merged per multiplexer by `setTerminalsConfig`, so
+ * setting tmux's terminal cannot blank Herdr's.
+ *
+ * Refused at BOTH levels, because with one nested map an outer count is not the same
+ * question. `{}` and `{ multiplexerTerminal: {} }` are the same no-op write, and the outer
+ * refusal sees one key in the second and lets it through to the merge and a `setAppConfig`
+ * that stores what was already there. A write that changed nothing must not answer 200.
+ */
+export const TerminalsConfigPatchSchema = z
+  .object({
+    multiplexerTerminal: z
+      .object(multiplexerTerminalPatchShape)
+      .strict()
+      .refine((o) => Object.keys(o).length > 0, {
+        message: "empty multiplexer terminal update",
+      })
+      .optional(),
+  })
+  .strict()
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+export type TerminalsConfigPatch = z.infer<typeof TerminalsConfigPatchSchema>;
 
 /**
  * The whole set of configured task sources, as the panel sends it back.

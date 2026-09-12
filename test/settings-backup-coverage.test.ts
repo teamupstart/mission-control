@@ -112,6 +112,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "shipping",
       "skills",
       "taskSources",
+      "terminals",
       "ui",
       "workflows",
       "worktrees",
@@ -131,6 +132,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
     APP_CONFIG_ENTRIES.shipping,
     APP_CONFIG_ENTRIES.pipelines,
     APP_CONFIG_ENTRIES.repoIndex,
+    APP_CONFIG_ENTRIES.terminals,
     APP_CONFIG_ENTRIES.ui,
   ]) {
     assert.equal(entry.classification.kind, "fields");

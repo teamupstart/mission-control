@@ -32,14 +32,20 @@ import {
   binUnsupportedReason,
   type BinAvailabilityDeps,
 } from "./bin.ts";
-import { MULTIPLEXERS, EMULATORS } from "./registry.ts";
+import {
+  automaticFocusEmulator,
+  emulatorAttemptOrder,
+  EMULATORS,
+  MULTIPLEXERS,
+  type FocusEmulatorPreference,
+} from "./registry.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
   isolatedAgentArgv,
 } from "../agent-subprocess-env.ts";
 
-export interface TerminalTargetDeps extends BinAvailabilityDeps {
+export interface TerminalTargetDeps extends BinAvailabilityDeps, FocusEmulatorPreference {
   multiplexers: Record<string, Multiplexer>;
   emulators: Record<string, TerminalEmulator>;
   launchId: () => string;
@@ -51,6 +57,9 @@ export const defaultTerminalTargetDeps: TerminalTargetDeps = {
   installed: binPresent,
   unsupported: binUnsupportedReason,
   launchId: () => randomUUID().slice(0, 6),
+  // Automatic unless the daemon composes the stored reader over it - see
+  // `automaticFocusEmulator` and `configuredTerminalTargetDeps`.
+  focusEmulator: automaticFocusEmulator,
 };
 
 /** What a launcher asks for: a window, here, running this. */
@@ -61,21 +70,28 @@ export interface TerminalLaunchSpec {
   argv: readonly string[];
 }
 
+/** Can this emulator open a window right now? The one condition, asked in one place. */
+function canRaise(
+  emulator: TerminalEmulator | undefined,
+  deps: BinAvailabilityDeps,
+): emulator is TerminalEmulator {
+  return Boolean(
+    emulator?.spawn && !binUnavailableReason(emulator.bin, emulator.label, deps),
+  );
+}
+
 /**
- * The emulator that will raise a detached multiplexer session, or null when none can.
+ * The first emulator in `emulatorAttemptOrder` that CAN open a window, or null when none can.
  *
- * First installed one wins, in `EMULATOR_IDS` order, which is the same precedence
- * `homeBackends` uses. Named rather than merely counted so the row can say which one it
- * will use - "New session, raised in WezTerm" is a promise a human can check, and "tmux is
- * available" is not.
+ * Named rather than merely counted so the row can say which one it will use - "New session,
+ * raised in WezTerm" is a promise a human can check, and "tmux is available" is not.
+ *
+ * Takes the adapter because that is what both call sites already hold.
  */
-function raiser(deps: TerminalTargetDeps): TerminalEmulator | null {
-  for (const id of EMULATOR_IDS) {
+function raiser(deps: TerminalTargetDeps, mux: Multiplexer): TerminalEmulator | null {
+  for (const id of emulatorAttemptOrder(mux.id, deps)) {
     const emulator = deps.emulators[id];
-    if (
-      emulator?.spawn &&
-      !binUnavailableReason(emulator.bin, emulator.label, deps)
-    ) return emulator;
+    if (canRaise(emulator, deps)) return emulator;
   }
   return null;
 }
@@ -84,12 +100,18 @@ function multiplexerView(
   mux: Multiplexer,
   deps: TerminalTargetDeps,
 ): Omit<TerminalTargetView, "id"> {
+  const sessions = mux.sessions;
   const base = {
     label: mux.label,
     glyph: mux.glyph,
     dispatchBlurb: "New persistent session for each dispatch.",
+    // Stated on EVERY multiplexer row, including the refusals below, because the Setup panel
+    // renders a terminal chooser exactly where this is true - and a row whose multiplexer is
+    // merely not installed yet still has a preference worth carrying. Read off the adapter's
+    // `attachArgv`, never off a backend name: a multiplexer that draws its own window says so
+    // by declaring `attachArgv: null`, and cmux is not the only one that ever will.
+    needsTerminalApp: Boolean(sessions?.attachArgv),
   };
-  const sessions = mux.sessions;
   if (!sessions) {
     // A multiplexer that only ever attaches to what is already running cannot make one.
     const reason = `${mux.label} cannot start a session`;
@@ -110,7 +132,7 @@ function multiplexerView(
       dispatchUnavailable: null,
     };
   }
-  const raise = raiser(deps);
+  const raise = raiser(deps, mux);
   if (!raise) {
     return {
       ...base,
@@ -325,23 +347,25 @@ export async function launchTerminal(
       // Detached is not open. A backend whose sessions can exist without a window has only
       // half-finished at this point, and reporting success here would be the exact failure
       // this module's header is about.
-      const raise = raiser(deps);
-      if (!raise?.spawn) {
-        const error = await cleanupDetachedFailure(
-          sessions,
-          name,
-          view.label,
-          `${view.label} session started but no terminal could show it`,
-        );
-        return {
-          ok: false,
-          label: view.label,
-          error,
-          status: 502,
-        };
-      }
-      const shown = await raise.spawn.tab({ argv: sessions.attachArgv(name), title: name, cwd: null });
-      if (!shown.ok) {
+      //
+      // EVERY candidate in `emulatorAttemptOrder`, not just the first. `raiser` answers "which
+      // one can", and a terminal that can still fails: taking the first refusal as final would
+      // tear down a session another installed terminal could have shown, and the preference
+      // makes that reachable by putting the operator's choice at the head of the order.
+      const argv = sessions.attachArgv(name);
+      let refusal: string | null = null;
+      let raised = false;
+      for (const id of emulatorAttemptOrder(mux.id, deps)) {
+        const emulator = deps.emulators[id];
+        const spawn = canRaise(emulator, deps) ? emulator.spawn : null;
+        if (!spawn) continue;
+        const shown = await spawn.tab({ argv, title: name, cwd: null });
+        if (shown.ok) {
+          raised = true;
+          break;
+        }
+        // The window may well be open. Cleaning up on an unknown outcome would close a
+        // session the operator can see, so stop here and leave it standing.
         if (shown.outcomeUnknown) {
           return {
             ok: false,
@@ -351,11 +375,14 @@ export async function launchTerminal(
             status: 504,
           };
         }
+        refusal = shown.error ?? `${emulator?.label ?? id} could not open a window`;
+      }
+      if (!raised) {
         const error = await cleanupDetachedFailure(
           sessions,
           name,
           view.label,
-          shown.error ?? `${raise.label} could not open a window`,
+          refusal ?? `${view.label} session started but no terminal could show it`,
         );
         return {
           ok: false,

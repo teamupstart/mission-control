@@ -371,9 +371,10 @@ test.describe("the phase meter on a board card", () => {
     await expect(meter.locator(".tpm-now.workflow-failed")).toHaveText("BUILD");
     await shoot(dashboard, tile, "07-halted-mid-step-card");
 
-    // Hovering it gives the class, the reason, and what that class means for whoever has to
-    // clear it - the same three facts the attention inbox leads with.
-    await halted.hover();
+    // Focus keeps the reason open when discovery moves the card beneath the pointer.
+    // It gives the class, reason, and operator action, just like the attention inbox.
+    await dashboard.mouse.move(0, 0);
+    await halted.focus();
     const popover = dashboard.locator(".tooltip.tt-rich");
     await expect(popover).toBeVisible();
     await expect(popover).toContainText("Halted");
@@ -386,9 +387,9 @@ test.describe("the phase meter on a board card", () => {
 
     // The phase the run stopped in repeats the sentence, since no phase failed to claim it -
     // so an operator who opens the ringed segment first still finds the reason there.
-    await dashboard.mouse.move(0, 0);
+    await halted.blur();
     await expect(popover).toHaveCount(0);
-    await meter.locator(".tpm-seg").nth(3).hover();
+    await meter.locator(".tpm-seg").nth(3).focus();
     await expect(popover.locator(".tpm-pop-foot")).toContainText(
       "Needs a human - the scope widened past the approved plan",
     );

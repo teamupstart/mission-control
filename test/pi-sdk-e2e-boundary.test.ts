@@ -25,6 +25,40 @@ import type { PiHostUI } from "../src/server/harness/pi/sdk-ui.ts";
 const FAKE_SDK = new URL("../e2e/fixtures/fake-pi-sdk.mjs", import.meta.url);
 const DAEMON_FIXTURE = new URL("../e2e/fixtures/daemon.ts", import.meta.url);
 
+test("unsupported diagnostics do not keep an ordinary fake turn streaming", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-diagnostic-boundary-"));
+  try {
+    writeFileSync(join(home, "models.json"), "[]");
+    await withEnv({ MISSION_HOME: home, PI_CODING_AGENT_DIR: join(home, "agent"),
+      MC_E2E_RECORD_DIR: join(home, "records"), MC_E2E_PI_SDK_MODELS: join(home, "models.json") }, async (module) => {
+      const sdk = await module.createPiSdk() as unknown as PiSdk;
+      const runtime = await sdk.createRuntime({ cwd: home, sessionPath: null, model: null,
+        thinkingLevel: null, projectTrust: false, appendSystemPrompt: [], toolEnv: {} });
+      const methods: string[] = [];
+      let settled = 0;
+      runtime.session.subscribe((event) => { if (event.type === "agent_settled") settled += 1; });
+      await runtime.session.bindExtensions({ select: async () => undefined, confirm: async () => false,
+        input: async () => undefined, editor: async () => undefined, notify() {},
+        unsupported(method) { methods.push(method); } });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          runtime.session.prompt("PI_UNSUPPORTED", { preflightResult() {} }),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("ordinary turn did not settle")), 3_000);
+          }),
+        ]);
+        assert.equal(runtime.session.streaming, false);
+        assert.equal(settled, 1);
+        assert.deepEqual(methods, ["custom", "setWidget", "setWidget"]);
+      } finally {
+        clearTimeout(timeout);
+        await runtime.dispose();
+      }
+    });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 for (const blocked of ["select", "confirm", "input", "editor"] as const) {
   test(`the fake stops its scripted turn after abort during ${blocked}`, async () => {
     const home = mkdtempSync(join(tmpdir(), "pi-abort-boundary-"));

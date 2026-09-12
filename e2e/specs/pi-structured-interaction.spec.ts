@@ -169,7 +169,8 @@ test("reset cancels an extension question before rebinding the replacement", asy
 });
 
 test("an unsupported UI method can report after its first diagnostic was throttled", async ({ dashboard, daemon }) => {
-  await dispatch(dashboard, daemon, "PI_UNSUPPORTED");
+  // Keep diagnostics visible until the explicit interrupt through the shared slow-turn mode.
+  await dispatch(dashboard, daemon, "PI_UNSUPPORTED SLOWLY");
   await dashboard.getByRole("button", { name: /Trust project$/ }).click();
   const detail = dashboard.locator(".console-detail");
   await expect(detail.getByText("Pi warning: Extension UI setWidget is unavailable in managed sessions", { exact: true })).toBeVisible();

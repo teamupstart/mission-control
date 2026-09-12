@@ -198,20 +198,12 @@ class FakeSession {
     }
     if (text.includes("PI_BLOCK")) await this.ui.input("Blocking extension question");
     if (!current()) return;
-    if (text.includes("PI_UNSUPPORTED")) {
-      this.ui.unsupported("custom");
-      this.ui.unsupported("setWidget");
-      // Repeated use after the host's diagnostic throttle must remain reportable.
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      if (!current()) return;
-      this.ui.unsupported("setWidget");
-      return;
-    }
     if (text.includes("PI_CREATE_PR")) {
       this.emit({ type: "tool_execution_start", toolCallId: "pr", toolName: "bash", command: "gh pr create", opensPullRequest: true });
       this.emit({ type: "tool_execution_end", toolCallId: "pr", toolName: "bash", isError: false, prUrls: ["https://github.com/test/pi-fixture/pull/975"] });
     }
-    if (/SLOWLY/.test(text)) {
+    const slow = /SLOWLY/.test(text);
+    if (slow) {
       this.partialReply = /PARTIAL/.test(text) ? "Pi response before interruption" : "";
       this.emit({
         type: "tool_execution_start",
@@ -219,8 +211,16 @@ class FakeSession {
         toolName: "bash",
         args: { command: "sleep 600" },
       });
-      return;
     }
+    if (text.includes("PI_UNSUPPORTED")) {
+      this.ui.unsupported("custom");
+      this.ui.unsupported("setWidget");
+      // Repeated use after the host's diagnostic throttle must remain reportable.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!current()) return;
+      this.ui.unsupported("setWidget");
+    }
+    if (slow) return;
     setTimeout(() => this.settleWith(text), 5);
   }
 

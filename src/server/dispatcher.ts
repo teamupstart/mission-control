@@ -307,6 +307,9 @@ export class Dispatcher {
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
       const missionMcp = kindMissionMcpRequirement(task, options.missionMcp ?? null, workflowEvidence);
+      // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
+      // the fork further down. Resolved before provisioning so the guard can refuse before
+      // any worktree exists. A toggle flipped mid-batch still reaches the next session.
       const runtime = (this.deps.resolveRuntime ?? resolveDispatchRuntime)(task.agent);
       const missionTools = capabilitiesFor(task.agent).missionTools;
       const piManagedRuntime = task.agent === "pi" && runtime === "sdk";
@@ -340,14 +343,9 @@ export class Dispatcher {
       // terminal home and an agent that has to be torn down again.
       const baseSha = options.baseSha ? await verifyPinnedBase(task.repoRoot, options.baseSha) : null;
 
-      // Which runtime this launch takes, resolved ONCE and read twice: the guard below and
-      // the fork further down. Resolved here rather than after provisioning so the guard can
-      // refuse before any worktree exists - the same ordering, and the same reason, as the
-      // pinned-base check above. Reading a toggle flipped mid-batch still reaches the next
-      // session rather than the next restart, which is all the later position bought.
-      // Resolved once beside the runtime, and only on the terminal arm. The exact choice is
-      // persisted with the resulting home so a later settings edit cannot re-aim liveness or
-      // teardown at a different backend.
+      // Resolve the backend only on the terminal arm. The exact choice is persisted with the
+      // resulting home so a later settings edit cannot re-aim liveness or teardown at a
+      // different backend.
       const terminalBackend = runtime === "terminal"
         ? (this.deps.resolveTerminalBackend ?? resolveDispatchTerminalBackend)(task.agent)
         : null;

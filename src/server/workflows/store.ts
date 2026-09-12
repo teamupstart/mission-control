@@ -10862,6 +10862,12 @@ export class WorkflowStore {
          * would turn a resumed capture that staged one more claim in between into a thrown
          * capture - trading a duplicated log line for a failed submission. Digesting the claims
          * dedupes an identical retry and appends a second line when the answer genuinely moved.
+         *
+         * The digest and the payload read the SAME normalized value, which is the point of
+         * normalizing rather than a tidiness preference. Digesting a sorted set while writing the
+         * unsorted one restores the very failure this guards against: the same links in a
+         * different order dedupe to one event id carrying a different payload, which is exactly
+         * what the replay-conflict guard refuses.
          */
         const claims = unresolved.map((claim) => ({
           clientCriterionId: claim.clientCriterionId,
@@ -10872,7 +10878,7 @@ export class WorkflowStore {
           submissionId: input.submissionId,
           round: submission.round,
           segment: submission.segment,
-          claims: unresolved,
+          claims,
         }, now, `coverage-left-staged:${input.submissionId}:${digest}`);
       }
       return { frozen, unresolved };

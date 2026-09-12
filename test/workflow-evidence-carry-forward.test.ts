@@ -2552,3 +2552,70 @@ test("the deferred pass is safe to re-run and logs one refusal, not one per atte
     rmSync(checkout, { recursive: true, force: true });
   }
 });
+
+/**
+ * The event id digests the claims and the payload writes them, so the two have to be the SAME
+ * value. Digesting a sorted set while writing the unsorted one reintroduces the failure the
+ * digest exists to prevent: the same links in a different order collapse to one event id
+ * carrying a different payload, which is what `appendEvent`'s replay-conflict guard refuses.
+ */
+test("the left-staged event writes the same normalized claims its id was digested from", () => {
+  const checkout = realpathSync(mkdtempSync(join(tmpdir(), "mission-carry-normalized-")));
+  try {
+    const body = "the suite this criterion rests on\n";
+    writeFileSync(join(checkout, "zeta.log"), body);
+    writeFileSync(join(checkout, "alpha.log"), body);
+    const { store, noteKey, binding, runId } = fixture(checkout);
+    const scoped = (id: string, locator: string, scope: string) => ({
+      ...logWrite({
+        id: `normalized-${id}`,
+        clientItemId: id,
+        root: checkout,
+        locator,
+        caption: `Proof from ${locator}`,
+        body,
+      }),
+      repositoryScope: scope,
+    });
+    store.stageWorkflowEvidence(
+      noteKey,
+      [scoped("zeta-proof", "zeta.log", "repo-01"), scoped("alpha-proof", "alpha.log", "repo-01")],
+      2,
+      null,
+      [{
+        id: "normalized-claim",
+        clientCriterionId: "normalized-criterion",
+        criterion: "The panel renders and its suite passes",
+        proofClass: "visual" as const,
+        repositoryScope: "repo-01" as const,
+        sourceRoot: checkout,
+        // Registered zeta-first on purpose: the payload must not echo this order back.
+        links: [
+          { clientItemId: "zeta-proof", role: "rendered_output" as const },
+          { clientItemId: "alpha-proof", role: "execution" as const },
+        ],
+      }],
+    );
+    store.stageWorkflowEvidence(
+      noteKey,
+      [scoped("zeta-proof", "zeta.log", "repo-02"), scoped("alpha-proof", "alpha.log", "repo-02")],
+      3,
+      null,
+    );
+    const submission = store.createInitialSubmission(
+      { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "normalized-root", now: 4 },
+      { id: "normalized-first", triggerSource: "manual", triggerKey: "normalized-root", context: {}, evidence: {}, now: 4 },
+    );
+
+    store.freezeDeferredSubmissionCoverage({ submissionId: submission.submission.id, now: 5 });
+    const event = store.listEvents(runId)
+      .find((row) => row.kind === "evidence_coverage_left_staged");
+    assert.deepEqual(
+      (event?.payload as { claims: Array<{ unresolvedLinks: string[] }> }).claims,
+      [{ clientCriterionId: "normalized-criterion", unresolvedLinks: ["alpha-proof", "zeta-proof"] }],
+      "the payload carries the sorted set the event id was keyed on, not the registration order",
+    );
+  } finally {
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});

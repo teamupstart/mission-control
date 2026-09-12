@@ -61,16 +61,13 @@ function deps(
 
 function appFor(setupDeps: SetupDeps) {
   const registry = new Registry();
-  return buildApp(
+  return buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     setupDeps,
-  );
+  });
 }
 
 test("the route returns every row and folds an environment warning field by field", async () => {

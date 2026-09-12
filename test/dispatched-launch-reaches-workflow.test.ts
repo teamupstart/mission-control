@@ -206,15 +206,14 @@ function dispatch(slug: string): Dispatched {
   const queues = new QueueManager(registry);
   const personas = new PersonaManager(registry);
   const workflows = mkWorkflows(registry, personas, queues);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
     queues,
-    undefined,
     personas,
     workflows,
-  );
+  });
 
   const task = mkTask();
   const delivered = withTaskKindContract(task, task.intent);

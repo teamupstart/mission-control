@@ -392,7 +392,12 @@ test("registry prune drops orphaned invites and never a live session's", () => {
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 function mkApp(registry: InstanceType<typeof Registry>): ReturnType<typeof buildApp> {
-  return buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
+  return buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
 }
 
 test("POST /api/sessions/:id/foreman-invite invites; DELETE withdraws; both 404 on unknown", async () => {

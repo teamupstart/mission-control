@@ -246,18 +246,13 @@ test("an answer that chose nothing is not written down as a decision", () => {
 // ---- through the route, which is where the record is actually written ----------------
 
 function mkApp(registry: Registry_, reviews: InstanceType<typeof ReviewManager>, supervisor: SdkSupervisor) {
-  return buildApp(
+  return buildApp({
     registry,
     reviews,
-    {} as unknown as TaskManager,
-    {} as unknown as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    supervisor,
-  );
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    sdkSessions: supervisor,
+  });
 }
 
 /** A supervisor that accepts every answer, so the route reaches its record step. */

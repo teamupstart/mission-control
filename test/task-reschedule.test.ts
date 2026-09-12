@@ -223,12 +223,7 @@ test("rescheduling does not overwrite a status changed during resource teardown"
 test("the reschedule route validates an empty body before mutating", async () => {
   const { registry, tasks } = setup();
   registry.upsertTask(mkTask({ id: "wire", status: "cancelled" }));
-  const app = buildApp(
-    registry,
-    {} as ReviewManager,
-    tasks,
-    {} as QueueManager,
-  );
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const stray = await app.request("/api/tasks/wire/reschedule", {
     method: "POST",

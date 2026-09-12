@@ -100,17 +100,13 @@ function discovered(): DiscoveredSession {
 function appWith(focusTerminals: ReturnType<typeof terminals>["deps"]) {
   const registry = new Registry();
   registry.applyDiscovery([discovered()]);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     focusTerminals,
-  );
+  });
   const session = registry.snapshot().sessions.find((s) => s.id === "s1")!;
   return { app, session };
 }

@@ -181,12 +181,7 @@ test("an already-satisfied edge keeps its original timestamp", async () => {
 test("a blocked-dependent completion refuses a task that is no longer stopped", async () => {
   const { registry, tasks } = setup();
   chain(registry);
-  const app = buildApp(
-    registry,
-    {} as ReviewManager,
-    tasks,
-    {} as QueueManager,
-  );
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const response = await app.request("/api/tasks/root/complete", {
     method: "POST",

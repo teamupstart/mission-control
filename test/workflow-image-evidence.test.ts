@@ -990,15 +990,13 @@ test("reservation freezes immutable bytes, supports all-scope fan-out, and prune
     const manager = new WorkflowManager(registry, store);
     assert.equal(manager.supportsImageEvidence(BUILTIN_WORKFLOWS[0]!.definition.id), true);
     assert.equal(manager.supportsImageEvidence("missing-workflow"), false);
-    const app = buildApp(
+    const app = buildApp({
       registry,
-      new ReviewManager(registry),
-      new TaskManager(registry),
-      new QueueManager(registry),
-      undefined,
-      undefined,
-      manager,
-    );
+      reviews: new ReviewManager(registry),
+      tasks: new TaskManager(registry),
+      queues: new QueueManager(registry),
+      workflows: manager,
+    });
     const retainedResponse = await app.request(
       `/api/workflow-runs/${lead.run.id}/images/${leadImages[0]!.id}`,
       { headers: { host: "127.0.0.1:7317" } },

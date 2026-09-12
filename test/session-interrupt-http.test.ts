@@ -77,22 +77,14 @@ function fixture(options: { interrupt?: () => Promise<"interrupted" | "idle" | n
   } as unknown as SdkSupervisor;
   const pending = new PendingTurnManager(registry, supervisor, { idleSettleMs: 0 });
   pending.start();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as ReviewManager,
-    {} as TaskManager,
-    {} as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    supervisor,
-    undefined,
-    undefined,
-    undefined,
-    pending,
-  );
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    sdkSessions: supervisor,
+    pendingTurns: pending,
+  });
   // The outbox is keyed on the CONVERSATION, not the card: `noteKeyFor` prefers the
   // harness-native id, so rows follow the conversation across a restart.
   const key = `agent:interrupt-http:${fixtureSerial}`;
@@ -260,11 +252,13 @@ test("a terminal session is stopped by writing Escape into its pane", async () =
   const session = paneSession(registry);
   assert.equal(session.runtime, "terminal");
   const pane = recordingPane();
-  const app = buildApp(
-    registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, pane.deps,
-  );
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    paneDeps: pane.deps,
+  });
 
   const response = await interrupt(app, session.id);
   assert.equal(response.status, 200);
@@ -281,11 +275,13 @@ test("a pane in copy-mode is refused with 409 and is NOT pulled out of it", asyn
   const registry = new Registry();
   const session = paneSession(registry);
   const pane = recordingPane("1");
-  const app = buildApp(
-    registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, pane.deps,
-  );
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    paneDeps: pane.deps,
+  });
 
   const response = await interrupt(app, session.id);
   assert.equal(response.status, 409);
@@ -321,11 +317,13 @@ test("a pane interrupt that found no turn running leaves the queue alone", async
 test("a session with no pane to write to is a 500, not a silent success", async () => {
   const registry = new Registry();
   const session = paneSession(registry);
-  const app = buildApp(
-    registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, { pane: () => null, capture: async () => null },
-  );
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    paneDeps: { pane: () => null, capture: async () => null },
+  });
 
   const response = await interrupt(app, session.id);
   assert.equal(response.status, 500);
@@ -339,7 +337,12 @@ test("a harness with no interrupt mechanism at all is still refused by the route
   // capability away, which is what a harness that genuinely cannot be stopped would declare.
   const registry = new Registry();
   const session = paneSession(registry);
-  const app = buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
   const prior = HARNESS_CAPABILITIES.claude.interrupt;
   HARNESS_CAPABILITIES.claude.interrupt = null;
   try {
@@ -362,7 +365,12 @@ test("a build with no supervisor answers rather than pretending the stop landed"
     agentSessionId: "agent:no-supervisor",
   });
   registry.applyDriverEvent(session.id, { kind: "state", state: "working", activity: null });
-  const app = buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
 
   const response = await interrupt(app, session.id);
   assert.equal(response.status, 500);

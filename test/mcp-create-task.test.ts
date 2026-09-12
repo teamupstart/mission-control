@@ -99,7 +99,7 @@ test("MCP task creation combines phase prerequisites with the calling session", 
     (session) => session.name === "phase the plan",
   );
   assert.ok(planningSession);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const response = await app.request("/mcp/tasks", {
     method: "POST",
     headers: {
@@ -141,7 +141,7 @@ test("a task filed through MCP takes the kind's agent, not a hardcoded Claude", 
   const repo = gitRepo();
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const response = await app.request("/mcp/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
@@ -162,7 +162,7 @@ test("the versioned route resolves an absolute alternate primary and echoes its 
   const repoB = gitRepo("absolute-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
@@ -182,7 +182,7 @@ test("a unique repository basename resolves through the workspace index", async 
   const repoB = gitRepo("short-name-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     targetRepository: "short-name-b",
@@ -198,7 +198,7 @@ test("missing and ambiguous short names are actionable and create no task", asyn
   const second = gitRepo("beta/shared-lib");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
   const missing = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
@@ -223,7 +223,7 @@ test("one versioned call stores an ordered canonical attachment set", async () =
   const repoC = gitRepo("attached-c");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     targetRepository: "attached-b",
@@ -244,7 +244,7 @@ test("the full repository set is refused before storage on collisions, duplicate
   const repoB = gitRepo("policy-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
   const primaryCollision = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
@@ -273,7 +273,7 @@ test("the default ship harness is capability-checked before a multi-repo task is
   const repoB = gitRepo("pi-b");
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const before = registry.snapshot().tasks.length;
 
   const original = HARNESS_CAPABILITIES.pi.multiRepoDispatch;
@@ -325,7 +325,7 @@ test("a planning session in repo A can gate a task whose primary is repo B", asy
   });
   const planningSession = registry.snapshot().sessions.find((session) => session.name === "plan across repos");
   assert.ok(planningSession);
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
 
   const response = await createTaskRequest(app, "/mcp/v2/tasks", repoA, {
     sessionId: "cross-repo-agent",

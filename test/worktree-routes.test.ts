@@ -37,28 +37,15 @@ const launch = async (_backend: TerminalBackendId, spec: TerminalLaunchSpec) => 
   launched.push(spec);
   return { ok: true, label: "Test terminal", homeName: null, status: 200 };
 };
-const app = buildApp(
+const app = buildApp({
   registry,
-  new ReviewManager(registry),
+  reviews: new ReviewManager(registry),
   tasks,
-  new QueueManager(registry),
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  launch,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  manager,
-  operations,
-);
+  queues: new QueueManager(registry),
+  launchSessionTerminal: launch,
+  worktrees: manager,
+  worktreeOperations: operations,
+});
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 after(() => db.exec("DELETE FROM worktree_slots; DELETE FROM worktree_pools; DELETE FROM app_config WHERE key = 'worktrees';"));
@@ -128,7 +115,12 @@ test("preview/execute status vocabulary and injected terminal launcher stay exac
 });
 
 test("worktree routes fail with 503 when the singleton operation service is absent", async () => {
-  const bare = buildApp(registry, new ReviewManager(registry), tasks, new QueueManager(registry));
+  const bare = buildApp({
+    registry,
+    reviews: new ReviewManager(registry),
+    tasks,
+    queues: new QueueManager(registry),
+  });
   assert.equal((await bare.request("/api/worktrees", { headers: HEADERS })).status, 503);
 });
 

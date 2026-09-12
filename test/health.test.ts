@@ -14,7 +14,7 @@ const registry = {} as unknown as Registry;
 const reviews = {} as unknown as ReviewManager;
 const tasks = {} as unknown as TaskManager;
 const queues = {} as unknown as QueueManager;
-const app = buildApp(registry, reviews, tasks, queues);
+const app = buildApp({ registry, reviews, tasks, queues });
 
 // The endpoint should surface exactly the version declared in package.json.
 const pkgVersion = (

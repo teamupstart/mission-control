@@ -98,11 +98,7 @@ function fixture(consented: readonly string[] = [repo]) {
   const registry = new Registry();
   restorePipelineProjection(registry);
   resetPipelineIngest();
-  const app = buildApp(
-    registry, null as never, null as never, null as never,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined, undefined,
-  );
+  const app = buildApp({ registry, reviews: null as never, tasks: null as never, queues: null as never });
   /** POST one NDJSON batch, with the token unless a test is about not having one. */
   const push = (body: string, headers: Record<string, string> = {}) =>
     app.request("/ingest/conductor", {

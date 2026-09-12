@@ -571,7 +571,12 @@ fileComments.start();
 // outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 
-const app = buildApp(
+// Named rather than positional. Every service below reaches its route domain by field name,
+// so adding one here cannot re-point another domain's dependency, and a misspelled field is
+// rejected by `buildApp` naming the offending key instead of arriving as a silent `undefined`.
+// The fields this omits - `handoffDeps`, `launchSessionTerminal`, `paneDeps`, `setupDeps`,
+// `setupInstallDeps` - are test seams whose production defaults live in `buildApp`.
+const app = buildApp({
   registry,
   reviews,
   tasks,
@@ -582,11 +587,8 @@ const app = buildApp(
   schedules,
   ensembles,
   sdkSessions,
-  undefined,
-  undefined,
   sessionActions,
   pendingTurns,
-  undefined,
   keepAwake,
   archives,
   workflowCommands,
@@ -597,7 +599,7 @@ const app = buildApp(
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
-);
+});
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

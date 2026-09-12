@@ -49,7 +49,7 @@ const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
-const app = buildApp(registry, reviews, tasks, queues);
+const app = buildApp({ registry, reviews, tasks, queues });
 
 // Loopback host + the shared token are what the real dashboard and hook present.
 const LOOPBACK = { host: "127.0.0.1:7317" };

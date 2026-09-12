@@ -484,7 +484,7 @@ test("the prompted-consumption route is what carries the verdict to the task", a
   const tasks = new TaskManager(registry, kill.deps);
   managers.push(tasks);
   const queues = new QueueManager(registry);
-  const app = buildApp(registry, {} as ReviewManager, tasks, queues);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues });
 
   const { schedule, occurrenceId, taskId } = filedRun({ completionPolicy: "auto-on-conclusion" });
   const sessionId = uid("sess");

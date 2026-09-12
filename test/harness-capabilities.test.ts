@@ -46,6 +46,7 @@ const {
   workQueueBlockedReason,
 } = await import("../src/shared/harness-capabilities.ts");
 const { HARNESSES, foremanAutomationAuthorized } = await import("../src/server/harness/index.ts");
+import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
 const { ModePicker } = await import("../src/web/components/ModePicker.tsx");
 const { EffortPicker, reconcileOptimisticEffort } = await import("../src/web/components/EffortPicker.tsx");
@@ -191,8 +192,8 @@ test("every capability's null path is exercised, by a real harness or a named fi
 
 // ---- permission modes ----
 
-const registry = { getSession: (id: string) => SESSIONS.get(id) } as unknown as Parameters<typeof buildApp>[0];
-const app = buildApp(registry, {} as never, {} as never, {} as never);
+const registry = { getSession: (id: string) => SESSIONS.get(id) } as unknown as RouteDeps["registry"];
+const app = buildApp({ registry, reviews: {} as never, tasks: {} as never, queues: {} as never });
 const HEADERS = { host: "127.0.0.1:7317" };
 const SESSIONS = new Map<string, Session>();
 

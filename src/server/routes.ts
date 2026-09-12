@@ -962,44 +962,50 @@ function ensembleSubmitResponse(result: EnsembleSubmitResult): { status: 200 | 4
   }
 }
 
-export function buildApp(
-  registry: Registry,
-  reviews: ReviewManager,
-  tasks: TaskManager,
-  queues: QueueManager,
+/**
+ * Every service `buildApp` composes, keyed by name. See `resolveRouteDeps` for why names.
+ *
+ * An absent field is answerable rather than silent: the routes that need it reply 503 instead
+ * of constructing a second owner inside a request handler, which would put two writers on one
+ * catalog, one library, or one OS child.
+ *
+ * `registry`, `reviews`, `tasks`, and `queues` are required because no useful subset of the
+ * route table exists without them. Everything else is optional so a focused test can supply
+ * only the domain it exercises.
+ */
+export interface RouteDeps {
+  registry: Registry;
+  reviews: ReviewManager;
+  tasks: TaskManager;
+  queues: QueueManager;
   /** Optional so tests can build an app without the away poller running. */
-  away?: AwayWatcher,
-  /** Optional for existing route-unit stubs; the daemon always supplies it. */
-  personas?: PersonaManager,
-  /** Optional for existing route-unit stubs; the daemon always supplies it. */
-  workflows?: WorkflowManager,
+  away?: AwayWatcher;
+  personas?: PersonaManager;
+  workflows?: WorkflowManager;
   /**
-   * The Recurring Missions service. Optional only so the broad legacy route-unit
-   * construction (four args) still compiles; production always passes it, and the schedule
-   * routes answer 503 when it is absent rather than constructing a second manager here.
+   * The Recurring Missions service. The schedule routes answer 503 when it is absent rather
+   * than constructing a second manager here.
    */
-  schedules?: ScheduleService,
-  /** Optional for existing route-unit stubs; the daemon always supplies it. */
-  ensembles?: EnsembleManager,
+  schedules?: ScheduleService;
+  ensembles?: EnsembleManager;
   /**
    * The owner of embedded (SDK-runtime) sessions.
    *
-   * Optional for the same route-unit reason, and its absence is answerable rather than
-   * silent: the driver arms below refuse with "this build has no session supervisor",
-   * which nothing can reach anyway, since without one no embedded session can exist.
+   * Its absence is answerable rather than silent: the driver arms below refuse with "this
+   * build has no session supervisor", which nothing can reach anyway, since without one no
+   * embedded session can exist.
    */
-  sdkSessions?: SdkSupervisor,
+  sdkSessions?: SdkSupervisor;
   /**
    * How a handed-off session's terminal home is opened. Injected so the handoff route is
    * testable on a machine with no tmux - the `HomeDeps` seam, one level up.
    */
-  handoffDeps?: HandoffDeps,
+  handoffDeps?: HandoffDeps;
   /** The selected terminal launcher. Injected so route tests never open a real window. */
-  launchSessionTerminal?: typeof launchTerminal,
-  /** Optional for existing route-unit stubs; the daemon always supplies it. */
-  sessionActions?: SessionActionManager,
-  /** Durable editable outbox. Optional only for legacy route-unit construction. */
-  pendingTurns?: PendingTurnManager,
+  launchSessionTerminal?: typeof launchTerminal;
+  sessionActions?: SessionActionManager;
+  /** Durable editable outbox. */
+  pendingTurns?: PendingTurnManager;
   /**
    * How the pane-answering routes reach a terminal. The `HandoffDeps` seam above, for the
    * two routes that drive a menu with bare keystrokes.
@@ -1012,76 +1018,374 @@ export function buildApp(
    * regression in the gating here would ship undetected. Production passes nothing and gets
    * `defaultPaneDeps`.
    */
-  paneDeps?: PaneDeps,
+  paneDeps?: PaneDeps;
   /**
-   * The transient Keep Awake owner. Optional only for the legacy route-unit
-   * construction, like every service above it; production always supplies it, and the
-   * keep-awake routes answer 503 when it is absent rather than constructing a second
-   * owner here - the manager owns exactly one OS child, and a route-built twin would be
-   * a second claimant on host power state.
+   * The transient Keep Awake owner. The keep-awake routes answer 503 when it is absent rather
+   * than constructing a second owner here - the manager owns exactly one OS child, and a
+   * route-built twin would be a second claimant on host power state.
    */
-  keepAwake?: KeepAwakeManager,
+  keepAwake?: KeepAwakeManager;
   /**
-   * The archive library owner. Appended LAST for the reason every optional above it is
-   * optional: `buildApp` is called positionally by around fifty focused tests, and the ones
-   * that care about tasks or panes must not have to learn about archives to keep compiling.
-   *
-   * Absent means the archive routes answer 503 rather than constructing a manager here. A
-   * route-built twin would be a second owner of one filesystem library and one reconciler -
-   * two background walks over the same directory, two writers of the same derived rows.
+   * The archive library owner. Absent means the archive routes answer 503 rather than
+   * constructing a manager here. A route-built twin would be a second owner of one filesystem
+   * library and one reconciler - two background walks over the same directory, two writers of
+   * the same derived rows.
    */
-  archives?: ArchiveManager,
+  archives?: ArchiveManager;
   /**
-   * The Global Command catalog owner. Appended LAST for the reason every optional above it
-   * is: `buildApp` is called positionally by around fifty focused tests, and none of them
-   * should have to learn about Commands to keep compiling.
-   *
-   * Absent means the catalog routes answer 503 and the legacy config route projects an empty
-   * command list. A route-built twin would be a second writer of one catalog and a second
-   * emitter on one live stream.
+   * The Global Command catalog owner. Absent means the catalog routes answer 503 and the
+   * legacy config route projects an empty command list. A route-built twin would be a second
+   * writer of one catalog and a second emitter on one live stream.
    */
-  workflowCommands?: WorkflowCommandManager,
+  workflowCommands?: WorkflowCommandManager;
   /** The daemon's singleton native allocator. Manual-session routes return 503 without it. */
-  worktrees?: WorktreeManager,
+  worktrees?: WorktreeManager;
   /** Singleton projection/action owner for Settings > Worktrees. */
-  worktreeOperations?: WorktreeOperationsService,
+  worktreeOperations?: WorktreeOperationsService;
+  /** Daemon-owned model discovery/cache service. */
+  modelCatalogs?: HarnessModelCatalogService;
+  /** Daemon-owned public issue writer. */
+  productIssues?: ProductIssueService;
   /**
-   * Daemon-owned model discovery/cache service. Appended last so focused route tests that
-   * do not exercise catalogs never construct or spawn one.
+   * The line-comment owner. Absent means these routes answer 503 rather than constructing a
+   * manager here. A route-built twin would be a second subscriber on `session_remove` and a
+   * second emitter on one live stream - two teardown paths for state whose whole contract is
+   * that it has exactly three.
    */
-  modelCatalogs?: HarnessModelCatalogService,
-  /** Daemon-owned public issue writer. Appended last for focused route-test compatibility. */
-  productIssues?: ProductIssueService,
-  /**
-   * The line-comment owner. Appended LAST for the reason every optional above it is: the
-   * ~50 focused tests that construct `buildApp` positionally must not have to learn about
-   * comment threads to keep compiling.
-   *
-   * Absent means these routes answer 503 rather than constructing a manager here. A
-   * route-built twin would be a second subscriber on `session_remove` and a second emitter
-   * on one live stream - two teardown paths for state whose whole contract is that it has
-   * exactly three.
-   */
-  fileComments?: FileCommentManager,
-  /** The walkthrough. Optional for the same reason `fileComments` is; its routes answer 503. */
-  fileCommentWalkthrough?: FileCommentWalkthrough,
+  fileComments?: FileCommentManager;
+  /** The walkthrough. Absent for the same reason `fileComments` is; its routes answer 503. */
+  fileCommentWalkthrough?: FileCommentWalkthrough;
   /** The daemon's singleton snapshot/restore owner. Its loopback routes return 503 without it. */
-  settingsBackups?: SettingsBackupService,
-  /** Read-only setup probe seams. Optional so existing focused route tests stay unchanged. */
-  setupDeps?: SetupDeps,
+  settingsBackups?: SettingsBackupService;
+  /** Read-only setup probe seams. */
+  setupDeps?: SetupDeps;
   /** Visible-terminal setup execution seams. Browser input never enters these values. */
-  setupInstallDeps?: SetupInstallRouteDeps,
+  setupInstallDeps?: SetupInstallRouteDeps;
   /**
    * The terminal registries Focus drives, for tests that need to watch what a raise DID
    * without spawning a real terminal on the machine running them.
    *
-   * Appended last like every optional above it. Default is `configuredTerminalDeps`, so the
-   * daemon is unaffected. A test that overrides this should spread that default rather than
-   * build one from scratch, keeping the production `focusEmulator` - the point of a test at
-   * this level is that the stored preference is read through the real composition.
+   * Default is `configuredTerminalDeps`, so the daemon is unaffected. A test that overrides
+   * this should spread that default rather than build one from scratch, keeping the
+   * production `focusEmulator` - the point of a test at this level is that the stored
+   * preference is read through the real composition.
    */
-  focusTerminals?: TerminalDeps,
-): Hono {
+  focusTerminals?: TerminalDeps;
+}
+
+/**
+ * Every dependency name, and the ONE runtime representation of them.
+ *
+ * An interface vanishes at runtime, so validating a supplied object against `RouteDeps`
+ * needs a value. This is that value, and it is pinned to the interface in BOTH directions at
+ * compile time: the `satisfies` clause rejects a name that is not a dependency, and
+ * `RouteDepNamesAreComplete` below rejects a dependency that is not named here. Neither list
+ * can drift from the interface without failing `npm run typecheck` at this line.
+ */
+export const ROUTE_DEP_NAMES = [
+  "registry",
+  "reviews",
+  "tasks",
+  "queues",
+  "away",
+  "personas",
+  "workflows",
+  "schedules",
+  "ensembles",
+  "sdkSessions",
+  "handoffDeps",
+  "launchSessionTerminal",
+  "sessionActions",
+  "pendingTurns",
+  "paneDeps",
+  "keepAwake",
+  "archives",
+  "workflowCommands",
+  "worktrees",
+  "worktreeOperations",
+  "modelCatalogs",
+  "productIssues",
+  "fileComments",
+  "fileCommentWalkthrough",
+  "settingsBackups",
+  "setupDeps",
+  "setupInstallDeps",
+  "focusTerminals",
+] as const satisfies readonly (keyof RouteDeps)[];
+
+export type RouteDepName = (typeof ROUTE_DEP_NAMES)[number];
+
+/**
+ * Compile-time proof that `ROUTE_DEP_NAMES` names every key of `RouteDeps`.
+ *
+ * The `satisfies` clause above already rejects a name that is not a dependency. This rejects
+ * the other direction: a field added to the interface and never added to the list fails to
+ * typecheck right here, with the missing name printed in the error, rather than being
+ * silently accepted by the validator as an unknown key.
+ */
+export type RouteDepNamesAreComplete =
+  Exclude<keyof RouteDeps, RouteDepName> extends never
+    ? true
+    : ["route dependency missing from ROUTE_DEP_NAMES", Exclude<keyof RouteDeps, RouteDepName>];
+
+/** @see RouteDepNamesAreComplete */
+export const ROUTE_DEP_NAMES_ARE_COMPLETE: RouteDepNamesAreComplete = true;
+
+/** The keys a caller must supply, read off the interface rather than restated. */
+type RequiredKeys<T> = {
+  [K in keyof T]-?: Record<never, never> extends Pick<T, K> ? never : K;
+}[keyof T];
+
+/** Which dependencies `RouteDeps` declares non-optional. Derived, never asserted. */
+export type RequiredRouteDep = RequiredKeys<RouteDeps>;
+
+/**
+ * The dependencies with no meaningful default: no useful subset of the routes exists without
+ * them.
+ *
+ * Pinned to the interface in both directions, like the name list. The `satisfies` clause
+ * rejects an entry that `RouteDeps` declares optional, and `RequiredRouteDepsAreComplete`
+ * rejects a field made required in the interface and never added here. Without the second
+ * check the validator would happily accept a construction missing a dependency that the type
+ * says is mandatory, which is the drift a reviewer would otherwise have to catch by reading.
+ */
+export const REQUIRED_ROUTE_DEPS = [
+  "registry",
+  "reviews",
+  "tasks",
+  "queues",
+] as const satisfies readonly RequiredRouteDep[];
+
+/** @see REQUIRED_ROUTE_DEPS */
+export type RequiredRouteDepsAreComplete =
+  Exclude<RequiredRouteDep, (typeof REQUIRED_ROUTE_DEPS)[number]> extends never
+    ? true
+    : [
+        "required route dependency missing from REQUIRED_ROUTE_DEPS",
+        Exclude<RequiredRouteDep, (typeof REQUIRED_ROUTE_DEPS)[number]>,
+      ];
+
+/** @see REQUIRED_ROUTE_DEPS */
+export const REQUIRED_ROUTE_DEPS_ARE_COMPLETE: RequiredRouteDepsAreComplete = true;
+
+const ROUTE_DEP_NAME_SET = new Set<string>(ROUTE_DEP_NAMES);
+
+/**
+ * The own property names a pristine `Object.prototype` carries, fixed by the language spec.
+ *
+ * Hardcoded rather than snapshotted at module load. A snapshot would be taken from whatever
+ * `Object.prototype` already looked like, so anything that polluted it before this module was
+ * imported would be baked into the baseline and never reported - which is precisely the case
+ * worth catching. These twelve are the whole of it, and they are all non-enumerable, so an
+ * ordinary object literal contributes nothing outside this set.
+ */
+const PRISTINE_OBJECT_PROTOTYPE_KEYS: ReadonlySet<string> = new Set([
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "__proto__",
+]);
+
+/** Levenshtein distance, bounded by the short names it runs over, for "did you mean". */
+function nameDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row: number[] = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const substitution = (prev[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1);
+      row.push(Math.min((prev[j] ?? 0) + 1, (row[j - 1] ?? 0) + 1, substitution));
+    }
+    prev = row;
+  }
+  return prev[b.length] ?? 0;
+}
+
+function suggestRouteDep(name: string): string {
+  let best: string | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  const lowered = name.toLowerCase();
+  for (const known of ROUTE_DEP_NAMES) {
+    const score = nameDistance(lowered, known.toLowerCase());
+    if (score < bestScore) {
+      bestScore = score;
+      best = known;
+    }
+  }
+  // A wholly unrelated word should not be dressed up as a typo. Half the name has to match.
+  return best && bestScore <= Math.max(2, Math.floor(name.length / 2))
+    ? ` (did you mean "${best}"?)`
+    : "";
+}
+
+/**
+ * Validate and normalize the one named object `buildApp` accepts.
+ *
+ * There is no positional form. There was one, taking 27 arguments, and it is gone rather
+ * than deprecated: a positional list
+ * assigns by index with no identity check, so an argument skipped or inserted in the middle
+ * binds a perfectly valid service to a DIFFERENT route domain and constructs successfully. The
+ * wrong domain then answers 503 much later, nowhere near the mistake. A name cannot do that,
+ * and a misspelled name is refused here, by name.
+ *
+ * Exported so the composition contract test can assert the validation directly, rather than
+ * inferring it from which routes happen to answer.
+ */
+export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
+  if (typeof deps !== "object" || deps === null) {
+    throw new TypeError(
+      `buildApp: expected a named RouteDeps object, received ${deps === null ? "null" : typeof deps}.`,
+    );
+  }
+  // A PLAIN object, because the typo check can only report names it can see. A field carried
+  // on a prototype is readable through `fields[key]` but appears in no own-key listing, so a
+  // class instance with `keepAwke` on its prototype would pass validation silently and leave
+  // `/api/keep-awake` answering 503 at request time - the deferred failure this seam exists
+  // to abolish. Refusing the shape outright is cheaper and more honest than walking an
+  // arbitrary prototype chain, and every real caller composes a literal anyway.
+  const prototype: unknown = Object.getPrototypeOf(deps);
+  if (prototype !== Object.prototype && prototype !== null) {
+    const constructorName = (deps as { constructor?: { name?: unknown } }).constructor?.name;
+    // `Object.create({ ... })` reports a constructor of `Object` while still carrying an
+    // extra link in the chain, so the name alone would describe it misleadingly.
+    const described =
+      typeof constructorName === "string" && constructorName && constructorName !== "Object"
+        ? `an instance of ${constructorName}`
+        : "an object with a non-standard prototype chain";
+    throw new TypeError(
+      `buildApp: expected a plain RouteDeps object, received ${described}. ` +
+        `Dependency names are checked against the object's own keys, so a field inherited ` +
+        `from a prototype could be neither seen nor reported.`,
+    );
+  }
+  const fields = deps as unknown as Record<string, unknown>;
+  // Names reaching this object through its prototype rather than as own fields.
+  //
+  // Requiring a plain object bounds the chain to `Object.prototype` but does not empty it. A
+  // name installed there is readable through `fields[key]` yet appears in no OWN-key listing,
+  // and `Object.hasOwn` will not copy it, so it would be neither reported nor honoured. Every
+  // name on the chain is compared against the pristine set instead, so enumerability is
+  // irrelevant: an installed name is caught whether it was assigned or defined.
+  //
+  // A name that DOES match a dependency is refused for the same reason rather than adopted:
+  // a polluted prototype is indistinguishable from a supplied field, and silently declining
+  // to honour one would be its own quiet miswiring.
+  const inheritedKeys: string[] = [];
+  for (
+    let proto: object | null = Object.getPrototypeOf(deps) as object | null;
+    proto !== null;
+    proto = Object.getPrototypeOf(proto) as object | null
+  ) {
+    // `Reflect.ownKeys`, not `for...in`: `for...in` yields only ENUMERABLE inherited names,
+    // so a `keepAwke` installed with `Object.defineProperty(..., { enumerable: false })`
+    // stayed invisible and reachable exactly like the enumerable case.
+    for (const key of Reflect.ownKeys(proto)) {
+      if (typeof key === "string" && PRISTINE_OBJECT_PROTOTYPE_KEYS.has(key)) continue;
+      const name = typeof key === "string" ? key : String(key);
+      if (!inheritedKeys.includes(name)) inheritedKeys.push(name);
+    }
+  }
+  if (inheritedKeys.length > 0) {
+    const shown = inheritedKeys.slice(0, 5);
+    const listed = shown.map((key) => `"${key}"${suggestRouteDep(key)}`).join(", ");
+    const rest =
+      inheritedKeys.length > shown.length ? ` and ${inheritedKeys.length - shown.length} more` : "";
+    throw new TypeError(
+      `buildApp: route dependency ${inheritedKeys.length === 1 ? "name" : "names"} ${listed}${rest} ` +
+        `reached this object through its prototype rather than as own fields. A polluted ` +
+        `prototype cannot be told apart from a supplied dependency, so it is refused here ` +
+        `rather than ignored and left to surface as an unavailable route.`,
+    );
+  }
+  // `Reflect.ownKeys` rather than `Object.keys`: a non-enumerable own property is still a
+  // name the caller supplied, and a misspelling hidden on one has to be reported rather than
+  // skipped. Symbols can never be a dependency name, so they are reported as unknown too.
+  const unknownKeys = Reflect.ownKeys(fields)
+    .filter((key) => typeof key !== "string" || !ROUTE_DEP_NAME_SET.has(key))
+    .map((key) => (typeof key === "string" ? key : String(key)));
+  if (unknownKeys.length > 0) {
+    // Bounded: an unreadable error is barely better than a silent one.
+    const shown = unknownKeys.slice(0, 5);
+    const listed = shown.map((key) => `"${key}"${suggestRouteDep(key)}`).join(", ");
+    const rest =
+      unknownKeys.length > shown.length ? ` and ${unknownKeys.length - shown.length} more` : "";
+    throw new TypeError(
+      `buildApp: unknown route ${unknownKeys.length === 1 ? "dependency" : "dependencies"} ` +
+        `${listed}${rest}. Known dependencies: ${ROUTE_DEP_NAMES.join(", ")}.`,
+    );
+  }
+  const named: Record<string, unknown> = {};
+  for (const key of ROUTE_DEP_NAMES) {
+    // Own properties only, read exactly once: an accessor must not be able to answer one
+    // thing to the presence check and another to the assignment.
+    if (!Object.hasOwn(fields, key)) continue;
+    const value = fields[key];
+    if (value !== undefined) named[key] = value;
+  }
+  const missing = REQUIRED_ROUTE_DEPS.filter((key) => named[key] === undefined);
+  if (missing.length > 0) {
+    throw new TypeError(
+      `buildApp: missing required route ${missing.length === 1 ? "dependency" : "dependencies"} ` +
+        `${missing.map((key) => `"${key}"`).join(", ")}.`,
+    );
+  }
+  return named as unknown as RouteDeps;
+}
+
+/**
+ * Compose the HTTP surface from one named dependency object.
+ *
+ * Named only. See `resolveRouteDeps` for why the 27-argument positional form was removed
+ * rather than kept for compatibility.
+ */
+export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
+  // JavaScript would discard these in silence. The count is named because it is what locates
+  // the mistake for the caller.
+  if (extra.length > 0) {
+    throw new TypeError(
+      `buildApp: received ${extra.length + 1} arguments. Route dependencies are supplied as ` +
+        `ONE named RouteDeps object; every argument after the first would be discarded, ` +
+        `so a positional list is refused here rather than composing an app that silently ` +
+        `dropped most of what it was given.`,
+    );
+  }
+  const {
+    registry,
+    reviews,
+    tasks,
+    queues,
+    away,
+    personas,
+    workflows,
+    schedules,
+    ensembles,
+    sdkSessions,
+    handoffDeps,
+    launchSessionTerminal,
+    sessionActions,
+    pendingTurns,
+    paneDeps,
+    keepAwake,
+    archives,
+    workflowCommands,
+    worktrees,
+    worktreeOperations,
+    modelCatalogs,
+    productIssues,
+    fileComments,
+    fileCommentWalkthrough,
+    settingsBackups,
+    setupDeps,
+    setupInstallDeps,
+    focusTerminals,
+  } = resolveRouteDeps(deps);
   const app = new Hono();
   const composerActivity = new ComposerActivityTracker();
   const setupSnapshots = createSetupSnapshotTracker(randomUUID);

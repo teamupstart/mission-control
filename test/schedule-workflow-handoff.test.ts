@@ -189,15 +189,14 @@ async function fireMission(slug: string, workflowId: string | null): Promise<Fir
   const personas = new PersonaManager(registry);
   const queues = new QueueManager(registry);
   const workflows = mkWorkflows(registry, personas, queues);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
+    reviews: new ReviewManager(registry),
     tasks,
     queues,
-    undefined,
     personas,
     workflows,
-  );
+  });
 
   const clock = { now: T0 };
   let n = 0;

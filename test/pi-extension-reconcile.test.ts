@@ -207,7 +207,7 @@ for (const operation of ["writeFileSync", "renameSync"] as const) {
 test("API GET returns default and persisted intent; PUT validates and reports foreign-file conflicts", async () => {
   const intentFile = join(home, "pi-extension.json");
   rmSync(intentFile, { force: true });
-  const app = buildApp({} as never, {} as never, {} as never, {} as never);
+  const app = buildApp({ registry: {} as never, reviews: {} as never, tasks: {} as never, queues: {} as never });
   const url = "/api/extensions/pi/config";
   const get = () => app.request(url, { headers: { host: "127.0.0.1:7317" } });
   const put = (body: unknown) => app.request(url, { method: "PUT", headers: { host: "127.0.0.1:7317", "content-type": "application/json" }, body: JSON.stringify(body) });

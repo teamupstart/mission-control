@@ -51,7 +51,7 @@ test("the authenticated no-change route settles only its calling retro task", as
     cwd: running.worktreePath,
     agentSessionId: "agent:http-retro",
   });
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const payload = {
     env: {},
     sessionId: "agent:http-retro",

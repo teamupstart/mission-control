@@ -76,14 +76,13 @@ function harness(send: (turn: SdkTurn) => Promise<unknown>) {
       return send(turn);
     },
   } as unknown as SdkSupervisor;
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    {} as TaskManager,
-    {} as QueueManager,
-    undefined, undefined, undefined, undefined, undefined,
-    supervisor,
-  );
+    reviews: new ReviewManager(registry),
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    sdkSessions: supervisor,
+  });
   // `app.request` is typed as sync-or-async; awaiting it here gives every caller one shape.
   const inject = async (text: string, origin: string): Promise<Response> =>
     await app.request(`/api/sessions/${session.id}/inject`, {

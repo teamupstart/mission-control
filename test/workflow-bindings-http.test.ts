@@ -140,15 +140,14 @@ test("session evidence routes expose and remove staging before a binding exists"
     bytes: 68,
     sha256: "a".repeat(64),
   }], 100);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     personas,
     workflows,
-  );
+  });
 
   const listed = await request(
     app,
@@ -251,15 +250,13 @@ test("a dispatched task arms its selected published workflow at Foreman Complete
   assert.equal(binding.deliveryMode, "preview");
 
   seedRuntimeVersion("dispatch-replacement", graph);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     workflows,
-  );
+  });
   for (const workflowId of ["w-dispatch-replacement", null]) {
     const changed = await request(
       app,
@@ -489,15 +486,13 @@ test("task creation inherits the dispatch default while explicit None opts out",
   });
   const registry = new Registry();
   const workflows = new WorkflowManager(registry, new PersonaManager(registry).store);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     workflows,
-  );
+  });
 
   const inherited = await request(app, "/api/tasks", {
     repoRoot: repo,
@@ -598,15 +593,14 @@ test("binding routes pin immutable versions, enforce one active owner, and refus
     },
   });
   workflows.start();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     personas,
     workflows,
-  );
+  });
 
   const created = await request(app, "/api/workflow-bindings", {
     workflowVersionId: "v",
@@ -799,15 +793,14 @@ test("the Ship it review route starts the built-in workflow and never replaces a
     boundaryChanged: async () => false,
     compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
   });
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
     queues,
-    undefined,
     personas,
     workflows,
-  );
+  });
 
   const invalidEvidence = await request(
     app,
@@ -878,15 +871,14 @@ test("positive disappearance orphans, compatible reattach is explicit, and conve
   const personas = new PersonaManager(registry);
   const workflows = new WorkflowManager(registry, personas.store);
   workflows.start();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     personas,
     workflows,
-  );
+  });
   const created = await request(app, "/api/workflow-bindings", {
     workflowVersionId: "v",
     sessionId: "session-old",
@@ -937,15 +929,14 @@ test("an orphaned binding cannot reattach until its workflow is restored", async
   const personas = new PersonaManager(registry);
   const workflows = new WorkflowManager(registry, personas.store);
   workflows.start();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     personas,
     workflows,
-  );
+  });
 
   const created = await request(app, "/api/workflow-bindings", {
     workflowVersionId: "v-archived-reattach",
@@ -1137,15 +1128,14 @@ test("resubmit fingerprints are durable, unchanged confirmation reuses its trigg
     compactContext: async (raw) => fallbackWorkflowContext(raw, "test fallback"),
   });
   workflows.start();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    new ReviewManager(registry),
-    new TaskManager(registry),
-    new QueueManager(registry),
-    undefined,
+    reviews: new ReviewManager(registry),
+    tasks: new TaskManager(registry),
+    queues: new QueueManager(registry),
     personas,
     workflows,
-  );
+  });
   const created = await request(app, "/api/workflow-bindings", {
     workflowVersionId: "v-repair",
     sessionId: "repair-session",

@@ -154,7 +154,11 @@ import type {
 } from "@shared/archives.ts";
 import type { AwayBufferSummary, AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
-import type { PersonaDefaultsView, WorkflowUploadEvidenceLocator } from "@shared/workflow.ts";
+import type {
+  PersonaDefaultsView,
+  WorkflowLaunchFix,
+  WorkflowUploadEvidenceLocator,
+} from "@shared/workflow.ts";
 import type {
   RepoIndexConfigPatch,
   RepoIndexView,
@@ -193,6 +197,18 @@ export interface SetupServiceStartResult extends ActionResult {
  */
 export interface AssignResult extends ActionResult {
   resetConfirm?: AssignResetConfirm;
+}
+
+/**
+ * A refused launch that names where the grant it was missing is made.
+ *
+ * The daemon answers a Workflow refusal with a settings DESTINATION beside the sentence, so
+ * the form can put that screen one press away instead of asking the reader to go and find
+ * it. Absent when the refusal is answered on the form itself, such as picking another
+ * workflow.
+ */
+export interface DispatchResult extends ActionResult {
+  fix?: WorkflowLaunchFix;
 }
 
 /**
@@ -1735,7 +1751,7 @@ export const api = {
   ) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response, selections }),
   // --- dispatch (agents) ---
-  dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
+  dispatch: (input: DispatchInput) => post<DispatchResult>(`/api/tasks`, input),
   /**
    * A tour's own task family, addressed by tour id.
    *
@@ -1764,7 +1780,7 @@ export const api = {
    * action; without that claim the daemon refuses a parked task.
    */
   dispatchBacklog: (id: string, overrideDisabled: boolean) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
+    post<DispatchResult>(`/api/tasks/${encodeURIComponent(id)}/dispatch`, { overrideDisabled }),
   recheckPipelineReadiness: (id: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/pipeline/readiness`),
   startPipelineAfterReadiness: (id: string) =>

@@ -23,17 +23,13 @@ import type {
   WorkflowVersion,
 } from "@shared/workflow.ts";
 import {
-  WORKFLOW_LIMITS,
   formatCheckCommand,
   isVerdictNode,
   sessionActionCompletionLabel,
   sessionActionSkillLabel,
   workflowEvidenceReadinessPolicyEnforces,
 } from "@shared/workflow.ts";
-import {
-  WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
-  blockedPhaseClause,
-} from "@shared/workflow-lifecycle.ts";
+import { blockedPhaseClause } from "@shared/workflow-lifecycle.ts";
 import { nodeLabel } from "@shared/workflow-stages.ts";
 import { workflowRequest } from "./workflowApi.ts";
 import { RunPipeline } from "./RunPipeline.tsx";
@@ -108,7 +104,6 @@ import {
   readCapturedContext,
   readinessActionLabel,
   readinessGapCriteria,
-  readinessOverrideDisabled,
   restageDisabled,
   restageLabel,
   restageOffered,
@@ -177,6 +172,9 @@ import { useRunActions } from "./run-action-store.ts";
 import { createWorkflowLoadCommitBarrier } from "./workflow-load-commit.ts";
 import { moveWorkflowRunSelection } from "./run-navigation.ts";
 import { useTourTargetRef } from "../tour/target-context.tsx";
+
+/** The durable audit sentence recorded by the dashboard's one-click readiness override. */
+const READINESS_OVERRIDE_REASON = "Proceed to review with unresolved evidence readiness gaps.";
 
 /**
  * Watching a run.
@@ -2238,15 +2236,13 @@ function EvidencePane({
   overrideReason: string | null;
   onRestage?: (image: WorkflowEvidenceImage, clientItemId: string) => Promise<void>;
   onRetry?: () => Promise<void>;
-  onOverride?: (reason: string) => Promise<void>;
+  onOverride?: () => Promise<void>;
   recovery?: WorkflowRunDetail["evidenceRecovery"];
   onRecover?: (submissionId: string) => Promise<void>;
 }): React.JSX.Element {
   const bodies = useFrozenImageBodies(runId, images);
   const [preview, setPreview] = useState<string | null>(null);
   const returnFocus = useRef<FocusBookmark | null>(null);
-  const [reason, setReason] = useState("");
-  const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState<"retry" | "override" | null>(null);
   const [restageBusy, setRestageBusy] = useState<ReadonlySet<string>>(() => new Set());
   const [restaged, setRestaged] = useState<ReadonlySet<string>>(() => new Set());
@@ -2366,33 +2362,19 @@ function EvidencePane({
       )}
       {summary.blocking && onOverride && (
         <div className="wf-readiness-override" role="region" aria-label="Evidence readiness override">
-          <h5>Continue despite gaps</h5>
+          <h5>Continue to review despite gaps</h5>
           {summary.refinementsExhausted && (
             <p className="wf-run-notice" role="status">
               This round has spent its evidence preflight refinements without closing these gaps,
-              so the run is blocked for you rather than refining again. Continue despite gaps to
-              review this packet as it stands, or start a new round.
+              so the run is blocked for you rather than refining again. Continue to review this
+              packet as it stands, or start a new round.
             </p>
           )}
-          <label>
-            Reason
-            <textarea
-              value={reason}
-              maxLength={WORKFLOW_LIMITS.readinessOverrideReason}
-              placeholder="Why this structurally incomplete packet should continue"
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </label>
-          <label className="wf-checkbox-label">
-            <Tooltip label="Acknowledge that readiness gaps remain visible to the Test Evidence Auditor">
-              <input
-                type="checkbox"
-                checked={acknowledged}
-                onChange={(event) => setAcknowledged(event.target.checked)}
-              />
-            </Tooltip>
-            Test Evidence Auditor may still reject this packet.
-          </label>
+          <p>
+            This sends the current packet to reviewers without resolving the evidence preflight
+            gaps above. The gaps stay visible, and Test Evidence Auditor may still reject the
+            packet.
+          </p>
           <div className="wf-run-actions">
             {onRetry && (
               <Tooltip label="Capture newly staged evidence and evaluate this round again">
@@ -2406,16 +2388,12 @@ function EvidencePane({
                 </button>
               </Tooltip>
             )}
-            <Tooltip label="Record this reason and continue the current submission despite readiness gaps">
+            <Tooltip label="Continue the current packet to review without resolving its evidence preflight gaps">
               <button
                 type="button"
                 className="btn"
-                disabled={readinessOverrideDisabled(busy, acknowledged, reason)}
-                onClick={() => void runReadinessAction(
-                  "override",
-                  () => onOverride(reason.trim()),
-                  setBusy,
-                )}
+                disabled={busy !== null}
+                onClick={() => void runReadinessAction("override", onOverride, setBusy)}
               >
                 {readinessActionLabel("override", busy)}
               </button>
@@ -3344,7 +3322,7 @@ export function WorkflowRunView({
   ) => Promise<void>;
   onRetryEvidenceReadiness?: (submissionId: string) => Promise<void>;
   onRecoverEvidence?: (submissionId: string) => Promise<void>;
-  onOverrideEvidenceReadiness?: (submissionId: string, reason: string) => Promise<void>;
+  onOverrideEvidenceReadiness?: (submissionId: string) => Promise<void>;
   onLoadEvents?: () => Promise<void>;
   onLoadCalls?: () => Promise<void>;
   /**
@@ -4137,7 +4115,7 @@ export function WorkflowRunView({
                 onRetry={record.evidence.refinementsExhausted
                   ? undefined
                   : () => onRetryEvidenceReadiness(viewed.id)}
-                onOverride={(reason) => onOverrideEvidenceReadiness(viewed.id, reason)}
+                onOverride={() => onOverrideEvidenceReadiness(viewed.id)}
               />
             ),
           },
@@ -5206,10 +5184,14 @@ export function WorkflowRuns({
                 { requestId: crypto.randomUUID() },
               );
             }}
-            onOverrideEvidenceReadiness={async (submissionId, reason) => {
+            onOverrideEvidenceReadiness={async (submissionId) => {
               await mutate(
                 `/api/workflow-runs/${detail.run.id}/submissions/${submissionId}/evidence-readiness/override`,
-                { requestId: crypto.randomUUID(), reason, acknowledgedRisk: true },
+                {
+                  requestId: crypto.randomUUID(),
+                  reason: READINESS_OVERRIDE_REASON,
+                  acknowledgedRisk: true,
+                },
               );
             }}
             onToggleNodesDisabled={(nodeIds, disabled) => {

@@ -68,6 +68,8 @@ Read more in [The Line and fleet UI](docs/ui.md) and
 Open any card to see the conversation, diff, files, review progress, and controls for that session.
 Read it as a terminal stream or a chat, queue and reorder messages, answer structured questions,
 change permission posture, interrupt a turn, and drop images directly into the composer.
+Interrupted turns retain a visible marker in the conversation across all three harnesses,
+on terminal and Agent SDK runtimes.
 
 The diff is scoped to what that agent changed. Files support pull request-style line comments and a
 guided review that walks the agent through one thread at a time. A terminal in the same working copy

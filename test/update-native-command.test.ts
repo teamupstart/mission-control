@@ -22,10 +22,13 @@ test("the app menu and tray expose the same native update command seam", () => {
   assert.match(index, /const onCheckForUpdates = \(\) => void updater\?\.checkForUpdates\(\)/);
   assert.match(index, /installAppMenu\(\{ onOpenSettings: openSettings, onCheckForUpdates \}\)/);
   assert.match(index, /createTray[\s\S]*onCheckForUpdates/);
-  assert.match(
-    index,
-    /win\?\.isVisible\(\) \? dialog\.showMessageBox\(win, options\) : dialog\.showMessageBox\(options\)/,
-  );
+  // What the command opens is a Mission Control modal, drawn by the dashboard. The helper
+  // that used to route these to `dialog.showMessageBox` - parented to the window when it was
+  // visible, parentless when it was not - is gone with the platform sheet itself, so the
+  // menu and tray reach the presenter instead. `showIntegrationResult` still owns the only
+  // message box left in this file, and it is not an update surface.
+  assert.doesNotMatch(index, /showNativeMessage/);
+  assert.match(index, /const updateDialogPresenter = new UpdateDialogPresenter\(/);
   const updaterStart = index.indexOf("updater = new UpdateController");
   const backgroundReady = index.indexOf("const background = await backgroundStart.ready");
   assert.notEqual(updaterStart, -1, "the native updater must be constructed");

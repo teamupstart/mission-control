@@ -53,7 +53,6 @@ import {
   readCapturedContext,
   readinessActionLabel,
   readinessGapCriteria,
-  readinessOverrideDisabled,
   restageClientItemId,
   restageDisabled,
   restageLabel,
@@ -1958,25 +1957,14 @@ test("the re-stage control never reads as settled while it is in flight or idle"
   assert.equal(restageDisabled(false, false), false);
 });
 
-test("continue despite gaps needs an acknowledgement and a reason that is not blank", () => {
-  assert.equal(readinessOverrideDisabled(null, true, "The mapping is right"), false);
-  // An unexplained override is an unexplained decision in the durable log.
-  assert.equal(readinessOverrideDisabled(null, true, ""), true);
-  assert.equal(readinessOverrideDisabled(null, true, "   \n  "), true);
-  assert.equal(readinessOverrideDisabled(null, false, "The mapping is right"), true);
-  // Nothing is pressable while either action is in flight.
-  assert.equal(readinessOverrideDisabled("retry", true, "The mapping is right"), true);
-  assert.equal(readinessOverrideDisabled("override", true, "The mapping is right"), true);
-});
-
 test("each readiness control says which of the two is in flight, not merely that one is", () => {
   assert.equal(readinessActionLabel("retry", null), "Retry evidence preflight");
   assert.equal(readinessActionLabel("retry", "retry"), "Retrying…");
   // The other action being in flight must not relabel this one.
   assert.equal(readinessActionLabel("retry", "override"), "Retry evidence preflight");
-  assert.equal(readinessActionLabel("override", null), "Continue despite gaps");
+  assert.equal(readinessActionLabel("override", null), "Continue to review");
   assert.equal(readinessActionLabel("override", "override"), "Continuing…");
-  assert.equal(readinessActionLabel("override", "retry"), "Continue despite gaps");
+  assert.equal(readinessActionLabel("override", "retry"), "Continue to review");
 });
 
 test("a failed action reports the daemon's own reason, or one that is still true", () => {

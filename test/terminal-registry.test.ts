@@ -114,19 +114,28 @@ test("writes prefer the innermost handle", () => {
   // call sites resolve this identically today and each states the rule again.
   // Emulator FIRST in the list, so this cannot pass by reading position: the list's order
   // is a naming priority, and the write target is decided by the handle's axis.
-  const bound = bindPane([EMU_HANDLE, MUX_HANDLE]);
-  assert.equal(bound?.kind, "multiplexer");
-  assert.equal(bound?.token, "tmux:%3");
+  for (const multiplexer of MULTIPLEXER_IDS) {
+    for (const emulator of EMULATOR_IDS) {
+      const bound = bindPane([
+        { ...EMU_HANDLE, backend: emulator },
+        { ...MUX_HANDLE, backend: multiplexer },
+      ]);
+      assert.equal(bound?.kind, "multiplexer");
+      assert.equal(bound?.token, `${multiplexer}:%3`, `${multiplexer} inside ${emulator}`);
+      assert.ok(bound?.write, "the inner pane supports interrupt keystrokes");
+    }
+  }
 });
 
 test("an emulator-only session binds to its emulator", () => {
-  const bound = bindPane([EMU_HANDLE]);
-  assert.equal(bound?.kind, "emulator");
-  assert.equal(bound?.token, "wezterm:5");
-  assert.ok(bound?.write, "wezterm can be typed into");
-  // Not "we asked and it is in no mode" - there is nothing to ask. A caller that reads the
-  // two as the same thing will treat "cannot see a mode" as evidence a write will land.
-  assert.equal(bound?.mode, null);
+  for (const emulator of EMULATOR_IDS) {
+    const bound = bindPane([{ ...EMU_HANDLE, backend: emulator }]);
+    assert.equal(bound?.kind, "emulator");
+    assert.equal(bound?.token, `${emulator}:5`);
+    assert.ok(bound?.write, `${emulator} supports interrupt keystrokes`);
+    // No multiplexer mode probe exists for a standalone emulator.
+    assert.equal(bound?.mode, null);
+  }
 });
 
 test("a session with no terminal handle binds to nothing", () => {

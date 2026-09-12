@@ -561,7 +561,14 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await expect(readiness).toContainText("Gaps: missing rendered output");
   await reconciliation.click();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
-  await expect(readiness.getByRole("button", { name: "Continue despite gaps" })).toBeDisabled();
+  const continueButton = readiness.getByRole("button", { name: "Continue to review" });
+  await expect(continueButton).toBeEnabled();
+  const overrideRegion = readiness.getByRole("region", { name: "Evidence readiness override" });
+  await expect(overrideRegion).toContainText(
+    "This sends the current packet to reviewers without resolving the evidence preflight gaps above.",
+  );
+  await expect(overrideRegion.getByRole("textbox")).toHaveCount(0);
+  await expect(overrideRegion.getByRole("checkbox")).toHaveCount(0);
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "03-waiting-for-readiness", readiness);
 
@@ -624,20 +631,21 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await dashboard.goto(`${daemon.baseURL}/#/runs/${overrideRun.run.id}`);
   readiness = await evidencePane(dashboard);
   const overrideBox = readiness.getByRole("region", { name: "Evidence readiness override" });
-  await overrideBox.getByLabel("Reason").fill("Operator accepts the missing rendered output for this run.");
-  await overrideBox.getByLabel("Test Evidence Auditor may still reject this packet.").check();
   const overrideRequest = dashboard.waitForRequest((request) => (
     request.method() === "POST"
     && request.url().includes(`/api/workflow-runs/${overrideRun.run.id}/submissions/`)
     && request.url().endsWith("/evidence-readiness/override")
   ));
-  await overrideBox.getByRole("button", { name: "Continue despite gaps" }).click();
-  expect((await overrideRequest).postDataJSON()).toMatchObject({ acknowledgedRisk: true });
+  await overrideBox.getByRole("button", { name: "Continue to review" }).click();
+  expect((await overrideRequest).postDataJSON()).toMatchObject({
+    reason: "Proceed to review with unresolved evidence readiness gaps.",
+    acknowledgedRisk: true,
+  });
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${overrideRun.run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("completed");
   await expect(readiness).toContainText(
-    "Operator continued despite gaps: Operator accepts the missing rendered output for this run.",
+    "Operator continued despite gaps: Proceed to review with unresolved evidence readiness gaps.",
   );
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "05-durable-operator-override", readiness);
@@ -810,15 +818,10 @@ test("a round's spent preflight refinements block the run and hand the decision 
   await readiness.scrollIntoViewIfNeeded();
   await capture(dashboard, "08-preflight-refinements-exhausted", readiness);
 
-  await overrideBox.getByLabel("Reason").fill(
-    "The mapping is right; the preflight and this packet disagree about the proof class.",
-  );
-  await overrideBox.getByLabel("Test Evidence Auditor may still reject this packet.").check();
-  await overrideBox.getByRole("button", { name: "Continue despite gaps" }).click();
+  await overrideBox.getByRole("button", { name: "Continue to review" }).click();
   await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 }).toBe("completed");
   await expect(readiness).toContainText(
-    "Operator continued despite gaps: The mapping is right; the preflight and this packet"
-    + " disagree about the proof class.",
+    "Operator continued despite gaps: Proceed to review with unresolved evidence readiness gaps.",
   );
 });
 

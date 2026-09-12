@@ -1049,9 +1049,26 @@ reaching it is recorded as `evidence_carry_truncated` alongside the evidence cou
 re-declared under the same id is the same claim, and the author's current wording wins; a
 different id for the same criterion is a different claim and is retained beside it.
 
+A claim whose links do not all resolve inside the submission is left in the tray rather than
+frozen, because freezing a claim beside evidence the submission does not hold would be a
+permanent assertion nobody made. Coherence is asked twice: once when the submission reserves
+what it staged, and again after the carry has landed, because a refinement child reserves under
+its own group key and so holds nothing of its parent's until then. A replacement claim citing an
+earlier round's proof is therefore frozen by the second pass rather than dropped by the first.
+Whatever is still unresolved after it is recorded as `evidence_coverage_left_staged`, naming the
+claim and the exact links that would not resolve, so a claim the author registered and cannot
+find is inspectable rather than silent.
+
 Readiness persists the effective claim selection separately from retained ancestry. A new
-unique declaration replaces the selected claim for that criterion; two current declarations
-remain ambiguous. A later repair of another criterion retains the earlier selection. Missing
+unique declaration replaces the selected claim for that criterion. Two current declarations
+remain ambiguous, with one exception: where they share a criterion's exact wording and exactly
+one of them satisfies its declared proof class, that one supersedes the other. A reserved claim
+cannot be amended, so re-registering under a new criterion id is the only repair open to an
+author, and this is what keeps following that instruction from wedging the run. Differing
+wording, or two declarations that both satisfy their class, stay ambiguous: the first are two
+assertions and the second is a choice between author statements.
+
+A later repair of another criterion retains the earlier selection. Missing
 selected claims or links become gaps instead of reviving an older claim. Each new snapshot
 revalidates its selected claims against its own frozen evidence. Legacy chains reconstruct this
 selection from declaration provenance through at most 128 preceding submissions; uncertain or
@@ -1149,9 +1166,11 @@ behaviour: it compacts per submission and a preflight child reuses its parent's 
 when their intent fingerprints match. The LLM ledger records stable extraction as
 `context_compaction`, semantic claim mapping as `context_reconciliation`, and no call for
 deterministic reuse.
-The operator may instead continue through the run detail after entering a reason and acknowledging
-that Test Evidence Auditor can still reject the packet. That append-only override and the original
-gap result remain visible after activation and restart.
+The operator may instead use **Continue to review** in the run detail. The action explains that it
+sends the current packet to reviewers without resolving the evidence preflight gaps and that Test
+Evidence Auditor may still reject it. The click records a standard append-only operator decision;
+no separate reason or acknowledgement input is required. That override and the original gap result
+remain visible after activation and restart.
 
 One round may spend at most two consecutive `evidence_preflight` refinements. A third, whether the
 session staged it or the operator asked for it, is refused rather than reserved: the run blocks in

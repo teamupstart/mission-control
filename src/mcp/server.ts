@@ -995,7 +995,13 @@ server.registerTool(
         ]).describe("An issued repository slot such as repo-01, or all."),
         links: z.array(z.object({
           clientItemId: z.string().min(1).max(WORKFLOW_IMAGE_LIMITS.clientItemIdChars)
-            .describe("A staged evidence client item id."),
+            // "Staged" read as a restriction to this call's tray, which it never was: a claim may
+            // cite evidence an earlier round registered, and in a repair round that is usually the
+            // point. Saying so is the difference between re-proving work and re-running a suite.
+            .describe(
+              "An evidence client item id registered in this call or an earlier one, including"
+                + " one an earlier submission already froze.",
+            ),
           role: z.enum(WORKFLOW_EVIDENCE_PROOF_ROLES)
             .describe("How this evidence item contributes to the criterion."),
         })).max(WORKFLOW_EVIDENCE_COVERAGE_LIMITS.linksPerClaim).refine(

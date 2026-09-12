@@ -8,6 +8,20 @@ function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
+/**
+ * A file with its comments removed.
+ *
+ * The scans below look for code that must not exist, and prose about that code is not it.
+ * `update-dialog.ts` explains at length WHY there is no platform sheet in the update path,
+ * and a scan that cannot tell the explanation from the thing being explained would fail on
+ * the comment while proving nothing.
+ */
+function codeOnly(path: string): string {
+  return source(path)
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
 function sandboxedPreloadUsesOnlySafeImports(contents: string): boolean {
   const tree = ts.createSourceFile(
     "src/preload/index.ts",
@@ -115,6 +129,16 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
     "mission:update-cancel",
     "mission:update-defer",
   ];
+  // The pushed channels, which are `on`/`send` rather than `invoke`/`handle` because main is
+  // the side asking: it pushes a snapshot nobody requested, and a dialog it is waiting on an
+  // answer to. `mission:update-dialog-ready` runs the other way, and is how a renderer says
+  // it can draw one - see `main/update-dialog.ts` for what happens when none can.
+  const pushChannels = [
+    "mission:update-state",
+    "mission:update-dialog",
+    "mission:update-dialog-ready",
+    "mission:update-dialog-choice",
+  ];
 
   assert.deepEqual(
     {
@@ -133,6 +157,24 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         !updateHandlers.includes("updateController?."),
       mainSubscribesOnce:
         (main.match(/updater(?:\?|!)?\.subscribe\(/g) ?? []).length === 1,
+      // The two dialog channels are the renderer talking back, so both are refused from any
+      // sender but the dashboard's own contents. A second window - or anything else that got
+      // hold of the channel name - must not be able to answer a question on the operator's
+      // behalf, and "install the update now" is one of the answers.
+      mainGatesDialogChannelsOnTheDashboard:
+        (main.match(/ipcMain\.on\(["']mission:update-dialog-[^"']+["']/g) ?? []).length === 2 &&
+        ["mission:update-dialog-ready", "mission:update-dialog-choice"].every((channel) =>
+          new RegExp(
+            `ipcMain\\.on\\("${channel}"[\\s\\S]{0,220}?event\\.sender !== getMainWindow\\(\\)\\?\\.webContents\\) return;`,
+          ).test(updateHandlers),
+        ) &&
+        /mission:update-dialog-ready[\s\S]{0,240}updateDialogPresenter\.attach\(\)/.test(updateHandlers) &&
+        /mission:update-dialog-choice[\s\S]{0,320}updateDialogPresenter\.answer\(/.test(updateHandlers),
+      // A renderer that is destroyed while a question is up cannot answer it, and
+      // `checkForUpdates()` is awaiting that answer. Without this the update wedges for the
+      // life of the process, silently.
+      mainFallsBackWhenTheRendererGoes:
+        /onMainWindowClosed\(\(\) => \{[\s\S]{0,200}updateDialogPresenter\.detach\(\);/.test(main),
       mainGuardsUpdateStateSend:
         updatePush.includes('wc.send("mission:update-state"') &&
         updatePush.includes("isLoading()") &&
@@ -142,7 +184,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       preloadUsesOnlySandboxSafeImports: sandboxedPreloadUsesOnlySafeImports(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
-          "getState,check,apply,install,cancel,defer,onState" &&
+          "getState,check,apply,install,cancel,defer,onState,onDialog,answerDialog" &&
         [
           ["getState", "mission:update-get-state"],
           ["check", "mission:update-check"],
@@ -154,9 +196,16 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
           new RegExp(`${method}:\\s*[^\\n]+${channel}`).test(updatePreload),
         ) &&
         Array.from(updatePreload.matchAll(/["'](mission:update-[^"']+)["']/g), ([, channel]) => channel)
-          .every((channel) => [...channels, "mission:update-state"].includes(channel!)) &&
+          .every((channel) => [...channels, ...pushChannels].includes(channel!)) &&
         channels.every((channel) => (updatePreload.match(new RegExp(channel, "g")) ?? []).length === 1) &&
-        (updatePreload.match(/mission:update-state/g) ?? []).length === 2,
+        (updatePreload.match(/mission:update-state/g) ?? []).length === 2 &&
+        // Subscribing to the questions IS the announcement that this renderer can draw them,
+        // and the order is load-bearing: main re-offers whatever is unanswered on that
+        // signal, so a listener attached afterwards would miss its own backlog.
+        /ipcRenderer\.on\(["']mission:update-dialog["'][\s\S]{0,120}ipcRenderer\.send\(["']mission:update-dialog-ready["']/
+          .test(updatePreload) &&
+        /removeListener\(["']mission:update-dialog["'],\s*listener\)/.test(updatePreload) &&
+        /answerDialog:[^\n]+\n[^\n]*mission:update-dialog-choice/.test(updatePreload),
       preloadDropsEventAndUnsubscribes:
         /listener\s*=\s*\([^,]+,\s*snapshot[^)]*\)\s*(?::[^=]+)?=>\s*cb\(snapshot\)/s.test(updatePreload) &&
         /removeListener\(["']mission:update-state["'],\s*listener\)/.test(updatePreload),
@@ -164,6 +213,11 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         !/\b(?:path|url|stderr|stack|rawError)\b/i.test(updatePreload),
       declarationsMirrorGroupedContract:
         /import\s+type\s+\{\s*UpdateSnapshot\s*\}/.test(declarations) &&
+        // Optional, like `setCardJumpKeys`: an older preload beside this bundle is what a
+        // partly-applied desktop update looks like, and the `?` is what makes the compiler
+        // refuse the unguarded call that would throw out of a mount effect.
+        /onDialog\?\(/.test(declarations) &&
+        /answerDialog\?\(/.test(declarations) &&
         /updates\s*:\s*\{[\s\S]*getState\(\)\s*:\s*Promise<UpdateSnapshot>[\s\S]*check\(\)\s*:\s*Promise<UpdateSnapshot>[\s\S]*apply\(\)\s*:\s*Promise<boolean>[\s\S]*install\(\)\s*:\s*Promise<boolean>[\s\S]*cancel\(\)\s*:\s*Promise<void>[\s\S]*defer\(\)\s*:\s*Promise<void>[\s\S]*onState\(.*UpdateSnapshot.*\)\s*:\s*\(\)\s*=>\s*void[\s\S]*\}/.test(
           declarations,
         ),
@@ -173,6 +227,8 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       mainRegistersExactlyTheUpdateHandlers: true,
       mainHandlersCallController: true,
       mainSubscribesOnce: true,
+      mainGatesDialogChannelsOnTheDashboard: true,
+      mainFallsBackWhenTheRendererGoes: true,
       mainGuardsUpdateStateSend: true,
       preloadHasOneGroupedNamespace: true,
       preloadUsesOnlySandboxSafeImports: true,
@@ -186,22 +242,30 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
 });
 
 
-test("the native dialog and the dashboard banner take the update's words from one owner", () => {
-  // Both surfaces are reachable for the same phase - the dialog when someone updates from the
-  // menu bar with the window hidden, the banner when the window is up - so a sentence written
-  // twice is a sentence that will drift. It already had: one draft said "administrator
-  // password" while the other said "administrator permission".
+test("every update surface takes its words from one owner", () => {
+  // Two surfaces are reachable for the same phase - the dashboard banner, and the themed
+  // modal when the shell needs an answer - so a sentence written twice is a sentence that
+  // will drift. It already had: one draft said "administrator password" while the other said
+  // "administrator permission".
+  //
+  // `shared/update-dialog.ts` owns the title, the detail, the tone and the buttons for all
+  // seven conversations, and the shell asks only through it, so a phase cannot be worded or
+  // styled one way here and another way there.
   const main = source("src/main/index.ts");
+  const dialogs = source("src/shared/update-dialog.ts");
+  const presenter = codeOnly("src/main/update-dialog.ts");
+  const mainCode = codeOnly("src/main/index.ts");
   const banner = source("src/web/components/UpdateBanner.tsx");
+  const modal = source("src/web/components/UpdateDialog.tsx");
 
   assert.deepEqual(
     {
-      dialogsReadTheSharedCopy:
-        /import \{ UPDATE_COPY \} from "\.\.\/shared\/update-copy\.ts"/.test(main) &&
+      dialogContentReadsTheSharedCopy:
+        /import \{ UPDATE_COPY \} from "\.\/update-copy\.ts"/.test(dialogs) &&
         ["preparing", "ready", "applying"].every(
           (phase) =>
-            main.includes(`UPDATE_COPY.${phase}.title(version)`) &&
-            main.includes(`UPDATE_COPY.${phase}.detail`),
+            dialogs.includes(`UPDATE_COPY.${phase}.title(version)`) &&
+            dialogs.includes(`UPDATE_COPY.${phase}.detail`),
         ),
       bannerReadsTheSharedCopy:
         /import \{ UPDATE_COPY \} from "@shared\/update-copy\.ts"/.test(banner) &&
@@ -210,17 +274,45 @@ test("the native dialog and the dashboard banner take the update's words from on
             banner.includes(`UPDATE_COPY.${phase}.title(snapshot.newVersion)`) &&
             banner.includes(`UPDATE_COPY.${phase}.detail`),
         ),
-      // The sentences themselves appear in neither file: one owner, not one owner plus a copy.
-      neitherSurfaceHardCodesASentence: [
+      // The shell asks through the builders and never writes a dialog's words itself.
+      shellAsksThroughTheSharedBuilders:
+        /import \{ UPDATE_DIALOGS \} from "\.\.\/shared\/update-dialog\.ts"/.test(main) &&
+        ["available", "upToDate", "preparing", "ready", "applying", "error", "outcome"].every(
+          (phase) => new RegExp(`askUpdate\\(UPDATE_DIALOGS\\.${phase}\\(`).test(main),
+        ) &&
+        !main.includes("UPDATE_COPY"),
+      // No update conversation reaches a platform message box. A `dialog.showMessageBox`
+      // sheet is a SECOND, unthemed auto-update surface, which is the thing this change
+      // removes rather than a fallback worth keeping - so the whole of the update path, the
+      // presenter included, must be free of one. `showMessageBox` survives in this file
+      // only for the integrations result, which is not an update surface.
+      noUpdateConversationReachesAPlatformSheet:
+        !/native|MessageBox/i.test(presenter) &&
+        (mainCode.match(/showMessageBox/g) ?? []).length ===
+          (functionBlock(mainCode, "showIntegrationResult").match(/showMessageBox/g) ?? []).length,
+      // The modal draws whatever arrives. A per-phase branch here would be a second place
+      // that decides what an update says, which is the defect this file exists for.
+      modalRendersContentRatherThanPhases:
+        modal.includes("request.title") &&
+        modal.includes("request.actions.map") &&
+        !/UPDATE_COPY|snapshot\.phase/.test(modal),
+      // The sentences themselves appear in none of them: one owner, not one owner plus copies.
+      noSurfaceHardCodesASentence: [
         UPDATE_COPY.preparing.detail,
         UPDATE_COPY.ready.detail,
         UPDATE_COPY.applying.detail,
-      ].every((sentence) => !main.includes(sentence) && !banner.includes(sentence)),
+      ].every(
+        (sentence) =>
+          !main.includes(sentence) && !banner.includes(sentence) && !modal.includes(sentence),
+      ),
     },
     {
-      dialogsReadTheSharedCopy: true,
+      dialogContentReadsTheSharedCopy: true,
       bannerReadsTheSharedCopy: true,
-      neitherSurfaceHardCodesASentence: true,
+      shellAsksThroughTheSharedBuilders: true,
+      noUpdateConversationReachesAPlatformSheet: true,
+      modalRendersContentRatherThanPhases: true,
+      noSurfaceHardCodesASentence: true,
     },
   );
 });

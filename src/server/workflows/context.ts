@@ -22,6 +22,7 @@ import {
   WORKFLOW_EVIDENCE_PROOF_CLASSES,
   WORKFLOW_EXECUTION_LIMITS,
   classifyWorkflowCoverageCitation,
+  normalizedWorkflowCriterionText as normalizedCriterionText,
   workflowCoverageCitationAllowsText,
   workflowCrossCriterionClaimIds,
 } from "@shared/workflow.ts";
@@ -213,10 +214,6 @@ function boundedStrings(items: string[], maxBytes: number, maxItems: number): st
 
 function sha(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function normalizedCriterionText(value: string): string {
-  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase("en-US");
 }
 
 /**

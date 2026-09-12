@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test.ts";
@@ -8,7 +8,13 @@ import { artifactsDir } from "../fixtures/artifacts.ts";
 import { recordsIn } from "../fixtures/records.ts";
 import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
-test.use({ daemonEnv: { MC_E2E_PI_TRUST: "1" }, viewport: { width: 1280, height: 900 } });
+test.use({
+  daemonEnv: {
+    MC_E2E_PI_TRUST: "1",
+    MISSION_PI_EXTENSION: resolve("dist/pi-extension/index.js"),
+  },
+  viewport: { width: 1280, height: 900 },
+});
 const evidence = artifactsDir("pi-structured-interaction");
 
 async function shoot(page: Page, name: string) {
@@ -28,12 +34,17 @@ async function live(daemon: DaemonHandle) {
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle, prompt: string) {
-  await page.goto(`${daemon.baseURL}/#/settings`);
-  await page.getByRole("tab", { name: /Harnesses/ }).click();
-  await page.getByRole("combobox", { name: "Session runtime for dispatched Pi sessions" }).selectOption("sdk");
+  const installed = await page.request.post(`${daemon.baseURL}/api/setup/install`, {
+    data: { id: "pi-integration" },
+  });
+  expect(installed.ok(), await installed.text()).toBe(true);
+  const configured = await page.request.put(`${daemon.baseURL}/api/harnesses/config`, {
+    data: { sessionRuntime: { pi: "sdk" } },
+  });
+  expect(configured.ok(), await configured.text()).toBe(true);
   // A configured fixture remote is enough for local provenance matching. No GitHub call.
   execFileSync("git", ["remote", "add", "fixture", "https://github.com/test/pi-fixture.git"], { cwd: daemon.repo });
-  await page.getByRole("button", { name: "← Fleet" }).click();
+  await page.goto(daemon.baseURL);
   await page.getByRole("button", { name: "Dispatch" }).click();
   const modal = page.getByRole("dialog", { name: "Dispatch an agent" });
   await modal.getByPlaceholder("search repos or type a path…").fill(daemon.repo);

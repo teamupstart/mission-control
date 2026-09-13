@@ -1,0 +1,236 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup C - Field guide - anniversary party site</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 2.5rem 1.5rem 4rem; background: #e9e6dd; color: #1d2722;
+    font: 15px/1.6 Georgia, "Iowan Old Style", "Times New Roman", serif; -webkit-font-smoothing: antialiased; }
+  .head { max-width: 46rem; margin: 0 auto 2rem; }
+  .head .kicker { font: 600 11px/1 ui-monospace, Menlo, monospace; letter-spacing: .16em;
+    text-transform: uppercase; color: #63706a; margin: 0 0 .7rem; }
+  .head h1 { font: 700 2.3rem/1.15 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif; margin: 0 0 .7rem; letter-spacing: -0.028em;
+    color: #1d2722; }
+  .head p { margin: 0; color: #63706a; max-width: 34rem; }
+  .swatches { display: flex; gap: .4rem; margin-top: 1.2rem; }
+  .sw { width: 2rem; height: 2rem; border-radius: 2px; border: 1px solid rgba(128,128,128,.28); }
+  .strip { display: flex; gap: 1.25rem; overflow-x: auto; padding: .5rem .25rem 1.5rem;
+    max-width: 100%; }
+  .phone { margin: 0; flex: 0 0 auto; }
+  .cap { font: 600 10px/1 ui-monospace, Menlo, monospace; letter-spacing: .12em;
+    text-transform: uppercase; color: #63706a; margin: 0 0 .6rem .1rem; }
+  .screen { width: 312px; height: 660px; overflow: hidden; background: #f6f4ee;
+    border: 1px solid #d3cec1; border-radius: 6px; position: relative; }
+  .ridge { display: block; width: 100%; height: 96px; }
+  .ridge.slim { height: 30px; }
+  .ridge .sky { fill: #dbe4e6; }
+  .ridge .sun { fill: #eef0e8; }
+  .ridge .r4 { fill: #aec0c6; } .ridge .r3 { fill: #8ba4ad; }
+  .ridge .r2 { fill: #688a92; } .ridge .r1 { fill: #4a7568; }
+  .nav { display: flex; gap: .9rem; padding: .7rem .95rem; border-bottom: 1px solid #d3cec1;
+    font: 600 10.5px/1 -apple-system, sans-serif; letter-spacing:.06em; text-transform:uppercase; color: #63706a; }
+  .nav .on { color: #2f5d4a; border-bottom:2px solid currentColor; padding-bottom:2px; }
+  .pad { padding: 1.05rem .95rem 1.4rem; }
+  .eyebrow { font: 600 9.5px/1 ui-monospace, Menlo, monospace; letter-spacing: .16em;
+    text-transform: uppercase; color: #2f5d4a; margin: 0 0 .6rem; }
+  .display { font: 700 1.72rem/1.12 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif; letter-spacing: -0.026em; margin: 0 0 .55rem;
+    color: #1d2722; }
+  .display.sm { font-size: 1.3rem; margin-bottom: .35rem; }
+  .lede { margin: 0 0 1rem; color: #63706a; font-size: 12.5px; line-height: 1.55; }
+  .rule { height: 1px; background: #d3cec1; margin: 1rem 0; }
+  .count { font-size: 12px; color: #63706a; margin: 0 0 .9rem; }
+  .count strong { color: #2f5d4a; font-size: 14px; }
+  .field { display: block; margin: 0 0 .7rem; }
+  .lbl { display: block; font: 600 9.5px/1 ui-monospace, Menlo, monospace; letter-spacing: .1em;
+    text-transform: uppercase; color: #63706a; margin-bottom: .3rem; }
+  input, textarea { width: 100%; font: 12.5px/1.45 Georgia, "Iowan Old Style", "Times New Roman", serif; color: #1d2722; background: #ffffff;
+    border: 1px solid #d3cec1; border-radius: 2px; padding: .5rem .6rem; resize: none; }
+  .choice { margin: 0 0 .7rem; }
+  .segs { display: flex; gap: .35rem; }
+  .seg { flex: 1; text-align: center; font-size: 12px; padding: .45rem; border-radius: 2px;
+    border: 1px solid #d3cec1; color: #63706a; background: #ffffff; }
+  .seg.sel { background: #2f5d4a; border-color: #2f5d4a; color: #f6f4ee; font-weight: 600; }
+  .btn { display: block; width: 100%; margin: .85rem 0 0; padding: .62rem; border: 0;
+    border-radius: 2px; background: #2f5d4a; color: #f6f4ee; font: 700 12px/1 -apple-system, sans-serif; letter-spacing:.05em; text-transform:uppercase; cursor: default; }
+  .fine { font-size: 11px; color: #63706a; margin: .75rem 0 0; text-align: center; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; margin: .2rem 0 .8rem; }
+  .tile { height: 74px; border-radius: 2px; }
+  .tile.wide { grid-column: span 2; height: 92px; }
+  .t1 { background: linear-gradient(150deg,#b7c8cc,#7e969e); } .t2 { background: linear-gradient(30deg,#cbcbb6,#8d9478); } .t3 { background: linear-gradient(120deg,#9db3ba,#5f7d8a); }
+  .t4 { background: linear-gradient(200deg,#c4c3ae,#82886e); } .t5 { background: linear-gradient(60deg,#aabfc1,#6e8a92); } .t6 { background: linear-gradient(160deg,#cdcdbc,#8ea4a6); }
+  .card { border: 1px solid #d3cec1; border-radius: 2px; padding: .8rem .85rem; background: #eeece3;
+    margin: 0 0 .9rem; }
+  .card h3 { font: 700 13px/1.3 -apple-system, sans-serif; margin: 0 0 .4rem; color: #1d2722; }
+  .card p { margin: 0 0 .45rem; font-size: 12px; color: #63706a; line-height: 1.5; }
+  .pin { font: 600 9px/1 ui-monospace, Menlo, monospace !important; letter-spacing: .14em;
+    text-transform: uppercase; color: #2f5d4a !important; margin: 0 0 .45rem !important; }
+  .meta { font-size: 11px !important; color: #63706a; margin: .55rem 0 0 !important; }
+  .thread { margin: 0 0 .8rem; }
+  .cmt { padding: .5rem .6rem; border-left: 2px solid #d3cec1; margin: 0 0 .45rem; }
+  .cmt.reply { margin-left: 1.1rem; }
+  .cmt .who { font: 600 10px/1 ui-monospace, Menlo, monospace; letter-spacing: .08em;
+    text-transform: uppercase; color: #63706a; }
+  .cmt .who.host { color: #2f5d4a; }
+  .cmt p { margin: .3rem 0 0; font-size: 12px; color: #1d2722; line-height: 1.5; }
+  .chat { display: flex; flex-direction: column; gap: .45rem; margin: 0 0 .9rem; }
+  .bub { max-width: 82%; padding: .5rem .65rem; font-size: 12px; line-height: 1.45; }
+  .bub.them { align-self: flex-start; background: #e4e1d5; color: #1d2722; border-radius: 2px; }
+  .bub.me { align-self: flex-end; background: #2f5d4a; color: #f6f4ee; border-radius: 2px; }
+  footer { max-width: 46rem; margin: 2rem auto 0; padding-top: 1.2rem;
+    border-top: 1px solid #d3cec1; color: #63706a; font-size: 12.5px; }
+</style>
+
+<div class="head">
+  <p class="kicker">Direction C of 3 &middot; Blue Ridge theme</p>
+  <h1>C &middot; Field guide</h1>
+  <p>A trail map for the evening. Off-white stock, a tight sans for anything structural and a serif for prose, forest green against ridge blue. The clearest to read on a phone in a parking lot, and the easiest to fill in quickly.</p>
+  <div class="swatches"><span class="sw" style="background:#f6f4ee"></span><span class="sw" style="background:#2f5d4a"></span><span class="sw" style="background:#557684"></span><span class="sw" style="background:#a8bcc4"></span><span class="sw" style="background:#1d2722"></span><span class="sw" style="background:#e9e6dd"></span></div>
+</div>
+
+
+<section class="strip">
+
+  <figure class="phone">
+    <div class="cap">1 &middot; The gate</div>
+    <div class="screen">
+      <svg class="ridge" viewBox="0 0 320 96" preserveAspectRatio="none" aria-hidden="true">
+  <rect class="sky" x="0" y="0" width="320" height="96"/>
+  <circle class="sun" cx="238" cy="30" r="14"/>
+  <path class="r4" d="M0,52 C28,40 54,47 84,38 C116,28 146,45 178,40 C210,35 242,47 276,39 C298,34 310,39 320,37 L320,96 L0,96 Z"/>
+  <path class="r3" d="M0,64 C32,52 60,62 94,52 C128,42 156,60 190,54 C224,48 252,62 286,54 C302,50 313,54 320,52 L320,96 L0,96 Z"/>
+  <path class="r2" d="M0,76 C30,66 62,74 96,66 C132,58 160,74 194,68 C228,62 256,76 290,68 C304,65 314,68 320,67 L320,96 L0,96 Z"/>
+  <path class="r1" d="M0,88 C36,80 68,87 104,80 C140,73 168,87 204,81 C240,75 266,88 300,82 C310,80 316,82 320,81 L320,96 L0,96 Z"/>
+</svg>
+      <div class="pad gate">
+        <p class="eyebrow">Private</p>
+        <h1 class="display">You&rsquo;re invited</h1>
+        <p class="lede">Enter the password from your invitation.</p>
+        <label class="field">
+          <span class="lbl">Password</span>
+          <input type="password" value="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" readonly>
+        </label>
+        <button class="btn">Come in</button>
+        <p class="fine">Ask whoever sent you the link.</p>
+      </div>
+    </div>
+  </figure>
+
+  <figure class="phone">
+    <div class="cap">2 &middot; Invitation &amp; RSVP</div>
+    <div class="screen">
+      <svg class="ridge" viewBox="0 0 320 96" preserveAspectRatio="none" aria-hidden="true">
+  <rect class="sky" x="0" y="0" width="320" height="96"/>
+  <circle class="sun" cx="238" cy="30" r="14"/>
+  <path class="r4" d="M0,52 C28,40 54,47 84,38 C116,28 146,45 178,40 C210,35 242,47 276,39 C298,34 310,39 320,37 L320,96 L0,96 Z"/>
+  <path class="r3" d="M0,64 C32,52 60,62 94,52 C128,42 156,60 190,54 C224,48 252,62 286,54 C302,50 313,54 320,52 L320,96 L0,96 Z"/>
+  <path class="r2" d="M0,76 C30,66 62,74 96,66 C132,58 160,74 194,68 C228,62 256,76 290,68 C304,65 314,68 320,67 L320,96 L0,96 Z"/>
+  <path class="r1" d="M0,88 C36,80 68,87 104,80 C140,73 168,87 204,81 C240,75 266,88 300,82 C310,80 316,82 320,81 L320,96 L0,96 Z"/>
+</svg>
+      <nav class="nav"><span class="on">Invitation</span><span>Album</span><span>Updates</span><span>Messages</span></nav>
+      <div class="pad">
+        <p class="eyebrow">Saturday 18 October &middot; 6pm</p>
+        <h1 class="display">A surprise<br>anniversary party</h1>
+        <p class="lede">Hawksbill Lodge, Blue Ridge Parkway. Park at the overlook and walk up
+        the gravel path.</p>
+        <div class="rule"></div>
+        <p class="count"><strong>24</strong> people are coming so far</p>
+        <div class="form">
+          <label class="field"><span class="lbl">Your name</span><input value="Dana Whitfield" readonly></label>
+          <div class="choice"><span class="lbl">Can you come?</span>
+            <div class="segs"><span class="seg sel">Yes</span><span class="seg">No</span></div>
+          </div>
+          <label class="field"><span class="lbl">How many, including you</span><input value="2" readonly></label>
+          <label class="field"><span class="lbl">Anything we should know</span><textarea readonly rows="2">Driving up from Asheville, may be 20 min late.</textarea></label>
+          <button class="btn">Send my RSVP</button>
+        </div>
+      </div>
+    </div>
+  </figure>
+
+  <figure class="phone">
+    <div class="cap">3 &middot; The album</div>
+    <div class="screen">
+      <nav class="nav"><span>Invitation</span><span class="on">Album</span><span>Updates</span><span>Messages</span></nav>
+      <svg class="ridge slim" viewBox="0 0 320 34" preserveAspectRatio="none" aria-hidden="true">
+  <path class="r3" d="M0,17 C34,7 62,18 96,9 C130,1 158,16 192,11 C226,6 254,18 288,10 C304,6 313,11 320,9 L320,34 L0,34 Z"/>
+  <path class="r1" d="M0,27 C36,19 68,27 104,20 C140,14 168,27 204,22 C240,17 266,28 300,22 C310,20 316,22 320,22 L320,34 L0,34 Z"/>
+</svg>
+      <div class="pad">
+        <h2 class="display sm">The wedding</h2>
+        <p class="lede">Twenty years ago, on a considerably colder day.</p>
+        <div class="grid">
+          <div class="tile t1"></div><div class="tile t2"></div>
+          <div class="tile t3 wide"></div>
+          <div class="tile t4"></div><div class="tile t5"></div>
+          <div class="tile t6 wide"></div>
+          <div class="tile t2"></div><div class="tile t5"></div>
+        </div>
+        <p class="fine">Tap any photo to open it full size.</p>
+      </div>
+    </div>
+  </figure>
+
+  <figure class="phone">
+    <div class="cap">4 &middot; Updates &amp; comments</div>
+    <div class="screen">
+      <nav class="nav"><span>Invitation</span><span>Album</span><span class="on">Updates</span><span>Messages</span></nav>
+      <svg class="ridge slim" viewBox="0 0 320 34" preserveAspectRatio="none" aria-hidden="true">
+  <path class="r3" d="M0,17 C34,7 62,18 96,9 C130,1 158,16 192,11 C226,6 254,18 288,10 C304,6 313,11 320,9 L320,34 L0,34 Z"/>
+  <path class="r1" d="M0,27 C36,19 68,27 104,20 C140,14 168,27 204,22 C240,17 266,28 300,22 C310,20 316,22 320,22 L320,34 L0,34 Z"/>
+</svg>
+      <div class="pad">
+        <h2 class="display sm">Updates</h2>
+        <article class="card">
+          <p class="pin">Pinned</p>
+          <h3>Parking, and how to stay hidden</h3>
+          <p>Leave cars at the lower overlook, not the lodge. We need the front drive
+          to look empty right up until 6.</p>
+          <p class="meta">3 comments</p>
+        </article>
+        <div class="thread">
+          <div class="cmt"><span class="who">Marcus</span>
+            <p>Can I drop the cake off early?</p></div>
+          <div class="cmt reply"><span class="who host">Host</span>
+            <p>Yes - any time after 3 works.</p></div>
+        </div>
+        <label class="field"><input value="Add a comment" readonly></label>
+        <article class="card">
+          <h3>The cake is handled</h3>
+          <p>Marcus has it. Please do not also bring a cake.</p>
+          <p class="meta">1 comment</p>
+        </article>
+      </div>
+    </div>
+  </figure>
+
+  <figure class="phone">
+    <div class="cap">5 &middot; Message the host</div>
+    <div class="screen">
+      <nav class="nav"><span>Invitation</span><span>Album</span><span>Updates</span><span class="on">Messages</span></nav>
+      <svg class="ridge slim" viewBox="0 0 320 34" preserveAspectRatio="none" aria-hidden="true">
+  <path class="r3" d="M0,17 C34,7 62,18 96,9 C130,1 158,16 192,11 C226,6 254,18 288,10 C304,6 313,11 320,9 L320,34 L0,34 Z"/>
+  <path class="r1" d="M0,27 C36,19 68,27 104,20 C140,14 168,27 204,22 C240,17 266,28 300,22 C310,20 316,22 320,22 L320,34 L0,34 Z"/>
+</svg>
+      <div class="pad">
+        <h2 class="display sm">Just you and the host</h2>
+        <p class="lede">Nobody else can see this.</p>
+        <div class="chat">
+          <div class="bub them">Hi Dana - glad you can make it.</div>
+          <div class="bub me">Is there anything you need brought up?</div>
+          <div class="bub them">A folding table if you have one. And keep it quiet.</div>
+          <div class="bub me">Understood. Anything else?</div>
+          <div class="bub them">Park at the lower overlook, not the drive.</div>
+          <div class="bub me">Got it. See you Saturday.</div>
+        </div>
+        <label class="field"><input value="Write a message" readonly></label>
+        <button class="btn">Send</button>
+      </div>
+    </div>
+  </figure>
+
+</section>
+
+<footer>
+  Five screens at phone width, which is where almost everyone will open the link. Copy, dates and
+  the venue are sample text. Photographs are placeholders - the real wedding album replaces them.
+  Ridge artwork is inline SVG, so it costs nothing to load and scales to any screen.
+</footer>

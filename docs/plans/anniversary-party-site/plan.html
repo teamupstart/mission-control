@@ -92,6 +92,23 @@
 message the host - plus one host console behind a second password, from which every word on the
 site is editable.</p>
 
+<h2>The event</h2>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr><td>Occasion</td><td><strong>Ten year anniversary</strong>, surprise party</td></tr>
+    <tr><td>Date</td><td><strong>Saturday 14 November 2026</strong> - 62 days from today, 13 September 2026</td></tr>
+    <tr><td>Venue</td><td><strong>The Capital Club</strong>, Asheville, NC</td></tr>
+    <tr><td>Parking</td><td><strong>6 Sears Alley, Asheville, NC</strong> - covered, and included</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The date is far enough out that the Supabase Free pause window matters and close enough that
+invitations want sending soon. Those two facts set the build order: the gate, the invitation and
+the RSVP first, everything else after.</p>
+
 <h2>Decisions already taken</h2>
 
 <div class="scroll">
@@ -102,7 +119,7 @@ site is editable.</p>
     <tr><td>Guest identity</td><td><strong>Cookie only, plus a merge tool in <code>/host</code></strong></td><td>No resume codes to lose. If someone clears their browser they simply reappear as a new guest, and you join the two rows yourself from the host console.</td></tr>
     <tr><td>Photos</td><td><strong>Private Supabase Storage bucket</strong></td><td>Signed URLs minted server-side, so the album is genuinely behind the password, and you add photos from <code>/host</code> without a deploy.</td></tr>
     <tr><td>Host notifications</td><td><strong>None</strong></td><td>No Resend, no email. The host console carries unread counts. One fewer service, one fewer API key.</td></tr>
-    <tr><td>Visual direction</td><td><strong>Warm archival, extended to a Blue Ridge Mountains theme</strong></td><td>Three mockups are built and waiting - see below.</td></tr>
+    <tr><td>Visual direction</td><td><strong>A - Blue Ridge at dawn</strong></td><td>Cream letterpress paper, a sunrise over layered ridges, serif throughout. Chosen from three built directions; B and C are kept in <code>mockups/</code> as a record, not as live options.</td></tr>
   </tbody>
 </table>
 </div>
@@ -126,42 +143,67 @@ change what "free" means.</p>
 
 <h2>Look and feel: Blue Ridge</h2>
 
-<p>Three directions are built as working pages, not pictures. Each shows the same five screens at
-phone width, which is where almost everyone will open a link sent by text. Open them and pick one:</p>
+<p><strong>Chosen: A - Blue Ridge at dawn</strong>
+(<a href="mockups/a-blue-ridge-dawn.html">mockups/a-blue-ridge-dawn.html</a>). Cream letterpress
+paper, a sunrise over layered ridges, serif throughout. The warmest of the three and the closest to
+a printed keepsake - it reads as an anniversary first and a web app second.</p>
 
 <div class="picks">
   <div class="pick">
-    <h3>A - Blue Ridge at dawn</h3>
+    <h3>A - Blue Ridge at dawn <span class="chosen">chosen</span></h3>
     <div class="sws"><span class="sw" style="background:#faf6ee"></span><span class="sw" style="background:#b0653c"></span><span class="sw" style="background:#33566b"></span><span class="sw" style="background:#55798c"></span><span class="sw" style="background:#9db7c0"></span><span class="sw" style="background:#26323b"></span></div>
-    <p>Cream letterpress paper, a sunrise over layered ridges, serif throughout. The warmest, and
-    the closest to a printed keepsake. Reads as an anniversary first and a web app second.</p>
     <a href="mockups/a-blue-ridge-dawn.html">mockups/a-blue-ridge-dawn.html</a>
-  </div>
-  <div class="pick">
-    <h3>B - Blue hour</h3>
-    <div class="sws"><span class="sw" style="background:#111d27"></span><span class="sw" style="background:#e0a862"></span><span class="sw" style="background:#36536e"></span><span class="sw" style="background:#8ba1ae"></span><span class="sw" style="background:#e7eef2"></span><span class="sw" style="background:#0a121a"></span></div>
-    <p>Dusk on the parkway. A dark ground so the wedding photographs are the only bright thing on
-    screen, lantern-amber for anything you can act on. The most atmospheric, and the most
-    obviously an evening party.</p>
-    <a href="mockups/b-blue-hour.html">mockups/b-blue-hour.html</a>
-  </div>
-  <div class="pick">
-    <h3>C - Field guide</h3>
-    <div class="sws"><span class="sw" style="background:#f6f4ee"></span><span class="sw" style="background:#2f5d4a"></span><span class="sw" style="background:#688a92"></span><span class="sw" style="background:#aec0c6"></span><span class="sw" style="background:#1d2722"></span><span class="sw" style="background:#e9e6dd"></span></div>
-    <p>A trail map for the evening. Off-white stock, a tight sans for structure and a serif for
-    prose, forest green against ridge blue. The clearest to read on a phone in a parking lot.</p>
-    <a href="mockups/c-field-guide.html">mockups/c-field-guide.html</a>
   </div>
 </div>
 
-<p>The ridgelines are <strong>inline SVG</strong>, layered and hazed the way the Blue Ridge
-actually recedes. That is deliberate: no image request, no loading flash, sharp on any screen, and
-recolourable per direction from one set of tokens. The same four-layer silhouette appears full
-height on the gate and the invitation, and as a thin band under the navigation everywhere else, so
-the theme carries without repeating itself.</p>
+<p>Its tokens, which become the theme file verbatim:</p>
 
-<p>Whichever direction wins becomes a small token file - paper, ink, four ridge blues, one accent -
-and every screen is built from those tokens rather than from hand-picked colours.</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Token</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>paper / page</td><td><code>#faf6ee</code> / <code>#efe9dd</code></td></tr>
+    <tr><td>ink / muted</td><td><code>#26323b</code> / <code>#6d7a80</code></td></tr>
+    <tr><td>accent (clay)</td><td><code>#b0653c</code></td></tr>
+    <tr><td>ridge, front to back</td><td><code>#33566b</code>, <code>#55798c</code>, <code>#7a9aa8</code>, <code>#9db7c0</code></td></tr>
+    <tr><td>sky / sun</td><td><code>#f3d9b8</code> / <code>#f0b070</code></td></tr>
+    <tr><td>display and body</td><td>Georgia / Iowan Old Style, serif throughout</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><a href="mockups/b-blue-hour.html">mockups/b-blue-hour.html</a> and
+<a href="mockups/c-field-guide.html">mockups/c-field-guide.html</a> stay in the repository as a
+record of what was considered and rejected. They are not live options.</p>
+
+<p>The ridgelines are <strong>inline SVG</strong>, layered and hazed the way the Blue Ridge actually
+recedes. That is deliberate: no image request, no loading flash, sharp on any screen, and
+recolourable from one set of tokens. The same four-layer silhouette appears full height on the gate
+and the invitation, and as a thin band under the navigation everywhere else, so the theme carries
+without repeating itself. Every screen is built from the tokens above rather than from hand-picked
+colours.</p>
+
+<h2>Getting there</h2>
+
+<p>Parking is covered and included, and it is <strong>not</strong> at the venue - so the invitation
+leads with the garage, not the club. The primary action is a map link to <strong>6 Sears
+Alley</strong>, because that is the address a guest should actually drive to. The Capital Club is
+named beneath it as the destination they walk to.</p>
+
+<ul>
+  <li>The address is rendered as selectable text as well as a link, so anyone can copy it into
+  whatever they already use.</li>
+  <li>The link is the Google Maps universal URL,
+  <code>https://www.google.com/maps/search/?api=1&amp;query=6+Sears+Alley+Asheville+NC</code>,
+  which opens the Maps app on both iOS and Android when one is installed and falls back to the
+  browser when not. An Apple Maps variant (<code>https://maps.apple.com/?q=</code>) is a one-line
+  addition if you would rather offer both, at the cost of a second control to explain.</li>
+  <li>It is the only outbound link on the site, so it carries <code>rel="noopener noreferrer"</code>
+  and the site sets <code>Referrer-Policy: no-referrer</code>. A gated URL should not reach a third
+  party in a referrer header, surprise or no surprise.</li>
+  <li>Both addresses live in the <code>party</code> table and are editable from <code>/host</code>,
+  so a venue change is a form submission rather than a deploy.</li>
+</ul>
 
 <h2>The one idea the whole design rests on</h2>
 
@@ -317,11 +359,11 @@ explain to every guest for no security the app gate does not already provide.</p
   <thead><tr><th>Route</th><th>Who</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code>/gate</code></td><td>anyone with the link</td><td>One password field. Nothing above it names the occasion or the honoree.</td></tr>
-    <tr><td><code>/</code></td><td>guest</td><td>The invitation: date, time, place, and the RSVP form. Shows a running count of who is coming (host-toggleable, default on).</td></tr>
+    <tr><td><code>/</code></td><td>guest</td><td>The invitation: date, time, the Capital Club, a <strong>Getting there</strong> block with the Sears Alley parking address and a map link, and the RSVP form. Shows a running count of who is coming (host-toggleable, default on).</td></tr>
     <tr><td><code>/album</code></td><td>guest</td><td>The wedding photos, from the private bucket via signed URLs. Responsive grid, tap to open full size, captions optional.</td></tr>
     <tr><td><code>/updates</code></td><td>guest</td><td>Host posts newest-first, pinned ones on top. Each opens a comment thread, one level of replies.</td></tr>
     <tr><td><code>/messages</code></td><td>guest</td><td>That guest's private thread with the host. Unread replies badge in the nav.</td></tr>
-    <tr><td><code>/host</code></td><td>host</td><td>Second password, then six tabs: <strong>RSVPs</strong> (table, totals, CSV export, merge duplicate guests), <strong>Messages</strong> (every thread, unread counts, reply), <strong>Posts</strong> (compose, edit, pin, draft, delete), <strong>Album</strong> (upload, caption, reorder, delete), <strong>Content</strong> (every word on the site), <strong>Party</strong> (date, time, venue, guest-list toggle).</td></tr>
+    <tr><td><code>/host</code></td><td>host</td><td>Second password, then six tabs: <strong>RSVPs</strong> (table, totals, CSV export, merge duplicate guests), <strong>Messages</strong> (every thread, unread counts, reply), <strong>Posts</strong> (compose, edit, pin, draft, delete), <strong>Album</strong> (upload, caption, reorder, delete), <strong>Content</strong> (every word on the site), <strong>Party</strong> (date, time, venue, parking address and note, guest-list toggle).</td></tr>
   </tbody>
 </table>
 </div>
@@ -332,7 +374,9 @@ explain to every guest for no security the app gate does not already provide.</p
 
 <ul>
   <li><strong><code>party</code></strong> - the structured facts. Date and time, venue name and
-  address, and the <code>show_guest_list</code> toggle.</li>
+  address, the parking address and its note, and the <code>show_guest_list</code> toggle. The map
+  link is derived from <code>parking_addr</code> rather than stored, so it can never drift from the
+  address printed above it.</li>
   <li><strong><code>content_blocks</code></strong> - every piece of prose, keyed by slug:
   <code>gate.note</code>, <code>home.eyebrow</code>, <code>home.title</code>,
   <code>home.body</code>, <code>album.title</code>, <code>album.intro</code>,
@@ -461,9 +505,11 @@ create table messages (
 
 create table party (
   id              int primary key default 1 check (id = 1),
-  starts_at       timestamptz,
-  venue_name      text,
+  starts_at       timestamptz,                     -- 2026-11-14, time to be confirmed
+  venue_name      text,                            -- &#x27;The Capital Club&#x27;
   venue_addr      text,
+  parking_addr    text,                            -- &#x27;6 Sears Alley, Asheville, NC&#x27;
+  parking_note    text,                            -- &#x27;Covered and included&#x27;
   show_guest_list boolean not null default true,
   updated_at      timestamptz not null default now()
 );
@@ -650,6 +696,8 @@ here.</p>
   <li>A guest cannot reach <code>/host</code> without the host password.</li>
   <li>No route returns anything without <code>party_session</code>.</li>
   <li>The home page ships no <code>og:image</code> and no occasion-naming metadata.</li>
+  <li>The map link points at the parking address currently in <code>party</code>, and carries
+  <code>rel="noopener noreferrer"</code>.</li>
 </ol>
 
 <h2>What I still need from you</h2>
@@ -658,12 +706,17 @@ here.</p>
 env var.</p>
 
 <ul>
-  <li>Party date, start time, venue name and address.</li>
+  <li><strong>The start time.</strong> The mockups show 6pm as a placeholder; the invitation cannot
+  ship without the real one, and it is the one field guests will act on.</li>
+  <li><strong>The Capital Club's street address</strong>, for the line beneath the parking block.</li>
   <li>The invitation copy, and how much the gate page should say (currently: nothing).</li>
   <li>The two passwords - party and host.</li>
   <li>The wedding photos, resized to max 2000px on the long edge.</li>
   <li>Whether there is a gift or registry note to include.</li>
 </ul>
+
+<p>Everything except the start time can land after the first deploy, because all of it is editable
+from <code>/host</code>.</p>
 
 <h2>Cost</h2>
 
@@ -708,7 +761,7 @@ Any can follow; none belongs in the first version.</p>
   <thead><tr><th>Risk</th><th>Severity</th><th>Handling</th></tr></thead>
   <tbody>
     <tr><td>The honoree sees a forwarded link preview</td><td>High - it ends the surprise</td><td>Blank OG tags, bland title, no preview image. First thing built, first thing tested.</td></tr>
-    <tr><td>Free Supabase project pauses before the party</td><td>High - site down</td><td>Daily Vercel Cron keepalive, plus the warning email Supabase sends a week ahead.</td></tr>
+    <tr><td>Free Supabase project pauses before the party</td><td>High - site down</td><td>Nine quiet weeks stand between now and 14 November, which is eight more than the pause window. The daily Vercel Cron keepalive is therefore load-bearing, not belt-and-braces, and it is tested.</td></tr>
     <tr><td>A migration on a preview branch hits production data</td><td>Medium</td><td>No database branching on Free. Additive migrations only; the PR diff is the review.</td></tr>
     <tr><td>The password gets forwarded outside the guest list</td><td>Medium</td><td>Rotatable in one env var; <code>kid</code> bump invalidates every session.</td></tr>
     <tr><td>A guest clears cookies and appears twice</td><td>Low</td><td>The merge tool in <code>/host</code>, and <code>merged_into</code> keeps it reversible.</td></tr>

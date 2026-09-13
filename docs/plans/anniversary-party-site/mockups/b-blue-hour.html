@@ -13,12 +13,12 @@
   .head p { margin: 0; color: #8ba1ae; max-width: 34rem; }
   .swatches { display: flex; gap: .4rem; margin-top: 1.2rem; }
   .sw { width: 2rem; height: 2rem; border-radius: 999px; border: 1px solid rgba(128,128,128,.28); }
-  .strip { display: flex; gap: 1.25rem; overflow-x: auto; padding: .5rem .25rem 1.5rem;
+  .strip { display: flex; align-items: flex-start; gap: 1.25rem; overflow-x: auto; padding: .5rem .25rem 1.5rem;
     max-width: 100%; }
   .phone { margin: 0; flex: 0 0 auto; }
   .cap { font: 600 10px/1 ui-monospace, Menlo, monospace; letter-spacing: .12em;
     text-transform: uppercase; color: #8ba1ae; margin: 0 0 .6rem .1rem; }
-  .screen { width: 312px; height: 660px; overflow: hidden; background: #111d27;
+  .screen { width: 312px; min-height: 600px; overflow: hidden; background: #111d27;
     border: 1px solid #24384a; border-radius: 20px; position: relative; }
   .ridge { display: block; width: 100%; height: 96px; }
   .ridge.slim { height: 30px; }
@@ -51,6 +51,14 @@
   .seg.sel { background: #e0a862; border-color: #e0a862; color: #12202b; font-weight: 600; }
   .btn { display: block; width: 100%; margin: .85rem 0 0; padding: .62rem; border: 0;
     border-radius: 8px; background: #e0a862; color: #12202b; font: 600 12.5px/1 -apple-system, sans-serif; cursor: default; }
+  .where { border: 1px solid #24384a; border-radius: 12px; background: #16242f;
+    padding: .7rem .8rem; margin: 0 0 .2rem; }
+  .wlbl { font: 600 9.5px/1 ui-monospace, Menlo, monospace; letter-spacing: .14em;
+    text-transform: uppercase; color: #e0a862; margin: 0 0 .45rem; }
+  .waddr { font: 600 13px/1.35 "Iowan Old Style", Georgia, "Times New Roman", serif; color: #e7eef2; margin: 0 0 .35rem; }
+  .wnote { font-size: 11.5px; line-height: 1.5; color: #8ba1ae; margin: 0 0 .6rem; }
+  .btn.ghost { background: transparent; color: #e0a862; border: 1px solid #e0a862;
+    margin-top: 0; padding: .48rem; text-align: center; }
   .fine { font-size: 11px; color: #8ba1ae; margin: .75rem 0 0; text-align: center; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; margin: .2rem 0 .8rem; }
   .tile { height: 74px; border-radius: 6px; }
@@ -127,10 +135,17 @@
 </svg>
       <nav class="nav"><span class="on">Invitation</span><span>Album</span><span>Updates</span><span>Messages</span></nav>
       <div class="pad">
-        <p class="eyebrow">Saturday 18 October &middot; 6pm</p>
-        <h1 class="display">A surprise<br>anniversary party</h1>
-        <p class="lede">Hawksbill Lodge, Blue Ridge Parkway. Park at the overlook and walk up
-        the gravel path.</p>
+        <p class="eyebrow">Saturday 14 November 2026</p>
+        <h1 class="display">Ten years</h1>
+        <p class="lede">A surprise anniversary party at the Capital Club, Asheville.
+        Doors at 6pm - please be inside before then.</p>
+        <div class="where">
+          <p class="wlbl">Getting there</p>
+          <p class="waddr">6 Sears Alley<br>Asheville, NC</p>
+          <p class="wnote">Park here - it is covered and included. The Capital Club is a short
+          walk from the garage.</p>
+          <span class="btn ghost">Open in Maps</span>
+        </div>
         <div class="rule"></div>
         <p class="count"><strong>24</strong> people are coming so far</p>
         <div class="form">
@@ -139,7 +154,7 @@
             <div class="segs"><span class="seg sel">Yes</span><span class="seg">No</span></div>
           </div>
           <label class="field"><span class="lbl">How many, including you</span><input value="2" readonly></label>
-          <label class="field"><span class="lbl">Anything we should know</span><textarea readonly rows="2">Driving up from Asheville, may be 20 min late.</textarea></label>
+          <label class="field"><span class="lbl">Anything we should know</span><textarea readonly rows="2">May be 20 minutes late.</textarea></label>
           <button class="btn">Send my RSVP</button>
         </div>
       </div>
@@ -156,7 +171,7 @@
 </svg>
       <div class="pad">
         <h2 class="display sm">The wedding</h2>
-        <p class="lede">Twenty years ago, on a considerably colder day.</p>
+        <p class="lede">Ten years ago, on a considerably colder day.</p>
         <div class="grid">
           <div class="tile t1"></div><div class="tile t2"></div>
           <div class="tile t3 wide"></div>
@@ -182,8 +197,8 @@
         <article class="card">
           <p class="pin">Pinned</p>
           <h3>Parking, and how to stay hidden</h3>
-          <p>Leave cars at the lower overlook, not the lodge. We need the front drive
-          to look empty right up until 6.</p>
+          <p>Use the Sears Alley garage, not the street outside. The front of the club
+          needs to look ordinary right up until 6.</p>
           <p class="meta">3 comments</p>
         </article>
         <div class="thread">
@@ -218,7 +233,7 @@
           <div class="bub me">Is there anything you need brought up?</div>
           <div class="bub them">A folding table if you have one. And keep it quiet.</div>
           <div class="bub me">Understood. Anything else?</div>
-          <div class="bub them">Park at the lower overlook, not the drive.</div>
+          <div class="bub them">Park in the Sears Alley garage, not out front.</div>
           <div class="bub me">Got it. See you Saturday.</div>
         </div>
         <label class="field"><input value="Write a message" readonly></label>
@@ -230,7 +245,8 @@
 </section>
 
 <footer>
-  Five screens at phone width, which is where almost everyone will open the link. Copy, dates and
-  the venue are sample text. Photographs are placeholders - the real wedding album replaces them.
-  Ridge artwork is inline SVG, so it costs nothing to load and scales to any screen.
+  Five screens at phone width, which is where almost everyone will open the link. The date, venue
+  and parking address are real; the rest of the copy is sample text you will edit from the host
+  console, and the photographs are placeholders the real wedding album replaces. Ridge artwork is
+  inline SVG, so it costs nothing to load and scales to any screen.
 </footer>

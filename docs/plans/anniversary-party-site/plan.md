@@ -9,6 +9,19 @@ A small Next.js app on Vercel, a Postgres schema on Supabase, and a private GitH
 host - plus one host console behind a second password, from which every word on the site is
 editable.
 
+## The event
+
+| | |
+|---|---|
+| Occasion | **Ten year anniversary**, surprise party |
+| Date | **Saturday 14 November 2026** - 62 days from today, 13 September 2026 |
+| Venue | **The Capital Club**, Asheville, NC |
+| Parking | **6 Sears Alley, Asheville, NC** - covered, and included |
+
+The date is far enough out that the Supabase Free pause window matters and close enough that
+invitations want sending soon. Those two facts set the build order: the gate, the invitation and
+the RSVP first, everything else after.
+
 ## Decisions already taken
 
 | Question | Chosen | What it means here |
@@ -17,7 +30,7 @@ editable.
 | Guest identity | **Cookie only, plus a merge tool in `/host`** | No resume codes to lose. If someone clears their browser they simply reappear as a new guest, and you join the two rows yourself from the host console. |
 | Photos | **Private Supabase Storage bucket** | Signed URLs minted server-side, so the album is genuinely behind the password, and you add photos from `/host` without a deploy. |
 | Host notifications | **None** | No Resend, no email. The host console carries unread counts. One fewer service, one fewer API key. |
-| Visual direction | **Warm archival, extended to a Blue Ridge Mountains theme** | Three mockups are built and waiting - see below. |
+| Visual direction | **A - Blue Ridge at dawn** | Cream letterpress paper, a sunrise over layered ridges, serif throughout. Chosen from three built directions; B and C are kept in `mockups/` as a record, not as live options. |
 
 ## What I checked before planning
 
@@ -33,23 +46,50 @@ change what "free" means.
 
 ## Look and feel: Blue Ridge
 
-Three directions are built as working pages, not pictures. Each shows the same five screens at
-phone width, which is where almost everyone will open a link sent by text. Open them and pick one:
+**Chosen: A - Blue Ridge at dawn** (`mockups/a-blue-ridge-dawn.html`). Cream letterpress paper, a
+sunrise over layered ridges, serif throughout. The warmest of the three and the closest to a
+printed keepsake - it reads as an anniversary first and a web app second.
 
-| Direction | File | The idea |
-|---|---|---|
-| **A - Blue Ridge at dawn** | `mockups/a-blue-ridge-dawn.html` | Cream letterpress paper, a sunrise over layered ridges, serif throughout. The warmest, and the closest to a printed keepsake. Reads as an anniversary first and a web app second. |
-| **B - Blue hour** | `mockups/b-blue-hour.html` | Dusk on the parkway. A dark ground so the wedding photographs are the only bright thing on screen, lantern-amber for anything you can act on. The most atmospheric, and the most obviously an evening party. |
-| **C - Field guide** | `mockups/c-field-guide.html` | A trail map for the evening. Off-white stock, a tight sans for structure and a serif for prose, forest green against ridge blue. The clearest to read on a phone in a parking lot. |
+Its tokens, which become the theme file verbatim:
+
+| Token | Value |
+|---|---|
+| paper / page | `#faf6ee` / `#efe9dd` |
+| ink / muted | `#26323b` / `#6d7a80` |
+| accent (clay) | `#b0653c` |
+| ridge, front to back | `#33566b`, `#55798c`, `#7a9aa8`, `#9db7c0` |
+| sky / sun | `#f3d9b8` / `#f0b070` |
+| display and body | Georgia / Iowan Old Style, serif throughout |
+
+`mockups/b-blue-hour.html` and `mockups/c-field-guide.html` stay in the repository as a record of
+what was considered and rejected. They are not live options.
 
 The ridgelines are **inline SVG**, layered and hazed the way the Blue Ridge actually recedes.
-That is deliberate: no image request, no loading flash, sharp on any screen, and recolourable
-per direction from one set of tokens. The same four-layer silhouette appears full height on the
-gate and the invitation, and as a thin band under the navigation everywhere else, so the theme
-carries without repeating itself.
+That is deliberate: no image request, no loading flash, sharp on any screen, and recolourable from
+one set of tokens. The same four-layer silhouette appears full height on the gate and the
+invitation, and as a thin band under the navigation everywhere else, so the theme carries without
+repeating itself. Every screen is built from the tokens above rather than from hand-picked
+colours.
 
-Whichever direction wins becomes a small token file - paper, ink, four ridge blues, one accent -
-and every screen is built from those tokens rather than from hand-picked colours.
+## Getting there
+
+Parking is covered and included, and it is **not** at the venue - so the invitation leads with the
+garage, not the club. The primary action is a map link to **6 Sears Alley**, because that is the
+address a guest should actually drive to. The Capital Club is named beneath it as the destination
+they walk to.
+
+- The address is rendered as selectable text as well as a link, so anyone can copy it into
+  whatever they already use.
+- The link is the Google Maps universal URL,
+  `https://www.google.com/maps/search/?api=1&query=6+Sears+Alley+Asheville+NC`, which opens the
+  Maps app on both iOS and Android when one is installed and falls back to the browser when not.
+  An Apple Maps variant (`https://maps.apple.com/?q=`) is a one-line addition if you would rather
+  offer both, at the cost of a second control to explain.
+- It is the only outbound link on the site, so it carries `rel="noopener noreferrer"` and the site
+  sets `Referrer-Policy: no-referrer`. A gated URL should not reach a third party in a referrer
+  header, surprise or no surprise.
+- Both addresses live in the `party` table and are editable from `/host`, so a venue change is a
+  form submission rather than a deploy.
 
 ## The one idea the whole design rests on
 
@@ -130,18 +170,19 @@ flowchart TD
 | Route | Who | What it does |
 |---|---|---|
 | `/gate` | anyone with the link | One password field. Nothing above it names the occasion or the honoree. |
-| `/` | guest | The invitation: date, time, place, and the RSVP form. Shows a running count of who is coming (host-toggleable, default on). |
+| `/` | guest | The invitation: date, time, the Capital Club, a **Getting there** block with the Sears Alley parking address and a map link, and the RSVP form. Shows a running count of who is coming (host-toggleable, default on). |
 | `/album` | guest | The wedding photos, from the private bucket via signed URLs. Responsive grid, tap to open full size, captions optional. |
 | `/updates` | guest | Host posts newest-first, pinned ones on top. Each opens a comment thread, one level of replies. |
 | `/messages` | guest | That guest's private thread with the host. Unread replies badge in the nav. |
-| `/host` | host | Second password, then six tabs: **RSVPs** (table, totals, CSV export, merge duplicate guests), **Messages** (every thread, unread counts, reply), **Posts** (compose, edit, pin, draft, delete), **Album** (upload, caption, reorder, delete), **Content** (every word on the site), **Party** (date, time, venue, guest-list toggle). |
+| `/host` | host | Second password, then six tabs: **RSVPs** (table, totals, CSV export, merge duplicate guests), **Messages** (every thread, unread counts, reply), **Posts** (compose, edit, pin, draft, delete), **Album** (upload, caption, reorder, delete), **Content** (every word on the site), **Party** (date, time, venue, parking address and note, guest-list toggle). |
 
 ## Everything on the page is editable
 
 Nothing a guest reads is hardcoded in the repo. Two tables carry it:
 
-- **`party`** - the structured facts. Date and time, venue name and address, and the
-  `show_guest_list` toggle.
+- **`party`** - the structured facts. Date and time, venue name and address, the parking address
+  and its note, and the `show_guest_list` toggle. The map link is derived from `parking_addr`
+  rather than stored, so it can never drift from the address printed above it.
 - **`content_blocks`** - every piece of prose, keyed by slug: `gate.note`, `home.eyebrow`,
   `home.title`, `home.body`, `album.title`, `album.intro`, `updates.title`, `updates.intro`,
   `messages.title`, `messages.intro`, `footer`. Each row has a human label so the Content tab
@@ -228,9 +269,11 @@ create table messages (
 
 create table party (
   id              int primary key default 1 check (id = 1),
-  starts_at       timestamptz,
-  venue_name      text,
+  starts_at       timestamptz,                     -- 2026-11-14, time to be confirmed
+  venue_name      text,                            -- 'The Capital Club'
   venue_addr      text,
+  parking_addr    text,                            -- '6 Sears Alley, Asheville, NC'
+  parking_note    text,                            -- 'Covered and included'
   show_guest_list boolean not null default true,
   updated_at      timestamptz not null default now()
 );
@@ -361,16 +404,23 @@ A Playwright spec per core flow, written before or alongside the feature:
 9. A guest cannot reach `/host` without the host password.
 10. No route returns anything without `party_session`.
 11. The home page ships no `og:image` and no occasion-naming metadata.
+12. The map link points at the parking address currently in `party`, and carries
+    `rel="noopener noreferrer"`.
 
 ## What I still need from you
 
 None of this blocks building - all of it is data you type into `/host` or set as an env var.
 
-- Party date, start time, venue name and address.
+- **The start time.** The mockups show 6pm as a placeholder; the invitation cannot ship without
+  the real one, and it is the one field guests will act on.
+- **The Capital Club's street address**, for the line beneath the parking block.
 - The invitation copy, and how much the gate page should say (currently: nothing).
 - The two passwords - party and host.
 - The wedding photos, resized to max 2000px on the long edge.
 - Whether there is a gift or registry note to include.
+
+Everything except the start time can land after the first deploy, because all of it is editable
+from `/host`.
 
 ## Cost
 
@@ -402,7 +452,7 @@ follow; none belongs in the first version.
 | Risk | Severity | Handling |
 |---|---|---|
 | The honoree sees a forwarded link preview | High - it ends the surprise | Blank OG tags, bland title, no preview image. First thing built, first thing tested. |
-| Free Supabase project pauses before the party | High - site down | Daily Vercel Cron keepalive, plus the warning email Supabase sends a week ahead. |
+| Free Supabase project pauses before the party | High - site down | Nine quiet weeks stand between now and 14 November, which is eight more than the pause window. The daily Vercel Cron keepalive is therefore load-bearing, not belt-and-braces, and it is tested. |
 | A migration on a preview branch hits production data | Medium | No database branching on Free. Additive migrations only; the PR diff is the review. |
 | The password gets forwarded outside the guest list | Medium | Rotatable in one env var; `kid` bump invalidates every session. |
 | A guest clears cookies and appears twice | Low | The merge tool in `/host`, and `merged_into` keeps it reversible. |

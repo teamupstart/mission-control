@@ -1,0 +1,620 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anniversary party site - plan</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #5c6370; --rule: #e3e6ea; --card: #f7f8fa;
+    --accent: #2f6feb; --warn-bg: #fff6e5; --warn-fg: #7a4d00; --warn-rule: #f0c26b;
+    --code-bg: #f2f3f5; --box: #ffffff; --box-rule: #c4cad3; --arrow: #8b93a1;
+    --hot: #d1383d; --good: #1f7a4d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e8ec; --muted: #98a0ad; --rule: #2a2e35; --card: #1b1e24;
+      --accent: #6699ff; --warn-bg: #2b2313; --warn-fg: #e8c37a; --warn-rule: #6b5420;
+      --code-bg: #21252b; --box: #1b1e24; --box-rule: #3a4049; --arrow: #6b7280;
+      --hot: #f0787c; --good: #56c98c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 3rem 1.25rem 6rem; max-width: 52rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 1.5rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.35rem; margin: 3rem 0 1rem; letter-spacing: -0.01em;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 2rem 0 .6rem; letter-spacing: -0.005em; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  blockquote {
+    margin: 0 0 2rem; padding: 1rem 1.25rem; border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 6px 6px 0;
+    font-size: 1.05rem; color: var(--muted);
+  }
+  blockquote p { margin: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .855em; background: var(--code-bg); padding: .12em .38em; border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; margin: 1.25rem 0; font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  .scroll { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:last-child td { border-bottom: none; }
+  .verdict {
+    background: var(--warn-bg); border: 1px solid var(--warn-rule); color: var(--warn-fg);
+    border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .verdict p { margin: 0; color: var(--warn-fg); }
+  .verdict p + p { margin-top: .6rem; }
+  figure { margin: 1.75rem 0; }
+  figcaption { color: var(--muted); font-size: .87rem; margin-top: .5rem; }
+  .diagram { width: 100%; height: auto; display: block; min-width: 33rem; }
+  .flow-label { font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--fg); }
+  .flow-sub { font: 9.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted); }
+  .flow-edge { font: 9.5px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+  .flow-box { fill: var(--box); stroke: var(--box-rule); stroke-width: 1.2; }
+  .flow-hot { stroke: var(--hot); }
+  .flow-good { stroke: var(--good); }
+  .flow-arrow { stroke: var(--arrow); stroke-width: 1.3; fill: none; }
+  .flow-dash { stroke: var(--arrow); stroke-width: 1.2; fill: none; stroke-dasharray: 4 3; }
+  .title-tag { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .09em; text-transform: uppercase; }
+  footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .87rem; }
+</style>
+
+<h1>Anniversary party site</h1>
+
+<blockquote>
+  <p>One link, one password, one name. Guests RSVP, browse the wedding album, read your updates
+  and comment on them, and can message you privately - with no accounts to create and nothing
+  in the link preview that can spoil the surprise.</p>
+</blockquote>
+
+<p>A small Next.js app on Vercel, a Postgres schema on Supabase, and a private GitHub repo at
+<code>mancej/rsvp</code>. Four guest-facing functions - RSVP, album, updates with comments,
+message the host - plus one host console behind a second password.</p>
+
+<h2>What I checked before planning</h2>
+
+<p>These are account facts, read from the live APIs, not assumptions. Two of them contradict the
+brief and change what "free" means here.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Thing</th><th>What is actually there</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Vercel teams</td>
+      <td>one: <code>mancej's projects</code> (<code>team_kk8pgfBj70UFlHGr2PAtCKLl</code>) - plan <strong>pro</strong></td>
+      <td>Deploying here adds <strong>$0</strong>. There is no free/Hobby account on this login to deploy to.</td>
+    </tr>
+    <tr>
+      <td>Supabase orgs</td>
+      <td>one: <code>Claim Your Court</code> (<code>mzkjsbalifykumkrlpin</code>) - plan <strong>pro</strong>, holding one ACTIVE_HEALTHY project</td>
+      <td>A second project in this org is <strong>not free</strong> - Pro bills compute per project beyond the included credit. A genuinely free project needs a <strong>new org on the Free plan</strong>.</td>
+    </tr>
+    <tr>
+      <td>GitHub</td>
+      <td><code>mancej</code> is authenticated on this machine but is <strong>not</strong> the active <code>gh</code> account (<code>mancej2</code> is). <code>mancej/rsvp</code> does not exist.</td>
+      <td>Every repo action needs <code>gh auth switch --user mancej</code> first, or it silently lands under the wrong account.</td>
+    </tr>
+    <tr>
+      <td>Supabase Free pausing</td>
+      <td>Confirmed in Supabase docs: Free projects with low activity over a 7-day window are paused, after a warning email, restorable for 90 days.</td>
+      <td>A party site can easily sit idle for a week. Unmitigated, this is the site being down the morning someone tries to RSVP.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="verdict">
+  <p>So "free" is a real choice, not a default - see the decisions at the bottom.</p>
+</div>
+
+<h2>The one idea the whole design rests on</h2>
+
+<p>"No individual user accounts" and "people can message me directly" pull against each other.
+A private thread has to know whose thread it is. The resolution is a <strong>guest identity</strong>,
+which is not an account: no password, no email, no verification, nothing to forget.</p>
+
+<p>Three signed, HttpOnly cookies, all minted server-side, none of which a browser can forge:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Cookie</th><th>Claim</th><th>Set by</th></tr></thead>
+  <tbody>
+    <tr><td><code>party_session</code></td><td>"this device knows the party password"</td><td>the gate, on a correct password</td></tr>
+    <tr><td><code>party_guest</code></td><td>"this device is guest <code>&lt;uuid&gt;</code>"</td><td>the first time someone submits their name</td></tr>
+    <tr><td>(an <code>admin: true</code> claim inside <code>party_session</code>)</td><td>"this device is the host"</td><td><code>/host</code>, on a correct, different host password</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>They are JWTs signed with HS256 over a server-only secret (<code>jose</code>, which runs on
+Vercel's Edge runtime where the middleware lives). A guest cannot mint another guest's id, cannot
+promote themselves to host, and cannot read anything without the first cookie.</p>
+
+<h2>Trust boundary: the browser never holds a database credential</h2>
+
+<p>Every read and write goes through a Next.js Route Handler holding the Supabase
+<strong>service role</strong> key as a server-only environment variable. Row Level Security is
+enabled on every table with <strong>zero policies</strong> - a deliberate deny-all, since
+<code>anon</code> and <code>authenticated</code> match no policy and the service role bypasses RLS
+entirely. If a Supabase publishable key ever leaked, it would open nothing.</p>
+
+<figure>
+  <div class="scroll">
+    <svg class="diagram" viewBox="0 0 720 205" role="img"
+         aria-label="The guest browser holds only three signed cookies and no Supabase key. Requests cross a trust boundary into Vercel Edge middleware, which verifies the session cookie and redirects to the gate when it is missing, then into Next.js route handlers that hold the service role key and are the only thing that talks to Supabase Postgres, Supabase Storage and Resend.">
+      <defs>
+        <marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L7,3 L0,6 z" fill="var(--arrow)"/>
+        </marker>
+      </defs>
+
+      <line x1="142" y1="0" x2="142" y2="176" stroke="var(--box-rule)" stroke-width="1" stroke-dasharray="5 4"/>
+      <text x="142" y="192" class="flow-edge" text-anchor="middle">trust boundary</text>
+
+      <rect x="0" y="40" width="124" height="58" rx="5" class="flow-box"/>
+      <text x="62" y="62" class="flow-label" text-anchor="middle">Guest browser</text>
+      <text x="62" y="77" class="flow-sub" text-anchor="middle">3 signed cookies</text>
+      <text x="62" y="89" class="flow-sub" text-anchor="middle">no Supabase key</text>
+
+      <rect x="160" y="40" width="146" height="58" rx="5" class="flow-box"/>
+      <text x="233" y="62" class="flow-label" text-anchor="middle">Edge middleware</text>
+      <text x="233" y="77" class="flow-sub" text-anchor="middle">verify party_session</text>
+      <text x="233" y="89" class="flow-sub" text-anchor="middle">else redirect /gate</text>
+
+      <rect x="356" y="34" width="154" height="70" rx="5" class="flow-box flow-good"/>
+      <text x="433" y="56" class="flow-label" text-anchor="middle">Route handlers</text>
+      <text x="433" y="71" class="flow-sub" text-anchor="middle">Zod validation</text>
+      <text x="433" y="83" class="flow-sub" text-anchor="middle">service role key</text>
+      <text x="433" y="95" class="flow-sub" text-anchor="middle">server-only env</text>
+
+      <rect x="552" y="6" width="168" height="48" rx="5" class="flow-box"/>
+      <text x="636" y="26" class="flow-label" text-anchor="middle">Supabase Postgres</text>
+      <text x="636" y="41" class="flow-sub" text-anchor="middle">RLS on, zero policies</text>
+
+      <rect x="552" y="64" width="168" height="48" rx="5" class="flow-box"/>
+      <text x="636" y="84" class="flow-label" text-anchor="middle">Supabase Storage</text>
+      <text x="636" y="99" class="flow-sub" text-anchor="middle">private, signed URLs</text>
+
+      <rect x="552" y="122" width="168" height="44" rx="5" class="flow-box"/>
+      <text x="636" y="140" class="flow-label" text-anchor="middle">Resend</text>
+      <text x="636" y="155" class="flow-sub" text-anchor="middle">host notifications only</text>
+
+      <path d="M124,69 H156" class="flow-arrow" marker-end="url(#a1)"/>
+      <path d="M306,69 H352" class="flow-arrow" marker-end="url(#a1)"/>
+      <text x="329" y="62" class="flow-edge" text-anchor="middle">pass</text>
+
+      <path d="M510,69 H530" class="flow-arrow"/>
+      <path d="M530,30 V142" class="flow-arrow"/>
+      <path d="M530,30 H548" class="flow-arrow" marker-end="url(#a1)"/>
+      <path d="M530,88 H548" class="flow-arrow" marker-end="url(#a1)"/>
+      <path d="M530,142 H548" class="flow-dash" marker-end="url(#a1)"/>
+
+      <path d="M233,98 V126 H62 V102" class="flow-arrow" marker-end="url(#a1)"/>
+      <text x="196" y="140" class="flow-edge" text-anchor="middle">no cookie, or a bad one</text>
+    </svg>
+  </div>
+  <figcaption>Nothing to the right of the dashed line is reachable from a browser. The only
+  credential the browser carries is a signed cookie that names a guest, never a database key.</figcaption>
+</figure>
+
+<p><strong>The cost of this choice, stated plainly:</strong> no Supabase Realtime in the browser,
+because a Realtime subscription needs a Supabase key client-side. Live-feeling updates instead
+come from the page polling a route handler roughly every 10 seconds while the tab is visible, and
+stopping when it is not. For a guest list in the dozens that is the right trade; it is the wrong
+trade at 1,000 concurrent users, which this will never have.</p>
+
+<p><strong>Rejected alternative - anonymous Supabase Auth plus RLS policies.</strong> It puts a key
+in the browser, moves correctness from one auditable server module into policy SQL spread across
+seven tables, and is rate limited to 30 anonymous sign-ins per hour per IP - which one venue's
+shared Wi-Fi or one corporate NAT can exhaust. For a site with exactly one shared password there
+is nothing for per-user RLS to express.</p>
+
+<p><strong>Rejected alternative - Vercel's built-in Password Protection.</strong> It is available on
+Pro and is zero code, but it is all-or-nothing: it cannot tell a guest from the host, cannot
+capture the name, and gives the app no session to hang an identity on. Adding it <em>on top</em>
+would mean two passwords to explain to every guest for no security the app gate does not already
+provide.</p>
+
+<h2>Guest identity lifecycle</h2>
+
+<figure>
+  <div class="scroll">
+    <svg class="diagram" viewBox="0 0 720 240" role="img"
+         aria-label="Opening the link checks for a party_session cookie. Without one the visitor goes to the gate and enters the party password. With one, the app checks for a party_guest cookie; without one the visitor gives a name or a resume code, which inserts a guests row and sets the cookie. Either way they land on Home, and that guest id is carried into the RSVP, the comments and the message thread.">
+      <defs>
+        <marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L7,3 L0,6 z" fill="var(--arrow)"/>
+        </marker>
+      </defs>
+
+      <rect x="0" y="88" width="100" height="44" rx="5" class="flow-box"/>
+      <text x="50" y="115" class="flow-label" text-anchor="middle">Opens the link</text>
+
+      <rect x="128" y="82" width="116" height="56" rx="5" class="flow-box"/>
+      <text x="186" y="104" class="flow-label" text-anchor="middle">party_session?</text>
+      <text x="186" y="120" class="flow-sub" text-anchor="middle">edge middleware</text>
+
+      <rect x="128" y="6" width="116" height="52" rx="5" class="flow-box flow-hot"/>
+      <text x="186" y="28" class="flow-label" text-anchor="middle">/gate</text>
+      <text x="186" y="44" class="flow-sub" text-anchor="middle">party password</text>
+
+      <rect x="288" y="82" width="116" height="56" rx="5" class="flow-box"/>
+      <text x="346" y="104" class="flow-label" text-anchor="middle">party_guest?</text>
+      <text x="346" y="120" class="flow-sub" text-anchor="middle">cookie check</text>
+
+      <rect x="288" y="166" width="116" height="56" rx="5" class="flow-box"/>
+      <text x="346" y="187" class="flow-label" text-anchor="middle">Who are you?</text>
+      <text x="346" y="202" class="flow-sub" text-anchor="middle">name or code</text>
+      <text x="346" y="214" class="flow-sub" text-anchor="middle">INSERT guests</text>
+
+      <rect x="448" y="88" width="104" height="44" rx="5" class="flow-box flow-good"/>
+      <text x="500" y="115" class="flow-label" text-anchor="middle">Home</text>
+
+      <rect x="588" y="60" width="132" height="100" rx="5" class="flow-box"/>
+      <text x="654" y="82" class="flow-label" text-anchor="middle">guest_id carries</text>
+      <text x="654" y="100" class="flow-sub" text-anchor="middle">RSVP (upsert)</text>
+      <text x="654" y="114" class="flow-sub" text-anchor="middle">comments</text>
+      <text x="654" y="128" class="flow-sub" text-anchor="middle">message thread</text>
+      <text x="654" y="142" class="flow-sub" text-anchor="middle">album is read-only</text>
+
+      <path d="M100,110 H124" class="flow-arrow" marker-end="url(#a2)"/>
+      <path d="M186,82 V62" class="flow-arrow" marker-end="url(#a2)"/>
+      <text x="199" y="76" class="flow-edge" text-anchor="start">no</text>
+      <path d="M244,32 C268,32 264,96 284,96" class="flow-arrow" marker-end="url(#a2)"/>
+      <text x="258" y="24" class="flow-edge" text-anchor="start">ok</text>
+      <path d="M244,120 H284" class="flow-arrow" marker-end="url(#a2)"/>
+      <text x="264" y="114" class="flow-edge" text-anchor="middle">yes</text>
+      <path d="M346,138 V162" class="flow-arrow" marker-end="url(#a2)"/>
+      <text x="356" y="154" class="flow-edge" text-anchor="start">no</text>
+      <path d="M404,104 H444" class="flow-arrow" marker-end="url(#a2)"/>
+      <text x="424" y="98" class="flow-edge" text-anchor="middle">yes</text>
+      <path d="M404,194 C430,194 426,122 444,122" class="flow-arrow" marker-end="url(#a2)"/>
+      <path d="M552,110 H584" class="flow-arrow" marker-end="url(#a2)"/>
+    </svg>
+  </div>
+  <figcaption>Losing the cookie - a cleared browser, a second device - is the one rough edge. How
+  much to spend closing it is a decision below.</figcaption>
+</figure>
+
+<h2>Pages</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Route</th><th>Who</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>/gate</code></td><td>anyone with the link</td><td>One password field. Nothing above it names the occasion or the honoree.</td></tr>
+    <tr><td><code>/</code></td><td>guest</td><td>The invitation: date, time, place, and the RSVP form. Shows a running count of who is coming (host-toggleable, default on).</td></tr>
+    <tr><td><code>/album</code></td><td>guest</td><td>The wedding photos. Responsive grid, click to open full size, captions optional.</td></tr>
+    <tr><td><code>/updates</code></td><td>guest</td><td>Host posts newest-first, pinned ones on top. Each opens a comment thread, one level of replies.</td></tr>
+    <tr><td><code>/messages</code></td><td>guest</td><td>That guest's private thread with the host. Empty state invites the first message.</td></tr>
+    <tr><td><code>/host</code></td><td>host</td><td>Second password, then: RSVP table with totals and a CSV export, every message thread with unread counts, post composer, comment and message moderation, party-detail editor, guest-list visibility toggle.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Party details - date, time, venue, address, dress code, the invitation copy - live in a
+single-row <code>party</code> table edited from <code>/host</code>, not in a config file. The host
+console has to exist anyway for posts and messages, and putting the venue behind a redeploy means
+every small change needs an engineer.</p>
+
+<h2>Data model</h2>
+
+<figure>
+  <div class="scroll">
+    <svg class="diagram" viewBox="0 0 720 320" role="img"
+         aria-label="The guests table is the hub: one optional RSVP per guest, many messages forming one private thread per guest, and many comments. Posts carry many comments, and comments self-reference for one level of replies. The party settings row, the photos table and the gate attempt limiter stand alone with no foreign keys.">
+      <defs>
+        <marker id="a3" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto">
+          <path d="M0,0 L6,2.6 L0,5.2 z" fill="var(--arrow)"/>
+        </marker>
+      </defs>
+
+      <rect x="240" y="100" width="160" height="68" rx="5" class="flow-box flow-good"/>
+      <text x="320" y="124" class="flow-label" text-anchor="middle">guests</text>
+      <text x="320" y="140" class="flow-sub" text-anchor="middle">id, display_name</text>
+      <text x="320" y="154" class="flow-sub" text-anchor="middle">resume_code</text>
+
+      <rect x="20" y="20" width="150" height="60" rx="5" class="flow-box"/>
+      <text x="95" y="44" class="flow-label" text-anchor="middle">rsvps</text>
+      <text x="95" y="60" class="flow-sub" text-anchor="middle">attending, party_size</text>
+      <text x="95" y="72" class="flow-sub" text-anchor="middle">note</text>
+
+      <rect x="20" y="190" width="150" height="68" rx="5" class="flow-box"/>
+      <text x="95" y="214" class="flow-label" text-anchor="middle">messages</text>
+      <text x="95" y="230" class="flow-sub" text-anchor="middle">from_host, body</text>
+      <text x="95" y="244" class="flow-sub" text-anchor="middle">read_by_* stamps</text>
+
+      <rect x="470" y="20" width="170" height="60" rx="5" class="flow-box"/>
+      <text x="555" y="44" class="flow-label" text-anchor="middle">posts</text>
+      <text x="555" y="60" class="flow-sub" text-anchor="middle">title, body, pinned</text>
+      <text x="555" y="72" class="flow-sub" text-anchor="middle">published_at</text>
+
+      <rect x="470" y="134" width="170" height="66" rx="5" class="flow-box"/>
+      <text x="555" y="158" class="flow-label" text-anchor="middle">comments</text>
+      <text x="555" y="174" class="flow-sub" text-anchor="middle">post_id, guest_id</text>
+      <text x="555" y="188" class="flow-sub" text-anchor="middle">parent_id, deleted_at</text>
+
+      <text x="20" y="274" class="flow-edge" text-anchor="start">standalone - no foreign keys</text>
+
+      <rect x="20" y="284" width="150" height="28" rx="5" class="flow-box"/>
+      <text x="95" y="303" class="flow-label" text-anchor="middle">gate_attempts</text>
+
+      <rect x="240" y="284" width="160" height="28" rx="5" class="flow-box"/>
+      <text x="320" y="303" class="flow-label" text-anchor="middle">party</text>
+
+      <rect x="470" y="284" width="170" height="28" rx="5" class="flow-box"/>
+      <text x="555" y="303" class="flow-label" text-anchor="middle">photos</text>
+
+      <path d="M240,122 C206,122 202,50 176,50" class="flow-arrow" marker-end="url(#a3)"/>
+      <text x="196" y="96" class="flow-edge" text-anchor="end">1 : 0..1</text>
+
+      <path d="M240,146 C206,146 202,224 176,224" class="flow-arrow" marker-end="url(#a3)"/>
+      <text x="196" y="180" class="flow-edge" text-anchor="end">1 : N</text>
+
+      <path d="M400,140 C436,140 438,166 464,166" class="flow-arrow" marker-end="url(#a3)"/>
+      <text x="432" y="132" class="flow-edge" text-anchor="middle">1 : N</text>
+
+      <path d="M555,80 V130" class="flow-arrow" marker-end="url(#a3)"/>
+      <text x="578" y="108" class="flow-edge" text-anchor="start">1 : N</text>
+
+      <path d="M640,152 C674,144 674,192 646,184" class="flow-arrow" marker-end="url(#a3)"/>
+      <text x="666" y="210" class="flow-edge" text-anchor="middle">self, 1 level</text>
+    </svg>
+  </div>
+  <figcaption>Everything a guest does hangs off one <code>guests</code> row, which is why the
+  identity cookie is the load-bearing part of the design.</figcaption>
+</figure>
+
+<pre><code>create table guests (
+  id            uuid primary key default gen_random_uuid(),
+  display_name  text not null check (length(trim(display_name)) between 1 and 80),
+  resume_code   text unique,                    -- only if the resume-code option is chosen
+  created_at    timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now()
+);
+
+create table rsvps (
+  guest_id    uuid primary key references guests(id) on delete cascade,
+  attending   boolean not null,
+  party_size  int not null default 1 check (party_size between 0 and 12),
+  note        text,                              -- dietary needs, "arriving late", anything
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+create table posts (
+  id           uuid primary key default gen_random_uuid(),
+  title        text not null,
+  body         text not null,
+  pinned       boolean not null default false,
+  published_at timestamptz,                      -- null = draft, host-only
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create table comments (
+  id         uuid primary key default gen_random_uuid(),
+  post_id    uuid not null references posts(id) on delete cascade,
+  guest_id   uuid references guests(id) on delete set null,   -- null = the host
+  parent_id  uuid references comments(id) on delete cascade,  -- one level of replies
+  body       text not null,
+  deleted_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table messages (
+  id               uuid primary key default gen_random_uuid(),
+  guest_id         uuid not null references guests(id) on delete cascade, -- whose thread
+  from_host        boolean not null,
+  body             text not null,
+  read_by_host_at  timestamptz,
+  read_by_guest_at timestamptz,
+  created_at       timestamptz not null default now()
+);
+
+create table party (
+  id          int primary key default 1 check (id = 1),
+  title       text not null,
+  starts_at   timestamptz,
+  venue_name  text,
+  venue_addr  text,
+  details_md  text,
+  show_guest_list boolean not null default true
+);
+
+create table photos (
+  id           uuid primary key default gen_random_uuid(),
+  storage_path text not null,
+  caption      text,
+  sort_order   int not null default 0,
+  created_at   timestamptz not null default now()
+);
+
+create table gate_attempts (                    -- brute-force limiter for the password gate
+  ip         inet not null,
+  attempted_at timestamptz not null default now()
+);
+create index on gate_attempts (ip, attempted_at desc);
+
+create index on comments (post_id, created_at);
+create index on messages (guest_id, created_at);</code></pre>
+
+<p>Every table gets <code>alter table &lt;t&gt; enable row level security;</code> and no policies.
+Supabase's security advisor reports "RLS enabled, no policy" as informational for this shape; that
+is the intended state, not a gap.</p>
+
+<p>Migrations are plain SQL files under <code>supabase/migrations/</code>, applied with the Supabase
+CLI, so the schema is reviewable in the pull request rather than clicked into a dashboard.</p>
+
+<h2>Keeping the surprise</h2>
+
+<p>The password gate is the easy half. These are the leaks it does not cover.</p>
+
+<ul>
+  <li><strong>Link previews are the real risk.</strong> When a guest forwards the link into a group
+  text or WhatsApp thread, every person in that thread sees a preview card without opening
+  anything - and one of them may be the honoree. So: a deliberately bland <code>&lt;title&gt;</code>,
+  <strong>no</strong> <code>og:image</code>, no <code>og:description</code> naming the occasion or
+  either of you. Something like "You're invited" and nothing more. This is the single
+  highest-value item on the page.</li>
+  <li><strong><code>robots</code></strong>: <code>noindex, nofollow</code> on every route, an
+  <code>X-Robots-Tag</code> response header, and a <code>robots.txt</code> that disallows
+  everything. A gated site can still leak through a referrer or a browser extension that reports
+  URLs.</li>
+  <li><strong>The domain shows in the preview card.</strong> The Vercel project name becomes the
+  deployment hostname, so it wants to be neutral. <code>rsvp</code> is fine; anything with a name
+  or a number in it is not.</li>
+  <li><strong>Private repo.</strong> Non-negotiable once wedding photos and a guest list are
+  involved.</li>
+  <li><strong>Nothing above the password.</strong> The gate page carries no names, no date, no
+  photo.</li>
+</ul>
+
+<h2>Password gate hardening</h2>
+
+<p>A single shared password that lives for months is worth hardening properly.</p>
+
+<ul>
+  <li>Store a <strong>scrypt hash</strong> in <code>PARTY_PASSWORD_HASH</code>, never the plaintext,
+  so an env dump does not hand over a password that may be reused elsewhere. Same for
+  <code>HOST_PASSWORD_HASH</code>.</li>
+  <li>Verify with a constant-time compare, in a Node-runtime route handler (Edge has no
+  <code>timingSafeEqual</code>).</li>
+  <li>Rate limit on <code>gate_attempts</code>: at most 10 attempts per IP per 15 minutes, then a
+  delay response. Cheap, portable, and visible in the database rather than in a vendor
+  console.</li>
+  <li>Session cookie: <code>HttpOnly</code>, <code>Secure</code>, <code>SameSite=Lax</code>, and a
+  long expiry - the party is months out and nobody should have to re-enter the password
+  twice.</li>
+  <li>Rotating the password is a single env var change plus a redeploy, and bumping a
+  <code>kid</code> claim in the signing secret invalidates every existing session at once. Worth
+  building in from the start; it costs nothing and it is the only recovery if the password gets
+  posted somewhere public.</li>
+</ul>
+
+<h2>Stack</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Layer</th><th>Choice</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Framework</td><td>Next.js App Router, TypeScript, React Server Components</td><td>Route Handlers and Edge middleware are exactly the two primitives this design needs.</td></tr>
+    <tr><td>Styling</td><td>Tailwind CSS</td><td>No design system to maintain for a six-page site.</td></tr>
+    <tr><td>Validation</td><td>Zod, on every route handler input</td><td>One schema per payload, shared between the form and the server.</td></tr>
+    <tr><td>Sessions</td><td><code>jose</code> (HS256 JWT)</td><td>Runs unchanged in Edge middleware and Node route handlers.</td></tr>
+    <tr><td>Data</td><td><code>@supabase/supabase-js</code>, server-only client</td><td>One module owns the service-role client; nothing else imports it.</td></tr>
+    <tr><td>Tests</td><td>Playwright end-to-end against the built app; <code>node:test</code> units for session and crypto</td><td>The flows worth protecting are all multi-step and browser-shaped.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Versions get pinned by <code>create-next-app</code> at scaffold time rather than guessed at
+here.</p>
+
+<h2>Testing bar</h2>
+
+<p>Each core flow gets a Playwright spec, written before or alongside the feature:</p>
+
+<ol>
+  <li>Wrong password is rejected, and rejected again after the limiter trips.</li>
+  <li>Correct password, then a name, produces a guest and lands on the invitation.</li>
+  <li>RSVP submits, then editing it updates rather than duplicating.</li>
+  <li>The album renders every photo and opens one full size.</li>
+  <li>A guest comments on a post; a second guest sees it.</li>
+  <li>A guest messages the host; the host sees it in <code>/host</code> and replies; the guest sees the reply.</li>
+  <li>A guest cannot reach <code>/host</code> without the host password.</li>
+  <li>No route returns anything without <code>party_session</code>.</li>
+</ol>
+
+<h2>What I still need from you</h2>
+
+<p>None of this blocks writing the implementation phases - all of it is data, entered in
+<code>/host</code> or set as an env var, not code.</p>
+
+<ul>
+  <li>Party date, start time, venue name and address.</li>
+  <li>The invitation copy, and how much it should say on the gate page (currently: nothing).</li>
+  <li>The two passwords - party and host.</li>
+  <li>Roughly how many wedding photos, and their total size before resizing.</li>
+  <li>Whether there is a gift or registry note to include.</li>
+</ul>
+
+<h2>Cost</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Item</th><th>Free-org path</th><th>Existing-Pro-org path</th></tr></thead>
+  <tbody>
+    <tr><td>Vercel (Pro team, already paid)</td><td>$0 added</td><td>$0 added</td></tr>
+    <tr><td>Supabase project</td><td>$0, on a <strong>new Free org</strong></td><td>roughly $10/month for the second project's compute</td></tr>
+    <tr><td>Supabase Free limits</td><td>500 MB database, 1 GB storage, 5 GB egress - all far above this site</td><td>n/a</td></tr>
+    <tr><td>Pausing risk</td><td>Real. Mitigated by a Vercel Cron job hitting a trivial keepalive endpoint daily.</td><td>None - paid projects never pause</td></tr>
+    <tr><td>Resend (host notifications)</td><td>$0 on the free tier</td><td>$0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Repo and deploy</h2>
+
+<ul>
+  <li><code>gh auth switch --user mancej</code> <strong>first</strong>, every time. The machine's
+  active account is <code>mancej2</code>.</li>
+  <li>Create <code>mancej/rsvp</code>, <strong>private</strong>.</li>
+  <li>Link a Vercel project on the <code>mancej's projects</code> team; production tracks
+  <code>main</code>, every pull request gets a preview.</li>
+  <li>Preview deployments inherit the password gate, so they are not an open door - but they should
+  also carry Vercel's Deployment Protection, which is on by default for previews on Pro.</li>
+  <li>Environment variables: <code>SUPABASE_URL</code>, <code>SUPABASE_SERVICE_ROLE_KEY</code>,
+  <code>SESSION_SECRET</code>, <code>PARTY_PASSWORD_HASH</code>, <code>HOST_PASSWORD_HASH</code>,
+  and <code>RESEND_API_KEY</code> plus <code>HOST_EMAIL</code> if notifications are on. All
+  server-only - none prefixed <code>NEXT_PUBLIC_</code>.</li>
+  <li>A <code>GET /api/keepalive</code> route running <code>select 1</code>, called daily by Vercel
+  Cron, if the Supabase project is on the Free plan.</li>
+</ul>
+
+<h2>Out of scope</h2>
+
+<p>Named so they do not creep in: guest photo uploads, per-guest invitations or a known guest list,
+email or SMS to guests, calendar invites, seating charts, gift registry integration, payments,
+translation, and a custom domain. Any of them can follow; none belongs in the first version.</p>
+
+<h2>Risks</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Risk</th><th>Severity</th><th>Handling</th></tr></thead>
+  <tbody>
+    <tr><td>The honoree sees a forwarded link preview</td><td>High - it ends the surprise</td><td>Blank OG tags, bland title, no preview image. First thing built, first thing tested.</td></tr>
+    <tr><td>Free Supabase project pauses before the party</td><td>High - site down</td><td>Daily Vercel Cron keepalive, plus the warning email Supabase sends a week ahead.</td></tr>
+    <tr><td>A guest clears cookies and loses their message thread</td><td>Medium</td><td>Addressed by the guest-identity decision below.</td></tr>
+    <tr><td>The password gets forwarded outside the guest list</td><td>Medium</td><td>Rotatable in one env var; <code>kid</code> bump invalidates every session.</td></tr>
+    <tr><td>A guest opens on two devices and appears twice in the RSVP count</td><td>Low</td><td>Host console merges duplicate guests; RSVP is keyed per guest so totals stay correctable.</td></tr>
+    <tr><td>Photos push the repo or the free storage tier</td><td>Low</td><td>Resize to max 2000px and re-encode before adding; 40 photos land near 15 MB.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Open decisions</h2>
+
+<p>Presented for selection in the dashboard rather than decided here: where the Supabase project
+lives, how durable a guest's identity should be, where the photos live, whether the host gets
+email, and the visual direction.</p>
+
+<footer>
+  Source of truth: <code>docs/plans/anniversary-party-site/plan.md</code>. This page is a rendering
+  of it.
+</footer>

@@ -85,7 +85,7 @@
   <p>Six phases in <code>mancej/rsvp</code>. Phase 1 builds everything the others stand on; phases 2
   to 5 then run concurrently; phase 6 follows phase 2. Source plan:
   <a href="plan.md">plan.md</a>, rendered at <a href="plan.html">plan.html</a>. Chosen direction:
-  <a href="mockups/a-blue-ridge-dawn.html">Blue Ridge at dawn</a>.</p>
+  <a href="mockups/b-blue-hour.html">Blue hour</a>.</p>
 </blockquote>
 
 <div class="verdict">
@@ -104,7 +104,7 @@
     <tr><td>Guest identity</td><td><strong>Cookie only</strong>, plus a merge tool in <code>/host</code>. No resume codes.</td></tr>
     <tr><td>Photo hosting</td><td><strong>Private Supabase Storage bucket</strong>, signed URLs minted server-side</td></tr>
     <tr><td>Host notifications</td><td><strong>None.</strong> No email provider. Unread counts live in the host console.</td></tr>
-    <tr><td>Visual direction</td><td><strong>A - Blue Ridge at dawn.</strong> Tokens are recorded in <code>plan.md</code>.</td></tr>
+    <tr><td>Visual direction</td><td><strong>B - Blue hour.</strong> A dark-only theme; tokens are recorded in <code>plan.md</code>.</td></tr>
   </tbody>
 </table>
 </div>
@@ -257,8 +257,9 @@ file with it.</p>
   passthrough. Phases 2, 4 and 6 all render host-authored prose; they all call this. Phase 1 owns it
   and tests it even though Phase 1 has no surface that renders prose, because the alternative is
   three incompatible renderers.</li>
-  <li><strong><code>lib/theme.css</code> holds the direction-A tokens.</strong> No component declares
-  a colour literal.</li>
+  <li><strong><code>lib/theme.css</code> holds the direction-B tokens.</strong> No component declares
+  a colour literal, and there is no light variant - Blue hour is dark by design, not a night
+  mode.</li>
   <li><strong>Navigation is declared once, in Phase 1</strong>, in <code>lib/nav.ts</code> (guest) and
   <code>lib/host-tabs.ts</code> (host). Phase 1 also creates every route those files point at as a
   minimal placeholder page. <strong>Phases 2 to 6 replace their own page file and touch neither

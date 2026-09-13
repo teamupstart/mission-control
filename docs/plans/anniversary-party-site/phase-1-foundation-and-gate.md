@@ -32,7 +32,7 @@ it is on Pro and a project there costs roughly $10/month, which the plan explici
 
 - `create-next-app` scaffold: TypeScript, App Router, Tailwind, ESLint.
 - `AGENTS.md` stating the cross-phase contracts (see the handoff below).
-- Theme tokens from direction A, and the ridge SVG components.
+- Theme tokens from direction B, and the ridge SVG components.
 - App shell: root layout, guest navigation, host tab shell.
 - Complete schema migration plus seed data.
 - `lib/supabase.ts`, `lib/session.ts`, `lib/markdown.ts`, `lib/theme.css`, `lib/nav.ts`,
@@ -65,14 +65,22 @@ re-derives the server-only-key rule and the token file differently.
    not chase versions.
 2. **`AGENTS.md`.** Write the contracts from the handoff section below, in this repository's own
    voice. Keep it short enough that it is read.
-3. **`lib/theme.css`.** The direction-A tokens from `plan.md`: paper `#faf6ee`, page `#efe9dd`, ink
-   `#26323b`, muted `#6d7a80`, accent `#b0653c`, ridges `#33566b` / `#55798c` / `#7a9aa8` /
-   `#9db7c0`, sky `#f3d9b8`, sun `#f0b070`. Serif display and body. Wire into Tailwind so no
-   component writes a colour literal.
+3. **`lib/theme.css`.** The direction-B tokens from `plan.md`: page `#0a121a`, panel `#111d27`,
+   card `#16242f`, input ground `#0d1922`, ink `#e7eef2`, muted `#8ba1ae`, edge `#24384a`, accent
+   `#e0a862` with `#12202b` on top of it, ridges front to back `#172835` / `#203546` / `#2a4259` /
+   `#36536e`, sky `#1b3247`, moon `#f0d7a4`. Serif display at weight 300, sans body and controls.
+   Wire into Tailwind so no component writes a colour literal.
+
+   **Dark only.** Do not add a `prefers-color-scheme` light variant - Blue hour is the design, not a
+   night mode for a light theme that does not exist. Set `color-scheme: dark` so form controls and
+   scrollbars match rather than rendering as light chrome on a dark page.
+
+   Keep the ridge layers at roughly even value steps. They sit close together at dusk and compress
+   into a single dark mass if tightened; the tokens above are the corrected set.
 4. **Ridge components.** `components/Ridge.tsx` (full, 96 units tall, with the sun) and a slim
    variant (30 units, two layers, no sky). Copy the path geometry from
-   `mockups/a-blue-ridge-dawn.html` rather than redrawing it - the curves there are the approved
-   ones.
+   `mockups/b-blue-hour.html` rather than redrawing it - the curves there are the approved ones,
+   and that mockup carries a moon rather than a sun.
 5. **Migration.** One file under `supabase/migrations/`, matching the SQL in `plan.md` exactly:
    `guests`, `rsvps`, `posts`, `comments`, `messages`, `party`, `content_blocks`, `photos`,
    `gate_attempts`, their indexes, and `alter table ... enable row level security` on every one with

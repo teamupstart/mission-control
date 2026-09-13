@@ -1,7 +1,7 @@
 # Anniversary party site - phased implementation
 
 Source plan: [`plan.md`](plan.md) (rendered: [`plan.html`](plan.html)).
-Chosen visual direction: [`mockups/a-blue-ridge-dawn.html`](mockups/a-blue-ridge-dawn.html).
+Chosen visual direction: [`mockups/b-blue-hour.html`](mockups/b-blue-hour.html).
 
 **The implementation repository is `mancej/rsvp`, not this one.** Every phase below is implemented
 in that repository, with this checkout attached read-only so the phase agent can read the plan.
@@ -16,7 +16,7 @@ These came back from the plan review and are requirements now, not options:
 | Guest identity | **Cookie only**, plus a merge tool in `/host`. No resume codes. |
 | Photo hosting | **Private Supabase Storage bucket**, signed URLs minted server-side |
 | Host notifications | **None.** No email provider. Unread counts live in the host console. |
-| Visual direction | **A - Blue Ridge at dawn.** Tokens are recorded in `plan.md`. |
+| Visual direction | **B - Blue hour.** A dark-only theme; tokens are recorded in `plan.md`. |
 
 ## What I found before decomposing
 
@@ -118,7 +118,8 @@ Phase 1 owns all of these. Phases 2 to 6 consume them and must not change them.
 5. **`lib/markdown.ts` is the single renderer**, with no raw HTML passthrough. Phases 2, 4 and 6 all
    render host-authored prose; they all call this. Phase 1 owns it and tests it even though Phase 1
    has no surface that renders prose, because the alternative is three incompatible renderers.
-6. **`lib/theme.css` holds the direction-A tokens.** No component declares a colour literal.
+6. **`lib/theme.css` holds the direction-B tokens.** No component declares a colour literal, and
+   there is no light variant - Blue hour is dark by design, not a night mode.
 7. **Navigation is declared once, in Phase 1**, in `lib/nav.ts` (guest) and `lib/host-tabs.ts`
    (host). Phase 1 also creates every route those files point at as a minimal placeholder page.
    **Phases 2 to 6 replace their own page file and touch neither registry.** This is what makes the

@@ -119,7 +119,7 @@ the RSVP first, everything else after.</p>
     <tr><td>Guest identity</td><td><strong>Cookie only, plus a merge tool in <code>/host</code></strong></td><td>No resume codes to lose. If someone clears their browser they simply reappear as a new guest, and you join the two rows yourself from the host console.</td></tr>
     <tr><td>Photos</td><td><strong>Private Supabase Storage bucket</strong></td><td>Signed URLs minted server-side, so the album is genuinely behind the password, and you add photos from <code>/host</code> without a deploy.</td></tr>
     <tr><td>Host notifications</td><td><strong>None</strong></td><td>No Resend, no email. The host console carries unread counts. One fewer service, one fewer API key.</td></tr>
-    <tr><td>Visual direction</td><td><strong>A - Blue Ridge at dawn</strong></td><td>Cream letterpress paper, a sunrise over layered ridges, serif throughout. Chosen from three built directions; B and C are kept in <code>mockups/</code> as a record, not as live options.</td></tr>
+    <tr><td>Visual direction</td><td><strong>B - Blue hour</strong></td><td>Dusk on the parkway: a dark ground so the wedding photographs are the only bright thing on screen, lantern-amber for anything you can act on, light serif display over a sans body. Chosen from three built directions; A and C are kept in <code>mockups/</code> as a record, not as live options.</td></tr>
   </tbody>
 </table>
 </div>
@@ -143,16 +143,17 @@ change what "free" means.</p>
 
 <h2>Look and feel: Blue Ridge</h2>
 
-<p><strong>Chosen: A - Blue Ridge at dawn</strong>
-(<a href="mockups/a-blue-ridge-dawn.html">mockups/a-blue-ridge-dawn.html</a>). Cream letterpress
-paper, a sunrise over layered ridges, serif throughout. The warmest of the three and the closest to
-a printed keepsake - it reads as an anniversary first and a web app second.</p>
+<p><strong>Chosen: B - Blue hour</strong>
+(<a href="mockups/b-blue-hour.html">mockups/b-blue-hour.html</a>). Dusk on the parkway. A dark
+ground so the wedding photographs are the only bright thing on the screen, lantern-amber for
+anything you can act on, and a light serif display at a generous size. The most atmospheric of the
+three, and the most obviously an evening party - which this is.</p>
 
 <div class="picks">
   <div class="pick">
-    <h3>A - Blue Ridge at dawn <span class="chosen">chosen</span></h3>
-    <div class="sws"><span class="sw" style="background:#faf6ee"></span><span class="sw" style="background:#b0653c"></span><span class="sw" style="background:#33566b"></span><span class="sw" style="background:#55798c"></span><span class="sw" style="background:#9db7c0"></span><span class="sw" style="background:#26323b"></span></div>
-    <a href="mockups/a-blue-ridge-dawn.html">mockups/a-blue-ridge-dawn.html</a>
+    <h3>B - Blue hour <span class="chosen">chosen</span></h3>
+    <div class="sws"><span class="sw" style="background:#111d27"></span><span class="sw" style="background:#e0a862"></span><span class="sw" style="background:#36536e"></span><span class="sw" style="background:#8ba1ae"></span><span class="sw" style="background:#e7eef2"></span><span class="sw" style="background:#0a121a"></span></div>
+    <a href="mockups/b-blue-hour.html">mockups/b-blue-hour.html</a>
   </div>
 </div>
 
@@ -162,17 +163,39 @@ a printed keepsake - it reads as an anniversary first and a web app second.</p>
 <table>
   <thead><tr><th>Token</th><th>Value</th></tr></thead>
   <tbody>
-    <tr><td>paper / page</td><td><code>#faf6ee</code> / <code>#efe9dd</code></td></tr>
-    <tr><td>ink / muted</td><td><code>#26323b</code> / <code>#6d7a80</code></td></tr>
-    <tr><td>accent (clay)</td><td><code>#b0653c</code></td></tr>
-    <tr><td>ridge, front to back</td><td><code>#33566b</code>, <code>#55798c</code>, <code>#7a9aa8</code>, <code>#9db7c0</code></td></tr>
-    <tr><td>sky / sun</td><td><code>#f3d9b8</code> / <code>#f0b070</code></td></tr>
-    <tr><td>display and body</td><td>Georgia / Iowan Old Style, serif throughout</td></tr>
+    <tr><td>page / panel</td><td><code>#0a121a</code> / <code>#111d27</code></td></tr>
+    <tr><td>card / input ground</td><td><code>#16242f</code> / <code>#0d1922</code></td></tr>
+    <tr><td>ink / muted</td><td><code>#e7eef2</code> / <code>#8ba1ae</code></td></tr>
+    <tr><td>edge</td><td><code>#24384a</code></td></tr>
+    <tr><td>accent (lantern amber)</td><td><code>#e0a862</code>, with <code>#12202b</code> on top of it</td></tr>
+    <tr><td>ridge, front to back</td><td><code>#172835</code>, <code>#203546</code>, <code>#2a4259</code>, <code>#36536e</code></td></tr>
+    <tr><td>sky / moon</td><td><code>#1b3247</code> / <code>#f0d7a4</code></td></tr>
+    <tr><td>display</td><td>Iowan Old Style / Georgia serif, <strong>weight 300</strong>, generous size</td></tr>
+    <tr><td>body and controls</td><td>system sans, for legibility at small sizes on a dark ground</td></tr>
   </tbody>
 </table>
 </div>
 
-<p><a href="mockups/b-blue-hour.html">mockups/b-blue-hour.html</a> and
+<div class="verdict">
+  <p><strong>This is a dark-only theme, not a <code>prefers-color-scheme</code> pair.</strong> Blue
+  hour is the design, not a night mode for it, so there is no light variant to build or keep in
+  step.</p>
+</div>
+
+<p>Two consequences worth naming, both visible in the mockup:</p>
+
+<ul>
+  <li><strong>Ridge contrast has to be deliberate.</strong> At dusk the four layers sit close
+  together in value, and the first draft of this direction lost them into a single dark mass. The
+  tokens above are the corrected set, with roughly even steps between layers. Do not compress them
+  further.</li>
+  <li><strong>The photographs carry the page.</strong> On a dark ground an album tile is the
+  brightest thing on screen, which is the point of this direction - it also means a poorly exposed
+  scan will look worse here than it would on cream. Worth a glance at the album before the
+  invitations go out.</li>
+</ul>
+
+<p><a href="mockups/a-blue-ridge-dawn.html">mockups/a-blue-ridge-dawn.html</a> and
 <a href="mockups/c-field-guide.html">mockups/c-field-guide.html</a> stay in the repository as a
 record of what was considered and rejected. They are not live options.</p>
 

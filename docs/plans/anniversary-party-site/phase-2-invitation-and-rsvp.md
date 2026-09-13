@@ -47,7 +47,7 @@ already covers `/`.
    repository - that is the whole point of the content model.
 2. **Lay the page out as the mockup does**: full ridge, eyebrow with the date, the display heading,
    the lede, the Getting there block, a rule, the running count, then the form. Match
-   `mockups/a-blue-ridge-dawn.html` panel 2.
+   `mockups/b-blue-hour.html` panel 2.
 3. **Getting there.** Lead with the parking address, because that is where a guest drives; name the
    Capital Club beneath it as where they walk to. Render `party.parking_addr` as selectable text
    *and* as the link target. Build the href as the Google Maps universal URL,

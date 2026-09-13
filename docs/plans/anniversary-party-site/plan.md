@@ -30,7 +30,7 @@ the RSVP first, everything else after.
 | Guest identity | **Cookie only, plus a merge tool in `/host`** | No resume codes to lose. If someone clears their browser they simply reappear as a new guest, and you join the two rows yourself from the host console. |
 | Photos | **Private Supabase Storage bucket** | Signed URLs minted server-side, so the album is genuinely behind the password, and you add photos from `/host` without a deploy. |
 | Host notifications | **None** | No Resend, no email. The host console carries unread counts. One fewer service, one fewer API key. |
-| Visual direction | **A - Blue Ridge at dawn** | Cream letterpress paper, a sunrise over layered ridges, serif throughout. Chosen from three built directions; B and C are kept in `mockups/` as a record, not as live options. |
+| Visual direction | **B - Blue hour** | Dusk on the parkway: a dark ground so the wedding photographs are the only bright thing on screen, lantern-amber for anything you can act on, light serif display over a sans body. Chosen from three built directions; A and C are kept in `mockups/` as a record, not as live options. |
 
 ## What I checked before planning
 
@@ -46,23 +46,39 @@ change what "free" means.
 
 ## Look and feel: Blue Ridge
 
-**Chosen: A - Blue Ridge at dawn** (`mockups/a-blue-ridge-dawn.html`). Cream letterpress paper, a
-sunrise over layered ridges, serif throughout. The warmest of the three and the closest to a
-printed keepsake - it reads as an anniversary first and a web app second.
+**Chosen: B - Blue hour** (`mockups/b-blue-hour.html`). Dusk on the parkway. A dark ground so the
+wedding photographs are the only bright thing on the screen, lantern-amber for anything you can act
+on, and a light serif display at a generous size. The most atmospheric of the three, and the most
+obviously an evening party - which this is.
 
 Its tokens, which become the theme file verbatim:
 
 | Token | Value |
 |---|---|
-| paper / page | `#faf6ee` / `#efe9dd` |
-| ink / muted | `#26323b` / `#6d7a80` |
-| accent (clay) | `#b0653c` |
-| ridge, front to back | `#33566b`, `#55798c`, `#7a9aa8`, `#9db7c0` |
-| sky / sun | `#f3d9b8` / `#f0b070` |
-| display and body | Georgia / Iowan Old Style, serif throughout |
+| page / panel | `#0a121a` / `#111d27` |
+| card / input ground | `#16242f` / `#0d1922` |
+| ink / muted | `#e7eef2` / `#8ba1ae` |
+| edge | `#24384a` |
+| accent (lantern amber) | `#e0a862`, with `#12202b` on top of it |
+| ridge, front to back | `#172835`, `#203546`, `#2a4259`, `#36536e` |
+| sky / moon | `#1b3247` / `#f0d7a4` |
+| display | Iowan Old Style / Georgia serif, **weight 300**, generous size |
+| body and controls | system sans, for legibility at small sizes on a dark ground |
 
-`mockups/b-blue-hour.html` and `mockups/c-field-guide.html` stay in the repository as a record of
-what was considered and rejected. They are not live options.
+**This is a dark-only theme, not a `prefers-color-scheme` pair.** Blue hour is the design, not a
+night mode for it, so there is no light variant to build or keep in step.
+
+Two consequences worth naming, both visible in the mockup:
+
+- **Ridge contrast has to be deliberate.** At dusk the four layers sit close together in value, and
+  the first draft of this direction lost them into a single dark mass. The tokens above are the
+  corrected set, with roughly even steps between layers. Do not compress them further.
+- **The photographs carry the page.** On a dark ground an album tile is the brightest thing on
+  screen, which is the point of this direction - it also means a poorly exposed scan will look worse
+  here than it would on cream. Worth a glance at the album before the invitations go out.
+
+`mockups/a-blue-ridge-dawn.html` and `mockups/c-field-guide.html` stay in the repository as a record
+of what was considered and rejected. They are not live options.
 
 The ridgelines are **inline SVG**, layered and hazed the way the Blue Ridge actually recedes.
 That is deliberate: no image request, no loading flash, sharp on any screen, and recolourable from

@@ -104,9 +104,10 @@ either order because of the registry contract below.
 Phase 1 owns all of these. Phases 2 to 6 consume them and must not change them.
 
 1. **The full schema ships in Phase 1**, including tables no phase-1 surface reads
-   (`photos`, `posts`, `comments`, `messages`, `content_blocks`). Later phases add indexes and data,
-   never columns to these tables. One migration that matches `plan.md` is easier to review than six
-   that arrive piecemeal, and it removes every ordering hazard between the concurrent phases.
+   (`photos`, `posts`, `comments`, `messages`, `content_blocks`) **and the `merge_guests()`
+   function no phase-1 surface calls**. Later phases add indexes and data, never columns to these
+   tables. One migration that matches `plan.md` is easier to review than six that arrive piecemeal,
+   and it removes every ordering hazard between the concurrent phases.
 2. **Seed rows ship with the schema**, so every page has real copy to render before any editor
    exists. A phase-2 invitation page reads seeded `content_blocks` and `party` rows; it does not
    wait for Phase 6.
@@ -114,7 +115,11 @@ Phase 1 owns all of these. Phases 2 to 6 consume them and must not change them.
    server-only. No other file imports `@supabase/supabase-js`. No environment variable is prefixed
    `NEXT_PUBLIC_`.
 4. **`lib/session.ts` owns both cookies** and exports `requireGuest()` and `requireHost()`. No later
-   phase reads or writes a cookie directly.
+   phase reads or writes a cookie directly. **`requireGuest()` resolves `merged_into` and re-mints
+   `party_guest` when it moved**, so every phase that writes a `guest_id` writes the surviving one
+   without knowing merges exist. This is a Phase 1 contract rather than a Phase 6 one precisely
+   because phases 3, 4 and 5 all write `guest_id` and none of them will have heard of the merge
+   tool.
 5. **`lib/markdown.ts` is the single renderer**, with no raw HTML passthrough. Phases 2, 4 and 6 all
    render host-authored prose; they all call this. Phase 1 owns it and tests it even though Phase 1
    has no surface that renders prose, because the alternative is three incompatible renderers.
@@ -127,14 +132,23 @@ Phase 1 owns all of these. Phases 2 to 6 consume them and must not change them.
    collides. The placeholders are short-lived and honest ("The album goes here"), not broken states.
 8. **Every guest-facing route is gated by the Phase 1 middleware.** A later phase adding a route
    under the guest tree inherits the gate; it does not re-implement one.
-9. **`AGENTS.md` in `mancej/rsvp` states rules 3 to 8** so an agent arriving with only a phase file
-   still finds them.
+9. **Playwright runs against a local Supabase stack only.** Phase 1 builds the harness: CI starts
+   the stack, applies `supabase/migrations` and the seed, builds the app and serves it locally, and
+   a global setup step aborts the run unless the Supabase URL resolves to `127.0.0.1` or
+   `localhost`. **No phase points a spec at a preview or production URL.** The Free plan has no
+   database branching, so previews share the production database and the specs below delete
+   photographs, rewrite party content and merge guests.
+10. **`AGENTS.md` in `mancej/rsvp` states rules 3 to 9** so an agent arriving with only a phase file
+    still finds them.
 
 ## Verification strategy
 
 Each phase runs its own Playwright specs plus the whole accumulated suite, against the built app,
-in CI. Phase 1 establishes the harness and the fake-free approach: there are no model tokens or
-paid services in this product, so the specs drive the real app against a real Supabase project.
+in CI. Phase 1 establishes the harness. Nothing is mocked - there are no model tokens and no paid
+services in this product, so the specs drive the real app against a real Postgres. That Postgres is
+a **local Supabase stack started by the CI job**, not the hosted project: see contract 9. The
+specs delete photographs, rewrite the invitation and merge identities, and the Free plan gives
+previews no database of their own to do that in.
 
 Two checks run in every phase because they are the ones that end the surprise or take the site down:
 
@@ -155,6 +169,9 @@ These cannot be done by an agent and block Phase 1:
 2. Hand Phase 1 the project URL and **service role** key.
 3. Enable the **Supabase GitHub integration** for `mancej/rsvp` in the project dashboard.
 4. Choose the party and host passwords. Phase 1 generates the scrypt hashes from them.
+
+Phase 1's CI job also needs the Supabase CLI and Docker, which the GitHub-hosted `ubuntu-latest`
+runner already provides - no human step, but it is why the harness is cheap enough to insist on.
 
 One more input has a deadline rather than a blocker: **the party start time**. The mockups show 6pm
 as a placeholder, and Phase 2 cannot ship an invitation without the real one.

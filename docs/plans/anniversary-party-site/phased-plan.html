@@ -241,7 +241,8 @@ file with it.</p>
 <ol>
   <li><strong>The full schema ships in Phase 1</strong>, including tables no phase-1 surface reads
   (<code>photos</code>, <code>posts</code>, <code>comments</code>, <code>messages</code>,
-  <code>content_blocks</code>). Later phases add indexes and data, never columns to these tables. One
+  <code>content_blocks</code>) <strong>and the <code>merge_guests()</code> function no phase-1
+  surface calls</strong>. Later phases add indexes and data, never columns to these tables. One
   migration that matches <code>plan.md</code> is easier to review than six that arrive piecemeal, and
   it removes every ordering hazard between the concurrent phases.</li>
   <li><strong>Seed rows ship with the schema</strong>, so every page has real copy to render before
@@ -252,7 +253,11 @@ file with it.</p>
   No environment variable is prefixed <code>NEXT_PUBLIC_</code>.</li>
   <li><strong><code>lib/session.ts</code> owns both cookies</strong> and exports
   <code>requireGuest()</code> and <code>requireHost()</code>. No later phase reads or writes a cookie
-  directly.</li>
+  directly. <strong><code>requireGuest()</code> resolves <code>merged_into</code> and re-mints
+  <code>party_guest</code> when it moved</strong>, so every phase that writes a
+  <code>guest_id</code> writes the surviving one without knowing merges exist. This is a Phase 1
+  contract rather than a Phase 6 one precisely because phases 3, 4 and 5 all write
+  <code>guest_id</code> and none of them will have heard of the merge tool.</li>
   <li><strong><code>lib/markdown.ts</code> is the single renderer</strong>, with no raw HTML
   passthrough. Phases 2, 4 and 6 all render host-authored prose; they all call this. Phase 1 owns it
   and tests it even though Phase 1 has no surface that renders prose, because the alternative is
@@ -268,15 +273,24 @@ file with it.</p>
   album goes here"), not broken states.</li>
   <li><strong>Every guest-facing route is gated by the Phase 1 middleware.</strong> A later phase
   adding a route under the guest tree inherits the gate; it does not re-implement one.</li>
-  <li><strong><code>AGENTS.md</code> in <code>mancej/rsvp</code> states rules 3 to 8</strong> so an
+  <li><strong>Playwright runs against a local Supabase stack only.</strong> Phase 1 builds the
+  harness: CI starts the stack, applies <code>supabase/migrations</code> and the seed, builds the app
+  and serves it locally, and a global setup step aborts the run unless the Supabase URL resolves to
+  <code>127.0.0.1</code> or <code>localhost</code>. <strong>No phase points a spec at a preview or
+  production URL.</strong> The Free plan has no database branching, so previews share the production
+  database and the specs below delete photographs, rewrite party content and merge guests.</li>
+  <li><strong><code>AGENTS.md</code> in <code>mancej/rsvp</code> states rules 3 to 9</strong> so an
   agent arriving with only a phase file still finds them.</li>
 </ol>
 
 <h2>Verification strategy</h2>
 
 <p>Each phase runs its own Playwright specs plus the whole accumulated suite, against the built app,
-in CI. Phase 1 establishes the harness: there are no model tokens or paid services in this product,
-so the specs drive the real app against a real Supabase project.</p>
+in CI. Phase 1 establishes the harness. Nothing is mocked - there are no model tokens and no paid
+services in this product, so the specs drive the real app against a real Postgres. That Postgres is
+a <strong>local Supabase stack started by the CI job</strong>, not the hosted project: see contract
+9. The specs delete photographs, rewrite the invitation and merge identities, and the Free plan
+gives previews no database of their own to do that in.</p>
 
 <p>Two checks run in every phase because they are the ones that end the surprise or take the site
 down:</p>
@@ -304,6 +318,10 @@ inherits.</p>
   project dashboard.</li>
   <li>Choose the party and host passwords. Phase 1 generates the scrypt hashes from them.</li>
 </ol>
+
+<p>Phase 1's CI job also needs the Supabase CLI and Docker, which the GitHub-hosted
+<code>ubuntu-latest</code> runner already provides - no human step, but it is why the harness is
+cheap enough to insist on.</p>
 
 <p>One more input has a deadline rather than a blocker: <strong>the party start time</strong>. The
 mockups show 6pm as a placeholder, and Phase 2 cannot ship an invitation without the real one.</p>

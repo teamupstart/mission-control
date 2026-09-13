@@ -21,6 +21,7 @@ Phase 1 merged. The `photos` table exists and is empty.
 - `app/host/album/page.tsx` - replaces the Phase 1 placeholder.
 - Server-side signed-URL minting.
 - Upload, caption, reorder and delete for the host.
+- An orphaned-object sweep in the host tab.
 - Playwright specs.
 
 ### Non-goals
@@ -44,18 +45,38 @@ the theme tokens, the slim ridge component, and the middleware gate covering `/a
    full size. Captions render beneath when present. Use Next's image component against the signed
    URLs; configure the remote pattern for the Supabase host.
 4. **Host Album tab.** Upload one or many files, each writing to the bucket and inserting a `photos`
-   row. Edit a caption. Reorder by changing `sort_order`. Delete, which must remove **both** the row
-   and the object - a row without an object renders a broken tile and an object without a row is
-   invisible and still bills storage.
-5. **Guard the upload** with a size and MIME allowlist. The 1 GB free bucket is generous for around
+   row. Edit a caption. Reorder by changing `sort_order`. Delete, which must remove both the row and
+   the object.
+
+   **Storage and Postgres cannot share a transaction, so pick the order deliberately.** Either step
+   can fail on its own, and the two failure shapes are not equally bad: an object with no row is
+   invisible to every page and costs a few megabytes, while a row with no object is a broken image
+   in the middle of the wedding album. So the rule is **the `photos` row is the album, and the
+   object is only its payload**:
+
+   - **Upload:** object first, row second. If the insert fails, delete the object you just wrote.
+     If that compensating delete also fails, stop and log - you are left with an orphan, which is
+     the tolerable end of the failure space, not a broken album.
+   - **Delete:** row first, object second. If the object delete fails, the tile is already gone from
+     the album and an orphan remains.
+   - Never the other order in either direction. It is the only way to produce the one outcome
+     neither of these can.
+5. **Sweep the orphans.** A host-only action lists objects in the `album` bucket with no matching
+   `photos.storage_path` and deletes them, showing the count first. This is the compensation path's
+   backstop, and it is bounded work - around forty photographs, not a paginated crawl.
+6. **Guard the upload** with a size and MIME allowlist. The 1 GB free bucket is generous for around
    forty resized photographs, and it is not generous for a phone's original camera roll. Reject
    oversized files with a message that says what to do.
-6. **Empty state.** Before any photograph exists, `/album` says so in the theme's voice rather than
+7. **Empty state.** Before any photograph exists, `/album` says so in the theme's voice rather than
    rendering an empty grid.
 
 ## Data and compatibility
 
 No change to `photos`. The bucket migration is additive and safe to re-run.
+
+The consistency rule above is a code contract rather than a schema one - there is nothing Postgres
+can enforce about an object it cannot see. `photos.storage_path` is already `unique`, so a retried
+upload cannot produce two rows pointing at one object.
 
 ## Tests and verification
 
@@ -66,16 +87,26 @@ Playwright:
 2. Opening a tile shows it full size.
 3. The host uploads a file and it appears for a guest.
 4. The host deletes a photograph and both the row and the object are gone.
-5. `/album` redirects to `/gate` without `party_session`; the host tab is unreachable without the
+5. **Failure injection, both directions.** Stub the Supabase client so the second half of each
+   operation throws after the first half succeeded, then assert the album is still coherent: an
+   upload whose insert fails leaves no tile and no object (the compensating delete ran); a delete
+   whose object removal fails leaves no tile either, and the sweep then finds and removes the
+   orphan. A test that only exercises the happy path cannot see the bug this ordering exists to
+   prevent.
+6. `/album` redirects to `/gate` without `party_session`; the host tab is unreachable without the
    host claim.
-6. An oversized upload is rejected with a message.
+7. An oversized upload is rejected with a message.
+
+These run against the local Supabase stack Phase 1's harness starts, which brings up Storage as
+well as Postgres. No spec points at the hosted bucket.
 
 Commands: `npm run typecheck`, `npm run lint`, `npm run build`, `npm test`, `npx playwright test`.
 
 ## Merge and exit criteria
 
 CI green; a photograph uploaded through `/host` is visible on `/album` on the Vercel preview; the
-bucket is private and no object is reachable without a signature.
+bucket is private and no object is reachable without a signature; neither failure-injection spec
+leaves a broken tile.
 
 ## Downstream handoff
 
@@ -88,4 +119,8 @@ No later phase depends on this one. It owns the `album` bucket and every `photos
 - The bucket is created by migration rather than by a dashboard click so that the repository remains
   the single description of the project's state, consistent with Phase 1 putting the whole schema in
   `supabase/migrations/`.
+- The storage/database ordering rule was added after review. The phase originally said a delete
+  must remove "both" the row and the object without saying in which order, and said nothing about a
+  half-completed upload - which leaves the implementing agent to pick, and half the picks render a
+  broken album.
 - Confirmed no file overlap with phases 2, 4 or 5.

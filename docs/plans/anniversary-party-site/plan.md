@@ -239,9 +239,10 @@ erDiagram
 create table guests (
   id            uuid primary key default gen_random_uuid(),
   display_name  text not null check (length(trim(display_name)) between 1 and 80),
-  merged_into   uuid references guests(id) on delete set null,  -- set by the host merge tool
+  merged_into   uuid references guests(id) on delete set null,  -- set by merge_guests() below
   created_at    timestamptz not null default now(),
-  last_seen_at  timestamptz not null default now()
+  last_seen_at  timestamptz not null default now(),
+  constraint guests_no_self_merge check (merged_into is distinct from id)
 );
 
 create table rsvps (
@@ -310,7 +311,7 @@ create table photos (
 );
 
 create table gate_attempts (                    -- brute-force limiter for the password gate
-  ip           inet not null,
+  ip           inet not null,                  -- pruned on every check; see the hardening section
   attempted_at timestamptz not null default now()
 );
 create index on gate_attempts (ip, attempted_at desc);
@@ -318,6 +319,46 @@ create index on gate_attempts (ip, attempted_at desc);
 create index on comments (post_id, created_at);
 create index on messages (guest_id, created_at);
 create index on photos (sort_order);
+
+-- Merging two guests moves rows across four tables and then marks the loser. A plpgsql
+-- function body is one transaction; four REST calls are four, and a failure between them
+-- leaves one person split across two identities.
+create function merge_guests(p_survivor uuid, p_loser uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = public
+as $$
+begin
+  if p_survivor = p_loser then
+    raise exception 'a guest cannot be merged into itself';
+  end if;
+
+  -- Lock both rows, so two hosts merging at once serialise instead of interleaving.
+  perform 1 from guests where id = p_survivor and merged_into is null for update;
+  if not found then
+    raise exception 'survivor % is missing or has itself been merged', p_survivor;
+  end if;
+  perform 1 from guests where id = p_loser and merged_into is null for update;
+  if not found then
+    raise exception 'loser % is missing or has already been merged', p_loser;
+  end if;
+
+  -- rsvps is keyed by guest_id, so the two answers cannot both move. The survivor's wins;
+  -- the host is shown which one that is before confirming.
+  delete from rsvps
+   where guest_id = p_loser
+     and exists (select 1 from rsvps where guest_id = p_survivor);
+  update rsvps set guest_id = p_survivor, updated_at = now() where guest_id = p_loser;
+
+  update comments set guest_id = p_survivor where guest_id = p_loser;
+  update messages set guest_id = p_survivor where guest_id = p_loser;
+
+  -- Keep chains one hop deep, so resolution on read is a single lookup.
+  update guests set merged_into = p_survivor where merged_into = p_loser;
+  update guests set merged_into = p_survivor where id = p_loser;
+end;
+$$;
 ```
 
 Every table gets `alter table <t> enable row level security;` and no policies. Supabase's security
@@ -326,6 +367,21 @@ state, not a gap.
 
 `guests.merged_into` is how the merge tool stays honest: the losing row is kept and pointed at the
 winner rather than deleted, so nothing cascades away and a bad merge is reversible.
+
+**Resolution happens on read, not at merge time.** The losing browser still holds a perfectly valid
+`party_guest` cookie naming the row that lost, and it has no way to learn otherwise - so if nothing
+followed the pointer, that guest's next comment would revive the identity the merge just hid, and
+the head count would drift apart again. `requireGuest()` therefore follows `merged_into` before it
+returns an id and re-mints the cookie when the two differ. The merge is a one-way door for the data
+and a no-op for the person: they keep typing, and it lands on the surviving row.
+
+**The `photos` row is the album; the storage object is only its payload.** Postgres and Storage
+cannot share a transaction, so each album write picks the order that can only fail towards an
+orphaned object and never towards a broken tile. An upload writes the object first and the row
+second, deleting the object if the insert fails. A delete removes the row first and the object
+second. An orphan is invisible to every page and costs a few megabytes; a row with no object is a
+broken image in the middle of the wedding album, and that is the outcome neither order can produce.
+A host-only sweep lists objects with no row and removes them.
 
 ## Deploys
 
@@ -355,7 +411,8 @@ flowchart LR
   preview deployments talk to the **same database as production**. Previews are behind the same
   password and Vercel's deployment protection, so this is not an exposure - but a migration that
   drops or rewrites data affects the real site the moment it merges. Additive migrations only,
-  and read the diff.
+  and read the diff. It is also why nothing automated is ever pointed at a preview URL - see
+  **Where the tests run** below.
 - **Vercel Cron** declared in `vercel.json` calls `GET /api/keepalive` once a day, which runs
   `select 1`. That is what keeps the Free project out of the 7-day pause window.
 - Content edits need none of this. They are database writes from `/host` and take effect on the
@@ -384,7 +441,11 @@ The password gate is the easy half. These are the leaks it does not cover.
 - A **scrypt hash** in `PARTY_PASSWORD_HASH`, never the plaintext, so an env dump does not hand
   over a password that may be reused elsewhere. Same for `HOST_PASSWORD_HASH`.
 - Constant-time compare, in a Node-runtime route handler (Edge has no `timingSafeEqual`).
-- Rate limit on `gate_attempts`: 10 attempts per IP per 15 minutes, then a delay response.
+- Rate limit on `gate_attempts`: 10 attempts per IP per 15 minutes, then a delay response. The
+  gate is deliberately public, so the table has to be bounded: the same handler deletes rows older
+  than the window **before** it counts, and the daily keepalive sweeps anything older than a day.
+  Without that, a scanner hammering the one open endpoint fills a 500 MB Free database with rows
+  nothing will ever read again.
 - Session cookie `HttpOnly`, `Secure`, `SameSite=Lax`, long expiry - the party is months out and
   nobody should have to re-enter the password twice.
 - Rotation is one env var plus a redeploy, and bumping a `kid` claim in the signing secret
@@ -416,12 +477,37 @@ A Playwright spec per core flow, written before or alongside the feature:
 5. A guest comments on a post; a second guest sees it.
 6. A guest messages the host; the host sees it in `/host` and replies; the guest sees the reply.
 7. Editing a content block in `/host` changes what a guest reads, with no redeploy.
-8. Merging two guests moves the RSVP and the message thread and leaves the totals right.
+8. Merging two guests moves the RSVP and the message thread and leaves the totals right, and the
+   merged browser's **next** comment lands on the survivor rather than reviving the hidden row.
 9. A guest cannot reach `/host` without the host password.
 10. No route returns anything without `party_session`.
 11. The home page ships no `og:image` and no occasion-naming metadata.
 12. The map link points at the parking address currently in `party`, and carries
     `rel="noopener noreferrer"`.
+13. An album write that fails after its first side succeeded leaves no broken tile, and the sweep
+    finds the orphaned object.
+14. A `gate_attempts` row older than the window is gone after the next attempt.
+
+### Where the tests run
+
+**Against a local Supabase stack, never a hosted project.** This is the one place the Free plan's
+missing database branching turns into a real hazard rather than an inconvenience. Previews share
+the production database, and the specs above create guests, edit the party details, delete
+photographs and merge identities - so a Playwright run pointed at a preview URL would quietly
+rewrite the live invitation on every pull request.
+
+So CI runs `supabase start`, applies `supabase/migrations` and the seed into that throwaway
+Postgres, builds the app, and serves it locally. Playwright drives that, and only that. A global
+setup step refuses to run at all unless the Supabase URL resolves to `127.0.0.1` or `localhost`, so
+a mis-set environment variable costs a red build instead of the party.
+
+The preview deployment keeps the job it is good at: a person opens it to look at the theme and read
+the copy. Nothing automated points at a preview, and nothing automated points at production.
+
+Each phase's exit criteria do ask for one hand check on the preview - post something, edit a block,
+upload a photograph. That is you, on the real database, on purpose, before any invitation has gone
+out, and you can undo it from `/host`. The distinction worth keeping is between a person doing that
+once and a suite doing it on every push.
 
 ## What I still need from you
 

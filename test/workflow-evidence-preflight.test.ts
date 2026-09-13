@@ -23,7 +23,6 @@ const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.t
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 const { openDb } = await import("../src/server/db.ts");
-const { EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT } = await import("../src/server/workflows/store.ts");
 
 const repositoryRoot = process.cwd();
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] });
@@ -229,7 +228,7 @@ async function harness(
   return { registry, store, manager, binding: binding.value, injected };
 }
 
-test("replacement evidence packets reuse stable intent criteria up to the refinement cap", async (t) => {
+test("round 1 can close gaps on its sixth evidence attempt while retaining earlier proof and intent", async (t) => {
   const h = await harness(t, "stable-evidence-preflight", undefined, {
     recordCompactionLedger: true,
   });
@@ -282,11 +281,12 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
     "initial packet did not wait for missing rendered output",
   );
 
-  // The cap is what bounds this loop now, so the run gets exactly the refinements it is
-  // allowed and the last one closes the gap. The refusal past the cap is its own test below.
+  // Six total attempts means the initial packet plus five refinements. Close the gap on
+  // the last allowed attempt to prove the budget includes a usable final capture.
+  const refinementLimit = 5;
   let parentId = submitted.value.submission.id;
-  for (let ordinal = 1; ordinal <= EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT; ordinal++) {
-    const ready = ordinal === EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT;
+  for (let ordinal = 1; ordinal <= refinementLimit; ordinal++) {
+    const ready = ordinal === refinementLimit;
     await stageReplacement(ordinal, ready);
     const retry = await h.manager.retryEvidenceReadiness(
       runId,
@@ -304,14 +304,14 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   await waitFor(() => h.store.getRun(runId)?.status === "completed", "final packet did not activate");
 
   const submissions = h.store.listSubmissions(runId);
-  assert.equal(submissions.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(submissions.length, refinementLimit + 1);
   const contexts = submissions.map((submission) => WorkflowContextSnapshotSchema.parse(submission.context));
   const stableCriteria = contexts.map((context) => context.canonicalCriteria);
   for (const criteria of stableCriteria.slice(1)) assert.deepEqual(criteria, stableCriteria[0]);
   assert.deepEqual(submissions[0]?.readiness?.gapCodes, ["missing_rendered_output"]);
   assert.equal(submissions.at(-1)?.readiness?.status, "ready");
   // Phase 2's cap names the last segment; carry-forward decides what that segment holds.
-  const lastClaim = `claim-${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT}`;
+  const lastClaim = `claim-${refinementLimit}`;
   const finalClaims = h.store.listSubmissionCoverage(submissions.at(-1)!.id);
   assert.deepEqual(
     finalClaims.filter((claim) => !claim.inheritedFromSubmissionId)
@@ -322,7 +322,7 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   assert.deepEqual(
     finalClaims.filter((claim) => claim.inheritedFromSubmissionId)
       .map((claim) => claim.clientCriterionId).sort(),
-    Array.from({ length: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT }, (_unused, index) => `claim-${index}`),
+    Array.from({ length: refinementLimit }, (_unused, index) => `claim-${index}`),
     "and every frozen ancestor claim is retained beside it by id, marked as carried",
   );
   // Retained ancestry is provenance, not a competing assertion: the claim the author declared
@@ -340,8 +340,8 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   assert.deepEqual(
     finalEvidence.filter((item) => !item.inheritedFrom).map((item) => item.caption).sort(),
     [
-      `Replacement ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} execution`,
-      `Replacement ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} rendered output`,
+      `Replacement ${refinementLimit} execution`,
+      `Replacement ${refinementLimit} rendered output`,
     ],
   );
   assert.equal(
@@ -354,7 +354,7 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   }
   const captureEvents = h.store.listEvents(runId)
     .filter((event) => event.kind === "submission_captured");
-  assert.equal(captureEvents.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(captureEvents.length, refinementLimit + 1);
   assert.match(JSON.stringify(captureEvents[0]?.payload), /"criteriaReused":false/);
   for (const event of captureEvents.slice(1)) {
     assert.match(JSON.stringify(event.payload), /"criteriaReused":true/);
@@ -571,9 +571,7 @@ test("a mid-run change to the live decisions never moves the run's frozen criter
     "the criteria a submission is judged by never move inside a run",
   );
 
-  // The round has now spent its consecutive preflight refinements, so a third one is refused
-  // rather than reviewed. That bound is asserted on its own below; what matters here is that
-  // the two submissions the round did produce carry one intent identity between them.
+  // Both refinements still carry the original intent identity despite the new decision.
   assert.deepEqual(
     new Set(h.store.listSubmissions(runId)
       .map((row) => WorkflowContextSnapshotSchema.parse(row.context).intentFingerprint)),
@@ -909,13 +907,19 @@ test("workflow event ids replay exact writes and reject conflicting reuse", () =
   );
 });
 
-test("the round's third consecutive preflight refinement blocks the run for the operator", async (t) => {
-  const h = await harness(t, "capped-evidence-preflight");
+for (const { round, refinementLimit } of [
+  { round: 1, refinementLimit: 5 },
+  { round: 2, refinementLimit: 2 },
+  { round: 6, refinementLimit: 2 },
+  { round: 7, refinementLimit: 2 },
+]) for (const manualRetry of [true, false]) test(`round ${round} allows ${refinementLimit + 1} evidence attempts via ${manualRetry ? "manual retry" : "automatic sweep"}`, async (t) => {
+  const sessionId = `capped-evidence-${round}-${manualRetry}`;
+  const h = await harness(t, sessionId);
   const criterion = "Rendered workflow state is inspectable";
   const stagePacket = async (ordinal: number, ready: boolean) => {
     const executionId = `capped-execution-${ordinal}`;
     const renderedId = `capped-rendered-${ordinal}`;
-    await h.manager.stageAgentEvidence("capped-evidence-preflight", {
+    await h.manager.stageAgentEvidence(sessionId, {
       images: [],
       commandOutputs: [
         {
@@ -960,36 +964,66 @@ test("the round's third consecutive preflight refinement blocks the run for the 
     "the first gapped packet did not wait for evidence readiness",
   );
 
-  // Refinements one and two are the repair the cap leaves room for, and neither blocks.
+  // Seed the current workflow round without spending unrelated Persona repair rounds.
+  openDb().prepare("UPDATE workflow_submissions SET round = ? WHERE id = ?")
+    .run(round, submitted.value.submission.id);
+
+  // Every allowed refinement stays in this round, including the final available retry.
   let parentId = submitted.value.submission.id;
-  for (let ordinal = 1; ordinal <= EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT; ordinal++) {
+  let lastParentId = parentId;
+  for (let ordinal = 1; ordinal <= refinementLimit; ordinal++) {
     await stagePacket(ordinal, false);
-    const retry = await h.manager.retryEvidenceReadiness(runId, parentId, `capped-${ordinal}`, ordinal);
-    assert.equal(retry.ok, true, `refinement ${ordinal} was refused`);
-    if (!retry.ok) return;
-    parentId = retry.value.submission.id;
+    lastParentId = parentId;
+    if (manualRetry) {
+      const retry = await h.manager.retryEvidenceReadiness(runId, parentId, `capped-${ordinal}`, ordinal);
+      assert.equal(retry.ok, true, `refinement ${ordinal} was refused`);
+      if (!retry.ok) return;
+    } else {
+      await h.manager.sweepResumptions(Date.now() + ordinal * 60_000);
+    }
+    const latest = h.store.latestSubmission(runId)!;
+    assert.equal(latest.parentSubmissionId, parentId);
+    assert.equal(latest.round, round);
+    assert.equal(latest.segment, ordinal);
+    parentId = latest.id;
     await waitFor(
       () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
       `refinement ${ordinal} did not wait for evidence readiness`,
     );
     assert.equal(h.store.getRun(runId)?.currentPhase, "evidence_readiness");
   }
-  assert.equal(h.store.listSubmissions(runId).length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(h.store.listSubmissions(runId).length, refinementLimit + 1);
 
-  await stagePacket(EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1, false);
-  const exhausted = await h.manager.retryEvidenceReadiness(
-    runId,
-    parentId,
-    "capped-over-limit",
-    EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1,
-  );
-  assert.equal(exhausted.ok, false);
-  if (exhausted.ok) return;
-  assert.equal(exhausted.reason, "conflict");
-  assert.match(exhausted.message, /continue despite gaps or start a new round/);
+  // Reopening the store and replaying the final reservation cannot spend another attempt.
+  const reopened = new WorkflowStore(openDb());
+  const latest = reopened.getSubmission(parentId)!;
+  const replay = reopened.reserveEvidenceReadinessRefinement({
+    id: `${sessionId}-unused-replay`, runId, waitingSubmissionId: lastParentId,
+    triggerKey: latest.triggerKey, manualRetry, now: Date.now(),
+  });
+  assert.equal(replay.ok, true);
+  if (replay.ok) {
+    assert.equal(replay.idempotent, true);
+    assert.equal(replay.submission.id, parentId);
+  }
+  assert.equal(reopened.consecutiveEvidencePreflightRefinements(parentId), refinementLimit);
+
+  await stagePacket(refinementLimit + 1, false);
+  if (manualRetry) {
+    const exhausted = await h.manager.retryEvidenceReadiness(
+      runId, parentId, "capped-over-limit", refinementLimit + 1,
+    );
+    assert.equal(exhausted.ok, false);
+    if (exhausted.ok) return;
+    assert.equal(exhausted.reason, "conflict");
+    assert.equal(exhausted.message,
+      `This round has spent its ${refinementLimit} evidence preflight refinements; continue despite gaps or start a new round`);
+  } else {
+    await h.manager.sweepResumptions(Date.now() + (refinementLimit + 1) * 60_000);
+  }
   assert.equal(
     h.store.listSubmissions(runId).length,
-    EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1,
+    refinementLimit + 1,
     "the refused refinement must not create a submission",
   );
   const blocked = h.store.getRun(runId);
@@ -1000,15 +1034,15 @@ test("the round's third consecutive preflight refinement blocks the run for the 
   assert.ok(event, "the block must be readable on the run's own timeline");
   assert.deepEqual(event.payload, {
     submissionId: parentId,
-    round: 1,
-    segment: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
-    refinements: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
-    limit: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
-    manualRetry: true,
+    round,
+    segment: refinementLimit,
+    refinements: refinementLimit,
+    limit: refinementLimit,
+    manualRetry,
   });
   // The automatic sweep is the loop this bound exists to stop: it must not reopen the round.
   await h.manager.sweepResumptions(Date.now() + 60_000);
-  assert.equal(h.store.listSubmissions(runId).length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(h.store.listSubmissions(runId).length, refinementLimit + 1);
   assert.equal(h.store.getRun(runId)?.status, "blocked");
 
   // The block asks the operator a question, so the answer stays reachable from it.

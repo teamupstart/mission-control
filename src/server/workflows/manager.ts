@@ -182,7 +182,6 @@ import {
   type SubmitExternalInput,
 } from "./external-binding.ts";
 import {
-  EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
   EVIDENCE_RECOVERY_LIMIT,
   WorkflowStore,
   type WorkflowDeleteWrite,
@@ -2265,7 +2264,7 @@ export class WorkflowManager {
             : reserved.reason === "no_change"
               ? "Stage new evidence before retrying evidence preflight"
               : reserved.reason === "refinement_exhausted"
-                ? `This round has spent its ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} evidence`
+                ? `This round has spent its ${reserved.limit} evidence`
                   + " preflight refinements; continue despite gaps or start a new round"
                 : "The submission is no longer waiting for evidence readiness",
       };

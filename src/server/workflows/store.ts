@@ -207,19 +207,18 @@ const PERSONA_DIRECTIVES_JSON_BYTES =
 export const WORKFLOW_RETENTION_BATCH_SIZE = 100;
 
 /**
- * How many consecutive evidence-preflight refinements one round may spend.
- *
- * Stated as a limit the count must EXCEED, exactly like `UNCHANGED_EVIDENCE_NUDGE_LIMIT` in
- * the manager: refinements one and two are reserved normally, and the run blocks on the third.
- * Reading it as "stop after the second" would refuse the segment that closes the gaps in the
- * common case, which is the repair this bound exists to leave room for.
- *
- * The bound is small on purpose. A preflight refinement re-measures a mapping the agent
- * already had every chance to declare, so a third consecutive one is evidence that the packet
- * and the preflight disagree about something a person has to settle - which is why exceeding
- * it parks the run for the operator rather than costing another repair round.
+ * Later rounds allow two consecutive refinements after their initial evidence packet.
+ * Round 1 doubles the total attempts, including that initial packet: six attempts means
+ * five refinements. It has more gaps to close before later rounds can inherit the evidence.
+ * The final allowed refinement is captured normally; only the next reservation blocks.
  */
-export const EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT = 2;
+const EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT = 2;
+
+function evidencePreflightRefinementLimit(round: number): number {
+  return round === 1
+    ? (EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1) * 2 - 1
+    : EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT;
+}
 
 /** Explicit recovery has a separate durable run budget, independent of author repairs. */
 export const EVIDENCE_RECOVERY_LIMIT = 3;
@@ -9011,9 +9010,9 @@ export class WorkflowStore {
           | "not_waiting"
           | "no_change"
           | "delivery_in_flight"
-          | "request_conflict"
-          | "refinement_exhausted";
-      } {
+          | "request_conflict";
+      }
+    | { ok: false; reason: "refinement_exhausted"; limit: number } {
     return transaction(this.db, () => {
       const existing = this.submissionByTrigger(input.triggerKey);
       if (existing) {
@@ -9057,7 +9056,8 @@ export class WorkflowStore {
        * is keeps `overrideEvidenceReadiness` - continue despite gaps - reachable from the block.
        */
       const refinements = this.consecutiveEvidencePreflightRefinements(parent.id);
-      if (refinements + 1 > EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT) {
+      const limit = evidencePreflightRefinementLimit(parent.round);
+      if (refinements + 1 > limit) {
         this.setRunState(
           run.id,
           "blocked",
@@ -9070,10 +9070,10 @@ export class WorkflowStore {
           round: parent.round,
           segment: parent.segment,
           refinements,
-          limit: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
+          limit,
           manualRetry: input.manualRetry,
         }, input.now, `preflight-refinement-exhausted:${parent.id}`);
-        return { ok: false, reason: "refinement_exhausted" };
+        return { ok: false, reason: "refinement_exhausted", limit };
       }
       const inFlight = this.db.prepare(
         `SELECT 1 FROM workflow_deliveries

@@ -1,0 +1,234 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>P0. Product questions and telemetry data contract</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>P0. Product questions and telemetry data contract</h1>
+<p>Design contract. Parent: <a href="../plan.html">OpenTelemetry planning brief</a>. The operator approved both user-owned export and product analytics with separate opt-ins, deeper planning across all six areas, restart-safe local capture in v1 and scheduling through the <a href="../phased-plan.html">phased plan</a>. Its phase tasks own the implementation sequence and verification gates.</p>
+<nav aria-label="Contents"><ul><li><a href="#decision-this-area-owns">Decision this area owns</a></li><li><a href="#questions-units-and-acceptance-signals">Questions, units and acceptance signals</a></li><li><a href="#four-records-with-different-jobs">Four records with different jobs</a></li><li><a href="#identity-and-idempotency-contract">Identity and idempotency contract</a></li><li><a href="#actor-and-origin-contract">Actor and origin contract</a></li><li><a href="#audience-policies">Audience policies</a></li><li><a href="#metric-catalog-contract-and-cardinality">Metric catalog contract and cardinality</a></li><li><a href="#versioning-and-adoption">Versioning and adoption</a></li><li><a href="#acceptance-examples-and-gates">Acceptance examples and gates</a></li></ul></nav><h2 id="decision-this-area-owns">Decision this area owns</h2>
+<p>Define the meaning, grain, identity, allowed attributes and audiences of every signal before instrumentation begins. The other five areas consume this contract. A signal is accepted into the catalog only when it has an analysis question, an authoritative owner, a clear denominator and a bounded payload.</p>
+<p>Propose three priority levels: <strong>core</strong> for session/workflow outcomes, persona verdicts, recovery, execution attribution and errors; <strong>breadth</strong> for the remaining primary-action inventory; <strong>diagnostic</strong> for optional detailed timing. The first release is not “all actions covered” until the breadth inventory is complete, even if core insights become useful earlier.</p>
+<h2 id="questions-units-and-acceptance-signals">Questions, units and acceptance signals</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Question</th>
+<th>Unit of analysis</th>
+<th>Minimum required facts</th>
+<th>Signal of useful coverage</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>What models and features are used?</td>
+<td>Execution segment; successful logical action</td>
+<td>Model/effort observation, task kind, feature, actor, origin, app version</td>
+<td>Unknown attribution is reported; exposure is separate from use</td>
+</tr>
+<tr>
+<td>Which workflows work efficiently?</td>
+<td>Logical workflow run and review round</td>
+<td>Start/end, immutable workflow version, elapsed state intervals, repair rounds</td>
+<td>Parallel work is not added into fictitious wall time</td>
+</tr>
+<tr>
+<td>Which personas send work back?</td>
+<td>Executed review, finding, delivered repair packet</td>
+<td>Verdict, execution disposition, reason, causal links</td>
+<td>Invalid responses, skipped passes and actual work rejection stay separate</td>
+</tr>
+<tr>
+<td>How often must people intervene?</td>
+<td>Distinct run plus successful intervention</td>
+<td>Explicit human provenance, action intent, cause, workflow start boundary</td>
+<td>Recovery, required decisions and voluntary steering have separate rates</td>
+</tr>
+<tr>
+<td>How does work end?</td>
+<td>Session observation, work episode, task, repository PR</td>
+<td>Termination observation, completion provenance, continuation links, PR visibility</td>
+<td>Unknown outcome is never relabeled as failure or abandonment</td>
+</tr>
+<tr>
+<td>Did an update improve things?</td>
+<td>Comparable installation/task/workflow cohort</td>
+<td>Event-time release, workflow/persona revision, model exposure, observation coverage</td>
+<td>Late exports do not move old work into a new release cohort</td>
+</tr>
+</tbody></table></div>
+<p>Installation-level identity supports repeat-use and within-installation comparisons. It does not measure unique people. No account lookup, cross-device identity join or fingerprinting is proposed.</p>
+<h2 id="four-records-with-different-jobs">Four records with different jobs</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Record</th>
+<th>Grain</th>
+<th>Owner and lifespan</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Domain event</td>
+<td>One accepted semantic fact</td>
+<td>Minimized local capture; immutable, versioned, bounded retention</td>
+</tr>
+<tr>
+<td>Context snapshot</td>
+<td>One immutable execution/association context</td>
+<td>Telemetry projection of existing owners; retained while referenced, then expires</td>
+</tr>
+<tr>
+<td>Metric point</td>
+<td>One instrument, dimension set, resource and collection interval</td>
+<td>Deterministic projection of domain facts, or an explicitly separate live operational instrument</td>
+</tr>
+<tr>
+<td>Trace span</td>
+<td>One bounded operation</td>
+<td>Correlated timing/outcome view; never the source of metric denominators</td>
+</tr>
+</tbody></table></div>
+<p>The journal is not a new task/workflow history API. Existing managers remain authoritative. Metrics describe populations; traces explain individual operations. The same fact may contribute to both, but it contributes to each declared metric only once.</p>
+<p>Proposed local envelope, with synthetic IDs and model names:</p>
+<pre><code class="language-json">{
+  &quot;schema_version&quot;: 1,
+  &quot;event_id&quot;: &quot;evt-example-review-1&quot;,
+  &quot;name&quot;: &quot;workflow.review.finished&quot;,
+  &quot;occurred_at&quot;: &quot;2026-09-12T15:00:00.000Z&quot;,
+  &quot;observed_at&quot;: &quot;2026-09-12T15:00:00.020Z&quot;,
+  &quot;resource_snapshot_id&quot;: &quot;resource-example-v1&quot;,
+  &quot;context_snapshot_id&quot;: &quot;context-example-segment-2&quot;,
+  &quot;actor&quot;: { &quot;kind&quot;: &quot;workflow&quot;, &quot;origin&quot;: &quot;daemon&quot;, &quot;basis&quot;: &quot;owner&quot; },
+  &quot;refs&quot;: { &quot;run&quot;: &quot;run-example&quot;, &quot;submission&quot;: &quot;submission-example&quot;, &quot;attempt&quot;: &quot;attempt-example&quot; },
+  &quot;facts&quot;: {
+    &quot;execution_disposition&quot;: &quot;executed&quot;,
+    &quot;review_verdict&quot;: &quot;fail&quot;,
+    &quot;response_validity&quot;: &quot;valid&quot;,
+    &quot;reviewer_model_key&quot;: &quot;catalogued-reviewer-model&quot;,
+    &quot;reason_categories&quot;: [&quot;test_coverage&quot;],
+    &quot;reason_provenance&quot;: &quot;structured&quot;
+  }
+}
+</code></pre>
+<p>This is a domain example, not an OTLP request. An event-specific schema rejects undeclared fields. Internal correlation identities are translated to destination-scoped identities before export. A serializer cannot spread an internal Session, Task, WorkflowEvent or exception object into this envelope.</p>
+<h2 id="identity-and-idempotency-contract">Identity and idempotency contract</h2>
+<ul>
+<li>Capture dedupe uses a source kind plus an authoritative source identity and semantic revision, when one exists. A workflow attempt completion is not identified by arrival time or model output text.</li>
+<li>A logical user action has one operation ID across its network retries. Its HTTP attempts may be measured separately, but a successful replay cannot become a second intervention.</li>
+<li>A source record amended later emits a new fact or revision. It does not mutate an already delivered historical event. Retractions/late corrections need a separately versioned projection rule.</li>
+<li>Local sequence numbers order journal processing. They are not event time. Out-of-order source observations retain their timestamps and provenance.</li>
+<li>Destination event IDs are stable for retries within one audience/configuration epoch. Different audiences use different keys, so their identifiers are not trivially joinable.</li>
+<li>A collection reset creates a new telemetry identity epoch. Runtime task/session identity is untouched. Backlog policy must be resolved before old telemetry identities are destroyed.</li>
+</ul>
+<p>Existing optional workflow event IDs demonstrate a useful dedupe seam, but some current events lack them. Coverage cannot be assumed globally. <a href="../../../../src/server/workflows/store.ts">Workflow event writer</a>.</p>
+<h2 id="actor-and-origin-contract">Actor and origin contract</h2>
+<p>Actor kinds: <code>human</code>, <code>agent</code>, <code>foreman</code>, <code>workflow</code>, <code>scheduler</code>, <code>recovery</code>, <code>unknown</code>. Origins: <code>dashboard</code>, <code>mcp</code>, <code>cli</code>, <code>daemon</code>, <code>external_observation</code>, <code>unknown</code>. Actor basis: <code>owner</code>, <code>app_context</code>, <code>declared</code>, <code>inferred</code>, <code>unknown</code>.</p>
+<p>These fields describe attribution, not authorization. Existing permission decisions must not start trusting a telemetry field. A dashboard operation context provides application-level attribution, not cryptographic proof of a person. Existing <code>by</code>/<code>origin</code> flags on some routes can be retained as declared provenance until a stronger context is present. Unmarked API requests, direct terminal input and unclear external changes remain unknown. P4 owns the propagation design.</p>
+<h2 id="audience-policies">Audience policies</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Local capture</th>
+<th>User-owned backend</th>
+<th>Product analytics</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>App version, task kind, harness/runtime, bounded action/outcome</td>
+<td>Yes, when collection enabled</td>
+<td>Yes</td>
+<td>Yes, with product opt-in</td>
+</tr>
+<tr>
+<td>Catalogued model/effort and builtin workflow/persona identity</td>
+<td>Yes</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Session/run/attempt relationships</td>
+<td>Opaque local correlation</td>
+<td>Destination-scoped IDs on traces</td>
+<td>Separately scoped IDs on approved outcome traces</td>
+</tr>
+<tr>
+<td>Custom entity identity/revision</td>
+<td>Opaque ID, no name or content</td>
+<td>Opaque ID by default</td>
+<td><code>custom</code> category; opaque per-installation correlation only where needed for approved queries</td>
+</tr>
+<tr>
+<td>Installation pseudonym</td>
+<td>Local random seed</td>
+<td>Separate destination identity if requested</td>
+<td>Stable within the consent epoch, with reset support</td>
+</tr>
+<tr>
+<td>Error detail</td>
+<td>Bounded codes and sanitized app frames</td>
+<td>Same default</td>
+<td>Bounded code/category; no free-text detail by default</td>
+</tr>
+<tr>
+<td>Prompt, code, path, branch, repository/PR URL, rationale, headers, terminal output</td>
+<td>No new telemetry copy</td>
+<td>No</td>
+<td>No</td>
+</tr>
+</tbody></table></div>
+<p>Keep all export schemas minimized. A later diagnostic mode is a new explicit scope, not a hidden switch to ship raw objects. Local capture must disclose that it can retain data before an endpoint is configured. Enabling product analytics authorizes new product data from that point, not automatic historical sharing.</p>
+<h2 id="metric-catalog-contract-and-cardinality">Metric catalog contract and cardinality</h2>
+<p>Each instrument declares name, description, unit, type, contribution event, exact predicate, dimension allowlist, histogram boundaries where applicable, unknown policy, audience, schema revision and owner. No caller invents metric names from an action string.</p>
+<p>Suggested specialized views rather than one giant label set:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Instrument</th>
+<th>Proposed dimensions</th>
+<th>Excluded dimensions</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>mission.persona.verdicts</code></td>
+<td>Persona family, reviewer model key, verdict</td>
+<td>Author model, session ID, node ID, free-text reason</td>
+</tr>
+<tr>
+<td><code>mission.workflow.interventions</code></td>
+<td>Workflow family, action kind, intervention intent</td>
+<td>Operation/run IDs, actor free text</td>
+</tr>
+<tr>
+<td><code>mission.workflow.completed_by_author</code></td>
+<td>Workflow family, task kind, author model, author effort</td>
+<td>Reviewer matrix, individual persona</td>
+</tr>
+<tr>
+<td><code>mission.action.count</code></td>
+<td>Feature/action ID, outcome, actor class</td>
+<td>Raw route, query string, all session metadata</td>
+</tr>
+<tr>
+<td><code>mission.errors</code></td>
+<td>Component, error family, handled state</td>
+<td>Stack, message, fingerprint, individual entity IDs</td>
+</tr>
+</tbody></table></div>
+<p>Cross-dimensional author/reviewer comparisons belong in traces or a supported analytical projection. Do not silently omit the user&#39;s desired joins and then claim metrics alone cover them.</p>
+<p>The selected local Grafana/Prometheus deliverable in <a href="../p5-analysis-delivery/plan.html">P5</a> also requires bounded analytical snapshot gauges for distinct-run recovery, horizon outcomes and repeat feature use. P5 owns the reducers and panels; P0 owns their catalog entries, cohort definitions and dimension budgets. Keep window/horizon enums bounded, timestamp bounds as values, and individual run/operation IDs out of metric labels. Raw action counters do not substitute for these cohort summaries.</p>
+<p>Illustrative cardinality, not a measurement: 12 persona families × 8 models × 2 verdicts = 192 active dimension combinations. Adding 8 author models × 6 efforts × 20 workflow revisions makes 184,320 combinations before resource identity. Histogram buckets and backend resource-to-label promotion add further series. P5 measures the real budget.</p>
+<p>Candidate limits for design testing: 256 bytes per ordinary string, 16 KiB per canonical event, bounded 64 reference links and 16 reason categories, 32 catalogued model keys per profile, 2,000 active series per instrument and 10,000 per installation/profile. These are proposal limits to validate, not all safe defaults at once. Truncating links/categories carries omitted counts; exceeding a metric dimension budget folds into explicit overflow/other categories and never silently changes a denominator. Unknown values remain visible.</p>
+<h2 id="versioning-and-adoption">Versioning and adoption</h2>
+<p>Maintain independent event schema, metric catalog, reason taxonomy and audience-policy versions. Additive fields are optional to old readers; persisted enum IDs remain append-only. A changed metric meaning gets a new instrument/version, not a retroactive relabeling. Queue records carry the schema/policy that created them; unknown future versions are quarantined or expired with visible counts, never interpreted optimistically.</p>
+<p>Use a launch-date cutover watermark. Do not bulk export historical operational tables by default: they predate consent, lack complete context, and may contain private data. A future explicit import must preserve <code>historical_import</code> provenance and be excluded from live adoption counts by default.</p>
+<h2 id="acceptance-examples-and-gates">Acceptance examples and gates</h2>
+<ol>
+<li>Retrying one successful resubmit request produces one intervention, two HTTP attempts if measured, and one new semantic review round.</li>
+<li>A valid failing review contributes one executed rejection; a malformed response followed by that review contributes one response error as a separate fact.</li>
+<li>Product-only opt-in cannot produce a user-backend batch or include a private fixture string.</li>
+<li>Changing an app default does not alter previously captured model/effort context.</li>
+<li>An unknown terminal actor does not count as a confirmed human action or confirmed automation.</li>
+<li>Core outcome metrics remain correct if diagnostic trace sampling is disabled or reduced.</li>
+</ol>
+<p>P0 is sufficiently specified for the remaining draft designs. Implementation gates remain the final registry/limits review and proof that each proposed event has a source seam. Selected audience policy is confirmed; proposed field names, limits and identity lifetime are recommendations for review.</p>
+</main></body></html>

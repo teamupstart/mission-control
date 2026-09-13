@@ -1,0 +1,563 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenTelemetry integration: planning brief</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>OpenTelemetry for product use and workflow efficiency</h1>
+<p>Status: approved direction with scheduled implementation planning. The six linked briefs define contracts, examples, ownership and verification gates. Revised 2026-09-13: the operator requested dependency-linked implementation tasks, including actual local Grafana/Prometheus dashboards. See the <a href="phased-plan.html">seven-phase implementation index</a> for the execution sequence and scheduling record.</p>
+<p>Repository baseline: <code>5b59bc7a</code>. Research date: 2026-09-12.</p>
+<h2 id="the-six-detailed-designs">The six detailed designs</h2>
+<p>Confirmed decisions: support user-owned telemetry and product analytics with separate opt-ins; require restart-safe local capture in the first usable release; make P5 deliver actual dashboards on a local Grafana/Prometheus installation; schedule the work through the phased-plan skill.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Brief to open</th>
+<th>What it settles</th>
+<th>Concrete review material</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="p0-data-contract/plan.html">P0. Data contract</a></td>
+<td>Signal meaning, grain, identities, actor provenance and audience policies</td>
+<td>Example event, metric views, cardinality arithmetic, versioning rules</td>
+</tr>
+<tr>
+<td><a href="p1-durable-export/plan.html">P1. Durable export</a></td>
+<td>Durable acceptance, storage, projection, replay and independent destinations</td>
+<td>Crash-boundary matrix, SDK resource constraint, capacity/acknowledgement contract</td>
+</tr>
+<tr>
+<td><a href="p2-session-lifecycle/plan.html">P2. Session lifecycle</a></td>
+<td>Session/task/conversation identity, actual model/effort and outcomes</td>
+<td>Pending-effort timeline, mixed-model attribution, unknown exits and late PR facts</td>
+</tr>
+<tr>
+<td><a href="p3-workflow-insights/plan.html">P3. Workflow insights</a></td>
+<td>Stages, executed reviews, reasons, repair and human intervention</td>
+<td>Reason taxonomy, timing boundaries, worked retry/reuse example</td>
+</tr>
+<tr>
+<td><a href="p4-interactions-errors-settings/plan.html">P4. Interactions, errors and settings</a></td>
+<td>Primary-action coverage, actor context, error handling and user controls</td>
+<td>Action inventory, profile states, offline/consent user flows and E2E scenarios</td>
+</tr>
+<tr>
+<td><a href="p5-analysis-delivery/plan.html">P5. Local Grafana dashboards</a></td>
+<td>Build the local reference stack, six dashboards, analytical projections and end-to-end coverage</td>
+<td>Provisioned dashboard contract, PromQL, trace navigation, golden fixture and acceptance scenarios</td>
+</tr>
+</tbody></table></div>
+<p>Read P0 first; P1/P2/P3/P4 can then be reviewed by area, followed by P5&#39;s dashboard implementation scope. P0-P5 are design areas; the seven implementation phases are separate merge units. Each brief&#39;s recommended field names, limits and mechanism remain reviewable; confirmed product requirements are firm, and the compatibility phase resolves unproven mechanisms before dependent tasks are released.</p>
+<p>The original exploration below remains context. For detailed semantics and acceptance cases, the linked area owner is the source within this draft package; conflicts must be resolved before implementation.</p>
+<nav aria-label="Contents"><ul><li><a href="#the-six-detailed-designs">The six detailed designs</a></li><li><a href="#recommendation">Recommendation</a></li><li><a href="#what-success-looks-like">What success looks like</a></li><li><a href="#what-the-repository-already-provides">What the repository already provides</a></li><li><a href="#collection-approaches">Collection approaches</a></li><li><a href="#proposed-signal-catalog">Proposed signal catalog</a></li><li><a href="#session-metadata-and-attribution">Session metadata and attribution</a></li><li><a href="#persona-verdicts-reasons-and-repair-loops">Persona verdicts, reasons and repair loops</a></li><li><a href="#endings-completion-and-prs">Endings, completion and PRs</a></li><li><a href="#traces-and-error-signals">Traces and error signals</a></li><li><a href="#data-flow-and-offline-behavior">Data flow and offline behavior</a></li><li><a href="#export-audience-and-data-minimization">Export audience and data minimization</a></li><li><a href="#additional-ideas-worth-tracking">Additional ideas worth tracking</a></li><li><a href="#how-to-turn-data-into-decisions">How to turn data into decisions</a></li><li><a href="#six-bounded-planning-sessions">Six bounded planning sessions</a></li><li><a href="#verification-bar-for-the-eventual-implementation">Verification bar for the eventual implementation</a></li><li><a href="#decisions-and-remaining-uncertainty">Decisions and remaining uncertainty</a></li></ul></nav><h2 id="recommendation">Recommendation</h2>
+<p>Build one daemon-owned telemetry facility that records meaningful application outcomes, projects them into OpenTelemetry metrics and traces, and can retain a bounded backlog locally. Instrument the owners of state transitions, then add browser interaction signals where the daemon cannot see intent or friction.</p>
+<p>Start with session outcomes and workflow repair loops. They directly answer whether changes make the app more useful and workflows more efficient. Treat offline delivery as its own early design exercise: adding an exporter is straightforward compared with preserving correct counts and attribution through restarts, retries, model changes, and long-running workflows.</p>
+<p>Recommend an application-owned durable queue, with an optional external Collector. Restart-safe capture is required in v1. Confirm the mechanism with a small durability prototype before broad instrumentation; a failed prototype must lead to another durable mechanism, not an in-memory-only release.</p>
+<p>P5 must deliver a runnable local Grafana/Prometheus setup and six provisioned dashboards. Its proposed supporting components are an OpenTelemetry Collector for routing and Tempo for trace storage/search. The same stack supplies P1&#39;s early compatibility test. P5 also builds the bounded cohort projectors required by its panels; dashboard delivery is a concrete implementation outcome, not just a final validation report. See <a href="p5-analysis-delivery/plan.html">the revised P5 scope</a> for component sources and acceptance criteria.</p>
+<p>Confirmed audience decision: support both user-owned backends and aggregate product analytics, with separate opt-ins. The operator selected this in Mission Control on 2026-09-12. Each destination has its own export policy, queue and identity; configuring a personal backend does not enable product sharing. This decision specifies the future feature, not permission to export present operator data.</p>
+<h2 id="what-success-looks-like">What success looks like</h2>
+<p>The first useful analysis should answer these questions, grouped by app version, task kind, workflow version, authoring model and effort, and reviewer model where applicable:</p>
+<ol>
+<li>Which workflows and features do installations actually use, and which do they try once and stop using?</li>
+<li>Which workflow stages consume execution time, human waiting time, repair time, tokens, and estimated cost?</li>
+<li>Which personas request changes most often, for what categories of reasons, and how often does the next round resolve them?</li>
+<li>How often does a workflow finish without a human intervention after it starts? Which interventions are required decisions versus recovery from a problem?</li>
+<li>Which session outcomes lead to completed tasks and verified pull requests? Which end early, are explicitly killed, or have an unknown outcome?</li>
+<li>Does an app, workflow, persona, or default-model update improve these outcomes for comparable work?</li>
+</ol>
+<p>An installation is not necessarily a person. Until an explicit account identity exists and is approved for this use, report active installations and sessions rather than unique users. Offline telemetry also makes recent cohorts incomplete; every dashboard should show data freshness and coverage.</p>
+<h2 id="what-the-repository-already-provides">What the repository already provides</h2>
+<p>These are verified source observations, not claims from a running telemetry system. The <a href="phased-plan.md#repository-findings-and-reconciliations">implementation index</a> records current-baseline evidence and reconciliations. The local investigation report is excluded from publication.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Existing seam</th>
+<th>Useful facts</th>
+<th>Planning consequence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>src/server/routes.ts:3988</code>, <code>src/server/usage.ts</code>, <code>src/server/spend-ledger.ts</code></td>
+<td>Claude OTLP metrics arrive locally; other usage paths feed the usage ledger</td>
+<td>Reuse authoritative usage and deduplication. This receiver is not a general outbound OTel integration.</td>
+</tr>
+<tr>
+<td><code>src/shared/types.ts:245</code></td>
+<td>Session metadata includes observed model ID, effort, source and observation time</td>
+<td>Snapshot effective values and their provenance. A configured default is not proof of what ran.</td>
+</tr>
+<tr>
+<td><code>src/shared/types.ts:1844</code></td>
+<td>Task kinds are <code>ship</code>, <code>scout</code>, <code>plan</code>, <code>pipeline</code>, <code>chat</code></td>
+<td>Reuse the existing vocabulary. Keep task kind separate from runtime and session origin.</td>
+</tr>
+<tr>
+<td><code>src/shared/workflow.ts:4252</code></td>
+<td>Node attempts retain runner, model, state, verdict and timestamps</td>
+<td>Export attempt outcomes without reconstructing them from dashboard text. Reviewer effort is not an explicit field on this interface today.</td>
+</tr>
+<tr>
+<td><code>src/server/workflows/engine.ts:1090</code></td>
+<td>Response-contract failures and accepted response shapes are distinct from pass/fail verdicts</td>
+<td>A valid fail verdict means the reviewer rejected the work, not that its model call failed.</td>
+</tr>
+<tr>
+<td><code>src/shared/workflow-stages.ts:15</code></td>
+<td>Stages are projected from a graph</td>
+<td>Reuse that projection and immutable graph version; do not persist a competing stage model.</td>
+</tr>
+<tr>
+<td><code>src/server/registry.ts</code>, <code>src/server/db.ts</code></td>
+<td>Registry owns eviction; work episodes and per-repository PR associations preserve provenance</td>
+<td>Observe these owners; do not add another session teardown path or infer PR success from prose.</td>
+</tr>
+<tr>
+<td><code>src/server/workflows/store.ts</code></td>
+<td>Durable events include manual infrastructure retries and uncertain-delivery resolutions</td>
+<td>Expand explicit actor/reason attribution at these seams. Existing event payloads are not a safe export allowlist.</td>
+</tr>
+</tbody></table></div>
+<h2 id="collection-approaches">Collection approaches</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Benefits and tradeoffs</th>
+<th>Rough effort</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A. Direct SDK export, optionally to a user-managed Collector</td>
+<td>Smallest initial integration. In-memory-only export is rejected for v1 because it cannot satisfy the confirmed restart-safe capture requirement.</td>
+<td>M for foundations; full action coverage still L</td>
+<td>Useful comparison point; requires proven persistence to qualify.</td>
+</tr>
+<tr>
+<td>B. Bundle and supervise a Collector with persistent queues</td>
+<td>Uses a standard export component. Adds a binary, packaging, upgrades, process supervision and a second local service. Data can still be lost before reaching the Collector.</td>
+<td>L, including desktop integration</td>
+<td>Strong export ecosystem with an installation and lifecycle cost.</td>
+</tr>
+<tr>
+<td>C. Daemon-owned journal and durable export queue; optional Collector</td>
+<td>Fits existing local ownership and supports capture before an endpoint exists. Requires careful projection, bounded storage, replay and compatibility tests.</td>
+<td>L, split into independent milestones</td>
+<td>Best fit for ordinary desktop use and later product analytics. Recommended for prototyping.</td>
+</tr>
+</tbody></table></div>
+<p>Effort is relative scope, not a delivery estimate. The broad coverage requested is larger than any one exporter choice.</p>
+<p>The Collector supports persistent sending queues using <code>file_storage</code>, but retry limits and disk capacity still bound retention. A Collector running only remotely cannot cache events that never left an offline laptop. <a href="https://opentelemetry.io/docs/collector/resiliency/">OpenTelemetry Collector resiliency</a>.</p>
+<h2 id="proposed-signal-catalog">Proposed signal catalog</h2>
+<p>“Primary action” means an intentional operation that changes work, configuration, or navigation to a meaningful feature. It does not mean every render, pointer movement, SSE frame, poll, or keystroke. Maintain one typed action registry with owner, trigger, dimensions, result vocabulary, privacy policy and test coverage.</p>
+<p>Metric names below are proposals. Use counters for occurrences, histograms for durations and distributions, and observable gauges for current backlog/state. Instrument units explicitly, with seconds for durations, bytes for sizes, and a named currency plus cost basis for money.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Events and outcomes worth collecting</th>
+<th>Example metrics</th>
+<th>Useful trace context</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Dispatch and backlog</td>
+<td>Task creation; dispatch requested, admitted, ready, failed; queue wait; dependency block; automatic/manual dispatch</td>
+<td><code>mission.dispatch.count</code>, <code>.duration</code>, <code>mission.task.queue.wait.duration</code></td>
+<td>Source surface, task kind, runtime resolution and preparation/launch/readiness spans</td>
+</tr>
+<tr>
+<td>Sessions</td>
+<td>Created vs first discovered; resumed; turn started/completed/interrupted; model/effort changed; context reset; handoff; end observation</td>
+<td><code>mission.session.started</code>, <code>.ended</code>, <code>.duration</code>, <code>mission.turn.duration</code></td>
+<td>Launch snapshot, observed execution segments, lifecycle and task outcome separately</td>
+</tr>
+<tr>
+<td>Workflow adoption</td>
+<td>Bound/unbound, started, restarted, completed, failed, cancelled, orphaned</td>
+<td><code>mission.workflow.started</code>, <code>.finished</code>, <code>.duration</code>, <code>.active</code></td>
+<td>Workflow identity/version, trigger, completion policy, linked work episode</td>
+</tr>
+<tr>
+<td>Stages and nodes</td>
+<td>Eligible, queued, execution started, completed, skipped, disabled, retried</td>
+<td><code>mission.workflow.node.count</code>, <code>.queue.duration</code>, <code>.execution.duration</code>, <code>mission.workflow.stage.duration</code></td>
+<td>Stage occurrence, node kind, submission, repair round, actual runner/model</td>
+</tr>
+<tr>
+<td>Persona quality</td>
+<td>Executed pass/fail; invalid response; contract violation; pass reuse; bypass; finding categories</td>
+<td><code>mission.persona.verdicts</code>, <code>mission.persona.response.errors</code>, <code>mission.persona.findings</code></td>
+<td>Authoring model and reviewer model separately, finding basis, directive/version provenance</td>
+</tr>
+<tr>
+<td>Workflow repair</td>
+<td>Feedback prepared/delivered/uncertain; session pickup; repair completed; resubmission; unchanged refusal; budget exhausted</td>
+<td><code>mission.workflow.repairs</code>, <code>.repair.duration</code>, <code>.repair.rounds</code>, <code>.delivery.failures</code></td>
+<td>Causal attempt(s), delivery identity, repair round, reason and actor</td>
+</tr>
+<tr>
+<td>Human involvement</td>
+<td>Manual resume, retry, restart, override, bypass, disable persona, change directive, permission response, clarification, cancellation</td>
+<td><code>mission.workflow.interventions</code>, <code>.human.wait.duration</code></td>
+<td>Whether required, recovery, or optional steering; cause; time since workflow start</td>
+</tr>
+<tr>
+<td>Session actions and shipping</td>
+<td>Action requested/completed/blocked; PR observed, created, updated, merged, closed; CI/review repair</td>
+<td><code>mission.session_action.count</code>, <code>.duration</code>, <code>mission.pr.outcomes</code></td>
+<td>Verified per-repository PR association, action attempt, observed vs app-created provenance</td>
+</tr>
+<tr>
+<td>Feature use</td>
+<td>Meaningful entry and successful use of Files, Diff, Runs, Library, search, archives, schedules, queues, ensembles, pipelines, Foreman and integrations</td>
+<td><code>mission.feature.used</code>, <code>mission.action.count</code>, <code>.duration</code></td>
+<td>Stable feature/action IDs, UI/MCP/CLI origin, completed/cancelled/refused/failed</td>
+</tr>
+<tr>
+<td>Automation</td>
+<td>Foreman invited/withdrawn; automatic answer, completion claim, handoff, rejected stale claim; Inspector outcomes</td>
+<td><code>mission.automation.actions</code>, <code>.failures</code>, <code>.wait.duration</code></td>
+<td>Automation role and result, never count an automatic answer as a human intervention</td>
+</tr>
+<tr>
+<td>Ensembles and pipelines</td>
+<td>Strategy selected, candidates launched/settled, human decision wait, winner applied, handoff, external stage results</td>
+<td><code>mission.ensemble.runs</code>, <code>.candidate.count</code>, <code>.decision.wait.duration</code>, <code>mission.pipeline.stage.count</code></td>
+<td>Parent work episode, child identities, strategy/provider, authoritative stage reports only</td>
+</tr>
+<tr>
+<td>Errors and reliability</td>
+<td>Dispatch failure, provider timeout/rate limit/auth, workflow engine/check failure, route error, UI exception, disconnect, daemon recovery</td>
+<td><code>mission.errors</code>, <code>mission.operation.duration</code>, <code>mission.connection.recoveries</code></td>
+<td>Error category/code, component, retryability and handled/unhandled status</td>
+</tr>
+<tr>
+<td>Resource efficiency</td>
+<td>Input/output/reasoning/cache tokens, API-equivalent cost, context pressure, compactions, warm/cold worktree preparation</td>
+<td><code>mission.tokens</code>, <code>mission.cost</code>, <code>mission.context.utilization</code>, <code>mission.worktree.prepare.duration</code></td>
+<td>Usage origin and coverage, cost/pricing basis, work role</td>
+</tr>
+<tr>
+<td>Telemetry health</td>
+<td>Pending records/bytes, oldest pending age, successes, retries, drops, expired records, rejected payloads, disabled state</td>
+<td><code>mission.telemetry.pending</code>, <code>.pending.bytes</code>, <code>.oldest.age</code>, <code>.dropped</code>, <code>.export.failures</code></td>
+<td>Destination class, schema revision, bounded export error code</td>
+</tr>
+</tbody></table></div>
+<p>Prioritize the session, workflow, persona, repair, intervention and error rows for v1. Keep the remaining action inventory in the coverage roadmap so “all primary actions” is a measurable commitment rather than an unbounded instruction.</p>
+<p>Distinguish actor from entry surface: human, agent, Foreman, workflow, scheduler, recovery and unknown are actor categories; dashboard, MCP, CLI and external observation are surfaces. Derive provenance from validated ingress and causal owner context, not an arbitrary caller-supplied “human” flag. Direct terminal interaction and external changes may not have reliable actor attribution. Keep them unknown and report that coverage limit rather than claiming all post-start human involvement is observable.</p>
+<h2 id="session-metadata-and-attribution">Session metadata and attribution</h2>
+<p>Capture a launch snapshot, then immutable execution segments when relevant metadata changes. Every session-linked event references the snapshot/segment effective when it occurred. Historical exports must never join against today&#39;s model default or today&#39;s workflow definition.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>Metadata</th>
+<th>Rules</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Application resource</td>
+<td>Service name/version, release channel, OS family/architecture, instrumentation schema revision, environment</td>
+<td>Stamp at event time. Exclude hostnames, usernames and filesystem paths. Keep runtime writer identity distinct from optional product installation identity.</td>
+</tr>
+<tr>
+<td>Session context</td>
+<td>Opaque session instance ID, logical conversation and work-episode links, harness, terminal/SDK runtime, launch/discovery origin</td>
+<td>Keep these identities distinct. Context clears and SDK-to-terminal handoffs do not preserve every identity.</td>
+</tr>
+<tr>
+<td>Execution segment</td>
+<td>Requested model/effort; effective model/effort; provider; native effort when allowed; source, observed time and confidence state</td>
+<td>Unknown, unsupported, inherited and observed are different states. Record model changes rather than rewriting the session&#39;s past.</td>
+</tr>
+<tr>
+<td>Terminal context</td>
+<td>Multiplexer ID and emulator ID, if present; capability/availability state</td>
+<td>Derive through existing registries. Never export pane IDs, tty, PID, tab titles or commands. SDK has no terminal, which is different from an unknown terminal.</td>
+</tr>
+<tr>
+<td>Task context</td>
+<td>Task kind, creation/dispatch source, automatic/manual, queue/schedule association, single/multiple repository count</td>
+<td>No task title, goal, repository URL, branch name or prompt. Discovered personal sessions may have no task.</td>
+</tr>
+<tr>
+<td>Workflow context</td>
+<td>Binding identity, workflow family and immutable version, completion policy, trigger source, node/stage occurrence, submission/round/attempt</td>
+<td>One session can have multiple workflow bindings/runs. Represent links rather than one mutable workflow string.</td>
+</tr>
+<tr>
+<td>Reviewer context</td>
+<td>Persona stable ID/origin/revision, node execution override, actual runner/model, effective effort if available</td>
+<td>The reviewer can use a different model from the authoring session. Missing reviewer effort stays unknown until supported at the execution seam.</td>
+</tr>
+<tr>
+<td>Outcome context</td>
+<td>Session end reason, task disposition, workflow outcome, completion evidence, PR outcome and observation coverage</td>
+<td>Completed, killed, abandoned and PR generated are separate facts, not one enum.</td>
+</tr>
+</tbody></table></div>
+<p>Full session metadata belongs on trace spans or correlated structured records. Each metric gets a small explicit dimension allowlist. Do not attach session IDs, run IDs, task IDs, repository IDs, trace IDs, raw error messages, arbitrary persona names or model endpoint URLs as metric labels.</p>
+<p>Use catalogued model IDs and builtin workflow/persona IDs for bounded metric slices. Custom entities use a bounded <code>custom</code> category for aggregate metrics; destination-scoped opaque identities can support trace analysis. Offer explicit local allowlisting for more detailed user-backend dimensions later. Exact versions/revisions belong on traces by default, with selected bounded release/workflow version slices promoted only after a series budget is measured.</p>
+<p>Keep process/stream resource identity where needed to prevent multiple metric writers colliding, and aggregate installations at the backend. OpenTelemetry&#39;s metric model requires a single logical writer per stream and makes reset/temporality handling explicit. <a href="https://opentelemetry.io/docs/specs/otel/metrics/data-model/">Metrics data model</a>.</p>
+<h2 id="persona-verdicts-reasons-and-repair-loops">Persona verdicts, reasons and repair loops</h2>
+<p>Keep four different outcomes:</p>
+<ol>
+<li><strong>Review verdict:</strong> an executed persona judged the work <code>pass</code> or <code>fail</code>.</li>
+<li><strong>Response validity:</strong> the model returned a parseable, contract-compliant review, or did not.</li>
+<li><strong>Execution disposition:</strong> actually executed, reused an earlier pass, disabled/bypassed, cancelled or infrastructure failure.</li>
+<li><strong>Delivery disposition:</strong> requested changes reached the session, failed delivery, or delivery is uncertain.</li>
+</ol>
+<p>Reuse and bypass do not increase executed acceptance counts. An infrastructure failure does not become a work rejection. A persona may generate several findings, and several personas may contribute to one repair packet; retain all causal links while counting each verdict, finding and delivered packet at its own grain.</p>
+<p>Use the existing finding bases (<code>substantive</code>, <code>coverage_registration</code>, <code>evidence_access</code>) as one axis. Propose a separate bounded general-reason axis: requirement mismatch, correctness, test coverage, missing execution evidence, missing visual evidence, maintainability, architecture, security, performance, documentation, delivery/PR, and other/unknown. These are proposed categories, not an inference that current verdicts already contain them.</p>
+<p>Prefer existing structured facts and explicit persona output over text classification. Adding a category to persona results requires a versioned schema and backward-compatible unknown values. A local deterministic classifier is a possible transitional aid, but must export its version and <code>inferred</code> provenance. Do not introduce another paid model call per rejection. Do not export free-text requested changes, quotes, filenames or rationale by default.</p>
+<p>Suggested derived measures:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Insight</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Executed rejection rate</td>
+<td>Executed fail verdicts / executed pass-or-fail verdicts, grouped by persona and comparable workflow stage</td>
+</tr>
+<tr>
+<td>First-review pass rate</td>
+<td>Executed passes on a node&#39;s first semantic review / eligible first semantic reviews; infrastructure retries do not create new first reviews</td>
+</tr>
+<tr>
+<td>Repair-loop burden</td>
+<td>Repair rounds and repair time per finished run, with pending/cancelled runs shown separately</td>
+</tr>
+<tr>
+<td>Next-round resolution</td>
+<td>Failed nodes that pass on the next executed review / failed nodes with a next executed review; also show those never re-reviewed</td>
+</tr>
+<tr>
+<td>Manual recovery incidence</td>
+<td>Distinct runs with at least one human recovery action after start / eligible started runs in a matured cohort</td>
+</tr>
+<tr>
+<td>Human-free completion</td>
+<td>Completed runs with zero human interactions after start / eligible started runs; separately show workflows designed to require human gates</td>
+</tr>
+<tr>
+<td>Intervention load</td>
+<td>Successful recovery/steering/required-decision actions per run, not merely button clicks; display unsuccessful attempts as separate friction</td>
+</tr>
+<tr>
+<td>Reason distribution</td>
+<td>Findings per category, plus affected verdicts/runs; show unknown/inferred shares and multiple reasons per verdict</td>
+</tr>
+</tbody></table></div>
+<p>Repeated-reason counts are not proof of repeated identical defects. Stable finding tracking would need a separate design and evaluation. Bypassing a persona is a frustration signal, not proof the persona was wrong.</p>
+<h2 id="endings-completion-and-prs">Endings, completion and PRs</h2>
+<p>Observe durable removal through Registry&#39;s existing lifecycle and pair it with explicit termination intent from the action owner. Keep <code>completed</code>, <code>operator_killed</code>, <code>cancelled</code>, <code>process_exit</code>, <code>lost</code>, <code>suspended_for_restart</code>, <code>handoff</code> and <code>unknown</code> distinguishable where evidence supports them. Final enum design must follow current lifecycle contracts rather than replacing them.</p>
+<p>“Exited early” should mean a known session ended while its associated work was still incomplete at that time. “Abandoned” is a derived, configurable cohort classification after a grace period with no continuation, completion or handoff; it is not a raw event and must not be inferred from closing a window, a temporary discovery miss, or a missing PR.</p>
+<p>Preserve task completion provenance: explicit completion, verified workflow completion, merged PR, cancellation, failure or unknown. Chat, scout and plan tasks may complete successfully without any PR. For PR-eligible work, distinguish no PR observed, existing PR associated, PR creation verified, merged and closed without merge. An unverified “PR created” message is an action attempt, not success. Keep late PR/merge observations as subsequent facts, including after the original session ends.</p>
+<p>For multi-repository work, count the task once and each associated PR once at repository grain. Record creation coverage so “not observed” does not silently become “did not happen.”</p>
+<h2 id="traces-and-error-signals">Traces and error signals</h2>
+<p>Use bounded operational traces: dispatch, a work turn, a workflow submission/review round, a session action and a recovery operation. Within a round, stage spans contain parallel node spans, which contain actual model/check calls. Link later repair/resume traces to their causal attempt and stable workflow/work-episode identity. An ensemble join can link several contributing traces.</p>
+<p>Persist correlation and start-time facts, not live SDK Span objects. Emit completed spans as operations finish. Long human waits can be reconstructed from durable state intervals with their original timestamps; interrupted/unknown intervals must be identified. Do not hold one open span in RAM for a session lasting days or depend on a tail sampler holding an entire multi-day workflow. Verify historical span ingestion limits in the selected backend.</p>
+<p>Derive product metrics from unsampled canonical domain records, independently of trace sampling. Start with complete coverage of the bounded core outcome/attempt spans; make high-volume UI and diagnostic tracing separately configurable and record any sampling policy. Trace-derived counts cannot substitute for unsampled acceptance and intervention denominators. If later sampling is needed, decide at bounded trace boundaries and retain independent error/outcome records; head sampling cannot guarantee that every later failure retains its original trace.</p>
+<p>Stage wall time is elapsed time across parallel work, not the sum of persona durations. Keep queue delay, execution, repair activity and human wait separate, and distinguish elapsed time from CPU time or human effort. Record interruption and sleep/clock uncertainty instead of manufacturing precise execution time across a restart.</p>
+<p>Attach expected domain outcomes such as a review fail to span attributes/events. Mark an operation as an error when the operation itself failed, not merely because a reviewer found an issue. Export bounded error counters and error spans/events with component, category, stable code, operation, retryability, handled state and sanitized fingerprint. Correlate renderer exceptions with the action when possible; disconnected/crashed processes may only support an uncorrelated error record on recovery.</p>
+<p>OTLP logs are a useful extension for standalone errors and structured events. Keep them behind the same facade so SDK churn is isolated: OpenTelemetry JavaScript currently lists traces and metrics as stable, logs as development, and browser client instrumentation as experimental. This supports starting with typed browser events sent to the daemon rather than broad browser auto-instrumentation. <a href="https://opentelemetry.io/docs/languages/js/">JavaScript status</a>.</p>
+<p>Use standard OTel resource, HTTP and exception conventions where appropriate and versioned <code>mission.*</code> attributes for app semantics. Evaluate current GenAI conventions for actual model calls during the execution-attribution design; do not make changing experimental conventions the application domain contract.</p>
+<h2 id="data-flow-and-offline-behavior">Data flow and offline behavior</h2>
+<p>Proposed flow: browser, MCP and worker intents reach the existing daemon APIs. State-owning managers record authoritative results. A typed telemetry facade validates, minimizes and enriches selected records before a bounded local journal. A projection creates metrics and trace export batches. A durable outbox retries those batches to the chosen OTLP endpoint, directly or through an optional Collector. Export status returns to the dashboard through existing authenticated API and SSE patterns.</p>
+<div class="diagram"><svg viewBox="0 0 1100 570" role="img" aria-label="Proposed telemetry flow: existing daemon owners feed a bounded journal, metrics and trace projection, and a durable outbox for an OTLP endpoint. Status returns to Settings."><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+<text x="28" y="35" class="title">Proposed daemon-owned telemetry flow</text>
+<rect x="28" y="63" width="240" height="78" rx="8"/><text x="148" y="94" text-anchor="middle">Browser / MCP / workers</text><text x="148" y="118" class="small" text-anchor="middle">Existing authenticated APIs</text>
+<rect x="360" y="63" width="245" height="78" rx="8"/><text x="482" y="94" text-anchor="middle">Daemon state owners</text><text x="482" y="118" class="small" text-anchor="middle">Authoritative operation results</text>
+<path d="M268 102 H350" marker-end="url(#arrow)"/>
+<rect x="360" y="190" width="245" height="78" rx="8"/><text x="482" y="222" text-anchor="middle">Typed telemetry facade</text><text x="482" y="246" class="small" text-anchor="middle">Validate, minimize, enrich</text>
+<path d="M482 141 V180" marker-end="url(#arrow)"/>
+<rect x="28" y="190" width="240" height="78" rx="8"/><text x="148" y="222" text-anchor="middle">Canonical usage ledger</text><text x="148" y="246" class="small" text-anchor="middle">Existing cost ingest and dedupe</text><path d="M268 229 H350" marker-end="url(#arrow)"/>
+<rect x="708" y="190" width="330" height="78" rx="8"/><text x="873" y="222" text-anchor="middle">Bounded local journal</text><text x="873" y="246" class="small" text-anchor="middle">Capture can precede endpoint setup</text><path d="M605 229 H698" marker-end="url(#arrow)"/>
+<rect x="708" y="317" width="330" height="78" rx="8"/><text x="873" y="349" text-anchor="middle">Metrics + trace projection</text><text x="873" y="373" class="small" text-anchor="middle">Durable checkpoints and batches</text><path d="M873 268 V307" marker-end="url(#arrow)"/>
+<rect x="360" y="317" width="245" height="78" rx="8"/><text x="482" y="349" text-anchor="middle">Durable outbox</text><text x="482" y="373" class="small" text-anchor="middle">Bounded retry per destination</text><path d="M708 356 H615" marker-end="url(#arrow)"/>
+<rect x="28" y="317" width="240" height="78" rx="8"/><text x="148" y="349" text-anchor="middle">OTLP endpoint</text><text x="148" y="373" class="small" text-anchor="middle">Or optional Collector</text><path d="M360 356 H278" marker-end="url(#arrow)"/>
+<rect x="360" y="454" width="245" height="78" rx="8"/><text x="482" y="486" text-anchor="middle">Settings status</text><text x="482" y="510" class="small" text-anchor="middle">Daemon API / SSE</text><path d="M482 395 V444" marker-end="url(#arrow)"/>
+</svg></div>
+<p>Recommended contract for the durability prototype:</p>
+<ul>
+<li><strong>Explicit modes:</strong> off, local capture only, and capture plus export. No endpoint is required for local capture. Local capture itself is a visible choice; enabling export later does not silently authorize historical sharing to a new audience.</li>
+<li><strong>Single owner:</strong> the daemon owns journal/checkpoints/outbox writes. Foreman and MCP use HTTP. Use the existing database/migration owner; a dedicated telemetry database is an alternative only if measurement justifies it.</li>
+<li><strong>Projection, not replacement:</strong> telemetry never becomes the source of truth for task or workflow behavior. Consume committed authoritative transitions. Where a durable source identity exists, use it for idempotency and crash recovery; close missing seams explicitly rather than periodically rescanning all history.</li>
+<li><strong>Failure boundary:</strong> exporting is asynchronous and cannot block a session or workflow. Capture is bounded and must not turn an otherwise successful action into a failure. The prototype must prove the selected transaction/reconciliation approach and state its pre-journal crash-loss window. Do not promise atomic lossless capture and unconditional fail-open behavior without demonstrating both.</li>
+<li><strong>Replay:</strong> give each record a version and stable event identity. Persist projection progress with resulting aggregate state and export batches atomically. Retry an immutable batch, not the original counter increments. Retain original event timestamps, resource version, metric start/end timestamps and trace IDs.</li>
+<li><strong>Temporality:</strong> prefer persisted cumulative domain counters/histograms for the first compatibility spike, preserving stream start times; keep live process gauges separate. Test reset, old sample and out-of-order behavior in the actual backend. If delta is required, design and test interval identity, ordered delivery and duplicates explicitly. Replaying a queue must not double local aggregates.</li>
+<li><strong>Delivery guarantee:</strong> bounded at-least-once attempts after durable acceptance, subject to expiry, capacity and permanent failure. An ambiguous remote acknowledgement can produce duplicates; generic OTLP backends do not promise exactly-once results. Maintain a local canonical count for reconciliation and test backend duplicate behavior. <a href="https://opentelemetry.io/docs/specs/otlp/">OTLP specification</a>.</li>
+<li><strong>Response handling:</strong> obey signal-specific OTLP full-success, partial-success and retry rules. A partial-success response must not trigger replay of the entire request; record rejected counts. Separate retryable network/throttle errors from permanent payload/configuration errors, and prevent one poison batch from blocking all later data. <a href="https://opentelemetry.io/docs/specs/otlp/#otlphttp-response">OTLP responses</a>.</li>
+<li><strong>Bounds:</strong> candidate payload retention is 7 days with a combined 256 MiB logical telemetry budget. Minimal P5 cohort state proposes a separate 30-day lifetime for its bounded lookback, charged to that same budget. These values are proposals, not measured capacity claims. Reduce optional high-volume interaction detail first; preserve a reserved budget for workflow outcomes/errors, but still enforce the absolute cap and expose incomplete cohorts and drops.</li>
+<li><strong>User control:</strong> show pending count/size/age, last success, destination, last bounded failure, dropped/expired records, pause, retry and purge. Disabling collection must stop new capture and prevent unsent data from draining without explicit intent. Keep “pause export” distinct from disabling collection.</li>
+<li><strong>Destination changes:</strong> queued data remains pinned to its original audience and endpoint generation. Changing an endpoint or opt-in requires an explicit keep-for-original, discard, or approve-backlog choice. Consent withdrawal purges unsent product data; it cannot retract data already accepted remotely.</li>
+<li><strong>Isolation:</strong> keep credentials out of records, logs, exports and ordinary settings snapshots. Do not pass Mission Control&#39;s own outbound OTel environment to child agents or overwrite the existing Claude cost-ingest settings. Avoid forwarding data back to the local cost receiver or recursively instrumenting exporter failures.</li>
+</ul>
+<p>Use official SDK/export/serialization components where their public interfaces fit. The persistence adapter and projection protocol need a compatibility spike; no hand-written OTLP implementation or package version is approved by this draft.</p>
+<h2 id="export-audience-and-data-minimization">Export audience and data minimization</h2>
+<p>Approved direction: both audiences, with independent opt-ins. Users may enable either, both or neither. User-owned operational export and minimized product analytics have separate schemas, queues and destination-scoped identities. Product analytics receives only its approved subset, not a copy of all user-backend telemetry. Failure or revocation of one destination must not block or redirect the other.</p>
+<p>This choice rejects a user-backend-only scope because it would not directly supply the requested cross-installation product insights, and rejects product-only export because user-owned observability is also wanted.</p>
+<p>Proposed common baseline: no prompts, transcript text, code, diffs, filenames, repository/PR URLs, branch names, feedback prose, terminal contents, authorization headers or environment dumps. Error messages/stacks can contain all of these; use bounded codes and sanitized app-frame fingerprints by default. A later diagnostic-detail mode requires a separate explicit contract.</p>
+<p>Use random or keyed, destination-scoped opaque identifiers, with an identity reset option. Do not equate hashing a path or repository URL with anonymity. Custom workflow/persona names and custom model identifiers can also contain private information. Never copy raw workflow events wholesale into the export pipeline.</p>
+<p>Keep collection consent and operational state out of automatically restored settings in ways that could silently enable sharing on another installation. A user-owned collector needs only its own endpoint credentials. A shared product ingest service cannot rely on a secret embedded in a distributed desktop app; authentication/enrollment, quotas, retention, abuse handling and remote data access need a separately scoped service design. P5 delivers local backend configuration; hosted product ingestion remains separate.</p>
+<h2 id="additional-ideas-worth-tracking">Additional ideas worth tracking</h2>
+<ul>
+<li><strong>Friction before success:</strong> repeated failed action attempts, cancelled dispatch/forms, and time from feature entry to successful use. Compare an exposed feature with a used feature; a setting being enabled is not evidence it was used.</li>
+<li><strong>Time to first value:</strong> first managed dispatch, first completed workflow and first verified PR after setup, with separate task-kind cohorts.</li>
+<li><strong>Automatic recovery effectiveness:</strong> proportion of eligible stalls recovered automatically, time saved in waiting, and how often human intervention still follows.</li>
+<li><strong>Reviewer usefulness:</strong> resolution on the next review, manual disable/directive rates and new findings after a prior pass. Avoid a leaderboard based only on rejection volume.</li>
+<li><strong>Model switching:</strong> escalations after failures, reductions in effort after success, and per-segment repair burden. Distinguish author model switching from reviewer overrides.</li>
+<li><strong>Workflow structure:</strong> node count, parallel width, custom versus builtin, required human gates, pass reuse and repair limits. These are potential explanations for performance differences.</li>
+<li><strong>Cost per useful outcome:</strong> tokens and API-equivalent cost per completed workflow or verified PR, including repair and automation overhead, with unknown-usage coverage shown. Do not call these figures invoices or subscription spending.</li>
+<li><strong>Cross-surface continuity:</strong> workflow started through MCP but recovered in the dashboard, session handed from SDK to terminal, or task continued by another session.</li>
+<li><strong>Reliability as experienced:</strong> user-visible failure rate, blocked duration, reconnect recovery and successful resume after upgrade, rather than raw exception volume alone.</li>
+<li><strong>Observation quality:</strong> proportion of sessions with observed model/effort, unresolved outcome, missing PR visibility, inferred reason, dropped telemetry and delayed export. Improving these may precede useful conclusions about users.</li>
+</ul>
+<h2 id="how-to-turn-data-into-decisions">How to turn data into decisions</h2>
+<p>Ship query definitions with instrumentation. A new counter without a decision it informs is lower priority.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>First dashboard</th>
+<th>Decision it supports</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Workflow funnel: started -&gt; reviewed -&gt; repaired -&gt; completed -&gt; PR outcome where applicable</td>
+<td>Find where work stops, using distinct logical runs rather than attempt counts</td>
+</tr>
+<tr>
+<td>Persona matrix: executed rejection rate, volume, reason, resolution, bypass/directive rate</td>
+<td>Identify reviewers or instructions worth changing without rewarding permissive reviews</td>
+</tr>
+<tr>
+<td>Model/effort cohorts: completion, repair rounds, waiting, tokens/cost</td>
+<td>Evaluate defaults for comparable task kinds and workflow versions</td>
+</tr>
+<tr>
+<td>Human involvement: required decisions vs recovery vs optional steering</td>
+<td>Remove avoidable manual resumes without hiding deliberate control points</td>
+</tr>
+<tr>
+<td>Release comparison: version, exposure, workflow revision, coverage and export lag</td>
+<td>Detect regressions and assess improvements after updates</td>
+</tr>
+<tr>
+<td>Feature adoption: exposure, first use, repeat use, successful use</td>
+<td>Prioritize features users benefit from, not just frequently visible UI</td>
+</tr>
+</tbody></table></div>
+<p>Keep denominator definitions, time windows, eligibility, unknown values and sample sizes beside the charts. Compare matured cohorts and show pending/cancelled/lost work rather than silently dropping it. Installation opt-in is a selection bias. Version correlation does not establish causality; use within-installation comparisons or a separately approved experiment for stronger conclusions. Do not claim a model is better because it was chosen for easier tasks.</p>
+<p>OTel provides transport and signal semantics. The selected local dashboards run on Grafana/Prometheus, with Tempo proposed for trace drill-down. P5 implements bounded daemon cohort summaries where raw metric counters cannot answer a required question; it does not leave the six dashboards dependent on a future warehouse. Arbitrary retrospective joins remain outside this local reference scope.</p>
+<h2 id="six-bounded-planning-sessions">Six bounded planning sessions</h2>
+<p>Do not split by telemetry signal alone. Metrics and traces must agree on identity and semantics. Split by the questions and owners below, and share one approved data contract.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Session</th>
+<th>Scope and concrete output</th>
+<th>Dependencies</th>
+<th>Boundary</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>P0. Product questions and data contract</td>
+<td>Audience/consent decision; prioritized action catalog; signal schemas; identity and cardinality budgets; completion/intervention definitions</td>
+<td>This exploration</td>
+<td>Locks what counts and what can leave a machine; does not choose database tables</td>
+</tr>
+<tr>
+<td>P1. Durable export architecture</td>
+<td>Compare app queue and Collector; prototype acceptance design; temporality/replay/ack protocol; retention, endpoint and shutdown behavior; package/backend compatibility ADR</td>
+<td>P0 core contract</td>
+<td>Owns transport/durability; does not add instrumentation across the app</td>
+</tr>
+<tr>
+<td>P2. Session, task and execution attribution</td>
+<td>Lifecycle mapping; requested vs effective model/effort; segments, handoffs, work episodes, PR provenance and late outcomes</td>
+<td>P0</td>
+<td>Owns session context; does not reinterpret workflow engine states</td>
+</tr>
+<tr>
+<td>P3. Workflow and persona insights</td>
+<td>Stage mapping, attempts vs reviews, reason taxonomy, repair causality, actor provenance, wait intervals, example metric/trace fixtures</td>
+<td>P0; coordinate identity with P2</td>
+<td>Owns workflow meaning; does not create a new stage or verdict authority</td>
+</tr>
+<tr>
+<td>P4. Interaction, reliability and settings experience</td>
+<td>Owner-by-owner primary-action inventory; browser-to-daemon signals; error schema; endpoint/status/consent controls; E2E scenarios</td>
+<td>P0; coordinate endpoint states with P1</td>
+<td>Measures actual actions; no indiscriminate click capture</td>
+</tr>
+<tr>
+<td>P5. Local Grafana dashboards</td>
+<td>Specify a runnable local stack, six provisioned dashboards, required analytical projectors, PromQL/rules, trace navigation and end-to-end tests</td>
+<td>P0/P1 for early stack proof; P2/P3/P4 for complete panels</td>
+<td>Owns concrete dashboard/stack/code deliverables; source owners retain their own acceptance tests</td>
+</tr>
+</tbody></table></div>
+<p>After P0, P1/P2/P3/P4 can be reasoned about concurrently as separate planning sessions using a frozen shared contract. P2 and P3 should exchange example records early. Keep <code>src/shared/types.ts</code>, <code>protocol.ts</code>, <code>db.ts</code>, <code>routes.ts</code>, Registry and workflow stores under coordinated ownership when implementation begins; parallel planning does not imply parallel edits to those files.</p>
+<p>Suggested implementation sequence after those designs are approved:</p>
+<ol>
+<li><strong>Walking slice:</strong> one authoritative workflow attempt and one session context exported as a metric and trace, including disabled mode, offline backlog, restart and reconnect. Prove exact local counting, privacy and bounded failure behavior with fake endpoints and agents.</li>
+<li><strong>Session and workflow core:</strong> lifecycle, PR outcome, model/effort, persona verdict/reason and manual recovery coverage. Reconcile sample metrics against authoritative fixture rows.</li>
+<li><strong>Primary-action and error coverage:</strong> dashboard/MCP/automation origins, integration use, errors, settings and telemetry health, plus broader queues/ensembles/pipelines coverage.</li>
+<li><strong>Dashboard implementation and rollout:</strong> runnable local Grafana/Prometheus stack, six provisioned dashboards, bounded cohort projectors, tested queries and trace navigation, performance measurements and setup guide. Start the minimal stack in the walking slice. A hosted product ingest service has its own infrastructure scope.</li>
+</ol>
+<p>No backlog tasks are created by this draft. It proposes planning boundaries; implementation sessions should not be dispatched until their contracts and dependencies are resolved.</p>
+<h2 id="verification-bar-for-the-eventual-implementation">Verification bar for the eventual implementation</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Contract</th>
+<th>Required evidence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Correct counting</td>
+<td>Duplicate hooks/SSE/retries/restart produce one canonical event and one local metric contribution. Distinguish reused passes, invalid reviews, bypasses, cancelled attempts and actual work rejection.</td>
+</tr>
+<tr>
+<td>Attribution</td>
+<td>Mid-session model/effort change, unknown terminal metadata, separate reviewer model, task handoff, multiple workflows, and multi-repository PRs preserve event-time provenance.</td>
+</tr>
+<tr>
+<td>Durability</td>
+<td>Endpoint absent, offline/reconnect, crash at every projection/ack boundary, partial success, lost acknowledgement, throttle, bad credentials, poison payload, disk full, expiry and bounded drain.</td>
+</tr>
+<tr>
+<td>Consent and minimization</td>
+<td>Known private fixture strings never reach journal/export; disabling and purging stop queued delivery; endpoint changes and settings restore cannot silently redirect or enable sharing.</td>
+</tr>
+<tr>
+<td>Lifecycle</td>
+<td>Discovery miss, durable removal, restart suspension, real kill, task completion without PR, late PR merge and unknown terminal exit remain distinguishable.</td>
+</tr>
+<tr>
+<td>UI behavior</td>
+<td>Playwright specs exercise consent/configuration/status, intended actions and their resulting records using fake agents; verify modal inset for new modals.</td>
+</tr>
+<tr>
+<td>Compatibility</td>
+<td>Real local Collector/backend fixture receives intended metrics/traces, preserves exemplars/links when supported, and demonstrates duplicate/temporality/late-data behavior.</td>
+</tr>
+<tr>
+<td>Performance</td>
+<td>Measure enabled/disabled daemon latency, event-loop delay, queue growth, disk writes, exporter memory, shutdown time and high-cardinality stress against an agreed budget.</td>
+</tr>
+</tbody></table></div>
+<p>Use repository typecheck/lint and focused tests for code changes; runtime changes also need build/smoke, and UI changes need the E2E coverage required by AGENTS.md. This planning-only task does not run the application suite or touch operator telemetry/state.</p>
+<h2 id="decisions-and-remaining-uncertainty">Decisions and remaining uncertainty</h2>
+<p>Confirmed from the request and subsequent choices: comprehensive primary-action visibility; session/model/effort attribution; workflow/stage/persona and intervention analysis; errors; metrics and traces; restart-safe local capture in v1; and deeper designs across all six planning areas.</p>
+<p>Approved product decisions: both user-owned export and product analytics with independent opt-ins; restart-safe capture required in v1; actual local Grafana/Prometheus dashboards as P5&#39;s deliverable. The operator specified the dashboard direction on 2026-09-13.</p>
+<p>Remaining implementation decisions: the tested durable adapter/store mechanism; compatible local stack versions/topology and the separate product-ingest service contract; measured limits and the final event/category/UI contract. Grafana/Prometheus is selected. The <a href="phased-plan.html">phased plan</a> schedules concrete implementation outcomes behind the planning PR and direct prerequisites; Phase 1 resolves the foundational compatibility gate. <a href="p5-analysis-delivery/plan.html">P5</a> defines the dashboard deliverables.</p>
+<p>Verified foundations: source-owned lifecycle and workflow seams, existing usage ingest, stage projection, observed session metadata, and current official OTel behavior cited above. Proposed architecture and defaults are recommendations, not verified existing behavior. The durable SDK adapter, capture transaction boundary, backend late-data behavior and performance envelope remain unverified until P1&#39;s prototype. Those are implementation gates; this draft does not build on an assumed successful prototype.</p>
+<p>Design-package verdict: all six areas are developed and ready for review; prototype and implementation decisions remain pending.</p>
+</main></body></html>

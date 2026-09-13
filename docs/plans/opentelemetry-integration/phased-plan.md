@@ -97,6 +97,8 @@ P4's action inventory is partitioned at operation level: telemetry controls belo
 
 ## Publication and scheduling
 
+All seven tasks have been created and their durable dependency records verified. Open the [task schedule](schedule.html) for the phase-to-task-ID map and publication record.
+
 Commit and push the approved source briefs, this index/HTML and all seven phase guides before creating any task. Verify each exact repo-relative path in the pushed commit. Every task gets `dependsOnCurrentSession: true`, plus only the direct task prerequisites shown above, using default agent/model/effort. Verify the returned canonical repository and persist the phase-to-task map in `schedule.md` after successful creation. No duplicate task is recreated on a timeout without checking its recorded result.
 
 Open the planning PR, record the map in its description and wait for green CI. The operator merges the planning PR; no merge permission is implied by scheduling. Its merge publishes the paths and releases Phase 1. Subsequent phase PR merges release their dependents. The active planning task is `029710f7-b160-45dd-9080-955b2939dcfb`; use the MCP's current-session edge rather than copying that identity into task inputs.

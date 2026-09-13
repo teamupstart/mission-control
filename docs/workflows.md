@@ -1172,8 +1172,14 @@ Evidence Auditor may still reject it. The click records a standard append-only o
 no separate reason or acknowledgement input is required. That override and the original gap result
 remain visible after activation and restart.
 
-One round may spend at most two consecutive `evidence_preflight` refinements. A third, whether the
-session staged it or the operator asked for it, is refused rather than reserved: the run blocks in
+Workflow round 1 gets six evidence attempts in total: its initial submission plus at most five
+consecutive `evidence_preflight` refinements. Rounds 2 and later keep three total attempts: their
+initial submission plus at most two refinements. The first round has more room to close evidence
+gaps; later rounds inherit applicable evidence through the existing carry-forward rules. These
+refinements stay within their workflow round and do not spend Persona repair rounds.
+
+The next refinement beyond the round's limit, whether the session staged it or the operator asked
+for it, is refused rather than reserved: the run blocks in
 the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
 submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
 alone. The waiting submission stays waiting, so the run record opens on its **Evidence** tab with the

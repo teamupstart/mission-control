@@ -179,6 +179,8 @@ By default, judges that have passed are skipped on later repair rounds of that r
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
+Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
+round, with applicable evidence carried forward between submissions.
 
 When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
 Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.

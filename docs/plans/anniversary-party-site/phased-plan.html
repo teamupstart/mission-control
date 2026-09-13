@@ -1,0 +1,314 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anniversary party site - phased implementation</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1c1e21; --muted: #5c6370; --rule: #e3e6ea; --card: #f7f8fa;
+    --accent: #2f6feb; --warn-bg: #fff6e5; --warn-fg: #7a4d00; --warn-rule: #f0c26b;
+    --code-bg: #f2f3f5; --box: #ffffff; --box-rule: #c4cad3; --arrow: #8b93a1;
+    --hot: #d1383d; --good: #1f7a4d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e8ec; --muted: #98a0ad; --rule: #2a2e35; --card: #1b1e24;
+      --accent: #6699ff; --warn-bg: #2b2313; --warn-fg: #e8c37a; --warn-rule: #6b5420;
+      --code-bg: #21252b; --box: #1b1e24; --box-rule: #3a4049; --arrow: #6b7280;
+      --hot: #f0787c; --good: #56c98c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 3rem 1.25rem 6rem; max-width: 52rem;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 1.5rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.35rem; margin: 3rem 0 1rem; letter-spacing: -0.01em;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 2rem 0 .6rem; letter-spacing: -0.005em; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  blockquote {
+    margin: 0 0 2rem; padding: 1rem 1.25rem; border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 6px 6px 0;
+    font-size: 1.05rem; color: var(--muted);
+  }
+  blockquote p { margin: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .855em; background: var(--code-bg); padding: .12em .38em; border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: .9rem 1.1rem; overflow-x: auto; margin: 1.25rem 0; font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  .scroll { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:last-child td { border-bottom: none; }
+  .verdict {
+    background: var(--warn-bg); border: 1px solid var(--warn-rule); color: var(--warn-fg);
+    border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .verdict p { margin: 0; color: var(--warn-fg); }
+  .verdict p + p { margin-top: .6rem; }
+  figure { margin: 1.75rem 0; }
+  figcaption { color: var(--muted); font-size: .87rem; margin-top: .5rem; }
+  .diagram { width: 100%; height: auto; display: block; min-width: 33rem; }
+  .flow-label { font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--fg); }
+  .flow-sub { font: 9.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted); }
+  .flow-edge { font: 9.5px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+  .flow-box { fill: var(--box); stroke: var(--box-rule); stroke-width: 1.2; }
+  .flow-hot { stroke: var(--hot); }
+  .flow-good { stroke: var(--good); }
+  .flow-arrow { stroke: var(--arrow); stroke-width: 1.3; fill: none; }
+  .flow-dash { stroke: var(--arrow); stroke-width: 1.2; fill: none; stroke-dasharray: 4 3; }
+  .title-tag { font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .09em; text-transform: uppercase; }
+  .picks { display: grid; gap: .9rem; margin: 1.5rem 0; }
+  .pick { border: 1px solid var(--rule); border-radius: 8px; padding: .95rem 1.1rem; background: var(--card); }
+  .pick h3 { margin: 0 0 .3rem; font-size: 1rem; }
+  .pick p { margin: 0 0 .7rem; color: var(--muted); font-size: .92rem; }
+  .pick .sws { display: flex; gap: .3rem; margin-bottom: .7rem; }
+  .pick .sw { width: 1.5rem; height: 1.5rem; border-radius: 4px; border: 1px solid rgba(128,128,128,.3); }
+  .pick a { font: 600 .86rem ui-monospace, Menlo, monospace; }
+  footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .87rem; }
+</style>
+
+<h1>Anniversary party site - phased implementation</h1>
+
+<blockquote>
+  <p>Six phases in <code>mancej/rsvp</code>. Phase 1 builds everything the others stand on; phases 2
+  to 5 then run concurrently; phase 6 follows phase 2. Source plan:
+  <a href="plan.md">plan.md</a>, rendered at <a href="plan.html">plan.html</a>. Chosen direction:
+  <a href="mockups/a-blue-ridge-dawn.html">Blue Ridge at dawn</a>.</p>
+</blockquote>
+
+<div class="verdict">
+  <p><strong>The implementation repository is <code>mancej/rsvp</code>, not this one.</strong> Every
+  phase is implemented there, with this checkout attached read-only so the phase agent can read the
+  plan.</p>
+</div>
+
+<h2>Incorporated decisions</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Decision</th><th>Resolution</th></tr></thead>
+  <tbody>
+    <tr><td>Supabase project placement</td><td>A <strong>new organization on the Free plan</strong>, with a daily Vercel Cron keepalive</td></tr>
+    <tr><td>Guest identity</td><td><strong>Cookie only</strong>, plus a merge tool in <code>/host</code>. No resume codes.</td></tr>
+    <tr><td>Photo hosting</td><td><strong>Private Supabase Storage bucket</strong>, signed URLs minted server-side</td></tr>
+    <tr><td>Host notifications</td><td><strong>None.</strong> No email provider. Unread counts live in the host console.</td></tr>
+    <tr><td>Visual direction</td><td><strong>A - Blue Ridge at dawn.</strong> Tokens are recorded in <code>plan.md</code>.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What I found before decomposing</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Finding</th><th>Evidence</th><th>Consequence for the phases</th></tr></thead>
+  <tbody>
+    <tr><td>The implementation repository is <strong>greenfield</strong></td><td><code>mancej/rsvp</code> created during this session; contains <code>README.md</code> and nothing else. No <code>package.json</code>, no framework, no CI, no <code>AGENTS.md</code>.</td><td>Phase 1 is unusually large because every shared contract has to be invented, not extended. There is no existing code to reconcile the plan against.</td></tr>
+    <tr><td>A phase agent arrives with <strong>no repository conventions</strong></td><td>The multi-repository dispatch manifest tells an agent to read each repository's own <code>AGENTS.md</code>; <code>mancej/rsvp</code> has none, and only the primary repository's instructions load automatically.</td><td><strong>Phase 1 must write <code>AGENTS.md</code> in <code>mancej/rsvp</code>.</strong> Without it, phases 2 to 6 arrive with no statement of the server-only-key rule, the token file, or the no-raw-HTML rule, and will each re-derive them differently.</td></tr>
+    <tr><td>The Supabase MCP <strong>cannot create an organization</strong></td><td>The tool surface offers <code>list_organizations</code>, <code>create_project</code>, <code>apply_migration</code> and friends - there is no <code>create_organization</code>. <code>create_project</code> requires an existing <code>organization_id</code>.</td><td>Creating the Free organization is a <strong>human prerequisite of Phase 1</strong>, not agent work. Phase 1 also needs the project URL and service role key handed to it.</td></tr>
+    <tr><td>The Supabase GitHub integration is configured in the dashboard</td><td>Supabase docs describe enabling it from project settings, not from an API.</td><td>Phase 1 states the dashboard steps as human prerequisites and verifies the result, rather than pretending to automate them.</td></tr>
+    <tr><td>Vercel project creation and env vars <strong>are</strong> automatable</td><td>The Vercel MCP exposes <code>create_git_project</code>, and the Vercel CLI sets environment variables.</td><td>Phase 1 can do the Vercel half itself once the repository exists.</td></tr>
+    <tr><td>Vercel team is on <strong>Pro</strong>, Supabase's only existing org is on <strong>Pro</strong></td><td>Read from the live APIs during planning; recorded in <code>plan.md</code>.</td><td>Confirms the new-Free-org decision has a real cost consequence and is not a formality.</td></tr>
+    <tr><td>The party is <strong>62 days out</strong> (Saturday 14 November 2026)</td><td>Confirmed against today's date, 13 September 2026.</td><td>Sets the phase priority: the gate, the invitation and the RSVP come first because invitations want sending. The album, updates and messages can land afterwards without holding anything up.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Sizing</h2>
+
+<p><strong>Estimated total: 3,500 to 4,500 non-test implementation lines</strong>, excluding
+generated scaffold output (<code>create-next-app</code>, lockfiles, Tailwind config) and excluding
+test files.</p>
+
+<p>Assumptions behind the range: six guest-facing and host-facing surfaces rather than one; a full
+schema with seeds written from scratch; a session and identity layer that cannot be borrowed from an
+existing auth library because the model is a shared password plus an anonymous identity; and a theme
+built from tokens plus hand-authored SVG rather than a component library.</p>
+
+<p>That is an order of magnitude above the 200-line one-phase threshold, so more than one phase is
+warranted. The count below is six, and each addition is justified against combining it with its
+neighbour.</p>
+
+<h3>Why six</h3>
+
+<ul>
+  <li><strong>Phase 1 cannot be split.</strong> The schema, the session, the guest identity, the
+  theme tokens, the app shell and the deploy pipeline are mutually dependent: any subset merged
+  alone is a repository that does not run. It is the largest phase by design.</li>
+  <li><strong>Phase 2 is deliberately the smallest thing that lets invitations go out.</strong>
+  Combining it with Phase 6's host editors would roughly double it and delay the only surface with a
+  calendar deadline.</li>
+  <li><strong>Phases 3, 4 and 5 are three unrelated features</strong> - an album, a comment system, a
+  message thread - sharing nothing but the shell Phase 1 provides. Combining any two produces a pull
+  request that reviews two products at once, and combining all three produces roughly 1,500 lines in
+  one unit. Kept apart they also run concurrently, which matters against the date.</li>
+  <li><strong>Phase 6 is separated from Phase 2 because it depends on it</strong> and because the
+  host editors are the one part with no deadline pressure. Merging it into Phase 2 would put the
+  critical-path work behind work that can wait.</li>
+</ul>
+
+<p>No phase here is a preparation, test-only, documentation-only or cleanup phase. Each ends with a
+site a person can use.</p>
+
+<h2>Phases</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>#</th><th>Phase</th><th>File</th><th>Depends on</th><th>Rough size</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Foundation and the gate</td><td><a href="phase-1-foundation-and-gate.md">phase-1-foundation-and-gate.md</a></td><td>-</td><td>~1,100</td></tr>
+    <tr><td>2</td><td>Invitation, RSVP and getting there</td><td><a href="phase-2-invitation-and-rsvp.md">phase-2-invitation-and-rsvp.md</a></td><td>1</td><td>~500</td></tr>
+    <tr><td>3</td><td>The wedding album</td><td><a href="phase-3-album.md">phase-3-album.md</a></td><td>1</td><td>~520</td></tr>
+    <tr><td>4</td><td>Updates and comments</td><td><a href="phase-4-updates-and-comments.md">phase-4-updates-and-comments.md</a></td><td>1</td><td>~540</td></tr>
+    <tr><td>5</td><td>Private messages</td><td><a href="phase-5-private-messages.md">phase-5-private-messages.md</a></td><td>1</td><td>~470</td></tr>
+    <tr><td>6</td><td>Host console: content, party and guests</td><td><a href="phase-6-host-content-and-guests.md">phase-6-host-content-and-guests.md</a></td><td>2</td><td>~560</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Dependencies are <strong>direct</strong> prerequisites only. Phase 6 lists Phase 2, which implies
+Phase 1.</p>
+
+<figure>
+  <div class="scroll">
+    <svg class="diagram" viewBox="0 0 720 262" role="img"
+         aria-label="Phase 1, foundation and the gate, is the sole prerequisite of phases 2 through 5, which run concurrently: invitation and RSVP, the wedding album, updates and comments, and private messages. Phase 6, the host console for content, party and guests, follows phase 2.">
+      <defs><marker id="pg" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+        <path d="M0,0 L7,3 L0,6 z" fill="var(--arrow)"/></marker></defs>
+
+      <rect x="0" y="100" width="160" height="52" rx="5" class="flow-box flow-good"/>
+      <text x="80" y="122" class="flow-label" text-anchor="middle">Phase 1</text>
+      <text x="80" y="138" class="flow-sub" text-anchor="middle">foundation and gate</text>
+
+      <rect x="220" y="8" width="210" height="44" rx="5" class="flow-box"/>
+      <text x="325" y="27" class="flow-label" text-anchor="middle">Phase 2</text>
+      <text x="325" y="42" class="flow-sub" text-anchor="middle">invitation and RSVP</text>
+
+      <rect x="220" y="68" width="210" height="44" rx="5" class="flow-box"/>
+      <text x="325" y="87" class="flow-label" text-anchor="middle">Phase 3</text>
+      <text x="325" y="102" class="flow-sub" text-anchor="middle">the wedding album</text>
+
+      <rect x="220" y="128" width="210" height="44" rx="5" class="flow-box"/>
+      <text x="325" y="147" class="flow-label" text-anchor="middle">Phase 4</text>
+      <text x="325" y="162" class="flow-sub" text-anchor="middle">updates and comments</text>
+
+      <rect x="220" y="188" width="210" height="44" rx="5" class="flow-box"/>
+      <text x="325" y="207" class="flow-label" text-anchor="middle">Phase 5</text>
+      <text x="325" y="222" class="flow-sub" text-anchor="middle">private messages</text>
+
+      <rect x="486" y="8" width="234" height="44" rx="5" class="flow-box"/>
+      <text x="603" y="27" class="flow-label" text-anchor="middle">Phase 6</text>
+      <text x="603" y="42" class="flow-sub" text-anchor="middle">content, party, guests</text>
+
+      <path d="M160,118 C192,118 190,30 216,30" class="flow-arrow" marker-end="url(#pg)"/>
+      <path d="M160,122 C192,122 190,90 216,90" class="flow-arrow" marker-end="url(#pg)"/>
+      <path d="M160,130 C192,130 192,150 216,150" class="flow-arrow" marker-end="url(#pg)"/>
+      <path d="M160,134 C192,134 190,210 216,210" class="flow-arrow" marker-end="url(#pg)"/>
+      <path d="M430,30 H482" class="flow-arrow" marker-end="url(#pg)"/>
+
+      <line x1="446" y1="70" x2="446" y2="232" stroke="var(--box-rule)" stroke-width="1" stroke-dasharray="4 3"/>
+      <text x="456" y="156" class="flow-edge" text-anchor="start">phases 2 to 5 share</text>
+      <text x="456" y="170" class="flow-edge" text-anchor="start">no files and merge</text>
+      <text x="456" y="184" class="flow-edge" text-anchor="start">in any order</text>
+    </svg>
+  </div>
+  <figcaption>Phase 1 is the only serialisation point. The registry contract below is what lets the
+  four middle phases merge in any order.</figcaption>
+</figure>
+
+<p><strong>Concurrency groups.</strong> Phase 1 alone. Then phases 2, 3, 4 and 5 concurrently. Phase
+6 after Phase 2. Phases 3, 4 and 5 may still be in flight when Phase 6 starts; none of them shares a
+file with it.</p>
+
+<p><strong>Merge order.</strong> 1, then any order among 2/3/4/5, then 6.</p>
+
+<h2>Cross-phase contracts</h2>
+
+<p>Phase 1 owns all of these. Phases 2 to 6 consume them and must not change them.</p>
+
+<ol>
+  <li><strong>The full schema ships in Phase 1</strong>, including tables no phase-1 surface reads
+  (<code>photos</code>, <code>posts</code>, <code>comments</code>, <code>messages</code>,
+  <code>content_blocks</code>). Later phases add indexes and data, never columns to these tables. One
+  migration that matches <code>plan.md</code> is easier to review than six that arrive piecemeal, and
+  it removes every ordering hazard between the concurrent phases.</li>
+  <li><strong>Seed rows ship with the schema</strong>, so every page has real copy to render before
+  any editor exists. A phase-2 invitation page reads seeded <code>content_blocks</code> and
+  <code>party</code> rows; it does not wait for Phase 6.</li>
+  <li><strong><code>lib/supabase.ts</code> is the only module that constructs a Supabase
+  client</strong>, and it is server-only. No other file imports <code>@supabase/supabase-js</code>.
+  No environment variable is prefixed <code>NEXT_PUBLIC_</code>.</li>
+  <li><strong><code>lib/session.ts</code> owns both cookies</strong> and exports
+  <code>requireGuest()</code> and <code>requireHost()</code>. No later phase reads or writes a cookie
+  directly.</li>
+  <li><strong><code>lib/markdown.ts</code> is the single renderer</strong>, with no raw HTML
+  passthrough. Phases 2, 4 and 6 all render host-authored prose; they all call this. Phase 1 owns it
+  and tests it even though Phase 1 has no surface that renders prose, because the alternative is
+  three incompatible renderers.</li>
+  <li><strong><code>lib/theme.css</code> holds the direction-A tokens.</strong> No component declares
+  a colour literal.</li>
+  <li><strong>Navigation is declared once, in Phase 1</strong>, in <code>lib/nav.ts</code> (guest) and
+  <code>lib/host-tabs.ts</code> (host). Phase 1 also creates every route those files point at as a
+  minimal placeholder page. <strong>Phases 2 to 6 replace their own page file and touch neither
+  registry.</strong> This is what makes the concurrent phases conflict-free: without it, four agents
+  edit the same array and every pair collides. The placeholders are short-lived and honest ("The
+  album goes here"), not broken states.</li>
+  <li><strong>Every guest-facing route is gated by the Phase 1 middleware.</strong> A later phase
+  adding a route under the guest tree inherits the gate; it does not re-implement one.</li>
+  <li><strong><code>AGENTS.md</code> in <code>mancej/rsvp</code> states rules 3 to 8</strong> so an
+  agent arriving with only a phase file still finds them.</li>
+</ol>
+
+<h2>Verification strategy</h2>
+
+<p>Each phase runs its own Playwright specs plus the whole accumulated suite, against the built app,
+in CI. Phase 1 establishes the harness: there are no model tokens or paid services in this product,
+so the specs drive the real app against a real Supabase project.</p>
+
+<p>Two checks run in every phase because they are the ones that end the surprise or take the site
+down:</p>
+
+<ul>
+  <li><strong>The home page ships no <code>og:image</code> and no occasion-naming metadata.</strong>
+  Asserted in Phase 1 and re-asserted by every phase that touches a page's metadata.</li>
+  <li><strong>No route returns guest content without <code>party_session</code>.</strong> Asserted in
+  Phase 1 and extended by each phase for the route it adds.</li>
+</ul>
+
+<p>The final state matches <code>plan.md</code> with no cleanup phase: Phase 6 is the last to merge
+and leaves no placeholder behind, because each of phases 2 to 6 replaces the placeholder it
+inherits.</p>
+
+<h2>Human prerequisites</h2>
+
+<p>These cannot be done by an agent and block Phase 1:</p>
+
+<ol>
+  <li>Create a <strong>new Supabase organization on the Free plan</strong> and one project inside it.
+  The MCP has no <code>create_organization</code>.</li>
+  <li>Hand Phase 1 the project URL and <strong>service role</strong> key.</li>
+  <li>Enable the <strong>Supabase GitHub integration</strong> for <code>mancej/rsvp</code> in the
+  project dashboard.</li>
+  <li>Choose the party and host passwords. Phase 1 generates the scrypt hashes from them.</li>
+</ol>
+
+<p>One more input has a deadline rather than a blocker: <strong>the party start time</strong>. The
+mockups show 6pm as a placeholder, and Phase 2 cannot ship an invitation without the real one.</p>
+
+<footer>
+  Source of truth: <code>docs/plans/anniversary-party-site/phased-plan.md</code>. This page is a
+  rendering of it. The detailed route for each phase lives in its own
+  <code>phase-&lt;n&gt;-*.md</code> file.
+</footer>

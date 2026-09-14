@@ -296,6 +296,33 @@ test("the same operation gets unrelated ids for different audiences", async () =
   assert.equal(user, scopedTraceId("user", "salt", "operation-1"));
 });
 
+test("a long string is cut to the byte budget without splitting a character", async () => {
+  // Measuring bytes and then slicing UTF-16 units was wrong in both directions: for multi-byte
+  // text the result could still exceed the budget, and a cut between the halves of a surrogate
+  // pair leaves a lone surrogate, which is not valid UTF-8 and which a protobuf encoder or a
+  // backend may refuse. One emoji in a fact was enough.
+  const { boundString } = await import("../src/server/telemetry/capture.ts");
+  const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+
+  assert.equal(boundString("short"), "short", "a string inside the budget is untouched");
+
+  for (const unit of ["a", "\u00e9", "\u4e2d", "\uD83D\uDE80"]) {
+    const cut = boundString(unit.repeat(4_000));
+    assert.ok(
+      Buffer.byteLength(cut, "utf8") <= TELEMETRY_LIMITS.maxStringBytes,
+      `${JSON.stringify(unit)} overflowed the budget at ${Buffer.byteLength(cut, "utf8")} bytes`,
+    );
+    // A lone surrogate survives a round trip through Buffer as U+FFFD, so comparing the
+    // re-decoded bytes to the string is what actually catches a split pair.
+    assert.equal(
+      Buffer.from(cut, "utf8").toString("utf8"),
+      cut,
+      `${JSON.stringify(unit)} was cut mid-character`,
+    );
+    assert.ok(cut.endsWith("\u2026"), "truncation is visible rather than silent");
+  }
+});
+
 // ---- the extension seams ----
 
 test("registering the same implementation twice is idempotent", async () => {

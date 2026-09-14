@@ -508,9 +508,24 @@ class Collector implements TelemetryEmitter {
     const json = JSON.stringify(payload);
     const bytes = Buffer.byteLength(json, "utf8");
     if (bytes > TELEMETRY_LIMITS.maxRequestBytes) {
-      // Prevented rather than split after the fact: OTLP's own guidance is that a rebuild
-      // policy has to be protocol-tested, and one bounded pass is the cheaper guarantee.
-      recordGap(d, "payload_expired", `${signal} batch over the request byte limit`, this.now);
+      // SPLIT, rather than drop.
+      //
+      // Dropping here lost data for real: the checkpoint advances whether or not a batch was
+      // written, so the events in this pass were consumed and their output thrown away. The
+      // cumulative series survived that for metrics, but spans have nowhere else to live and
+      // were gone.
+      //
+      // Splitting is safe now that every resource attribute is bounded at capture: each half
+      // carries the same bounded resource, so halving the item list really does halve the
+      // payload and the recursion terminates. The one case it cannot fix is a SINGLE item that
+      // does not fit alone, which is counted as loss below.
+      if (itemCount > 1) return this.writeSplitBatch(d, signal, payload, oldestEventAt);
+      recordGap(
+        d,
+        "payload_expired",
+        `one ${signal} item exceeds the ${TELEMETRY_LIMITS.maxRequestBytes} byte request limit`,
+        this.now,
+      );
       return false;
     }
     insertBatch(
@@ -533,6 +548,37 @@ class Collector implements TelemetryEmitter {
       this.now,
     );
     return true;
+  }
+
+  /**
+   * Halve an oversized payload and write both halves, recursing until each fits.
+   *
+   * Both signals split cleanly: a metrics request is a list of independent data points and a
+   * traces request a list of completed spans, so two requests carry exactly what one would
+   * have. Order within a signal is preserved, which is what the cumulative stream needs.
+   */
+  private writeSplitBatch(
+    d: import("node:sqlite").DatabaseSync,
+    signal: "metrics" | "traces",
+    payload: MetricsBatchPayload | TracesBatchPayload,
+    oldestEventAt: number,
+  ): boolean {
+    if (signal === "metrics") {
+      const full = payload as MetricsBatchPayload;
+      const half = Math.floor(full.metrics.length / 2);
+      const left = { ...full, metrics: full.metrics.slice(0, half) };
+      const right = { ...full, metrics: full.metrics.slice(half) };
+      const a = this.writeBatch(d, signal, left, left.metrics.length, oldestEventAt);
+      const b = this.writeBatch(d, signal, right, right.metrics.length, oldestEventAt);
+      return a || b;
+    }
+    const full = payload as TracesBatchPayload;
+    const half = Math.floor(full.spans.length / 2);
+    const left = { ...full, spans: full.spans.slice(0, half) };
+    const right = { ...full, spans: full.spans.slice(half) };
+    const a = this.writeBatch(d, signal, left, left.spans.length, oldestEventAt);
+    const b = this.writeBatch(d, signal, right, right.spans.length, oldestEventAt);
+    return a || b;
   }
 
   /** Apply one contribution to its durable cumulative stream, honouring the series ceilings. */

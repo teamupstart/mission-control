@@ -142,6 +142,13 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
     const facts = truncateStrings(parsed.data as Record<string, unknown>);
 
     const { refs, omitted } = boundRefs(request.refs ?? {}, definition.refKeys);
+    // Bounded by the SAME rules as facts and refs, and counted in the same byte budget below.
+    // It was neither before: `context` went to `putContext` unmodified and never entered
+    // `bytes`, so a future source passing a large context could exceed the 16 KiB per-event
+    // limit and push the store past its total budget without tripping admission control - the
+    // one check that runs before the write. Dormant while Phase 1's two callers pass none, and
+    // exactly the kind of thing a later phase trips without noticing.
+    const context = boundContext(request.context ?? {});
     const traceId = request.trace?.traceId ?? newTraceId();
     const spanId = newSpanId();
     refs[TRACE_REF] = traceId;
@@ -150,7 +157,7 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
 
     const occurredAt = request.occurredAt ?? now;
     const actor = request.actor ?? SYSTEM_ACTOR;
-    const bytes = Buffer.byteLength(JSON.stringify({ facts, refs }), "utf8");
+    const bytes = Buffer.byteLength(JSON.stringify({ facts, refs, context }), "utf8");
     if (bytes > TELEMETRY_LIMITS.maxEventBytes) {
       recordCaptureGap(`${definition.name} exceeded ${TELEMETRY_LIMITS.maxEventBytes} bytes`, now);
       return { kind: "refused", reason: "too_large", detail: "event payload over the byte limit" };
@@ -166,7 +173,7 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
       }
 
       const resourceId = putResource(d, resourceAttributes(), now);
-      const contextId = putContext(d, { ...request.context }, now);
+      const contextId = putContext(d, context, now);
       const epochs: Record<string, number> = {};
       for (const profile of eligible) epochs[profile] = getDestination(d, profile).policyEpoch;
 
@@ -251,6 +258,22 @@ export function boundString(value: string): string {
     used += size;
   }
   return `${cut}${ellipsis}`;
+}
+
+/**
+ * Bound an immutable context snapshot: bounded keys, bounded values, bounded count.
+ *
+ * The same ceiling as `refs`, because a context is the same kind of thing - a small map of
+ * short identifiers - and giving it its own looser limit would just move the problem.
+ */
+function boundContext(context: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (Object.keys(out).length >= TELEMETRY_LIMITS.maxRefs) break;
+    if (typeof value !== "string") continue;
+    out[boundString(key)] = boundString(value);
+  }
+  return out;
 }
 
 /**

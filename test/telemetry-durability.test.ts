@@ -433,7 +433,7 @@ test("product-only eligibility never produces a user-backend batch", () => {
 
 // ---- capacity and gaps ----
 
-test("an oversized event is refused and the refusal is counted", () => {
+test("an undeclared ref is dropped before the journal rather than inflating the event", () => {
   enableLocalOnly();
   const result = captureTelemetry({
     event: DAEMON_STARTED_EVENT,

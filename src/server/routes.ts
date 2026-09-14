@@ -6696,7 +6696,13 @@ export function buildApp(
   // two concurrent OTLP requests to one endpoint, which is precisely what
   // `maxInFlightPerDestination: 1` promises. A drain arriving mid-cycle joins the running one
   // and reports its real result.
-  app.post("/api/telemetry/drain", async (c) => c.json(await telemetryCycle()));
+  app.post("/api/telemetry/drain", async (c) => {
+    const result = await telemetryCycle();
+    // 500 on a failed cycle. An all-zero result is what both "nothing to do" and "it threw"
+    // look like, so returning 200 for the second would tell an operator who pressed drain that
+    // an empty queue was drained successfully.
+    return result.ok ? c.json(result) : c.json(result, 500);
+  });
 
   // --- Terminals: which terminal app each multiplexer's sessions are focused into ---
   //

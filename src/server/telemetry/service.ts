@@ -39,6 +39,17 @@ export interface TelemetryCycleResult {
   batches: number;
   sent: number;
   accepted: number;
+  /**
+   * False when the cycle threw.
+   *
+   * A background tick must not crash the daemon, so `telemetryCycle` swallows the rejection -
+   * but an operator who pressed drain has to be able to tell a FAILED cycle from a cycle that
+   * found nothing to do, and all-zero counts look identical to both. The route turns this into
+   * a non-2xx response.
+   */
+  ok: boolean;
+  /** Bounded reason when `ok` is false. Never a stack trace. */
+  error: string | null;
 }
 
 /**
@@ -52,7 +63,14 @@ export async function runTelemetryCycle(
   deps: Partial<DeliveryDeps> = {},
 ): Promise<TelemetryCycleResult> {
   const now = deps.now?.() ?? Date.now();
-  const result: TelemetryCycleResult = { consumed: 0, batches: 0, sent: 0, accepted: 0 };
+  const result: TelemetryCycleResult = {
+    consumed: 0,
+    batches: 0,
+    sent: 0,
+    accepted: 0,
+    ok: true,
+    error: null,
+  };
 
   // A hard ceiling on passes per cycle, so an unexpectedly large journal cannot hold the loop.
   const maxPasses = 64;
@@ -100,7 +118,15 @@ export function telemetryCycle(
   inFlightCycle = runTelemetryCycle(deps)
     .catch((error: unknown) => {
       console.warn("[telemetry] export cycle failed:", error);
-      return { consumed: 0, batches: 0, sent: 0, accepted: 0 };
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        consumed: 0,
+        batches: 0,
+        sent: 0,
+        accepted: 0,
+        ok: false,
+        error: detail.slice(0, 256),
+      };
     })
     .finally(() => {
       inFlightCycle = null;

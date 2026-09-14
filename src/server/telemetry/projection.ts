@@ -28,6 +28,7 @@ import {
   TELEMETRY_EVENTS,
   TELEMETRY_METRICS,
   metricsForEvent,
+  type TelemetrySpanDefinition,
   type TelemetrySpanKind,
 } from "@shared/telemetry-catalog.ts";
 import { randomUUID } from "node:crypto";
@@ -172,8 +173,7 @@ export const CATALOG_PROJECTION: TelemetryProjection<Record<string, never>> = {
         // holding an SDK span open.
         startTime: event.occurredAt - durationMs,
         endTime: event.occurredAt,
-        status: "unset",
-        statusMessage: null,
+        ...spanStatus(span, event.facts),
         attributes,
         // Ref promotion happens in the engine, where the per-profile salt is known: the same
         // session must not carry the same exported id to two audiences.
@@ -182,6 +182,29 @@ export const CATALOG_PROJECTION: TelemetryProjection<Record<string, never>> = {
     return state;
   },
 };
+
+/**
+ * Whether this span reports a failure, from the event's own declared outcome fact.
+ *
+ * Every span was hard-coded `unset`, which in Tempo reads as "nothing went wrong" - so a failed
+ * export probe rendered identically to a working one and the failure was legible only by
+ * reading the attribute text, on the drill-down path this facility exists to make diagnosis
+ * possible through. The mapping lives in the catalog entry, so an outcome-bearing event added
+ * by a later phase is described rather than special-cased here.
+ */
+function spanStatus(
+  span: TelemetrySpanDefinition,
+  facts: Record<string, unknown>,
+): { status: EmittedSpan["status"]; statusMessage: string | null } {
+  if (!span.errorWhen) return { status: "unset", statusMessage: null };
+  const value = facts[span.errorWhen.factKey];
+  if (typeof value !== "string" || !span.errorWhen.values.includes(value)) {
+    return { status: "unset", statusMessage: null };
+  }
+  // The outcome itself, which is already a bounded catalog enum. Nothing free-form reaches a
+  // status message, so it cannot become an accidental carrier for operator data.
+  return { status: "error", statusMessage: `${span.errorWhen.factKey}=${value}` };
+}
 
 function envelopeOf(event: StoredTelemetryEvent): TelemetryEnvelope {
   return {

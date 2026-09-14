@@ -650,6 +650,64 @@ test("two probes in the same millisecond are both recorded, not deduplicated int
   assert.equal(journal.n, 2, "both results are on the record");
 });
 
+test("a failed probe exports a span Tempo can see is an error", async () => {
+  // Every span was hard-coded `status: "unset"`, which in Tempo reads as "nothing went wrong".
+  // A refused or unreachable probe rendered exactly like a working one, and the failure was
+  // legible only by reading the attribute text - on the drill-down path this facility exists to
+  // make export diagnosis possible through.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  // 404: the endpoint answered, and refused.
+  const failed = await runTelemetryProbe("user", {
+    fetch: fixture([() => status(404)]).fetch,
+    now: () => 1_000,
+  });
+  assert.equal(failed.outcome, "refused");
+
+  runProjectionPass(2_000);
+  const spans = (
+    openDb()
+      .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'`)
+      .all() as unknown as Array<{ payload_json: string }>
+  ).flatMap(
+    (row) =>
+      (JSON.parse(row.payload_json) as {
+        spans: Array<{ name: string; status: string; statusMessage: string | null }>;
+      }).spans,
+  );
+  const probe = spans.find((sp) => sp.name === "mission.telemetry.probe");
+  assert.ok(probe, "the failed probe produced a span");
+  assert.equal(probe!.status, "error", "and it is an error, not an unset that reads as fine");
+  assert.equal(probe!.statusMessage, "outcome=refused");
+});
+
+test("a working probe is not reported as an error", async () => {
+  // The other half. A status that is error-on-everything is as useless as one that is never
+  // error, and `not_configured` is deliberately outside the mapping: nothing was tried.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  const okProbe = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: () => 1_000 });
+  assert.equal(okProbe.outcome, "accepted");
+
+  runProjectionPass(2_000);
+  const spans = (
+    openDb()
+      .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'`)
+      .all() as unknown as Array<{ payload_json: string }>
+  ).flatMap(
+    (row) =>
+      (JSON.parse(row.payload_json) as {
+        spans: Array<{ name: string; status: string; statusMessage: string | null }>;
+      }).spans,
+  );
+  const probe = spans.find((sp) => sp.name === "mission.telemetry.probe");
+  assert.ok(probe);
+  assert.equal(probe!.status, "unset");
+  assert.equal(probe!.statusMessage, null);
+});
+
 // ---- single-flight ----
 
 test("two concurrent cycles run as one, so a destination never sees two requests at once", async () => {

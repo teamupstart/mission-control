@@ -130,6 +130,19 @@ export interface TelemetrySpanDefinition {
   attributes: readonly string[];
   /** Ref keys promoted to span attributes, after destination-scoped translation. */
   refAttributes: readonly string[];
+  /**
+   * Which values of which fact make this span an ERROR rather than a success.
+   *
+   * Declared here rather than decided in the engine, so a later phase adds an outcome-bearing
+   * event by describing it instead of by editing the projection.
+   *
+   * Not cosmetic. Tempo filters and colours by span status, so a span left `unset` reads as
+   * "nothing went wrong": a failed export probe rendered identically to a working one, and the
+   * failure was legible only by reading the attribute text - on the very drill-down path this
+   * facility exists to make diagnosis possible through. `null` means the event has no notion
+   * of failing.
+   */
+  errorWhen: { factKey: string; values: readonly string[] } | null;
 }
 
 // ---- event definitions ----
@@ -254,6 +267,9 @@ export const DAEMON_STARTED_EVENT = defineEvent({
     durationFactKey: "startup_ms",
     attributes: ["launch_mode", "schema_upgraded"],
     refAttributes: [],
+    // A daemon start that was captured is a daemon start that happened. There is no failing
+    // variant of it to report, and inventing one would make `unset` mean something it does not.
+    errorWhen: null,
   },
 });
 
@@ -290,6 +306,9 @@ export const TELEMETRY_PROBE_EVENT = defineEvent({
     durationFactKey: "latency_ms",
     attributes: ["profile", "outcome"],
     refAttributes: [],
+    // `not_configured` is deliberately absent: nothing was tried, so nothing failed. Only a
+    // probe that reached for an endpoint and did not get what it needed is an error.
+    errorWhen: { factKey: "outcome", values: ["refused", "unreachable"] },
   },
 });
 

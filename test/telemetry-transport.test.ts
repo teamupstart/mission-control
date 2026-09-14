@@ -545,6 +545,65 @@ test("a partial success records the refused items without re-sending the accepte
   );
 });
 
+test("a backend's own words never reach the health view's lastError", async () => {
+  // `TelemetryProfileHealth.lastError` is documented as bounded and SANITIZED - "never a
+  // response body" - and Phase 2 renders it directly. Every write on this path uses a fixed
+  // template except one: a partial success carried `partialSuccess.errorMessage`, backend prose
+  // read straight out of a 2xx body, into exactly that field.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  // A real partial-success body, hand-encoded through the same shape the serializer reads:
+  // partialSuccess { rejectedDataPoints: 2, errorMessage: <backend prose> }.
+  const backendText = "backend prose that must not reach the health view";
+  const messageBytes = Buffer.from(backendText, "utf8");
+  const inner = Buffer.concat([
+    Buffer.from([0x08, 0x02, 0x12, messageBytes.length]),
+    messageBytes,
+  ]);
+  const body = Buffer.concat([Buffer.from([0x0a, inner.length]), inner]);
+
+  const f = fixture([() => new Response(body, { status: 200 })]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  // The fixture really did carry it: the delivery row - internal accounting, rendered nowhere -
+  // still has the backend's text, which is what keeps the diagnosis available.
+  const delivery = openDb()
+    .prepare(`SELECT last_error FROM telemetry_delivery WHERE state = 'accepted' LIMIT 1`)
+    .get() as { last_error: string | null } | undefined;
+  assert.equal(delivery?.last_error, backendText, "the message was decoded, so this is a real test");
+
+  const user = telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!;
+  assert.ok(user.lastError, "the partial success is still reported");
+  assert.equal(
+    user.lastError!.includes(backendText),
+    false,
+    "but not in the backend's own words, which is what the type promises callers",
+  );
+  assert.match(
+    user.lastError!,
+    /2 item\(s\) refused by the backend/,
+    "the count is the part an operator can act on, and it survives",
+  );
+});
+
+test("a clean acceptance clears lastError rather than leaving a stale one", async () => {
+  // The other half of the same branch: a delivery that refused nothing must not leave a
+  // previous failure standing in the health view.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  await runDeliveryPass({ fetch: fixture([() => status(503)]).fetch, now: () => 2_000 });
+  assert.ok(telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!.lastError);
+
+  // Past the jittered backoff, so the retry is actually eligible rather than held back.
+  await runDeliveryPass({ fetch: fixture([ok]).fetch, now: () => 200_000 });
+  assert.equal(
+    telemetryHealth(200_100).profiles.find((p) => p.profile === "user")!.lastError,
+    null,
+    "nothing failed, so nothing is reported",
+  );
+});
+
 test("a credential does not follow a redirect to another host", async () => {
   enableUser("https://otlp.example.com", "super-secret-token");
   captureAndProject("boot-1", 1_000);

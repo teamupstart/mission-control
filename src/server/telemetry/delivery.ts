@@ -220,7 +220,27 @@ function settle(
       // Release the payload: nothing local needs it once the destination has it, and holding a
       // second copy of every delivered batch is how a bounded budget stops being bounded.
       releaseBatchPayload(d, batch.id);
-      updateDestination(d, profile, { lastAcceptedAt: now, lastError: outcome.message }, now);
+      // A FIXED template, never the backend's own words. `TelemetryProfileHealth.lastError`
+      // promises a bounded, SANITIZED string - "never a response body" - and Phase 2 renders it
+      // directly. Every other write on this path already uses a template (`HTTP ${status}`,
+      // `error.name`, `safeEndpointLabel`); `partialSuccess.errorMessage` is backend-supplied
+      // prose and was the one thing here that would have carried a response body into it.
+      //
+      // Nothing is lost that an operator can act on: the count is the actionable part, and the
+      // backend's own text is still kept on the delivery row above, which is internal
+      // accounting and is not rendered anywhere.
+      updateDestination(
+        d,
+        profile,
+        {
+          lastAcceptedAt: now,
+          lastError:
+            outcome.rejectedItems > 0
+              ? `${profile}/${signal}: ${outcome.rejectedItems} item(s) refused by the backend`
+              : null,
+        },
+        now,
+      );
       if (outcome.rejectedItems > 0) {
         // Partial success. The accepted half is NOT re-sent; only the accounting records the
         // refused items, because retrying the whole batch would double what already landed.

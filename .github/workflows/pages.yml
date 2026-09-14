@@ -57,26 +57,37 @@ jobs:
       # into a sentence naming the setting to change.
       #
       # This blocks only on a definite 404, which is the API's answer for "no Pages site".
-      # Any other status means the check could not reach a verdict - a token that cannot read
-      # the endpoint looks nothing like a misconfigured site - so it warns and steps aside
-      # rather than failing a deploy that would have worked. A preflight that can be wrong is
-      # not allowed to be the gate.
+      # Anything else means the check could not reach a verdict - a token that cannot read the
+      # endpoint, and a request that never got an HTTP reply at all, look nothing like a
+      # misconfigured site - so it warns and steps aside rather than failing a deploy that
+      # would have worked. A preflight that can be wrong is not allowed to be the gate.
       - name: Check the Pages source is GitHub Actions
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          status=$(curl -sS -o /tmp/pages.json -w '%{http_code}' \
+          response=$(mktemp)
+          errlog=$(mktemp)
+          remedy="A repository admin must set Settings -> Pages -> Source to 'GitHub Actions', then re-run this workflow. See site/README.md."
+
+          # The `if` is what keeps `set -e` from aborting the step here. A DNS failure, a reset
+          # connection or a TLS error exits curl non-zero with no HTTP status to inspect, and
+          # under a bare assignment that killed the job before the `case` below ever ran - the
+          # exact opposite of what the paragraph above promises. `--max-time` bounds a stalled
+          # request so the same path is taken instead of hanging.
+          if ! status=$(curl -sS --max-time 30 --retry 2 --retry-connrefused \
+            -o "$response" -w '%{http_code}' \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pages")
-
-          remedy="A repository admin must set Settings -> Pages -> Source to 'GitHub Actions', then re-run this workflow. See site/README.md."
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pages" 2>"$errlog"); then
+            echo "::warning::Could not reach the Pages API ($(tr '\n' ' ' < "$errlog")); leaving the verdict to the deploy steps."
+            exit 0
+          fi
 
           case "$status" in
             200)
-              build_type=$(jq -r '.build_type // "null"' /tmp/pages.json)
+              build_type=$(jq -r '.build_type // "null"' "$response")
               if [ "$build_type" = "workflow" ]; then
                 echo "Pages source is GitHub Actions."
               else

@@ -9,6 +9,7 @@ import type {
   SessionActionCompletionKind,
   SessionActionContinuationExpectation,
   SessionActionSnapshot,
+  SessionActionWarning,
   WorkflowContextSnapshot,
 } from "@shared/workflow.ts";
 import type { Session } from "@shared/types.ts";
@@ -65,6 +66,7 @@ export interface SessionActionAdapterContext {
 export type SessionActionCaptureValidation =
   | { kind: "waiting"; detail: string }
   | { kind: "blocked"; code: SessionActionBlockCode; detail: string }
+  | { kind: "warning"; warning: SessionActionWarning }
   | null;
 
 /** What the bound session's checkout says about itself, resolved before the adapter runs. */
@@ -119,8 +121,8 @@ export interface SessionActionAdoptedPullRequest {
    * recorded it. Normalising both sides to the resolved common directory is what makes a
    * correct pull request compare as belonging to this repository.
    *
-   * Null is UNKNOWN and is neither a match nor a mismatch: it cannot satisfy the proof, and it
-   * cannot accuse an operator's session of opening a pull request somewhere else.
+   * Null is UNKNOWN and is neither a match nor a mismatch. Adoption still completes the action;
+   * the missing comparison value is retained as a warning.
    */
   repositoryRoot: string | null;
   /** The branch the pull request is opened FROM, or null until the first poll. */
@@ -285,14 +287,67 @@ function openedByThisTurn(
   return pr.sessionId === sessionId && pr.adoptedAt >= deliveredAt;
 }
 
+function pullRequestExpectation(
+  pr: SessionActionAdoptedPullRequest,
+  acceptedContentTreeOid: string | null | undefined,
+): Extract<SessionActionContinuationExpectation, { kind: "pull_request" }> {
+  return {
+    kind: "pull_request",
+    pullRequestKey: pr.key,
+    pullRequestUrl: pr.url,
+    pullRequestNumber: pr.number,
+    repositoryRoot: pr.repositoryRoot,
+    branch: pr.branch,
+    expectedHeadOid: pr.observedHeadOid,
+    acceptedContentTreeOid,
+    observedAt: pr.observedAt ?? pr.adoptedAt,
+  };
+}
+
+function pullRequestWarning(detail: string): SessionActionWarning {
+  return { code: "pull_request_review_mismatch", detail };
+}
+
+function completePullRequest(
+  pr: SessionActionAdoptedPullRequest,
+  context: SessionActionAdapterContext,
+  warning: string | null,
+): SessionActionCompletionDecision {
+  const continuationExpectation = pullRequestExpectation(
+    pr,
+    context.acceptedContentTreeOid,
+  );
+  const missing = [
+    pr.repositoryRoot ? null : "repository",
+    pr.branch ? null : "branch",
+    pr.observedHeadOid ? null : "pushed ref",
+    pr.observedState ? null : "pull-request state",
+  ].filter((part): part is string => part !== null);
+  const details = [
+    warning,
+    missing.length > 0
+      ? `The pull request was opened and adopted, but its ${missing.join(", ")} ${
+        missing.length === 1 ? "was" : "were"
+      } not available for comparison. The workflow continued; run it again to review the published ref.`
+      : null,
+  ].filter((detail): detail is string => detail !== null);
+  return {
+    kind: "complete",
+    continuationExpectation,
+    ...(details.length > 0 ? { warnings: details.map(pullRequestWarning) } : {}),
+  };
+}
+
 /**
- * The completion that requires a real, open, adopted pull request at the reviewed commit.
+ * The completion that requires a real, adopted pull request and treats later verification as
+ * advisory.
  *
  * The generic observer has already proven the turn ran and settled. That is the easy half and
- * it is emphatically not the guarantee: an agent can finish a turn having failed to push,
- * having opened the pull request against the wrong base, or having said it opened one and not.
- * So the turn boundary buys nothing here on its own, and every arm below is written to prefer
- * WAITING over completing.
+ * it is emphatically not the guarantee: an agent can finish a turn having said it opened a pull
+ * request and not. Durable adoption is therefore still required. Once an observed adoption
+ * exists, repository, branch, head, state, and reviewed-tree disagreements are warnings rather
+ * than reasons to stop the graph. The PR exists, downstream stages can inspect it, and a person
+ * can choose to rerun the workflow against the published ref.
  *
  * What it never does:
  *
@@ -301,8 +356,7 @@ function openedByThisTurn(
  *  - talk to GitHub. The Inspector poller is the only thing that does, and this reads what it
  *    durably wrote down. A second poll loop would double the API cost of every open pull
  *    request to answer a question the first one already answers;
- *  - infer success from a pull request merely EXISTING, from the branch name, or from the
- *    agent's own account of what it did.
+ *  - infer success from the agent's own account of what it did.
  */
 const pullRequest: SessionActionAdapter = {
   ...SESSION_ACTION_COMPLETION_CAPABILITIES.pull_request,
@@ -314,16 +368,37 @@ const pullRequest: SessionActionAdapter = {
 
   decide: (context) => {
     const repository = context.repository;
-    // Cannot look is not an answer. A checkout that has gone away, a git call that failed, a
-    // detached HEAD with no branch to match a pull request against: none of them is evidence
-    // about a pull request, so none of them may complete or block the action.
+    const openedThisTurn = context.adoptedPullRequests.filter(
+      (pr) => openedByThisTurn(pr, context.session.id, context.deliveredAt),
+    );
+    const adoptedThisTurn = openedThisTurn.length > 0
+      ? openedThisTurn.reduce((best, pr) => (pr.number < best.number ? pr : best))
+      : null;
+    // Adoption, not checkout comparison data, is the completion boundary. If the checkout is
+    // unavailable after this turn opened a PR, preserve that diagnostic and continue.
     if (!repository || !repository.branch) {
+      if (adoptedThisTurn) {
+        return completePullRequest(
+          adoptedThisTurn,
+          context,
+          "The pull request was opened, but the checked repository or branch could not be read for comparison. The workflow continued; run it again to review the published ref.",
+        );
+      }
       return { kind: "waiting", reason: "awaiting_proof" };
     }
     // The head a capture already fixed wins over whatever the checkout has moved on to. See
     // `capturedHeadOid`: re-deciding against a moving HEAD never converges.
     const target = context.capturedHeadOid ?? repository.headOid;
-    if (!target) return { kind: "waiting", reason: "awaiting_proof" };
+    if (!target) {
+      if (adoptedThisTurn) {
+        return completePullRequest(
+          adoptedThisTurn,
+          context,
+          "The pull request was opened, but the checked ref could not be read for comparison. The workflow continued; run it again to review the published ref.",
+        );
+      }
+      return { kind: "waiting", reason: "awaiting_proof" };
+    }
 
     const onBranch = context.adoptedPullRequests.filter(
       (pr) => belongsToBranch(pr, repository.repositoryId, repository.branch!),
@@ -337,39 +412,35 @@ const pullRequest: SessionActionAdapter = {
       // lowest number is the one that was opened first, and the one an operator would call
       // "the" pull request for this branch.
       const chosen = open.reduce((best, pr) => (pr.number < best.number ? pr : best));
-      return {
-        kind: "complete",
-        continuationExpectation: {
-          kind: "pull_request",
-          pullRequestKey: chosen.key,
-          pullRequestUrl: chosen.url,
-          pullRequestNumber: chosen.number,
-          repositoryRoot: repository.repositoryId,
-          branch: repository.branch,
-          expectedHeadOid: target,
-          acceptedContentTreeOid: context.acceptedContentTreeOid,
-          observedAt: chosen.observedAt ?? context.now,
-        },
-      };
+      return completePullRequest(chosen, context, null);
     }
-    // A pull request at the right commit that is closed or merged is the one durable
-    // contradiction here: waiting cannot reopen it, and completing would hand downstream
-    // stages a pull request nobody can review. Everything else below waits.
+    // The PR was opened successfully. A later close or merge changes what Inspector can do,
+    // but it does not rewrite that completed publication action into a failure.
     if (matching.length > 0) {
-      const closed = matching[0]!;
-      return {
-        kind: "blocked",
-        code: "pull_request_closed",
-        detail:
-          `${closed.url} is at the reviewed commit but is ${
-            closed.observedState === "MERGED" ? "already merged" : "closed"
-          }. Reopen it, or start a new pull request for this branch, and retry this action.`,
-      };
+      const chosen = matching.reduce((best, pr) => (pr.number < best.number ? pr : best));
+      return completePullRequest(
+        chosen,
+        context,
+        chosen.observedState === null
+          ? `${chosen.url} was opened for the reviewed ref, but its current state has not been observed. The workflow continued; run it again if the published state needs a fresh review.`
+          : `${chosen.url} was opened for the reviewed ref, but it is now ${
+            chosen.observedState === "MERGED" ? "merged" : "closed"
+          }. The workflow continued; run it again if the published state needs a fresh review.`,
+      );
     }
-    // On this branch but not at this commit. The remedy is a push, and saying so is the whole
-    // reason this is its own wait reason rather than a generic "verifying".
-    if (onBranch.some((pr) => pr.observedState === "OPEN")) {
-      return { kind: "waiting", reason: "awaiting_pushed_head" };
+    // The PR exists on the intended branch, but the pushed ref differs from the one the action
+    // observed locally. Preserve the disagreement and advance so Inspector and later stages get
+    // their turn.
+    const openOnBranch = onBranch.filter((pr) => pr.observedState === "OPEN");
+    if (openOnBranch.length > 0) {
+      const chosen = openOnBranch.reduce((best, pr) => (pr.number < best.number ? pr : best));
+      return completePullRequest(
+        chosen,
+        context,
+        `The pull request was opened, but its pushed ref ${chosen.observedHeadOid?.slice(0, 12) ?? "is unknown"} `
+          + `did not match the checked ref ${target.slice(0, 12)}. The workflow continued; run it `
+          + "again to review the published ref.",
+      );
     }
     // Nothing on this branch. Before reporting that as "no pull request yet", ask whether this
     // turn opened one SOMEWHERE ELSE, because those two states look identical from here and
@@ -377,24 +448,40 @@ const pullRequest: SessionActionAdapter = {
     // that finished and landed off target. Reported as a wait rather than a block because a
     // later adoption can still put the right pull request on this branch - a block would end
     // the run for a turn that opened a stray pull request first and the right one second.
-    const strays = context.adoptedPullRequests.filter(
-      (pr) => openedByThisTurn(pr, context.session.id, context.deliveredAt),
-    );
+    const strays = openedThisTurn;
     // Repository first: a pull request in another repository is the larger mistake, and a
     // branch comparison across two repositories would be meaningless anyway.
     //
-    // Both tests demand a KNOWN value that DIFFERS, never merely one that fails to match.
-    // A row the poller has not reached yet carries a null branch and a null head, and reading
-    // that as "not this branch" would report a pull request opened seconds ago - the ordinary
-    // case - as an operator's mistake. Unknown is unknown, and unknown waits.
-    if (strays.some((pr) => pr.repositoryRoot !== null && pr.repositoryRoot !== repository.repositoryId)) {
-      return { kind: "waiting", reason: "pull_request_wrong_repository" };
+    // Both mismatch tests demand a KNOWN value that DIFFERS, never merely one that fails to
+    // match. A row the poller has not reached yet carries null comparison values; the final
+    // adoption arm completes it with an availability warning rather than inventing a mismatch.
+    const wrongRepository = strays.find(
+      (pr) => pr.repositoryRoot !== null && pr.repositoryRoot !== repository.repositoryId,
+    );
+    if (wrongRepository) {
+      return completePullRequest(
+        wrongRepository,
+        context,
+        `The pull request was opened, but it belongs to a different repository than the one `
+          + "this workflow checked. The workflow continued; run it again against the published ref.",
+      );
     }
-    if (strays.some((pr) => pr.branch !== null && pr.branch !== repository.branch)) {
-      return { kind: "waiting", reason: "pull_request_wrong_branch" };
+    const wrongBranch = strays.find(
+      (pr) => pr.branch !== null && pr.branch !== repository.branch,
+    );
+    if (wrongBranch) {
+      return completePullRequest(
+        wrongBranch,
+        context,
+        `The pull request was opened from ${wrongBranch.branch}, not the checked branch `
+          + `${repository.branch}. The workflow continued; run it again to review the published ref.`,
+      );
     }
-    // Nothing adopted for this branch at all - including the ordinary case where the pull
-    // request was opened moments ago and the poller has not looked yet.
+    // A freshly adopted row may not have any comparison metadata yet. The adoption itself is
+    // still durable proof that this turn opened a PR, so complete with the generated metadata
+    // warning rather than waiting for an optional provider poll.
+    if (adoptedThisTurn) return completePullRequest(adoptedThisTurn, context, null);
+    // No pull request was adopted for this turn or identified on the checked branch.
     return { kind: "waiting", reason: "awaiting_pull_request" };
   },
 
@@ -408,42 +495,57 @@ const pullRequest: SessionActionAdapter = {
     }
     if (!capture.capturedHeadOid) {
       return {
-        kind: "waiting",
-        detail: "The commit this continuation captured could not be identified in the repository",
+        kind: "warning",
+        warning: pullRequestWarning(
+          "The pull request was opened, but the checked ref could not be identified for comparison. "
+            + "The workflow continued; run it again to review the published ref.",
+        ),
       };
     }
-    // The one check this whole adapter exists to make survive a restart. The pull request was
-    // proven to be at `expectedHeadOid`; if the capture is at any other commit then the
-    // evidence downstream stages would read is work the pull request does not contain.
+    // The PR action owns publication, not review freshness. A ref disagreement remains visible
+    // but cannot prevent the continuation from reaching Inspector or later stages.
+    if (!expectation.expectedHeadOid) {
+      // The completion decision already recorded that provider metadata was unavailable.
+      // There is no second comparison result to add at capture time.
+      return null;
+    }
     if (capture.capturedHeadOid !== expectation.expectedHeadOid) {
       return {
-        kind: "waiting",
-        detail: `The captured commit ${capture.capturedHeadOid.slice(0, 12)} is not the commit `
-          + `${expectation.expectedHeadOid.slice(0, 12)} that ${expectation.pullRequestUrl} was `
-          + "proven to be at",
+        kind: "warning",
+        warning: pullRequestWarning(
+          `The pull request was opened, but its pushed ref ${expectation.expectedHeadOid.slice(0, 12)} `
+            + `did not match the checked ref ${capture.capturedHeadOid.slice(0, 12)}. The workflow `
+            + "continued; run it again to review the published ref.",
+        ),
       };
     }
     if (!expectation.acceptedContentTreeOid) {
       return {
-        kind: "blocked",
-        code: "capture_failed",
-        detail: "The parent judged submission has no server-owned content-tree proof. Start a fresh review before shipping.",
+        kind: "warning",
+        warning: pullRequestWarning(
+          "The pull request was opened, but the prior review has no content-tree proof to compare. "
+            + "The workflow continued; run it again to review the published ref.",
+        ),
       };
     }
     if (!capture.capturedCommitTreeOid) {
       return {
-        kind: "waiting",
-        detail: `The content tree of the commit published at ${expectation.pullRequestUrl} `
-          + "could not be resolved in this repository yet",
+        kind: "warning",
+        warning: pullRequestWarning(
+          `The pull request was opened, but the content tree published at ${expectation.pullRequestUrl} `
+            + "could not be compared with the prior review. The workflow continued; run it again "
+            + "to review the published ref.",
+        ),
       };
     }
     if (capture.capturedCommitTreeOid !== expectation.acceptedContentTreeOid) {
       return {
-        kind: "blocked",
-        code: "published_content_changed",
-        detail: `The published content tree ${capture.capturedCommitTreeOid.slice(0, 12)} differs from `
-          + `the reviewed content tree ${expectation.acceptedContentTreeOid.slice(0, 12)}. `
-          + "The prior verdict does not cover the pull request content. Start a fresh review before shipping.",
+        kind: "warning",
+        warning: pullRequestWarning(
+          `The pull request was opened, but its published content ${capture.capturedCommitTreeOid.slice(0, 12)} `
+            + `did not match the checked content ${expectation.acceptedContentTreeOid.slice(0, 12)}. `
+            + "The workflow continued; run it again to review the published ref.",
+        ),
       };
     }
     return null;

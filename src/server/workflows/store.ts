@@ -156,6 +156,7 @@ import type {
   SessionActionCompletionCapability,
   SessionActionCompletionKind,
   SessionActionSnapshot,
+  SessionActionWarning,
   WorkflowCheckSlot,
   WorkflowCommandOverride,
   WorkflowCommandView,
@@ -7658,6 +7659,7 @@ export class WorkflowStore {
     attemptId: string;
     submissionId: string;
     receipts: Array<{ edgeId: string; payload: WorkflowJson }>;
+    warnings?: SessionActionWarning[];
     now: number;
   }): { attempt: WorkflowNodeAttempt; submission: WorkflowSubmission } | null {
     return transaction(this.db, () => {
@@ -7666,6 +7668,10 @@ export class WorkflowStore {
       const child = this.getSubmission(input.submissionId);
       if (!child || child.continuationNodeAttemptId !== attempt.id) return null;
       const state = this.sessionActionState(attempt);
+      const warnings = [...(state?.warnings ?? []), ...(input.warnings ?? [])]
+        .filter((warning, index, all) =>
+          all.findIndex((candidate) =>
+            candidate.code === warning.code && candidate.detail === warning.detail) === index);
       const completed = this.finishAttempt(attempt.id, {
         state: "completed",
         output: workflowJson({
@@ -7677,11 +7683,12 @@ export class WorkflowStore {
           pickedUpAt: state?.pickedUpAt ?? null,
           settledAt: state?.settledAt ?? null,
           // Carried past completion rather than dropped with the waiting state, because it is
-          // the only durable record of WHAT WAS PROVEN. A finished `pull_request` action whose
+          // the only durable record of WHAT WAS OBSERVED. A finished `pull_request` action whose
           // expectation went with its wait state can say it completed and nothing else - not
           // which pull request, not at which commit - which is exactly the audit question run
           // detail and a diagnostic are asked afterwards.
           expectation: state?.expectation ?? null,
+          warnings,
         }),
         error: null,
       }, input.now);
@@ -7694,7 +7701,17 @@ export class WorkflowStore {
         submissionId: child.id,
         parentSubmissionId: child.parentSubmissionId,
         receipts: input.receipts.map((receipt) => receipt.edgeId),
+        warningCount: warnings.length,
       }, input.now);
+      for (const warning of warnings) {
+        this.appendEvent(child.runId, "session_action_warning", {
+          nodeId: attempt.nodeId,
+          attemptId: attempt.id,
+          submissionId: child.id,
+          code: warning.code,
+          detail: warning.detail,
+        }, input.now);
+      }
       return { attempt: completed, submission: this.mustSubmission(child.id) };
     });
   }

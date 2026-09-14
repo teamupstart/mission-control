@@ -472,6 +472,27 @@ test("a verified terminal pull request segment is shipping completion, not evide
   assert.equal(evidenceChipLabel(shipping), "verified shipping");
   assert.equal(roundEvidenceCountLabel(runRoundGroups(rounds)[0]!), "review + shipping");
   assert.match(segmentProvenanceSentence(shipping) ?? "", /reached End without another evidence review/);
+
+  const warned = {
+    ...completed,
+    output: {
+      ...(completed.output as Record<string, unknown>),
+      warnings: [{
+        code: "pull_request_review_mismatch",
+        detail: "The pushed ref did not match the checked ref.",
+      }],
+    } as WorkflowNodeAttempt["output"],
+  };
+  const warningRounds = runRounds(detail({
+    version: published,
+    submissions: [parent, child],
+    attempts: [warned],
+  }));
+  const warningSegment = warningRounds[1]!;
+  assert.equal(warningSegment.verifiedShipping, false);
+  assert.equal(warningSegment.label, "Round 1 · evidence 2");
+  assert.equal(evidenceChipLabel(warningSegment), "evidence 2");
+  assert.equal(roundEvidenceCountLabel(runRoundGroups(warningRounds)[0]!), "2 evidence");
 });
 
 test("the action that authorized a segment is visible WITH that segment", () => {

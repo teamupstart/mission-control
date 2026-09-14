@@ -471,7 +471,7 @@ from the browser's own copy of the list:
 | Completion | What the daemon must observe |
 |---|---|
 | Session turn finishes | The session verifiably picked the instruction up, then settled. A pre-existing idle never counts. |
-| Pull request is opened and verified | The same turn boundary, plus an **open pull request Mission Control adopted, on this repository and this branch, observed at the exact commit the continuation captured**. See [Pull request actions](#pull-request-actions). |
+| Pull request is opened | The same turn boundary, plus a pull request Mission Control durably adopted after observing the creation command. Repository, branch, head, and reviewed-content disagreements are retained as warnings rather than stopping the graph. See [Pull request actions](#pull-request-actions). |
 | A commit lands in the checkout | The same turn boundary, plus a **commit in the bound checkout made after the session picked the instruction up** - HEAD's committer time is what proves it, because nothing durable records the head at delivery. Uncommitted edits do not count, and what the commit touched is a review question rather than this adapter's. The shipped [Retro](repository-memory.md#the-retro) action uses it: a retrospective that discussed three memories and wrote none of them has not finished. |
 
 A completion is **code with proof and recovery tests**, not a string you type or a skill you
@@ -500,8 +500,9 @@ snapshot outdated or its source archived and shows the exact instruction that ve
 #### Pull request actions
 
 The shipped **Pull Request** action invokes the [`pull-request`](skills-and-settings.md#skills-every-session-mixed-reload-behavior) skill and completes
-only on durable proof. Duplicating it keeps that completion and that skill, so you can rewrite
-the instruction without losing the verification.
+only after Mission Control has durable proof that a pull request was opened. Duplicating it keeps
+that completion and that skill, so you can rewrite the instruction without losing the adoption
+proof.
 
 What the daemon has to see before the stages below it run, and before End:
 
@@ -509,24 +510,22 @@ What the daemon has to see before the stages below it run, and before End:
    it, and the session has since settled without a question outstanding;
 2. Mission Control has **adopted** a pull request - the same ledger the
    [GitHub Inspector](inspector-and-shipping.md#inspector-automated-pr-review) reviews from, which only records pull requests it can prove are
-   ours;
-3. that pull request is on the **same repository root and the same branch** as the bound
-   session's checkout;
-4. it is **open**, and the last poll saw its remote head at the **exact commit** the
-   continuation captured;
-5. the Git content tree at that remote-head commit is identical to the server-captured content
-   tree accepted by the parent judged submission.
+   ours.
 
 None of that can be satisfied by the session saying so. A pull request URL on the session card
-is a lookup hint and nothing more, the branch name is not proof, and a pull request merely
-existing is not proof. The head comparison is between full object ids on both sides: evidence
-capture records an abbreviated commit, so the abbreviation is resolved against the repository's
-object database rather than prefix-matched.
+is a lookup hint and nothing more. The durable adoption record is the proof that the creation
+command succeeded. The daemon still compares the observed repository, branch, pushed head, and
+content tree with the workflow evidence, but those comparisons are diagnostics rather than a
+second definition of whether the PR action happened. Adoption completes the action even when
+the provider poll has not populated repository, branch, state, or pushed-ref metadata yet; the
+missing comparison values are retained as warnings.
 
 The tree comparison is content-semantic rather than commit-semantic. A packaging commit may
 change author, message, parent, or commit id without changing reviewed content. If the published
-tree differs, the action blocks durably with `published_content_changed`; the prior verdict is
-not reused and End is not reached. The content must go through a fresh review before shipping.
+tree or pushed ref differs, the action completes with a durable **PR opened with warning**
+notice, preserves both identities, and activates its `complete` route. Inspector and every other
+downstream stage can continue. When the run finishes, **Run this review again** captures the
+published state for a fresh full workflow run.
 
 **Conditional CI instructions.** Foreman's **Keep sessions on track with CI** preference also
 applies when the daemon prepares a workflow action whose completion is **Pull request**,
@@ -542,51 +541,29 @@ allowlist, and review-comment preference do not change this instruction choice; 
 existing delivery authorization still applies. Other completion kinds and on-demand session
 actions receive no CI policy. The existing legacy missing-PR handoff is unchanged.
 
-The instruction is not a new CI completion gate or a replacement for the content-tree proof
-above. Sessions report absent or unavailable checks and concrete external blockers accurately.
-CI repairs and rebases can change the accepted tree and still require a fresh review. Inspector
-comments and merge authority remain with their existing owners.
+The instruction is not a new CI completion gate. Sessions report absent or unavailable checks
+and concrete external blockers accurately. CI repairs and rebases may produce an advisory ref or
+content warning, but they do not stop the PR action. Inspector comments and merge authority remain
+with their existing owners.
 
-**Mission Control never polls GitHub for this.** The GitHub Inspector's existing poller is the only
-thing that talks to a provider, and the action reads what it wrote down - which is also why a
-freshly opened pull request can take up to one poll interval to be seen.
+**Mission Control never polls GitHub for this.** The creation hook durably adopts the pull request.
+The GitHub Inspector's existing poller is the only thing that later asks the provider for
+comparison metadata, and the PR action never waits for that optional diagnostic enrichment.
 
 While it waits, the run says which of four things it is waiting for, because the remedies
 differ:
 
 | State | What it means |
 |---|---|
-| **Awaiting PR** | The turn finished and no adopted pull request names this repository and branch yet. |
-| **Awaiting push** | The pull request is open, and the reviewed commit has not reached it. |
-| **PR on another repo** | This turn opened a pull request, and it is against a different repository. |
-| **PR on another branch** | This turn opened a pull request on this repository, from a different branch. |
+| **Awaiting PR** | The turn finished and no pull request was durably adopted for it or identified on the checked branch. |
+| **Awaiting push** | Historical state from older daemon versions; a pushed-ref mismatch now completes with a warning. |
+| **PR on another repo** | Historical state from older daemon versions; a repository mismatch now completes with a warning. |
+| **PR on another branch** | Historical state from older daemon versions; a branch mismatch now completes with a warning. |
 
-The last two are the ones worth having separately. "No pull request yet" and "a pull request
-was opened somewhere else" look identical from the outside and are opposite problems - one is
-work that has not finished, the other is work that finished and landed off target - so an
-operator told only "awaiting" would keep watching for something that already exists where they
-are not looking. Both are still waits rather than blocks: a turn that opened a stray pull
-request first and the right one second recovers on its own, with nothing retyped.
-
-Mission Control claims a stray only when it can prove one: the pull request has to have been
-adopted from the bound session after this action's instruction was delivered, and its
-repository or branch has to be **known and different**. A pull request the poller has not
-looked at yet has neither recorded, and that reads as *Awaiting PR* - the ordinary case for one
-opened seconds ago - rather than as your session's mistake.
-
-If the checkout moves between the proof and the capture - an agent that pushed and then kept
-working - the captured segment is held to the commit it actually holds, and the action waits
-for the pull request to catch up with *that*. It never sends a second instruction to get there.
-
-One state blocks instead of waiting: a pull request at the reviewed commit that is **closed or
-merged**. Nothing the daemon waits for reopens it, so the run stops for you to reopen it,
-replace it, or reset the run. That holds for a pull request closed *while the action was
-waiting*, which is the ordinary way it happens. Everything else - a provider that could not be reached, a
-checkout that could not be read, a pull request on the wrong branch - waits, because a later
-observation can still change the answer.
-
-A blocked action is never a review failure. It writes no verdict, sends no repair packet back
-to the session, and spends no repair round.
+Mission Control attributes an adoption to this action only when the pull request belongs to the
+bound session and was adopted after the instruction was delivered. Once that durable fact exists,
+a closed or merged state, a moved checkout, a changed pushed ref, or missing provider metadata is
+reported on the completed action. None sends a repair packet or spends a repair round.
 
 ### Command nodes
 

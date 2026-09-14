@@ -1,0 +1,12 @@
+time_local,source,event,evidence
+2026-09-13 17:01:21,workflow_events 10447-10450,Local review passed and Pull Request action started,"The final Persona verdict passed, then attempt 3bc328c5 entered session_action_waiting."
+2026-09-13 17:02:25,Codex rollout FileChange,Repository changed after review,"The action added Supabase runtime paths to .gitignore."
+2026-09-13 17:03:05,Codex rollout CommandExecution,Pre-publication test failed,"make test exited 2 because the forged-cookie test did not always reject."
+2026-09-13 17:03:16,Codex rollout FileChange,Repository changed again after review,"The action rewrote tests/unit/session.test.ts so the forged signature mutation was deterministic."
+2026-09-13 17:03:52,git commit 45eb35d,Changed tree committed,"Commit 45eb35d has tree 188c4d59e701."
+2026-09-13 17:05:49,inspector_prs mancej/rsvp#1,Pull request adopted,"PR #1 was open on head 45eb35d and associated with the source session."
+2026-09-13 17:07:16,inspector_prs and inspector_comments,Inspector review completed with findings,"Round 1 recorded three open findings: one blocker and two major findings."
+2026-09-13 17:10:17,Codex rollout CommandExecution,CI passed,"gh pr checks --watch exited 0 after verify changed from pending to pass."
+2026-09-13 17:10:55,Codex rollout assistant final,Session ended its action turn,"The agent reported the checked head, CI passed, and No blockers."
+2026-09-13 17:11:14,workflow_events 10460,Pull Request action blocked,"published_content_changed: published tree 188c4d59e701 differed from reviewed tree 8d05b7ccc038."
+2026-09-13 17:17:26,workflow_runs and inspector tables,Ownership gap persisted,"Run 70d5f0d8 remained blocked/session_action_blocked while PR #1 still had three open Inspector findings."

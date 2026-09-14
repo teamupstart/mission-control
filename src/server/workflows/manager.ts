@@ -5506,6 +5506,7 @@ export class WorkflowManager {
       pickedUpAt,
       settledAt: now,
       expectation: decision.continuationExpectation,
+      warnings: decision.warnings ?? [],
     }, now);
     this.publishRun(run.id);
     await this.captureSessionActionContinuation(attempt.id, now);
@@ -5547,8 +5548,8 @@ export class WorkflowManager {
    * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
    * request reachable at all. The poller retires a closed row in the statement after the one
    * that records the closure, so the open set loses it on the very tick the adapter needed to
-   * see it - and a durable contradiction that should block would report as an ordinary missing
-   * pull request and wait for ever. Anything retired before this action was even delivered
+   * preserve the PR as a completed action with a warning. Anything retired before this action
+   * was even delivered
    * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
    * one repository-identity resolution per DISTINCT root, which is a git subprocess.
    */
@@ -5701,10 +5702,10 @@ export class WorkflowManager {
     const captureRoot = binding.sessionRepoRoot ?? null;
     // A child that is already captured cannot be captured again - the capture guard requires
     // the run and the submission to both be `capturing`, and a completed capture left neither.
-    // It gets here when a previous pass captured the evidence and the adapter then refused it,
-    // which is the ordinary shape of "HEAD moved between the proof and the capture": the
-    // observer has since re-decided against the head this child actually holds, so the only
-    // thing left to do is re-check that fresh expectation against the evidence that exists.
+    // It gets here when a previous pass captured the evidence and the adapter did not seal it,
+    // which can happen when the daemon stopped between capture and completion. The observer
+    // has since re-decided against the head this child actually holds, so the only thing left
+    // to do is re-check that fresh expectation against the evidence that exists.
     // Without this the run would sit in `awaiting_proof` forever, re-reserving a row it could
     // never refill.
     if (child.status !== "capturing") {
@@ -5793,7 +5794,7 @@ export class WorkflowManager {
       this.blockSessionAction(attempt.id, validation.code, validation.detail, Date.now());
       return false;
     }
-    if (validation) {
+    if (validation?.kind === "waiting") {
       // Deliberately a WAIT rather than a block when the expectation has simply not been met
       // yet: the child row stays reserved, nothing downstream activates, and the next sweep
       // re-checks. A block here would end a run for a race.
@@ -5805,6 +5806,7 @@ export class WorkflowManager {
       }, Date.now());
       return false;
     }
+    const warnings = validation?.kind === "warning" ? [validation.warning] : [];
     const receipts = sessionActionCompleteEdges(version.graph, node.id).map((edge) => ({
       edgeId: edge.id,
       payload: workflowJson({
@@ -5818,6 +5820,7 @@ export class WorkflowManager {
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
+      warnings,
       now: Date.now(),
     }));
   }

@@ -23,14 +23,16 @@ const {
 } = await import("../src/server/telemetry/config.ts");
 const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
 const { runDeliveryPass, backoffMs } = await import("../src/server/telemetry/delivery.ts");
-const { registerBuiltinTelemetry, telemetryCycle } = await import(
+const { registerBuiltinTelemetry, startTelemetry, telemetryCycle } = await import(
   "../src/server/telemetry/service.ts"
 );
+const { setTimeout: delay } = await import("node:timers/promises");
 const { telemetryHealth } = await import("../src/server/telemetry/health.ts");
 const { credentialSurvivesRedirect, safeEndpointLabel, signalUrl, validateEndpoint } =
   await import("../src/server/telemetry/endpoint.ts");
 const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
 const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+const { TELEMETRY_SHUTDOWN_BUDGET_MS } = await import("../src/server/telemetry/service.ts");
 
 registerBuiltinTelemetry();
 
@@ -396,6 +398,53 @@ test("a server fault is retried indefinitely rather than pausing the destination
   assert.equal(
     telemetryHealth(now).profiles.find((p) => p.profile === "user")!.pausedReason,
     null,
+  );
+});
+
+test("shutdown tears an in-flight export down rather than only stopping waiting on it", async () => {
+  // Bounding the WAIT is not bounding the WORK. Racing the cycle against a two-second budget
+  // and walking away left the request running to its own ten-second timeout, so an offline
+  // exit could still take ten seconds - and when the request finally resolved it settled
+  // delivery state AFTER shutdown had recorded the run as having ended cleanly.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  let aborted = false;
+  const hung = (async (_input: unknown, init?: RequestInit) => {
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  const service = startTelemetry({ fetch: hung, now: () => 2_000 });
+  const cycling = service.cycle();
+  // Let the pass reach the socket it is never going to get an answer from.
+  await delay(50);
+
+  const startedAt = Date.now();
+  await service.stop();
+  const elapsed = Date.now() - startedAt;
+
+  // Read the instant shutdown returns, deliberately before joining the cycle: the whole defect
+  // is work that outlives the shutdown, and a snapshot taken after joining cannot see it.
+  const atShutdown = openDb()
+    .prepare(`SELECT state, attempts, updated_at FROM telemetry_delivery ORDER BY batch_id`)
+    .all();
+  assert.equal(aborted, true, "the request was cancelled by shutdown, not merely abandoned");
+  assert.ok(
+    elapsed < TELEMETRY_SHUTDOWN_BUDGET_MS * 2,
+    `exit took ${elapsed}ms, so it waited on the request timeout rather than its own budget`,
+  );
+
+  await cycling;
+  await delay(150);
+  assert.deepEqual(
+    openDb().prepare(`SELECT state, attempts, updated_at FROM telemetry_delivery ORDER BY batch_id`).all(),
+    atShutdown,
+    "no delivery write raced past the shutdown that had already recorded this run as clean",
   );
 });
 

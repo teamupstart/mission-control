@@ -60,9 +60,22 @@ export interface DeliveryDeps {
   /** Injected so a fixture can answer without a socket. Defaults to global `fetch`. */
   fetch: typeof globalThis.fetch;
   now: () => number;
+  /**
+   * Tears down whatever is in flight. Shutdown's budget is the only thing that fires it.
+   *
+   * Bounding the WAIT is not bounding the WORK: a request abandoned at the budget still runs
+   * to its own ten-second timeout, so the process could take ten seconds to exit, and when the
+   * request finally resolved it would settle delivery state after shutdown had already
+   * recorded the run as having ended cleanly.
+   */
+  abort: AbortSignal | null;
 }
 
-const defaultDeps: DeliveryDeps = { fetch: (...args) => globalThis.fetch(...args), now: Date.now };
+const defaultDeps: DeliveryDeps = {
+  fetch: (...args) => globalThis.fetch(...args),
+  now: Date.now,
+  abort: null,
+};
 
 /**
  * Drain a bounded slice of every exporting destination's queue.
@@ -78,6 +91,9 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
   if (!config.enabled) return result;
 
   for (const profile of ["user", "product"] as const) {
+    // Whatever was already in flight is torn down by the signal itself; this stops the pass
+    // claiming a batch it has no time left to send.
+    if (d.abort?.aborted) break;
     if (!profileIsExporting(config, profile)) continue;
     const endpoint = profile === "user" ? config.user.endpoint : config.product.endpoint;
     const paused = telemetryTransaction((tx) => getDestination(tx, profile).pausedReason);
@@ -85,6 +101,7 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
 
     for (const signal of TELEMETRY_SIGNALS) {
       for (let i = 0; i < TELEMETRY_LIMITS.deliveryBatchesPerTick; i += 1) {
+        if (d.abort?.aborted) break;
         const outcome = await deliverOne(profile, signal, endpoint, d);
         if (outcome === "idle") break;
         result.sent += 1;
@@ -317,7 +334,11 @@ export async function send(
         // `BodyInit` accepts. The copy is once per send, on a payload already capped at 1 MiB.
         body: new Uint8Array(body),
         redirect: "manual",
-        signal: AbortSignal.timeout(TELEMETRY_LIMITS.requestTimeoutMs),
+        // The per-request ceiling, plus shutdown's ability to cut it short. Whichever fires
+        // first ends the request; neither can be defeated by the other being generous.
+        signal: deps.abort
+          ? AbortSignal.any([deps.abort, AbortSignal.timeout(TELEMETRY_LIMITS.requestTimeoutMs)])
+          : AbortSignal.timeout(TELEMETRY_LIMITS.requestTimeoutMs),
       });
     } catch (error) {
       // Network failure or an ambiguous disconnect. Retryable, and NOT assumed unaccepted: the

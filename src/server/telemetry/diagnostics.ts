@@ -117,6 +117,9 @@ export async function runTelemetryProbe(
   const resolved: DeliveryDeps = {
     fetch: deps.fetch ?? ((...args) => globalThis.fetch(...args)),
     now: deps.now ?? Date.now,
+    // An operator-initiated probe is not part of the export cycle, so shutdown's cancellation
+    // does not reach it. Its own request timeout is the bound.
+    abort: deps.abort ?? null,
   };
   const body = serializeMetrics({ resource: resourceAttributes(), scope: TELEMETRY_SCOPE, metrics: [] });
 

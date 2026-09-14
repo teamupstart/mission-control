@@ -23,6 +23,14 @@ export const TELEMETRY_RETENTION_MS = 10 * 60_000;
 export const TELEMETRY_SHUTDOWN_BUDGET_MS = 2_000;
 
 /**
+ * How long an aborted cycle is given to unwind before shutdown proceeds regardless.
+ *
+ * Short because an aborted `fetch` rejects at once; this only bounds a pathological hang, so
+ * the exit stays inside its budget either way.
+ */
+export const TELEMETRY_ABORT_GRACE_MS = 250;
+
+/**
  * Register everything Phase 1 owns.
  *
  * Idempotent, and separate from `startTelemetry` so a focused test can exercise the pipeline
@@ -108,6 +116,8 @@ export async function runTelemetryCycle(
  * that needed it.
  */
 let inFlightCycle: Promise<TelemetryCycleResult> | null = null;
+/** Cancels the running cycle's in-flight request. Held beside the promise it belongs to. */
+let inFlightAbort: AbortController | null = null;
 
 /**
  * Run one cycle, single-flighted across the whole process.
@@ -120,7 +130,11 @@ export function telemetryCycle(
   deps: Partial<DeliveryDeps> = {},
 ): Promise<TelemetryCycleResult> {
   if (inFlightCycle) return inFlightCycle;
-  inFlightCycle = runTelemetryCycle(deps)
+  // Made here rather than by the caller, because the thing that needs to fire it - shutdown -
+  // is not the thing that started the cycle.
+  const abort = new AbortController();
+  inFlightAbort = abort;
+  inFlightCycle = runTelemetryCycle({ abort: abort.signal, ...deps })
     .catch((error: unknown) => {
       // The DETAIL goes to the daemon log; the RESULT carries a fixed string. An unhandled
       // projection or delivery rejection can name an endpoint, a file path or a SQL fragment,
@@ -138,6 +152,7 @@ export function telemetryCycle(
     })
     .finally(() => {
       inFlightCycle = null;
+      inFlightAbort = null;
     }) as Promise<TelemetryCycleResult>;
   return inFlightCycle;
 }
@@ -219,7 +234,20 @@ export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryServi
         // waited on its own deadline would be the bug this budget exists to prevent.
         delay(TELEMETRY_SHUTDOWN_BUDGET_MS, null, { ref: false }),
       ]).catch(() => null);
-      void settled;
+      if (settled === null && inFlightCycle) {
+        // The budget expired with a request still open. STOPPING AWAITING IT IS NOT STOPPING
+        // IT: the fetch runs on to its own ten-second timeout, so an offline exit could still
+        // take ten seconds, and when the request finally resolved it would settle delivery
+        // state after the local commit below had already recorded this run as clean - a write
+        // racing the shutdown that was supposed to have finished.
+        //
+        // So tear it down, then let the cycle actually unwind before committing.
+        inFlightAbort?.abort();
+        await Promise.race([
+          inFlightCycle,
+          delay(TELEMETRY_ABORT_GRACE_MS, null, { ref: false }),
+        ]).catch(() => null);
+      }
       try {
         // Commit whatever is captured but unprojected, so accepted facts are not left as
         // journal rows a later start has to rediscover.

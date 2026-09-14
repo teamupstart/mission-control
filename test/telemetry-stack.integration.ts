@@ -339,6 +339,7 @@ test("a historical app version survives as its own stream", async () => {
   const outcome = await send(`${ENDPOINTS.otlp}/v1/metrics`, "metrics", body, "user", {
     fetch: (...args) => globalThis.fetch(...args),
     now: Date.now,
+    abort: null,
   });
   assert.equal(outcome.kind, "accepted", JSON.stringify(outcome));
 
@@ -381,7 +382,11 @@ test("delivering the same batch twice does not double the total", async () => {
     ],
   };
   const body = serializeMetrics(payload);
-  const deps = { fetch: (...args: Parameters<typeof globalThis.fetch>) => globalThis.fetch(...args), now: Date.now };
+  const deps = {
+    fetch: (...args: Parameters<typeof globalThis.fetch>) => globalThis.fetch(...args),
+    now: Date.now,
+    abort: null,
+  };
 
   const first = await send(`${ENDPOINTS.otlp}/v1/metrics`, "metrics", body, "user", deps);
   assert.equal(first.kind, "accepted");
@@ -434,6 +439,7 @@ test("a sample past the configured late window is visibly refused, not silently 
   const outcome = await send(`${ENDPOINTS.otlp}/v1/metrics`, "metrics", body, "user", {
     fetch: (...args) => globalThis.fetch(...args),
     now: Date.now,
+    abort: null,
   });
 
   // The Collector accepts it (its queue is in front of Prometheus), so the refusal shows up as

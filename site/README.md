@@ -28,16 +28,14 @@ until `pages.yml` grows a build step and this paragraph is rewritten to say so.
 ## Publishing
 
 **Settings -> Pages -> Source must be set to "GitHub Actions".** This is a repository setting
-rather than a file, and it is the one part of publishing that no commit can carry. It is not
-set on `teamupstart/mission-control` yet, so the first run of the workflow will stop at its
-preflight until a repository admin changes it. A fork that wants its own copy of the site has
-to set it too.
+rather than a file, and it is the one part of publishing that no commit can carry. It is
+already set on `teamupstart/mission-control`. A fork that wants its own copy of the site has
+to set it itself.
 
-Only a repository **admin** can change it. `maintain` is not enough, and neither is the
-workflow's own `GITHUB_TOKEN`: `actions/configure-pages` can enable Pages through its
+The workflow cannot set it: `actions/configure-pages` can enable Pages through its
 `enablement` input, but that input requires a PAT with `repo` or an App with
 `administration:write`, and this repository's App tokens are minted for contents, issues and
-pull requests only. Rather than leave that to a deploy-time error that names no fix,
+pull requests only. Rather than leave a fork to a deploy-time error that names no fix,
 `pages.yml` reads the setting first and fails with the exact remediation.
 
 Once the source is set, every push to `main` that touches `site/` republishes, and

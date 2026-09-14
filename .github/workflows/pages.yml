@@ -11,7 +11,8 @@ name: Pages
 # `docs/` stays markdown for reading in the repository and is deliberately not published.
 #
 # One repository setting is a prerequisite: Settings -> Pages -> Source must be "GitHub
-# Actions". The workflow cannot set it for itself. `actions/configure-pages` has an
+# Actions". It is set on this repository; a fork has to set its own. The workflow cannot set
+# it for itself, and that is not an oversight. `actions/configure-pages` has an
 # `enablement` input, but its own documentation is explicit that the input needs a credential
 # other than `GITHUB_TOKEN` - a PAT with `repo`, or an App with `administration:write` - and
 # this repository mints App tokens for contents, issues and pull requests only. Turning

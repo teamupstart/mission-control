@@ -111,9 +111,6 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
   request: CaptureRequest<Facts>,
 ): TelemetryCaptureResult {
   const now = request.now ?? Date.now();
-  // Settle anything owed from a previous failed counter write, now that the store may be
-  // writable again. A no-op boolean check when nothing is owed, which is almost always.
-  flushPendingUnknownGap(now);
   try {
     const definition = TELEMETRY_EVENTS[request.event.name];
     if (!definition || definition !== (request.event as TelemetryEventDefinition)) {
@@ -128,6 +125,12 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
 
     const config = getTelemetryConfig();
     if (!config.enabled) return { kind: "disabled" };
+
+    // AFTER the enabled check, not before it. Flushing first meant a gap owed from a time when
+    // collection was on still wrote a row after an operator turned it off - the same shape as
+    // the identity mint `diagnostics.ts` documents, where the work happened before the guard
+    // could refuse it. The flag stays in memory, so re-enabling settles it then.
+    flushPendingUnknownGap(now);
 
     const eligible = capturingProfiles(config).filter((p) => definition.audience.includes(p));
     if (eligible.length === 0) {

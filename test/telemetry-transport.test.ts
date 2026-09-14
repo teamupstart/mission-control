@@ -353,6 +353,52 @@ test("Retry-After is honoured in seconds", async () => {
   assert.equal(row.next_attempt_at, 2_000 + 12_000);
 });
 
+test("a backend that throttles without Retry-After still pauses the destination", async () => {
+  // A bare 429 is what a rate-limited backend returns under sustained load as often as a
+  // documented one. Keying the pause on the crossing response carrying `Retry-After` meant
+  // those retried for ever with `pausedReason` null - the one field an operator is told to
+  // read to learn why nothing is arriving.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(429)]);
+
+  // Each pass is one attempt, spaced past the jittered ceiling so backoff never skips one.
+  let now = 2_000;
+  for (let pass = 0; pass < 10; pass += 1) {
+    await runDeliveryPass({ fetch: f.fetch, now: () => now });
+    now += 200_000;
+  }
+
+  assert.ok(
+    deliveryRows().every((row) => row.attempts >= 10),
+    "every queued batch really did reach the threshold, rather than being held back by backoff",
+  );
+  assert.equal(
+    telemetryHealth(now).profiles.find((p) => p.profile === "user")!.pausedReason,
+    "quota",
+  );
+});
+
+test("a server fault is retried indefinitely rather than pausing the destination", async () => {
+  // The other half of the same rule. An outage is not an operator's misconfiguration, and
+  // pausing on it would stop the backlog draining by itself when the backend comes back.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(500)]);
+
+  let now = 2_000;
+  for (let pass = 0; pass < 12; pass += 1) {
+    await runDeliveryPass({ fetch: f.fetch, now: () => now });
+    now += 200_000;
+  }
+
+  assert.ok(f.attempts.length >= 12, "still trying");
+  assert.equal(
+    telemetryHealth(now).profiles.find((p) => p.profile === "user")!.pausedReason,
+    null,
+  );
+});
+
 test("backoff is bounded, jittered and never below the floor", async () => {
   for (let attempt = 1; attempt <= 20; attempt += 1) {
     for (const random of [() => 0, () => 0.5, () => 1]) {

@@ -282,7 +282,17 @@ export type TelemetryPauseReason = (typeof TELEMETRY_PAUSE_REASONS)[number];
 /** How one send attempt ended, before any local bookkeeping. */
 export type TelemetryTransportOutcome =
   | { kind: "accepted"; rejectedItems: number; message: string | null }
-  | { kind: "retry"; retryAfterMs: number | null; detail: string }
+  | {
+      kind: "retry";
+      retryAfterMs: number | null;
+      /**
+       * True when the DESTINATION asked us to slow down (429 or 503), as opposed to our not
+       * being able to reach it at all. Persistent throttling pauses the destination; a network
+       * outage does not, because pausing would stop the backlog draining when the link returns.
+       */
+      throttled: boolean;
+      detail: string;
+    }
   | { kind: "paused"; reason: TelemetryPauseReason; detail: string }
   | { kind: "rejected"; detail: string };
 

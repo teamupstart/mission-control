@@ -228,7 +228,16 @@ function settle(
       updateDestination(d, profile, { lastError: outcome.detail }, now);
       // Persistent throttling stops being a transient condition at some point. Pause visibly
       // rather than hammering an endpoint that has told us ten times to go away.
-      if (outcome.retryAfterMs !== null && nextAttempts >= QUOTA_PAUSE_AFTER) {
+      //
+      // Keyed on the destination having THROTTLED us, not on that particular response having
+      // carried `Retry-After`. Plenty of backends return a bare 429 or 503 under sustained
+      // load, and requiring the header meant those were retried for ever with `pausedReason`
+      // stuck at null - the one field an operator is told to check.
+      //
+      // Deliberately not attempt count alone: a plain network failure retries through this
+      // same branch, and an outage is not a reason to pause. Pausing would stop the backlog
+      // draining by itself when the link comes back.
+      if (outcome.throttled && nextAttempts >= QUOTA_PAUSE_AFTER) {
         updateDestination(d, profile, { pausedReason: "quota" }, now);
       }
       return "retry";
@@ -314,7 +323,12 @@ export async function send(
       // Network failure or an ambiguous disconnect. Retryable, and NOT assumed unaccepted: the
       // server may have taken it, which is why the same immutable batch is what gets re-sent.
       const detail = error instanceof Error ? error.name : "network error";
-      return { kind: "retry", retryAfterMs: null, detail: `${detail} to ${safeEndpointLabel(target)}` };
+      return {
+        kind: "retry",
+        retryAfterMs: null,
+        throttled: false,
+        detail: `${detail} to ${safeEndpointLabel(target)}`,
+      };
     }
 
     if (response.status >= 300 && response.status < 400) {
@@ -357,10 +371,23 @@ async function classify(
     return authOrConfig(status, "configuration");
   }
   if (status === 429 || status === 503) {
-    return { kind: "retry", retryAfterMs: retryAfterMs(response), detail: `HTTP ${status}` };
+    // The destination asking us to slow down, with or without a `Retry-After` to say for how long.
+    return {
+      kind: "retry",
+      retryAfterMs: retryAfterMs(response),
+      throttled: true,
+      detail: `HTTP ${status}`,
+    };
   }
   if (status === 408 || status >= 500) {
-    return { kind: "retry", retryAfterMs: retryAfterMs(response), detail: `HTTP ${status}` };
+    // A server fault rather than a throttle. Retried, but never a reason to pause: there is
+    // nothing for an operator to fix at this end.
+    return {
+      kind: "retry",
+      retryAfterMs: retryAfterMs(response),
+      throttled: false,
+      detail: `HTTP ${status}`,
+    };
   }
   if (status === 413) {
     return { kind: "rejected", detail: "HTTP 413: the request exceeded the endpoint's size limit" };

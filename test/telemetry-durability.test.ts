@@ -216,6 +216,37 @@ test("a loss counter that could not be written becomes an unknown gap at the nex
   assert.ok(gap, "health reports it rather than absorbing it");
 });
 
+test("an owed gap is not written by a capture call made while collection is off", async () => {
+  // Default-off is a property of the whole capture path, not just the journal write. Settling
+  // the owed counter before reading the enabled flag meant an installation that had opted out
+  // still grew a row at the next capture attempt from any source - the same shape of bug as
+  // minting an identity ahead of the consent check.
+  const { markUnknownGapPending, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  enableLocalOnly();
+  resetPendingUnknownGap();
+  markUnknownGapPending();
+
+  const off = setTelemetryConfig({ enabled: false });
+  assert.equal(off.ok, true);
+  assert.equal(capture("boot-1", 2_000).kind, "disabled");
+  assert.equal(
+    (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_gaps`).get() as { n: number }).n,
+    0,
+    "collection is off, so the capture path wrote nothing at all",
+  );
+
+  // The debt is held in memory rather than dropped, so opting back in still settles it.
+  enableLocalOnly();
+  assert.equal(capture("boot-2", 3_000).kind, "accepted");
+  assert.ok(
+    telemetryHealth(4_000).gaps.some((g) => g.kind === "unknown_gap"),
+    "and the incident is not lost by having been deferred",
+  );
+  resetPendingUnknownGap();
+});
+
 test("an owed gap that still cannot be written keeps the run marked unclean", async () => {
   // The fallback when the store itself is the thing at fault: rather than declare a clean
   // shutdown and lose the incident, leave the marker set so the next start reports it.

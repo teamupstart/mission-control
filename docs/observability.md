@@ -315,7 +315,10 @@ queue depth and any pause reason, which tells a stopped export apart from a quie
 
 **Nothing arrives, and health shows a growing queue.** Check `pausedReason`. `auth` and
 `configuration` mean the destination refused and the daemon stopped rather than hammering it; fix
-the endpoint or credential and clear the pause by saving the configuration again.
+the endpoint or credential and clear the pause by saving the configuration again. `quota` means it
+throttled ten attempts in a row, with or without a `Retry-After` to say for how long; reduce what
+is being exported or raise the backend's limit, then save the configuration again to resume. A
+plain outage or server fault never pauses, so the backlog drains by itself when the link returns.
 
 **A backlog drained but old samples are missing.** Prometheus refuses samples older than its
 out-of-order window. Eight days is configured here; a sample older than that is real, visible loss

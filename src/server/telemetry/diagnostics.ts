@@ -98,7 +98,6 @@ export async function runTelemetryProbe(
   profile: TelemetryProfileId,
   deps: Partial<DeliveryDeps> = {},
 ): Promise<TelemetryProbeResult> {
-  const now = deps.now?.() ?? Date.now();
   const config = getTelemetryConfig();
   const endpoint = profile === "user" ? config.user.endpoint : config.product.endpoint;
 
@@ -123,7 +122,14 @@ export async function runTelemetryProbe(
 
   const started = resolved.now();
   const outcome = await send(signalUrl(endpoint, "metrics"), "metrics", body, profile, resolved);
-  const latencyMs = Math.max(0, resolved.now() - started);
+  // AFTER the request, not before it. `occurredAt` is the moment the operation finished, and
+  // the exported span is reconstructed as `[occurredAt - duration, occurredAt]`, so stamping it
+  // with a clock read at the top of this function put the whole span before the probe began -
+  // by the full round trip, which for an unreachable endpoint is the 10s timeout. That is
+  // exactly the case an operator is most likely to be looking at. `observeDaemonStart` already
+  // measures this way; this brings the probe in line with it.
+  const finishedAt = resolved.now();
+  const latencyMs = Math.max(0, finishedAt - started);
 
   const result: TelemetryProbeResult["outcome"] =
     outcome.kind === "accepted" ? "accepted" : outcome.kind === "retry" ? "unreachable" : "refused";
@@ -137,7 +143,8 @@ export async function runTelemetryProbe(
     source: { kind: "mission.telemetry", id: `probe:${profile}:${started}`, revision: 1 },
     actor: { kind: "human", origin: "dashboard", basis: "app_context" },
     facts: { profile, outcome: result, latency_ms: Math.round(latencyMs) },
-    now,
+    occurredAt: finishedAt,
+    now: finishedAt,
   });
 
   // Straight off this capture's own result. Nothing else in the process can substitute a

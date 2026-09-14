@@ -430,6 +430,38 @@ test("a batch built for a previous endpoint is never redirected to the new one",
   );
 });
 
+test("the probe's exported span covers when it ran, not a window before it started", async () => {
+  // The defect: `occurredAt` was read at the top of `runTelemetryProbe`, before the request.
+  // The span is reconstructed as [occurredAt - duration, occurredAt], so the whole thing landed
+  // BEFORE the probe began, offset by the full round trip - up to the 10s timeout for an
+  // unreachable endpoint, which is the case an operator is most likely to be diagnosing.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  // A clock that advances 400ms across the request, so a stale stamp is unmistakable.
+  const START = 1_000_000;
+  const LATENCY = 400;
+  let reads = 0;
+  const clock = () => (reads++ === 0 ? START : START + LATENCY);
+
+  const result = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: clock });
+  assert.equal(result.outcome, "accepted");
+  assert.equal(result.latencyMs, LATENCY);
+
+  runProjectionPass(START + LATENCY + 1);
+  const row = openDb()
+    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'`)
+    .get() as { payload_json: string };
+  const payload = JSON.parse(row.payload_json) as {
+    spans: Array<{ name: string; startTimeMs: number; endTimeMs: number }>;
+  };
+  const span = payload.spans.find((sp) => sp.name === "mission.telemetry.probe");
+  assert.ok(span);
+
+  assert.equal(span!.endTimeMs, START + LATENCY, "the span ends when the probe finished");
+  assert.equal(span!.startTimeMs, START, "and starts when it began, not a round trip earlier");
+});
+
 // ---- single-flight ----
 
 test("two concurrent cycles run as one, so a destination never sees two requests at once", async () => {

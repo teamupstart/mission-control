@@ -216,6 +216,63 @@ test("a loss counter that could not be written becomes an unknown gap at the nex
   assert.ok(gap, "health reports it rather than absorbing it");
 });
 
+test("a metric emitted from the snapshot hook is exportable, not durably unaddressable", async () => {
+  // The gauge seam Phase 6's cohort reducers publish through. `snapshot` runs after the event
+  // loop, so there is no contributing event to take a resource from - and an empty resource id
+  // stored the series happily, then silently skipped its export batch, because no resource row
+  // can ever have id "". A metric durably recorded and permanently unexportable, with nothing
+  // in the gap table or the health view to reveal it.
+  const { registerTelemetryProjection, resetTelemetryRegistrations } = await import(
+    "../src/server/telemetry/registration.ts"
+  );
+  const { DAEMON_STARTS_METRIC } = await import("../src/shared/telemetry-catalog.ts");
+  resetTelemetryRegistrations();
+  registerTelemetryProjection({
+    id: "mission.test.snapshot",
+    stateVersion: 1,
+    initialState: () => ({}),
+    migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
+    reduce: (_event, state) => state,
+    snapshot(_state, emit) {
+      emit.metric(DAEMON_STARTS_METRIC.name, { launch_mode: "daemon", schema_upgraded: "false" }, 1);
+    },
+  });
+
+  try {
+    enableUserBackend();
+    assert.equal(capture("boot-1", 1_000).kind, "accepted");
+    runProjectionPass(2_000);
+
+    const d = openDb();
+    // One row per capturing profile - `local` and `user` keep separate streams by design.
+    const series = d
+      .prepare(`SELECT profile, resource_id FROM telemetry_series ORDER BY profile`)
+      .all() as unknown as Array<{ profile: string; resource_id: string }>;
+    assert.deepEqual(series.map((row) => row.profile), ["local", "user"]);
+
+    for (const row of series) {
+      assert.notEqual(row.resource_id, "", `${row.profile} gauge is addressable to a resource`);
+      const resource = d
+        .prepare(`SELECT attributes_json FROM telemetry_resources WHERE id = ?`)
+        .get(row.resource_id) as { attributes_json: string } | undefined;
+      assert.ok(resource, `${row.profile} resource really exists, which is what export needs`);
+      assert.match(
+        resource!.attributes_json,
+        /"service\.name":"mission-control"/,
+        "the running process's own resource, not whichever event happened to be last in the pass",
+      );
+    }
+
+    const batches = d
+      .prepare(`SELECT COUNT(*) AS n FROM telemetry_batches WHERE signal = 'metrics'`)
+      .get() as { n: number };
+    assert.ok(batches.n > 0, "so it reaches an export batch instead of being dropped in silence");
+  } finally {
+    resetTelemetryRegistrations();
+    registerBuiltinTelemetry();
+  }
+});
+
 test("a projection is handed the semantic envelope, never the stored journal row", async () => {
   // The extension seam later phases register through. Passing the stored row made every future
   // reducer compile against the persistence layer, so changing how the journal is stored or

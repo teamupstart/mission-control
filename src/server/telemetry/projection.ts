@@ -38,7 +38,7 @@ import {
   profileSalt,
 } from "./config.ts";
 import { digest } from "./identity.ts";
-import { PARENT_SPAN_REF, SPAN_REF, TRACE_REF } from "./capture.ts";
+import { PARENT_SPAN_REF, SPAN_REF, TRACE_REF, resourceAttributes } from "./capture.ts";
 import {
   registeredProjections,
   type EmittedSpan,
@@ -53,6 +53,7 @@ import {
   insertBatch,
   journalHead,
   putProjectionState,
+  putResource,
   putSeries,
   readJournalAfter,
   recordGap,
@@ -439,6 +440,28 @@ class Collector implements TelemetryEmitter {
       recordGap(d, "unsupported_schema", problem, this.now);
     }
 
+    // Anything emitted OUTSIDE the event loop has no contributing event to take a resource
+    // from, because `endEvent` cleared it before `snapshot` ran. That is not a defect in the
+    // emitter: a cohort gauge is a statement about this installation NOW, so the running
+    // process's own resource is the right one - and the alternative, whatever event happened to
+    // be last in the pass, would attribute a fresh calculation to an arbitrary old app version.
+    //
+    // Resolved BEFORE the fold, so the durable series row and the export batch are keyed by the
+    // same resource. Leaving it empty stored the series happily and then silently skipped its
+    // batch below, since no resource row can ever have id "" - a metric durably recorded and
+    // permanently unexportable, with nothing in `telemetry_gaps` to say so.
+    let processResourceId: string | null = null;
+    const processResource = (): string => {
+      processResourceId ??= putResource(d, resourceAttributes(), this.now);
+      return processResourceId;
+    };
+    for (const pending of this.metrics) {
+      if (pending.resourceId === "") pending.resourceId = processResource();
+    }
+    for (const entry of this.spans) {
+      if (entry.resourceId === "") entry.resourceId = processResource();
+    }
+
     const touched = new Map<string, StoredSeries>();
     for (const pending of this.metrics) {
       const updated = this.fold(d, pending);
@@ -459,7 +482,18 @@ class Collector implements TelemetryEmitter {
     }
     for (const [resourceId, list] of byResource) {
       const resource = getResource(d, resourceId);
-      if (!resource) continue;
+      if (!resource) {
+        // Belt to the braces above. An unaddressable series cannot be put in an OTLP request at
+        // all, so it is permanent export loss - and the one thing this facility may never do is
+        // let loss happen without counting it.
+        recordGap(
+          d,
+          "permanently_rejected",
+          `${list.length} metric series have no addressable resource`,
+          this.now,
+        );
+        continue;
+      }
       const payload: MetricsBatchPayload = {
         resource,
         scope: TELEMETRY_SCOPE,
@@ -476,7 +510,15 @@ class Collector implements TelemetryEmitter {
     }
     for (const [resourceId, list] of spansByResource) {
       const resource = getResource(d, resourceId);
-      if (!resource) continue;
+      if (!resource) {
+        recordGap(
+          d,
+          "permanently_rejected",
+          `${list.length} span(s) have no addressable resource`,
+          this.now,
+        );
+        continue;
+      }
       const payload: TracesBatchPayload = {
         resource,
         scope: TELEMETRY_SCOPE,

@@ -83,3 +83,35 @@ export function desktopUpdateBridgeScript(snapshot: UpdateSnapshot): string;
  * `${action}: ${column title} for ${repository path}`.
  */
 export function trustCell(action: "Grant" | "Revoke", column: string, repo: string): RegExp;
+
+/** A browser context, narrowed to what `runCaptureLifecycle` asks of one. */
+export interface CaptureContext {
+  newPage(): Promise<CapturePage & { addInitScript(source: string): Promise<void> }>;
+  close(): Promise<void>;
+}
+
+/** A browser, narrowed the same way. */
+export interface CaptureBrowser {
+  newContext(options?: Record<string, unknown>): Promise<CaptureContext>;
+}
+
+/**
+ * Run every requested frame in the right order and the right isolation.
+ *
+ * `browser`, `dismissBanner` and `captureShot` are injected so the sequencing can be executed
+ * without a browser or a daemon. Production passes Playwright, the daemon route, and the
+ * module's own `capture`.
+ */
+export function runCaptureLifecycle(input: {
+  screenshots: readonly Screenshot[];
+  browser: CaptureBrowser;
+  baseURL: string;
+  runContext: CaptureRunContext;
+  dismissBanner: () => Promise<void> | void;
+  captureShot?: (
+    page: CapturePage,
+    baseURL: string,
+    shot: Screenshot,
+    context: CaptureRunContext,
+  ) => Promise<void>;
+}): Promise<void>;

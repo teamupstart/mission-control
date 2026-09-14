@@ -10,7 +10,9 @@ import {
   desktopUpdateBridgeScript,
   openSetupFamily,
   requestedScreenshots,
+  runCaptureLifecycle,
   trustCell,
+  type CaptureBrowser,
   type CaptureLocator,
   type CapturePage,
 } from "../scripts/docs-screenshots.mjs";
@@ -197,6 +199,100 @@ test("trustCell matches the accessible name TrustPanel actually builds", () => {
   assert.doesNotMatch(`Grant: Workflows act for ${repo}`, trustCell("Grant", "Foreman", repo));
 });
 
+test("the capture run takes the reminder frame before it dismisses the reminder", async () => {
+  // The registry assertions above prove the FLAGS are set. This runs the code that has to
+  // honour them, so a `main()` that stopped ordering by `beforeBannerDismissal`, or stopped
+  // isolating a shot carrying `init`, fails here instead of shipping a wrong figure.
+  const log: string[] = [];
+  const browser = fakeBrowser(log);
+
+  await runCaptureLifecycle({
+    screenshots: [
+      shot("first-run-reminder"),
+      shot("setup-panel"),
+      shot("update-available"),
+      shot("models"),
+    ],
+    browser,
+    baseURL: "http://127.0.0.1:0",
+    runContext: { repos: [] },
+    dismissBanner: async () => { log.push("dismiss"); },
+    captureShot: async (_page, _baseURL, s) => { log.push(`capture:${s.name}`); },
+  });
+
+  // The reminder is raised once on a fresh profile and its dismissal is bound to the attention
+  // set it was observed with, so a frame taken after the dismissal can never be of it.
+  assert.ok(
+    log.indexOf("capture:first-run-reminder") < log.indexOf("dismiss"),
+    `reminder must be captured before dismissal, got ${log.join(" ")}`,
+  );
+  // Every ordinary frame comes after, because the reminder would otherwise sit above the board
+  // in figures that are not about it.
+  for (const name of ["setup-panel", "update-available", "models"]) {
+    assert.ok(
+      log.indexOf("dismiss") < log.indexOf(`capture:${name}`),
+      `${name} must be captured after dismissal, got ${log.join(" ")}`,
+    );
+  }
+  assert.equal(log.filter((entry) => entry === "dismiss").length, 1, "dismissal must happen once");
+});
+
+test("a shot carrying an init script gets its own context, and the rest share one", async () => {
+  const log: string[] = [];
+  const browser = fakeBrowser(log);
+
+  await runCaptureLifecycle({
+    screenshots: [shot("setup-panel"), shot("update-available"), shot("models")],
+    browser,
+    baseURL: "http://127.0.0.1:0",
+    runContext: { repos: [] },
+    dismissBanner: async () => { log.push("dismiss"); },
+    captureShot: async (_page, _baseURL, s) => { log.push(`capture:${s.name}`); },
+  });
+
+  // `addInitScript` outlives the page it was added for, so the faked desktop bridge must not
+  // be added to the shared page - every later frame would silently render as a desktop one.
+  const initAt = log.indexOf("init");
+  assert.notEqual(initAt, -1, "the update shot must install its init script");
+  const openedBefore = log.slice(0, initAt).filter((e) => e === "context:open").length;
+  const closedBefore = log.slice(0, initAt).filter((e) => e === "context:close").length;
+  assert.equal(
+    openedBefore - closedBefore,
+    2,
+    "the init script must be applied in a second, nested context, not the shared one",
+  );
+
+  // That context closes again immediately after its own frame, so nothing it carries leaks.
+  const after = log.slice(log.indexOf("capture:update-available") + 1);
+  assert.equal(after[0], "context:close", `isolated context must close right after its frame, got ${after.join(" ")}`);
+
+  // The two ordinary frames share a single context, which is the whole point of not isolating
+  // every shot: a fresh context per frame would cost a page load each time.
+  assert.equal(log.filter((e) => e === "context:open").length, 2);
+  assert.equal(log.filter((e) => e === "context:close").length, 2, "every context must be closed");
+});
+
+test("a failing frame still closes the shared context", async () => {
+  const log: string[] = [];
+  const browser = fakeBrowser(log);
+
+  await assert.rejects(
+    runCaptureLifecycle({
+      screenshots: [shot("setup-panel")],
+      browser,
+      baseURL: "http://127.0.0.1:0",
+      runContext: { repos: [] },
+      dismissBanner: async () => {},
+      captureShot: async () => { throw new Error("frame failed"); },
+    }),
+    /frame failed/,
+  );
+
+  // Without the `finally` the browser holds the context for the rest of the run, and the real
+  // failure is then buried under whatever the leak causes next.
+  assert.equal(log.filter((e) => e === "context:close").length, 1, "the context must still close");
+});
+
 /**
  * A `Page` that records what was asked of it.
  *
@@ -230,5 +326,24 @@ function fakePage(
     },
     keyboard: { press: async () => {} },
     waitForTimeout: async () => {},
+  };
+}
+
+/** A `Browser` that records context and page lifecycle into `log`. */
+function fakeBrowser(log: string[]): CaptureBrowser {
+  return {
+    newContext: async () => {
+      log.push("context:open");
+      return {
+        newPage: async () => ({
+          ...fakePage(),
+          addInitScript: async (source: string) => {
+            assert.match(source, /window\.missionDesktop/, "init script must publish the bridge");
+            log.push("init");
+          },
+        }),
+        close: async () => { log.push("context:close"); },
+      };
+    },
   };
 }

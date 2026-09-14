@@ -360,23 +360,68 @@ async function dismissSetupBanner(baseURL) {
   });
 }
 
+const CONTEXT_OPTIONS = { viewport: VIEWPORT, deviceScaleFactor: 2, reducedMotion: "reduce" };
+
 /**
- * One capture in its own throwaway context.
+ * The run's ordering and isolation, separated from the daemon and browser that supply them.
  *
- * Used for a shot that injects a page init script, because `addInitScript` outlives the page
- * it was added for, and for the pre-dismissal frames, which are taken before the shared
- * context exists at all.
+ * Extracted so it can be executed by a test. `test/` has no browser and no daemon, but the two
+ * facts worth pinning are pure sequencing, and both are invisible from the registry: the
+ * reminder frame has to be taken while the reminder is still RAISED, and a shot carrying
+ * `init` must never share a context with one that does not. Asserting `beforeBannerDismissal`
+ * and `init` on the shot objects proves the flags are set; this is the code that has to honour
+ * them, and it is what a test should run.
+ *
+ * `browser`, `dismissBanner` and `captureShot` are injected for that reason. In production
+ * they are Playwright, the daemon route, and `capture` above.
  */
-async function captureIsolated(browser, baseURL, shot, runContext) {
-  const context = await browser.newContext({
-    viewport: VIEWPORT,
-    deviceScaleFactor: 2,
-    reducedMotion: "reduce",
-  });
+export async function runCaptureLifecycle({
+  screenshots,
+  browser,
+  baseURL,
+  runContext,
+  dismissBanner,
+  captureShot = capture,
+}) {
+  /**
+   * One capture in its own throwaway context.
+   *
+   * For a shot that injects a page init script, because `addInitScript` outlives the page it
+   * was added for and a leaked bridge would silently redraw every later frame; and for the
+   * pre-dismissal frames, which are taken before the shared context exists at all.
+   */
+  const isolated = async (shot) => {
+    const context = await browser.newContext(CONTEXT_OPTIONS);
+    try {
+      const page = await context.newPage();
+      if (shot.init) await page.addInitScript(shot.init());
+      await captureShot(page, baseURL, shot, runContext);
+    } finally {
+      await context.close();
+    }
+  };
+
+  // The reminder's own frames first, while it is still raised, then the dismissal, then
+  // everything else. Ordering is by the flag rather than by position in `SCREENSHOTS`, so a
+  // `--only` naming one of each still gets both, in the right order.
+  for (const shot of screenshots.filter((s) => s.beforeBannerDismissal)) await isolated(shot);
+
+  // Once, and only after those frames. It is a one-way door: the reminder's dismissal is bound
+  // to the attention set it was observed with, so there is no re-raising it for a later frame.
+  await dismissBanner();
+
+  const rest = screenshots.filter((s) => !s.beforeBannerDismissal);
+  if (rest.length === 0) return;
+
+  // One shared context for every ordinary frame, and `finally` so a failing shot still closes
+  // it rather than leaving the browser holding it for the rest of the run.
+  const context = await browser.newContext(CONTEXT_OPTIONS);
   try {
     const page = await context.newPage();
-    if (shot.init) await page.addInitScript(shot.init());
-    await capture(page, baseURL, shot, runContext);
+    for (const shot of rest) {
+      if (shot.init) await isolated(shot);
+      else await captureShot(page, baseURL, shot, runContext);
+    }
   } finally {
     await context.close();
   }
@@ -414,25 +459,14 @@ async function main() {
 
     await disableGuidedTour(daemon.baseURL);
 
-    const runContext = { repos };
     browser = await chromium.launch();
-
-    // The reminder's own frames first, while it is still raised, then the dismissal, then
-    // everything else. Ordering is by this flag rather than by position in `SCREENSHOTS`, so
-    // a `--only` naming one of each still gets both.
-    for (const shot of screenshots.filter((s) => s.beforeBannerDismissal)) {
-      await captureIsolated(browser, daemon.baseURL, shot, runContext);
-    }
-    await dismissSetupBanner(daemon.baseURL);
-
-    const rest = screenshots.filter((s) => !s.beforeBannerDismissal);
-    const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, reducedMotion: "reduce" });
-    const page = await context.newPage();
-    for (const shot of rest) {
-      if (shot.init) await captureIsolated(browser, daemon.baseURL, shot, runContext);
-      else await capture(page, daemon.baseURL, shot, runContext);
-    }
-    await context.close();
+    await runCaptureLifecycle({
+      screenshots,
+      browser,
+      baseURL: daemon.baseURL,
+      runContext: { repos },
+      dismissBanner: () => dismissSetupBanner(daemon.baseURL),
+    });
   } finally {
     await browser?.close();
     await daemon?.stop();

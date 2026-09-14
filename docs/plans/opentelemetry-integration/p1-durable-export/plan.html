@@ -1,0 +1,182 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>P1. Local durability and OpenTelemetry export</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>P1. Local durability and OpenTelemetry export</h1>
+<p>Draft architecture recommendation. Parent: <a href="../plan.html">planning brief</a>. Shared semantics: <a href="../p0-data-contract/plan.html">P0 data contract</a>.</p>
+<p>Confirmed requirement: the operator selected “Require restart-safe capture” after reviewing the first-release tradeoff. Telemetry accepted into local storage must survive Mission Control restarts in v1, within documented retention and capacity bounds. The remaining choice is how to satisfy that requirement, not whether to defer it.</p>
+<nav aria-label="Contents"><ul><li><a href="#decision-this-area-owns">Decision this area owns</a></li><li><a href="#architecture-and-ownership">Architecture and ownership</a></li><li><a href="#capture-is-a-separate-guarantee-from-export">Capture is a separate guarantee from export</a></li><li><a href="#projection-and-replay-protocol">Projection and replay protocol</a></li><li><a href="#metrics-and-traces-have-different-persistence-needs">Metrics and traces have different persistence needs</a></li><li><a href="#transport-contract">Transport contract</a></li><li><a href="#capacity-retention-and-scheduling">Capacity, retention and scheduling</a></li><li><a href="#consent-endpoint-changes-and-shutdown">Consent, endpoint changes and shutdown</a></li><li><a href="#prototype-acceptance-matrix">Prototype acceptance matrix</a></li><li><a href="#rejected-alternative-and-exit-gate">Rejected alternative and exit gate</a></li></ul></nav><h2 id="decision-this-area-owns">Decision this area owns</h2>
+<p>Guarantee that telemetry already accepted into a bounded durable store survives a daemon restart, preserves original attribution and can be retried when a destination returns. Do not promise lossless capture before that acceptance boundary, unlimited retention or exactly-once delivery to an arbitrary backend.</p>
+<p>Prefer one daemon-owned transport facility with independent destination profiles. A user-operated Collector is optional. A Collector bundled into the app remains the fallback if the public JavaScript integration surface makes application persistence disproportionately complex.</p>
+<p>The operator selected a local Grafana/Prometheus dashboard deliverable in <a href="../p5-analysis-delivery/plan.html">P5</a>. P1&#39;s compatibility spike uses that reference stack early; P5 proposes a standalone Collector and Tempo for its metric/trace routing. This does not make the local stack a prerequisite for application capture or replace P1&#39;s restart-safe store.</p>
+<h2 id="architecture-and-ownership">Architecture and ownership</h2>
+<p>Proposed flow:</p>
+<div class="diagram"><svg viewBox="0 0 1100 570" role="img" aria-label="Durable capture and independent destination delivery"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z"/></marker></defs><text class="title" x="28" y="35">Durable capture and independent destination delivery</text><rect x="28" y="70" width="270" height="90" rx="8"/><text x="163" y="105" text-anchor="middle">Domain owners / UI ingress</text><text class="small" x="163" y="131" text-anchor="middle">Authoritative facts and observations</text><rect x="410" y="70" width="270" height="90" rx="8"/><text x="545" y="105" text-anchor="middle">Validate and minimize</text><text class="small" x="545" y="131" text-anchor="middle">Immutable context and capture policy</text><rect x="792" y="70" width="270" height="90" rx="8"/><text x="927" y="105" text-anchor="middle">Bounded durable journal</text><text class="small" x="927" y="131" text-anchor="middle">Acceptance occurs on commit</text><rect x="792" y="240" width="270" height="90" rx="8"/><text x="927" y="275" text-anchor="middle">Per-audience projection</text><text class="small" x="927" y="301" text-anchor="middle">Aggregates and checkpoints</text><rect x="410" y="240" width="270" height="90" rx="8"/><text x="545" y="275" text-anchor="middle">Immutable export batches</text><text class="small" x="545" y="301" text-anchor="middle">Original identities and timestamps</text><rect x="28" y="240" width="270" height="90" rx="8"/><text x="163" y="275" text-anchor="middle">Destination delivery state</text><text class="small" x="163" y="301" text-anchor="middle">Independent retry / expiry / consent</text><rect x="28" y="415" width="270" height="90" rx="8"/><text x="163" y="450" text-anchor="middle">OTLP endpoint</text><text class="small" x="163" y="476" text-anchor="middle">Direct or optional local Collector</text><rect x="410" y="415" width="270" height="90" rx="8"/><text x="545" y="450" text-anchor="middle">API / SSE status</text><text class="small" x="545" y="476" text-anchor="middle">Pending, accepted, expired, failed</text><path d="M298 115 H400" marker-end="url(#arr)"/><path d="M680 115 H782" marker-end="url(#arr)"/><path d="M927 160 V230" marker-end="url(#arr)"/><path d="M792 285 H690" marker-end="url(#arr)"/><path d="M410 285 H308" marker-end="url(#arr)"/><path d="M163 330 V405" marker-end="url(#arr)"/><path d="M298 310 H345 V460 H400" marker-end="url(#arr)"/></svg></div>
+<p>Only the daemon writes SQLite. Browser, MCP, Foreman and Electron report through daemon interfaces. The existing database setup uses a single synchronous connection with explicit transaction ownership. The workflow store&#39;s transaction helper opens <code>BEGIN IMMEDIATE</code>; it cannot safely receive a generic nested telemetry transaction. <a href="../../../../src/server/db.ts">Database ownership</a>, <a href="../../../../src/server/workflows/store.ts">workflow store</a>.</p>
+<p>Reference storage proposal, not migration-ready SQL:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Logical store</th>
+<th>Key facts</th>
+<th>Invariant</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Contexts/resources</td>
+<td>Immutable allowed metadata, resource revision, policy epoch</td>
+<td>No join to current defaults during replay</td>
+</tr>
+<tr>
+<td>Journal</td>
+<td>Sequence, event ID, schema, source identity, event/observation time, minimized payload, eligible profiles</td>
+<td>Unique semantic identity; bounded bytes and age</td>
+</tr>
+<tr>
+<td>Projection state</td>
+<td>Catalog version, consumed sequence, active series, cumulative counters/buckets, source reconciliation cursors and bounded P5 cohort reducers</td>
+<td>Aggregate contribution and checkpoint commit together</td>
+</tr>
+<tr>
+<td>Export batches</td>
+<td>Signal, destination generation, policy epoch, immutable payload/DTO, digest, original resource/timestamps</td>
+<td>Retry does not reaggregate or restamp</td>
+</tr>
+<tr>
+<td>Delivery state</td>
+<td>Pending/leased/retry/accepted/rejected/expired, attempts, next retry, bounded error</td>
+<td>Independent per destination; no unbounded retry history</td>
+</tr>
+</tbody></table></div>
+<p>Use existing daemon DB/migrations initially only if measured storage and maintenance cost fit. A separate telemetry SQLite file is a possible daemon-owned alternative, not permission for another process to write. It provides a clearer physical quota boundary but loses same-database transactional opportunities. The prototype compares the tradeoff.</p>
+<h2 id="capture-is-a-separate-guarantee-from-export">Capture is a separate guarantee from export</h2>
+<p>Reference capture sequence:</p>
+<ol>
+<li>The business operation completes at its existing authoritative owner.</li>
+<li>A bounded telemetry append attempts to capture its normalized fact without network I/O. Success means journal commit; failure is contained and does not change the business result.</li>
+<li>A bounded reconciliation adapter can recover facts from durable authoritative records where identity and event-time context are sufficient. Source retention and a cutover watermark bound that recovery.</li>
+<li>Ephemeral UI intent/error observations that never reached durable acceptance may be lost. Expose capture coverage; do not synthesize missing history from mutable state.</li>
+</ol>
+<p>This consciously leaves a crash window between a successful business commit and telemetry acceptance. Closing it requires an owner-specific transactional capture record with a demonstrated failure policy. Do not attach arbitrary telemetry work to every business transaction and claim both losslessness and unconditional fail-open behavior.</p>
+<p>Durable domain facts with stable source identity can be reconciled idempotently. They still cannot recover metadata that was never frozen. A post-restart scan of a current Session cannot reconstruct its previous model. Source adapters must state what they can recover, their maximum scan/work per tick, and what becomes unknown.</p>
+<h2 id="projection-and-replay-protocol">Projection and replay protocol</h2>
+<p>Read a bounded journal batch. In one projection-owned transaction, compute declared metric contributions, update bounded aggregate state, create deterministic completed span descriptors, create export-ready batches and advance the consumed sequence. No network calls occur inside this transaction. Any serialization work moved outside the transaction must use a persisted pending descriptor so a crash cannot advance the checkpoint without retaining its output.</p>
+<p>Delivery leases one batch per ordered signal/stream partition, sends it asynchronously, then records its result. A crash before local acknowledgement retries the same immutable record. Lease recovery cannot assume a pending request was never accepted remotely.</p>
+<p>Do not replay journal events through live SDK counters on every restart. The journal is processed once into durable aggregate state; retries operate on resulting batches. Reconciliation uses source event identity rather than re-counting all terminal rows at every startup.</p>
+<p>Retain dedupe identities/cursors for the supported replay window even after export payloads are pruned. A committed capture cutoff prevents an expired historical source from being imported again as fresh activity. Late genuine observations, such as a merge recorded today for an old task, have their own semantic identity and observation time. The implementation must specify this horizon; a unique key on a journal row that is later deleted is not by itself durable deduplication.</p>
+<p>Each destination gets its own aggregation and consent epoch. A product opt-in cannot receive the user&#39;s cumulative pre-opt-in total merely because both use the same local source. Eligibility considers original occurrence/capture policy and historical-import rules. A newly enabled profile starts a new metric stream baseline; runs already in progress are marked as pre-existing observations for cohort analysis.</p>
+<h2 id="metrics-and-traces-have-different-persistence-needs">Metrics and traces have different persistence needs</h2>
+<p>For domain counts and explicit-bucket duration histograms, prototype persisted cumulative values with original stream start time. For live process gauges and optional diagnostics, use ordinary SDK collection with explicit best-effort coverage. Keep namespaces/projections disjoint so the same event is not counted by both.</p>
+<p>Each queued metric point retains resource attributes, schema/catalog revision, temporality, start/end times, dimensions and values. Replaying after an upgrade cannot replace <code>service.version</code> with the new binary&#39;s version. Resource identity must distinguish logical writers, while a durable domain stream can survive a process restart when its state and start time actually survive.</p>
+<p>For traces, persist operation IDs, correlation, original start/end timestamps and bounded attributes/events. A completed operation can be serialized later without keeping an SDK Span alive. Interrupted operations produce an explicitly incomplete/interrupted result on reconciliation when the owner can establish it, not an invented successful completion.</p>
+<p>Important SDK constraint found during planning: the current JavaScript <code>MetricReaderOptions.metricProducers</code> option is experimental, and its documentation says additional producers&#39; resources are replaced by the reader&#39;s SDK resource. A naive producer attached to the new daemon would therefore misattribute historical batches. The public exports include metric data types, a reader and producer interface, but this does not prove a compatible durable adapter for a selected package release. <a href="https://raw.githubusercontent.com/open-telemetry/opentelemetry-js/main/packages/sdk-metrics/src/export/MetricReader.ts">MetricReader source</a>, <a href="https://raw.githubusercontent.com/open-telemetry/opentelemetry-js/main/packages/sdk-metrics/src/index.ts">public exports</a>.</p>
+<p>The prototype must select and pin a supported SDK/export/serialization path that preserves resources and IDs. Options are resource-partitioned readers with tested public extension interfaces, or another supported exporter/serialization boundary. Do not deep-import SDK internals, manually implement OTLP protobuf, or assume ordinary exporter callbacks expose sufficient partial-success detail. If no maintainable adapter passes, re-evaluate a local Collector before broad instrumentation.</p>
+<h2 id="transport-contract">Transport contract</h2>
+<p>Recommend OTLP/HTTP protobuf as the first wire format, with explicit per-signal URLs or one base URL resolved once. JSON support and gRPC are later compatibility choices, not prerequisites. The existing local Claude receiver uses its own HTTP/JSON contract and stays independent.</p>
+<p>Credential-bearing exports to non-loopback destinations require HTTPS. Loopback HTTP Collectors remain supported. Enforce this at configuration validation and the exporter boundary, and never forward credentials when a redirect changes the destination. TLS certificate verification stays enabled; remote credential-free endpoints still prefer HTTPS.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Result</th>
+<th>Delivery action</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Valid full success</td>
+<td>Mark accepted and release retained payload when no other local policy needs it</td>
+</tr>
+<tr>
+<td>Partial success</td>
+<td>Record accepted/rejected accounting from the response; do not retry the whole batch</td>
+</tr>
+<tr>
+<td>Network failure, ambiguous disconnect or protocol-defined retryable response</td>
+<td>Retry same batch with bounded backoff/jitter and valid Retry-After handling</td>
+</tr>
+<tr>
+<td>Authentication/configuration error</td>
+<td>Pause that destination visibly; do not hammer it indefinitely</td>
+</tr>
+<tr>
+<td>Permanent payload/schema rejection</td>
+<td>Quarantine bounded metadata or discard according to policy; continue unrelated valid batches</td>
+</tr>
+<tr>
+<td>Oversized request</td>
+<td>Prefer preventing it with the configured byte limit; any split/rebuild policy must be protocol-tested rather than assumed</td>
+</tr>
+<tr>
+<td>Unexpected response or parse error</td>
+<td>Preserve bounded diagnostics; follow the selected transport&#39;s tested failure classification</td>
+</tr>
+</tbody></table></div>
+<p>OTLP defines retryability, partial success and ambiguous-acknowledgement limitations. Endpoint acceptance is not proof that a downstream dashboard indexed the data. Document each hop&#39;s durability promise. <a href="https://opentelemetry.io/docs/specs/otlp/">OTLP specification</a>.</p>
+<p>Candidate transport budgets for measurement: 30-second collection/export cadence, 1 MiB maximum request payload, 10-second request timeout, one in-flight request per destination/signal, and jittered retry from roughly 1 to 60 seconds subject to server backoff and retention. These values are proposals. Recovery drains under a byte/rate budget so an overnight backlog cannot saturate the daemon or endpoint.</p>
+<h2 id="capacity-retention-and-scheduling">Capacity, retention and scheduling</h2>
+<p>Candidate policy: seven-day age limit for retained journal/export payloads and a 256 MiB logical telemetry budget across contexts, journal, aggregates and both destination queues. The applicable age or capacity limit wins. Charge payload copies and pending serialization descriptors, not just journal JSON. Bound active series, orphaned contexts, leases and diagnostic histories too.</p>
+<p>Minimal aggregate/dedupe state has its own declared lifetime. P5&#39;s seven-day start window plus seven-day outcome horizon needs a longer lookback than an unsent-payload queue; it proposes 30 days for bounded analytical reducer state, including late-arrival reconciliation. Charge that state to the same total budget, enforce consent deletion and expose incomplete cohorts if required state expires or is dropped. Finalize these lifetime pairs together in the compatibility spike; do not extend raw payload retention implicitly or retain aggregates indefinitely.</p>
+<p>A logical quota in shared <code>harness.db</code> is not a hard cap on the SQLite file/WAL on disk. Deletes free pages for reuse but may not reduce file size. Measure physical overhead and maintenance effects; use a separate daemon-owned store if an independently enforceable disk budget is required. Never run disruptive whole-database compaction merely to shrink telemetry while sessions are active.</p>
+<p>Admission order under pressure: stop optional diagnostic detail, then drop new low-priority interaction observations, while preserving a bounded reserve for outcome/error facts. At the absolute cap, even high-priority capture may fail and must not block work. Export lag, rejected/expired counts and capture gaps remain visible. If disk failure prevents recording a drop count, report an unknown gap on recovery instead of claiming a precise count.</p>
+<p>Keep a stopped destination from exhausting the other&#39;s whole capacity by assigning per-profile shares with a total cap. An idle profile can lend capacity, but records never cross audiences. Prune unreferenced contexts and inactive series with explicit reset semantics. Do not preserve aggregates forever after their consent/retention context expires.</p>
+<p>Export original historical points in stream order. Expiring older cumulative snapshots may preserve aggregate totals while losing temporal resolution; do not regenerate them with current timestamps or call a reconnect burst new activity. P5&#39;s freshness/coverage markers must expose such gaps. Backend rejection of old samples is visible loss, not grounds to silently retimestamp them.</p>
+<h2 id="consent-endpoint-changes-and-shutdown">Consent, endpoint changes and shutdown</h2>
+<p>Collection modes are off, local-only and export-enabled profiles. Product and user-backend permissions are independent. Pausing export keeps bounded capture running; disabling a profile prevents new profile capture and drains no backlog. Withdrawing product consent purges unsent product batches/projections, while leaving separately authorized local/user data intact.</p>
+<p>Each endpoint change creates a destination generation. Old batches never silently move to a new endpoint. The user may keep them for the previous endpoint, discard them, or explicitly approve a compatible transfer. Narrowing a policy can purge/reproject only from already allowed retained facts; it cannot widen sharing retroactively.</p>
+<p>On shutdown, stop new export work, complete a bounded local commit and release/expire leases cleanly. A network flush is opportunistic and time-bounded; offline exit never waits for the remote server. On startup, recover leases, validate supported schema versions, reconcile bounded sources and start draining only enabled destinations.</p>
+<p>Credentials are resolved at send time from a secret reference; they never enter journal or batch payloads. Do not mutate global <code>OTEL_*</code> variables that child agents inherit. No exporter traffic goes back into the existing local cost receiver, and exporter errors use a bounded self-diagnostic path to prevent recursive telemetry generation.</p>
+<h2 id="prototype-acceptance-matrix">Prototype acceptance matrix</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Injected boundary/failure</th>
+<th>Required observation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Crash after journal commit, before projection</td>
+<td>Event contributes once after restart</td>
+</tr>
+<tr>
+<td>Crash during projection transaction</td>
+<td>Checkpoint and aggregate/batch state either all commit or none do</td>
+</tr>
+<tr>
+<td>Crash after remote acceptance, before local ack</td>
+<td>Same payload/identity replayed; backend duplicate behavior documented</td>
+</tr>
+<tr>
+<td>Upgrade with old batches pending</td>
+<td>Old app version, policy, timestamps and schema retained</td>
+</tr>
+<tr>
+<td>One destination offline, the other healthy</td>
+<td>Healthy destination continues; budgets stay bounded</td>
+</tr>
+<tr>
+<td>Consent withdrawal during in-flight send</td>
+<td>Stop new sends and cancel when possible; acknowledge that already accepted data cannot be recalled</td>
+</tr>
+<tr>
+<td>Long offline period, age/byte pressure</td>
+<td>Defined admission/expiry, visible loss, bounded disk/memory</td>
+</tr>
+<tr>
+<td>Partial success and invalid response</td>
+<td>Correct status accounting without whole-batch amplification</td>
+</tr>
+<tr>
+<td>Malformed/unknown schema record</td>
+<td>Quarantine/expire bounded record, preserve other data</td>
+</tr>
+<tr>
+<td>Source history pruned before reconciliation</td>
+<td>Mark recovery gap; do not fabricate context</td>
+</tr>
+</tbody></table></div>
+<p>Use only synthetic fixtures and local fake endpoints. Prove one review metric, one duration histogram, one trace and one standalone error, including privacy sentinel checks and both destination profiles. Testing must cover acknowledgement details as well as “HTTP request succeeded.”</p>
+<h2 id="rejected-alternative-and-exit-gate">Rejected alternative and exit gate</h2>
+<p>An in-memory-only queue was considered and rejected for v1 because it loses accepted unsent data on restart. Best-effort capture can still describe the explicit pre-journal boundary and optional live diagnostics; it cannot describe accepted core telemetry or replace durable local capture.</p>
+<p>Choose the durable implementation mechanism only after a public-API compatibility spike, backend replay test and measured storage/latency envelope pass. A failed application-queue spike requires another durable mechanism, such as a supervised persistent Collector with a demonstrated application-to-Collector acceptance boundary; it does not silently reduce the v1 requirement. This area is a concrete protocol proposal with named failure boundaries, not evidence that an SDK already provides those guarantees.</p>
+</main></body></html>

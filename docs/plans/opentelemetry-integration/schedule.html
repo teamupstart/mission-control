@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenTelemetry scheduled implementation tasks</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>OpenTelemetry task schedule</h1>
+<p>Created 2026-09-13 after publishing plan commit <code>5e62fea7f63a60d287e7ffe4671cf944705fec63</code>. All seven tasks target the canonical Mission Control repository, with no additional repositories and no model or effort overrides. They were verified in the backlog through the daemon API.</p>
+<p>Every task has a direct prerequisite on planning task <code>029710f7-b160-45dd-9080-955b2939dcfb</code>, resolved by Mission Control from the current session. That edge remains unsatisfied until the planning PR merges. Direct implementation prerequisites are listed below; transitive edges are omitted.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Phase and guide</th>
+<th>Task ID</th>
+<th>Direct phase prerequisites</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="phase-1-durable-walking-slice.md">1. Durable walking slice and local reference stack</a></td>
+<td><code>d3b7baa9-ce4f-4770-8cf6-51badfd7628b</code></td>
+<td>None</td>
+</tr>
+<tr>
+<td><a href="phase-2-profiles-and-settings.md">2. Export profiles, consent and Settings</a></td>
+<td><code>053c2d24-57c0-43a9-9d80-0bc087bc5787</code></td>
+<td>1</td>
+</tr>
+<tr>
+<td><a href="phase-3-session-attribution.md">3. Session attribution and verified outcomes</a></td>
+<td><code>212cd9e2-8f42-4221-9ed5-7ae083906142</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td><a href="phase-4-workflow-insights.md">4. Workflow stages, verdicts and recovery</a></td>
+<td><code>b434ca9f-ec2a-4c2a-82ec-2e585ef22cee</code></td>
+<td>3</td>
+</tr>
+<tr>
+<td><a href="phase-5-actions-and-errors.md">5. Primary actions, automation and safe errors</a></td>
+<td><code>9cf90755-b85a-4050-9b12-362db0a5cfa8</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td><a href="phase-6-analytical-projections.md">6. Bounded analytical projections</a></td>
+<td><code>60dcf818-09a5-43b7-9fa5-01eb3bb05157</code></td>
+<td>4</td>
+</tr>
+<tr>
+<td><a href="phase-7-grafana-dashboards.md">7. Six local Grafana dashboards</a></td>
+<td><code>ea77fc60-1123-484e-8b1e-6a217e0b156b</code></td>
+<td>5, 6</td>
+</tr>
+</tbody></table></div>
+<p>Execution order: <code>1 -&gt; 2 -&gt; 3 -&gt; 4 -&gt; {5, 6} -&gt; 7</code>. Phases 5 and 6 can execute and merge in either order. Phase 7 waits for both. Each phase task opens its own implementation PR; a completed prerequisite is released by its merged PR rather than by a plan checkbox.</p>
+<p>Read the <a href="phased-plan.html">rendered implementation index</a> or <a href="phased-plan.md">source index</a> for ownership and verification. The task prompts reference the published source plan, index and exact phase guide, and leave implementation detail in those documents.</p>
+</main></body></html>

@@ -1,0 +1,216 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>P2. Session, task and execution attribution</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>P2. Session, task and execution attribution</h1>
+<p>Draft design recommendation. Parent: <a href="../plan.html">planning brief</a>. Shared terms and audience policy: <a href="../p0-data-contract/plan.html">P0 data contract</a>.</p>
+<nav aria-label="Contents"><ul><li><a href="#decision-this-area-owns">Decision this area owns</a></li><li><a href="#identity-graph">Identity graph</a></li><li><a href="#launch-discover-and-resume-are-different-observations">Launch, discover and resume are different observations</a></li><li><a href="#requested-pending-and-effective-execution">Requested, pending and effective execution</a></li><li><a href="#which-author-model-belongs-on-a-review">Which author model belongs on a review?</a></li><li><a href="#terminal-and-task-context">Terminal and task context</a></li><li><a href="#session-endings-and-task-outcomes">Session endings and task outcomes</a></li><li><a href="#early-exit-and-abandonment">Early exit and abandonment</a></li><li><a href="#pr-and-completion-provenance">PR and completion provenance</a></li><li><a href="#acceptance-examples-and-remaining-gates">Acceptance examples and remaining gates</a></li></ul></nav><h2 id="decision-this-area-owns">Decision this area owns</h2>
+<p>Preserve what was actually known about a session when work happened. Model choice, session existence, task completion and PR creation are independent facts. Telemetry must follow the current lifecycle owners while retaining enough context to compare results across changes.</p>
+<h2 id="identity-graph">Identity graph</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Identity</th>
+<th>Meaning</th>
+<th>Transition rule</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Telemetry installation/consent epoch</td>
+<td>One opted-in installation identity period</td>
+<td>Reset/re-consent can rotate it; never a person/account ID</td>
+</tr>
+<tr>
+<td>Daemon boot</td>
+<td>One running process</td>
+<td>Changes on restart; useful for operational errors and gauges</td>
+</tr>
+<tr>
+<td>Session instance</td>
+<td>One Registry-owned runtime entry</td>
+<td>A new entry for SDK-to-terminal handoff; not derived remotely from PID/tty</td>
+</tr>
+<tr>
+<td>Logical conversation</td>
+<td>Harness conversation identity</td>
+<td>May rotate on context clear; unknown until observed</td>
+</tr>
+<tr>
+<td>Work episode</td>
+<td>Provenance of work across current bindings</td>
+<td>Reuse the existing episode owner; do not equate with every work turn</td>
+</tr>
+<tr>
+<td>Task</td>
+<td>Durable intended work</td>
+<td>May span sessions and multiple repositories</td>
+</tr>
+<tr>
+<td>Execution segment</td>
+<td>Time interval with stable effective execution metadata</td>
+<td>Opens on meaningful observed change, not every metadata refresh</td>
+</tr>
+<tr>
+<td>Workflow binding/run</td>
+<td>One association or one execution of a workflow version</td>
+<td>Several may attach to one session/task; use explicit links</td>
+</tr>
+<tr>
+<td>Repository PR association</td>
+<td>Proven per-repository delivery outcome</td>
+<td>Late updates survive the original session&#39;s removal</td>
+</tr>
+</tbody></table></div>
+<p>The current Session interface explicitly distinguishes Registry ID, runtime and harness session ID. Work-episode interfaces retain PR and merge facts. These are verified source contracts. <a href="../../../../src/shared/types.ts">Session types</a>, <a href="../../../../src/server/db.ts">work episodes</a>.</p>
+<p>Proposed relationships: task -&gt; work episode -&gt; session instance; session instance -&gt; logical conversation and execution segments; workflow run -&gt; frozen submission context -&gt; relevant work episode/segments; task/work episode -&gt; one or more repository PR associations. Persist only the telemetry projection of these links, not another binding mechanism.</p>
+<h2 id="launch-discover-and-resume-are-different-observations">Launch, discover and resume are different observations</h2>
+<p>Emit <code>session.created</code> for an app-owned launch after actual runtime creation, linked to the dispatch operation. Emit <code>session.first_observed</code> for a discovered external session. Do not manufacture its original start time: record process-reported timing separately with source quality, and report an observation window.</p>
+<p>A reconnecting dashboard and an SSE snapshot emit neither event. A daemon restart that re-adopts the same proven session updates observation continuity, not new-user or new-session adoption. When identity cannot be proven across restart, report a new observation with continuity unknown rather than deduping by directory/name.</p>
+<p>Managed restoration is a separate operation with requested/succeeded/failed results. An inert restoring projection is not yet a usable session. Record restoration duration and outcome at the supervisor, and only measure usable-session counts after Registry admission.</p>
+<p>Dispatch records requested/default-resolved choices at the dispatcher&#39;s model/effort resolution boundary, then actual runtime and first authoritative execution metadata later. A launch request that fails never becomes a started session.</p>
+<h2 id="requested-pending-and-effective-execution">Requested, pending and effective execution</h2>
+<p>The source already exposes observed model ID, <code>thinkingLevel</code>, <code>nativeEffort</code>, metadata source and observation time. It also distinguishes a successful effort selection from when that selection takes effect: some driver changes are next-turn pending. <a href="../../../../src/server/routes.ts">Effort route</a>, <a href="../../../../src/server/registry.ts">Registry effort reconciliation</a>, <a href="../../../../src/server/dispatcher.ts">dispatcher resolution</a>.</p>
+<p>Proposed execution snapshot fields:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field group</th>
+<th>Fields and semantics</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Request</td>
+<td>Model/effort requested, inherited/default-resolved value, resolution source, requested time</td>
+</tr>
+<tr>
+<td>Acceptance</td>
+<td>Accepted/rejected, pending/current applicability, acceptance time</td>
+</tr>
+<tr>
+<td>Effective</td>
+<td>Catalogued model ID, normalized effort, optional allowlisted native effort, observed time and source</td>
+</tr>
+<tr>
+<td>Quality</td>
+<td><code>observed</code>, <code>launch_resolved</code>, <code>unknown</code>, <code>unsupported</code>; freshness at capture</td>
+</tr>
+<tr>
+<td>Scope</td>
+<td>Harness, runtime, segment ID, conversation identity, work-turn identity when known</td>
+</tr>
+</tbody></table></div>
+<p>Do not set <code>effective_effort=high</code> merely because the API accepted a request. Example timeline:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Time</th>
+<th>Event</th>
+<th>Attribution</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>10:00</td>
+<td>Turn A starts on medium effort</td>
+<td>Segment S1: medium</td>
+</tr>
+<tr>
+<td>10:01</td>
+<td>User selects high; driver accepts for next turn</td>
+<td>Selection event: high pending; S1 still medium</td>
+</tr>
+<tr>
+<td>10:02</td>
+<td>Turn A completes</td>
+<td>Duration/tokens attributed to medium</td>
+</tr>
+<tr>
+<td>10:03</td>
+<td>Turn B reports high</td>
+<td>Open S2: high observed; clear pending</td>
+</tr>
+<tr>
+<td>10:04</td>
+<td>Default setting changes globally</td>
+<td>Existing S2 stays high; future launches may differ</td>
+</tr>
+</tbody></table></div>
+<p>Segment changes follow Registry&#39;s reconciled values, not raw hook races. Repeated identical observations refresh quality without creating new segments. Conversation rotation always ends the old segment; a model/effort value never migrates to an unrelated conversation by accident.</p>
+<p>If a provider does not expose effective effort, retain the launch-resolved choice with its weaker provenance. Never translate unsupported/unknown into low or zero.</p>
+<h2 id="which-author-model-belongs-on-a-review">Which author model belongs on a review?</h2>
+<p>Freeze the authoring context when a submission is captured. The reviewer model comes from the attempt&#39;s own execution resolution. These are two distinct roles.</p>
+<p>For a submission built across multiple authoring segments, retain the segment links, a bounded set of model/effort pairs, and <code>author_execution=mixed</code>. If a simple chart uses the last observed author segment at submission time, name that dimension <code>author_model_at_submission</code>, not “the model that produced all the work.” Do not duplicate one review into each model cohort and inflate the total.</p>
+<p>Model-specific token and turn-duration comparisons use execution segments with proven attribution. A mixed workflow-run outcome goes in a mixed/unknown bucket unless the analysis explicitly allocates it using an approved method. No attribution by filename, cost guessing or transcript text classification is proposed.</p>
+<h2 id="terminal-and-task-context">Terminal and task context</h2>
+<p>Read backend IDs through terminal registries and Session terminal handles. Record multiplexer and emulator independently because one can nest inside the other. SDK runtime is <code>not_applicable</code>; an unintegrated terminal is <code>unknown</code>, not no terminal. Never capture tty, process ID, pane token, tab name or command.</p>
+<p>Task kinds remain the existing <code>ship</code>, <code>scout</code>, <code>plan</code>, <code>pipeline</code>, <code>chat</code>. A personal discovered session can have no task kind; use an explicit no-task state instead of inventing <code>chat</code>. Capture task source, dispatch source, queue/schedule linkage, configured workflow selection and frozen run version at their respective times. A later task assignment starts a new association interval.</p>
+<p>For multi-repository work, expose repository count and opaque per-repository association on traces. Model/task counters must not multiply by repository count.</p>
+<h2 id="session-endings-and-task-outcomes">Session endings and task outcomes</h2>
+<p>Use two orthogonal records: <code>session.end_observed</code> and <code>task.outcome_recorded</code>. A kill request is an action fact before either. The session event contains observation reason and supporting provenance; it does not overwrite the task&#39;s authoritative status.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Observed circumstance</th>
+<th>Session measurement</th>
+<th>Task/analysis treatment</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Explicit kill requested and confirmed by owner</td>
+<td>Operator/automation termination, with actor provenance</td>
+<td>Task outcome remains independently observed</td>
+</tr>
+<tr>
+<td>Temporary terminal discovery miss</td>
+<td>Observation interruption only</td>
+<td>Not ended, abandoned or failed</td>
+</tr>
+<tr>
+<td>Registry durable removal with no known reason</td>
+<td>End observed, reason unknown/lost as supported</td>
+<td>Missing completion evidence remains unknown</td>
+</tr>
+<tr>
+<td>App shutdown suspends a managed session</td>
+<td>Suspension/restoration episode</td>
+<td>Not task abandonment</td>
+</tr>
+<tr>
+<td>SDK-to-terminal handoff</td>
+<td>Source entry replaced/handoff; link successor</td>
+<td>One continuous task if existing owners bind it that way</td>
+</tr>
+<tr>
+<td>Task explicitly completes while session stays open</td>
+<td>No session end yet</td>
+<td>Successful task, session continues</td>
+</tr>
+<tr>
+<td>Session vanishes with no recorded outcome</td>
+<td>Unknown work completion</td>
+<td>Preserve operational task status but do not infer a verified failed task result</td>
+</tr>
+<tr>
+<td>Late verified PR merge</td>
+<td>Separate later delivery fact</td>
+<td>Can update cohort outcome; historical session-end observation stays unchanged</td>
+</tr>
+</tbody></table></div>
+<p>The distinction in the unknown row is necessary: <code>TaskManager.agentWentAway</code> may settle an uncompleted departed task as failed while documenting that a clean exit cannot be distinguished from a crash. Export <code>task_status=failed</code> and <code>completion_evidence=missing</code> together; product dashboards should not turn this into a measured correctness failure. <a href="../../../../src/server/tasks.ts">Task departure handling</a>.</p>
+<p>Registry&#39;s <code>session_exit</code> fires before the removal timer and still has access to the session snapshot; durable <code>session_remove</code> occurs later. Use the early signal only to stage context, with a cancellation path if the session is rediscovered. Count final removal at the durable boundary. Startup reconciliation needs the matching path, after restoration/observation, to prevent omissions. <a href="../../../../src/server/registry.ts">Registry eviction</a>.</p>
+<h2 id="early-exit-and-abandonment">Early exit and abandonment</h2>
+<p><code>ended_while_work_open</code> is an observed relationship at departure, not a moral judgment or a failed outcome. “Abandoned” is an optional derived cohort: ended work with no completion or linked continuation after a proposed seven-day grace period. Display the horizon and observation quality, and exclude known suspensions/handoffs. Later continuation can revise the cohort result without rewriting raw events.</p>
+<p>Do not emit abandonment as a one-way counter from a timer. A count that cannot be corrected when a user returns is unsuitable for retention/cohort analysis. P5 defines the classification contract; Phases 6 and 7 implement the corresponding summaries and queries.</p>
+<h2 id="pr-and-completion-provenance">PR and completion provenance</h2>
+<p>Use the existing work-episode/per-repository PR ledger, action verification and merge observations. Proposed PR facts are <code>associated_existing</code>, <code>creation_verified</code>, <code>updated</code>, <code>merged</code>, <code>closed_unmerged</code>, and visibility unknown. An action requested or a session saying it opened a PR does not satisfy creation verified.</p>
+<h3>Preserving late delivery observations</h3>
+<p>Phase 3 owns the preservation and polling needed for late PR facts. The current implementation does not guarantee them after every ownership change: <code>invalidateTaskOwnershipInTransaction</code> deletes current task bindings without archiving them. <code>mergedPrFor</code> and <code>taskPrPollTargets</code> then lose that association. Existing historical bindings survive ordinary rebinds, but copying invalidated bindings into that table would also make them eligible for operational task completion and could release dependencies outside the selection-time boundary. <a href="../../../../src/server/db.ts">Ownership invalidation</a>, <a href="../../../../src/server/tasks.ts">completion lookup</a>, <a href="../../../../test/task-dependencies.test.ts">dependency boundary tests</a>.</p>
+<p>For opted-in capture, Phase 3 retains a minimal, bounded telemetry projection of each verified task/work-episode/repository/PR association when first observed, while its source ownership still exists. Persist it through P1&#39;s durable capture/projection facility, with the original context and a local-only PR lookup reference. This is observation state, with no authority to bind a session or complete a task. It survives ownership invalidation and restart until the declared late-outcome horizon expires; acceptance failures or expired associations produce incomplete coverage. PR URLs remain local polling metadata and are excluded from exported telemetry.</p>
+<p>Extend the existing daemon PR poller with a distinct telemetry observation reason, deduplicating URLs with operational poll targets. An observation-only result emits the verified late-delivery fact into P1 and the Phase 6 cohort input lookup; it does not enter <code>mergedPrFor</code>, call task completion, or satisfy dependencies. When a URL also has operational provenance, the existing operational reconciliation still applies its own eligibility and selection-time rules. Do not archive invalidated bindings into <code>historical_task_work_episode_bindings</code> merely to enable telemetry. Changing operational late-merge completion policy is outside this telemetry phase.</p>
+<p>Completion is task-kind aware. Chat/plan/scout success requires its own contract and need not create a PR. For eligible shipping work, count one task with any verified PR and separately the number of unique PR associations. Preserve zero-observed versus observation-unavailable. Do not export the PR URL, repository owner, branch or commit SHA to product analytics.</p>
+<h2 id="acceptance-examples-and-remaining-gates">Acceptance examples and remaining gates</h2>
+<p>Focused tests should cover the timeline above; unchanged metadata; context clear; external discovery followed by adoption; failed restoration; transient exit and reappearance; explicit kill versus actual termination; task completion without session exit; clean unknown exit; handoff; multiple workflow bindings; multiple PRs and late merge.</p>
+<p>Phase 3 must capture a verified open-PR association, remove or rotate session ownership through the real invalidation path, restart, then observe its later verified merge through the shared poller. Assert one late-delivery fact and an updated cohort-input lookup with original attribution, unchanged session-end evidence and operational task status, and no newly satisfied dependency edge. Include dependencies selected before and after the ownership boundary, a URL with both polling reasons, duplicate observations, expired capture and no-consent cases. Phase 6 adds the corresponding final cohort-snapshot assertion.</p>
+<p>All exact capture points need an owner-by-owner implementation review. Historical rows before the cutover remain unattributed unless an explicit historical-import feature is later designed. This area defines telemetry semantics; it does not change Registry eviction, task completion policy, effort application or terminal behavior.</p>
+</main></body></html>

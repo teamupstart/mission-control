@@ -47,8 +47,9 @@ Mission Control's product reference is organized by feature below.
 
 ## Contributing and setup
 
+- [Setup guide](setup-guide.html): install Mission Control, set this machine up from **Settings → Setup**, and keep the app current. Illustrated, for someone installing it for the first time.
 - [Contributing](../CONTRIBUTING.md)
-- [First-run setup](setup.md)
+- [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
 
 ## Support
 

@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Install Mission Control, set this machine up from Settings &rarr; Setup, and keep the app current.">
+<title>Mission Control setup guide</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --surface-0: #0e1013;
+    --surface-1: #16181c;
+    --surface-2: #1d2026;
+    --surface-3: #262a31;
+    --line:      #2f343c;
+    --line-soft: #23272e;
+    --text-primary:   #f2f3f5;
+    --text-secondary: #b6bcc6;
+    --text-muted:     #858d97;
+    --accent:    #5b9bf0;
+    --good:      #3fb98a;
+    --warn:      #d9a441;
+    --critical:  #e8756f;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:where(:not([data-theme="dark"])) {
+      color-scheme: light;
+      --surface-0: #f5f5f3;
+      --surface-1: #ffffff;
+      --surface-2: #efefec;
+      --surface-3: #e4e4e0;
+      --line:      #d3d3ce;
+      --line-soft: #e3e3df;
+      --text-primary:   #14161a;
+      --text-secondary: #464a51;
+      --text-muted:     #6b6f76;
+      --accent:    #1e5fbd;
+      --good:      #11835e;
+      --warn:      #96650a;
+      --critical:  #bd3330;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 15.5px;
+    line-height: 1.65;
+  }
+  code, pre, kbd, .chip, .rail-eyebrow, th { font-family: var(--mono); }
+  a { color: var(--accent); text-underline-offset: 0.2em; }
+  a:hover { color: var(--text-primary); }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  .shell {
+    width: min(1180px, calc(100% - 32px));
+    margin: 28px auto 96px;
+    display: grid;
+    grid-template-columns: 226px minmax(0, 1fr);
+    gap: 34px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    .rail { position: static; max-height: none; }
+  }
+
+  .rail {
+    position: sticky;
+    top: 28px;
+    max-height: calc(100vh - 56px);
+    overflow: auto;
+    padding: 18px 16px 20px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  .rail-eyebrow {
+    margin: 0 0 14px;
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .rail nav { display: grid; gap: 2px; }
+  .rail nav a {
+    display: block;
+    padding: 6px 9px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.9rem;
+  }
+  .rail nav a:hover { background: var(--surface-2); color: var(--text-primary); }
+  .rail-foot {
+    margin: 16px 0 0;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-soft);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .rail-foot a { display: block; margin-top: 6px; }
+
+  header.hero {
+    padding: 0 0 26px;
+    border-bottom: 1px solid var(--line);
+  }
+  .eyebrow {
+    margin: 0 0 8px;
+    font-size: 0.7rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  h1 { margin: 0 0 12px; font-size: 2.15rem; line-height: 1.18; letter-spacing: -0.015em; }
+  .lede { margin: 0; max-width: 62ch; color: var(--text-secondary); font-size: 1.06rem; }
+
+  section { padding: 34px 0 6px; border-bottom: 1px solid var(--line-soft); }
+  section:last-of-type { border-bottom: 0; }
+  h2 { margin: 0 0 6px; font-size: 1.45rem; letter-spacing: -0.01em; }
+  h3 { margin: 26px 0 6px; font-size: 1.06rem; }
+  h4 { margin: 20px 0 4px; font-size: 0.95rem; color: var(--text-secondary); }
+  p { margin: 0 0 12px; max-width: 74ch; }
+  ul, ol { margin: 0 0 12px; padding-left: 20px; max-width: 74ch; }
+  li { margin-bottom: 5px; }
+  .section-note { color: var(--text-secondary); }
+
+  pre {
+    margin: 0 0 14px;
+    padding: 13px 15px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 0.855rem;
+    line-height: 1.6;
+  }
+  pre code { color: var(--text-primary); }
+  .comment { color: var(--text-muted); }
+  :not(pre) > code {
+    padding: 1px 5px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    font-size: 0.87em;
+  }
+  kbd {
+    padding: 1px 6px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    font-size: 0.85em;
+  }
+
+  figure { margin: 20px 0 22px; }
+  figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  figcaption {
+    margin-top: 8px;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+    max-width: 74ch;
+  }
+
+  table {
+    width: 100%;
+    margin: 0 0 16px;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+  }
+  caption {
+    caption-side: top;
+    text-align: left;
+    padding-bottom: 8px;
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+  }
+  th, td {
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  th {
+    font-size: 0.7rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border-bottom-color: var(--line);
+    font-weight: 600;
+  }
+  td:first-child { white-space: nowrap; }
+  td.cmd { white-space: nowrap; }
+  tbody tr:hover { background: var(--surface-1); }
+
+  .chip {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .chip-required { color: var(--critical); }
+  .chip-recommended { color: var(--warn); }
+  .chip-optional { color: var(--text-muted); }
+  .chip-ready { color: var(--good); }
+
+  .callout {
+    margin: 0 0 16px;
+    padding: 13px 16px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+  }
+  .callout > :last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); }
+  .callout-title {
+    margin: 0 0 5px;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); margin-bottom: 18px; }
+  .card {
+    padding: 15px 17px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+  }
+  .card h3 { margin: 0 0 6px; font-size: 1rem; }
+  .card p { font-size: 0.9rem; color: var(--text-secondary); }
+  .card > :last-child { margin-bottom: 0; }
+
+  ol.steps { counter-reset: step; list-style: none; padding-left: 0; }
+  ol.steps > li {
+    counter-increment: step;
+    position: relative;
+    padding-left: 38px;
+    margin-bottom: 18px;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 1px;
+    width: 25px;
+    height: 25px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    color: var(--text-secondary);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+  }
+  /* The step's own title only. An unqualified `> strong` also caught every inline
+     emphasis inside the step body and put each control name on a line of its own. */
+  ol.steps > li > strong:first-child { display: block; margin-bottom: 3px; }
+
+  footer.doc-foot {
+    margin-top: 34px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    color: var(--text-muted);
+    font-size: 0.86rem;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail" aria-label="Document navigation">
+    <p class="rail-eyebrow">Setup guide</p>
+    <nav>
+      <a href="#prerequisites">1. Before you start</a>
+      <a href="#install">2. Install it</a>
+      <a href="#first-launch">3. First launch</a>
+      <a href="#setup-panel">4. The Setup panel</a>
+      <a href="#what-matters">5. What is necessary</a>
+      <a href="#other-settings">6. Settings beyond Setup</a>
+      <a href="#updating">7. Keep it current</a>
+      <a href="#trouble">8. When something is wrong</a>
+    </nav>
+    <p class="rail-foot">
+      Reference docs
+      <a href="README.md">Documentation index</a>
+      <a href="setup.md">First-run setup (contributors)</a>
+      <a href="configuration.md">Configuration</a>
+    </p>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <p class="eyebrow">Mission Control / operator guide</p>
+      <h1>Setting up Mission Control</h1>
+      <p class="lede">
+        How to install Mission Control on your own machine, teach it about the tools you already
+        use through <strong>Settings &rarr; Setup</strong>, tell the necessary settings apart from
+        the optional ones, and keep the app up to date afterwards.
+      </p>
+    </header>
+
+    <section id="prerequisites">
+      <p class="eyebrow">Step 1</p>
+      <h2>Before you start</h2>
+      <p class="section-note">
+        Mission Control runs entirely on your machine. It launches the agent CLIs, terminals, and
+        the GitHub CLI you already have, so the prerequisites below are the handful of things it
+        cannot supply for itself.
+      </p>
+
+      <table>
+        <caption>What you need on the machine before installing.</caption>
+        <thead>
+          <tr><th scope="col">Prerequisite</th><th scope="col">Why</th><th scope="col">Check it with</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Node.js 24 or newer</td>
+            <td>Bootstrap, build, and the update preflight all refuse an older runtime.</td>
+            <td class="cmd"><code>node --version</code></td>
+          </tr>
+          <tr>
+            <td>Git</td>
+            <td>Clones the repository, and every session works in an isolated worktree.</td>
+            <td class="cmd"><code>git --version</code></td>
+          </tr>
+          <tr>
+            <td>GitHub CLI, authenticated</td>
+            <td>Carries pull requests, reviews, issues, and repository reads. Required.</td>
+            <td class="cmd"><code>gh auth status</code></td>
+          </tr>
+          <tr>
+            <td>At least one agent CLI</td>
+            <td>Claude Code, Codex, or Pi. Mission Control launches these to create sessions.</td>
+            <td class="cmd"><code>claude --version</code></td>
+          </tr>
+          <tr>
+            <td>Apple Silicon Mac <span class="chip chip-optional">desktop app only</span></td>
+            <td>The packaged macOS app refuses an Intel host rather than building one that cannot run.</td>
+            <td class="cmd"><code>uname -m</code></td>
+          </tr>
+          <tr>
+            <td>Xcode command line tools <span class="chip chip-optional">desktop app only</span></td>
+            <td>Packaging compiles a small native module with node-gyp.</td>
+            <td class="cmd"><code>xcode-select -p</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <p class="callout-title">You do not have to get this right first</p>
+        <p>
+          Nothing here has to be perfect before you install. Mission Control inspects the machine
+          itself and tells you what is missing in <a href="#setup-panel">Settings &rarr; Setup</a>,
+          with an install command or a documentation link on every unsatisfied row. Install first,
+          then work down that panel.
+        </p>
+      </div>
+    </section>
+
+    <section id="install">
+      <p class="eyebrow">Step 2</p>
+      <h2>Install it</h2>
+      <p class="section-note">
+        There are two ways to run Mission Control, and they are not exclusive: both read the same
+        state directory at <code>~/.mission-control</code>, and the desktop app adopts an already
+        running daemon instead of starting a second one.
+      </p>
+
+      <div class="cards">
+        <div class="card">
+          <h3>The desktop app</h3>
+          <p>
+            A native macOS app that supervises the daemon and keeps delivering alerts with the
+            window closed, which a browser tab cannot do. It also keeps itself current from
+            published releases. Choose this if you just want to use Mission Control.
+          </p>
+        </div>
+        <div class="card">
+          <h3>The checkout</h3>
+          <p>
+            The daemon and dashboard run straight from a clone, in your browser. Choose this to
+            work on Mission Control itself, to run it on Linux, or to stay on a specific commit.
+          </p>
+        </div>
+      </div>
+
+      <figure>
+        <img src="images/fleet-board.png" alt="The Mission Control dashboard running: a top bar with live session counts and a Dispatch button, a backlog column of queued tasks, and a Needs you column holding an agent session on the demo-api repository awaiting an answer.">
+        <figcaption>
+          Where both paths end. The board is the dashboard's home: one column per state, so what
+          is working, what is idle, and what needs a decision is answerable at a glance.
+        </figcaption>
+      </figure>
+
+      <h3>Option A: install the desktop app (macOS, recommended)</h3>
+      <pre><code><span class="comment"># 1. Get the source. Any location you like; this clone is only the launch pad.</span>
+git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
+
+<span class="comment"># 2. Build and install /Applications/Mission Control.app</span>
+make install</code></pre>
+      <p>That is the whole install. Run it as your signed-in account, never with <code>sudo</code>. It:</p>
+      <ul>
+        <li>
+          checks the prerequisites first, so a missing one costs seconds instead of failing at the
+          end of a full build;
+        </li>
+        <li>
+          creates a separate clone at <code>~/.mission-control/app-src</code> that only the updater
+          ever touches. Your own checkout is never fetched, rebuilt, or checked out by it. Budget
+          roughly 1 to 2 GB of disk for that clone, and delete it freely: the cost is one fresh
+          clone next time;
+        </li>
+        <li>
+          checks out the newest stable release, or the default branch tip while no release exists
+          yet. <code>make install ARGS="--ref v1.2.3"</code> installs a specific ref instead, and
+          <code>make install ARGS="--dry-run"</code> prints what it would do and changes nothing;
+        </li>
+        <li>
+          verifies the packaged app's version against the source tree before it replaces anything
+          in <code>/Applications</code>, then swaps the bundle atomically. A failed install leaves
+          the app you already had;
+        </li>
+        <li>
+          writes an install <strong>receipt</strong> at
+          <code>~/.mission-control/install-receipt.json</code>. That receipt is the only evidence
+          the app has that it is updater-managed, which is what
+          <a href="#updating">automatic updates</a> depend on.
+        </li>
+      </ul>
+      <p>
+        Re-running <code>make install</code> is safe: every step detects its own completion. If
+        <code>/Applications</code> is not writable, macOS asks for administrator authorization only
+        at the final swap, once the new bundle is complete and verified.
+      </p>
+      <p>
+        Both the app and its updater build on your own Mac, so nothing crosses a download boundary
+        and Gatekeeper never quarantines the bundle. It opens normally, with no right-click
+        <strong>Open</strong> and no <code>xattr</code> workaround.
+      </p>
+      <p>
+        Closing the window hides the app so alerts keep firing; quit from the tray menu. The tray
+        also offers <strong>Start at login</strong> and
+        <strong>Install Claude integrations&hellip;</strong>, which wires the status hooks and the
+        review MCP server at the app's own bundled paths.
+      </p>
+
+      <h3>Option B: run it from the checkout</h3>
+      <pre><code>git clone https://github.com/teamupstart/mission-control.git
+cd mission-control
+
+make init          <span class="comment"># deps, build, and the Claude status hooks</span>
+make dev           <span class="comment"># daemon + Vite, then open http://127.0.0.1:5173</span></code></pre>
+      <p>
+        <code>make init</code> is idempotent and safe to repeat. It installs dependencies, builds
+        the application, and merges the Claude status hooks into
+        <code>~/.claude/settings.json</code> without replacing your other hooks. It checks the Node
+        version before it changes anything, and each failed check prints the command that fixes it.
+      </p>
+      <p>
+        Vite answers within a moment; the daemon takes a few seconds longer, and requests made in
+        that window have nowhere to go. That is expected and prints one line rather than a stack
+        per request.
+      </p>
+      <p>For a production-shaped run, where the daemon serves the built dashboard on one port:</p>
+      <pre><code>npm run build
+npm start          <span class="comment"># http://127.0.0.1:7317</span></code></pre>
+      <p>To keep it running across logins on macOS, install it as a LaunchAgent:</p>
+      <pre><code>npm run install-service              <span class="comment"># start now, and at every login</span>
+npm run install-service -- --uninstall</code></pre>
+
+      <div class="callout callout-warn">
+        <p class="callout-title">Install the hooks from a durable clone</p>
+        <p>
+          The hook installer writes absolute paths into <code>~/.claude/settings.json</code>, and
+          those paths do not follow a checkout that is later renamed or deleted. Every Claude
+          session on the machine then fails every hook event with <code>MODULE_NOT_FOUND</code>.
+          Run <code>make init</code> from a clone you intend to keep. Setup carries a
+          <strong>Claude Code hooks</strong> row that names a dead path when one appears.
+        </p>
+      </div>
+    </section>
+
+    <section id="first-launch">
+      <p class="eyebrow">Step 3</p>
+      <h2>First launch</h2>
+      <p class="section-note">
+        Open the dashboard, at <code>http://127.0.0.1:5173</code> under <code>make dev</code>, at
+        <code>http://127.0.0.1:7317</code> under <code>npm start</code>, or in the desktop app's
+        window. Three things happen the first time, and all three are pointing you at the same
+        place.
+      </p>
+      <ol class="steps">
+        <li>
+          <strong>A reminder appears above the dashboard.</strong>
+          It names how many required checks need attention and offers <strong>Open Setup</strong>.
+          It also returns later if a required capability regresses, so dismissing it is not
+          permanent. Dismissal is stored on this machine only.
+        </li>
+        <li>
+          <strong>The "Set up this machine" tour runs once.</strong>
+          Seven stops: the <span aria-hidden="true">&#9881;</span> gear, <strong>Setup</strong> in
+          the Settings rail, the dependency list, <strong>Re-check</strong>, then
+          <strong>Trust</strong>, its repository-by-grant matrix, and the row that adds a
+          repository to it. It runs no remedy and clicks no grant. Start it again any time from
+          <strong>Help &amp; tours</strong> at the bottom of the Settings rail, or from
+          <strong>Start Set up this machine tour</strong> in the command palette
+          (<kbd>&#8984;</kbd><kbd>K</kbd>).
+        </li>
+        <li>
+          <strong>Your existing sessions show up immediately.</strong>
+          Discovery needs no configuration, though sessions start with a coarse grey "running"
+          status until the Claude hooks are installed and a <em>new</em> session is started. Hooks
+          only affect sessions launched after they are installed.
+        </li>
+      </ol>
+      <figure>
+        <img src="images/first-run-reminder.png" alt="The dashboard with a full-width band above the board reading '1 required setup check needs attention. Setup explains what is missing, what it enables, and how to finish.', with an Open Setup button and a Dismiss button on the right.">
+        <figcaption>
+          The reminder, above the board. It counts only <em>required</em> checks, so it stays
+          quiet about the optional tools you chose not to install, and an inconclusive result
+          never raises it.
+        </figcaption>
+      </figure>
+
+      <p>
+        You can reach the Setup panel at any time: the <span aria-hidden="true">&#9881;</span> gear
+        in the top bar, then <strong>Setup</strong> under <em>Sessions</em> in the Settings rail.
+        The direct link is <code>#/settings/setup</code>.
+      </p>
+    </section>
+
+    <section id="setup-panel">
+      <p class="eyebrow">Step 4</p>
+      <h2>Set the machine up from the Setup panel</h2>
+      <p class="section-note">
+        Setup is the machine-wide view of every external tool Mission Control can use: agent CLIs,
+        terminal backends, GitHub CLI authentication, agent extensions, external pipeline engines,
+        and the system Node.js runtime. It reads your home directory and changes nothing on its own.
+      </p>
+
+      <figure>
+        <img src="images/setup-panel.png" alt="Settings, Setup. A verdict header reads 'This machine is missing something required', with a tick meter and '11 of 16 ready, 1 required gap blocks work', and a Re-check button. Below it a rail lists Agent CLIs 3 of 3, Terminals 5 of 7, GitHub 1 of 2, Agent extensions 0 of 2, Pipelines 1 of 1 and Runtime 1 of 1, with the Agent CLIs rows shown beside it.">
+        <figcaption>
+          The Setup panel. The verdict describes the whole machine; the rail holds one family at a
+          time with its own ready count; the pane beside it holds that family's rows.
+        </figcaption>
+      </figure>
+
+      <h3>Reading the panel</h3>
+      <ul>
+        <li>
+          <strong>The verdict, at the top.</strong> One sentence for the whole machine, either
+          <em>This machine can run sessions</em> or <em>This machine is missing something
+          required</em>, over one tick per check and a count such as
+          <em>11 of 16 ready &middot; 1 required gap blocks work</em>. The verdict never changes as
+          you move around the rail, because it is about the machine and not about what you are
+          reading.
+        </li>
+        <li>
+          <strong>The family rail.</strong> Six families, each with its own ready count and a mark
+          when it has gaps. One family's rows are mounted at a time. The panel opens on the family
+          holding a required gap, then any gap, and then stays where you put it: a
+          <strong>Re-check</strong> that repairs the family you are reading reports into that
+          family rather than moving the rail out from under you.
+        </li>
+        <li>
+          <strong>A satisfied row</strong> shows a green dot, its name, the path or evidence found,
+          and where that path came from: inherited PATH, login shell, operator override, or a
+          supported application location. Paths are written relative to your home directory, with
+          the absolute path on hover.
+        </li>
+        <li>
+          <strong>An unsatisfied row</strong> shows an amber dot, a status word, a requirement
+          badge, the sentence describing what is unavailable while it stays that way, and a remedy.
+        </li>
+      </ul>
+
+      <table>
+        <caption>The four states a row can report.</caption>
+        <thead>
+          <tr><th scope="col">Status</th><th scope="col">What it means</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="chip chip-ready">Ready</span></td><td>Found and usable. The row shows the evidence and its source.</td></tr>
+          <tr><td><span class="chip chip-optional">Missing</span></td><td>Not installed at all. The remedy is an install command or a documentation link.</td></tr>
+          <tr><td><span class="chip chip-recommended">Needs setup</span></td><td>Installed but not usable yet, for example a GitHub CLI with no login, or Herdr with its server stopped. Installing again would repair nothing, so the remedy is the actual missing step.</td></tr>
+          <tr><td><span class="chip chip-optional">Unknown</span></td><td>The probe could not reach a conclusion. This never raises the reminder banner on its own.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Fixing a row</h3>
+      <p>Unsatisfied rows carry one of four kinds of help, and none of them runs an installer inside the daemon.</p>
+      <ul>
+        <li>
+          <strong>A copyable command.</strong> Press <strong>Copy</strong> and run it yourself. A
+          runnable package-manager remedy additionally offers <strong>Run in a terminal</strong>:
+          choose an available backend and Mission Control opens a visible terminal running the
+          catalog's fixed command. The daemon owns the arguments, working directory, and title; the
+          browser sends only the dependency id and the terminal backend. The terminal stays open
+          after the command exits so you can read its exit code.
+        </li>
+        <li>
+          <strong>A documentation link</strong>, where the install is not a single command.
+        </li>
+        <li>
+          <strong>A service action</strong>, where the tool is installed but not running.
+          <strong>Start the Herdr server</strong> and <strong>Open cmux</strong> open no terminal:
+          the daemon starts the thing, waits for it to answer, and the panel re-reads the machine
+          on its own.
+        </li>
+        <li>
+          <strong>An integration install</strong>, such as <strong>Install Pi integration</strong>,
+          which verifies the bundle in a bounded child process before installing and refuses pooled
+          checkouts.
+        </li>
+      </ul>
+      <p>
+        When an install finishes, press <strong>Re-check</strong>. Opening an installer alone never
+        marks a row ready. Mission Control inspects the machine again and updates the verdict, the
+        rail counts, and the rows in place.
+      </p>
+    </section>
+
+    <section id="what-matters">
+      <p class="eyebrow">Step 5</p>
+      <h2>What is necessary, and what is not</h2>
+      <p class="section-note">
+        Every row carries its own requirement level, and the panel shows the badge on any row that
+        is not satisfied. <code>required</code> is the only level worth repeating on a healthy row,
+        so it is also shown there.
+      </p>
+
+      <figure>
+        <img src="images/setup-github.png" alt="The GitHub family in Setup. GitHub CLI is a green Ready row marked required, found at /opt/homebrew/bin/gh from inherited PATH. GitHub authentication is an amber row marked Needs setup and required, explaining that GitHub operations fail without a github.com login, quoting the CLI's own message, and offering a link to the GitHub authentication guide.">
+        <figcaption>
+          Both GitHub rows are <code>required</code>. The second one is why installing a tool and
+          being able to use it are tracked as separate facts: the CLI is present and the machine
+          still cannot open a pull request.
+        </figcaption>
+      </figure>
+
+      <h3>Required: the machine cannot do its job without these</h3>
+      <p>These are the rows counted by <em>N required gaps blocks work</em> in the verdict.</p>
+      <table>
+        <caption>Rows that block work while they are unsatisfied.</caption>
+        <thead>
+          <tr><th scope="col">Row</th><th scope="col">Family</th><th scope="col">What is lost without it</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>GitHub CLI</td><td>GitHub</td>
+            <td>Mission Control cannot inspect, open, review, or merge GitHub work.</td>
+          </tr>
+          <tr>
+            <td>GitHub authentication</td><td>GitHub</td>
+            <td>GitHub operations fail even with the CLI installed. Fix with <code>gh auth login</code>.</td>
+          </tr>
+          <tr>
+            <td>A terminal window Mission&nbsp;Control can open</td><td>Terminals</td>
+            <td>Dispatches cannot open a visible terminal window on their checkout. This row is derived from the terminals you do have, rather than naming one product.</td>
+          </tr>
+          <tr>
+            <td>Node.js</td><td>Runtime</td>
+            <td>App updates cannot be prepared, and Node-based tools cannot run. The minimum is the installer's, currently Node.js 24.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Two further required rows exist but appear only when they are already broken, because their
+        healthy state is "you never installed this" and nagging about that would be wrong:
+      </p>
+      <ul>
+        <li>
+          <strong>Pi extension</strong>, when an installed Pi integration is broken. A broken one
+          can silently lose Mission Control integration or stop every Pi session from starting.
+        </li>
+        <li>
+          <strong>Claude Code hooks</strong>, when hooks are installed and their script has gone.
+          That state is strictly worse than never installing them: every Claude hook event on the
+          machine now fails loudly. See the durable-clone warning in
+          <a href="#install">Install it</a>.
+        </li>
+      </ul>
+
+      <h3>Recommended: install at least one</h3>
+      <p>
+        The three agent CLIs are each <code>recommended</code> rather than required, because no
+        single one of them is the one you must have. Without any of them, Mission Control has
+        nothing to launch.
+      </p>
+      <table>
+        <caption>Agent CLIs. Install the ones you actually use.</caption>
+        <thead>
+          <tr><th scope="col">Row</th><th scope="col">Install with</th><th scope="col">Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Claude Code</td>
+            <td><code>npm install -g @anthropic-ai/claude-code</code></td>
+            <td>Also backs Claude-powered background jobs such as titling and review.</td>
+          </tr>
+          <tr>
+            <td>Codex CLI</td>
+            <td>Linked install guide</td>
+            <td>Needed for Codex sessions and Codex-backed background jobs.</td>
+          </tr>
+          <tr>
+            <td>Pi</td>
+            <td><code>npm install -g @earendil-works/pi-coding-agent</code></td>
+            <td>Pi's Agent SDK runtime additionally needs the Pi extension row ready.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Optional: capability you add if you want it</h3>
+      <p>
+        None of these block anything. Each row's sentence starts with <em>Adds</em>, and skipping
+        all of them leaves a working Mission Control with fewer choices in it.
+      </p>
+      <table>
+        <caption>Optional rows, by family.</caption>
+        <thead>
+          <tr><th scope="col">Row</th><th scope="col">Family</th><th scope="col">What it adds</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>tmux</td><td>Terminals</td><td>Durable detached sessions, provided an installed emulator can raise them.</td></tr>
+          <tr><td>WezTerm</td><td>Terminals</td><td>Scriptable terminal windows, and can raise detached tmux sessions.</td></tr>
+          <tr><td>Ghostty</td><td>Terminals</td><td>Native terminal windows Mission Control can discover and focus on macOS.</td></tr>
+          <tr><td>iTerm2</td><td>Terminals</td><td>Scriptable iTerm2 windows, and can raise detached tmux sessions on macOS.</td></tr>
+          <tr><td>cmux</td><td>Terminals</td><td>Visible, durable workspaces that need no second terminal to raise them.</td></tr>
+          <tr><td>Herdr</td><td>Terminals</td><td>Durable default-server workspaces, pane control, and full-client reattachment on macOS and Linux.</td></tr>
+          <tr><td>Claude Code plugins</td><td>Agent extensions</td><td>Plugin-provided tools, hooks, and commands inside Claude sessions.</td></tr>
+          <tr><td>Mission Control skills</td><td>Agent extensions</td><td>Mission Control's reusable workflow skills, managed in <strong>Settings &rarr; Skills</strong>.</td></tr>
+          <tr><td>ai-conductor</td><td>Pipelines</td><td>Commissioning and observing gated external pipeline runs.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout">
+        <p class="callout-title">Two terminals report more than "installed"</p>
+        <p>
+          <strong>cmux</strong> reports three facts, and two of them are not installation. Its
+          control socket exists only while the cmux app is running, and cmux ships a default that
+          admits only processes started inside cmux, which the daemon is not. So an installed cmux
+          can still be unusable. Setup offers <strong>Open cmux</strong> for the closed app, and
+          <strong>Allow Mission Control to drive cmux</strong> for the refusing socket, which
+          changes exactly one value in <code>~/.config/cmux/cmux.json</code> and copies the previous
+          file to a timestamped <code>.bak</code> first.
+        </p>
+        <p>
+          <strong>Herdr</strong> reports two: the binary, and whether its default server is
+          answering. With the server stopped the row offers <strong>Start the Herdr server</strong>
+          instead of the install guide, because installing again repairs nothing.
+        </p>
+      </div>
+
+      <h3>A reasonable target</h3>
+      <p>
+        A machine that reads <em>This machine can run sessions</em> with the agent CLI you use,
+        an authenticated <code>gh</code>, a terminal Mission Control can open, and Node.js 24 is
+        fully set up. The remaining optional rows are preferences, and the verdict says so: it
+        reports them as <em>no required gaps</em> plus a count of optional tools that would add
+        capability.
+      </p>
+    </section>
+
+    <section id="other-settings">
+      <p class="eyebrow">Step 6</p>
+      <h2>Settings beyond Setup</h2>
+      <p class="section-note">
+        Setup is about tools on the machine. The rest of Settings is about behavior, and it is
+        grouped by how far each group reaches: <em>This screen</em>, <em>Sessions</em>,
+        <em>Background work</em>, and <em>Leaves the machine</em>. Each panel also carries its own
+        scope badge, which is never softer than the truth.
+      </p>
+
+      <h3>Worth visiting after Setup</h3>
+      <ul>
+        <li>
+          <strong>Trust</strong> <span class="chip chip-required">acts on GitHub</span> is the one
+          place you have to visit if you want Mission Control to act on its own. Four subsystems
+          act outside the app, and each keeps its own list of repositories it may act in: Foreman
+          sends live, Workflows deliver repairs and run Commands, the GitHub Inspector posts
+          reviews, and Shipping merges. Trust is one table over all four, a row per repository and
+          a column per grant. Adding a repository grants nothing: every cell starts off, and each
+          one is a deliberate click. A fresh install therefore acts nowhere until you say otherwise,
+          which is the intended starting point rather than a gap to close.
+        </li>
+        <li>
+          <strong>Repositories</strong> decides which directories are walked to find your checkouts.
+          The saved defaults are <code>~/workspace</code>, <code>~/code</code>, <code>~/dev</code>,
+          and <code>~/upstart</code>. Add yours here if your repositories live somewhere else,
+          otherwise the dispatch picker will not find them.
+        </li>
+        <li>
+          <strong>Harnesses</strong> chooses whether each agent's dispatched sessions run on the
+          Agent SDK or in a terminal, and which terminal backend. The defaults are sensible; come
+          here when Setup has just made a new backend available.
+        </li>
+      </ul>
+
+      <figure>
+        <img src="images/settings-trust.png" alt="Settings, Trust. A table headed Repository, Foreman sends live, Workflows act, GitHub Inspector posts reviews and YOLO merges. The demo-api row reads allowed in the first two columns and grant in the other two; the demo-web row reads grant in all four. A footnote warns that workflow Commands are on, so a workflow may run branch-authored code in demo-api. Below the table an add row reads 'search repos or type a path' and a hint says adding a repo grants nothing yet.">
+        <figcaption>
+          Trust, with one repository granted the two local grants and one granted nothing. Both
+          rows were <em>added</em> the same way; the difference is four deliberate clicks. The
+          footnote is the panel naming its own heaviest grant rather than leaving a cell that
+          reads "allowed" to speak for itself.
+        </figcaption>
+      </figure>
+
+      <h3>Safe to leave alone</h3>
+      <p>
+        Everything else ships with a working default and can wait until you have a reason.
+        <strong>Display</strong>, <strong>Keyboard</strong>, and <strong>Dispatch</strong> are
+        browser-local preferences that never reach the daemon. <strong>Models</strong>,
+        <strong>Cost</strong>, <strong>Foreman</strong>, <strong>Workflows</strong>,
+        <strong>Task sources</strong>, <strong>Conductor</strong>,
+        <strong>Standing instructions</strong>, <strong>Worktrees</strong>,
+        <strong>GitHub Inspector</strong>, and <strong>Shipping</strong> all have defaults that work
+        on a fresh install, and the two that act on GitHub do nothing at all until you grant them a
+        repository in Trust.
+      </p>
+      <p>
+        Launch-time environment variables are a separate escape hatch, not a setup step. You do not
+        need any of them for a normal install. <code>MISSION_HOME</code> moves the state directory,
+        and the per-tool <code>MISSION_*_BIN</code> overrides point Mission Control at a binary that
+        is not on PATH. <a href="configuration.md">Configuration</a> is the full list.
+      </p>
+    </section>
+
+    <section id="updating">
+      <p class="eyebrow">Step 7</p>
+      <h2>Keep it current</h2>
+
+      <h3>The desktop app updates itself</h3>
+      <p>
+        A managed app, meaning one installed by <code>make install</code> and carrying a receipt,
+        checks the repository's stable releases through the <code>gh</code> CLI you already
+        authenticated. It checks after a short startup delay, every six hours with jitter, and once
+        after returning from a long sleep. You can also ask at any time with
+        <strong>Check for Updates&hellip;</strong> from the application menu or the tray.
+      </p>
+      <figure>
+        <img src="images/update-available.png" alt="The dashboard with a full-width band above the board reading 'Mission Control 1.17.0 is available' over a one-line release summary, with an Update Now button and a Later link on the right.">
+        <figcaption>
+          The update banner, above the same board the setup reminder used. It carries the new
+          version and a shortened plain-text release summary, so the choice does not need a
+          separate window. This surface exists only in the desktop app.
+        </figcaption>
+      </figure>
+
+      <ol class="steps">
+        <li>
+          <strong>A banner offers the new version.</strong>
+          Full width, with the version, a short plain-text release summary, and
+          <strong>Update Now</strong> and <strong>Later</strong>. Deferring hides it until the next
+          check. A release is offered only when its version is strictly newer, so there is no
+          downgrade path.
+        </li>
+        <li>
+          <strong>Update Now closes nothing.</strong>
+          The build starts and Mission Control stays open and usable. The banner becomes a progress
+          bar naming the stage the install has reached, from prerequisites through source, release,
+          checkout, dependencies, build, and verify, with a <strong>Cancel</strong>.
+        </li>
+        <li>
+          <strong>Restart and Install is the only part that needs the app gone.</strong>
+          It appears once the new version is built and verified, and it takes seconds. A build you
+          defer is kept and pinned, so accepting it later installs immediately rather than spending
+          those minutes again. A failed install restores the previous working bundle.
+        </li>
+      </ol>
+      <p>
+        Before offering an actionable <strong>Update Now</strong>, the app checks the system Node.js
+        and npm. Node must satisfy the installer's minimum, currently Node.js 24. A missing or
+        incompatible runtime leaves the release visible with a disabled <strong>Update Now</strong>,
+        an explanation, and <strong>Check again</strong>. Install or select a supported Node.js,
+        then press <strong>Check again</strong>.
+      </p>
+      <div class="callout callout-warn">
+        <p class="callout-title">When updates are deliberately inert</p>
+        <p>
+          There is no update path in development, on Intel Macs, without a managed-install receipt,
+          without a system Node.js binary, or when the install came from a non-canonical repository.
+          A manual check explains which of these applies. The plain browser dashboard has no update
+          bridge at all: it renders no banner and starts no check.
+        </p>
+        <p>
+          An application update also covers only the app and its updater-owned clone. A separately
+          installed daemon LaunchAgent still runs from the repository path in its plist and is not
+          changed by it.
+        </p>
+      </div>
+
+      <h3>Updating a checkout</h3>
+      <p>
+        A clone you run directly is updated the way any clone is, followed by the same idempotent
+        bootstrap that set it up:
+      </p>
+      <pre><code>git pull
+make init          <span class="comment"># reinstalls deps, rebuilds, refreshes the hooks</span></code></pre>
+      <p>
+        If you installed the LaunchAgent, restart it afterwards so the daemon picks up the new
+        build. If you also installed the desktop app from this clone with <code>make install</code>,
+        note that the two are independent: updating your checkout does not update the installed app,
+        and the app's own updater never touches your checkout.
+      </p>
+      <p>
+        Upgrading Node.js itself is worth a note, because the app's environment is inherited at
+        launch. Switching Node in an unrelated terminal does not change what an already running
+        Mission Control sees. Select the supported version, then restart Mission Control with the
+        corrected environment, and press <strong>Re-check</strong> in Setup to confirm the Runtime
+        row agrees.
+      </p>
+    </section>
+
+    <section id="trouble">
+      <p class="eyebrow">Step 8</p>
+      <h2>When something is wrong</h2>
+      <ul>
+        <li>
+          <strong>Start at the verdict.</strong> Setup tells you whether the machine can run
+          sessions at all, and a required gap is named on the row that has it.
+        </li>
+        <li>
+          <strong>Press Re-check after every repair.</strong> Setup reads the machine when you ask
+          it to, not continuously, and an opened installer proves nothing by itself.
+        </li>
+        <li>
+          <strong>A row that stays wrong after a successful install</strong> is usually an
+          environment question rather than an installation one. Mission Control resolves tools from
+          the environment it was launched with, so restart it after changing PATH or switching a
+          version manager. <code>MISSION_EXECUTABLE_PATHS</code> is the escape hatch for a private
+          tool directory the login shell does not export.
+        </li>
+        <li>
+          <strong>Every Claude turn prints <code>MODULE_NOT_FOUND</code></strong> means the hooks
+          point at a checkout that has moved or gone. Re-run <code>npm run install-hooks</code>
+          from a durable clone, or press <strong>Install Claude integrations</strong> in the desktop
+          app if you have no checkout.
+        </li>
+      </ul>
+      <p>
+        <a href="troubleshooting.md">Troubleshooting</a> covers the specific failures in detail, and
+        the <a href="README.md">documentation index</a> is the map of everything else.
+      </p>
+
+      <footer class="doc-foot">
+        <p>
+          Source of truth for this guide: <a href="setup.md">docs/setup.md</a> for bootstrap and
+          verification, <a href="desktop-and-packaging.md">docs/desktop-and-packaging.md</a> for the
+          managed install and the updater,
+          <a href="skills-and-settings.md#trust-who-may-act-in-which-repository">docs/skills-and-settings.md</a>
+          for Trust, and <a href="../src/shared/setup-catalog.ts">src/shared/setup-catalog.ts</a> for
+          the dependency catalog every Setup row is built from. The figures are regenerated by
+          <code>npm run docs:screenshots</code>.
+        </p>
+      </footer>
+    </section>
+  </main>
+</div>
+</body>
+</html>

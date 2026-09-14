@@ -4,6 +4,11 @@ This walkthrough takes a new checkout from clone to a running Mission Control an
 its full verification suite. For the contributor expectations and test policy, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
 
+If you are installing Mission Control to use rather than to work on, read the illustrated
+[setup guide](setup-guide.html) instead. It covers the same Setup panel from the operator's
+side, with screenshots, a required-versus-optional breakdown of every row, and how updates
+arrive.
+
 ## Prerequisites
 
 After Mission Control is running, open **Settings → Setup** for the machine-wide view of

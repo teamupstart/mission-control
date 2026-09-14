@@ -222,12 +222,14 @@ export destination configured. These are this build's numbers, not a guarantee.
 | Capture p95, collection on | under 2 ms added | **0.65 ms** (0.64 ms added) |
 | Capture p99, collection on | - | 0.85 ms |
 | Projection cost | - | 0.14 ms per event |
-| Logical bytes per event | - | **645 B** (journal + batches + aggregates + contexts) |
+| Logical bytes per event | - | **728 B** (journal, batches, aggregates, contexts, resources, delivery bookkeeping and durable dedupe) |
 | Physical database growth per event | - | ~1.0 kB including WAL |
 | Local stack, idle | - | ~290 MiB RSS total, ~1% CPU (Tempo 103, Grafana 101, Prometheus 51, Collector 36 MiB) |
 
-At 645 B per event the 256 MiB logical budget holds roughly 400,000 events, which the seven-day age
-limit will normally reach first.
+At 728 B per event the 256 MiB logical budget holds roughly 370,000 events, which the seven-day age
+limit will normally reach first. The figure covers every table the budget charges, including the
+durable dedupe identities - the one table that keeps growing after payloads are pruned, since it is
+retained for 30 days against the payload window's 7.
 
 ### Retention and limits
 
@@ -301,7 +303,7 @@ output batch commit in ONE transaction with the writer that already serializes e
 the process.
 
 The quota argument is also weaker than it looks, since a logical quota in a shared file is not a
-hard cap on the file either way. The measured envelope above - 645 logical bytes per event against
+hard cap on the file either way. The measured envelope above - 728 logical bytes per event against
 a 256 MiB budget - is small enough that the budget plus the retention sweep bounds it adequately.
 If a later phase needs a hard disk cap, the store interface is the seam to move; nothing above it
 names a file.

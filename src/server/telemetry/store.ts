@@ -949,6 +949,13 @@ export function usedBytes(d: DatabaseSync): number {
          -- docs/observability.md charges "both destination queues" to this budget.
          + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)
          + (SELECT COALESCE(SUM(LENGTH(dimensions_json) + 64),0) FROM telemetry_series)
+         -- Durable dedupe. Tiny per row and easy to forget, but it is the one table that keeps
+         -- growing AFTER payloads are pruned: it is retained for 30 days against the payload
+         -- window's 7, so on a busy installation it outlives everything it deduplicates. The
+         -- health view calls this figure exact, so it has to include it.
+         + (SELECT COALESCE(SUM(
+             LENGTH(source_kind) + LENGTH(source_id) + LENGTH(event_id) + 24
+           ),0) FROM telemetry_source_identities)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_contexts)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_resources)
          AS total`,

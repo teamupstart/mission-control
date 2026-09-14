@@ -900,6 +900,32 @@ test("the same source identity is captured once, however often it is offered", (
   assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [1]);
 });
 
+test("the dedupe table is charged against the budget, like every other retained table", async () => {
+  // `telemetry_source_identities` is the one table that keeps growing AFTER payloads are
+  // pruned: it is retained for 30 days against the payload window's 7, so on a busy
+  // installation it outlives everything it deduplicates. It was not in the sum at all, while
+  // the health view and the guide both call that figure exact.
+  const { telemetryTransaction, usedBytes } = await import("../src/server/telemetry/store.ts");
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+
+  const withIdentity = telemetryTransaction((d) => usedBytes(d));
+  const d = openDb();
+  const identities = (
+    d.prepare(`SELECT COUNT(*) AS n FROM telemetry_source_identities`).get() as { n: number }
+  ).n;
+  assert.equal(identities, 1, "the capture wrote a dedupe identity");
+
+  // Drop only the identity row. Everything else the budget counts is untouched.
+  d.exec("DELETE FROM telemetry_source_identities");
+  const withoutIdentity = telemetryTransaction((d2) => usedBytes(d2));
+
+  assert.ok(
+    withoutIdentity < withIdentity,
+    `the identity row was carrying ${withIdentity - withoutIdentity} bytes of the budget, not zero`,
+  );
+});
+
 test("admission control carries the byte total forward instead of re-scanning per capture", async () => {
   // `usedBytes` is seven unindexed aggregates over tables the budget lets reach hundreds of
   // thousands of rows, and it ran inside the capture transaction - which holds the single

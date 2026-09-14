@@ -106,7 +106,7 @@ one immediately.
 
 | Persona | What it judges |
 |---|---|
-| Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| Intent Conformance Judge | Whether the intended feature and explicit interfaces and constraints are satisfied. Allows plan deviations, extra tests, and accompanying bug fixes |
 | Test Coverage Judge | Whether tests appropriately cover changed material executable behavior, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
@@ -181,8 +181,8 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the eight built-in Personas wired the way they were written to compose. In versions 15
-and 16, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+Behind it are the eight built-in Personas wired the way they were written to compose. From version
+15 onward, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
 same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
 misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
 Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
@@ -267,10 +267,9 @@ it already reserved, and the built-in it shadows stays hidden behind your copy w
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
 see the built-in.
 
-An upgrade that improves one of the eight Personas improves this workflow too, with no gesture
-from you: it always carries the guidance and the graph the build was made from. Improving the
-shipped workflow itself appends a **new version** rather than editing the one you may be bound
-to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
+An upgrade that improves the shipped workflow or one of its Personas appends a **new version**
+with the updated graph and guidance. An existing binding keeps running the version it was bound
+to until you rebind it.
 
 Versions 3 through 7 are that rule in practice. Version 3 added the deterministic check
 stage; version 4 preserves that graph and changes only the immutable GitHub Inspector-findings
@@ -285,16 +284,20 @@ Slop Filter to stage 4; version 13 keeps that graph while enabling criterion-map
 preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
 with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; version 15 adds
 Test Coverage Judge beside Intent Conformance Judge in stage 2, with the same pinned Codex Terra
-routing as the other non-design reviewers; and version 16 keeps that graph and routing while
-freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy. Version 15
-retains the percentage-based guidance it was published with. Every earlier version remains in the
+routing as the other non-design reviewers; version 16 keeps that graph and routing while
+freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy; and version 17
+keeps the same graph and routing while updating Intent Conformance Judge to prioritize the requested
+outcome and explicit interfaces over plan details. It allows extra tests and accompanying bug fixes,
+including unrelated bugs explained in supplied comments or submission notes. Versions 1 through 16
+retain their original intent guidance. Version 15 retains the percentage-based guidance it was
+published with. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 16 because it is current. Adopting the newer version on an
+take version 17 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

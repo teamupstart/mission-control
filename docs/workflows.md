@@ -118,11 +118,12 @@ one immediately.
 They are **app data, not your data**, and the Persona rail groups them under `Built-in`, apart
 from the ones you wrote. Each
 carries exactly the guidance the build was made from. An upgrade that improves a role updates
-the current catalog, so drafts and newly published versions use the new guidance. Existing
-published versions keep the guidance they were published with and history marks them
-outdated. Adopting the changed guidance requires publishing a new version. Opening a
-built-in shows it read-only: there is no Save to press, Archive is absent, and there is a line
-saying why. **Duplicate to edit** is the promoted verb and the way to a version you own - the
+the current catalog, so drafts and newly published versions use the new guidance. Versions you
+publish from editable workflows keep the guidance they were published with and history marks
+them outdated. Adopting changed guidance in those workflows requires publishing a new version.
+[Built-in workflow versions](#built-in-workflows) follow the snapshot rules described below.
+Opening a built-in shows it read-only: there is no Save to press, Archive is absent, and there
+is a line saying why. **Duplicate to edit** is the promoted verb and the way to a version you own - the
 copy is an ordinary Persona with its own name, editable, archivable, and never touched by an
 upgrade. Their guidance is still exactly as visible as any other: Copy Markdown, Download .md
 and the preview all work, from the header's `⋯` menu.

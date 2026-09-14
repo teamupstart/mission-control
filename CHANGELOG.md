@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.17.0](https://github.com/teamupstart/mission-control/compare/v1.16.1...v1.17.0) (2026-09-14)
+
+
+### Features
+
+* **telemetry:** durable OTLP capture, export and local Grafana stack ([#1040](https://github.com/teamupstart/mission-control/issues/1040)) ([513790b](https://github.com/teamupstart/mission-control/commit/513790b5a50f27182a339eda5517f4a762b8fe53))
+* **updater:** add opt-in alpha updates from main ([#1046](https://github.com/teamupstart/mission-control/issues/1046)) ([d0e05e3](https://github.com/teamupstart/mission-control/commit/d0e05e3bc9820f2d2dc1f844e676fe6ec20a6fdd))
+* **workflows:** add review presets and bugfix task kind ([#1043](https://github.com/teamupstart/mission-control/issues/1043)) ([b70c989](https://github.com/teamupstart/mission-control/commit/b70c9895cb8cae50aa83edfa000a274370c4b8bc))
+
+
+### Bug Fixes
+
+* **foreman:** require evidence only for eligible Persona workflows ([#1047](https://github.com/teamupstart/mission-control/issues/1047)) ([2752ab5](https://github.com/teamupstart/mission-control/commit/2752ab50d7c578bc60f932a4e86705537e7f7fc3))
+* **workflows:** allow 150 seconds for context model calls ([#1045](https://github.com/teamupstart/mission-control/issues/1045)) ([a316a60](https://github.com/teamupstart/mission-control/commit/a316a60e0696189408cd1badb3eaa88491e9df33))
+* **workflows:** judge feature intent without rigid plan adherence ([#1042](https://github.com/teamupstart/mission-control/issues/1042)) ([1618919](https://github.com/teamupstart/mission-control/commit/16189194ab0bea53e451b03f6bbd3154bb06c533))
+
 ## [1.16.1](https://github.com/teamupstart/mission-control/compare/v1.16.0...v1.16.1) (2026-09-14)
 
 

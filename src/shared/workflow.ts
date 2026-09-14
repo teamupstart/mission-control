@@ -1544,7 +1544,7 @@ export const SESSION_ACTION_COMPLETION_CAPABILITIES: Record<
   pull_request: {
     kind: "pull_request",
     available: true,
-    label: "Pull request is opened and verified",
+    label: "Pull request is opened",
     unavailableReason: null,
   },
   repo_commit: {
@@ -1760,20 +1760,34 @@ export const SESSION_ACTION_BLOCK_CODES = [
   "delivery_uncertain",
   "capture_failed",
   "expectation_unmet",
-  /** Published pull request content differs from the content accepted by the prior verdict. */
+  /** Legacy block retained for durable rows written before PR mismatches became warnings. */
   "published_content_changed",
   /**
    * The pull request this action's work belongs to is closed or merged.
    *
-   * A BLOCK rather than a wait, and the only one the pull request adapter raises. Every other
-   * way a PR can fail to match - not opened yet, opened on another branch, head not pushed,
-   * `gh` unreachable for a tick - is a state that a later observation can change on its own,
-   * so those wait. A closed pull request is a durable contradiction: nothing the daemon waits
-   * for will reopen it, and a human has to decide whether to reopen, replace or abandon it.
+   * Retained for historical action attempts. Current pull request actions complete with a
+   * warning once the PR has been opened, even if a later observation finds it closed.
    */
   "pull_request_closed",
 ] as const;
 export type SessionActionBlockCode = (typeof SESSION_ACTION_BLOCK_CODES)[number];
+
+/**
+ * Advisory outcomes that may accompany a completed session action.
+ *
+ * APPEND-ONLY. A warning records that the action achieved its authored side effect while a
+ * stronger verification did not agree. It never changes graph routing: `complete` still
+ * advances, and the warning remains on the attempt so a person can choose a fresh run.
+ */
+export const SESSION_ACTION_WARNING_CODES = [
+  "pull_request_review_mismatch",
+] as const;
+export type SessionActionWarningCode = (typeof SESSION_ACTION_WARNING_CODES)[number];
+
+export interface SessionActionWarning {
+  code: SessionActionWarningCode;
+  detail: string;
+}
 
 /**
  * What an adapter may require of the continuation capture, as a CLOSED union.
@@ -1786,14 +1800,13 @@ export type SessionActionBlockCode = (typeof SESSION_ACTION_BLOCK_CODES)[number]
 export type SessionActionContinuationExpectation =
   | { kind: "none" }
   /**
-   * The pull request adapter's proof, carried forward so the capture can be held to it.
+   * The pull request adapter's observed publication, carried forward for comparison.
    *
-   * Every field is something the adapter VERIFIED before it said complete, written down so a
+   * Every field is something the adapter observed before it said complete, written down so a
    * capture that happens later - possibly after a daemon restart, possibly after the checkout
    * moved - can be checked against the same facts rather than against whatever is true by
-   * then. `expectedHeadOid` is the load-bearing one: the adapter proved this exact commit is
-   * the pull request's remote head, so a child segment captured at any other commit is
-   * evidence of work the pull request does not contain.
+   * then. A difference between `expectedHeadOid` and the continuation is advisory: it is
+   * preserved as a warning and never prevents the graph from advancing.
    *
    * Bounded and provider-neutral on purpose. No credentials, no `gh` output, no diff: this is
    * durable attempt state that run detail renders and export carries.
@@ -1804,12 +1817,12 @@ export type SessionActionContinuationExpectation =
       pullRequestKey: string;
       pullRequestUrl: string;
       pullRequestNumber: number;
-      /** The local repository root the adoption was matched against. */
-      repositoryRoot: string;
-      /** The head branch the pull request was observed to be opened from. */
-      branch: string;
-      /** The commit the pull request's remote head was observed at. */
-      expectedHeadOid: string;
+      /** The local repository root, or null when adoption preceded provider metadata. */
+      repositoryRoot: string | null;
+      /** The head branch, or null when the provider has not supplied it yet. */
+      branch: string | null;
+      /** The remote head, or null when the provider has not supplied it yet. */
+      expectedHeadOid: string | null;
       /** Complete content tree accepted by the parent judged submission. */
       acceptedContentTreeOid?: string | null;
       /** When that observation was made, so provenance can say how fresh the proof was. */
@@ -1823,7 +1836,11 @@ export type SessionActionContinuationExpectation =
  * expectation explicitly so a capture cannot silently skip a check the adapter meant to make.
  */
 export type SessionActionCompletionDecision =
-  | { kind: "complete"; continuationExpectation: SessionActionContinuationExpectation }
+  | {
+      kind: "complete";
+      continuationExpectation: SessionActionContinuationExpectation;
+      warnings?: SessionActionWarning[];
+    }
   | { kind: "waiting"; reason: SessionActionWaitReason }
   | { kind: "blocked"; code: SessionActionBlockCode; detail: string };
 
@@ -1859,6 +1876,8 @@ export interface SessionActionAttemptState {
   expectation: SessionActionContinuationExpectation | null;
   continuationSubmissionId: WorkflowSubmissionId | null;
   blocked: { code: SessionActionBlockCode; detail: string } | null;
+  /** Advisories collected before the action advances. Missing on rows from older builds. */
+  warnings?: SessionActionWarning[];
 }
 
 /**

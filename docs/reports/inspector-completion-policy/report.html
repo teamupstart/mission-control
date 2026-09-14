@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inspector completion policy: what it does and how authors use it</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1016;
+      --panel: #121a24;
+      --panel-2: #182331;
+      --text: #eef5fc;
+      --muted: #aebdca;
+      --line: #354658;
+      --cyan: #68d7e8;
+      --green: #70dfa5;
+      --amber: #f1c36b;
+      --red: #ff8d91;
+      --ink: #081117;
+      --max: 1060px;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 85% -5%, rgba(104, 215, 232, .13), transparent 33rem),
+        linear-gradient(180deg, #0d141d 0, var(--bg) 32rem);
+      color: var(--text);
+      font: 16px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(calc(100% - 36px), var(--max)); margin: 0 auto; padding: 56px 0 72px; }
+    header { max-width: 910px; margin-bottom: 30px; }
+    .eyebrow { color: var(--cyan); font-size: .75rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { margin: .42rem 0 .7rem; font-size: clamp(2rem, 5.5vw, 4.25rem); line-height: 1.02; letter-spacing: -.045em; }
+    .question { color: var(--muted); font-size: 1.06rem; max-width: 760px; }
+    .finding {
+      margin: 28px 0 36px;
+      padding: 24px 26px;
+      border: 1px solid var(--cyan);
+      border-left: 7px solid var(--cyan);
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(104, 215, 232, .12), rgba(18, 26, 36, .93));
+      font-size: 1.16rem;
+    }
+    .finding strong { color: var(--cyan); }
+    h2 { margin: 48px 0 16px; font-size: 1.65rem; letter-spacing: -.025em; }
+    h3 { margin: 0 0 7px; font-size: 1.03rem; }
+    p { margin: .55rem 0 1rem; }
+    code { color: #bdeff6; font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+    a { color: var(--cyan); text-underline-offset: 3px; }
+    .steps, .reasons { display: grid; gap: 12px; }
+    .step, .reason, .note {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      padding: 18px 20px;
+    }
+    .step { display: grid; grid-template-columns: 40px 1fr; gap: 12px; }
+    .num {
+      width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+      background: var(--cyan); color: var(--ink); font-weight: 900;
+    }
+    .step p, .reason p { color: var(--muted); margin: 0; }
+    .diagram {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      background: var(--panel);
+    }
+    svg { display: block; min-width: 880px; width: 100%; height: auto; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); }
+    th, td { padding: 13px 15px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--cyan); background: var(--panel-2); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+    td:first-child { width: 26%; font-weight: 700; }
+    tr:last-child td { border-bottom: 0; }
+    .tag { display: inline-block; margin: 2px 5px 2px 0; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font-size: .78rem; }
+    .callout { border-left: 4px solid var(--amber); padding: 4px 0 4px 18px; color: var(--muted); }
+    .boundaries { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .boundary { padding: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+    .boundary strong { color: var(--amber); }
+    .sources li { margin: .45rem 0; color: var(--muted); }
+    footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; }
+    @media (max-width: 740px) {
+      main { width: min(calc(100% - 24px), var(--max)); padding-top: 34px; }
+      .boundaries { grid-template-columns: 1fr; }
+      th, td { padding: 10px; }
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        color-scheme: light;
+        --bg: #f4f7fa; --panel: #ffffff; --panel-2: #eaf1f6; --text: #13202b;
+        --muted: #465b6d; --line: #b7c7d4; --cyan: #006c7b; --green: #087a45;
+        --amber: #8a5a00; --red: #a5252c; --ink: #ffffff;
+      }
+      body { background: radial-gradient(circle at 85% -5%, rgba(0,108,123,.09), transparent 33rem), var(--bg); }
+      .finding { background: linear-gradient(135deg, rgba(0,108,123,.08), rgba(255,255,255,.96)); }
+      code { color: #005c6b; }
+      svg .ok-label { fill: #087a45; }
+      svg .finding-label { fill: #a5252c; }
+      svg .repair-label { fill: #7a5000; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Product behavior report</div>
+    <h1>Inspector completion policy</h1>
+    <p class="question"><strong>Question:</strong> What does the Inspector completion policy do, specifically, and how can a user apply it to a custom workflow?</p>
+  </header>
+
+  <section class="finding" aria-label="Finding">
+    <strong>Answer:</strong> It is a workflow-wide, post-End approval stage. After the workflow graph succeeds, Mission Control waits for GitHub Inspector to review the exact pull request commit submitted by that run. A clean review completes the run; findings follow the workflow's configured repair policy and may keep the run waiting or blocked. A custom-workflow author can enable it under <strong>Properties → Workflow settings → Final gate → GitHub Inspector approval</strong>. It is not a node in the graph. The author must then publish the draft and bind that new immutable version for the setting to take effect.
+  </section>
+
+  <h2>How a user turns it on</h2>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><div><h3>Open an editable workflow</h3><p>Create a custom workflow, or select <strong>Duplicate</strong> on a built-in. Built-ins are intentionally read-only, including their settings.</p></div></div>
+    <div class="step"><div class="num">2</div><div><h3>Open Properties</h3><p>In the right rail, find <strong>Workflow settings</strong>. On a narrow viewport, first use the <strong>Properties</strong> drawer button.</p></div></div>
+    <div class="step"><div class="num">3</div><div><h3>Choose the final gate</h3><p>Set <strong>Final gate</strong> to <strong>GitHub Inspector approval</strong>, then choose what happens after findings and when a pull request is missing.</p></div></div>
+    <div class="step"><div class="num">4</div><div><h3>Publish and bind</h3><p>Publish the saved draft. Bind a session to that newly published version, or replace its existing binding. An older binding remains pinned to its older policy.</p></div></div>
+  </div>
+
+  <p class="callout"><strong>Why it feels absent:</strong> when the final gate is None there is no Inspector item on the canvas. When enabled, Pipeline view adds a fixed Inspector footer after End, but that footer is a visual projection of the policy, not an editable stage.</p>
+
+  <h2>What happens at runtime</h2>
+  <div class="diagram" role="img" aria-label="Workflow reaches End, waits for Inspector review, and either completes cleanly or follows the configured findings repair policy">
+    <svg viewBox="0 0 980 360" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#68d7e8"/></marker>
+      </defs>
+      <g font-family="ui-sans-serif, system-ui, sans-serif" fill="#eef5fc">
+        <rect x="20" y="118" width="145" height="72" rx="12" fill="#182331" stroke="#68d7e8"/>
+        <text x="92" y="147" text-anchor="middle" font-size="14" fill="#aebdca">Graph succeeds</text><text x="92" y="174" text-anchor="middle" font-size="24" font-weight="800">End</text>
+        <path d="M165 154H220" stroke="#68d7e8" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="230" y="100" width="205" height="108" rx="12" fill="#182331" stroke="#68d7e8"/>
+        <text x="332" y="130" text-anchor="middle" font-size="19" font-weight="800">Enter final gate</text>
+        <text x="332" y="158" text-anchor="middle" font-size="13" fill="#aebdca">Capture committed local HEAD</text>
+        <text x="332" y="181" text-anchor="middle" font-size="13" fill="#aebdca">Find adopted, open PR</text>
+        <path d="M435 154H490" stroke="#68d7e8" stroke-width="2" marker-end="url(#arrow)"/>
+        <rect x="500" y="100" width="205" height="108" rx="12" fill="#182331" stroke="#68d7e8"/>
+        <text x="602" y="130" text-anchor="middle" font-size="19" font-weight="800">Wait for Inspector</text>
+        <text x="602" y="158" text-anchor="middle" font-size="13" fill="#aebdca">Fresh observation after entry</text>
+        <text x="602" y="181" text-anchor="middle" font-size="13" fill="#aebdca">Remote head must match</text>
+        <path d="M705 137H760" stroke="#70dfa5" stroke-width="2" marker-end="url(#arrow)"/>
+        <text class="ok-label" x="733" y="124" text-anchor="middle" font-size="12" fill="#70dfa5">clean</text>
+        <rect x="770" y="100" width="180" height="72" rx="12" fill="#173328" stroke="#70dfa5"/>
+        <text x="860" y="144" text-anchor="middle" font-size="20" font-weight="800">Run completes</text>
+        <path d="M602 208V263" stroke="#f1c36b" stroke-width="2" marker-end="url(#arrow)"/>
+        <text class="repair-label" x="615" y="242" font-size="12" fill="#f1c36b">findings</text>
+        <rect x="455" y="274" width="295" height="66" rx="12" fill="#443315" stroke="#f1c36b"/>
+        <text x="602" y="301" text-anchor="middle" font-size="17" font-weight="800">Apply findings policy</text>
+        <text x="602" y="325" text-anchor="middle" font-size="13" fill="#f5dfb0">Restart all or wait for a new pushed head</text>
+      </g>
+    </svg>
+  </div>
+
+  <p>The stage does not accept a PR URL as proof by itself. GitHub Inspector must already have adopted the PR from Mission Control observing <code>gh pr create</code>. Gate entry captures the submission's committed local HEAD, waits for a fresh Inspector observation, and verifies that the PR is still open and the remote head matches. A closed PR, switched PR, mismatched head, disabled Inspector, contradictory observation, or unresolved finding can keep this separately configured approval stage waiting or blocked. That behavior belongs to the Inspector completion gate, not to the earlier Pull Request action.</p>
+
+  <h2>The authoring choices</h2>
+  <table>
+    <thead><tr><th>Setting</th><th>Choice</th><th>Specific effect</th></tr></thead>
+    <tbody>
+      <tr><td>Final gate</td><td><span class="tag">None</span><span class="tag">GitHub Inspector approval</span></td><td>None lets End complete the workflow immediately. GitHub Inspector approval waits for review of the intended PR head and applies its configured findings policy.</td></tr>
+      <tr><td>After findings</td><td><span class="tag">Restart all Personas</span></td><td>Sends the Inspector feedback packet and requires a full workflow resubmission, so every Persona reviews the repaired state.</td></tr>
+      <tr><td>After findings</td><td><span class="tag">Repush and recheck Inspector only</span></td><td>Waits for a different pushed head, records an Inspector-only bypass submission, and rechecks that head without rerunning Personas.</td></tr>
+      <tr><td>Missing PR</td><td><span class="tag">Wait</span></td><td>Leaves the run waiting until an adopted PR exists.</td></tr>
+      <tr><td>Missing PR</td><td><span class="tag">Offer Prepare PR</span></td><td>Exposes a manual <strong>Prepare PR in session</strong> handoff.</td></tr>
+      <tr><td>Missing PR</td><td><span class="tag">Prepare PR automatically</span></td><td>In Live delivery, sends the deterministic commit, push, and PR-preparation prompt to the session. The gate itself does not push or create the PR. Preview records that this handoff was withheld.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Why a custom-workflow author may not find it</h2>
+  <div class="reasons">
+    <div class="reason"><h3>It is not in the node palette</h3><p>The policy applies to the entire workflow after End, so it is only in the Properties rail. It cannot be dragged, connected, or deleted like a node.</p></div>
+    <div class="reason"><h3>The selected workflow may be built-in</h3><p>Built-ins display the settings but disable editing. Duplicate the workflow to obtain an editable custom draft.</p></div>
+    <div class="reason"><h3>The right rail may be collapsed</h3><p>Below the responsive breakpoint, Properties is a closed drawer until the user opens it.</p></div>
+    <div class="reason"><h3>The draft may not be the bound version</h3><p>Saving changes only updates the draft. Publish creates an immutable version, and the session must be bound to that version.</p></div>
+    <div class="reason"><h3>The current No-Mistakes version does not use it</h3><p>No-Mistakes Review version 16 sets its completion policy to None. Version 8 retains the older Inspector gate, while versions 9 onward do not. Looking at the current built-in therefore shows no fixed Inspector footer.</p></div>
+  </div>
+
+  <h2>What this policy does not do</h2>
+  <div class="boundaries">
+    <div class="boundary"><strong>Not CI tracking</strong><p>It consumes GitHub Inspector's review ledger. Check runs and CI completion are separate workflow concerns.</p></div>
+    <div class="boundary"><strong>Not PR merge</strong><p>Passing the gate completes the workflow run. It neither merges nor authorizes Shipping.</p></div>
+    <div class="boundary"><strong>Not Inspector setup</strong><p>The workflow policy does not enable or configure GitHub Inspector. If Inspector is disabled, the gate blocks.</p></div>
+  </div>
+
+  <h2>Evidence</h2>
+  <ul class="sources">
+    <li><code>src/web/workflows/WorkflowProperties.tsx:74</code> defines the workflow-wide settings form and exposes Final gate, After findings, and Missing PR.</li>
+    <li><code>src/web/workflows/WorkflowLibrary.tsx:821</code> exposes the mobile Properties drawer; lines 1087-1088 publish an immutable version, and lines 1254-1265 render the settings rail in either editor mode.</li>
+    <li><code>src/shared/protocol.ts:4967</code> defines the persisted completion-policy union and its compatibility fields.</li>
+    <li><code>src/server/workflows/manager.ts:2733</code> enters the post-End stage and <code>src/server/workflows/manager.ts:4567</code> applies the selected findings repair policy.</li>
+    <li><code>docs/workflows.md:365</code> explains the fixed Pipeline footer and <code>docs/workflows.md:2043</code> specifies the post-End Inspector behavior.</li>
+    <li><code>src/server/workflows/builtin-workflows.ts:1153</code> shows the current No-Mistakes version's <code>completionPolicy: { kind: "none" }</code>.</li>
+  </ul>
+
+  <h2>What was not established</h2>
+  <div class="note">
+    This report traces the current source, schema, runtime manager, tests, and product documentation. It did not launch the dashboard to reproduce the authoring path visually, and it does not assess whether the existing labels or layout are discoverable enough in usability testing. The source does establish that the control is available to editable custom workflows and that publication plus rebinding is required for activation.
+  </div>
+
+  <footer>Prepared from the repository state available on 2026-09-13. No production state or external service was queried.</footer>
+</main>
+</body>
+</html>

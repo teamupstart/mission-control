@@ -117,7 +117,7 @@ test("the rail groups what ships apart from what you wrote, and names each row b
    */
   const pullRequest = rail.getByRole("button", { name: /Pull Request/ });
   const retro = rail.getByRole("button", { name: /^Retro/ });
-  await expect(pullRequest).toContainText("Skill · pull-request · Pull request is opened and verified");
+  await expect(pullRequest).toContainText("Skill · pull-request · Pull request is opened");
   await expect(retro).toContainText("Skill · retro · A commit lands in the checkout");
   await expect(pullRequest).not.toContainText("Prepare the reviewed work");
   await shoot(dashboard, "01-rail-groups");
@@ -181,7 +181,7 @@ test("the contract line states what will be checked, and follows the chip that d
   const picker = popover.getByRole("combobox", { name: "Completes when" });
   await expect(picker.locator("option")).toHaveText([
     "Session turn finishes",
-    "Pull request is opened and verified",
+    "Pull request is opened",
     "A commit lands in the checkout",
   ]);
   await picker.selectOption({ label: "A commit lands in the checkout" });
@@ -241,7 +241,7 @@ test("a completion this build cannot prove stays visible and marked, not hidden 
         {
           kind: "pull_request",
           available: false,
-          label: "Pull request is opened and verified",
+          label: "Pull request is opened",
           unavailableReason: "This build cannot verify a pull request yet.",
         },
       ],
@@ -254,10 +254,10 @@ test("a completion this build cannot prove stays visible and marked, not hidden 
   // Marked on the chip's face, explained beside it, and still stated by the contract line -
   // the action's own guarantee is not this build's to quietly edit.
   await expect(dashboard.locator(".lib-chip.is-attention"))
-    .toContainText("Pull request is opened and verified");
+    .toContainText("Pull request is opened");
   await expect(dashboard.locator("p.lib-props-note"))
     .toHaveText("This build cannot verify a pull request yet.");
-  await expect(contract(dashboard)).toContainText("Pull request is opened and verified");
+  await expect(contract(dashboard)).toContainText("Pull request is opened");
   await shoot(dashboard, "05-unprovable-completion");
 
   // And it cannot be chosen: the option is there to be read, disabled. Asserted as the
@@ -265,7 +265,7 @@ test("a completion this build cannot prove stays visible and marked, not hidden 
   // enabled `<select>` as enabled.
   await chip(dashboard, "completes when").click();
   const retained = dashboard.getByRole("group", { name: "Completes when" })
-    .getByRole("option", { name: "Pull request is opened and verified" });
+    .getByRole("option", { name: "Pull request is opened" });
   await expect(retained).toHaveAttribute("disabled", "");
 });
 
@@ -302,7 +302,7 @@ test("while the capability answer is in flight, the chip claims nothing", async 
           {
             kind: "pull_request",
             available: false,
-            label: "Pull request is opened and verified",
+            label: "Pull request is opened",
             unavailableReason: "This build cannot verify a pull request yet.",
           },
         ],
@@ -316,7 +316,7 @@ test("while the capability answer is in flight, the chip claims nothing", async 
   // Present first, so the absences beneath it are facts about the state and not about a chip
   // that had not drawn yet. The value is the stored completion, in the shared words - the one
   // string this screen owns, which needs no daemon to print.
-  await expect(chip(dashboard, "completes when")).toContainText("Pull request is opened and verified");
+  await expect(chip(dashboard, "completes when")).toContainText("Pull request is opened");
   await expect(dashboard.locator(".lib-chip.is-attention")).toHaveCount(0);
   await expect(dashboard.locator("p.lib-props-note")).toHaveCount(0);
   // Its description is the ordinary one - what the field IS, rather than a verdict on it. The
@@ -328,14 +328,14 @@ test("while the capability answer is in flight, the chip claims nothing", async 
     hasText: "This build cannot prove the completion this action names",
   })).toHaveCount(0);
   // And the sentence beneath states the action's own contract throughout, unqualified.
-  await expect(contract(dashboard)).toContainText("Pull request is opened and verified");
+  await expect(contract(dashboard)).toContainText("Pull request is opened");
   await shoot(dashboard, "08-capabilities-in-flight");
 
   answer();
 
   // The answer lands, and it is a real no: now the chip marks and says whose refusal it is.
   await expect(dashboard.locator(".lib-chip.is-attention"))
-    .toContainText("Pull request is opened and verified");
+    .toContainText("Pull request is opened");
   await expect(dashboard.locator("p.lib-props-note"))
     .toHaveText("This build cannot verify a pull request yet.");
 });
@@ -423,7 +423,7 @@ test("a built-in promotes Duplicate, offers no Save, and has no menu to open", a
   await duplicate.click();
   await expect(nameField(dashboard)).toHaveValue("Pull Request copy");
   await expect(nameField(dashboard)).not.toHaveAttribute("readonly", "");
-  await expect(chip(dashboard, "completes when")).toContainText("Pull request is opened and verified");
+  await expect(chip(dashboard, "completes when")).toContainText("Pull request is opened");
   await expect(chip(dashboard, "requires skill")).toContainText("pull-request");
   await expect(dashboard.getByRole("button", { name: "Save" })).toBeEnabled();
 });

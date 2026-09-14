@@ -257,7 +257,7 @@ test("the card model sorts by name and never invents a description", () => {
   // The honest answer is rendered, not stored: a card model that filled in "No description"
   // would make an empty description indistinguishable from that literal text.
   assert.match(page({ personas: [persona({ description: "" })] }), /No description/);
-  assert.equal(actionCards([action()])[0]?.fact, "Skill · pull-request · Pull request is opened and verified");
+  assert.equal(actionCards([action()])[0]?.fact, "Skill · pull-request · Pull request is opened");
 });
 
 // A drifted source file is a DURABLE fact about the asset - it stays drifted until a human

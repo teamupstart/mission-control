@@ -6,23 +6,15 @@ import type { Page } from "@playwright/test";
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
-import { withDaemonDb } from "../fixtures/daemon-db.ts";
 
 /**
- * A real Pull Request action run, read in the browser: parked on each of the two
- * stray-pull-request states in turn, then recovered and completed.
+ * A real Pull Request action run, read in the browser: the PR is durably adopted before its
+ * provider metadata arrives, the missing comparison facts become a warning, and the workflow
+ * still completes.
  *
- * These two states are the ones an operator most needs told apart from "no pull request yet",
- * and until this spec existed the only thing proving their labels was a unit test calling
- * `sessionActionStatus` directly. That asserts a lookup table. It does not assert that the
- * daemon computes the state, that it survives the SSE projection, or that either label ever
- * reaches a screen - which is the whole reason this repository requires a browser spec for a
- * UI change.
- *
- * The completion at the end is the other half, and it is what proves the two mismatch states
- * are WAITS rather than blocks: the same run recovers from both and finishes, and the card
- * then carries the provenance a finished action leaves behind - which pull request, on which
- * branch, at which commit. Nothing else asserts that provenance renders at all.
+ * The browser assertion covers the product boundary: the card says the PR opened, names the
+ * ref disagreement without using a failure state, and offers the completed run's existing
+ * fresh-review action. A unit test alone cannot prove that warning survives the SSE projection.
  *
  * ## What is real here and what is stood in for
  *
@@ -32,11 +24,8 @@ import { withDaemonDb } from "../fixtures/daemon-db.ts";
  * signals that prove Mission Control opened a pull request), the adapter's decision, and the
  * dashboard reading it back over SSE.
  *
- * Stood in for: what the Inspector's poll SAW on GitHub. The observation columns
- * (`head_ref_name`, `observed_head_sha`, `observed_state`) are written by the poller calling
- * `gh`, and e2e reaches no network - the same reason every agent binary here is a fake. So the
- * spec writes the row the poll would have written, and nothing else. The adapter still has to
- * read it, compare it, and choose the state; the browser still has to render it.
+ * No Inspector poll is fabricated. That absence is the point: durable creation adoption is
+ * sufficient, and the later GitHub comparison fields are optional diagnostics.
  */
 
 const NODE = { session: "session-node", action: "action-node", end: "end-node" };
@@ -84,32 +73,6 @@ async function announcePullRequest(daemon: DaemonHandle, sessionId: string, url:
     }),
   });
   if (!response.ok) throw new Error(`hook answered ${response.status}: ${await response.text()}`);
-}
-
-/**
- * Write what a poll would have observed about the adopted pull request.
- *
- * The one thing this file fabricates, and it fabricates only the provider's answer.
- * `loadOpenInspectorPrs` is read fresh on every decision - deliberately, so a cached ledger
- * cannot leave an action waiting for a head that had already arrived.
- */
-function observePullRequest(
-  daemon: DaemonHandle,
-  patch: { branch: string; repoRoot?: string; headSha?: string },
-): void {
-  withDaemonDb(daemon, (db) => {
-    db.prepare(
-      `UPDATE inspector_prs
-          SET head_ref_name = ?, observed_head_sha = ?, observed_state = 'OPEN', observed_at = ?
-              ${patch.repoRoot ? ", repo_root = ?" : ""}
-        WHERE state = 'open'`,
-    ).run(
-      patch.branch,
-      patch.headSha ?? "a".repeat(40),
-      Date.now(),
-      ...(patch.repoRoot ? [patch.repoRoot] : []),
-    );
-  });
 }
 
 async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
@@ -165,7 +128,7 @@ const actionWait = async (daemon: DaemonHandle, runId: string): Promise<string |
   (await api<{ summary: { actionWait?: string | null } }>(daemon, `/api/workflow-runs/${runId}`))
     .summary.actionWait ?? null;
 
-test("a pull request action names each stray, then completes as verified shipping", async ({
+test("a durably adopted pull request completes before provider metadata arrives", async ({
   dashboard,
   daemon,
 }) => {
@@ -227,97 +190,33 @@ test("a pull request action names each stray, then completes as verified shippin
   await expect(card).toBeVisible();
   await expect(card).toContainText("Awaiting PR");
 
-  // The turn opened a pull request, through the daemon's own adoption path - and the poll that
-  // follows finds it on a branch this action is not about.
+  // The turn opened a pull request through the daemon's own adoption path. Do not fabricate a
+  // provider poll: the newly adopted row deliberately still has null comparison metadata.
   await announcePullRequest(daemon, sessionId, "https://github.com/owner/repo/pull/77");
   await expect.poll(async () =>
     (await api<Array<{ key: string }>>(daemon, "/api/inspector/prs")).length,
     { message: "the prCreated hook never adopted a pull request" },
   ).toBeGreaterThan(0);
-  observePullRequest(daemon, { branch: "some-other-branch" });
-
-  await expect.poll(() => actionWait(daemon, runId), {
-    message: "a pull request on another branch was not distinguished from having none",
-    timeout: 120_000,
-  }).toBe("pull_request_wrong_branch");
-
-  // The label an operator actually reads, in the browser, arriving over SSE without a reload.
-  await expect(card).toContainText("PR on another branch");
-  await expect(card).toContainText("opened a pull request from a different branch");
-  await expect(card).not.toContainText("Awaiting PR");
-  await shoot(dashboard, "11-pr-on-another-branch");
-
-  // The same run, with the pull request found in another repository entirely.
-  //
-  // A REAL second repository, because "a different repository" is a claim about identity that
-  // the daemon resolves through git. A path that does not exist resolves to nothing, and the
-  // adapter reads that as UNKNOWN rather than as a mismatch - correctly, since it will not
-  // convict a session on a directory it cannot inspect.
-  const otherRepo = join(daemon.workspace, "other-repo");
-  mkdirSync(otherRepo, { recursive: true });
-  execFileSync("git", ["init", "-q", "."], { cwd: otherRepo });
-  observePullRequest(daemon, { branch: "some-other-branch", repoRoot: otherRepo });
-  await expect.poll(() => actionWait(daemon, runId), {
-    message: "a pull request in another repository was not distinguished from a branch mismatch",
-    timeout: 120_000,
-  }).toBe("pull_request_wrong_repository");
-
-  await expect(card).toContainText("PR on another repo");
-  await expect(card).toContainText("in a different repository");
-  await shoot(dashboard, "12-pr-on-another-repo");
-
-  // A WAIT throughout, never a block: the run is still live and the action is still waiting,
-  // which is what lets a turn that opened a stray first and the right one second recover.
-  const state = await api<{ run: { status: string }; attempts: Array<{ state: string }> }>(
-    daemon,
-    `/api/workflow-runs/${runId}`,
-  );
-  expect(state.run.status).toBe("waiting_for_action");
-  expect(state.attempts.some((attempt) => attempt.state === "waiting")).toBe(true);
-
-  // And the run RECOVERS from both, which is what makes them waits rather than blocks. The
-  // pull request is found on the right branch, at the commit this session's checkout is
-  // actually on, and the action completes.
-  const session = (await api<Array<{ id: string; cwd: string; gitBranch: string | null }>>(
-    daemon,
-    "/api/sessions",
-  )).find((item) => item.id === sessionId)!;
-  const head = execFileSync("git", ["-C", session.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })
-    .trim();
-  observePullRequest(daemon, {
-    branch: session.gitBranch!,
-    repoRoot: session.cwd,
-    headSha: head,
-  });
-
   await expect.poll(async () =>
-    (await api<{ attempts: Array<{ nodeId: string; state: string }> }>(
-      daemon,
-      `/api/workflow-runs/${runId}`,
-    )).attempts.some((attempt) => attempt.nodeId === NODE.action && attempt.state === "completed"),
-    { message: "a matching pull request never completed the action", timeout: 180_000 },
-  ).toBe(true);
+    (await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${runId}`)).run.status,
+  { message: "the PR warning stopped the workflow", timeout: 120_000 }).toBe("completed");
 
-  // The PROVENANCE, in the browser. This is the audit trail a finished action leaves - which
-  // pull request, on which branch, at which commit - and nothing else asserts that it renders.
-  // A regression could drop the link or the commit after completion and every other check here
-  // would still pass, because they all read waiting states.
+  // The warning arrives over SSE without a reload, while the action and run remain complete.
   await expect(card).toContainText("Complete");
+  await expect(card).toContainText("PR opened with warning");
+  await expect(card).toContainText("branch, pushed ref, pull-request state");
+  await expect(card).toContainText("not available for comparison");
+  await expect(card).toContainText("workflow continued");
+  await expect(card).not.toContainText("Awaiting PR");
   const link = card.getByRole("link", { name: "#77" });
   await expect(link).toBeVisible();
   await expect(link).toHaveAttribute("href", "https://github.com/owner/repo/pull/77");
-  await expect(card).toContainText(`on ${session.gitBranch}, verified at ${head.slice(0, 8)}`);
-  // The commit is the one the CONTINUATION captured, not merely the one the pull request is at.
-  // Those are the same here, and the point of printing it is that a reader can tell when they
-  // are not.
-  await expect(card).not.toContainText("Awaiting");
-  const shippingNotice = dashboard.locator('[role="status"]', {
-    hasText: "Verified shipping completion",
-  });
-  await expect(shippingNotice).toContainText("Verified shipping completion");
-  await expect(shippingNotice).toContainText("without another evidence review");
-  await expect(dashboard.getByRole("button", { name: /verified shipping/i })).toBeVisible();
-  await shoot(dashboard, "13-pr-verified-provenance");
+  await expect(card).toContainText("on a branch not yet observed, pushed ref not yet observed");
+  await expect(dashboard.getByRole("button", { name: "Run this review again" })).toBeVisible();
+  await shoot(dashboard, "11-pr-mismatch-warning");
+  if (process.env.MC_E2E_EVIDENCE) {
+    await card.screenshot({ path: `${EVIDENCE}12-pr-warning-card.png` });
+  }
 });
 
 /** Both widths, for `workflow-session-action-evidence.spec.ts`' reason. */

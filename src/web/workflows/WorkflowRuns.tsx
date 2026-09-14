@@ -395,6 +395,7 @@ function SessionActionCard({
   const snapshot = attempt.sessionAction;
   const blocked = state?.blocked ?? null;
   const proven = provenPullRequest(state);
+  const warnings = state?.warnings ?? [];
   const prompt = snapshot?.promptMarkdown ?? "";
   const clipped = prompt.length > ACTION_PREVIEW_CHARS;
   return (
@@ -416,12 +417,23 @@ function SessionActionCard({
           : state?.wait
             ? actionWaitSentence(state.wait)
             : state?.complete
-              ? verifiedShipping
+              ? warnings.length > 0
+                ? "The pull request was opened and the workflow continued with a warning."
+                : verifiedShipping
                 ? "The pull request was verified open at the captured commit, its content matched the prior review, and the workflow reached End."
                 : "The turn finished, and the fresh evidence the stages below it review was captured."
               : attemptStateLabel(attempt.state)}
       </p>
       {blocked && <ErrorLine raw={blocked.detail} />}
+      {warnings.map((warning) => (
+        <p
+          className="wf-run-notice"
+          role="status"
+          key={`${warning.code}:${warning.detail}`}
+        >
+          <strong>PR opened with warning.</strong> {warning.detail}
+        </p>
+      ))}
       <p className="wf-run-meta">
         {[
           snapshot ? sessionActionSkillLabel(snapshot.requiredSkillId) : null,
@@ -438,20 +450,22 @@ function SessionActionCard({
           {state.settledAt === null ? "" : ` · turn finished ${when(state.settledAt)}`}
         </p>
       )}
-      {/* What the proof actually WAS, for the one adapter that has one.
+      {/* What the action observed, for the one adapter that carries PR provenance.
           Shown only once it exists, because until then there is no pull request to link and
           no commit to name - and a link rendered early is the "Open PR" affordance the plan
           refuses, offering to open something nothing has verified. The commit is printed
-          because it is the whole claim: this pull request, at this commit, is what the stages
-          below were allowed to read fresh evidence for. */}
+          so a warning can name both sides of a disagreement without hiding the PR that opened. */}
       {proven && (
         <p className="wf-run-meta wf-run-action-pr">
-          <Tooltip label="The pull request this action proved, at the commit it was proved at">
+          <Tooltip label="The pull request this action opened or found, at the ref Inspector observed">
             <a href={proven.pullRequestUrl} target="_blank" rel="noreferrer">
               #{proven.pullRequestNumber}
             </a>
           </Tooltip>
-          {` on ${proven.branch}, verified at ${proven.expectedHeadOid.slice(0, 8)}`}
+          {proven.branch ? ` on ${proven.branch}` : " on a branch not yet observed"}
+          {proven.expectedHeadOid
+            ? `, observed at ${proven.expectedHeadOid.slice(0, 8)}`
+            : ", pushed ref not yet observed"}
         </p>
       )}
       {snapshot && (

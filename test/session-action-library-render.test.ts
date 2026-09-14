@@ -64,7 +64,7 @@ const CAPABILITIES: SessionActionCompletionCapability[] = [
   {
     kind: "pull_request",
     available: false,
-    label: "Pull request is opened and verified",
+    label: "Pull request is opened",
     unavailableReason: "This build cannot verify a pull request yet.",
   },
 ];
@@ -175,7 +175,7 @@ test("the rail separates what ships from what you wrote, and names each row by i
   );
   assert.match(
     html,
-    /<small class="lib-rail-row-detail mono is-two-line">Skill · pull-request · Pull request is opened and verified<\/small>/,
+    /<small class="lib-rail-row-detail mono is-two-line">Skill · pull-request · Pull request is opened<\/small>/,
   );
   assert.doesNotMatch(html, />Remove the scratch files</, "the description is not the sub-label");
   // Provenance is said once, at the head, for every row beneath it - rather than as a tag on
@@ -382,11 +382,11 @@ test("an action already naming an unavailable adapter keeps it, marked, and says
   // a closed dropdown, so the one fact on this row that is waiting on somebody was the only
   // one an operator had to open a control to find.
   assert.match(html, /class="lib-chip is-overridden is-attention[^"]*"/);
-  assert.match(html, /<span class="lib-chip-v">Pull request is opened and verified<\/span>/);
+  assert.match(html, /<span class="lib-chip-v">Pull request is opened<\/span>/);
   assert.match(html, /<p class="lib-props-note">This build cannot verify a pull request yet\.<\/p>/);
   // And the contract line still states what this action names, rather than falling back to
   // something this build could prove - the action's own guarantee is not the build's to edit.
-  assert.match(html, /<b>Pull request is opened and verified<\/b>/);
+  assert.match(html, /<b>Pull request is opened<\/b>/);
 
   const choices = completionChoices(CAPABILITIES, "pull_request");
   assert.deepEqual(choices.map((choice) => choice.kind), ["pull_request", "session_turn"]);

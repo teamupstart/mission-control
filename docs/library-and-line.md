@@ -215,7 +215,7 @@ is a choice**, and an action that requires none is not inheriting a default but 
 nothing, so it is sent to whatever skills the bound session has already loaded.
 
 **The rail** groups **Built-in** and **Yours** with counts, and each row's sub-label is that
-contract - `Skill · pull-request · Pull request is opened and verified`, or
+contract - `Skill · pull-request · Pull request is opened`, or
 `No required skill · Session turn finishes` where the action asks for none. The description is
 not repeated there, because on the shipped pair it restates the title, and the contract is the
 thing that tells two actions apart. Search sits above the list; the **Archived** toggle, carrying

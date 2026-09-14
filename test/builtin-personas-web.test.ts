@@ -234,7 +234,8 @@ test("the built-in Persona library rails every shipped role and opens the first"
   // naming a single role here made this assertion turn over every time the catalog gained
   // one that sorts ahead of it.
   for (const persona of BUILTIN_PERSONAS) {
-    assert.match(library, new RegExp(`>${persona.name}<`), `${persona.name} has no rail row`);
+    const nameMarkup = renderToStaticMarkup(createElement("span", null, persona.name));
+    assert.ok(library.includes(nameMarkup), `${persona.name} has no rail row`);
   }
   // The description belongs to the detail pane, and the pane opens on the first row with no
   // gesture. Asserting THAT rather than a fixed name keeps the claim about the surface.

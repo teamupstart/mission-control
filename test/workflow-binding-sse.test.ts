@@ -232,7 +232,7 @@ test("a built-in binding names its workflow, which no SQL join can reach", () =>
   new WorkflowManager(registry, store);
 
   const summary = registry.snapshot().workflowBindingSummaries[0];
-  assert.equal(summary?.workflowName, "No-Mistakes Review");
+  assert.equal(summary?.workflowName, "No-Mistakes Review (High Rigor)");
   assert.equal(summary?.workflowVersion, 8);
   assert.equal(summary?.workflowId, NO_MISTAKES_REVIEW_WORKFLOW_ID);
   assert.notEqual(summary?.workflowName, "Missing workflow version");

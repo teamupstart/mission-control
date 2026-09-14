@@ -622,6 +622,34 @@ test("the probe's exported span covers when it ran, not a window before it start
   assert.equal(span!.startTimeMs, START, "and starts when it began, not a round trip earlier");
 });
 
+test("two probes in the same millisecond are both recorded, not deduplicated into one", async () => {
+  // The dedupe identity was `probe:${profile}:${Date.now()}`, so two probes for the same
+  // profile inside one millisecond - a double click, or two clients - collided. The second came
+  // back `duplicate`, which meant a null `traceId` even while its own outcome said accepted,
+  // and its real result and latency were never journaled. Nothing counted that as loss either,
+  // because from the store's point of view nothing was lost. A probe is a distinct
+  // operator-initiated operation every time, so there is no idempotency for an identity to
+  // protect here.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  // A clock frozen at one instant, which is what the old identity was derived from.
+  const frozen = () => 5_000;
+  const first = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: frozen });
+  const second = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: frozen });
+
+  assert.equal(first.outcome, "accepted");
+  assert.equal(second.outcome, "accepted");
+  assert.ok(first.traceId, "the first probe is correlatable");
+  assert.ok(second.traceId, "and so is the second, rather than coming back null as a duplicate");
+  assert.notEqual(first.traceId, second.traceId, "they are separate operations");
+
+  const journal = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_journal WHERE name = 'mission.telemetry.probe.finished'`)
+    .get() as { n: number };
+  assert.equal(journal.n, 2, "both results are on the record");
+});
+
 // ---- single-flight ----
 
 test("two concurrent cycles run as one, so a destination never sees two requests at once", async () => {

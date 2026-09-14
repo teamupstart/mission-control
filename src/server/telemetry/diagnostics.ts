@@ -17,6 +17,7 @@ import { DAEMON_STARTED_EVENT, TELEMETRY_PROBE_EVENT } from "@shared/telemetry-c
 import { TELEMETRY_SCOPE } from "./projection.ts";
 import { captureTelemetry, resourceAttributes } from "./capture.ts";
 import { getTelemetryConfig, profileIsExporting, profileSalt, telemetryIdentity } from "./config.ts";
+import { newSpanId } from "./identity.ts";
 import { registerTelemetrySource } from "./registration.ts";
 import { scopedTraceId } from "./projection.ts";
 import { send, type DeliveryDeps } from "./delivery.ts";
@@ -143,7 +144,14 @@ export async function runTelemetryProbe(
 
   const captured = captureTelemetry({
     event: TELEMETRY_PROBE_EVENT,
-    source: { kind: "mission.telemetry", id: `probe:${profile}:${started}`, revision: 1 },
+    // Per INVOCATION, not per millisecond. Keying the dedupe identity on `Date.now()` meant two
+    // probes for the same profile in the same millisecond - a double click, or two clients -
+    // collided: the second came back `duplicate`, so its `traceId` was null even while its
+    // outcome said accepted, and its real result was never journaled. Unlike every other loss
+    // in this facility, nothing counted it, because from the store's point of view nothing was
+    // lost. A probe is a distinct operator-initiated operation every time it runs, so there is
+    // no idempotency here for a shared identity to protect.
+    source: { kind: "mission.telemetry", id: `probe:${profile}:${started}:${newSpanId()}`, revision: 1 },
     actor: { kind: "human", origin: "dashboard", basis: "app_context" },
     facts: { profile, outcome: result, latency_ms: Math.round(latencyMs) },
     occurredAt: finishedAt,

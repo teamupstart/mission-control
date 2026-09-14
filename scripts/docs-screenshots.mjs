@@ -46,7 +46,10 @@ const AVAILABLE_UPDATE = {
     "Durable OTLP capture, export and a local Grafana stack. Setup now reports cmux socket "
     + "control and the Herdr server as separate facts from the binaries themselves.",
   publishedAt: "2026-09-14T00:00:00.000Z",
-  checkedAt: 1_773_446_400_000,
+  // On the same day as `publishedAt` and after it. A check that predates the release it found
+  // is a state the real updater cannot reach, and a fixture nobody can construct is a bad
+  // fixture even where nothing renders it - the banner shows only the version and the notes.
+  checkedAt: 1_789_376_400_000,
   lastOutcome: null,
 };
 

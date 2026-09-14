@@ -141,6 +141,14 @@ test("the update snapshot is a phase the shipped union actually has", () => {
   assert.ok(isNewerVersion(AVAILABLE_UPDATE.currentVersion, AVAILABLE_UPDATE.newVersion));
   assert.equal(typeof AVAILABLE_UPDATE.releaseNotes, "string");
   assert.ok(AVAILABLE_UPDATE.releaseNotes.length > 0);
+
+  // The check that found a release cannot predate the release. Nothing renders either field -
+  // the banner shows the version and the notes - so only an assertion can keep the fixture
+  // describing a machine state the real updater could actually reach.
+  assert.ok(
+    AVAILABLE_UPDATE.checkedAt >= Date.parse(AVAILABLE_UPDATE.publishedAt),
+    "checkedAt predates publishedAt, which the updater can never produce",
+  );
 });
 
 test("the update shot takes its own context and the reminder shot precedes the dismissal", () => {

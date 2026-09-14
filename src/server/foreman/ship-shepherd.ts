@@ -1,6 +1,7 @@
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { settledIdle } from "@shared/session.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { workflowEvidenceRequirement } from "@shared/task-completion.ts";
 import type {
   PromptedCompletionDecision,
   PromptedRecoveryReason,
@@ -22,6 +23,7 @@ export interface ShipShepherdInput {
   /** Full-fleet report/input ownership, already resolved by the caller. */
   humanOwnsSession: boolean;
   workflowOwnsSession: boolean;
+  workflowEvidenceEligible: boolean;
   hasTaskOwnedOpenPr: boolean;
   /** A daemon/worker read of the current complete checkout diff. */
   diffHasChanges: boolean;
@@ -238,7 +240,7 @@ function decideShipRecovery(
     episodeKey: input.episodeKey,
     attempt,
     marker,
-    payload: structuralPayload(cause),
+    payload: structuralPayload(cause, input.workflowEvidenceEligible),
     needsReview: cause.reason === "idle_ambiguous",
     decision: cause.decision,
   };
@@ -271,17 +273,28 @@ function recoveryCause(
   return { reason: diffHasChanges ? "idle_ambiguous" : "idle_empty", decision: null };
 }
 
-function structuralPayload(cause: RecoveryCause): string | null {
+function structuralPayload(cause: RecoveryCause, workflowEvidenceEligible: boolean): string | null {
   switch (cause.reason) {
     case "held_gaps": {
-      const gaps = cause.decision?.gaps ?? [];
+      const storedGaps = cause.decision?.gaps ?? [];
+      const gaps = workflowEvidenceEligible ? storedGaps : storedGaps.filter((gap) =>
+        (gap.kind !== undefined && gap.kind !== "unverified" && gap.kind !== "incomplete")
+          || !workflowRegistrationOnly(gap.detail));
+      const summary = cause.decision?.summary ?? "";
+      const obsoleteHold = !workflowEvidenceEligible && gaps.length === 0
+        && (storedGaps.length > 0 || workflowRegistrationOnly(summary));
       const detail = gaps.length > 0
         ? gaps.map((gap, i) => `${i + 1}. ${gap.path ? `${gap.path}: ` : ""}${gap.detail}`).join("\n")
-        : cause.decision?.summary || "The completion review found unfinished implementation work.";
-      return `Foreman's completion review found blocking work that still belongs in this implementation turn:\n\n${detail}\n\nAddress only these implementation, documentation, test, or evidence gaps. Do not commit, push, create a pull request, merge, or expand repository scope. When the requested work is verified, report completion and end the turn so Mission Control can re-run the normal handoff.`;
+        : obsoleteHold
+          ? "Recheck the requested implementation, documentation, and focused verification against the task objective."
+          : summary || "The completion review found unfinished implementation work.";
+      const heading = obsoleteHold
+        ? "Foreman's previous evidence-registration hold no longer applies:"
+        : "Foreman's completion review found blocking work that still belongs in this implementation turn:";
+      return `${heading}\n\n${detail}\n\n${workflowEvidenceRequirement(workflowEvidenceEligible)}\n\nAddress only these applicable implementation, documentation, test, or evidence gaps. Do not commit, push, create a pull request, merge, or expand repository scope. When the requested work is verified, report completion and end the turn so Mission Control can re-run the normal handoff.`;
     }
     case "idle_empty":
-      return "This invited ship task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation, focused verification, and evidence registration, then report completion and end the turn. Do not commit, push, create a pull request, merge, delete work, or expand repository scope.";
+      return `This invited ship task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation and focused verification, then report completion and end the turn. ${workflowEvidenceRequirement(workflowEvidenceEligible)} Do not commit, push, create a pull request, merge, delete work, or expand repository scope.`;
     case "direct_handoff_missing_pr":
       return "Continue the task's existing Straight-to-PR handoff on this same branch. First check whether this task already has an open pull request in any attached repository; if one exists, do not create another. If none exists, finish the already-authorized commit, push, and pull-request creation for the task-owned changes only, then follow its CI on the same branch. Do not merge, delete work, create another task, or expand repository scope.";
     case "idle_ambiguous":
@@ -289,6 +302,13 @@ function structuralPayload(cause: RecoveryCause): string | null {
     case "verification_failed":
       return null;
   }
+}
+
+/** Legacy gaps have prose rather than a registration category. Keep ambiguous work requests. */
+function workflowRegistrationOnly(detail: string): boolean {
+  if (/(?:^|[.!?;]\s*|\b(?:and|then)\s+)(?:implement|fix|repair|add|cover|test|document|run|verify)\b/i.test(detail.trim())) return false;
+  return /\b(?:submit_workflow_evidence|workflow evidence|evidence registration|evidence is registered|registered evidence)\b/i.test(detail)
+    && /\b(?:register|submit|attach|upload|required|missing|absent|no|not|unregistered|incomplete|403|workflow_unbound)\b/i.test(detail);
 }
 
 function escalationSummary(cause: RecoveryCause): string {

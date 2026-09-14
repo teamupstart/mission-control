@@ -189,6 +189,7 @@ test("registered evidence keeps trusted metadata above the fence and child text 
   const prompt = buildVerifyPrompt(mkVerifyInput({
     completionContract: contract,
     registeredEvidence: {
+      registrationEligible: true,
       totalCount: 1,
       truncated: false,
       items: [{
@@ -227,7 +228,7 @@ test("registered evidence states only the structural count and the zero-item fai
   const contract = taskCompletionContract("ship")!;
   const zero = buildVerifyPrompt(mkVerifyInput({
     completionContract: contract,
-    registeredEvidence: { items: [], totalCount: 0, truncated: false },
+    registeredEvidence: { registrationEligible: true, items: [], totalCount: 0, truncated: false },
   }));
   assert.match(
     zero,
@@ -237,6 +238,7 @@ test("registered evidence states only the structural count and the zero-item fai
   const one = buildVerifyPrompt(mkVerifyInput({
     completionContract: contract,
     registeredEvidence: {
+      registrationEligible: true,
       totalCount: 1,
       truncated: false,
       items: [{
@@ -270,7 +272,7 @@ test("registered evidence applies per-item and aggregate content caps", () => {
   }));
   const prompt = buildVerifyPrompt(mkVerifyInput({
     completionContract: contract,
-    registeredEvidence: { items, totalCount: items.length, truncated: false },
+    registeredEvidence: { registrationEligible: true, items, totalCount: items.length, truncated: false },
   }));
   assert.match(prompt, /Registered evidence contents \(TRUNCATED for length\)/);
   const contents = prompt.slice(

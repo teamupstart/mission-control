@@ -365,7 +365,7 @@ test("an unbound session still cannot register agent evidence", async () => {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-agent-evidence-unbound-")));
   try {
     execFileSync("git", ["init", "-q", repo]);
-    const { app } = harness(repo, "unbound-scout-session");
+    const { app, workflows, session } = harness(repo, "unbound-scout-session");
 
     const response = await evidenceRequest(app, {
       env: { cwd: repo },
@@ -383,6 +383,51 @@ test("an unbound session still cannot register agent evidence", async () => {
 
     assert.equal(response.status, 403);
     assert.equal((await response.json() as { code: string }).code, "workflow_unbound");
+    assert.equal(workflows.store.listWorkflowEvidence(noteKeyFor(session)).artifacts.length, 0);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("session evidence eligibility follows the active immutable Persona binding", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-evidence-eligibility-")));
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const { app, session, workflows, versionId } = harness(repo, "eligibility-session");
+    const eligible = async () => {
+      const response = await app.request(`/api/sessions/${session.id}/workflow-evidence`, {
+        headers: { host: "127.0.0.1:7317" },
+      });
+      assert.equal(response.status, 200);
+      return (await response.json() as { registrationEligible: boolean }).registrationEligible;
+    };
+    assert.equal(await eligible(), false, "an empty tray is not an eligible workflow");
+    const bound = workflows.createBinding({ workflowVersionId: versionId, sessionId: session.id });
+    assert.ok(bound.ok);
+    assert.equal(await eligible(), true, "manual attachment does not change task.workflowId");
+
+    // Publishing a graph without Personas must not change an already pinned binding.
+    const noPersonaVersion = `${versionId}-without-personas`;
+    const noPersonaGraph: PublishedWorkflowGraph = {
+      nodes: [PERSONA_GRAPH.nodes[0]!, PERSONA_GRAPH.nodes[2]!],
+      edges: [{ id: "s-e", source: "session", sourcePort: "submitted", target: "end", targetPort: "terminal" }],
+    };
+    openDb().prepare(`INSERT INTO workflow_versions (
+      id, workflow_id, version, source_draft_revision, graph_json,
+      completion_policy_json, binding_defaults_json, published_at
+    ) SELECT ?, workflow_id, 2, 2, ?, completion_policy_json, binding_defaults_json, 2
+      FROM workflow_versions WHERE id = ?`)
+      .run(noPersonaVersion, JSON.stringify(noPersonaGraph), versionId);
+    openDb().prepare("UPDATE workflow_definitions SET current_version_id = ? WHERE current_version_id = ?")
+      .run(noPersonaVersion, versionId);
+    assert.equal(await eligible(), true, "eligibility reads the bound version");
+    assert.ok(workflows.archiveBinding(bound.value.id).ok);
+    assert.equal(await eligible(), false, "removing the binding retires the obligation");
+    const noPersona = workflows.createBinding({ workflowVersionId: noPersonaVersion, sessionId: session.id });
+    assert.ok(noPersona.ok);
+    assert.equal(await eligible(), false, "a binding without a Persona accepts no agent evidence");
+    await assert.rejects(workflows.stageAgentEvidence(session.id, { images: [] }),
+      (error: { code?: string }) => error.code === "workflow_unbound");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

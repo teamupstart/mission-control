@@ -860,6 +860,12 @@ export interface WorkflowStagedEvidenceList {
   coverage?: WorkflowStagedEvidenceCoverageClaim[];
 }
 
+/** Live-session read: an evidence tray can exist without a workflow accepting agent writes. */
+export interface WorkflowSessionEvidenceList extends WorkflowStagedEvidenceList {
+  /** Resolved from the current active binding's pinned Persona graph, never task selection. */
+  registrationEligible: boolean;
+}
+
 export interface WorkflowAgentEvidenceLocator {
   kind: "agent";
   clientItemId: string;

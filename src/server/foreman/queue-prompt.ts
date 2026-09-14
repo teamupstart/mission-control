@@ -8,7 +8,7 @@ import { PREFS_END, fromChild, instructionsSection } from "./prefs.ts";
 // and command erased. A second renderer of the same data is how that drift happened, so the
 // copy is gone; the empty-window wording each surface needs is a parameter instead.
 import { formatTranscript } from "./prompt.ts";
-import type { TaskCompletionContract } from "@shared/task-completion.ts";
+import { workflowEvidenceRequirement, type TaskCompletionContract } from "@shared/task-completion.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff, transcript and registered evidence and never
@@ -44,6 +44,7 @@ export interface RegisteredEvidenceItem {
 }
 
 export interface RegisteredEvidenceInput {
+  registrationEligible: boolean;
   items: RegisteredEvidenceItem[];
   totalCount: number;
   truncated: boolean;
@@ -247,14 +248,18 @@ export function buildVerifyPrompt(input: VerifyInput): string {
 
   if (input.registeredEvidence) {
     const evidence = input.registeredEvidence;
-    lines.push("## Registered evidence (trusted structural facts from Mission Control)");
-    if (evidence.totalCount === 0) {
+    lines.push(
+      "## Registered evidence (trusted structural facts from Mission Control)",
+      workflowEvidenceRequirement(evidence.registrationEligible),
+      "",
+    );
+    if (evidence.totalCount === 0 && evidence.registrationEligible) {
       lines.push(
         "No evidence is registered for this work, so the contract clause 'evidence registration",
         "is done' is not satisfied.",
         "",
       );
-    } else {
+    } else if (evidence.totalCount > 0) {
       lines.push(
         `${evidence.totalCount} evidence item${evidence.totalCount === 1 ? " is" : "s are"} registered for this work.`,
         "Daemon-verified metadata is below; child-authored contents are inside the evidence fence.",

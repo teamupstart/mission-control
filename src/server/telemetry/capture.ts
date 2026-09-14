@@ -38,6 +38,7 @@ import { eventIdFor, newSpanId, newTraceId } from "./identity.ts";
 import { flushPendingUnknownGap, markUnknownGapPending } from "./retention.ts";
 import {
   appendJournal,
+  findSourceIdentity,
   getDestination,
   putContext,
   putResource,
@@ -168,6 +169,16 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
     }
 
     return telemetryTransaction((d) => {
+      // DEDUPE FIRST, before admission control.
+      //
+      // A duplicate costs zero additional bytes, so it is not new data pressing on the quota.
+      // Checking capacity first meant a retried capture at a full store was refused as
+      // `over_capacity` and recorded a `capture_refused` gap - a loss claimed for a fact that
+      // was already safely stored. Claiming a loss that did not happen is the one failure this
+      // facility's honesty rests on not making.
+      const duplicateOf = findSourceIdentity(d, request.source);
+      if (duplicateOf) return { kind: "duplicate", eventId: duplicateOf };
+
       // Admission control. At the absolute cap even high-priority capture fails, and it fails
       // here - visibly, with a counted gap - rather than by growing the file past the number
       // the operator was shown.

@@ -165,19 +165,27 @@ function toEvent(row: JournalRow): StoredTelemetryEvent {
  * journal row can be pruned while the identity must not be: an expired historical source must
  * never be importable again as fresh activity.
  */
-export function appendJournal(
+export function findSourceIdentity(
   d: DatabaseSync,
-  event: JournalAppend,
-): { kind: "accepted"; seq: number } | { kind: "duplicate"; eventId: string } {
+  source: TelemetrySourceIdentity,
+): string | null {
   const existing = d
     .prepare(
       `SELECT event_id FROM telemetry_source_identities
         WHERE source_kind = ? AND source_id = ? AND source_revision = ?`,
     )
-    .get(event.source.kind, event.source.id, event.source.revision) as
-    | { event_id: string }
-    | undefined;
-  if (existing) return { kind: "duplicate", eventId: existing.event_id };
+    .get(source.kind, source.id, source.revision) as { event_id: string } | undefined;
+  return existing?.event_id ?? null;
+}
+
+export function appendJournal(
+  d: DatabaseSync,
+  event: JournalAppend,
+): { kind: "accepted"; seq: number } | { kind: "duplicate"; eventId: string } {
+  // Kept here as well as at the caller: this function must be safe to call on its own, and the
+  // two checks agreeing costs one indexed lookup.
+  const existingId = findSourceIdentity(d, event.source);
+  if (existingId) return { kind: "duplicate", eventId: existingId };
 
   const result = d
     .prepare(

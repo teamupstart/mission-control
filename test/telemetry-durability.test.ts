@@ -372,6 +372,37 @@ test("the same source identity is captured once, however often it is offered", (
   assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [1]);
 });
 
+test("a duplicate at a full store is a duplicate, not a claimed loss", () => {
+  // The ordering defect: admission control ran before the dedupe lookup, so a retried capture
+  // at a full store was refused as `over_capacity` AND recorded a `capture_refused` gap. A
+  // duplicate costs zero additional bytes; it is not new data pressing on the quota, and
+  // claiming a loss for a fact that is already safely stored is the one thing this facility's
+  // honesty rests on not doing.
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+
+  // Force "at capacity" rather than manufacturing 256 MiB. Restored in `finally`, and the
+  // limits object is the real one the capture path reads.
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 1;
+  try {
+    const again = capture("boot-1", 2_000);
+    assert.equal(again.kind, "duplicate", "the retry is recognised before the quota is consulted");
+
+    const newFact = capture("boot-2", 3_000);
+    assert.equal(newFact.kind, "refused", "genuinely new data is still refused at the cap");
+    assert.equal(newFact.kind === "refused" && newFact.reason, "over_capacity");
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+
+  const gaps = telemetryHealth(4_000).gaps;
+  const refused = gaps.find((g) => g.kind === "capture_refused");
+  assert.ok(refused, "the genuinely refused fact is counted");
+  assert.equal(refused!.count, 1, "and the duplicate contributed no phantom loss");
+});
+
 test("dedupe outlives the payload it deduplicated", () => {
   // A unique key on a row that is later deleted is not durable deduplication. Once retention
   // prunes the journal row, the same expired historical source must not be importable again as

@@ -127,6 +127,51 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
 }
 
 /**
+ * A loss counter that could not itself be written, owed to the next writable moment.
+ *
+ * Process-level, and deliberately not durable: the whole premise is that a write just failed,
+ * so the only place left to remember it is memory. It is not lost by being in memory either,
+ * because a crash before it can be flushed leaves the in-progress marker set, and the next
+ * start reports the unknown gap for that reason instead.
+ */
+let unknownGapPending = false;
+
+/** Remember that `recordGap` itself threw. Called from capture's containment boundary. */
+export function markUnknownGapPending(): void {
+  unknownGapPending = true;
+}
+
+/**
+ * Write a deferred unknown gap if one is owed and the store is writable again.
+ *
+ * Without this the promise in docs/observability.md held only by coincidence: a failed gap
+ * write followed by a clean shutdown recorded nothing at all, and health showed zero gaps for
+ * an incident where a fact was refused AND its own counter failed. Returns whether it wrote.
+ */
+export function flushPendingUnknownGap(now = Date.now()): boolean {
+  if (!unknownGapPending) return false;
+  try {
+    telemetryTransaction((d) =>
+      recordGap(
+        d,
+        "unknown_gap",
+        "a loss counter could not be written, so at least one refusal is uncounted",
+        now,
+      ),
+    );
+    unknownGapPending = false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Test-only: forget any owed gap so one file's fixtures cannot leak into another's. */
+export function resetPendingUnknownGap(): void {
+  unknownGapPending = false;
+}
+
+/**
  * Note that the previous run ended abruptly, and mark this one as in progress.
  *
  * Called once at startup, and ONLY while collection is enabled so a never-opted-in
@@ -154,9 +199,17 @@ export function noteTelemetryRunStart(enabled: boolean, now = Date.now()): boole
   return unclean;
 }
 
-/** Record that this run ended in an orderly way, so the next start does not report a gap. */
-export function noteTelemetryRunStopped(enabled: boolean): void {
+/**
+ * Record that this run ended in an orderly way, so the next start does not report a gap.
+ *
+ * An owed unknown gap is written first. If it still cannot be written, the run is deliberately
+ * NOT marked clean: leaving the in-progress marker set makes the next start report the unknown
+ * gap, which is the outcome that keeps the promise even when the store is the thing at fault.
+ */
+export function noteTelemetryRunStopped(enabled: boolean, now = Date.now()): void {
   if (!enabled) return;
+  flushPendingUnknownGap(now);
+  if (unknownGapPending) return;
   setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: true });
 }
 

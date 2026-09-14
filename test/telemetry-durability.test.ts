@@ -196,6 +196,43 @@ test("an unclean previous run is reported as an unknown gap, not as zero loss", 
   assert.equal(noteTelemetryRunStart(true, 4_000), false);
 });
 
+test("a loss counter that could not be written becomes an unknown gap at the next chance", async () => {
+  // The double failure: a fact was refused AND its own counter failed. Relying on
+  // unclean-shutdown detection alone meant a transient write failure followed by an orderly
+  // exit recorded nothing at all, and health showed zero gaps for a real incident.
+  const { markUnknownGapPending, flushPendingUnknownGap, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  enableLocalOnly();
+  resetPendingUnknownGap();
+
+  assert.equal(flushPendingUnknownGap(1_000), false, "nothing owed, nothing written");
+
+  markUnknownGapPending();
+  assert.equal(flushPendingUnknownGap(2_000), true, "the owed gap is written once the store takes it");
+  assert.equal(flushPendingUnknownGap(3_000), false, "and is not written twice");
+
+  const gap = telemetryHealth(4_000).gaps.find((g) => g.kind === "unknown_gap");
+  assert.ok(gap, "health reports it rather than absorbing it");
+});
+
+test("an owed gap that still cannot be written keeps the run marked unclean", async () => {
+  // The fallback when the store itself is the thing at fault: rather than declare a clean
+  // shutdown and lose the incident, leave the marker set so the next start reports it.
+  const { noteTelemetryRunStopped, resetPendingUnknownGap, noteTelemetryRunStart } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  enableLocalOnly();
+  resetPendingUnknownGap();
+
+  noteTelemetryRunStart(true, 1_000);
+  noteTelemetryRunStopped(true, 2_000);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, true);
+  resetPendingUnknownGap();
+});
+
 test("the unclean-run marker is not written while collection is off", async () => {
   // Default-off covers this too: a never-opted-in installation writes no marker, so it can
   // never be told on its next boot that it lost something it was never collecting.

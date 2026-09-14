@@ -35,6 +35,7 @@ import {
   telemetryIdentity,
 } from "./config.ts";
 import { eventIdFor, newSpanId, newTraceId } from "./identity.ts";
+import { flushPendingUnknownGap, markUnknownGapPending } from "./retention.ts";
 import {
   appendJournal,
   getDestination,
@@ -109,6 +110,9 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
   request: CaptureRequest<Facts>,
 ): TelemetryCaptureResult {
   const now = request.now ?? Date.now();
+  // Settle anything owed from a previous failed counter write, now that the store may be
+  // writable again. A no-op boolean check when nothing is owed, which is almost always.
+  flushPendingUnknownGap(now);
   try {
     const definition = TELEMETRY_EVENTS[request.event.name];
     if (!definition || definition !== (request.event as TelemetryEventDefinition)) {
@@ -222,7 +226,10 @@ function recordCaptureGap(detail: string, now: number): void {
   try {
     telemetryTransaction((d) => recordGap(d, "capture_refused", detail, now));
   } catch {
-    /* the gap about the gap; recovery reports it as unknown */
+    // The gap about the gap. Remembered in memory so the next writable moment records an
+    // unknown gap: relying on unclean-shutdown detection alone meant a transient failure
+    // followed by an orderly exit was absorbed without trace.
+    markUnknownGapPending();
   }
 }
 

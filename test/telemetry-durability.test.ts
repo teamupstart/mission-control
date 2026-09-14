@@ -292,6 +292,61 @@ test("retention sheds orphaned resources, but never one a live series still need
   }
 });
 
+test("a computed dimension value is cut on a byte boundary, never mid-character", async () => {
+  // `TelemetryEmitter.metric` is the seam later phases emit COMPUTED dimension values through.
+  // A UTF-16 `slice` gets both halves wrong: for multi-byte text it can still exceed the
+  // 256-byte budget, and a cut between the halves of a surrogate pair leaves a lone surrogate
+  // that is not valid UTF-8 for the protobuf encoder. One emoji is enough.
+  const { registerTelemetryProjection, resetTelemetryRegistrations } = await import(
+    "../src/server/telemetry/registration.ts"
+  );
+  const { DAEMON_STARTS_METRIC } = await import("../src/shared/telemetry-catalog.ts");
+  // Every character is 4 UTF-8 bytes and 2 UTF-16 code units, so a code-unit slice at 256 both
+  // overshoots the byte budget and lands exactly between a surrogate pair.
+  const emoji = "\u{1F680}".repeat(200);
+  resetTelemetryRegistrations();
+  registerTelemetryProjection({
+    id: "mission.test.dimensions",
+    stateVersion: 1,
+    initialState: () => ({}),
+    migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
+    reduce(_event, state, emit) {
+      emit.metric(DAEMON_STARTS_METRIC.name, { launch_mode: emoji, schema_upgraded: "false" }, 1);
+      return state;
+    },
+  });
+
+  try {
+    enableLocalOnly();
+    assert.equal(capture("boot-1", 1_000).kind, "accepted");
+    runProjectionPass(2_000);
+
+    const row = openDb()
+      .prepare(`SELECT dimensions_json FROM telemetry_series LIMIT 1`)
+      .get() as { dimensions_json: string };
+    const value = (JSON.parse(row.dimensions_json) as Record<string, string>).launch_mode!;
+
+    assert.ok(
+      Buffer.byteLength(value, "utf8") <= TELEMETRY_LIMITS.maxStringBytes,
+      `stored ${Buffer.byteLength(value, "utf8")} bytes against a ${TELEMETRY_LIMITS.maxStringBytes} byte budget`,
+    );
+    assert.equal(
+      /[\uD800-\uDFFF]/.test(value.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")),
+      false,
+      "no half of a surrogate pair survives on its own",
+    );
+    // A lone surrogate does not survive a UTF-8 round trip; it comes back as U+FFFD.
+    assert.equal(
+      Buffer.from(value, "utf8").toString("utf8"),
+      value,
+      "and the value is valid UTF-8, which is what the protobuf encoder requires",
+    );
+  } finally {
+    resetTelemetryRegistrations();
+    registerBuiltinTelemetry();
+  }
+});
+
 test("a metric emitted from the snapshot hook is exportable, not durably unaddressable", async () => {
   // The gauge seam Phase 6's cohort reducers publish through. `snapshot` runs after the event
   // loop, so there is no contributing event to take a resource from - and an empty resource id

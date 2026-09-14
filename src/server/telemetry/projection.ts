@@ -38,7 +38,7 @@ import {
   profileSalt,
 } from "./config.ts";
 import { digest } from "./identity.ts";
-import { PARENT_SPAN_REF, SPAN_REF, TRACE_REF, resourceAttributes } from "./capture.ts";
+import { PARENT_SPAN_REF, SPAN_REF, TRACE_REF, boundString, resourceAttributes } from "./capture.ts";
 import {
   registeredProjections,
   type EmittedSpan,
@@ -386,10 +386,13 @@ class Collector implements TelemetryEmitter {
     const bounded: Record<string, string> = {};
     for (const key of definition.dimensions) {
       const raw = dimensions[key];
+      // `boundString`, not `slice`. Slicing by UTF-16 code units gets both halves wrong: for
+      // multi-byte text it can still exceed the 256-byte budget, and a cut between the halves
+      // of a surrogate pair leaves a lone surrogate that is not valid UTF-8 for the protobuf
+      // encoder. Phase 1's own two instruments only ever pass short enum strings, but this is
+      // the seam later phases emit COMPUTED dimension values through.
       bounded[key] =
-        typeof raw === "string" && raw.length > 0
-          ? raw.slice(0, TELEMETRY_LIMITS.maxStringBytes)
-          : TELEMETRY_UNKNOWN_VALUE;
+        typeof raw === "string" && raw.length > 0 ? boundString(raw) : TELEMETRY_UNKNOWN_VALUE;
     }
     for (const key of Object.keys(dimensions)) {
       // A dimension outside the allowlist is a catalog defect in the emitting projection. Drop

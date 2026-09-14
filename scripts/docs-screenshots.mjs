@@ -234,6 +234,22 @@ const SCREENSHOTS = [
     ready: (page) => page.getByRole("status", { name: "Mission Control update" }),
   },
   {
+    // Settings > Harnesses. The setup guide's "choose how your agents run" step: one card per
+    // agent carrying the model and the runtime every dispatch of it starts with. Framed at the
+    // top, because the cards are the subject and the auto-mode row below them is not.
+    name: "settings-harnesses",
+    route: "#/settings/harnesses",
+    ready: (page) => page.locator('[data-anchor="harnesses/claude"]'),
+  },
+  {
+    // Settings > Shipping, in its shipped state: off, trusting nothing. That is the state the
+    // guide describes, and the Prerequisites card naming what is still in the way is the part
+    // worth showing - it is how an operator finds out why nothing is merging.
+    name: "settings-shipping",
+    route: "#/settings/shipping",
+    ready: (page) => page.locator('[data-anchor="shipping/soak"]'),
+  },
+  {
     // Settings > Models, framed on Foreman's grid rather than on the top of the page.
     // The figure's subject is the per-role provider and model rows - what the README calls
     // the answer to "what is this app spending, and on whose account?" - and the top of the

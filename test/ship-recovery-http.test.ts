@@ -219,6 +219,16 @@ test(`the daemon revalidates ${kind} recovery and suppresses it on a new PR`, as
     body: JSON.stringify(claim),
   });
   assert.equal(withPr.status, 409, "an observed task-owned PR suppresses every recovery");
+
+  registry.upsertTask({ ...registry.getTask(taskId)!, status: "done" });
+  const stale = await app.request(`/api/sessions/${sessionId}/queue/ship-recovery/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(claim),
+  });
+  assert.equal(stale.status, 409, "a completed task cannot claim recovery");
+  assert.deepEqual(await stale.json(), { error: "the managed task is no longer current" });
+  assert.deepEqual(queues.get(sessionId)?.promptedRecovery, beforeForgery);
 });
 
 }

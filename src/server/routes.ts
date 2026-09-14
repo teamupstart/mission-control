@@ -5571,7 +5571,7 @@ export function buildApp(
       || !isShippingTaskKind(task.kind)
       || !["running", "dispatching"].includes(task.status)
     ) {
-      return c.json({ error: "the managed ship task is no longer current" }, 409);
+      return c.json({ error: "the managed task is no longer current" }, 409);
     }
     const diff = await computeSessionDiff(session.cwd);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);

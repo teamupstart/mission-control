@@ -65,11 +65,11 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
       (window as unknown as { pushAlphaSnapshot?(value: UpdateSnapshot): void }).pushAlphaSnapshot?.(value);
     }, snapshot).catch(() => {});
   });
-  const capture = async (name: string) => {
+  const capture = async (name: string, keepHover = false) => {
     if (process.env.MC_E2E_EVIDENCE !== "1") return;
     const dir = join(process.cwd(), "e2e/.artifacts/alpha-updates");
     await mkdir(dir, { recursive: true });
-    await dashboard.mouse.move(1, 1);
+    if (!keepHover) await dashboard.mouse.move(1, 1);
     await dashboard.screenshot({ path: join(dir, `${name}.png`), fullPage: true });
   };
   try {
@@ -82,6 +82,11 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
     await expect(alpha).not.toBeChecked();
     await expect(alpha).toBeEnabled();
     await capture("default-off");
+    await alpha.hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Track unreleased main commits instead of stable releases.");
+    await capture("alpha-tooltip", true);
+    await panel.getByRole("button", { name: "Check for updates" }).hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Check for a newer stable release now.");
     await panel.getByRole("button", { name: "Check for updates" }).click();
     const banner = dashboard.getByRole("status", { name: "Mission Control update" });
     await expect(banner).toContainText("Mission Control 1.2.4 is available");
@@ -90,6 +95,9 @@ test("alpha opt-in persists and automatic and manual checks offer exact main com
     await expect(alpha).toBeChecked();
     await expect(banner).toContainText("alpha bbbbbbb is available");
     await expect(banner).toContainText("Stable release v1.2.4 is also available");
+    await panel.getByRole("button", { name: "Check for updates" }).hover();
+    await expect(dashboard.locator(".tooltip")).toHaveText("Check for new main commits now.");
+    await capture("alpha-check-tooltip", true);
     expect(readUpdatePreferences(preferences).alpha).toBe(true);
     await capture("alpha-offer");
     await dashboard.reload();

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { UpdateSnapshot } from "@shared/update.ts";
 import { subscribeToDesktopUpdates } from "../useDesktopUpdates.ts";
+import { Tooltip } from "./Tooltip.tsx";
 
 /** The desktop updater owns this setting, even when the daemon cannot start. */
 export function UpdateSettingsPanel(): React.JSX.Element | null {
@@ -33,20 +34,24 @@ export function UpdateSettingsPanel(): React.JSX.Element | null {
   return (
     <section className="settings-section" aria-label="Application updates">
       <div className="settings-section-head"><h3>Application updates</h3></div>
-      <label className={`settings-toggle${snapshot?.alpha ? " is-on" : ""}`}>
-        <input type="checkbox" aria-label="Alpha updates" checked={snapshot?.alpha ?? false}
-          disabled={busy} onChange={(event) => { void change(event.target.checked); }} />
-        <span className="settings-toggle-text">
-          <span className="settings-toggle-label">Alpha updates</span>
-          <span className="settings-toggle-desc">
-            Track the latest commit on main, including unreleased changes. Check every five minutes
-            and show stable release news too. Off by default.
+      <Tooltip label="Track unreleased main commits instead of stable releases.">
+        <label className={`settings-toggle${snapshot?.alpha ? " is-on" : ""}`}>
+          <input type="checkbox" aria-label="Alpha updates" checked={snapshot?.alpha ?? false}
+            disabled={busy} onChange={(event) => { void change(event.target.checked); }} />
+          <span className="settings-toggle-text">
+            <span className="settings-toggle-label">Alpha updates</span>
+            <span className="settings-toggle-desc">
+              Track the latest commit on main, including unreleased changes. Check every five minutes
+              and show stable release news too. Off by default.
+            </span>
           </span>
-        </span>
-      </label>
+        </label>
+      </Tooltip>
       <p className="settings-hint">Updates are built while you work. You choose when to restart and install.</p>
-      <button type="button" className="btn btn-ghost" disabled={busy || snapshot?.phase === "disabled"}
-        onClick={() => { void check(); }}>Check for updates</button>
+      <Tooltip label={snapshot?.alpha ? "Check for new main commits now." : "Check for a newer stable release now."}>
+        <button type="button" className="btn btn-ghost" disabled={busy || snapshot?.phase === "disabled"}
+          onClick={() => { void check(); }}>Check for updates</button>
+      </Tooltip>
       {snapshot?.phase === "up-to-date" && <p role="status">
         {snapshot.alpha ? "You are running the latest main commit." : "You are running the latest release."}
         {" "}{snapshot.currentVersion}

@@ -287,7 +287,7 @@ export function setTelemetryConfig(
     // Collection starting or stopping mid-run is a run boundary for the unclean-shutdown
     // detector, exactly as process start and shutdown are. Arming it only at boot meant a
     // daemon that was told to start collecting through the API never armed it at all.
-    if (previous.enabled !== next.enabled) noteTelemetryCollectionChanged(next.enabled, now);
+    if (previous.enabled !== next.enabled) noteTelemetryCollectionChanged(next.enabled);
 
     for (const profile of TELEMETRY_PROFILE_IDS) {
       const wasCapturing = profileIsCapturing(previous, profile);

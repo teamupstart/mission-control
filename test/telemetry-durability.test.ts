@@ -558,6 +558,73 @@ test("turning collection on mid-run arms the unclean-shutdown detector", async (
   resetPendingUnknownGap();
 });
 
+test("opting out still succeeds when a loss counter is owed from earlier", async () => {
+  // Opting out is the one action the consent design must always honour. The mid-run marker
+  // write runs inside the config transaction, and routing it through the shutdown path meant a
+  // pending gap flush opened a SECOND `BEGIN IMMEDIATE` on the same connection. `node:sqlite`
+  // has no nested transactions, so that threw, the stray ROLLBACK took the config write with
+  // it, and `PUT /api/telemetry/config` failed with telemetry still on - after any earlier
+  // capture-side storage hiccup in the life of the process.
+  const { markUnknownGapPending, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { setTelemetryConfig, getTelemetryConfig } = await import(
+    "../src/server/telemetry/config.ts"
+  );
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  resetPendingUnknownGap();
+
+  enableLocalOnly();
+  markUnknownGapPending();
+
+  const off = setTelemetryConfig({ enabled: false });
+  assert.equal(off.ok, true, off.ok ? "" : off.error);
+  assert.equal(getTelemetryConfig().enabled, false, "collection really is off afterwards");
+  assert.equal(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown,
+    false,
+    "and a run with a gap still owed does not get to record itself as clean",
+  );
+  resetPendingUnknownGap();
+});
+
+test("a nested telemetry transaction joins the one already open instead of throwing", async () => {
+  // `node:sqlite` has no nested transactions, so a helper that opens its own while one is in
+  // progress used to throw and roll the OUTER unit of work back. An inner call now joins.
+  const { telemetryTransaction, recordGap } = await import("../src/server/telemetry/store.ts");
+  enableLocalOnly();
+
+  const value = telemetryTransaction((outer) => {
+    recordGap(outer, "capture_refused", "outer", 1_000);
+    // Same connection, one level down. This is the shape that threw.
+    return telemetryTransaction((inner) => {
+      recordGap(inner, "capture_refused", "inner", 1_000);
+      return "joined";
+    });
+  });
+  assert.equal(value, "joined");
+  assert.equal(
+    (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_gaps`).get() as { n: number }).n >= 1,
+    true,
+    "and both writes committed together as one unit",
+  );
+
+  // An inner failure still fails the whole unit rather than being swallowed.
+  assert.throws(
+    () =>
+      telemetryTransaction(() =>
+        telemetryTransaction(() => {
+          throw new Error("inner refused");
+        }),
+      ),
+    /inner refused/,
+  );
+
+  // The depth counter unwound, so the next transaction still works.
+  assert.equal(telemetryTransaction(() => "still usable"), "still usable");
+});
+
 test("turning collection off mid-run settles the marker instead of leaving it armed", async () => {
   // The other direction. Nothing can be lost while collection is off, so a marker left saying
   // "in progress" would report a gap that never happened on the next boot that starts with

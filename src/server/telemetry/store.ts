@@ -31,9 +31,29 @@ import { digest, stableJson } from "./identity.ts";
  * up front turns a second writer into an immediate failure rather than a partial transaction
  * that fails on its first write. `db.ts` documents why there is no busy timeout beside it.
  */
+let transactionDepth = 0;
+
 export function telemetryTransaction<T>(fn: (d: DatabaseSync) => T): T {
   const d = openDb();
+  // Reentrant by depth, because `node:sqlite` has no nested transactions. A helper that opens
+  // its own while one is already in progress throws "cannot start a transaction within a
+  // transaction", and the stray ROLLBACK in the catch below then takes the OUTER unit of work
+  // down with it - so an unrelated bookkeeping write could fail an operator's config change.
+  //
+  // An inner call JOINS the transaction in progress rather than suppressing anything. Its
+  // failure still propagates and the outermost frame rolls the whole thing back, which is what
+  // a caller of the outer transaction already expects. Committing at the inner frame instead
+  // would publish half a unit of work.
+  if (transactionDepth > 0) {
+    transactionDepth += 1;
+    try {
+      return fn(d);
+    } finally {
+      transactionDepth -= 1;
+    }
+  }
   d.exec("BEGIN IMMEDIATE");
+  transactionDepth = 1;
   try {
     const result = fn(d);
     d.exec("COMMIT");
@@ -43,6 +63,8 @@ export function telemetryTransaction<T>(fn: (d: DatabaseSync) => T): T {
       d.exec("ROLLBACK");
     } catch {}
     throw error;
+  } finally {
+    transactionDepth = 0;
   }
 }
 

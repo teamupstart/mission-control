@@ -235,12 +235,18 @@ export function noteTelemetryRunStopped(enabled: boolean, now = Date.now()): voi
  * that never happened. It settles through the shutdown path, so it inherits that path's
  * refusal to call itself clean while a gap is still owed and unwritable.
  */
-export function noteTelemetryCollectionChanged(capturing: boolean, now = Date.now()): void {
-  if (capturing) {
-    setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: false });
-    return;
-  }
-  noteTelemetryRunStopped(true, now);
+export function noteTelemetryCollectionChanged(capturing: boolean): void {
+  // Deliberately NOT routed through `noteTelemetryRunStopped`, which flushes an owed gap and so
+  // opens a transaction of its own. This runs inside the config write's transaction, and while
+  // that nesting is now survivable, the flush would still clear its in-memory "owed" flag
+  // against a row the outer transaction could yet roll back - losing the incident for good.
+  //
+  // The property that mattered is kept without the write: a run with a gap still owed does not
+  // get to record itself as clean. The gap itself settles at the next capture or at shutdown,
+  // which is where it settled before.
+  setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, {
+    cleanShutdown: !capturing && !unknownGapPending,
+  });
 }
 
 /** Whether the store is over the shedding threshold right now. */

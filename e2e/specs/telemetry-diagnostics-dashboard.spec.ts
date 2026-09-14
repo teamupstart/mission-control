@@ -19,9 +19,6 @@ const EVIDENCE = artifactsDir("telemetry-diagnostics-dashboard");
  * Without `MC_E2E_OBSERVABILITY` it skips with that command in the message, so an ordinary CI
  * run - which has no Docker - does not fail, and nobody can mistake a skipped run for a passing
  * proof. The phase's exit criteria require this to have been RUN, and its output attached.
- *
- * No model tokens are spent: the only thing dispatched here is the daemon's own start
- * observation and a synthetic connection probe, neither of which touches an agent.
  */
 const GRAFANA = "http://127.0.0.1:13000";
 const DASHBOARD = `${GRAFANA}/d/mission-telemetry-diagnostics`;

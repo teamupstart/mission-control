@@ -377,6 +377,47 @@ test("a different implementation cannot take an id that is already owned", async
   resetTelemetryRegistrations();
 });
 
+test("a docker that cannot be run is explained, not exited on in silence", async () => {
+  // `npm run observability:verify` runs promtool inside a container with `stdio: "inherit"`.
+  // `spawnSync` reports a missing or stopped Docker as `error` set and `status: null`, so a
+  // check reading only `status !== 0` exited 1 having printed nothing at all - and with
+  // inherited stdio there was no captured output to fall back on. "Docker is not running"
+  // looked exactly like "your Prometheus rules are broken, but I will not say how".
+  const { requireDocker } = await import("../scripts/observability.mjs");
+
+  const written: string[] = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const originalExit = process.exit.bind(process);
+  process.stderr.write = ((chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  process.exit = ((code?: number) => {
+    throw new Error(`exit:${code}`);
+  }) as typeof process.exit;
+
+  try {
+    assert.throws(
+      () => requireDocker({ error: new Error("spawn docker ENOENT"), status: null }),
+      /exit:1/,
+      "an unrunnable docker ends the command",
+    );
+    assert.match(
+      written.join(""),
+      /\[observability\] could not run docker: spawn docker ENOENT/,
+      "and says why, which is the whole point",
+    );
+
+    written.length = 0;
+    requireDocker({ status: 0 });
+    requireDocker({ status: 1 });
+    assert.deepEqual(written, [], "a docker that ran and reported something is not this branch");
+  } finally {
+    process.stderr.write = originalWrite;
+    process.exit = originalExit;
+  }
+});
+
 test("an empty OTLP response body is a full success", () => {
   // What every Collector returns on the happy path.
   assert.deepEqual(readMetricsPartialSuccess(new Uint8Array(0)), {

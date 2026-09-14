@@ -88,6 +88,21 @@ export function composeService(action, service) {
  * and tells the caller the stack is fine when nothing happened. A wrapper whose whole job is
  * to be the reliable entry point must not do that.
  */
+/**
+ * Exit with an explanation when docker itself could not be run.
+ *
+ * `spawnSync` reports a missing or stopped Docker as `error` set and `status: null`, so a check
+ * that reads only `status !== 0` exits 1 having printed nothing at all - and under
+ * `stdio: "inherit"` there is no captured output to fall back on either. `up` has always said
+ * so; the `verify` checks did not, which made "Docker is not running" look like "your
+ * Prometheus rules are broken, but I will not say how".
+ */
+export function requireDocker(result) {
+  if (!result.error) return;
+  process.stderr.write(`[observability] could not run docker: ${result.error.message}\n`);
+  process.exit(1);
+}
+
 function finish(result, successMessage) {
   if (result.error) {
     process.stderr.write(`[observability] could not run docker: ${result.error.message}\n`);
@@ -167,10 +182,7 @@ async function up() {
  */
 function verify() {
   const config = compose(["config", "-q"], { quiet: true });
-  if (config.error) {
-    process.stderr.write(`[observability] could not run docker: ${config.error.message}\n`);
-    process.exit(1);
-  }
+  requireDocker(config);
   if (config.status !== 0) {
     process.stderr.write(config.stderr ?? "");
     process.exit(config.status ?? 1);
@@ -193,6 +205,7 @@ function verify() {
     ],
     { stdio: "inherit" },
   );
+  requireDocker(promtool);
   if (promtool.status !== 0) process.exit(promtool.status ?? 1);
 
   // The config check has to run with the rule file at the path the real container mounts it at,
@@ -212,6 +225,7 @@ function verify() {
     ],
     { stdio: "inherit" },
   );
+  requireDocker(promConfig);
   if (promConfig.status !== 0) process.exit(promConfig.status ?? 1);
   process.stdout.write("[observability] prometheus configuration and rules are valid\n");
 }

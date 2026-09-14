@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   NO_MISTAKES_REVIEW_WORKFLOW_ID,
   NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
@@ -161,7 +162,10 @@ test("every Persona node names a shipped Persona and only frozen snapshots may d
           NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
           15,
         ) && node.persona.sourcePersonaId === "builtin:test-coverage-judge";
-        if (frozenV15Coverage) {
+        const frozenIntent = builtin.definition.id === builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG)
+          && version.version <= 16
+          && node.persona.sourcePersonaId === "builtin:intent-conformance-judge";
+        if (frozenV15Coverage || frozenIntent) {
           assert.equal(personaSnapshotIsOutdated(node.persona, current), true);
           continue;
         }
@@ -233,7 +237,7 @@ test("new tasks default to the newest immutable No-Mistakes Review version", () 
   assert.equal(builtin.definition.id, builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG));
   assert.equal(
     builtin.definition.currentVersionId,
-    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 17),
+    builtinWorkflowVersionId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG, 18),
   );
   assert.equal(
     builtin.definition.currentVersionId,
@@ -273,7 +277,7 @@ const shapeOf = (graph: WorkflowDraftGraph) => {
 test("No-Mistakes Review ships the adopted graph, defaults and Inspector completion", () => {
   const builtin = noMistakesReview();
   assert.equal(builtin.definition.name, "No-Mistakes Review (High Rigor)");
-  assert.equal(builtin.versions.length, 17);
+  assert.equal(builtin.versions.length, 18);
   assert.deepEqual(builtin.versions[0]!.bindingDefaults, {
     triggerMode: "manual",
     deliveryMode: "preview",
@@ -399,7 +403,7 @@ test("version 1 of No-Mistakes Review is frozen, asserted against a literal", ()
 
 test("version 5 adds automatic PR preparation after the Inspector-only repair policy", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 17, "one workflow, seventeen versions");
+  assert.equal(builtin.versions.length, 18, "one workflow, eighteen versions");
   for (const priorVersion of builtin.versions.slice(0, 3)) {
     assert.deepEqual(priorVersion.completionPolicy, {
       kind: "inspector",
@@ -694,7 +698,7 @@ test("version 9 judges code quality before the verified PR action and completes 
 
 test("appending version 9 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 17);
+  assert.equal(builtin.versions.length, 18);
   for (const [index, version] of builtin.versions.slice(0, 8).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-quality-judge"),
@@ -867,7 +871,7 @@ test("version 11 reviews design alongside risk and quality in stage 3", () => {
 
 test("appending version 11 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
-  assert.equal(builtin.versions.length, 17);
+  assert.equal(builtin.versions.length, 18);
   for (const [index, version] of builtin.versions.slice(0, 10).entries()) {
     assert.equal(
       version.graph.nodes.some((node) => node.id === "nmr-code-design"),
@@ -1161,6 +1165,51 @@ test("version 16 keeps the coverage stage but updates its frozen Persona snapsho
   assert.deepEqual(builtin.definition.draft, asDraft(version.graph));
 });
 
+test("version 17 changes only intent guidance and preserves every earlier intent snapshot", () => {
+  const builtin = noMistakesReview();
+  const prior = builtin.versions[15]!;
+  const version = builtin.versions[16]!;
+  const intentId = "builtin:intent-conformance-judge";
+  const current = BUILTIN_PERSONAS.find((persona) => persona.id === intentId)!;
+  assert.equal(version.id, builtinWorkflowVersionId("no-mistakes-review", 17));
+  assert.equal(version.version, 17);
+  assert.equal(version.sourceDraftRevision, 16);
+  assert.deepEqual(version, {
+    ...prior,
+    id: version.id,
+    version: 17,
+    sourceDraftRevision: 16,
+    graph: {
+      ...prior.graph,
+      nodes: prior.graph.nodes.map((node) => node.kind === "persona"
+        && node.persona.sourcePersonaId === intentId
+        ? { ...node, persona: {
+          ...node.persona,
+          description: current.description,
+          guidanceMarkdown: current.guidanceMarkdown,
+        } }
+        : node),
+    },
+  });
+
+  for (const historical of builtin.versions.slice(0, 16)) {
+    const node = historical.graph.nodes.find((candidate) => candidate.kind === "persona"
+      && candidate.persona.sourcePersonaId === intentId);
+    assert.ok(node && node.kind === "persona");
+    // Digest of the authored prompt before v17, independent of the snapshot override.
+    assert.equal(
+      createHash("sha256").update(node.persona.guidanceMarkdown).digest("hex"),
+      "965d30119963306103a6cf3df68c5a326704dffbab7d7bf1746373d3fa7ad244",
+      `version ${historical.version} changed its intent policy`,
+    );
+    assert.equal(node.persona.description,
+      "Decides one narrow question: does this change contradict the acceptance criteria the human "
+      + "actually stated?");
+    assert.equal(node.persona.runner, historical.version < 14 ? null : "codex");
+    assert.equal(node.persona.model, historical.version < 14 ? null : "gpt-5.6-terra");
+  }
+});
+
 test("appending version 15 rewrote no earlier version", () => {
   const builtin = noMistakesReview();
   for (const [index, version] of builtin.versions.slice(0, 14).entries()) {
@@ -1216,11 +1265,20 @@ test("the review presets ship the agreed judges and delivery boundaries", () => 
   }
 });
 
-test("version 17 adds only the Inspector gate to version 16", () => {
+test("version 18 adds only the Inspector gate to version 17", () => {
   const versions = noMistakesReview().versions;
-  assert.deepEqual(versions[16]!.graph, versions[15]!.graph);
-  assert.deepEqual(versions[15]!.completionPolicy, { kind: "none" });
-  assert.deepEqual(versions[16]!.completionPolicy, {
+  assert.equal(noMistakesReview().definition.currentVersionId, versions[17]!.id);
+  assert.deepEqual(versions[17], {
+    ...versions[16]!,
+    id: builtinWorkflowVersionId("no-mistakes-review", 18),
+    version: 18,
+    sourceDraftRevision: 17,
+    completionPolicy: {
+      kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait",
+    },
+  });
+  assert.deepEqual(versions[16]!.completionPolicy, { kind: "none" });
+  assert.deepEqual(versions[17]!.completionPolicy, {
     kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait",
   });
 });

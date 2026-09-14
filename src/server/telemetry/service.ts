@@ -134,7 +134,13 @@ export function telemetryCycle(
   // is not the thing that started the cycle.
   const abort = new AbortController();
   inFlightAbort = abort;
-  inFlightCycle = runTelemetryCycle({ abort: abort.signal, ...deps })
+  // COMPOSED with a caller's own signal, never chosen between. Spreading `deps` last let a
+  // caller's `abort` replace this one while `inFlightAbort` still pointed at the controller
+  // nobody was listening to, so `stop()` would have cancelled nothing and the bounded exit
+  // would have quietly become the ten-second request timeout again. Overriding the caller
+  // instead would be the same bug facing the other way, silently dropping the test seam.
+  const signal = deps.abort ? AbortSignal.any([deps.abort, abort.signal]) : abort.signal;
+  inFlightCycle = runTelemetryCycle({ ...deps, abort: signal })
     .catch((error: unknown) => {
       // The DETAIL goes to the daemon log; the RESULT carries a fixed string. An unhandled
       // projection or delivery rejection can name an endpoint, a file path or a SQL fragment,

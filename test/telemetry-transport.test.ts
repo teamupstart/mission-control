@@ -448,6 +448,44 @@ test("shutdown tears an in-flight export down rather than only stopping waiting 
   );
 });
 
+test("shutdown can still cancel a cycle a caller supplied its own abort signal to", async () => {
+  // `DeliveryDeps.abort` is a documented seam, and spreading `deps` last let a caller's signal
+  // REPLACE the single-flight controller while `inFlightAbort` still pointed at the one nobody
+  // was listening to. `stop()` would then have cancelled nothing and the bounded exit would
+  // have quietly gone back to being the ten-second request timeout. The two are composed now,
+  // so a caller keeps its signal and shutdown keeps its reach.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  let aborted = false;
+  const hung = (async (_input: unknown, init?: RequestInit) => {
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  // A caller's own controller, never fired. Only shutdown's may end this request.
+  const caller = new AbortController();
+  const service = startTelemetry({ fetch: hung, now: () => 2_000, abort: caller.signal });
+  const cycling = service.cycle();
+  await delay(50);
+
+  const startedAt = Date.now();
+  await service.stop();
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(caller.signal.aborted, false, "the caller never cancelled anything itself");
+  assert.equal(aborted, true, "and shutdown still reached the in-flight request");
+  assert.ok(
+    elapsed < TELEMETRY_SHUTDOWN_BUDGET_MS * 2,
+    `exit took ${elapsed}ms, so it waited on the request timeout rather than its own budget`,
+  );
+  await cycling;
+});
+
 test("backoff is bounded, jittered and never below the floor", async () => {
   for (let attempt = 1; attempt <= 20; attempt += 1) {
     for (const random of [() => 0, () => 0.5, () => 1]) {

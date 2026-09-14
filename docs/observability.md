@@ -138,6 +138,13 @@ tables:
   its own namespaced state rows and its own state migration. Phase 6's analytical reducers register
   here; the `snapshot` hook is where cohort gauges are published.
 
+A reducer is handed a `TelemetryEnvelope` - the semantic record - and never the stored journal row
+the engine hydrated it from. A reducer that compiled against the stored row would have to be edited
+whenever the journal's storage or hydration changed, despite having no opinion about either, and
+nothing would stop it reading `seq`, `profiles` or `epochs`: engine bookkeeping that answers "which
+pass, and under which consent epoch" rather than "what happened". The engine converts once, before
+it calls anything registered here, and keeps that bookkeeping to itself.
+
 Event and instrument definitions live in `src/shared/telemetry-catalog.ts`. Every feature group
 across all six design areas is already declared there with its owning phase, so a later phase adds
 entries to an existing group rather than coining a parallel taxonomy. Instruments declare an exact

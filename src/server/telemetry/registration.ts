@@ -10,9 +10,8 @@
  * Keeping them apart is what lets Phases 5 and 6 be concurrent: their write sets do not
  * overlap because neither registers into the other's table.
  */
-import type { TelemetryProfileId } from "@shared/telemetry.ts";
+import type { TelemetryEnvelope, TelemetryProfileId } from "@shared/telemetry.ts";
 import type { TelemetrySpanKind } from "@shared/telemetry-catalog.ts";
-import type { StoredTelemetryEvent } from "./store.ts";
 
 // ---- what a projection may emit ----
 
@@ -59,6 +58,14 @@ export interface TelemetryProjectionContext {
  * projection transaction. It must be pure with respect to everything except the state it
  * returns and what it emits: the whole replay contract rests on the same events producing the
  * same output.
+ *
+ * It is handed a `TelemetryEnvelope` - the SEMANTIC record - and never the stored row the
+ * engine hydrated it from. That boundary is the point of this seam. A reducer written in a
+ * later phase would otherwise compile against the persistence layer, so changing how the
+ * journal is stored or hydrated would edit reducers that have no opinion about storage, and
+ * nothing would stop one reading `seq`, `profiles` or `epochs` - engine bookkeeping whose
+ * meaning is "which pass and which consent epoch", not "what happened". The engine keeps
+ * those to itself and converts before it calls anything registered here.
  */
 export interface TelemetryProjection<State = unknown> {
   /** Namespaced, e.g. `mission.catalog`. Owns its own state rows under this id. */
@@ -75,7 +82,7 @@ export interface TelemetryProjection<State = unknown> {
    */
   migrateState(state: unknown, fromVersion: number): State | null;
   reduce(
-    event: StoredTelemetryEvent,
+    event: TelemetryEnvelope,
     state: State,
     emit: TelemetryEmitter,
     ctx: TelemetryProjectionContext,

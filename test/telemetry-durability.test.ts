@@ -216,6 +216,67 @@ test("a loss counter that could not be written becomes an unknown gap at the nex
   assert.ok(gap, "health reports it rather than absorbing it");
 });
 
+test("a projection is handed the semantic envelope, never the stored journal row", async () => {
+  // The extension seam later phases register through. Passing the stored row made every future
+  // reducer compile against the persistence layer, so changing how the journal is stored or
+  // hydrated would have edited reducers with no opinion about storage - and nothing stopped one
+  // reading `seq`, `profiles` or `epochs`, which answer "which pass, which consent epoch"
+  // rather than "what happened". The engine converts once and keeps that bookkeeping.
+  const { registerTelemetryProjection, resetTelemetryRegistrations } = await import(
+    "../src/server/telemetry/registration.ts"
+  );
+  const seen: Array<Record<string, unknown>> = [];
+  resetTelemetryRegistrations();
+  registerTelemetryProjection({
+    id: "mission.test.boundary",
+    stateVersion: 1,
+    initialState: () => ({}),
+    migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
+    reduce(event, state) {
+      seen.push(event as unknown as Record<string, unknown>);
+      return state;
+    },
+  });
+
+  try {
+    enableLocalOnly();
+    assert.equal(capture("boot-1", 1_000).kind, "accepted");
+    runProjectionPass(2_000);
+
+    assert.equal(seen.length, 1, "the reducer ran once for the captured fact");
+    const event = seen[0]!;
+    assert.deepEqual(
+      Object.keys(event).sort(),
+      [
+        "actor",
+        "contextId",
+        "contextOmitted",
+        "envelopeVersion",
+        "eventId",
+        "eventVersion",
+        "facts",
+        "name",
+        "observedAt",
+        "occurredAt",
+        "refs",
+        "refsOmitted",
+        "resourceId",
+      ],
+      "exactly the envelope, with nothing extra to reach for",
+    );
+    for (const bookkeeping of ["seq", "profiles", "epochs", "bytes", "source"]) {
+      assert.equal(
+        bookkeeping in event,
+        false,
+        `${bookkeeping} belongs to the engine and must not reach a reducer`,
+      );
+    }
+  } finally {
+    resetTelemetryRegistrations();
+    registerBuiltinTelemetry();
+  }
+});
+
 test("context entries dropped at the ceiling are counted rather than silently lost", async () => {
   // `refs` has always carried its omitted count, on the grounds that truncating links silently
   // is how a denominator changes without anyone noticing. Context is the same kind of map under

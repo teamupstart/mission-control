@@ -135,9 +135,8 @@ export const CATALOG_PROJECTION: TelemetryProjection<Record<string, never>> = {
   initialState: () => ({}),
   migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
   reduce(event, state, emit) {
-    const envelope = envelopeOf(event);
     for (const metric of metricsForEvent(event.name)) {
-      const contribution = metric.contribution(event.facts, envelope);
+      const contribution = metric.contribution(event.facts, event);
       if (!contribution) continue;
       emit.metric(metric.name, contribution.dimensions, contribution.value);
     }
@@ -293,9 +292,12 @@ function runOne(
       if (!event.profiles.includes(profile)) continue;
       // A fact captured under a previous consent epoch does not join this one's streams.
       if (event.epochs[profile] !== destination.policyEpoch) continue;
-      collector.beginEvent(event);
+      // Converted HERE, once, so nothing registered through the extension seam ever sees the
+      // stored row. `seq`, `profiles` and `epochs` are read above and stay behind.
+      const envelope = envelopeOf(event);
+      collector.beginEvent(envelope);
       state = (projection as TelemetryProjection<unknown>).reduce(
-        event,
+        envelope,
         state,
         collector,
         { profile, policyEpoch: destination.policyEpoch, now },
@@ -349,7 +351,7 @@ interface PendingMetric {
 class Collector implements TelemetryEmitter {
   private readonly metrics: PendingMetric[] = [];
   private readonly spans: Array<{ span: EmittedSpan; resourceId: string }> = [];
-  private current: StoredTelemetryEvent | null = null;
+  private current: TelemetryEnvelope | null = null;
   private readonly salt: string;
   private readonly problems: string[] = [];
 
@@ -361,7 +363,7 @@ class Collector implements TelemetryEmitter {
     this.salt = profileSalt(profile);
   }
 
-  beginEvent(event: StoredTelemetryEvent): void {
+  beginEvent(event: TelemetryEnvelope): void {
     this.current = event;
   }
 

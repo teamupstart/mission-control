@@ -71,7 +71,7 @@ test("bugfix defaults to Bug Fix Review and persists as a schedulable task", asy
   await expect(dashboard.getByText("Fix the retry regression").first()).toBeVisible();
 });
 
-test("bugfix can opt out of its default and keep the explicit choice", async ({ dashboard }) => {
+test("bugfix can opt out of its default and keep the explicit choice", async ({ dashboard, daemon }) => {
   await dashboard.getByRole("button", { name: "Dispatch" }).click();
   const dialog = dashboard.getByRole("dialog", { name: "Dispatch an agent" });
   await expectContentClearsBorder(dialog);
@@ -82,4 +82,25 @@ test("bugfix can opt out of its default and keep the explicit choice", async ({ 
   await expect(dialog.getByText("No handoff")).toBeVisible();
   await kind.selectOption("ship");
   await expect(workflow).toHaveValue("__none");
+
+  await kind.selectOption("bugfix");
+  await workflow.selectOption("__none");
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Fix the retry without review");
+  const responsePromise = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/tasks") && response.request().method() === "POST");
+  await dialog.getByRole("button", { name: "Add to backlog" }).click();
+  const response = await responsePromise;
+  expect(response.ok()).toBe(true);
+  const task = await response.json();
+  expect(task.kind).toBe("bugfix");
+  expect(task.workflowId).toBe(null);
+  await expect(dialog).toBeHidden();
+  await expect.poll(async () => {
+    const tasks = await (await fetch(`${daemon.baseURL}/api/tasks`)).json() as Array<{
+      id: string; kind: string; workflowId: string | null;
+    }>;
+    return tasks.find((saved) => saved.id === task.id);
+  }).toMatchObject({ id: task.id, kind: "bugfix", workflowId: null });
 });

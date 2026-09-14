@@ -131,9 +131,9 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
-Kind is asked before After work: by the time that question is on screen a scout, plan, or chat has
-already moved the selection to **None**, and the question says so - naming the kind you just
-chose - rather than silently landing there.
+Kind is asked before After work: scout and chat move the selection to **None**, while plan
+selects **Plan Validation** and bugfix selects **Bug Fix Review**. The question names the kind
+and explains its selected workflow.
 
 Two dispatches never run it: editing a task already in the backlog, whose answers exist
 already, and **Ensemble**, whose body replaces Crew and After work outright. The switch is not

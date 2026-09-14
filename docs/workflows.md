@@ -100,7 +100,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Eight ready-made review roles ship with the application. Nothing has to be
+Twelve ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -108,6 +108,10 @@ one immediately.
 |---|---|
 | Intent Conformance Judge | Whether the intended feature and explicit interfaces and constraints are satisfied. Allows plan deviations, extra tests, and accompanying bug fixes |
 | Test Coverage Judge | Whether tests appropriately cover changed material executable behavior, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
+| Root Cause & Regression Judge | Whether the fix addresses the demonstrated cause and regression tests fail before the fix and pass afterward |
+| Plan Consistency Judge | Agreement among plan files, requirements, interfaces, and decisions, including sections within one phase |
+| Phase Dependencies Judge | Valid sequencing, producer/consumer contracts, and safe intermediate states across phases or tasks |
+| Plan Feasibility Judge | Whether the proposed work fits repository constraints and has achievable validation steps |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |

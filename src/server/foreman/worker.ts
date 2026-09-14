@@ -1569,7 +1569,7 @@ async function recordShipRecovery(
     marker: decision.marker,
     situation: "ship-recovery",
     surface: "terminal",
-    question: `Keep managed ship task moving before its first pull request: ${reasonLabel(decision.reason)}.`,
+    question: `Keep managed task moving before its first pull request: ${reasonLabel(decision.reason)}.`,
     pane: null,
     purpose,
     brief,

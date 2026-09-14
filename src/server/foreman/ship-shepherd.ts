@@ -126,7 +126,7 @@ function decideShipRecovery(
   const task = s.task;
   if (!input.featureEnabled) return skip("pre-PR ship recovery is off");
   if (!task || !isShippingTaskKind(task.kind) || !["running", "dispatching"].includes(task.status)) {
-    return skip("no running managed ship task is bound");
+    return skip("no running managed task is bound");
   }
   if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
   if (!capabilitiesFor(s.agent).workQueue || s.state === "exited" || s.state === "stopping") {
@@ -282,7 +282,7 @@ function structuralPayload(cause: RecoveryCause): string | null {
       return `Foreman's completion review found blocking work that still belongs in this implementation turn:\n\n${detail}\n\nAddress only these implementation, documentation, test, or evidence gaps. Do not commit, push, create a pull request, merge, or expand repository scope. When the requested work is verified, report completion and end the turn so Mission Control can re-run the normal handoff.`;
     }
     case "idle_empty":
-      return "This invited ship task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation, focused verification, and evidence registration, then report completion and end the turn. Do not commit, push, create a pull request, merge, delete work, or expand repository scope.";
+      return "This invited task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation, focused verification, and evidence registration, then report completion and end the turn. Do not commit, push, create a pull request, merge, delete work, or expand repository scope.";
     case "direct_handoff_missing_pr":
       return "Continue the task's existing Straight-to-PR handoff on this same branch. First check whether this task already has an open pull request in any attached repository; if one exists, do not create another. If none exists, finish the already-authorized commit, push, and pull-request creation for the task-owned changes only, then follow its CI on the same branch. Do not merge, delete work, create another task, or expand repository scope.";
     case "idle_ambiguous":

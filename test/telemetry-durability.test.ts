@@ -547,6 +547,40 @@ test("an undeclared fact is refused rather than passed through", () => {
   assert.equal(journalCount(), 0);
 });
 
+test("capacity shedding stops as soon as the budget is back under the mark", async () => {
+  // The defect this covers: the pressure branch took a fixed slice of up to 500 batches with no
+  // re-check, so a brief overshoot - the tail of one short outage - expired the entire
+  // undelivered queue for every destination in a single tick. The loss was counted rather than
+  // silent, but it was wildly out of proportion to the condition that caused it, and it threw
+  // away data that would have been delivered a minute later.
+  const { relievePressure } = await import("../src/server/telemetry/retention.ts");
+  const { telemetryTransaction, lowestConsumedSeq } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableUserBackend();
+  for (let i = 0; i < 4; i += 1) {
+    capture(`boot-${i}`, 1_000 + i * 100);
+    runProjectionPass(1_000 + i * 100 + 10);
+  }
+  const before = batchCount("user");
+  assert.ok(before >= 4, `expected several batches to shed from, got ${before}`);
+
+  // Over budget for exactly two checks, then under. The real predicate reads `usedBytes`;
+  // driving it directly is what lets this assert the STOPPING behaviour without manufacturing
+  // 230 MiB of telemetry.
+  let overFor = 2;
+  const relieved = telemetryTransaction((d) =>
+    relievePressure(d, 9_000, lowestConsumedSeq(d), () => overFor-- > 0),
+  );
+
+  assert.equal(relieved.expiredBatches, 2, "it sheds what the overshoot needed, not the queue");
+  assert.equal(
+    batchCount("user"),
+    before - 2,
+    "every other undelivered batch is still there to be delivered",
+  );
+});
+
 test("an expired batch is counted as loss rather than deleted quietly", () => {
   enableUserBackend();
   capture("boot-1", 1_000);

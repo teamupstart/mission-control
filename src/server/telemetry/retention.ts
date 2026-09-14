@@ -39,6 +39,14 @@ const PRESSURE_RATIO = 0.9;
 /** How much work one pass does. Bounded so the sweep cannot become the thing that stalls. */
 const BATCH_LIMIT = 500;
 
+/**
+ * How many journal payloads one pressure step prunes before re-checking the budget.
+ *
+ * Small enough that the sweep overshoots by little, large enough that it is not one aggregate
+ * query per row.
+ */
+const PRESSURE_CHUNK = 25;
+
 export interface RetentionPassResult {
   expiredBatches: number;
   prunedPayloads: number;
@@ -88,32 +96,13 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     }
 
     // 3. Capacity pressure. Age alone is not enough on a busy installation, so the same two
-    //    steps run again against the byte budget, oldest first.
-    if (usedBytes(d) > TELEMETRY_LIMITS.maxTotalBytes * PRESSURE_RATIO) {
+    //    steps run again against the byte budget - but PROPORTIONALLY, stopping the moment the
+    //    budget is back under the mark.
+    if (overPressure(d)) {
       result.underPressure = true;
-      const pressured = expiredBatchIds(d, now, now, BATCH_LIMIT);
-      for (const id of pressured) {
-        settleDelivery(
-          d,
-          id,
-          { state: "expired", attempts: 0, nextAttemptAt: now, lastError: "dropped under capacity pressure" },
-          now,
-        );
-        releaseBatchPayload(d, id);
-      }
-      if (pressured.length > 0) {
-        recordGap(
-          d,
-          "payload_expired",
-          `${pressured.length} batch(es) dropped under capacity pressure`,
-          now,
-          pressured.length,
-        );
-        result.expiredBatches += pressured.length;
-      }
-      if (consumedThrough !== null) {
-        result.prunedPayloads += pruneJournalPayloads(d, now, consumedThrough, now, BATCH_LIMIT);
-      }
+      const relieved = relievePressure(d, now, consumedThrough, () => overPressure(d));
+      result.expiredBatches += relieved.expiredBatches;
+      result.prunedPayloads += relieved.prunedPayloads;
     }
 
     // 4. The long window. Identities and their emptied rows finally go, together, so a
@@ -211,6 +200,68 @@ export function noteTelemetryRunStopped(enabled: boolean, now = Date.now()): voi
   flushPendingUnknownGap(now);
   if (unknownGapPending) return;
   setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: true });
+}
+
+/** Whether the store is over the shedding threshold right now. */
+function overPressure(d: import("node:sqlite").DatabaseSync): boolean {
+  return usedBytes(d) > TELEMETRY_LIMITS.maxTotalBytes * PRESSURE_RATIO;
+}
+
+/**
+ * Shed just enough to get back under the threshold, oldest first.
+ *
+ * The budget is re-checked between every drop, and that is the whole point. Taking a fixed
+ * slice instead meant a brief overshoot - the tail of one short outage - expired up to 500
+ * batches in a single tick, which on an ordinary installation is the ENTIRE undelivered queue
+ * for every destination. The loss was counted rather than silent, but it was wildly out of
+ * proportion to the condition that triggered it, and it threw away data that would have been
+ * delivered a minute later.
+ *
+ * `stillOver` is injected so a test can drive the stopping behaviour without having to
+ * manufacture 230 MiB of telemetry.
+ */
+export function relievePressure(
+  d: import("node:sqlite").DatabaseSync,
+  now: number,
+  consumedThrough: number | null,
+  stillOver: () => boolean,
+): { expiredBatches: number; prunedPayloads: number } {
+  let expiredBatches = 0;
+  let prunedPayloads = 0;
+
+  // Undelivered payloads first: they are the largest objects and the least recoverable cost,
+  // since a journal payload past its checkpoint has already contributed everything it will.
+  for (const id of expiredBatchIds(d, now, now, BATCH_LIMIT)) {
+    if (!stillOver()) break;
+    settleDelivery(
+      d,
+      id,
+      { state: "expired", attempts: 0, nextAttemptAt: now, lastError: "dropped under capacity pressure" },
+      now,
+    );
+    releaseBatchPayload(d, id);
+    expiredBatches += 1;
+  }
+  if (expiredBatches > 0) {
+    recordGap(
+      d,
+      "payload_expired",
+      `${expiredBatches} batch(es) dropped under capacity pressure`,
+      now,
+      expiredBatches,
+    );
+  }
+
+  // Then already-projected journal payloads, in small chunks for the same reason.
+  if (consumedThrough !== null) {
+    while (stillOver()) {
+      const pruned = pruneJournalPayloads(d, now, consumedThrough, now, PRESSURE_CHUNK);
+      if (pruned === 0) break;
+      prunedPayloads += pruned;
+    }
+  }
+
+  return { expiredBatches, prunedPayloads };
 }
 
 /**

@@ -351,6 +351,36 @@ test("a computed dimension value is cut on a byte boundary, never mid-character"
   }
 });
 
+test("an exported-but-empty environment variable still labels records as local", async () => {
+  // `??` only falls back on unset. An exported-but-empty variable is ordinary shell -
+  // `MISSION_TELEMETRY_ENVIRONMENT="$SOME_UNSET_VAR"` produces exactly that - and it labelled
+  // every record with no environment at all. That is worse than a visibly wrong value: the
+  // dashboard's `$environment` filter and P5's adoption cut both select ON this label, so an
+  // empty one falls outside the filtering rather than showing up in it.
+  const { resourceAttributes } = await import("../src/server/telemetry/capture.ts");
+  const original = process.env.MISSION_TELEMETRY_ENVIRONMENT;
+  try {
+    for (const empty of ["", "   "]) {
+      process.env.MISSION_TELEMETRY_ENVIRONMENT = empty;
+      assert.equal(
+        resourceAttributes()["deployment.environment.name"],
+        "local",
+        `an environment of ${JSON.stringify(empty)} is not an environment`,
+      );
+    }
+
+    // A real value is still honoured, and still trimmed.
+    process.env.MISSION_TELEMETRY_ENVIRONMENT = "  staging  ";
+    assert.equal(resourceAttributes()["deployment.environment.name"], "staging");
+
+    delete process.env.MISSION_TELEMETRY_ENVIRONMENT;
+    assert.equal(resourceAttributes()["deployment.environment.name"], "local");
+  } finally {
+    if (original === undefined) delete process.env.MISSION_TELEMETRY_ENVIRONMENT;
+    else process.env.MISSION_TELEMETRY_ENVIRONMENT = original;
+  }
+});
+
 test("a metric emitted from the snapshot hook is exportable, not durably unaddressable", async () => {
   // The gauge seam Phase 6's cohort reducers publish through. `snapshot` runs after the event
   // loop, so there is no contributing event to take a resource from - and an empty resource id

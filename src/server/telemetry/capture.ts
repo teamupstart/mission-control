@@ -98,8 +98,19 @@ export function resourceAttributes(): Record<string, string> {
     // kept out of adoption. Default `local`, because that is what an ordinary install is.
     // Bounded like any other string: this is operator-supplied and lands in the resource of
     // EVERY batch, so an unbounded value would be paid for on every request rather than once.
-    "deployment.environment.name": boundString(envVar("TELEMETRY_ENVIRONMENT") ?? "local"),
+    // Trimmed and checked for emptiness rather than `??`, which only catches unset. An
+    // exported-but-empty variable is ordinary shell - `MISSION_TELEMETRY_ENVIRONMENT="$UNSET"`
+    // produces exactly that - and it would have labelled every record with no environment at
+    // all, which is outside the `$environment` filter the dashboard and P5's adoption cut both
+    // read rather than being a visible wrong value.
+    "deployment.environment.name": boundString(environmentName()),
   };
+}
+
+/** The configured environment marker, or the default an ordinary install has. */
+function environmentName(): string {
+  const configured = envVar("TELEMETRY_ENVIRONMENT")?.trim();
+  return configured !== undefined && configured.length > 0 ? configured : "local";
 }
 
 /**

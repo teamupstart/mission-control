@@ -37,6 +37,7 @@ export { runRetentionPass } from "./retention.ts";
 export {
   registerBuiltinTelemetry,
   runTelemetryCycle,
+  telemetryCycle,
   startTelemetry,
   TELEMETRY_CYCLE_MS,
 } from "./service.ts";

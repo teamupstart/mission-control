@@ -69,6 +69,45 @@ export async function runTelemetryCycle(
   return result;
 }
 
+/**
+ * The one in-flight cycle for this process.
+ *
+ * MODULE scope, not a closure inside `startTelemetry`, and that is the fix for a real defect
+ * rather than a tidy-up. The guard was previously reachable only by the cadence timer and by
+ * the service object it returned, so `POST /api/telemetry/drain` - which has neither - called
+ * `runTelemetryCycle` straight through. A drain landing on the same tick as the timer produced
+ * two independent delivery passes against one destination, each awaiting its own `send()`.
+ * Per-batch leasing stops them taking the SAME batch; it does nothing about two concurrent
+ * OTLP requests to one endpoint, which is exactly what `maxInFlightPerDestination: 1` promises.
+ *
+ * There is one telemetry facility per daemon process, so this state was always process-wide.
+ * Hiding it in a closure did not make it narrower, only harder to reach from the second caller
+ * that needed it.
+ */
+let inFlightCycle: Promise<TelemetryCycleResult> | null = null;
+
+/**
+ * Run one cycle, single-flighted across the whole process.
+ *
+ * Every caller goes through here: the cadence timer, the drain route, and shutdown. A second
+ * caller arriving while one is running JOINS it rather than starting another, so it still gets
+ * a truthful result for work that is actually happening.
+ */
+export function telemetryCycle(
+  deps: Partial<DeliveryDeps> = {},
+): Promise<TelemetryCycleResult> {
+  if (inFlightCycle) return inFlightCycle;
+  inFlightCycle = runTelemetryCycle(deps)
+    .catch((error: unknown) => {
+      console.warn("[telemetry] export cycle failed:", error);
+      return { consumed: 0, batches: 0, sent: 0, accepted: 0 };
+    })
+    .finally(() => {
+      inFlightCycle = null;
+    }) as Promise<TelemetryCycleResult>;
+  return inFlightCycle;
+}
+
 export interface TelemetryService {
   /** Run one cycle now, outside the cadence. Used by shutdown and by focused tests. */
   cycle(): Promise<TelemetryCycleResult>;
@@ -105,22 +144,7 @@ export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryServi
   }
 
   let stopped = false;
-  let inFlight: Promise<TelemetryCycleResult> | null = null;
-
-  const cycle = (): Promise<TelemetryCycleResult> => {
-    // Never two cycles at once. Overlapping passes would race for the same leases and, worse,
-    // make "one in-flight request per destination" a claim rather than a fact.
-    if (inFlight) return inFlight;
-    inFlight = runTelemetryCycle(deps)
-      .catch((error: unknown) => {
-        console.warn("[telemetry] export cycle failed:", error);
-        return { consumed: 0, batches: 0, sent: 0, accepted: 0 };
-      })
-      .finally(() => {
-        inFlight = null;
-      }) as Promise<TelemetryCycleResult>;
-    return inFlight;
-  };
+  const cycle = (): Promise<TelemetryCycleResult> => telemetryCycle(deps);
 
   const cycleTimer = setInterval(() => {
     if (stopped || !getTelemetryConfig().enabled) return;
@@ -146,7 +170,7 @@ export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryServi
       // The local commit gets a budget. The remote flush gets whatever is left of it and not a
       // millisecond more - an offline exit must never wait for a server that is not there.
       const settled = await Promise.race([
-        inFlight ?? Promise.resolve(null),
+        inFlightCycle ?? Promise.resolve(null),
         // `ref: false` so this timer alone can never hold the process open. A shutdown that
         // waited on its own deadline would be the bug this budget exists to prevent.
         delay(TELEMETRY_SHUTDOWN_BUDGET_MS, null, { ref: false }),

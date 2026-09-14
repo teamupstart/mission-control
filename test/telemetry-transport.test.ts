@@ -23,7 +23,9 @@ const {
 } = await import("../src/server/telemetry/config.ts");
 const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
 const { runDeliveryPass, backoffMs } = await import("../src/server/telemetry/delivery.ts");
-const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
+const { registerBuiltinTelemetry, telemetryCycle } = await import(
+  "../src/server/telemetry/service.ts"
+);
 const { telemetryHealth } = await import("../src/server/telemetry/health.ts");
 const { credentialSurvivesRedirect, safeEndpointLabel, signalUrl, validateEndpoint } =
   await import("../src/server/telemetry/endpoint.ts");
@@ -426,6 +428,58 @@ test("a batch built for a previous endpoint is never redirected to the new one",
     telemetryHealth(2_100).gaps.some((g) => g.kind === "permanently_rejected"),
     "the operator can see that a queue was left behind",
   );
+});
+
+// ---- single-flight ----
+
+test("two concurrent cycles run as one, so a destination never sees two requests at once", async () => {
+  // The regression for a real defect: `POST /api/telemetry/drain` used to call the underlying
+  // `runTelemetryCycle` directly, while the only single-flight guard lived in a closure inside
+  // `startTelemetry` that the route could not reach. A drain landing on the same tick as the
+  // thirty-second cadence started a second, independent delivery pass against the same
+  // destination. Per-batch leasing stops the two taking the same BATCH; nothing stopped two
+  // concurrent OTLP requests to one endpoint, which is what `maxInFlightPerDestination: 1`
+  // promises. Both callers now go through `telemetryCycle`.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  let inFlight = 0;
+  let peak = 0;
+  const fetchImpl = (async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    inFlight -= 1;
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+
+  const first = telemetryCycle({ fetch: fetchImpl, now: () => 2_000 });
+  const second = telemetryCycle({ fetch: fetchImpl, now: () => 2_000 });
+  assert.equal(
+    first,
+    second,
+    "the second caller joins the running cycle rather than starting another",
+  );
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a, b, "both callers get the real result of the work that actually ran");
+  assert.equal(peak, 1, "never two OTLP requests in flight for one destination at once");
+  assert.ok(a.accepted > 0, "and the single cycle did deliver");
+});
+
+test("a cycle that has finished does not block the next one", async () => {
+  // The other half of single-flight: the guard must release. A latch that never cleared would
+  // turn the first drain into the only drain this daemon ever performs.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const first = fixture([ok]);
+  await telemetryCycle({ fetch: first.fetch, now: () => 2_000 });
+
+  captureAndProject("boot-2", 3_000);
+  const second = fixture([ok]);
+  const result = await telemetryCycle({ fetch: second.fetch, now: () => 4_000 });
+  assert.ok(result.accepted > 0, "a later cycle still runs");
+  assert.ok(second.attempts.length > 0);
 });
 
 // ---- two destinations ----

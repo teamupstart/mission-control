@@ -371,7 +371,7 @@ import {
   TelemetryProbeRequestSchema,
 } from "@shared/telemetry.ts";
 import {
-  runTelemetryCycle,
+  telemetryCycle,
   runTelemetryProbe,
   setTelemetryConfig,
   telemetryHealth,
@@ -6687,9 +6687,16 @@ export function buildApp(
   //
   // Exists for the reference stack and for tests: a thirty-second wait between an action and
   // a panel is what makes an end-to-end check flaky, and an operator watching a first export
-  // land should not have to guess whether it is queued or broken. It runs the same code the
-  // timer does; there is no second path.
-  app.post("/api/telemetry/drain", async (c) => c.json(await runTelemetryCycle()));
+  // land should not have to guess whether it is queued or broken.
+  //
+  // Through `telemetryCycle`, which is SINGLE-FLIGHTED across the process, not through the
+  // underlying `runTelemetryCycle`. A drain landing on the same tick as the thirty-second
+  // cadence would otherwise start a second, independent delivery pass against the same
+  // destination: per-batch leasing stops the two taking the same batch, but nothing would stop
+  // two concurrent OTLP requests to one endpoint, which is precisely what
+  // `maxInFlightPerDestination: 1` promises. A drain arriving mid-cycle joins the running one
+  // and reports its real result.
+  app.post("/api/telemetry/drain", async (c) => c.json(await telemetryCycle()));
 
   // --- Terminals: which terminal app each multiplexer's sessions are focused into ---
   //

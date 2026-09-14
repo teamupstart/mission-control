@@ -68,7 +68,7 @@ const SHIP_CONTRACT: TaskCompletionContract = {
     "the requested implementation is done",
     "repository documentation the change requires is updated",
     "the focused tests and verification the change requires have been run",
-    "evidence registration the task asked for is done",
+    "workflow evidence registration the task asked for is done when an active Persona workflow accepts it",
   ],
   deferred: [
     { id: "commit", imperative: "commit", noun: "committing the work" },
@@ -115,6 +115,13 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
  */
 export function taskCompletionContract(kind: TaskKind | null | undefined): TaskCompletionContract | null {
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
+}
+
+/** Current daemon authority overrides an evidence demand retained in an older prompt or gap. */
+export function workflowEvidenceRequirement(eligible: boolean): string {
+  return eligible
+    ? "An active Persona workflow accepts evidence. Complete the workflow evidence registration the task requires before handoff."
+    : "No active Persona workflow accepts evidence. Workflow evidence registration is not required for this handoff. Do not request it or treat its absence as a blocking gap, even if an earlier instruction or review requested it. Implementation, required documentation, and focused verification are still required.";
 }
 
 /** "commit, push, create or update a pull request, … or wait for pull-request CI". */

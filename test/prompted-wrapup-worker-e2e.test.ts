@@ -1,6 +1,6 @@
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
@@ -1671,12 +1671,12 @@ interface FixedGap {
   fix: string;
 }
 
-function mkFixedVerdictClaude(verdict: {
+function mkFixedVerdictClaude(configuredVerdict: {
   complete: boolean;
   summary: string;
   gaps: FixedGap[];
   resolved?: string[];
-}): { bin: string; log: string; prompt: string } {
+}, respectEvidencePolicy = false): { bin: string; log: string; prompt: string } {
   const dir = tmp("fake-claude-evidence-verdict-");
   const log = join(dir, "calls.log");
   const prompt = join(dir, "prompt.txt");
@@ -1689,8 +1689,15 @@ const chunks = [];
 process.stdin.on("data", (c) => chunks.push(c));
 process.stdin.on("end", () => {
   fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, Date.now() + "\\n");
-  fs.writeFileSync(${JSON.stringify(prompt)}, Buffer.concat(chunks));
-  process.stdout.write(JSON.stringify({ result: JSON.stringify(${JSON.stringify(verdict)}) }));
+  const text = Buffer.concat(chunks).toString("utf8");
+  fs.writeFileSync(${JSON.stringify(prompt)}, text);
+  const missing = ${respectEvidencePolicy} && text.includes("No evidence is registered for this work, so");
+  const policyVerdict = missing ? {
+    complete: false, summary: "Required workflow evidence is missing",
+    gaps: [{ id: "evidence-missing", severity: "blocking", kind: "unverified", path: "",
+      detail: "No evidence is registered", fix: "Register workflow evidence" }],
+  } : ${JSON.stringify(configuredVerdict)};
+  process.stdout.write(JSON.stringify({ result: JSON.stringify(policyVerdict) }));
 });
 `,
   );
@@ -1733,12 +1740,16 @@ async function runShipEvidenceScenario(input: {
   stopOn: "claim" | "consume" | "none";
   generation?: number;
   priorDecision?: NonNullable<SessionQueue["promptedDecision"]>;
+  registrationEligible?: boolean | null;
+  eligibilityAfterVerification?: boolean;
+  workflowId?: string | null;
+  respectEvidencePolicy?: boolean;
 }): Promise<{ stub: Stub; out: string; prompt: string; log: string }> {
   const repo = tmp("pw-evidence-repo-");
-  const fake = mkFixedVerdictClaude(input.verdict);
+  const fake = mkFixedVerdictClaude(input.verdict, input.respectEvidencePolicy);
   const generation = input.generation ?? 1;
   const session = mkSession(repo, {
-    task: mkTaskSummary({ kind: "ship", workflowId: "workflow-review" }),
+    task: mkTaskSummary({ kind: "ship", workflowId: input.workflowId === undefined ? "workflow-review" : input.workflowId }),
     workCycle: {
       logicalKey: "agent-1",
       generation,
@@ -1781,9 +1792,21 @@ async function runShipEvidenceScenario(input: {
     if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/workflow-evidence") {
       if (input.evidenceStatus && input.evidenceStatus !== 200) evidenceFailureAt = Date.now();
+      const verificationFinished = claudeCalls(fake.log).length > 0;
+      if (input.registrationEligible === null
+        || (verificationFinished && input.eligibilityAfterVerification !== undefined)) {
+        evidenceFailureAt ||= Date.now();
+      }
       return input.evidenceStatus && input.evidenceStatus !== 200
         ? { status: input.evidenceStatus, json: { error: "evidence unavailable" } }
-        : { status: 200, json: input.evidence ?? { generation: 0, images: [], artifacts: [] } };
+        : { status: 200, json: {
+          ...(input.evidence ?? { generation: 0, images: [], artifacts: [] }),
+          ...(input.registrationEligible === null ? {} : {
+            registrationEligible: verificationFinished && input.eligibilityAfterVerification !== undefined
+              ? input.eligibilityAfterVerification
+              : input.registrationEligible ?? true,
+          }),
+        } };
     }
     if (p === "/api/sessions/s1/transcript") {
       return {
@@ -1864,6 +1887,92 @@ const UNVERIFIED_GAP: FixedGap = {
   detail: "the implementation appears done, but verification output cannot be confirmed",
   fix: "provide verification output",
 };
+
+test("the fake verifier returns its policy-derived verdict for the legacy zero-evidence demand", () => {
+  const configured = { complete: true, summary: "implementation and tests complete", gaps: [] };
+  const fake = mkFixedVerdictClaude(configured, true);
+  for (const [prompt, complete] of [
+    ["No evidence is registered for this work, so the contract clause 'evidence registration is done' is not satisfied.", false],
+    ["Workflow evidence registration is not required for this handoff.", true],
+  ] as const) {
+    const result = spawnSync(process.execPath, [fake.bin], {
+      input: prompt, encoding: "utf8", env: { ...process.env, FAKE_CLAUDE_LOG: fake.log },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const verdict = JSON.parse(JSON.parse(result.stdout).result);
+    assert.equal(verdict.complete, complete, "the emitted verdict must follow the prompt, not the configured complete verdict");
+    if (!complete) {
+      assert.equal(verdict.gaps[0].severity, "blocking");
+      assert.equal(verdict.gaps[0].fix, "Register workflow evidence");
+    }
+  }
+});
+
+test("ship completion without an eligible Persona workflow never creates an evidence hold", async () => {
+  // Drive the real worker with a verifier that obeys the zero-item policy it receives.
+  // Before the fix both cases stop as held and recovery asks for an impossible registration.
+  for (const workflowId of [null, "workflow-without-personas"]) {
+    const result = await runShipEvidenceScenario({
+      verdict: { complete: true, summary: "implementation and tests complete", gaps: [] },
+      workflowId,
+      registrationEligible: false,
+      respectEvidencePolicy: true,
+      claimReason: "no_binding",
+      stopOn: "consume",
+    });
+    const consume = result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted")[0];
+    assert.equal((consume?.body as { decision?: { outcome: string } })?.decision?.outcome,
+      "direct_handoff", result.out);
+    const prompt = readFileSync(result.prompt, "utf8");
+    assert.match(prompt, /Workflow evidence registration is not required/);
+    assert.doesNotMatch(prompt, /No evidence is registered for this work, so/);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/ship-recovery/claim").length, 0);
+  }
+});
+
+test("a manually attached Persona workflow still holds completion for missing evidence", async () => {
+  const result = await runShipEvidenceScenario({
+    verdict: { complete: true, summary: "implementation and tests complete", gaps: [] },
+    workflowId: null,
+    registrationEligible: true,
+    respectEvidencePolicy: true,
+    stopOn: "consume",
+  });
+  const consume = result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted")[0];
+  assert.equal((consume?.body as { decision?: { outcome: string } })?.decision?.outcome,
+    "held", result.out);
+  assert.match(readFileSync(result.prompt, "utf8"), /No evidence is registered for this work, so/);
+  assert.match(JSON.stringify(consume?.body), /No evidence is registered/);
+  assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0);
+});
+
+test("a binding change during verification leaves the generation available for a fresh check", async () => {
+  for (const registrationEligible of [false, true]) {
+    const result = await runShipEvidenceScenario({
+      verdict: { complete: true, summary: "implementation complete", gaps: [] },
+      registrationEligible,
+      eligibilityAfterVerification: !registrationEligible,
+      stopOn: "none",
+    });
+    assert.equal(claudeCalls(result.log).length, 1, result.out);
+    assert.match(result.out, /workflow evidence eligibility changed or is unavailable/);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0);
+  }
+});
+
+test("missing eligibility or a disappeared evidence session cannot waive completion checks", async () => {
+  for (const unavailable of [{ registrationEligible: null }, { evidenceStatus: 404 }]) {
+    const result = await runShipEvidenceScenario({
+      verdict: { complete: true, summary: "would have completed", gaps: [] },
+      ...unavailable,
+      stopOn: "none",
+    });
+    assert.equal(claudeCalls(result.log).length, 0, result.out);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0);
+    assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0);
+  }
+});
 
 test("same-episode registered evidence is fenced into the prompt and a clean verdict claims", async () => {
   const result = await runShipEvidenceScenario({
@@ -2104,7 +2213,9 @@ test("a registered-evidence read failure neither verifies, consumes nor claims",
     evidenceStatus: 500,
     stopOn: "none",
   });
-  assert.equal(result.stub.to("GET", "/api/sessions/s1/workflow-evidence").length, 1, result.out);
+  // Recovery and completion both consult the same authority, and neither may turn a failed
+  // read into permission to act. Each path reads once in this pass, without a hot retry.
+  assert.equal(result.stub.to("GET", "/api/sessions/s1/workflow-evidence").length, 2, result.out);
   assert.equal(claudeCalls(result.log).length, 0, result.out);
   assert.equal(result.stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, result.out);
   assert.equal(result.stub.to("POST", "/api/sessions/s1/queue/wrapup/prompted").length, 0, result.out);
@@ -2148,6 +2259,9 @@ test("a ship objective that demands a PR still completes at the delivered bounda
           headSha: "abc123",
         },
       };
+    }
+    if (p === "/api/sessions/s1/workflow-evidence") {
+      return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: true } };
     }
     if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {
@@ -2280,6 +2394,9 @@ process.stdin.on("end", () => {
           headSha: "abc123",
         },
       };
+    }
+    if (p === "/api/sessions/s1/workflow-evidence") {
+      return { status: 200, json: { generation: 0, images: [], artifacts: [], registrationEligible: false } };
     }
     if (p === "/api/sessions/s1/transcript/size") return { status: 200, json: { size: 100 } };
     if (p === "/api/sessions/s1/transcript") {

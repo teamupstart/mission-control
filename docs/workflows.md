@@ -952,6 +952,11 @@ requirement.
 Registration itself is authorized by the conversation's own active Persona binding rather than by
 the task's dispatch-time selection, so a workflow an operator attaches to a session that is already
 running accepts evidence exactly as a selected one does.
+Foreman's completion and recovery instructions use that same authority. A session with no active
+Persona binding does not owe workflow evidence registration, and an attempted agent registration
+still returns `403 workflow_unbound` without staging anything. The live-session evidence read
+includes `registrationEligible` separately from the tray, because the dashboard can inspect staged
+evidence before a binding exists. Failure to read eligibility is not treated as an exemption.
 
 The daemon resolves repository scope from the task, falling back to the session's own checkout as
 the single slot when the bound conversation has no live task. It rejects file paths outside the

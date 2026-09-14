@@ -78,6 +78,7 @@ import type {
   WorkflowUploadEvidenceLocator,
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
+  WorkflowSessionEvidenceList,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
@@ -1418,6 +1419,15 @@ export class WorkflowManager {
     return Boolean(version && versionSupportsWorkflowEvidence(version));
   }
 
+  /** The same live authority for agent registration and Foreman's evidence obligation. */
+  agentEvidenceBinding(sessionId: string): WorkflowBinding | null {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") return null;
+    const binding = this.store.activeBindingForNote(noteKeyFor(session));
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    return binding && version && versionSupportsWorkflowEvidence(version) ? binding : null;
+  }
+
   /**
    * Session-attributed intake used by the bundled Mission MCP tool.
    *
@@ -1457,9 +1467,8 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       throw new WorkflowImageEvidenceError("session_unavailable", "The evidence session is not live", 404);
     }
-    const binding = this.store.activeBindingForNote(noteKeyFor(session));
-    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
-    if (!binding || !version || !versionSupportsWorkflowEvidence(version)) {
+    const binding = this.agentEvidenceBinding(sessionId);
+    if (!binding) {
       throw new WorkflowImageEvidenceError(
         "workflow_unbound",
         "This session does not have an active Persona workflow binding",
@@ -1546,10 +1555,13 @@ export class WorkflowManager {
    * ownership decision in the daemon and avoids making the browser invent a provisional
    * binding solely to list or remove evidence.
    */
-  stagedEvidenceForSession(sessionId: string): WorkflowStagedEvidenceList | null {
+  stagedEvidenceForSession(sessionId: string): WorkflowSessionEvidenceList | null {
     const session = this.registry.getSession(sessionId);
     return session && session.state !== "exited"
-      ? this.store.listWorkflowEvidence(noteKeyFor(session))
+      ? {
+        ...this.store.listWorkflowEvidence(noteKeyFor(session)),
+        registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
+      }
       : null;
   }
 

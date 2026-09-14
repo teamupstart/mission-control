@@ -123,7 +123,7 @@ import type {
   ShipRecoveryDeliveryOutcome,
   ShipShepherdDecision,
 } from "./ship-shepherd.ts";
-import type { WorkflowStagedEvidenceList } from "@shared/workflow.ts";
+import type { WorkflowSessionEvidenceList } from "@shared/workflow.ts";
 import { initializeExecutableEnvironment } from "../executables/locator.ts";
 
 /**
@@ -1091,6 +1091,7 @@ interface ShipRecoveryCandidate {
   queue: SessionQueue;
   diff: SessionDiff;
   decision: Exclude<ShipShepherdDecision, { kind: "skip" }>;
+  workflowEvidenceEligible: boolean;
 }
 
 /** Resolve the worker's advisory recovery snapshot through one shared set of reads. */
@@ -1106,12 +1107,13 @@ async function resolveShipRecoveryCandidate(
 
   // Queue and Workflow are durable owners outside the card snapshot. Failure to read
   // either holds this candidate: missing evidence can never become permission to type.
-  const [queue, workflowRuns, goal] = await Promise.all([
+  const [queue, workflowRuns, goal, evidence] = await Promise.all([
     client.queue(session.id).catch(() => undefined),
     client.workflowRuns(noteKeyOf(session)).catch(() => undefined),
     client.goal(session.id).catch(() => null),
+    client.workflowEvidence(session.id).catch(() => null),
   ]);
-  if (queue === undefined || queue === null || workflowRuns === undefined) return null;
+  if (queue === undefined || queue === null || workflowRuns === undefined || !evidence) return null;
 
   // Diff errors also hold. Treating "could not inspect" as empty would route a dirty,
   // ambiguous checkout into the structural empty instruction and erase the only branch
@@ -1127,6 +1129,7 @@ async function resolveShipRecoveryCandidate(
       reportBucket(session, sessions) === "needs-you"
       || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
     workflowOwnsSession: activeWorkflowOwnsSession(workflowRuns),
+    workflowEvidenceEligible: evidence.registrationEligible,
     hasTaskOwnedOpenPr: followupPrs(session).length > 0,
     diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
     featureEnabled: cfg.keepShipTasksMoving,
@@ -1137,7 +1140,10 @@ async function resolveShipRecoveryCandidate(
   const decision = deliveryRoute === "immediate-held"
     ? decideImmediateHeldGapDelivery(input)
     : decideShipShepherd(input);
-  return decision.kind === "skip" ? null : { session, task, queue, diff, decision };
+  return decision.kind === "skip" ? null : {
+    session, task, queue, diff, decision,
+    workflowEvidenceEligible: evidence.registrationEligible,
+  };
 }
 
 async function runShipShepherd(
@@ -1202,6 +1208,7 @@ async function runShipShepherd(
               standards: standards.docs,
               standardsTruncated: standards.truncated,
               completionContract: taskCompletionContract(task.kind)!,
+              workflowEvidenceEligible: candidate.workflowEvidenceEligible,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
             }, reviewModel(cfg, roleRunnerIds.review), roleRunnerIds.review);
@@ -1259,7 +1266,7 @@ async function runShipShepherd(
 
     const delivered = await deliverShipRecovery(
       client,
-      { session, task, queue, diff, decision },
+      { ...candidate, decision },
       payload,
       "shepherd",
     );
@@ -1319,6 +1326,7 @@ async function deliverShipRecovery(
     ? await client.workflowRuns(noteKeyOf(fresh)).catch(() => null)
     : null;
   const freshQueue = fresh ? await client.queue(fresh.id).catch(() => null) : null;
+  const freshEvidence = fresh ? await client.workflowEvidence(fresh.id).catch(() => null) : null;
   const settleMs = deliveryRoute === "immediate-held"
     ? 0
     : (freshCfg?.shipRecoveryMinutes ?? 0) * 60_000;
@@ -1328,6 +1336,8 @@ async function deliverShipRecovery(
     || !fresh
     || !freshRuns
     || !freshQueue
+    || !freshEvidence
+    || freshEvidence.registrationEligible !== candidate.workflowEvidenceEligible
     || !isLeader
     || !freshCfg.enabled
     || !freshCfg.keepShipTasksMoving
@@ -1868,11 +1878,11 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  * content mirrors the prompt's trust fence: only the former may render above it.
  */
 function promptedRegisteredEvidence(
-  staged: WorkflowStagedEvidenceList | null,
+  staged: WorkflowSessionEvidenceList,
   episodeKey: string,
 ): RegisteredEvidenceInput {
   const items: Array<{ id: string; item: RegisteredEvidenceItem }> = [
-    ...(staged?.images ?? [])
+    ...staged.images
       .filter((item) => item.episodeKey === episodeKey)
       .map((item) => ({
         id: item.id,
@@ -1890,7 +1900,7 @@ function promptedRegisteredEvidence(
           },
         },
       })),
-    ...(staged?.artifacts ?? [])
+    ...staged.artifacts
       .filter((item) => item.episodeKey === episodeKey)
       .map((item) => ({
         id: item.id,
@@ -1909,7 +1919,10 @@ function promptedRegisteredEvidence(
         },
       })),
   ].sort((a, b) => a.item.metadata.createdAt - b.item.metadata.createdAt || a.id.localeCompare(b.id));
-  return { items: items.map(({ item }) => item), totalCount: items.length, truncated: false };
+  return {
+    registrationEligible: staged.registrationEligible,
+    items: items.map(({ item }) => item), totalCount: items.length, truncated: false,
+  };
 }
 
 /**
@@ -2059,12 +2072,12 @@ async function processPromptedWrapup(
     log(`${session.name}: prompted wrap-up held - could not read the transcript anchor`);
     return false;
   }
-  if (!evidenceRead.ok) {
+  if (!evidenceRead.ok || (completionContract && !evidenceRead.value)) {
     log(`${session.name}: prompted wrap-up held - could not read registered evidence`);
     return false;
   }
   const transcriptAnchor = transcriptRead.value;
-  const registeredEvidence = completionContract
+  const registeredEvidence = completionContract && evidenceRead.value
     ? promptedRegisteredEvidence(evidenceRead.value, candidate.episodeKey)
     : null;
 
@@ -2211,6 +2224,16 @@ async function processPromptedWrapup(
   let current = await refreshPromptedCandidate(client, pcfg, candidate);
   if (!current || current.candidate.kind !== "check") return false;
 
+  // A workflow can be attached or removed while the verifier runs. Do not consume a verdict
+  // judged against an evidence obligation that no longer applies (or has just become due).
+  if (registeredEvidence) {
+    const freshEvidence = await client.workflowEvidence(current.session.id).catch(() => null);
+    if (!freshEvidence || freshEvidence.registrationEligible !== registeredEvidence.registrationEligible) {
+      log(`${session.name}: prompted wrap-up held - workflow evidence eligibility changed or is unavailable`);
+      return false;
+    }
+  }
+
   const blockingGaps = result.verdict.gaps.filter((gap) => gap.severity === "blocking");
   const trackedDecisionGaps = reconcileGaps(
     verificationHistory.priorGaps,
@@ -2220,6 +2243,7 @@ async function processPromptedWrapup(
   const verificationEvidenceFallback = Boolean(
     result.verdict.complete
     && registeredEvidence
+    && registeredEvidence.registrationEligible
     && registeredEvidence.totalCount > 0
     && blockingGaps.length > 0
     && blockingGaps.every((gap) => gap.kind === "unverified"),

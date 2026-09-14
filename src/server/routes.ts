@@ -5587,6 +5587,7 @@ export function buildApp(
         reportBucket(session, registry.snapshot().sessions) === "needs-you"
         || Boolean(session.note && noteAwaitsYou(session.note.disposition)),
       workflowOwnsSession: activeWorkflowOwnsSession(runs),
+      workflowEvidenceEligible: manager.agentEvidenceBinding(session.id) !== null,
       hasTaskOwnedOpenPr: followupPrs(session).length > 0,
       diffHasChanges: diff.filesChanged > 0 || diff.insertions > 0 || diff.deletions > 0,
       featureEnabled: cfg.keepShipTasksMoving,

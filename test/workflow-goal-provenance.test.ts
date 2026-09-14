@@ -111,6 +111,7 @@ function shipInput(over: Partial<Parameters<typeof decideShipShepherd>[0]> = {})
     episodeKey: "intent:1:1",
     humanOwnsSession: false,
     workflowOwnsSession: false,
+    workflowEvidenceEligible: false,
     hasTaskOwnedOpenPr: false,
     diffHasChanges: false,
     featureEnabled: true,

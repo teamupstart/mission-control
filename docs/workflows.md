@@ -267,9 +267,11 @@ it already reserved, and the built-in it shadows stays hidden behind your copy w
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
 see the built-in.
 
-An upgrade that improves the shipped workflow or one of its Personas appends a **new version**
-with the updated graph and guidance. An existing binding keeps running the version it was bound
-to until you rebind it.
+Changing the shipped workflow graph appends a **new version**. An existing binding keeps its
+graph until you rebind it. Built-in Persona guidance comes from this build's catalog unless a
+version explicitly freezes a historical snapshot, so pinning a built-in version alone does not
+freeze every Persona's guidance. A guidance update must preserve the earlier snapshots explicitly,
+as the Intent Conformance update below does for versions 1 through 16.
 
 Versions 3 through 7 are that rule in practice. Version 3 added the deterministic check
 stage; version 4 preserves that graph and changes only the immutable GitHub Inspector-findings

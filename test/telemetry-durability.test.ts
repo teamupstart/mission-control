@@ -428,6 +428,51 @@ test("the same source identity is captured once, however often it is offered", (
   assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [1]);
 });
 
+test("admission control carries the byte total forward instead of re-scanning per capture", async () => {
+  // `usedBytes` is seven unindexed aggregates over tables the budget lets reach hundreds of
+  // thousands of rows, and it ran inside the capture transaction - which holds the single
+  // writer lock every other subsystem in `harness.db` queues behind. Sessions and tasks would
+  // have paid for telemetry's bookkeeping, and worse the more telemetry there was.
+  const { telemetryTransaction, usedBytes, usedBytesForAdmission, resetUsedBytesCache } =
+    await import("../src/server/telemetry/store.ts");
+  enableLocalOnly();
+  resetUsedBytesCache();
+
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+  const estimate = telemetryTransaction((d) => usedBytesForAdmission(d, 128));
+  assert.ok(estimate > 0, "the accepted event is on the books");
+
+  // Empty every accounted table behind its back. A scan would see the drop immediately; the
+  // hot path does not, because it did not run one - which is the whole point.
+  for (const table of TELEMETRY_TABLES) openDb().exec(`DELETE FROM ${table}`);
+  assert.equal(
+    telemetryTransaction((d) => usedBytes(d)),
+    0,
+    "the authoritative total really is zero now",
+  );
+  assert.equal(
+    telemetryTransaction((d) => usedBytesForAdmission(d, 128)),
+    estimate,
+    "and the capture path did not pay for a scan to find that out",
+  );
+
+  // Over-stating is the safe direction, and it is not load-bearing: the moment an estimate
+  // reaches the cap the truth is recomputed, so no refusal is ever decided on a stale number.
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = estimate;
+  try {
+    const [fresh, admission] = telemetryTransaction(
+      (d) => [usedBytes(d), usedBytesForAdmission(d, 128)] as const,
+    );
+    assert.notEqual(fresh, estimate, "the truth and the stale estimate really do differ");
+    assert.equal(admission, fresh, "near the cap the number is computed, not remembered");
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+  resetUsedBytesCache();
+});
+
 test("a duplicate at a full store is a duplicate, not a claimed loss", () => {
   // The ordering defect: admission control ran before the dedupe lookup, so a retried capture
   // at a full store was refused as `over_capacity` AND recorded a `capture_refused` gap. A

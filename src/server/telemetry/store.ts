@@ -556,6 +556,9 @@ export function insertBatch(d: DatabaseSync, batch: StoredBatch, now: number): v
        (batch_id, profile, signal, state, attempts, next_attempt_at, updated_at)
      VALUES (?,?,?,'pending',0,?,?)`,
   ).run(batch.id, batch.profile, batch.signal, now, now);
+  // The one writer outside capture that adds a meaningful number of bytes. Reported so the
+  // admission estimate tracks a projection pass without another full scan.
+  noteBytesAdded(batch.bytes);
 }
 
 export interface LeasedBatch {
@@ -930,6 +933,58 @@ export function usedBytes(d: DatabaseSync): number {
     )
     .get() as { total: number } | undefined;
   return row?.total ?? 0;
+}
+
+/**
+ * The admission-control read of the same number, which is the one on the hot path.
+ *
+ * `usedBytes` is seven unindexed aggregates, and no index can help: summing `LENGTH(...)` over
+ * every live row is the question being asked. Running it inside the capture transaction meant
+ * every accepted fact scanned tables the budget lets grow to hundreds of thousands of rows -
+ * while holding the single writer lock that serializes every OTHER write in `harness.db`.
+ * Sessions and tasks would have paid for telemetry's bookkeeping.
+ *
+ * So the total is cached and carried forward by the writers that know what they added. The
+ * cache is allowed to be wrong; it is not allowed to be wrong in a way that matters:
+ *
+ *   - It is only ever RETURNED while the estimate sits below `RECHECK_FRACTION` of the cap.
+ *     Every refusal decision is therefore made against a freshly computed number, never a
+ *     remembered one. Approaching the cap costs a scan again, which is when it is worth paying.
+ *   - Deletions are not subtracted, so retention and payload release leave it over-stating.
+ *     Over-stating only ever buys an earlier recompute.
+ *   - Writers that add bytes outside capture - a projection writing a batch - report what they
+ *     added, and `MAX_CACHE_AGE_MS` bounds whatever is left (series, context and resource rows,
+ *     each tens of bytes) to one interval's worth of drift.
+ */
+let usedBytesCache: { value: number; addedSince: number; computedAt: number } | null = null;
+
+/** Recompute rather than trust the estimate once it reaches this share of the cap. */
+const RECHECK_FRACTION = 0.9;
+/** Longest an estimate is carried before the truth is recomputed regardless. */
+const MAX_CACHE_AGE_MS = 30_000;
+
+export function usedBytesForAdmission(d: DatabaseSync, incoming: number): number {
+  // Wall clock, deliberately not the caller's `now`: how stale an estimate is has nothing to do
+  // with event time, and a test that captures at t=1000 twice is not making the cache older.
+  const wall = Date.now();
+  const cached = usedBytesCache;
+  if (cached && wall - cached.computedAt < MAX_CACHE_AGE_MS) {
+    const estimate = cached.value + cached.addedSince;
+    if (estimate + incoming < TELEMETRY_LIMITS.maxTotalBytes * RECHECK_FRACTION) return estimate;
+  }
+  const value = usedBytes(d);
+  usedBytesCache = { value, addedSince: 0, computedAt: wall };
+  return value;
+}
+
+/** Report bytes just written, so the estimate tracks them without another scan. */
+export function noteBytesAdded(bytes: number): void {
+  if (usedBytesCache) usedBytesCache.addedSince += bytes;
+}
+
+/** Drop the estimate. For a test that rewrites the tables underneath it. */
+export function resetUsedBytesCache(): void {
+  usedBytesCache = null;
 }
 
 // ---- retention ----

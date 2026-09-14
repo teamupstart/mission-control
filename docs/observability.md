@@ -246,6 +246,20 @@ health view - and
 where a failure prevented even the counter from being written, recovery reports an **unknown** gap
 rather than claiming a precise number.
 
+That invariant reaches exactly as far as the daemon can see, and where it ends is worth saying
+plainly. A batch is accepted, and its copy released, the moment the Collector returns 200 - the
+Collector owns it from there, and nothing it does afterwards can reach the health view. So the
+reference stack is configured never to drop: both exporters retry with **no elapsed-time ceiling**
+(`max_elapsed_time: 0`). A ceiling would expire queued items during a long Prometheus or Tempo
+outage - a Docker Desktop restart, a sleeping host, a maintenance window - and that loss would
+appear only in the Collector's own logs while the health view still read zero gaps. Retrying
+indefinitely turns the same outage into backpressure instead: the persistent queue fills, enqueue
+begins failing, the OTLP receiver answers the daemon with an error, and the daemon keeps its own
+copy. Loss then happens only where it can be counted, against the daemon's own bounded retention.
+
+A different backend, configured by an operator, keeps its own promises. The daemon's guarantee is
+about what it accepted and has not yet handed over.
+
 A logical quota inside `harness.db` is not a hard cap on the file or its WAL. Deletes free pages
 for reuse without shrinking the file, and no whole-database compaction is ever run to reclaim
 telemetry space while sessions are active.

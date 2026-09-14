@@ -62,9 +62,18 @@ exporters:
       enabled: true
       initial_interval: 1s
       max_interval: 60s
-      # Longer than a coffee break and shorter than a weekend. Past this the Collector reports
-      # a permanent failure, which is a visible loss rather than an unbounded queue.
-      max_elapsed_time: 1h
+      # No ceiling, on purpose. A ceiling drops the item once it expires, and that drop is
+      # visible only in the COLLECTOR's own logs: Mission Control marked the batch accepted and
+      # released its copy the moment this Collector returned 200, so a Prometheus outage longer
+      # than the ceiling - a Docker Desktop restart, a host sleeping, a maintenance window -
+      # would silently break the invariant that loss is always counted in the health view.
+      #
+      # Retrying for ever instead turns a downstream outage into backpressure. The persistent
+      # queue below fills, enqueue starts failing, the OTLP receiver answers Mission Control
+      # with an error, and Mission Control keeps its own copy and retries. Loss then only
+      # happens where it can be counted: against Mission Control's own bounded retention, which
+      # reports it as a gap.
+      max_elapsed_time: 0
 
   otlp/tempo:
     endpoint: tempo:4317
@@ -79,7 +88,8 @@ exporters:
       enabled: true
       initial_interval: 1s
       max_interval: 60s
-      max_elapsed_time: 1h
+      # Unbounded for the same reason as the metrics exporter above.
+      max_elapsed_time: 0
 
 service:
   extensions: [file_storage, health_check]

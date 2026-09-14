@@ -44,7 +44,8 @@ import {
   putResource,
   recordGap,
   telemetryTransaction,
-  usedBytes,
+  noteBytesAdded,
+  usedBytesForAdmission,
 } from "./store.ts";
 
 /**
@@ -185,7 +186,7 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
       // Admission control. At the absolute cap even high-priority capture fails, and it fails
       // here - visibly, with a counted gap - rather than by growing the file past the number
       // the operator was shown.
-      if (usedBytes(d) + bytes > TELEMETRY_LIMITS.maxTotalBytes) {
+      if (usedBytesForAdmission(d, bytes) + bytes > TELEMETRY_LIMITS.maxTotalBytes) {
         recordGap(d, "capture_refused", `over capacity: ${definition.name}`, now);
         return { kind: "refused", reason: "over_capacity", detail: "telemetry store is full" };
       }
@@ -216,6 +217,8 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
         bytes,
       });
       if (appended.kind === "duplicate") return { kind: "duplicate", eventId: appended.eventId };
+      // Carried forward so the next capture does not have to re-scan the journal to learn it.
+      noteBytesAdded(bytes);
       // Returned with the acceptance rather than parked in a module slot for the caller to read
       // back: a shared slot would make a caller's own trace id depend on whether anything else
       // captured in between.

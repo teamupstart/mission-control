@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT } from "./config.ts";
-import { closeDb, openDb } from "./db.ts";
+import { closeDb, databaseMigratedOnOpen, openDb } from "./db.ts";
 import { acquireStateOwnership } from "./state-ownership.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
@@ -104,6 +104,12 @@ import { startSettingsBackupLoop } from "./settings-backups/loop.ts";
 import { DatabaseBackupService } from "./database-backups/service.ts";
 import { startDatabaseBackupLoop } from "./database-backups/loop.ts";
 import { initializeExecutableEnvironment } from "./executables/locator.ts";
+import {
+  observeDaemonStart,
+  registerBuiltinTelemetry,
+  startTelemetry,
+  type TelemetryService,
+} from "./telemetry/index.ts";
 
 // Every launch mode owns the same executable snapshot before any subsystem can detect or
 // start a child. An adopted daemon ran this in its own process when it originally launched.
@@ -120,6 +126,12 @@ const database = openDb();
 configureClaudeRunnerTransport(claudeTransportChoice);
 configureCodexRunnerTransport(codexTransportChoice);
 ensureToken();
+// Register the telemetry catalog projection and the daemon's own sources, before anything in
+// this process can capture or project. Registration only - no timers, no network, no capture:
+// collection is off by default and an installation that never opts in does nothing here beyond
+// populating two in-memory maps. The recurring cycle starts after the port is won, below,
+// because export is background work and backend availability is not a launch condition.
+registerBuiltinTelemetry();
 // Reclaim expired image drops now, while we know no send is mid-flight. An upload
 // outlives its send on purpose (the agent reads the path on its own schedule), so
 // a clock is the only thing that can retire one.
@@ -616,6 +628,7 @@ if (hasDist) {
 }
 
 let shutdownStarted = false;
+let telemetry: TelemetryService | null = null;
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {
   // Restoration remains serial, but is no longer on the listener's critical path. Terminal
   // discovery and every first-observation reconciliation still wait for every prepared SDK
@@ -698,6 +711,23 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
     .catch((error: unknown) => {
       console.warn("[mission-control] could not read installed plugin catalogs:", error);
     });
+  // Telemetry's recurring cycle, started HERE rather than beside the database for the reason
+  // every job in this callback is: it is background work, and nothing about a backend being
+  // unreachable may delay a daemon becoming available. Startup lease recovery runs inside it.
+  telemetry = startTelemetry();
+  // And the first fact this installation captures, if it has opted in: that the daemon
+  // started, and how long it took to answer. Measured to HERE, which is what an operator
+  // would call startup, and captured after it rather than before - the observation cannot be
+  // allowed to become part of what it measures.
+  //
+  // Inert when collection is off, which is the shipped default: `captureTelemetry` returns
+  // `disabled` without touching a table.
+  const launchMode = process.env.MISSION_WEB_DIR ? "desktop" : hasDist ? "daemon" : "dev";
+  observeDaemonStart({
+    startupMs: Math.round(process.uptime() * 1000),
+    schemaUpgraded: databaseMigratedOnOpen(),
+    launchMode,
+  });
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;
@@ -768,6 +798,10 @@ async function shutdown(): Promise<void> {
   // own `-w <daemon PID>` covers every exit that never reaches this line, so this is the
   // orderly half of a two-part cleanup, not the only one.
   await keepAwake.stop();
+  // Stop taking new export work, commit whatever is captured but unprojected, and release this
+  // process's leases. Time-bounded by construction: the local commit gets a budget and the
+  // remote flush gets only what is left of it, so an offline exit never waits for a server.
+  if (telemetry) await telemetry.stop();
   await stopModelCatalogs;
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());

@@ -1,0 +1,45 @@
+# Both data sources, with STABLE UIDs.
+#
+# The uids are the contract: a dashboard JSON file refers to a data source by uid, so these two
+# strings are what make a provisioned dashboard work on a machine that has never seen this
+# stack. Renaming one silently empties every panel. Phase 7's six dashboards inherit them.
+#
+# `url` uses container service names because Grafana runs inside this network. The host
+# addresses - 127.0.0.1:19090 and 127.0.0.1:13200 - are for a person with a browser, and are
+# documented separately in docs/observability.md.
+
+apiVersion: 1
+
+datasources:
+  - name: Mission Prometheus
+    uid: mission-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 30s
+      # The link from a metric to the trace that explains it. Exemplars only appear once the
+      # exporter and receiver path is proven to carry them, which Phase 1 does not claim; this
+      # entry exists so the drill-down works the moment they do, and trace navigation today
+      # goes through the Tempo search in the dashboard instead.
+      exemplarTraceIdDestination:
+        name: trace_id
+        datasourceUid: mission-tempo
+
+  - name: Mission Tempo
+    uid: mission-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # Tempo's own service graph and span metrics are not enabled in this stack: they would
+      # need the metrics-generator and a second write path into Prometheus, and Phase 1's
+      # metrics come from Mission Control's durable projection rather than from sampled spans.
+      tracesToLogsV2:
+        datasourceUid: mission-prometheus
+      search:
+        hide: false
+      nodeGraph:
+        enabled: false

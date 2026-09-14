@@ -1,0 +1,29 @@
+# Recording rules for the walking slice.
+#
+# Kept to what Phase 1 actually emits. Phase 7 owns the six product dashboards and the rules
+# they need; adding speculative rules here would create queries with no panel behind them and
+# no test to notice when they stop matching a real series.
+#
+# `promtool check rules` is run against this file by the stack command's `verify` step, so a
+# typo fails a command rather than a dashboard.
+
+groups:
+  - name: mission-telemetry-diagnostics
+    interval: 30s
+    rules:
+      # Daemon starts per hour, by launch mode. An activity TREND, deliberately named as one:
+      # `increase()` extrapolates over the selected interval and is not an exact census.
+      - record: mission:daemon_starts:rate1h
+        expr: sum by (launch_mode, service_version) (rate(mission_daemon_starts_total[1h]))
+
+      # The p95 startup time this installation is actually seeing.
+      - record: mission:daemon_startup_p95_ms
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le, launch_mode) (rate(mission_daemon_startup_duration_milliseconds_bucket[1h]))
+          )
+
+      # Probe outcomes, which is the pipeline's own health from the app's side.
+      - record: mission:telemetry_probes:rate1h
+        expr: sum by (profile, outcome) (rate(mission_telemetry_probes_total[1h]))

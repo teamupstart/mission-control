@@ -367,6 +367,17 @@ import { acknowledgeSetupRows } from "@shared/setup-banner.ts";
 import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
+  TelemetryConfigPatchSchema,
+  TelemetryProbeRequestSchema,
+} from "@shared/telemetry.ts";
+import {
+  telemetryCycle,
+  runTelemetryProbe,
+  setTelemetryConfig,
+  telemetryHealth,
+  telemetryStatus,
+} from "./telemetry/index.ts";
+import {
   getInspectorConfig,
   inspectorModel,
   inspectorRunner,
@@ -6636,6 +6647,61 @@ export function buildApp(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
     }
     return c.json(costTelemetryStatus());
+  });
+
+  // --- General telemetry: collection, export destinations and queue health ---
+  //
+  // Deliberately NOT the same family as `/api/cost/*` above, and not the same family as the
+  // inbound `/v1/metrics` receiver either. Those two are one feature: Claude Code exporting
+  // its own cost metrics INTO Mission Control. This is the opposite direction - Mission
+  // Control exporting its own domain facts OUT - and the two share no storage, no
+  // configuration and no queue. Folding them together would put one switch on two unrelated
+  // consents.
+  //
+  // Phase 2 owns the Settings UI over these routes. Phase 1 exposes them so the walking slice
+  // is operable and so a browser test has something to drive.
+  app.get("/api/telemetry/config", (c) => c.json(telemetryStatus()));
+  app.put("/api/telemetry/config", async (c) => {
+    const parsed = await parseBody(c, TelemetryConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const applied = setTelemetryConfig(parsed.data);
+    // 409 rather than 500: every refusal here is a configuration the operator can see and
+    // fix - an unencrypted remote endpoint carrying a credential, our own address, or the
+    // product audience that has no service behind it.
+    if (!applied.ok) return c.json({ error: applied.error }, 409);
+    return c.json(telemetryStatus());
+  });
+
+  app.get("/api/telemetry/health", (c) => c.json(telemetryHealth()));
+
+  // The synthetic connection probe. Sends a real, empty OTLP request, then captures the
+  // result through the ordinary durable path - so it answers "can I reach the endpoint?" now
+  // and proves the whole pipeline on the next drain.
+  app.post("/api/telemetry/probe", async (c) => {
+    const parsed = await parseBody(c, TelemetryProbeRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(await runTelemetryProbe(parsed.data.profile));
+  });
+
+  // Run one projection and delivery cycle now instead of waiting for the cadence.
+  //
+  // Exists for the reference stack and for tests: a thirty-second wait between an action and
+  // a panel is what makes an end-to-end check flaky, and an operator watching a first export
+  // land should not have to guess whether it is queued or broken.
+  //
+  // Through `telemetryCycle`, which is SINGLE-FLIGHTED across the process, not through the
+  // underlying `runTelemetryCycle`. A drain landing on the same tick as the thirty-second
+  // cadence would otherwise start a second, independent delivery pass against the same
+  // destination: per-batch leasing stops the two taking the same batch, but nothing would stop
+  // two concurrent OTLP requests to one endpoint, which is precisely what
+  // `maxInFlightPerDestination: 1` promises. A drain arriving mid-cycle joins the running one
+  // and reports its real result.
+  app.post("/api/telemetry/drain", async (c) => {
+    const result = await telemetryCycle();
+    // 500 on a failed cycle. An all-zero result is what both "nothing to do" and "it threw"
+    // look like, so returning 200 for the second would tell an operator who pressed drain that
+    // an empty queue was drained successfully.
+    return result.ok ? c.json(result) : c.json(result, 500);
   });
 
   // --- Terminals: which terminal app each multiplexer's sessions are focused into ---

@@ -1,0 +1,881 @@
+import { test, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// The transport half: what an endpoint may be, where a credential may travel, and every branch
+// of the delivery state machine.
+//
+// No sockets. The exporter takes its `fetch` as an injected dependency, so a fixture can answer
+// with an exact status, an exact `Retry-After`, or a redirect - and can INSPECT the headers it
+// was sent, which is the only way to prove a credential did not follow a redirect.
+
+const home = mkdtempSync(join(tmpdir(), "mission-telemetry-transport-"));
+process.env.HARNESS_HOME = join(home, "state");
+
+const { closeDb, openDb } = await import("../src/server/db.ts");
+const { captureTelemetry } = await import("../src/server/telemetry/capture.ts");
+const {
+  installProductIngestForTesting,
+  setTelemetryConfig,
+  telemetryStatus,
+} = await import("../src/server/telemetry/config.ts");
+const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
+const { runDeliveryPass, backoffMs } = await import("../src/server/telemetry/delivery.ts");
+const { registerBuiltinTelemetry, startTelemetry, telemetryCycle } = await import(
+  "../src/server/telemetry/service.ts"
+);
+const { setTimeout: delay } = await import("node:timers/promises");
+const { telemetryHealth } = await import("../src/server/telemetry/health.ts");
+const { credentialSurvivesRedirect, safeEndpointLabel, signalUrl, validateEndpoint } =
+  await import("../src/server/telemetry/endpoint.ts");
+const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
+const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+const { TELEMETRY_SHUTDOWN_BUDGET_MS } = await import("../src/server/telemetry/service.ts");
+
+registerBuiltinTelemetry();
+
+after(() => {
+  closeDb();
+  rmSync(home, { recursive: true, force: true });
+});
+
+const TELEMETRY_TABLES = [
+  "telemetry_journal",
+  "telemetry_source_identities",
+  "telemetry_projection_state",
+  "telemetry_series",
+  "telemetry_batches",
+  "telemetry_delivery",
+  "telemetry_destinations",
+  "telemetry_secrets",
+  "telemetry_gaps",
+  "telemetry_contexts",
+  "telemetry_resources",
+];
+
+beforeEach(() => {
+  const d = openDb();
+  for (const table of TELEMETRY_TABLES) d.exec(`DELETE FROM ${table}`);
+  d.exec("DELETE FROM app_config");
+  installProductIngestForTesting(null);
+});
+
+// ---- endpoint rules ----
+
+test("a credential-bearing export to a remote plaintext endpoint is refused", async () => {
+  // The sharp rule: a bearer token on a plaintext connection to anywhere but this machine is a
+  // credential on the wire. Refused at configuration AND again before transmission.
+  const check = validateEndpoint("http://collector.example.com:4318", { hasCredential: true });
+  assert.equal(check.ok, false);
+  assert.equal(check.problem, "credential_requires_https");
+});
+
+test("a credential-bearing export to a loopback Collector over plain HTTP is supported", async () => {
+  // Every local Collector is exactly this, and requiring TLS here would make the documented
+  // reference stack unusable.
+  for (const endpoint of ["http://127.0.0.1:4318", "http://localhost:4318", "http://[::1]:4318"]) {
+    const check = validateEndpoint(endpoint, { hasCredential: true });
+    assert.equal(check.ok, true, endpoint);
+    assert.equal(check.loopback, true, endpoint);
+  }
+});
+
+test("HTTPS validates normally, with or without a credential", async () => {
+  assert.equal(validateEndpoint("https://otlp.example.com", { hasCredential: true }).ok, true);
+  assert.equal(validateEndpoint("https://otlp.example.com", { hasCredential: false }).ok, true);
+});
+
+test("a remote plaintext endpoint with no credential is allowed but flagged", async () => {
+  const check = validateEndpoint("http://collector.example.com:4318", { hasCredential: false });
+  assert.equal(check.ok, true);
+  assert.match(check.warning ?? "", /HTTPS is strongly preferred/);
+});
+
+test("an endpoint that carries its own credentials in the URL is refused", async () => {
+  // A URL credential is logged by every proxy on the way and copied into any diagnostic that
+  // prints the endpoint. The header is the supported carrier.
+  const check = validateEndpoint("https://user:secret@otlp.example.com", { hasCredential: false });
+  assert.equal(check.ok, false);
+  assert.equal(check.problem, "has_credentials_in_url");
+});
+
+test("only http and https are accepted", async () => {
+  assert.equal(validateEndpoint("grpc://otlp.example.com", { hasCredential: false }).problem, "unsupported_scheme");
+  assert.equal(validateEndpoint("not a url", { hasCredential: false }).problem, "unparseable");
+  assert.equal(validateEndpoint("", { hasCredential: false }).problem, "empty");
+});
+
+test("per-signal URLs are resolved once from the base", async () => {
+  assert.equal(signalUrl("http://127.0.0.1:4318", "metrics"), "http://127.0.0.1:4318/v1/metrics");
+  assert.equal(signalUrl("http://127.0.0.1:4318/", "traces"), "http://127.0.0.1:4318/v1/traces");
+});
+
+test("an endpoint label is safe to log", async () => {
+  // Query strings are dropped wholesale rather than filtered: "which parameters are secret" is
+  // not a question worth being wrong about once.
+  assert.equal(
+    safeEndpointLabel("https://otlp.example.com/v1/metrics?token=abcdef"),
+    "https://otlp.example.com/v1/metrics",
+  );
+});
+
+test("a cross-destination redirect cannot carry a credential", async () => {
+  assert.equal(
+    credentialSurvivesRedirect("https://a.example.com/v1/metrics", "https://a.example.com/ingest"),
+    true,
+  );
+  assert.equal(
+    credentialSurvivesRedirect("https://a.example.com/v1/metrics", "https://b.example.com/ingest"),
+    false,
+  );
+  assert.equal(
+    credentialSurvivesRedirect("https://a.example.com/v1/metrics", "http://a.example.com/ingest"),
+    false,
+    "a downgrade to remote plaintext is a different destination for this purpose",
+  );
+  assert.equal(
+    credentialSurvivesRedirect("http://127.0.0.1:4318/v1/metrics", "http://127.0.0.1:4318/ingest"),
+    true,
+  );
+});
+
+// ---- configuration refusals ----
+
+test("saving a credential with a remote plaintext endpoint is refused as one unit", async () => {
+  // Validated against the credential that WILL be in place after the patch, not the one that
+  // is now - otherwise turning HTTPS off in the same write that adds a token would slip past.
+  const refused = setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint: "http://collector.example.com:4318" },
+    userCredential: "secret-token",
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.ok ? "" : refused.error, /HTTPS/);
+});
+
+test("exporting into this daemon's own cost receiver is refused", async () => {
+  // `/v1/metrics` here is the INBOUND Claude Code cost ingest. Pointing the outbound exporter
+  // at it would feed telemetry back into the cost ledger.
+  const { PORT } = await import("../src/server/config.ts");
+  const refused = setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint: `http://127.0.0.1:${PORT}` },
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.ok ? "" : refused.error, /cost ingest/i);
+});
+
+test("a stored credential is never returned by a read path", async () => {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint: "https://otlp.example.com" },
+    userCredential: "super-secret-token",
+  });
+  assert.equal(applied.ok, true);
+
+  const status = telemetryStatus();
+  assert.equal(status.userCredentialConfigured, true);
+  assert.ok(!JSON.stringify(status).includes("super-secret-token"));
+
+  // Nor by the settings surface: the telemetry entry has no backup domain at all.
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  assert.equal(APP_CONFIG_ENTRIES.telemetry.backupDomain, null);
+  const stored = openDb()
+    .prepare(`SELECT value FROM app_config WHERE key = 'telemetry'`)
+    .get() as { value: string };
+  assert.ok(!stored.value.includes("super-secret-token"));
+});
+
+// ---- delivery ----
+
+interface Attempt {
+  url: string;
+  headers: Record<string, string>;
+}
+
+function fixture(responses: Array<() => Response>): {
+  fetch: typeof globalThis.fetch;
+  attempts: Attempt[];
+} {
+  const attempts: Attempt[] = [];
+  let index = 0;
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+      headers[key.toLowerCase()] = value;
+    }
+    attempts.push({ url: String(input), headers });
+    const make = responses[Math.min(index, responses.length - 1)]!;
+    index += 1;
+    return make();
+  }) as unknown as typeof globalThis.fetch;
+  return { fetch: fetchImpl, attempts };
+}
+
+function ok(): Response {
+  return new Response(new Uint8Array(0), { status: 200 });
+}
+
+function status(code: number, headers: Record<string, string> = {}): Response {
+  return new Response(new Uint8Array(0), { status: code, headers });
+}
+
+function enableUser(endpoint = "https://otlp.example.com", credential?: string) {
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint },
+    ...(credential === undefined ? {} : { userCredential: credential }),
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+}
+
+function captureAndProject(id: string, now: number): void {
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id, revision: 1 },
+    facts: { startup_ms: 100, schema_upgraded: false, launch_mode: "daemon" },
+    now,
+  });
+  assert.equal(result.kind, "accepted");
+  runProjectionPass(now + 1);
+}
+
+function deliveryRows(): Array<{ batch_id: string; state: string; attempts: number; rejected_items: number }> {
+  return openDb()
+    .prepare(`SELECT batch_id, state, attempts, rejected_items FROM telemetry_delivery`)
+    .all() as unknown as Array<{
+    batch_id: string;
+    state: string;
+    attempts: number;
+    rejected_items: number;
+  }>;
+}
+
+test("an accepted batch is marked accepted and its payload released", async () => {
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([ok]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.ok(f.attempts.length >= 1);
+  assert.ok(f.attempts[0]!.url.endsWith("/v1/metrics"));
+  assert.equal(f.attempts[0]!.headers["content-type"], "application/x-protobuf");
+  for (const row of deliveryRows()) assert.equal(row.state, "accepted");
+  // Holding a second copy of every delivered batch is how a bounded budget stops being bounded.
+  const remaining = openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_batches`).get() as { n: number };
+  assert.equal(remaining.n, 0);
+});
+
+test("a server error retries the same immutable batch rather than rebuilding it", async () => {
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const before = openDb().prepare(`SELECT id, digest FROM telemetry_batches`).all() as unknown as Array<{
+    id: string;
+    digest: string;
+  }>;
+
+  const f = fixture([() => status(503)]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  const rows = deliveryRows();
+  assert.ok(rows.some((r) => r.state === "retry"));
+  const after = openDb().prepare(`SELECT id, digest FROM telemetry_batches`).all() as unknown as Array<{
+    id: string;
+    digest: string;
+  }>;
+  assert.deepEqual(after, before, "the retried payload is byte-identical, not re-aggregated");
+});
+
+test("a network failure is retryable and is not assumed to have been unaccepted", async () => {
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const fetchImpl = (async () => {
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof globalThis.fetch;
+
+  await runDeliveryPass({ fetch: fetchImpl, now: () => 2_000 });
+  assert.ok(deliveryRows().some((r) => r.state === "retry"));
+  // The batch is retained, so the same identity is what gets re-sent. A server that already
+  // took it sees a duplicate it can recognize, rather than a differently-shaped second batch.
+  const remaining = openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_batches`).get() as { n: number };
+  assert.ok(remaining.n > 0);
+});
+
+test("a 401 pauses the destination visibly instead of hammering it", async () => {
+  enableUser("https://otlp.example.com", "token");
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(401)]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  const health = telemetryHealth(2_100);
+  const user = health.profiles.find((p) => p.profile === "user")!;
+  assert.equal(user.pausedReason, "auth");
+
+  // And a second pass sends nothing at all while it is paused.
+  const second = fixture([ok]);
+  await runDeliveryPass({ fetch: second.fetch, now: () => 3_000 });
+  assert.equal(second.attempts.length, 0);
+});
+
+test("a pause stops the rest of the SAME pass, not just the next one", async () => {
+  // The pause was read once per profile, before the signal loop. A 401 answering the metrics
+  // batch paused the destination, and then the traces loop ran anyway - up to eight more
+  // requests to an endpoint just established as refusing this credential. Exactly the
+  // hammering the pause exists to stop, inside the very pass that discovered it.
+  enableUser("https://otlp.example.com", "token");
+  captureAndProject("boot-1", 1_000);
+  assert.equal(
+    (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_batches`).get() as { n: number }).n,
+    2,
+    "there is a metrics batch AND a traces batch queued, so a second signal exists to stop",
+  );
+
+  // 401 first, then an endpoint that would happily accept anything else offered to it.
+  const f = fixture([() => status(401), ok]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.equal(f.attempts.length, 1, "nothing was sent after the refusal was understood");
+  assert.equal(
+    telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!.pausedReason,
+    "auth",
+  );
+});
+
+test("a 404 pauses the destination as a configuration problem, not an auth one", async () => {
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(404)]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+  assert.equal(
+    telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!.pausedReason,
+    "configuration",
+  );
+});
+
+test("a permanent payload rejection quarantines one batch and keeps the destination open", async () => {
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(400)]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.ok(deliveryRows().some((r) => r.state === "rejected"));
+  const health = telemetryHealth(2_100);
+  assert.equal(health.profiles.find((p) => p.profile === "user")!.pausedReason, null);
+  assert.ok(health.gaps.some((g) => g.kind === "permanently_rejected"));
+});
+
+test("Retry-After is honoured in seconds", async () => {
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(429, { "retry-after": "12" })]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  const row = openDb()
+    .prepare(`SELECT next_attempt_at, state FROM telemetry_delivery LIMIT 1`)
+    .get() as { next_attempt_at: number; state: string };
+  assert.equal(row.state, "retry");
+  assert.equal(row.next_attempt_at, 2_000 + 12_000);
+});
+
+test("a backend that throttles without Retry-After still pauses the destination", async () => {
+  // A bare 429 is what a rate-limited backend returns under sustained load as often as a
+  // documented one. Keying the pause on the crossing response carrying `Retry-After` meant
+  // those retried for ever with `pausedReason` null - the one field an operator is told to
+  // read to learn why nothing is arriving.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(429)]);
+
+  // Each pass is one attempt, spaced past the jittered ceiling so backoff never skips one.
+  let now = 2_000;
+  for (let pass = 0; pass < 10; pass += 1) {
+    await runDeliveryPass({ fetch: f.fetch, now: () => now });
+    now += 200_000;
+  }
+
+  // One batch reaching the threshold is what pauses the destination, and the pause then stops
+  // the pass - so the OTHER queued batch deliberately stops short of it. Asserting every row
+  // reached ten would now be asserting the absence of that.
+  assert.ok(
+    deliveryRows().some((row) => row.attempts >= 10),
+    "a batch really did reach the threshold, rather than being held back by backoff",
+  );
+  assert.equal(
+    telemetryHealth(now).profiles.find((p) => p.profile === "user")!.pausedReason,
+    "quota",
+  );
+});
+
+test("a server fault is retried indefinitely rather than pausing the destination", async () => {
+  // The other half of the same rule. An outage is not an operator's misconfiguration, and
+  // pausing on it would stop the backlog draining by itself when the backend comes back.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const f = fixture([() => status(500)]);
+
+  let now = 2_000;
+  for (let pass = 0; pass < 12; pass += 1) {
+    await runDeliveryPass({ fetch: f.fetch, now: () => now });
+    now += 200_000;
+  }
+
+  assert.ok(f.attempts.length >= 12, "still trying");
+  assert.equal(
+    telemetryHealth(now).profiles.find((p) => p.profile === "user")!.pausedReason,
+    null,
+  );
+});
+
+test("shutdown tears an in-flight export down rather than only stopping waiting on it", async () => {
+  // Bounding the WAIT is not bounding the WORK. Racing the cycle against a two-second budget
+  // and walking away left the request running to its own ten-second timeout, so an offline
+  // exit could still take ten seconds - and when the request finally resolved it settled
+  // delivery state AFTER shutdown had recorded the run as having ended cleanly.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  let aborted = false;
+  const hung = (async (_input: unknown, init?: RequestInit) => {
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  const service = startTelemetry({ fetch: hung, now: () => 2_000 });
+  const cycling = service.cycle();
+  // Let the pass reach the socket it is never going to get an answer from.
+  await delay(50);
+
+  const startedAt = Date.now();
+  await service.stop();
+  const elapsed = Date.now() - startedAt;
+
+  // Read the instant shutdown returns, deliberately before joining the cycle: the whole defect
+  // is work that outlives the shutdown, and a snapshot taken after joining cannot see it.
+  const atShutdown = openDb()
+    .prepare(`SELECT state, attempts, updated_at FROM telemetry_delivery ORDER BY batch_id`)
+    .all();
+  assert.equal(aborted, true, "the request was cancelled by shutdown, not merely abandoned");
+  assert.ok(
+    elapsed < TELEMETRY_SHUTDOWN_BUDGET_MS * 2,
+    `exit took ${elapsed}ms, so it waited on the request timeout rather than its own budget`,
+  );
+
+  await cycling;
+  await delay(150);
+  assert.deepEqual(
+    openDb().prepare(`SELECT state, attempts, updated_at FROM telemetry_delivery ORDER BY batch_id`).all(),
+    atShutdown,
+    "no delivery write raced past the shutdown that had already recorded this run as clean",
+  );
+});
+
+test("shutdown can still cancel a cycle a caller supplied its own abort signal to", async () => {
+  // `DeliveryDeps.abort` is a documented seam, and spreading `deps` last let a caller's signal
+  // REPLACE the single-flight controller while `inFlightAbort` still pointed at the one nobody
+  // was listening to. `stop()` would then have cancelled nothing and the bounded exit would
+  // have quietly gone back to being the ten-second request timeout. The two are composed now,
+  // so a caller keeps its signal and shutdown keeps its reach.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  let aborted = false;
+  const hung = (async (_input: unknown, init?: RequestInit) => {
+    return await new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        aborted = true;
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  }) as unknown as typeof globalThis.fetch;
+
+  // A caller's own controller, never fired. Only shutdown's may end this request.
+  const caller = new AbortController();
+  const service = startTelemetry({ fetch: hung, now: () => 2_000, abort: caller.signal });
+  const cycling = service.cycle();
+  await delay(50);
+
+  const startedAt = Date.now();
+  await service.stop();
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(caller.signal.aborted, false, "the caller never cancelled anything itself");
+  assert.equal(aborted, true, "and shutdown still reached the in-flight request");
+  assert.ok(
+    elapsed < TELEMETRY_SHUTDOWN_BUDGET_MS * 2,
+    `exit took ${elapsed}ms, so it waited on the request timeout rather than its own budget`,
+  );
+  await cycling;
+});
+
+test("backoff is bounded, jittered and never below the floor", async () => {
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
+    for (const random of [() => 0, () => 0.5, () => 1]) {
+      const delay = backoffMs(attempt, random);
+      assert.ok(delay >= TELEMETRY_LIMITS.retryMinMs, `attempt ${attempt}`);
+      assert.ok(delay <= TELEMETRY_LIMITS.retryMaxMs * 1.25, `attempt ${attempt}`);
+    }
+  }
+});
+
+test("a partial success records the refused items without re-sending the accepted ones", async () => {
+  // Retrying the whole batch would amplify the half that already landed. The accounting is the
+  // difference between correct numbers and a duplication bug.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  const { ProtobufMetricsSerializer } = await import("@opentelemetry/otlp-transformer");
+  void ProtobufMetricsSerializer;
+  // A Collector reporting a partial success returns a body; an empty one means full success.
+  // Encode one by hand through the same public serializer path the exporter reads with.
+  const body = Buffer.from([0x0a, 0x04, 0x08, 0x02, 0x12, 0x00]); // partialSuccess{rejected=2}
+  const f = fixture([() => new Response(body, { status: 200 })]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  const rows = deliveryRows();
+  assert.ok(rows.every((r) => r.state === "accepted"), "a partial success is not a retry");
+  assert.ok(
+    telemetryHealth(2_100).gaps.some((g) => g.kind === "permanently_rejected"),
+    "the refused items are visible loss",
+  );
+});
+
+test("a backend's own words never reach the health view's lastError", async () => {
+  // `TelemetryProfileHealth.lastError` is documented as bounded and SANITIZED - "never a
+  // response body" - and Phase 2 renders it directly. Every write on this path uses a fixed
+  // template except one: a partial success carried `partialSuccess.errorMessage`, backend prose
+  // read straight out of a 2xx body, into exactly that field.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  // A real partial-success body, hand-encoded through the same shape the serializer reads:
+  // partialSuccess { rejectedDataPoints: 2, errorMessage: <backend prose> }.
+  const backendText = "backend prose that must not reach the health view";
+  const messageBytes = Buffer.from(backendText, "utf8");
+  const inner = Buffer.concat([
+    Buffer.from([0x08, 0x02, 0x12, messageBytes.length]),
+    messageBytes,
+  ]);
+  const body = Buffer.concat([Buffer.from([0x0a, inner.length]), inner]);
+
+  const f = fixture([() => new Response(body, { status: 200 })]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  // The fixture really did carry it: the delivery row - internal accounting, rendered nowhere -
+  // still has the backend's text, which is what keeps the diagnosis available.
+  const delivery = openDb()
+    .prepare(`SELECT last_error FROM telemetry_delivery WHERE state = 'accepted' LIMIT 1`)
+    .get() as { last_error: string | null } | undefined;
+  assert.equal(delivery?.last_error, backendText, "the message was decoded, so this is a real test");
+
+  const user = telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!;
+  assert.ok(user.lastError, "the partial success is still reported");
+  assert.equal(
+    user.lastError!.includes(backendText),
+    false,
+    "but not in the backend's own words, which is what the type promises callers",
+  );
+  assert.match(
+    user.lastError!,
+    /2 item\(s\) refused by the backend/,
+    "the count is the part an operator can act on, and it survives",
+  );
+});
+
+test("a clean acceptance clears lastError rather than leaving a stale one", async () => {
+  // The other half of the same branch: a delivery that refused nothing must not leave a
+  // previous failure standing in the health view.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  await runDeliveryPass({ fetch: fixture([() => status(503)]).fetch, now: () => 2_000 });
+  assert.ok(telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!.lastError);
+
+  // Past the jittered backoff, so the retry is actually eligible rather than held back.
+  await runDeliveryPass({ fetch: fixture([ok]).fetch, now: () => 200_000 });
+  assert.equal(
+    telemetryHealth(200_100).profiles.find((p) => p.profile === "user")!.lastError,
+    null,
+    "nothing failed, so nothing is reported",
+  );
+});
+
+test("a credential does not follow a redirect to another host", async () => {
+  enableUser("https://otlp.example.com", "super-secret-token");
+  captureAndProject("boot-1", 1_000);
+
+  const f = fixture([
+    () => status(307, { location: "https://elsewhere.example.com/v1/metrics" }),
+    ok,
+  ]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.equal(f.attempts.length >= 2, true);
+  assert.equal(f.attempts[0]!.headers.authorization, "super-secret-token");
+  assert.equal(
+    f.attempts[1]!.headers.authorization,
+    undefined,
+    "a redirect is not authorization to hand a token to a destination the operator never configured",
+  );
+});
+
+test("a credential follows a same-origin redirect", async () => {
+  enableUser("https://otlp.example.com", "super-secret-token");
+  captureAndProject("boot-1", 1_000);
+
+  const f = fixture([() => status(308, { location: "https://otlp.example.com/ingest" }), ok]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.equal(f.attempts[1]!.headers.authorization, "super-secret-token");
+});
+
+test("a batch built for a previous endpoint is never redirected to the new one", async () => {
+  enableUser("https://one.example.com");
+  captureAndProject("boot-1", 1_000);
+  setTelemetryConfig({ user: { endpoint: "https://two.example.com" } });
+
+  const f = fixture([ok]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.equal(f.attempts.length, 0, "nothing was sent to the new endpoint");
+  assert.ok(deliveryRows().some((r) => r.state === "rejected"));
+  assert.ok(
+    telemetryHealth(2_100).gaps.some((g) => g.kind === "permanently_rejected"),
+    "the operator can see that a queue was left behind",
+  );
+});
+
+test("the probe's exported span covers when it ran, not a window before it started", async () => {
+  // The defect: `occurredAt` was read at the top of `runTelemetryProbe`, before the request.
+  // The span is reconstructed as [occurredAt - duration, occurredAt], so the whole thing landed
+  // BEFORE the probe began, offset by the full round trip - up to the 10s timeout for an
+  // unreachable endpoint, which is the case an operator is most likely to be diagnosing.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  // A clock that advances 400ms across the request, so a stale stamp is unmistakable.
+  const START = 1_000_000;
+  const LATENCY = 400;
+  let reads = 0;
+  const clock = () => (reads++ === 0 ? START : START + LATENCY);
+
+  const result = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: clock });
+  assert.equal(result.outcome, "accepted");
+  assert.equal(result.latencyMs, LATENCY);
+
+  runProjectionPass(START + LATENCY + 1);
+  const row = openDb()
+    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'`)
+    .get() as { payload_json: string };
+  const payload = JSON.parse(row.payload_json) as {
+    spans: Array<{ name: string; startTimeMs: number; endTimeMs: number }>;
+  };
+  const span = payload.spans.find((sp) => sp.name === "mission.telemetry.probe");
+  assert.ok(span);
+
+  assert.equal(span!.endTimeMs, START + LATENCY, "the span ends when the probe finished");
+  assert.equal(span!.startTimeMs, START, "and starts when it began, not a round trip earlier");
+});
+
+test("two probes in the same millisecond are both recorded, not deduplicated into one", async () => {
+  // The dedupe identity was `probe:${profile}:${Date.now()}`, so two probes for the same
+  // profile inside one millisecond - a double click, or two clients - collided. The second came
+  // back `duplicate`, which meant a null `traceId` even while its own outcome said accepted,
+  // and its real result and latency were never journaled. Nothing counted that as loss either,
+  // because from the store's point of view nothing was lost. A probe is a distinct
+  // operator-initiated operation every time, so there is no idempotency for an identity to
+  // protect here.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  // A clock frozen at one instant, which is what the old identity was derived from.
+  const frozen = () => 5_000;
+  const first = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: frozen });
+  const second = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: frozen });
+
+  assert.equal(first.outcome, "accepted");
+  assert.equal(second.outcome, "accepted");
+  assert.ok(first.traceId, "the first probe is correlatable");
+  assert.ok(second.traceId, "and so is the second, rather than coming back null as a duplicate");
+  assert.notEqual(first.traceId, second.traceId, "they are separate operations");
+
+  const journal = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_journal WHERE name = 'mission.telemetry.probe.finished'`)
+    .get() as { n: number };
+  assert.equal(journal.n, 2, "both results are on the record");
+});
+
+test("a failed probe exports a span Tempo can see is an error", async () => {
+  // Every span was hard-coded `status: "unset"`, which in Tempo reads as "nothing went wrong".
+  // A refused or unreachable probe rendered exactly like a working one, and the failure was
+  // legible only by reading the attribute text - on the drill-down path this facility exists to
+  // make export diagnosis possible through.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  // 404: the endpoint answered, and refused.
+  const failed = await runTelemetryProbe("user", {
+    fetch: fixture([() => status(404)]).fetch,
+    now: () => 1_000,
+  });
+  assert.equal(failed.outcome, "refused");
+
+  runProjectionPass(2_000);
+  const spans = (
+    openDb()
+      .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'`)
+      .all() as unknown as Array<{ payload_json: string }>
+  ).flatMap(
+    (row) =>
+      (JSON.parse(row.payload_json) as {
+        spans: Array<{ name: string; status: string; statusMessage: string | null }>;
+      }).spans,
+  );
+  const probe = spans.find((sp) => sp.name === "mission.telemetry.probe");
+  assert.ok(probe, "the failed probe produced a span");
+  assert.equal(probe!.status, "error", "and it is an error, not an unset that reads as fine");
+  assert.equal(probe!.statusMessage, "outcome=refused");
+});
+
+test("a working probe is not reported as an error", async () => {
+  // The other half. A status that is error-on-everything is as useless as one that is never
+  // error, and `not_configured` is deliberately outside the mapping: nothing was tried.
+  const { runTelemetryProbe } = await import("../src/server/telemetry/diagnostics.ts");
+  enableUser();
+
+  const okProbe = await runTelemetryProbe("user", { fetch: fixture([ok]).fetch, now: () => 1_000 });
+  assert.equal(okProbe.outcome, "accepted");
+
+  runProjectionPass(2_000);
+  const spans = (
+    openDb()
+      .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile='user' AND signal='traces'`)
+      .all() as unknown as Array<{ payload_json: string }>
+  ).flatMap(
+    (row) =>
+      (JSON.parse(row.payload_json) as {
+        spans: Array<{ name: string; status: string; statusMessage: string | null }>;
+      }).spans,
+  );
+  const probe = spans.find((sp) => sp.name === "mission.telemetry.probe");
+  assert.ok(probe);
+  assert.equal(probe!.status, "unset");
+  assert.equal(probe!.statusMessage, null);
+});
+
+// ---- single-flight ----
+
+test("two concurrent cycles run as one, so a destination never sees two requests at once", async () => {
+  // The regression for a real defect: `POST /api/telemetry/drain` used to call the underlying
+  // `runTelemetryCycle` directly, while the only single-flight guard lived in a closure inside
+  // `startTelemetry` that the route could not reach. A drain landing on the same tick as the
+  // thirty-second cadence started a second, independent delivery pass against the same
+  // destination. Per-batch leasing stops the two taking the same BATCH; nothing stopped two
+  // concurrent OTLP requests to one endpoint, which is what `maxInFlightPerDestination: 1`
+  // promises. Both callers now go through `telemetryCycle`.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+
+  let inFlight = 0;
+  let peak = 0;
+  const fetchImpl = (async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    inFlight -= 1;
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+
+  const first = telemetryCycle({ fetch: fetchImpl, now: () => 2_000 });
+  const second = telemetryCycle({ fetch: fetchImpl, now: () => 2_000 });
+  assert.equal(
+    first,
+    second,
+    "the second caller joins the running cycle rather than starting another",
+  );
+
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(a, b, "both callers get the real result of the work that actually ran");
+  assert.equal(peak, 1, "never two OTLP requests in flight for one destination at once");
+  assert.ok(a.accepted > 0, "and the single cycle did deliver");
+});
+
+test("a cycle that has finished does not block the next one", async () => {
+  // The other half of single-flight: the guard must release. A latch that never cleared would
+  // turn the first drain into the only drain this daemon ever performs.
+  enableUser();
+  captureAndProject("boot-1", 1_000);
+  const first = fixture([ok]);
+  await telemetryCycle({ fetch: first.fetch, now: () => 2_000 });
+
+  captureAndProject("boot-2", 3_000);
+  const second = fixture([ok]);
+  const result = await telemetryCycle({ fetch: second.fetch, now: () => 4_000 });
+  assert.ok(result.accepted > 0, "a later cycle still runs");
+  assert.ok(second.attempts.length > 0);
+});
+
+// ---- two destinations ----
+
+test("one destination being offline does not stop the other", async () => {
+  // The product audience is `unavailable` in every shipped build, so the only honest way to
+  // exercise two independent queues is an isolated local receiver installed through the
+  // test-only seam. What is being proved is the independence, not the enrollment.
+  installProductIngestForTesting("isolated-local-receiver");
+  const applied = setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint: "https://healthy.example.com" },
+    product: { enabled: true, endpoint: "https://broken.example.com" },
+  });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+
+  captureAndProject("boot-1", 1_000);
+
+  const seen: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    seen.push(url);
+    if (url.includes("broken")) return status(503);
+    return ok();
+  }) as unknown as typeof globalThis.fetch;
+
+  await runDeliveryPass({ fetch: fetchImpl, now: () => 2_000 });
+
+  assert.ok(seen.some((u) => u.includes("healthy")), "the healthy destination was attempted");
+  assert.ok(seen.some((u) => u.includes("broken")), "the unhealthy one was attempted too");
+
+  const health = telemetryHealth(2_100);
+  const user = health.profiles.find((p) => p.profile === "user")!;
+  const product = health.profiles.find((p) => p.profile === "product")!;
+  assert.ok(user.accepted > 0, "the healthy destination drained");
+  assert.ok(product.retrying > 0, "the unhealthy one is retrying, on its own queue");
+  assert.equal(user.retrying, 0, "one destination's failure is not the other's");
+});
+
+test("two audiences get unrelated correlation identifiers for the same fact", async () => {
+  // Different audiences use different keys, so their exported identifiers are not trivially
+  // joinable by anyone holding both.
+  installProductIngestForTesting("isolated-local-receiver");
+  setTelemetryConfig({
+    enabled: true,
+    user: { enabled: true, endpoint: "https://one.example.com" },
+    product: { enabled: true, endpoint: "https://two.example.com" },
+  });
+  captureAndProject("boot-1", 1_000);
+
+  const rows = openDb()
+    .prepare(`SELECT profile, payload_json FROM telemetry_batches WHERE signal = 'traces'`)
+    .all() as unknown as Array<{ profile: string; payload_json: string }>;
+  assert.equal(rows.length, 2, "one traces batch per audience");
+
+  const traceIds = rows.map((r) => {
+    const payload = JSON.parse(r.payload_json) as { spans: Array<{ traceId: string }> };
+    return payload.spans[0]!.traceId;
+  });
+  assert.equal(traceIds[0]!.length, 32);
+  assert.notEqual(traceIds[0], traceIds[1]);
+});

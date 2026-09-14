@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.1](https://github.com/teamupstart/mission-control/compare/v1.16.0...v1.16.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **workflows:** continue after pull request adoption ([#1039](https://github.com/teamupstart/mission-control/issues/1039)) ([290c995](https://github.com/teamupstart/mission-control/commit/290c99513f13671b080d7de28a791a9d73a81dce))
+* **workflows:** double first-round evidence attempts ([#1036](https://github.com/teamupstart/mission-control/issues/1036)) ([16369e6](https://github.com/teamupstart/mission-control/commit/16369e60883abc440d432a9b55af3d9935e40c37))
+
 ## [1.16.0](https://github.com/teamupstart/mission-control/compare/v1.15.0...v1.16.0) (2026-09-12)
 
 

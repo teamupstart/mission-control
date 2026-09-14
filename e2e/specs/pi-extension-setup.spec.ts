@@ -156,6 +156,8 @@ test("a healthy installed extension admits a Pi plan dispatch through the real d
   await dialog.getByPlaceholder("What should this agent do?").fill("Plan the Pi integration proof");
   await dialog.getByLabel("Agent").selectOption("pi");
   await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption("plan");
+  // This proof exercises the extension guard independently of Workflow Live trust.
+  await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await dialog.getByRole("combobox", { name: /^Model/ }).selectOption("openai/gpt-5.6-sol");
   await expectContentClearsBorder(dialog);
   await dialog.getByRole("button", { name: /^Dispatch/ }).click();

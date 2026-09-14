@@ -125,7 +125,8 @@ test("a built-in Persona names and opens its built-in workflow", async ({ dashbo
   await expect(footer(dashboard).getByRole("heading", { name: "Used by" })).toBeVisible();
   const workflow = footer(dashboard).getByRole("link", { name: "No-Mistakes Review" });
   await expect(workflow).toBeVisible();
-  await expect(footer(dashboard).getByLabel("Reference graphs")).toContainText("Published");
+  await expect(footer(dashboard).getByRole("listitem").filter({ hasText: "No-Mistakes Review" })
+    .getByLabel("Reference graphs")).toContainText("Published");
   await shoot(dashboard, "01-populated");
 
   await workflow.click();

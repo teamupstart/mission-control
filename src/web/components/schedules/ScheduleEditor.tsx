@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentType, TaskKind, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type {
   MissionSchedule,
@@ -195,6 +195,12 @@ export function ScheduleEditor({
   const [draft, setDraft] = useState<EditorDraft>(() =>
     schedule ? draftFromSchedule(schedule) : emptyDraft(),
   );
+  // Kind defaults are temporary while switching kinds. Explicit after-work edits cancel
+  // restoration; an existing mission using its kind's default returns to None for Ship.
+  const workflowBeforeKindDefault = useRef<string | null>(
+    taskHasOwnDefaultWorkflow(draft.kind)
+      && draft.workflowId === taskDefaultWorkflowId(draft.kind, null) ? "" : null,
+  );
   const [repos, setRepos] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<ScheduleValidationField, string>>>(
@@ -226,6 +232,19 @@ export function ScheduleEditor({
     setFormError(null);
     onDirtyChange?.(true);
   };
+  const selectKind = (kind: TaskKind): void => {
+    if (kind === draft.kind) return;
+    let workflowId = draft.workflowId;
+    if (taskHasOwnDefaultWorkflow(kind)) {
+      workflowBeforeKindDefault.current ??= workflowId;
+      workflowId = taskDefaultWorkflowId(kind, null) ?? "";
+    } else if (workflowBeforeKindDefault.current !== null) {
+      workflowId = workflowBeforeKindDefault.current;
+      workflowBeforeKindDefault.current = null;
+    }
+    update({ kind, workflowId });
+  };
+
   const updateCadence = (patch: Partial<CadenceForm>): void => {
     setDraft((prev) => ({ ...prev, cadence: { ...prev.cadence, ...patch } }));
     onDirtyChange?.(true);
@@ -459,15 +478,7 @@ export function ScheduleEditor({
                 <select
                   className="field-input"
                   value={draft.kind}
-                  onChange={(event) => {
-                    const kind = event.target.value as TaskKind;
-                    update({
-                      kind,
-                      ...(kind !== draft.kind && taskHasOwnDefaultWorkflow(kind)
-                        ? { workflowId: taskDefaultWorkflowId(kind, null) ?? "" }
-                        : {}),
-                    });
-                  }}
+                  onChange={(event) => selectKind(event.target.value as TaskKind)}
                 >
                   {/* Driven off the tuple, like the harness select above it. These options
                       were hand-written until a third kind was added, which is the failure
@@ -580,7 +591,10 @@ export function ScheduleEditor({
                 // Shows what `draftToDefinition` would save; the draft keeps the choice.
                 value={afterWorkWhy ? "" : draft.workflowId}
                 disabled={afterWorkWhy !== null}
-                onChange={(event) => update({ workflowId: event.target.value })}
+                onChange={(event) => {
+                  workflowBeforeKindDefault.current = null;
+                  update({ workflowId: event.target.value });
+                }}
               >
                 <option value="">None - finish without a Workflow</option>
                 {publishedWorkflows.map((workflow) => (

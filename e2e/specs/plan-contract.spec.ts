@@ -108,6 +108,8 @@ test("a dispatched plan is told to invoke the planning skill, in this harness's 
 
   const dialog = await openDispatch(dashboard, daemon, TASK);
   await kindSelect(dialog).selectOption("plan");
+  // Plan selects its review; opt out here to isolate the planning-skill contract.
+  await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await submit(dialog);
   await expect(dialog).toBeHidden();
 
@@ -150,6 +152,8 @@ test("a plan dispatch with the planning skills off is refused on the form, namin
   // real state an operator meets this in.
   const dialog = await openDispatch(dashboard, daemon, TASK);
   await kindSelect(dialog).selectOption("plan");
+  // Plan selects its review; opt out here to isolate the planning-skill contract.
+  await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await submit(dialog);
 
   // The daemon's own sentence, where every other refusal from this form lands.

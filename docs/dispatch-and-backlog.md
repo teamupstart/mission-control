@@ -270,7 +270,8 @@ without a Workflow.
 Choosing **plan** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
 Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
 and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
-mission retains its explicit workflow or None. Both kind defaults apply to API-created
+mission retains its explicit workflow or None. Returning from a kind default restores the prior
+mission choice, including None; an explicit after-work edit cancels that restoration. Both kind defaults apply to API-created
 tasks when `workflowId` is omitted; an explicit workflow or **None** is preserved. Existing tasks
 keep their stored workflow. Ship continues to use Settings > Workflows for its machine default.
 

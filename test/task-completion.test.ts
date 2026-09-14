@@ -86,14 +86,14 @@ function mkVerifyInput(overrides: Partial<VerifyInput> = {}): VerifyInput {
   };
 }
 
-test("every task kind declares a completion boundary, and only ship defers work", () => {
+test("every task kind declares a completion boundary, and ship and bugfix defer work", () => {
   // The registry is exhaustive at the type level; this asserts the VALUES, so a kind added
   // with a copy-pasted contract it does not want is visible here rather than in a verdict.
   for (const kind of TASK_KINDS) {
     const contract = taskCompletionContract(kind);
-    if (kind === "ship") {
+    if (kind === "ship" || kind === "bugfix") {
       assert.ok(contract, "a ship task has a deferred post-completion boundary");
-      assert.equal(contract.kind, "ship");
+      assert.equal(contract.kind, kind);
       assert.ok(contract.complete.length > 0);
       assert.ok(contract.deferred.length > 0);
     } else {
@@ -176,7 +176,7 @@ test("a caller that supplies no contract gets the prompt it always got", () => {
 });
 
 test("no other task kind's delivery gains a completion boundary it did not ask for", () => {
-  for (const kind of TASK_KINDS.filter((k): k is TaskKind => k !== "ship")) {
+  for (const kind of TASK_KINDS.filter((k): k is TaskKind => k !== "ship" && k !== "bugfix")) {
     const contract = taskCompletionContract(kind);
     assert.equal(contract, null);
     const prompt = buildVerifyPrompt(mkVerifyInput({ completionContract: contract }));
@@ -279,4 +279,13 @@ test("registered evidence applies per-item and aggregate content caps", () => {
   );
   assert.ok(contents.length < 12_200, `registered evidence contents grew to ${contents.length}`);
   assert.match(contents, /… \(truncated\)/);
+});
+
+
+test("bugfix receives the same implementation and deferred-shipping instructions as ship", () => {
+  const ship = withTaskKindContract(mkTask(), "Fix the retry defect");
+  const bugfix = withTaskKindContract(mkTask({ kind: "bugfix" }), "Fix the retry defect");
+  assert.equal(bugfix, ship);
+  assert.deepEqual(taskCompletionContract("bugfix")!.complete, taskCompletionContract("ship")!.complete);
+  assert.deepEqual(taskCompletionContract("bugfix")!.deferred, taskCompletionContract("ship")!.deferred);
 });

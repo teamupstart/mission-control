@@ -48,6 +48,7 @@ const headers = { host: "127.0.0.1:7317", "content-type": "application/json" };
 function seed(
   suffix = "",
   decision: Parameters<typeof consumePromptedGeneration>[0]["decision"] = null,
+  kind: "ship" | "bugfix" = "ship",
 ): { sessionId: string; noteKey: string; taskId: string } {
   const sessionId = `ship-recovery-session${suffix}`;
   const noteKey = `ship-recovery-conversation${suffix}`;
@@ -72,7 +73,7 @@ function seed(
     id: taskId,
     title: "Recover the ship task",
     intent: "Implement the requested fix",
-    kind: "ship",
+    kind,
     status: "running",
     sessionId,
     repoRoot: repo,
@@ -123,8 +124,9 @@ function seed(
   return { sessionId, noteKey, taskId };
 }
 
-test("the daemon revalidates, claims, releases, and suppresses pre-PR recovery on a new PR", async () => {
-  const { sessionId, noteKey, taskId } = seed();
+for (const kind of ["ship", "bugfix"] as const) {
+test(`the daemon revalidates ${kind} recovery and suppresses it on a new PR`, async () => {
+  const { sessionId, noteKey, taskId } = seed(`-${kind}`, null, kind);
   const identity = {
     taskId,
     logicalKey: noteKey,
@@ -218,6 +220,8 @@ test("the daemon revalidates, claims, releases, and suppresses pre-PR recovery o
   });
   assert.equal(withPr.status, 409, "an observed task-owned PR suppresses every recovery");
 });
+
+}
 
 test("the daemon admits immediate held-gap claims through the existing recovery ledger", async () => {
   const heldDecision = {

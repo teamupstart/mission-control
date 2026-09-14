@@ -25,10 +25,10 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 const { WORKFLOW_DELIVERY_KINDS } = await import("../src/shared/workflow.ts");
 
-const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.name === "No-Mistakes Review")!;
+const noMistakes = () => BUILTIN_WORKFLOWS.find((item) => item.definition.id === "builtin-workflow:no-mistakes-review")!;
 
 before(() => {
-  assert.equal(noMistakes().versions.length, 16, "this file is written against sixteen versions");
+  assert.equal(noMistakes().versions.length, 17, "this file is written against seventeen versions");
 });
 
 test("both delivery kinds remain in the durable vocabulary, and neither replaced the other", () => {
@@ -39,7 +39,7 @@ test("both delivery kinds remain in the durable vocabulary, and neither replaced
   assert.ok(WORKFLOW_DELIVERY_KINDS.includes("session_action"));
 });
 
-test("legacy versions keep their post-End handoff policies while versions 9 onward need none", () => {
+test("legacy versions keep their post-End handoff policies while versions 9 through 16 need none", () => {
   // The split stated once, across all eight. A legacy version set to `wait` would reach End
   // with no pull request and no way to ask for one; version 8 set to `prepare_pr` would type a
   // second handoff asking for the pull request its own stage had just proven.
@@ -62,6 +62,7 @@ test("legacy versions keep their post-End handoff policies while versions 9 onwa
     null,
     null,
     null,
+    "wait",
   ]);
 });
 
@@ -78,7 +79,7 @@ test("GitHub Inspector remains versions 1 through 8's policy and never becomes a
       `version ${index + 1} grew an Inspector node`,
     );
   }
-  for (const [offset, version] of noMistakes().versions.slice(8).entries()) {
+  for (const [offset, version] of noMistakes().versions.slice(8, 16).entries()) {
     assert.deepEqual(
       version.completionPolicy,
       { kind: "none" },

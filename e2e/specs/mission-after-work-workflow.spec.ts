@@ -250,3 +250,31 @@ test("a mission can be saved with no Workflow selected, and the daemon stores no
 
   await shoot(dashboard, "06-saved-with-none", dashboard.getByText("Quiet sweep").first());
 });
+
+
+for (const [kind, workflowId] of [
+  ["bugfix", "builtin-workflow:bug-fix-review"],
+  ["plan", "builtin-workflow:plan-validation"],
+] as const) {
+  test(`selecting ${kind} on a mission selects its review and permits opting out`, async ({ dashboard, daemon }) => {
+    await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+    await dashboard.getByRole("button", { name: "Create mission" }).click();
+    const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+    await dashboard.getByRole("combobox", { name: "Task kind" }).selectOption(kind);
+    await expect(afterWork).toBeEnabled();
+    await expect(afterWork).toHaveValue(workflowId);
+    await shoot(dashboard, `${kind}-review-default`, afterWork);
+    await afterWork.selectOption("");
+    await dashboard.getByPlaceholder("e.g. Dependency audit").fill(`${kind} without review`);
+    await dashboard.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+    await dashboard.keyboard.press("Escape");
+    await dashboard.getByPlaceholder("e.g. Run dependency audit and update unsafe packages").fill("Review optional");
+    await dashboard.getByPlaceholder("What should the agent do each run?").fill("Do the requested work");
+    await dashboard.getByRole("button", { name: "Save paused" }).click();
+    await expect.poll(async () => {
+      const all = await api<StoredSchedule[]>(daemon, "/api/schedules");
+      const saved = all.find((entry) => entry.name === `${kind} without review`);
+      return saved ? saved.template?.workflowId ?? null : "not-saved";
+    }).toBe(null);
+  });
+}

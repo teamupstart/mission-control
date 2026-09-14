@@ -474,7 +474,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
       }>;
     }>(daemon, "/api/workflow-runs");
     const run = page.items.find((candidate) =>
-      candidate.workflowName === "No-Mistakes Review" && candidate.sessionId === sessionId
+      candidate.workflowName === "No-Mistakes Review (High Rigor)" && candidate.sessionId === sessionId
     );
     runId = run?.id ?? "";
     runVersion = run?.workflowVersion ?? 0;

@@ -157,10 +157,34 @@ copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 15 are preserved for bindings that already pin them, and version 16 is current. There is
-nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
-already published, and can be bound to a session immediately.
+Four ready-made workflows ship already published in the Library:
+
+| Workflow | Judges, in stage order | Finishes with |
+| --- | --- | --- |
+| **General Review** | Intent Conformance; then Code Risk, Code Quality, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
+| **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
+| **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
+| **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Review completion |
+
+General suits ordinary changes. Bug Fix trades general quality review for causal and regression
+proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
+complex work. The three implementation workflows begin with configured typecheck and test Commands.
+Unconfigured slots skip and pass. All presets use Foreman complete, live repair delivery, automatic
+resumption, and up to five repair rounds, subject to the existing trust and execution settings.
+General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
+Codex Sol for Code Design and Terra for its other judges.
+
+Plan Validation has no code-test Commands, Slop Filter, PR action, or Inspector gate. It compares
+complete relevant plan files, not just changed hunks: repeated requirements and interfaces, phase
+producers and consumers, safe intermediate states, and feasible validation steps. Single-phase
+plans receive the same checks across their sections and tasks. Missing or truncated comparison
+material is reported as a gap. Plan tasks with Persona review receive instructions to register a
+frozen text artifact containing the root plan, phase files, relevant unchanged references, and
+recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
+
+No-Mistakes version 17 is current. Versions 1 through 16 remain available with their original
+review graphs, Persona snapshots, and completion policies. The durable workflow ID remains
+`builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
 The **Author what runs** guided tour walks this workflow - its five stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
@@ -182,7 +206,7 @@ path version 2 does while preserving the deterministic stage in the graph. The
 slots.
 
 Behind it are the eight built-in Personas wired the way they were written to compose. In versions 15
-and 16, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+through 17, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
 same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
 misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
 Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
@@ -228,17 +252,17 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 16 preserve that verified publication
-contract. Versions 10 through 16 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 16.
+would ask for one the run already has. Versions 9 through 17 preserve that verified publication
+contract. Versions 10 through 17 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 17.
 
-A passed review in versions 1 through 8 is then gated on the
+A passed review in versions 1 through 8 and version 17 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
-Versions 9 onward instead complete when their Pull Request action reaches End, so the default
-workflow does not wait for optional remote review. GitHub Inspector remains independently available for
+Versions 9 through 16 complete when their Pull Request action reaches End. Version 17 waits
+for Inspector after that action. GitHub Inspector remains independently available for
 reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.
 
-In versions 4 through 8, findings require the session to fix, verify, commit and push, then
+In versions 4 through 8 and version 17, findings require the session to fix, verify, commit and push, then
 GitHub Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
 through 3 retain their original whole-workflow restart behavior. Versions 5 through 7
 automatically return a passed, PR-less review to the session to prepare the pull request;
@@ -261,7 +285,7 @@ an upgrade. Duplicating changes nothing about the built-in, which stays listed a
 bindable.
 
 Because it always exists, its name is reserved: creating or renaming a workflow to
-`No-Mistakes Review` is refused the way any duplicate name is. The one exception is
+`No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is
 historical - a workflow you authored under that name before it shipped built-in keeps the name
 it already reserved, and the built-in it shadows stays hidden behind your copy while remaining
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
@@ -294,7 +318,7 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 16 because it is current. Adopting the newer version on an
+take version 17 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

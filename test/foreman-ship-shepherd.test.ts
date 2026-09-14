@@ -647,3 +647,17 @@ test("surrounding whitespace never defeats the match, and the body is never empt
   assert.equal(brief.includes("blocking work"), false);
   assert.equal(brief, "Quiet age: 0 minutes. Delivery: delivered. Next: attempt budget exhausted; escalation is next.");
 });
+
+
+test("bugfix shares ship recovery and its live-delivery boundaries", () => {
+  const bugfix = session({ task: mkTaskSummary({ id: "task-1", kind: "bugfix", status: "running" }) });
+  for (const overrides of [
+    {}, { diffHasChanges: true }, { mayActLive: false }, { humanOwnsSession: true },
+    { workflowOwnsSession: true }, { queue: queue({ promptedDecision: decision("held") }) },
+  ]) {
+    assert.deepEqual(
+      decideShipShepherd(input({ ...overrides, session: bugfix })),
+      decideShipShepherd(input(overrides)),
+    );
+  }
+});

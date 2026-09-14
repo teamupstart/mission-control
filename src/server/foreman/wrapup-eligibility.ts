@@ -157,6 +157,7 @@ function diffContainsOnlyReviewArtifacts(paths: readonly string[]): boolean {
  */
 const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
   ship: true,
+  bugfix: true,
   scout: true,
   plan: false,
   pipeline: false,
@@ -166,6 +167,7 @@ const KIND_TAKES_REVIEW_ARTIFACT_CLASSIFIER: Record<TaskKind, boolean> = {
 /** Kinds whose ordinary completion stays with the human unless a Workflow was selected. */
 const KIND_REQUIRES_EXPLICIT_WORKFLOW: Record<TaskKind, boolean> = {
   ship: false,
+  bugfix: false,
   scout: false,
   plan: false,
   pipeline: false,

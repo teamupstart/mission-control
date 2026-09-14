@@ -208,6 +208,7 @@ export function endGuidedPass(pass: GuidedPass): GuidedPass {
  */
 export const GUIDED_KIND_KEYS: Record<TaskKind, string> = {
   ship: "p",
+  bugfix: "b",
   scout: "t",
   plan: "l",
   pipeline: "e",

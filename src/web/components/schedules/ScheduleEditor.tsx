@@ -19,6 +19,8 @@ import {
   TASK_KIND_INFO,
   TASK_PRIORITIES,
   hasReviewableDiff,
+  taskDefaultWorkflowId,
+  taskHasOwnDefaultWorkflow,
 } from "@shared/task.ts";
 import {
   createSchedule,
@@ -457,7 +459,15 @@ export function ScheduleEditor({
                 <select
                   className="field-input"
                   value={draft.kind}
-                  onChange={(event) => update({ kind: event.target.value as TaskKind })}
+                  onChange={(event) => {
+                    const kind = event.target.value as TaskKind;
+                    update({
+                      kind,
+                      ...(kind !== draft.kind && taskHasOwnDefaultWorkflow(kind)
+                        ? { workflowId: taskDefaultWorkflowId(kind, null) ?? "" }
+                        : {}),
+                    });
+                  }}
                 >
                   {/* Driven off the tuple, like the harness select above it. These options
                       were hand-written until a third kind was added, which is the failure

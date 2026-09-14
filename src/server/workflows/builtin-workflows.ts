@@ -24,6 +24,9 @@ import {
   builtinWorkflowId,
   builtinWorkflowVersionId,
   NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+  GENERAL_REVIEW_WORKFLOW_SLUG,
+  BUG_FIX_REVIEW_WORKFLOW_SLUG,
+  PLAN_VALIDATION_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -984,13 +987,13 @@ const SHIPPED_MANUAL_RESUMPTION = "manual" as const;
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
-    name: "No-Mistakes Review",
+    name: "No-Mistakes Review (High Rigor)",
     description:
       "Typecheck and test, then eight review roles: Intent Conformance and Test Coverage; Code "
       + "Risk, Quality and Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
       + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
       + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
-      + "the pull request without requiring GitHub Inspector.",
+      + "the pull request before the final GitHub Inspector gate.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -1261,6 +1264,157 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 16,
       },
+      {
+        // Version 18 retains version 17 and adds Inspector after the verified PR.
+        pipeline: NO_MISTAKES_REVIEW_V15,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 17,
+      },
     ],
+  }),
+  builtinWorkflow({
+    slug: GENERAL_REVIEW_WORKFLOW_SLUG,
+    name: "General Review",
+    description: "Balanced review for ordinary changes: Intent, Risk, Quality, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
+    versions: [{
+      pipeline: {
+        sessionId: "gr-session",
+        endId: "gr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "gr-checks-join",
+            members: [check("gr-typecheck", "typecheck"), check("gr-test", "test")],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("gr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-2-join",
+            members: [
+              reviewer("gr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("gr-code-quality-judge", "code-quality-judge"),
+              reviewer("gr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-3-join",
+            members: [
+              reviewer("gr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("gr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("gr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }],
+  }),
+  builtinWorkflow({
+    slug: BUG_FIX_REVIEW_WORKFLOW_SLUG,
+    name: "Bug Fix Review",
+    description: "Focused bug review: Intent, Root Cause & Regression, Risk, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
+    versions: [{
+      pipeline: {
+        sessionId: "bfr-session",
+        endId: "bfr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "bfr-checks-join",
+            members: [check("bfr-typecheck", "typecheck"), check("bfr-test", "test")],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("bfr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-2-join",
+            members: [
+              reviewer("bfr-root-cause-regression-judge", "root-cause-regression-judge"),
+              reviewer("bfr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("bfr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-3-join",
+            members: [
+              reviewer("bfr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("bfr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("bfr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }],
+  }),
+  builtinWorkflow({
+    slug: PLAN_VALIDATION_WORKFLOW_SLUG,
+    name: "Plan Validation",
+    description: "Reviews intent, consistency across plan files, phase dependencies, and technical feasibility. Validates single-phase and multi-phase plans without code checks or a pull request action.",
+    versions: [{
+      pipeline: {
+        sessionId: "pv-session",
+        endId: "pv-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("pv-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "pv-review-2-join",
+            members: [
+              reviewer("pv-plan-consistency-judge", "plan-consistency-judge"),
+              reviewer("pv-phase-dependencies-judge", "phase-dependencies-judge"),
+              reviewer("pv-plan-feasibility-judge", "plan-feasibility-judge"),
+            ],
+          },
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "off",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }],
   }),
 ];

@@ -112,3 +112,13 @@ export function planContractAppendix(skills: PlanSkillInvocations): string {
   ];
   return lines.join("\n");
 }
+
+/** Plan judges are tool-less: paths and changed hunks cannot prove cross-file agreement. */
+export function planWorkflowEvidenceAppendix(): string {
+  return [
+    "## Plan validation evidence",
+    "The selected workflow reviews the plan after this turn. Its Personas have no repository tools.",
+    "Before completing, register a gitignored UTF-8 artifact with submit_workflow_evidence containing an inventory and the complete current text of the root plan, all in-scope phase files, and referenced requirements or contracts needed to compare them. Label each file by its checkout-relative path. Include unchanged files when an in-scope phase depends on them, and identify explicit supersession and recorded human decisions.",
+    "For a single-phase review, include that phase and the external contracts it consumes. State the review scope. If material is unavailable or exceeds the evidence limits, identify the gap instead of claiming the plan is aligned. Register the final revised text after every repair; ordinary tool output and file paths alone do not reach the judges.",
+  ].join("\n");
+}

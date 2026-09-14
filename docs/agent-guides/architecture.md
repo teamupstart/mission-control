@@ -205,7 +205,7 @@ legacy intent/evidence columns as a fallback trigger.
 `src/shared/task-completion.ts` owns one browser-safe, exhaustive `Record<TaskKind,
 TaskCompletionContract | null>` describing what "complete" means for a task kind's initial
 delivered turn: what must be done, and what post-completion work is explicitly deferred to a
-later owner. `ship` is the only kind that defers anything today. The delivered handoff appendix
+later owner. `ship` and `bugfix` share this implementation handoff. The delivered handoff appendix
 (`src/server/task-contract.ts`) and Foreman's verify prompt render from that one record, so the
 boundary an agent is told and the boundary it is judged against cannot drift apart.
 

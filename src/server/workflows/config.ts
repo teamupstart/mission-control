@@ -1,3 +1,5 @@
+import type { TaskKind } from "@shared/types.ts";
+import { taskDefaultWorkflowId } from "@shared/task.ts";
 import type { WorkflowPolicyInput } from "@shared/protocol.ts";
 import { StoredWorkflowPolicySchema, WorkflowPolicySchema } from "@shared/protocol.ts";
 import type { WorkflowCheckSlot, WorkflowPolicy } from "@shared/workflow.ts";
@@ -55,8 +57,8 @@ function keepPreFieldCommandConsent(blob: unknown): unknown {
   return { ...(blob as Record<string, unknown>), checksEnabled: false };
 }
 
-export function resolveTaskWorkflowId(workflowId: string | null | undefined): string | null {
-  return workflowId === undefined ? getWorkflowPolicy().defaultWorkflowId : workflowId;
+export function resolveTaskWorkflowId(workflowId: string | null | undefined, kind: TaskKind = "ship"): string | null {
+  return workflowId === undefined ? taskDefaultWorkflowId(kind, getWorkflowPolicy().defaultWorkflowId) : workflowId;
 }
 
 /**

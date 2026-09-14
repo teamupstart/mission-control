@@ -87,7 +87,7 @@ then hands over the ordinary form with the answers set and the caret in the task
 | Step | Choices | Keys |
 |---|---|---|
 | **Repo** | every repository in the workspace, seeded from the last dispatch | type to filter by repository name, <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>↵</kbd> to take the highlighted repository |
-| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, and chat | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
+| **Kind** | ship, scout, plan, pipeline in a conductor-enabled repository, chat, and bugfix | <kbd>p</kbd>, <kbd>t</kbd>, <kbd>l</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>b</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **Harness** | Claude Code, Codex, Pi | <kbd>c</kbd>, <kbd>x</kbd>, <kbd>i</kbd>, arrows plus <kbd>↵</kbd>, or a position digit |
 | **After work** | dispatch default, None, or any active published Workflow | <kbd>d</kbd>, <kbd>n</kbd>, the printed Workflow letter, arrows plus <kbd>↵</kbd>, or a position digit |
 
@@ -131,9 +131,9 @@ successful **Dispatch now** or **Add to backlog** starts the next task with a fr
 **It is a different way to fill the form, never a second opinion about what a dispatch
 means.** Every answer is written through the same control the form offers, so the rules below
 still apply exactly as they are written - including the kind-to-after-work rule, which is why
-Kind is asked before After work: by the time that question is on screen a scout, plan, or chat has
-already moved the selection to **None**, and the question says so - naming the kind you just
-chose - rather than silently landing there.
+Kind is asked before After work: scout and chat move the selection to **None**, while plan
+selects **Plan Validation** and bugfix selects **Bug Fix Review**. The question names the kind
+and explains its selected workflow.
 
 Two dispatches never run it: editing a task already in the backlog, whose answers exist
 already, and **Ensemble**, whose body replaces Crew and After work outright. The switch is not
@@ -267,14 +267,18 @@ each new binding takes the newest immutable version shipped at the time (see
 form can override that choice for one task, including an explicit **None** that finishes
 without a Workflow.
 
-Choosing **scout**, **plan**, or **chat** under **Kind** moves that selection to **None** for
-you, because none sets out to deliver a change and so none has a diff for a review Workflow
-to run over. Switching back to **ship** hands back the exact choice the switch put aside, so
-the reversal loses nothing, including through several diffless kinds in a row where the
-selection you started with is what comes back. It is a default rather than a lock: pick a
-Workflow after choosing one of those kinds and it sticks, and a choice you make by hand is never
-reverted by a later kind switch. This is a behavior of the dispatch form, so it applies to
-the kind you pick there and not to the inheriting paths below.
+Choosing **plan** selects **Plan Validation**. Choosing **bugfix** selects **Bug Fix Review**.
+Bugfix behaves like Ship for dispatch, backlog scheduling, implementation handoff, PR follow-through,
+and recovery. Its default workflow is the difference. Selecting these kinds in a Recurring Mission also selects their review, while a saved
+mission retains its explicit workflow or None. Returning from a kind default restores the prior
+mission choice, including None; an explicit after-work edit cancels that restoration. Both kind defaults apply to API-created
+tasks when `workflowId` is omitted; an explicit workflow or **None** is preserved. Existing tasks
+keep their stored workflow. Ship continues to use Settings > Workflows for its machine default.
+
+Choosing **scout** or **chat** in the dispatch form preselects **None**. Returning to Ship restores
+the selection put aside by a kind switch. A manual after-work choice clears that restoration,
+so returning to Ship does not overwrite it. Plan and Bugfix remain selectable workflows rather
+than locks: choose **None** to opt out, or select another published workflow.
 
 **chat** starts a conversation rather than a delivery. The task box becomes **What would you
 like to talk about?**, and that opener is required and delivered exactly as written. A chat

@@ -32,6 +32,8 @@ import {
   TASK_KIND_BEHAVIOR,
   TASK_PRIORITIES,
   hasReviewableDiff,
+  taskDefaultWorkflowId,
+  taskHasOwnDefaultWorkflow,
   taskKindAllowsBacklog,
 } from "@shared/task.ts";
 import type { EnvironmentCheckView } from "@shared/environment-checks.ts";
@@ -1205,13 +1207,9 @@ function DispatchModal({
       ),
     [workflowSummaries],
   );
-  const selectedWorkflowId =
-    draft.workflowId === undefined ? workflowConfig?.defaultWorkflowId ?? null : draft.workflowId;
-  const defaultWorkflow = workflowConfig?.defaultWorkflowId
-    ? workflowSummaries.find(
-        (workflow) => workflow.id === workflowConfig.defaultWorkflowId,
-      ) ?? null
-    : null;
+  const defaultWorkflowId = taskDefaultWorkflowId(draft.kind, workflowConfig?.defaultWorkflowId ?? null);
+  const selectedWorkflowId = draft.workflowId === undefined ? defaultWorkflowId : draft.workflowId;
+  const defaultWorkflow = workflowSummaries.find((workflow) => workflow.id === defaultWorkflowId) ?? null;
   const kindBehavior = TASK_KIND_BEHAVIOR[draft.kind];
   const usesHarness = kindBehavior.launch === "harness";
   const managedPipeline = draft.kind === "pipeline" && pipelineLaunchRuntime === "agent-sdk";
@@ -1276,48 +1274,20 @@ function DispatchModal({
   const stashedWorkflowId = useRef<StashedWorkflowId>(NO_STASH);
   const stashedDependencies = useRef<StashedDependencies>(NO_STASH);
 
-  /**
-   * The after-work choice a kind switch carries with it, as a patch fragment.
-   *
-   * Kind carries this the same way switching harness carries model and effort: the
-   * dependent choice belongs to the kind now selected, not the one it replaced. Scout,
-   * plan, and chat do not set out to produce a delivered change to hand off, so choosing
-   * any of them moves the selection to None. Otherwise a review Workflow would run over a
-   * task that has no planned diff to review.
-   *
-   * Switching back HANDS BACK the exact choice that was put aside, rather than recomputing
-   * the machine default. That is what keeps the reversal lossless, and it is deliberately
-   * a pure function of what was already on screen: recomputing would need
-   * `workflowConfig`, which lands on its own fetch, so a scout-then-ship inside that
-   * window would resolve to `null` and SAVE an explicit None - fetch timing quietly
-   * converting a promised restoration into a task that finishes with no handoff at all.
-   * Reading the stash instead means there is no window in which this can be wrong.
-   *
-   * Still only a default, in both directions: the stash is dropped the moment the operator
-   * picks an after-work Workflow by hand, so their choice is never reverted underneath
-   * them by a later kind switch.
-   *
-   * One stash and not one per kind, which is what makes a scout-to-plan switch safe. Both
-   * sides of that switch want None, and the naive version stashes on every entry - so it
-   * would put aside the `null` scout had just set, overwriting the operator's real
-   * ship-time selection, and then hand that `null` back as an explicit "no handoff" on the
-   * way out to ship. Between two diffless kinds nothing has been decided, so nothing moves.
-   */
+  /** Preserve the prior selection until the operator makes an explicit after-work choice. */
   function afterWorkForKind(kind: TaskKind): Partial<DispatchDraft> {
     if (kind === draft.kind) return {};
+    if (taskHasOwnDefaultWorkflow(kind)) {
+      if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
+      return { workflowId: taskDefaultWorkflowId(kind, null) };
+    }
     if (!hasReviewableDiff(kind)) {
-      // Whatever is selected right now is either the None the first diffless kind set or a
-      // pick made by hand after it. Both are already right for this kind, and both survive
-      // by leaving the field and the stash exactly as they stand.
       if (!hasReviewableDiff(draft.kind)) return {};
-      stashedWorkflowId.current = draft.workflowId;
+      if (stashedWorkflowId.current === NO_STASH) stashedWorkflowId.current = draft.workflowId;
       return { workflowId: null };
     }
     const stashed = stashedWorkflowId.current;
     stashedWorkflowId.current = NO_STASH;
-    // Nothing to hand back - a modal opened on a scout, or an operator who has since
-    // chosen for themselves. Leave the selection exactly as it stands rather than
-    // inventing one: `taskUpdatePatch` reads an omitted key as "leave it alone".
     return stashed === NO_STASH ? {} : { workflowId: stashed };
   }
 
@@ -1493,14 +1463,14 @@ function DispatchModal({
       ? `${defaultWorkflow.name} · v${defaultWorkflow.publishedVersion}`
       : workflowConfig === null
         ? "loading…"
-        : workflowConfig.defaultWorkflowId
+        : defaultWorkflowId
           ? "unavailable workflow"
           : "none";
     push({
       value: "__default",
       label: `Dispatch default — ${defaultName}`,
       short: defaultName,
-      sub: "Whatever Settings → Workflows has this machine handing off to",
+      sub: "The default workflow for this task kind",
       hotkey: "d",
       commit: () => chosen(undefined),
     });
@@ -2866,7 +2836,7 @@ function DispatchModal({
                     workflowId:
                       value === "__default"
                         ? editing
-                          ? workflowConfig?.defaultWorkflowId ?? null
+                          ? defaultWorkflowId
                           : undefined
                         : value === "__none"
                           ? null
@@ -2878,7 +2848,7 @@ function DispatchModal({
                   <option value="__default">
                     {workflowConfig === null
                       ? "Dispatch default — loading…"
-                      : workflowConfig.defaultWorkflowId
+                      : defaultWorkflowId
                       ? defaultWorkflow
                         ? `Dispatch default — ${defaultWorkflow.name} · v${defaultWorkflow.publishedVersion}`
                         : "Dispatch default — unavailable workflow"
@@ -2914,9 +2884,9 @@ function DispatchModal({
               Opens UPWARD - this rail is the last field before the fold and the footer, and
               a list of every published Workflow hung below it leaves the panel entirely. */}
           {guidedPickerFor("afterWork", AFTER_WORK_FIELD_TIP, {
-            hint: hasReviewableDiff(draft.kind)
+            hint: TASK_KIND_INFO[draft.kind].afterWorkHint ?? (hasReviewableDiff(draft.kind)
               ? null
-              : `A ${TASK_KIND_INFO[draft.kind].label} has no diff, so None is preselected.`,
+              : `A ${TASK_KIND_INFO[draft.kind].label} has no diff, so None is preselected.`),
             place: "above",
           })}
         </div>

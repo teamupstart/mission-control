@@ -27,6 +27,7 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
   await dashboard.goto(`${daemon.baseURL}/#/workflows`);
   await dashboard.getByRole("button", { name: /No-Mistakes Review/ }).click();
 
+  await expect(dashboard.getByRole("textbox", { name: "Name", exact: true })).toHaveValue("No-Mistakes Review (High Rigor)");
   const pipeline = dashboard.locator(".wf-pipeline-strip");
   await expect(pipeline).toBeVisible();
   const stages = pipeline.locator("section.wf-pipeline-stage");
@@ -65,7 +66,15 @@ test("the shipped No-Mistakes Review gates on intent and test coverage before de
 
   const pullRequest = stages.nth(4);
   await expect(pullRequest.locator(".wf-pipeline-stage-name")).toHaveText("Pull Request");
-  await expect(pipeline.locator(".wf-pipeline-inspector")).toHaveCount(0);
+  await expect(pipeline.locator(".wf-pipeline-inspector")).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE) {
+    await pipeline.locator(".wf-pipeline-inspector").scrollIntoViewIfNeeded();
+    await dashboard.screenshot({
+      path: `${EVIDENCE}high-rigor-final-inspector.png`,
+      fullPage: true,
+    });
+  }
 
   await dashboard.getByRole("button", { name: /Version 15/ }).click();
   const currentVersion = dashboard.locator(".workflow-version-detail");

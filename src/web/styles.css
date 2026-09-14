@@ -27436,7 +27436,8 @@ span.line-run-prov {
   border: 1px solid var(--border-soft);
   border-radius: 999px;
 }
-.bl-kind-ship {
+.bl-kind-ship,
+.bl-kind-bugfix {
   color: var(--idle);
 }
 .bl-kind-scout {

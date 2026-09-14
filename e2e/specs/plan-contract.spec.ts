@@ -108,6 +108,8 @@ test("a dispatched plan is told to invoke the planning skill, in this harness's 
 
   const dialog = await openDispatch(dashboard, daemon, TASK);
   await kindSelect(dialog).selectOption("plan");
+  // Plan selects its review; opt out here to isolate the planning-skill contract.
+  await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await submit(dialog);
   await expect(dialog).toBeHidden();
 
@@ -138,8 +140,36 @@ test("a dispatched plan is told to invoke the planning skill, in this harness's 
   await expect(card).toContainText("docs/plans/");
   // And a plan is not handed a scout's contract.
   await expect(card).not.toContainText("submit_scout_artifacts");
+  await expect(card).not.toContainText("Plan validation evidence");
 
   await shoot(dashboard, "plan-contract-delivered", card);
+});
+
+test("a plan dispatched with its default review receives the frozen plan evidence contract", async ({
+  dashboard,
+  daemon,
+}) => {
+  await enablePlanningSkills(daemon);
+  const config = await fetch(`${daemon.baseURL}/api/workflows/config`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ liveEnabled: true, repoAllowlist: [daemon.repo] }),
+  });
+  expect(config.ok).toBe(true);
+
+  const dialog = await openDispatch(dashboard, daemon, TASK);
+  await kindSelect(dialog).selectOption("plan");
+  await expect(dialog.getByRole("combobox", { name: "After work", exact: true }))
+    .toHaveValue("builtin-workflow:plan-validation");
+  await submit(dialog);
+  await expect(dialog).toBeHidden();
+
+  await dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").first().click();
+  const card = dashboard.locator(".console-detail");
+  await expect(card).toContainText("Plan validation evidence", { timeout: 30_000 });
+  await expect(card).toContainText("complete current text of the root plan, all in-scope phase files");
+  await expect(card).toContainText("Include unchanged files");
+  await expect(card).toContainText("submit_workflow_evidence");
 });
 
 test("a plan dispatch with the planning skills off is refused on the form, naming the toggle", async ({
@@ -150,6 +180,8 @@ test("a plan dispatch with the planning skills off is refused on the form, namin
   // real state an operator meets this in.
   const dialog = await openDispatch(dashboard, daemon, TASK);
   await kindSelect(dialog).selectOption("plan");
+  // Plan selects its review; opt out here to isolate the planning-skill contract.
+  await dialog.getByRole("combobox", { name: "After work", exact: true }).selectOption("__none");
   await submit(dialog);
 
   // The daemon's own sentence, where every other refusal from this form lands.

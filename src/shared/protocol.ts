@@ -1060,8 +1060,9 @@ export const DispatchSchema = z
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
     /**
-     * Published Workflow to arm for Foreman Complete. Omitted follows the machine default;
-     * explicit null opts this task out of that default.
+     * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
+     * plan tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
+     * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     backlog: z.boolean().optional().default(false),

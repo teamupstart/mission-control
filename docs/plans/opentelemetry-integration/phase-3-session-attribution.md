@@ -18,7 +18,7 @@ Own dispatch/launch, discovered/restored sessions, conversation/turn boundaries,
 
 `src/server/registry.ts` owns all eviction through `beginEviction`; `session_exit` is provisional and `session_remove` is the durable removal signal. `src/server/tasks.ts` may settle departed work as failed when true completion is unknown. `src/server/db.ts` work episodes and PR associations retain repository-grained provenance. `src/server/usage.ts` and `src/server/spend-ledger.ts` prevent duplicate usage across ingest paths.
 
-The PR association is not preserved by every ownership path: `invalidateTaskOwnershipInTransaction` drops the current binding without archival, unlike ordinary rebinds. The source explicitly documents why copying it into the historical table would broaden dependency release. This phase owns the bounded observation-only preservation and poller integration defined in [P2](p2-session-lifecycle/plan.html#preserving-late-delivery-observations), while operational completion and selection-time dependency rules remain unchanged.
+The PR association is not preserved by every ownership path: `invalidateTaskOwnershipInTransaction` drops the current binding without archival, unlike ordinary rebinds. The source explicitly documents why copying it into the historical table would broaden dependency release. This phase owns the bounded observation-only preservation and poller integration defined in [P2](p2-session-lifecycle/plan.html#pr-and-completion-provenance), while operational completion and selection-time dependency rules remain unchanged.
 
 ## Implementation sequence
 

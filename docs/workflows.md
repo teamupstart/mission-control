@@ -891,7 +891,7 @@ Repository state, transcript evidence, evidence metadata, prior Persona feedback
 deliveries, and author coverage never enter criterion extraction. A separate source reconciliation call receives only those stable criteria
 and bounded author claim ids and text. Its schema and failure boundary are independent, so invalid
 mapping output leaves stable extraction intact and fails closed to deterministic mappings. Each
-45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 45-second
+150-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 150-second
 attempt; invalid, timed-out, or unavailable stable compaction produces a deterministic visible
 fallback.
 
@@ -1104,7 +1104,7 @@ nothing to choose between them. The repair packet names the competing claim ids.
 
 Reconciliation records its input fingerprint, completion status, consumed attempts and failure
 cause separately from readiness. Each operation allows two actual provider executions, including
-parse correction and interrupted calls, with a 45-second timeout per call. Successful identical
+parse correction and interrupted calls, with a 150-second timeout per call. Successful identical
 inputs are cached, including a successful no-match result. A failed mapping preserves deterministic
 matches and, when material claims remain unresolved under enforced policy, parks the run in
 `evidence_reconciliation_error` before any Persona or author repair delivery. A successful mapping

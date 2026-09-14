@@ -178,6 +178,10 @@ test("an unclean previous run is reported as an unknown gap, not as zero loss", 
     "../src/server/telemetry/retention.ts"
   );
   enableLocalOnly();
+  // Opting in now arms the detector itself, which is the point of the mid-run tests above. Clear
+  // the marker to get back to the state this case is about: collection already configured on
+  // from a previous install, and no run recorded yet.
+  openDb().exec("DELETE FROM app_config WHERE key = 'telemetry.runtime'");
 
   // A run starts and is killed: the marker is left saying "in progress".
   assert.equal(noteTelemetryRunStart(true, 1_000), false, "the first ever start reports no gap");
@@ -519,6 +523,84 @@ test("an owed gap is not written by a capture call made while collection is off"
     "and the incident is not lost by having been deferred",
   );
   resetPendingUnknownGap();
+});
+
+test("turning collection on mid-run arms the unclean-shutdown detector", async () => {
+  // The detector was armed once, at process start, from whatever `config.enabled` was then.
+  // Enabling telemetry through the API on a running daemon - the documented, normal way - left
+  // it unarmed, so a crash during the entire session collection was live produced a silent
+  // clean boot afterwards and no gap at all.
+  const { noteTelemetryRunStart, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  resetPendingUnknownGap();
+
+  // A daemon that booted with collection off writes no marker, by design.
+  assert.equal(noteTelemetryRunStart(false, 1_000), false);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime), undefined);
+
+  // The operator turns it on without restarting.
+  enableLocalOnly();
+  assert.equal(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown,
+    false,
+    "the run is marked in progress from the moment collection starts",
+  );
+
+  // Crash: no shutdown runs. The next boot, now starting with collection on, reports it.
+  assert.equal(
+    noteTelemetryRunStart(true, 2_000),
+    true,
+    "the loss that was possible while collection was live is not silently forgotten",
+  );
+  resetPendingUnknownGap();
+});
+
+test("turning collection off mid-run settles the marker instead of leaving it armed", async () => {
+  // The other direction. Nothing can be lost while collection is off, so a marker left saying
+  // "in progress" would report a gap that never happened on the next boot that starts with
+  // collection on.
+  const { noteTelemetryRunStart, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  resetPendingUnknownGap();
+
+  enableLocalOnly();
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, false);
+
+  const off = setTelemetryConfig({ enabled: false });
+  assert.equal(off.ok, true);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, true);
+
+  assert.equal(noteTelemetryRunStart(true, 2_000), false, "no phantom gap on the next boot");
+  resetPendingUnknownGap();
+});
+
+test("a ref a source names with a reserved key is counted as omitted, not waved through", async () => {
+  // The engine owns `__trace_id`, `__span_id` and `__parent_span_id` and overwrites them after
+  // bounding, so a caller's value really is dropped. Every other drop in `boundRefs` travels
+  // with the record; this one did not, so it would have been invisible in `refsOmitted`.
+  enableLocalOnly();
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "boot-reserved", revision: 1 },
+    facts: { startup_ms: 10, schema_upgraded: false, launch_mode: "daemon" },
+    refs: { __trace_id: "caller-supplied", __span_id: "also-supplied" },
+    now: 1_000,
+  });
+  assert.equal(result.kind, "accepted");
+
+  const row = openDb()
+    .prepare(`SELECT refs_omitted, refs_json FROM telemetry_journal LIMIT 1`)
+    .get() as { refs_omitted: number; refs_json: string };
+  assert.equal(row.refs_omitted, 2, "both reserved-key refs are on the record as dropped");
+  const refs = JSON.parse(row.refs_json) as Record<string, string>;
+  assert.notEqual(refs.__trace_id, "caller-supplied", "and the engine's own id is what survives");
 });
 
 test("an owed gap that still cannot be written keeps the run marked unclean", async () => {

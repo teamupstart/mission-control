@@ -221,6 +221,28 @@ export function noteTelemetryRunStopped(enabled: boolean, now = Date.now()): voi
   setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: true });
 }
 
+/**
+ * Arm or settle the unclean-shutdown detector for a collection change made MID-RUN.
+ *
+ * `noteTelemetryRunStart` reads `config.enabled` once, at process start, and that missed the
+ * normal way collection gets turned on: `PUT /api/telemetry/config` against a daemon that is
+ * already running. Nothing wrote the marker for that transition, so a crash any time after a
+ * live opt-in left the next boot computing a clean start and recording no gap - the one
+ * mechanism that catches a pre-acceptance loss, silently off for the common case.
+ *
+ * Turning collection OFF settles the marker rather than leaving it armed, because nothing can
+ * be lost while collection is off and a marker left saying "in progress" would report a gap
+ * that never happened. It settles through the shutdown path, so it inherits that path's
+ * refusal to call itself clean while a gap is still owed and unwritable.
+ */
+export function noteTelemetryCollectionChanged(capturing: boolean, now = Date.now()): void {
+  if (capturing) {
+    setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: false });
+    return;
+  }
+  noteTelemetryRunStopped(true, now);
+}
+
 /** Whether the store is over the shedding threshold right now. */
 function overPressure(d: import("node:sqlite").DatabaseSync): boolean {
   return usedBytes(d) > TELEMETRY_LIMITS.maxTotalBytes * PRESSURE_RATIO;

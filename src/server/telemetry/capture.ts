@@ -325,7 +325,13 @@ function boundRefs(
   const out: Record<string, string> = {};
   let omitted = 0;
   for (const [key, value] of Object.entries(refs)) {
-    if (RESERVED_REFS.has(key)) continue;
+    // Counted, not waved through. The engine owns these three keys and overwrites them after
+    // this runs, so a caller's value really is dropped - and every other drop in this function
+    // travels with the record for the same reason this one has to.
+    if (RESERVED_REFS.has(key)) {
+      omitted += 1;
+      continue;
+    }
     if (!allowed.includes(key)) {
       omitted += 1;
       continue;

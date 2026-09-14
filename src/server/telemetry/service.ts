@@ -12,7 +12,7 @@ import { runDeliveryPass, type DeliveryDeps } from "./delivery.ts";
 import { registerDaemonTelemetrySource } from "./diagnostics.ts";
 import { CATALOG_PROJECTION, runProjectionPass } from "./projection.ts";
 import { registerTelemetryProjection, registeredSources } from "./registration.ts";
-import { runRetentionPass } from "./retention.ts";
+import { noteTelemetryRunStart, noteTelemetryRunStopped, runRetentionPass } from "./retention.ts";
 import { recoverLeases, telemetryTransaction } from "./store.ts";
 
 /** P1's candidate collection and export cadence, measured in docs/observability.md. */
@@ -158,6 +158,16 @@ export interface TelemetryService {
 export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryService {
   registerBuiltinTelemetry();
 
+  // Did the previous run stop cleanly? Asked BEFORE anything else, because the answer is a
+  // durable marker that this start is about to overwrite. Only while collection is enabled, so
+  // a never-opted-in installation still writes nothing.
+  const enabled = getTelemetryConfig().enabled;
+  if (noteTelemetryRunStart(enabled, deps.now?.() ?? Date.now())) {
+    console.warn(
+      "[telemetry] the previous run did not shut down cleanly; recorded an unknown capture gap",
+    );
+  }
+
   const reclaimed = telemetryTransaction((d) => recoverLeases(d, deps.now?.() ?? Date.now()));
   if (reclaimed > 0) {
     console.log(`[telemetry] recovered ${reclaimed} in-flight export lease(s) from a previous run`);
@@ -217,6 +227,9 @@ export function startTelemetry(deps: Partial<DeliveryDeps> = {}): TelemetryServi
         // And release this process's leases explicitly, rather than leaving the next start to
         // wait for them to expire.
         telemetryTransaction((d) => recoverLeases(d, Date.now()));
+        // Last, and only after the local commit succeeded: this is what stops the next start
+        // reporting an unknown gap for a shutdown that was in fact orderly.
+        noteTelemetryRunStopped(getTelemetryConfig().enabled);
       } catch (error) {
         console.warn("[telemetry] could not complete the local shutdown commit:", error);
       }

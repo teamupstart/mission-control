@@ -170,6 +170,44 @@ test("health reports a disabled, empty facility without minting anything", () =>
   for (const profile of health.profiles) assert.equal(profile.capturing, false);
 });
 
+test("an unclean previous run is reported as an unknown gap, not as zero loss", async () => {
+  // The promise this closes: after a hard stop, health must say the loss is UNKNOWN rather than
+  // report zero. What is actually unquantifiable is the pre-acceptance gap - a crash between a
+  // business commit and its capture call - since everything after acceptance replays or retries.
+  const { noteTelemetryRunStart, noteTelemetryRunStopped } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  enableLocalOnly();
+
+  // A run starts and is killed: the marker is left saying "in progress".
+  assert.equal(noteTelemetryRunStart(true, 1_000), false, "the first ever start reports no gap");
+  assert.equal(
+    noteTelemetryRunStart(true, 2_000),
+    true,
+    "a start that finds the previous run still marked in progress reports a gap",
+  );
+
+  const gap = telemetryHealth(3_000).gaps.find((g) => g.kind === "unknown_gap");
+  assert.ok(gap, "health reports an unknown gap rather than claiming zero");
+  assert.ok(gap!.count >= 1);
+
+  // And an orderly stop clears it, so an ordinary restart is silent.
+  noteTelemetryRunStopped(true);
+  assert.equal(noteTelemetryRunStart(true, 4_000), false);
+});
+
+test("the unclean-run marker is not written while collection is off", async () => {
+  // Default-off covers this too: a never-opted-in installation writes no marker, so it can
+  // never be told on its next boot that it lost something it was never collecting.
+  const { noteTelemetryRunStart, noteTelemetryRunStopped } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  assert.equal(noteTelemetryRunStart(false, 1_000), false);
+  noteTelemetryRunStopped(false);
+  const row = openDb().prepare(`SELECT COUNT(*) AS n FROM app_config`).get() as { n: number };
+  assert.equal(row.n, 0);
+});
+
 // ---- the acceptance boundary ----
 
 test("accepted means committed: a captured fact survives a restart", () => {

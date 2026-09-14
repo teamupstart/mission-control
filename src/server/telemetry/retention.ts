@@ -16,6 +16,8 @@
  * rather than claiming a precise number it does not have.
  */
 import { TELEMETRY_LIMITS } from "@shared/telemetry.ts";
+import { APP_CONFIG_ENTRIES } from "@shared/app-config-entries.ts";
+import { getAppConfig, setAppConfig } from "../db.ts";
 import {
   expiredBatchIds,
   listGaps,
@@ -125,10 +127,43 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
 }
 
 /**
+ * Note that the previous run ended abruptly, and mark this one as in progress.
+ *
+ * Called once at startup, and ONLY while collection is enabled so a never-opted-in
+ * installation still stores nothing.
+ *
+ * What an unclean stop actually costs is the pre-acceptance gap: a crash between a business
+ * operation committing and its `capture()` call loses that fact, and nothing durable records
+ * how many there were. Everything after acceptance is recoverable - an unprojected journal row
+ * replays, an unacknowledged batch is retried - so this does not claim those were lost. It
+ * claims only that the count is unknown, which is the one thing the data can support.
+ *
+ * Returns whether a gap was recorded, so a caller can log it.
+ */
+export function noteTelemetryRunStart(enabled: boolean, now = Date.now()): boolean {
+  if (!enabled) return false;
+  const previous = getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime);
+  const unclean = previous !== undefined && previous.cleanShutdown === false;
+  if (unclean) {
+    recordUnknownGapOnRecovery(
+      "the previous run ended without a clean shutdown; facts captured between a business commit and their capture call cannot be counted",
+      now,
+    );
+  }
+  setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: false });
+  return unclean;
+}
+
+/** Record that this run ended in an orderly way, so the next start does not report a gap. */
+export function noteTelemetryRunStopped(enabled: boolean): void {
+  if (!enabled) return;
+  setAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime, { cleanShutdown: true });
+}
+
+/**
  * Report an unknown gap when the daemon can tell something was lost but not how much.
  *
- * Called on startup after a hard stop. The alternative - assuming zero - is the one answer the
- * data can never support.
+ * The alternative - assuming zero - is the one answer the data can never support.
  */
 export function recordUnknownGapOnRecovery(detail: string, now = Date.now()): void {
   try {

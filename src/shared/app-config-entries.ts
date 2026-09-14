@@ -339,6 +339,19 @@ export const APP_CONFIG_ENTRIES = {
   telemetry: wholeEntry("telemetry", TelemetryConfigSchema, "operational", null),
   /** The installation pseudonym. Restoring one onto another machine would merge two installations. */
   telemetryIdentity: wholeEntry("telemetry.identity", TelemetryIdentitySchema, "operational", null),
+  /**
+   * Whether the last telemetry run ended cleanly.
+   *
+   * Written only while collection is enabled, so a never-opted-in installation still stores
+   * nothing. `operational` with no backup domain for the same reason as the two entries above:
+   * it describes what happened on THIS machine and means nothing restored onto another.
+   */
+  telemetryRuntime: wholeEntry(
+    "telemetry.runtime",
+    z.object({ cleanShutdown: z.boolean() }),
+    "operational",
+    null,
+  ),
 } as const;
 
 export type AppConfigEntry = (typeof APP_CONFIG_ENTRIES)[keyof typeof APP_CONFIG_ENTRIES];

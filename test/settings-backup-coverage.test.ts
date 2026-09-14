@@ -117,6 +117,7 @@ test("the initial app_config key and value-class partition is pinned", () => {
       // turn collection on or merge two installations' identities. See docs/observability.md.
       "telemetry",
       "telemetry.identity",
+      "telemetry.runtime",
       "terminals",
       "ui",
       "workflows",

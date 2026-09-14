@@ -33,7 +33,12 @@ export type {
   TelemetryProjection,
   TelemetrySource,
 } from "./registration.ts";
-export { runRetentionPass } from "./retention.ts";
+export {
+  noteTelemetryRunStart,
+  noteTelemetryRunStopped,
+  recordUnknownGapOnRecovery,
+  runRetentionPass,
+} from "./retention.ts";
 export {
   registerBuiltinTelemetry,
   runTelemetryCycle,

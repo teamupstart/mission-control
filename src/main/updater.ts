@@ -21,7 +21,9 @@ import {
 // The updater asks the same locator as the daemon before it invokes `gh`, so detection and
 // execution retain one absolute identity even when Electron started with a minimal PATH.
 import { locateExecutable } from "../server/executables/locator.ts";
-import { bundleShortVersion } from "./bundle-version.ts";
+import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
+import { isCommitSha, sourceCommitProblem } from "../shared/update-source.mjs";
+import { readUpdatePreferences, writeUpdatePreferences } from "./update-preferences.ts";
 import { createRotatingUpdateLogger } from "./update-log.ts";
 import { clearUpdateOutcome, readUpdateOutcome, updateOutcomePath } from "./update-outcome.ts";
 import { checkUpdateRuntime, type UpdateRuntime } from "./update-runtime.ts";
@@ -43,6 +45,7 @@ const FIRST_CHECK_MIN_MS = 30_000;
 const FIRST_CHECK_JITTER_MS = 60_000;
 const RECHECK_MS = 6 * 60 * 60 * 1000;
 const RECHECK_JITTER_MS = 15 * 60 * 1000;
+export const ALPHA_RECHECK_MS = 5 * 60 * 1000;
 const MAX_RELEASE_NOTES = 4_000;
 
 export interface ReleaseInfo {
@@ -52,6 +55,12 @@ export interface ReleaseInfo {
   isDraft: boolean;
   isPrerelease: boolean;
   body: string;
+}
+
+export interface MainCommitInfo {
+  sha: string;
+  message: string;
+  committedAt: string;
 }
 
 export interface UpdateDialogs {
@@ -111,6 +120,7 @@ export interface StagedBundleIdentity {
   version: string | null;
   /** An opaque token that changes when the bundle is rebuilt or replaced. */
   revision: string | null;
+  commit?: string | null;
 }
 
 /** What the controller asks of a staged build; the port supplies the node binary and log. */
@@ -126,8 +136,12 @@ export interface UpdaterPort {
   packaged: boolean;
   arch: string;
   currentVersion(): string;
+  currentCommit(): string | null;
+  readAlpha(): boolean;
+  writeAlpha(alpha: boolean): void;
   readReceipt(): InstallReceipt | null;
   latestRelease(): Promise<ReleaseInfo | null>;
+  latestMainCommit(): Promise<MainCommitInfo>;
   runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
   helperSource(): string;
   stateDirectory(): string;
@@ -154,6 +168,7 @@ interface CommandResult {
 export type GhRunner = (args: string[]) => Promise<CommandResult>;
 
 export const UPDATE_GH_ARGS = {
+  mainCommit: () => ["api", `repos/${CANONICAL_REPO}/commits/main`],
   releaseList: () => [
     "release",
     "list",
@@ -178,6 +193,21 @@ export const UPDATE_GH_ARGS = {
     "body",
   ],
 };
+
+/** Resolve main once; every subsequent build and install uses this immutable SHA. */
+export async function latestMainCommit(run: GhRunner): Promise<MainCommitInfo> {
+  const result = await run(UPDATE_GH_ARGS.mainCommit());
+  if (result.code !== 0) throw ghFailure(result);
+  try {
+    const value = JSON.parse(result.stdout);
+    if (!isCommitSha(value?.sha) || typeof value?.commit?.message !== "string" ||
+      typeof value?.commit?.committer?.date !== "string" ||
+      !Number.isFinite(Date.parse(value.commit.committer.date))) throw new Error("invalid commit");
+    return { sha: value.sha, message: value.commit.message, committedAt: value.commit.committer.date };
+  } catch {
+    throw new UpdateError("GitHub CLI returned an invalid main commit. Check again.");
+  }
+}
 
 /**
  * What KIND of thing went wrong, as distinct from whether trying again might help.
@@ -236,7 +266,7 @@ function ghFailure(result: CommandResult): UpdateError {
   // for nothing else, is taken on the code.
   if (/rate limit|HTTP 429|abuse detection|secondary rate/i.test(detail)) {
     return new UpdateError(
-      "GitHub's API rate limit is reached, so releases cannot be checked right now. It resets within the hour and Mission Control will check again on its own.",
+      "GitHub's API rate limit is reached, so updates cannot be checked right now. It resets within the hour and Mission Control will check again on its own.",
       true,
       "gh-rate-limited",
     );
@@ -252,7 +282,7 @@ function ghFailure(result: CommandResult): UpdateError {
       "gh-auth",
     );
   }
-  return new UpdateError(`GitHub CLI cannot list releases here (exit ${result.code}). Try again.`);
+  return new UpdateError(`GitHub CLI cannot check updates here (exit ${result.code}). Try again.`);
 }
 
 function releaseRecord(value: unknown): Omit<ReleaseInfo, "body"> | null {
@@ -434,6 +464,7 @@ function safeUpdateError(error: unknown): {
 }
 
 export class UpdateController {
+  private alpha: boolean;
   private snapshot: UpdateSnapshot;
   private receipt: InstallReceipt | null = null;
   private checkPromise: Promise<UpdateSnapshot> | null = null;
@@ -463,6 +494,7 @@ export class UpdateController {
   private preparation: AbortController | null = null;
 
   constructor(private readonly port: UpdaterPort) {
+    this.alpha = port.readAlpha();
     this.snapshot = { phase: "disabled", reason: "Update manager has not started.", lastOutcome: null };
   }
 
@@ -477,9 +509,34 @@ export class UpdateController {
   }
 
   private publish(snapshot: UpdateSnapshot): UpdateSnapshot {
-    this.snapshot = snapshot;
-    for (const listener of this.listeners) listener(snapshot);
-    return snapshot;
+    this.snapshot = { ...snapshot, alpha: this.alpha };
+    for (const listener of this.listeners) listener(this.snapshot);
+    return this.snapshot;
+  }
+
+  /** A channel change cannot retarget a check, consent dialog, or build already in flight. */
+  setAlpha(alpha: boolean): UpdateSnapshot {
+    if (typeof alpha !== "boolean") throw new Error("Alpha mode must be a boolean.");
+    if (this.checkPromise || this.releaseDecisionPending || this.applyPromise || this.installPromise ||
+      ["preparing", "ready", "applying"].includes(this.snapshot.phase)) {
+      throw new Error("Finish or defer the current update before changing alpha mode.");
+    }
+    this.port.writeAlpha(alpha);
+    this.alpha = alpha;
+    this.staged = null;
+    if (this.snapshot.phase === "disabled") return this.publish(this.snapshot);
+    this.publish(idleSnapshot(this.currentLabel(), this.snapshot.lastOutcome, null));
+    this.schedule(0);
+    return this.snapshot;
+  }
+
+  private currentLabel(): string {
+    const commit = this.port.currentCommit();
+    return this.alpha && commit ? `${this.port.currentVersion()} (alpha ${commit.slice(0, 7)})` : this.port.currentVersion();
+  }
+
+  private recheckMs(): number {
+    return this.alpha ? ALPHA_RECHECK_MS : RECHECK_MS;
   }
 
   async start(): Promise<void> {
@@ -510,7 +567,7 @@ export class UpdateController {
         disable(`Updates are disabled because this app was installed from ${this.receipt.repo}.`);
       } else {
         this.lastBackgroundAttempt = this.port.now();
-        this.publish(idleSnapshot(this.port.currentVersion(), lastOutcome, null));
+        this.publish(idleSnapshot(this.currentLabel(), lastOutcome, null));
       }
     }
 
@@ -535,7 +592,7 @@ export class UpdateController {
     this.timer = setTimeout(() => {
       this.lastBackgroundAttempt = this.port.now();
       void this.check(false).finally(() => {
-        this.schedule(RECHECK_MS + Math.floor(this.port.random() * RECHECK_JITTER_MS));
+        this.schedule(this.recheckMs() + Math.floor(this.port.random() * (this.alpha ? 30_000 : RECHECK_JITTER_MS)));
       });
     }, delay);
     this.timer.unref?.();
@@ -559,7 +616,7 @@ export class UpdateController {
       this.snapshot.phase !== "applying" &&
       !this.checkPromise &&
       !this.releaseDecisionPending &&
-      this.port.now() - this.lastBackgroundAttempt >= RECHECK_MS
+      this.port.now() - this.lastBackgroundAttempt >= this.recheckMs()
     ) {
       this.lastBackgroundAttempt = this.port.now();
       void this.check(false);
@@ -586,29 +643,45 @@ export class UpdateController {
     this.manualCheckRequested = manual;
     const previousCheckedAt =
       this.snapshot.phase === "idle" ? this.snapshot.lastCheckedAt : this.port.now();
-    const currentVersion = this.port.currentVersion();
+    const currentVersion = this.currentLabel();
     this.lastBackgroundAttempt = this.port.now();
     const lastOutcome = this.snapshot.lastOutcome;
     this.publish({ phase: "checking", currentVersion, manual, lastOutcome });
     this.checkPromise = (async () => {
       try {
-        const release = await this.port.latestRelease();
+        // Stable release news remains part of alpha offers. A failed news lookup must not
+        // prevent tracking main; a failed main lookup must never fall back to older source.
+        const release = await this.port.latestRelease().catch((error: unknown) => {
+          if (!this.alpha) throw error;
+          this.port.log(`release news unavailable: ${String(error)}`);
+          return null;
+        });
+        const commit = this.alpha ? await this.port.latestMainCommit() : null;
         const checkedAt = this.port.now();
-        const newVersion = release ? versionFromReleaseTag(release.tagName) : null;
-        if (!release || !newVersion || !isNewerVersion(currentVersion, newVersion)) {
+        const releaseVersion = release ? versionFromReleaseTag(release.tagName) : null;
+        const newerRelease = releaseVersion && isNewerVersion(this.port.currentVersion(), releaseVersion);
+        if (commit ? commit.sha === this.port.currentCommit() : !release || !newerRelease) {
           return this.publish({ phase: "up-to-date", currentVersion, checkedAt, lastOutcome });
         }
-        const reusableStaged = this.staged?.releaseTag === release.tagName &&
+        const targetRef = commit?.sha ?? release!.tagName;
+        const newVersion = commit ? `alpha ${commit.sha.slice(0, 7)}` : releaseVersion!;
+        const notes = commit
+          ? [`Latest main commit ${commit.sha.slice(0, 7)}.`,
+              ...(newerRelease ? [`Stable release ${release!.tagName} is also available.`] : []),
+              commit.message, ...(newerRelease ? [release!.body] : [])].join("\n\n")
+          : release!.body;
+        const reusableStaged = this.staged?.releaseTag === targetRef &&
           this.stagedBundleIsIntact(this.staged);
         const runtime = await this.port.runtime(this.receipt!.sourceClone, !reusableStaged);
         return this.publish({
           phase: "available",
           currentVersion,
           newVersion,
-          releaseTag: release.tagName,
-          releaseName: sanitizeReleaseNotes(release.name || release.tagName).slice(0, 200),
-          releaseNotes: sanitizeReleaseNotes(release.body),
-          publishedAt: release.publishedAt,
+          releaseTag: targetRef,
+          ...(commit ? { commitSha: commit.sha } : {}),
+          releaseName: commit ? "Alpha update from main" : sanitizeReleaseNotes(release!.name || targetRef).slice(0, 200),
+          releaseNotes: sanitizeReleaseNotes(notes),
+          publishedAt: commit?.committedAt ?? release!.publishedAt,
           checkedAt,
           lastOutcome,
           ...(!runtime.ok ? { blocker: runtime.message } : {}),
@@ -803,6 +876,8 @@ export class UpdateController {
           },
         });
         if (outcome.ok) {
+          const sourceProblem = sourceCommitProblem(offer.releaseTag, this.identify(outcome.staged.bundlePath).commit ?? null);
+          if (sourceProblem) throw new UpdateError(sourceProblem);
           // Whether a finished build may be installed is a rule about bundles, and it lives
           // with the rest of them in `src/shared/staged-bundle.mjs`. What is left here is the
           // coordination: which log line, which dialog, which snapshot, and which of the two
@@ -937,6 +1012,7 @@ export class UpdateController {
     revision: string | null;
   }): boolean {
     const found = this.identify(staged.bundlePath);
+    if (sourceCommitProblem(staged.releaseTag, found.commit ?? null)) return false;
     if (found.version === null) return false;
     if (found.version !== staged.version) return false;
     // A port that cannot produce a revision (an unreadable directory) fails closed rather than
@@ -1083,6 +1159,7 @@ export class UpdateController {
 export function createDefaultUpdaterPort(options: {
   packaged: boolean;
   currentVersion: () => string;
+  currentCommit: () => string | null;
   arch?: string;
   helperSource: string;
   stateDirectory: string;
@@ -1095,8 +1172,12 @@ export function createDefaultUpdaterPort(options: {
     packaged: options.packaged,
     arch: options.arch ?? process.arch,
     currentVersion: options.currentVersion,
+    currentCommit: options.currentCommit,
+    readAlpha: () => readUpdatePreferences(join(options.stateDirectory, "update-preferences.json")).alpha,
+    writeAlpha: (alpha) => { writeUpdatePreferences(join(options.stateDirectory, "update-preferences.json"), { alpha }); },
     readReceipt,
     latestRelease: () => latestStableRelease(runGh),
+    latestMainCommit: () => latestMainCommit(runGh),
     runtime: checkUpdateRuntime,
     helperSource: () => options.helperSource,
     stateDirectory: () => options.stateDirectory,
@@ -1124,6 +1205,7 @@ export function createDefaultUpdaterPort(options: {
       if (!stats?.isDirectory()) return { version: null, revision: null };
       return {
         version: bundleShortVersion(path),
+        commit: appSourceCommit(join(path, "Contents", "Resources", "app")),
         // One formula, shared with the install script that checks it again before the swap.
         revision: stagedBundleRevision(stats),
       };

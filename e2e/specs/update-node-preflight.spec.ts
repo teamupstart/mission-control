@@ -17,6 +17,10 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     packaged: true,
     arch: "arm64",
     currentVersion: () => "1.2.3",
+    currentCommit: () => null,
+    readAlpha: () => false,
+    writeAlpha: () => {},
+    latestMainCommit: async () => { throw new Error("Stable mode must not query main"); },
     readReceipt: () => ({ schema: 1, repo: "teamupstart/mission-control", sourceClone: daemon.home, appPath: "/tmp/update-fixture.app", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-09-09T00:00:00Z" }),
     runtime: async () => {
       probes++;

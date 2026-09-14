@@ -26,6 +26,7 @@ import { ConversationViewPanel } from "./ConversationViewPanel.tsx";
 import { LineDensityPanel } from "./LineDensityPanel.tsx";
 import { BoardCardPanel } from "./BoardCardPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
+import { UpdateSettingsPanel } from "./UpdateSettingsPanel.tsx";
 import { DispatchSettingsPanel } from "./DispatchSettingsPanel.tsx";
 import { SetupPanel } from "./SetupPanel.tsx";
 import type { SetupChecksState } from "../useSetupChecks.ts";
@@ -566,11 +567,14 @@ export function SettingsPage({
         // link to a row in an unselected family has to move the rail before this page's
         // flash observer can ever find that row in the DOM.
         return (
-          <SetupPanel
-            state={setup}
-            jumpAnchor={unhandledJump?.anchor ?? null}
-            jumpRequestId={unhandledJump?.id ?? null}
-          />
+          <>
+            <UpdateSettingsPanel />
+            <SetupPanel
+              state={setup}
+              jumpAnchor={unhandledJump?.anchor ?? null}
+              jumpRequestId={unhandledJump?.id ?? null}
+            />
+          </>
         );
       case "skills":
         return <SkillsPanel state={skills} />;

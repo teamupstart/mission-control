@@ -19,6 +19,8 @@
  * it runs in when `--repo` is omitted - so a second, drifting copy is a trust hole rather
  * than a duplication smell. Not user-configurable.
  */
+import { isCommitSha } from "./update-source.mjs";
+
 export const CANONICAL_REPO = "teamupstart/mission-control";
 export const FORMER_CANONICAL_REPO = "mancej-cyc/ai-harness";
 
@@ -77,6 +79,9 @@ export function validateReceipt(value) {
   }
   if (typeof receipt.installedVersion !== "string" || receipt.installedVersion.length === 0) {
     return "receipt installedVersion is missing";
+  }
+  if (receipt.installedCommit !== undefined && !isCommitSha(receipt.installedCommit)) {
+    return "receipt installedCommit is not a full commit SHA";
   }
   if (!isAbsolutePosixPath(receipt.sourceClone)) {
     return "receipt sourceClone is not an absolute path";

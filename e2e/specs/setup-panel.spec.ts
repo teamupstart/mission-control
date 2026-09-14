@@ -60,10 +60,10 @@ test("Setup explains the machine and re-checks without executing a remedy", asyn
   await page.goto(`${daemon.baseURL}/#/settings/setup`);
 
   const scope = page.locator(".settings-panel-head .settings-scope");
-  await expect(scope).toHaveText("Reads ~/");
+  await expect(scope).toHaveText("This installation");
   await scope.hover();
   await expect(page.locator(".tooltip")).toHaveText(
-    "Inspects tools and configuration in your home directory without changing them.",
+    "Checks local tools and configures application updates and integrations.",
   );
 
   await openSetupFamily(page, "agents");

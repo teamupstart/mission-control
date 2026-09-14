@@ -106,7 +106,7 @@ one immediately.
 
 | Persona | What it judges |
 |---|---|
-| Intent Conformance Judge | Whether the change contradicts a stated acceptance criterion. Fails only on a removed required behavior or an added forbidden one |
+| Intent Conformance Judge | Whether the intended feature and explicit interfaces and constraints are satisfied. Allows plan deviations, extra tests, and accompanying bug fixes |
 | Test Coverage Judge | Whether tests appropriately cover changed material executable behavior, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
@@ -118,11 +118,12 @@ one immediately.
 They are **app data, not your data**, and the Persona rail groups them under `Built-in`, apart
 from the ones you wrote. Each
 carries exactly the guidance the build was made from. An upgrade that improves a role updates
-the current catalog, so drafts and newly published versions use the new guidance. Existing
-published versions keep the guidance they were published with and history marks them
-outdated. Adopting the changed guidance requires publishing a new version. Opening a
-built-in shows it read-only: there is no Save to press, Archive is absent, and there is a line
-saying why. **Duplicate to edit** is the promoted verb and the way to a version you own - the
+the current catalog, so drafts and newly published versions use the new guidance. Versions you
+publish from editable workflows keep the guidance they were published with and history marks
+them outdated. Adopting changed guidance in those workflows requires publishing a new version.
+[Built-in workflow versions](#built-in-workflows) follow the snapshot rules described below.
+Opening a built-in shows it read-only: there is no Save to press, Archive is absent, and there
+is a line saying why. **Duplicate to edit** is the promoted verb and the way to a version you own - the
 copy is an ordinary Persona with its own name, editable, archivable, and never touched by an
 upgrade. Their guidance is still exactly as visible as any other: Copy Markdown, Download .md
 and the preview all work, from the header's `⋯` menu.
@@ -158,7 +159,7 @@ copy changes what that role judges, not how it replies.
 ### Built-in workflows
 
 One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 15 are preserved for bindings that already pin them, and version 16 is current. There is
+through 16 are preserved for bindings that already pin them, and version 17 is current. There is
 nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
 already published, and can be bound to a session immediately.
 
@@ -181,8 +182,8 @@ path version 2 does while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
-Behind it are the eight built-in Personas wired the way they were written to compose. In versions 15
-and 16, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
+Behind it are the eight built-in Personas wired the way they were written to compose. From version
+15 onward, Intent Conformance Judge and Test Coverage Judge are stage 2, running **in parallel on the
 same submission** and aggregating at an All-pass Join. This keeps intent drift and inadequate or
 misleading tests ahead of the deeper reviews. Code Risk Reviewer, Code Quality Judge and Code Design
 Reviewer are stage 3, and Test Evidence Auditor, Documentation Steward and Slop Filter are stage 4.
@@ -228,9 +229,9 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 16 preserve that verified publication
-contract. Versions 10 through 16 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 16.
+would ask for one the run already has. Versions 9 through 17 preserve that verified publication
+contract. Versions 10 through 17 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 17.
 
 A passed review in versions 1 through 8 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
@@ -267,10 +268,11 @@ it already reserved, and the built-in it shadows stays hidden behind your copy w
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
 see the built-in.
 
-An upgrade that improves one of the eight Personas improves this workflow too, with no gesture
-from you: it always carries the guidance and the graph the build was made from. Improving the
-shipped workflow itself appends a **new version** rather than editing the one you may be bound
-to, so an existing binding keeps running exactly the graph it was bound to until you rebind it.
+Changing the shipped workflow graph appends a **new version**. An existing binding keeps its
+graph until you rebind it. Built-in Persona guidance comes from this build's catalog unless a
+version explicitly freezes a historical snapshot, so pinning a built-in version alone does not
+freeze every Persona's guidance. A guidance update must preserve the earlier snapshots explicitly,
+as the Intent Conformance update below does for versions 1 through 16.
 
 Versions 3 through 7 are that rule in practice. Version 3 added the deterministic check
 stage; version 4 preserves that graph and changes only the immutable GitHub Inspector-findings
@@ -285,16 +287,20 @@ Slop Filter to stage 4; version 13 keeps that graph while enabling criterion-map
 preflight; version 14 keeps the same graph and policies while pinning all seven reviewers to Codex,
 with Code Design Reviewer on `gpt-5.6-sol` and the other six on `gpt-5.6-terra`; version 15 adds
 Test Coverage Judge beside Intent Conformance Judge in stage 2, with the same pinned Codex Terra
-routing as the other non-design reviewers; and version 16 keeps that graph and routing while
-freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy. Version 15
-retains the percentage-based guidance it was published with. Every earlier version remains in the
+routing as the other non-design reviewers; version 16 keeps that graph and routing while
+freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy; and version 17
+keeps the same graph and routing while updating Intent Conformance Judge to prioritize the requested
+outcome and explicit interfaces over plan details. It allows extra tests and accompanying bug fixes,
+including unrelated bugs explained in supplied comments or submission notes. Versions 1 through 16
+retain their original intent guidance. Version 15 retains the percentage-based guidance it was
+published with. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
 binding defaults - including versions 1 through 6, which stay `manual` and still wait for you,
 and versions 1 through 7, none of which carries an action node or has its post-End handoff
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 16 because it is current. Adopting the newer version on an
+take version 17 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

@@ -113,7 +113,7 @@ Propose a Telemetry section with three explicit controls: local capture, user-ow
 | Configuration/auth problem | Actionable bounded explanation | Pause affected destination; other profile continues |
 | Storage/retention loss | Records expired/dropped and coverage gap | Explain limit; never present queue-empty as complete delivery |
 
-User-backend configuration: endpoint, signal availability, credential reference and necessary TLS/proxy settings. Prefer HTTPS remotely, support local loopback HTTP Collectors, and never disable TLS verification globally. Secrets are write-only in the UI after save; status reports only that a credential is configured. Redirects must not forward credentials to a changed destination.
+User-backend configuration: endpoint, signal availability, credential reference and necessary TLS/proxy settings. Require HTTPS for credential-bearing non-loopback exports; support local loopback HTTP Collectors and prefer HTTPS for other remote exports. Validate the rule in the daemon as well as the form, and never disable TLS verification globally. Secrets are write-only in the UI after save; status reports only that a credential is configured. Redirects must not forward credentials to a changed destination.
 
 “Test connection” sends a clearly identified synthetic diagnostic payload after configuration, not live buffered history. A successful test establishes endpoint acceptance, not that the user's dashboard has indexed the data. Product endpoint details and enrollment are a separate service contract; no secret embedded in the distributed app can serve as private service authentication.
 

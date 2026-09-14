@@ -82,6 +82,8 @@ The prototype must select and pin a supported SDK/export/serialization path that
 
 Recommend OTLP/HTTP protobuf as the first wire format, with explicit per-signal URLs or one base URL resolved once. JSON support and gRPC are later compatibility choices, not prerequisites. The existing local Claude receiver uses its own HTTP/JSON contract and stays independent.
 
+Credential-bearing exports to non-loopback destinations require HTTPS. Loopback HTTP Collectors remain supported. Enforce this at configuration validation and the exporter boundary, and never forward credentials when a redirect changes the destination. TLS certificate verification stays enabled; remote credential-free endpoints still prefer HTTPS.
+
 | Result | Delivery action |
 | --- | --- |
 | Valid full success | Mark accepted and release retained payload when no other local policy needs it |

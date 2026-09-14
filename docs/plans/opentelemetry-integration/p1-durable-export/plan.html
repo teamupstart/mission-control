@@ -75,6 +75,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <p>The prototype must select and pin a supported SDK/export/serialization path that preserves resources and IDs. Options are resource-partitioned readers with tested public extension interfaces, or another supported exporter/serialization boundary. Do not deep-import SDK internals, manually implement OTLP protobuf, or assume ordinary exporter callbacks expose sufficient partial-success detail. If no maintainable adapter passes, re-evaluate a local Collector before broad instrumentation.</p>
 <h2 id="transport-contract">Transport contract</h2>
 <p>Recommend OTLP/HTTP protobuf as the first wire format, with explicit per-signal URLs or one base URL resolved once. JSON support and gRPC are later compatibility choices, not prerequisites. The existing local Claude receiver uses its own HTTP/JSON contract and stays independent.</p>
+<p>Credential-bearing exports to non-loopback destinations require HTTPS. Loopback HTTP Collectors remain supported. Enforce this at configuration validation and the exporter boundary, and never forward credentials when a redirect changes the destination. TLS certificate verification stays enabled; remote credential-free endpoints still prefer HTTPS.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>

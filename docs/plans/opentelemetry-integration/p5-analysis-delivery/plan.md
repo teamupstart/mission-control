@@ -1,6 +1,6 @@
 # P5. Local Grafana dashboards and end-to-end telemetry
 
-Implementation scope for review. Parent: [planning brief](../plan.html). P5 builds the local observability stack and six working dashboards using the contracts and signals from [P0](../p0-data-contract/plan.html), [P1](../p1-durable-export/plan.html), [P2](../p2-session-lifecycle/plan.html), [P3](../p3-workflow-insights/plan.html) and [P4](../p4-interactions-errors-settings/plan.html). Validation supports these deliverables; it is not P5's only output.
+Design area P5. Parent: [planning brief](../plan.html). P5 specifies the local observability stack and six working dashboards using the contracts and signals from [P0](../p0-data-contract/plan.html), [P1](../p1-durable-export/plan.html), [P2](../p2-session-lifecycle/plan.html), [P3](../p3-workflow-insights/plan.html) and [P4](../p4-interactions-errors-settings/plan.html). The numbered implementation phases build these deliverables; validation supports their delivery.
 
 Confirmed requirements: independent user-backend/product opt-ins, restart-safe capture of accepted core telemetry in the first usable release, and actual dashboards on a local Grafana/Prometheus installation. On 2026-09-13 the operator also requested scheduling. The [phased plan](../phased-plan.html) owns the implementation sequence; this design specifies the dashboard behavior.
 
@@ -8,7 +8,7 @@ Confirmed requirements: independent user-backend/product opt-ins, restart-safe c
 
 An operator starts the supplied local stack, selects its OTLP endpoint in Mission Control, performs application actions and opens six already-provisioned Grafana dashboards showing real metrics and linked traces. A separate synthetic demo mode makes the same dashboards useful for development and acceptance testing without paid model calls or private operator data.
 
-P5 owns runnable stack configuration, version-controlled dashboards, PromQL/recording rules, trace navigation, any missing bounded analytical projections, fixture replay and browser/API checks. A document containing dashboard ideas or screenshots alone does not complete P5.
+P5 owns the requirements, contracts and acceptance criteria for these deliverables. [Phase 1](../phase-1-durable-walking-slice.md) builds the compatible local stack and walking slice; [Phase 6](../phase-6-analytical-projections.md) implements bounded analytical projections; [Phase 7](../phase-7-grafana-dashboards.md) implements the six dashboards, PromQL/recording rules, trace navigation, fixture replay, browser/API checks and final setup guide. A document containing dashboard ideas or screenshots alone does not complete P5's delivery requirements.
 
 ## Local reference stack
 
@@ -18,7 +18,7 @@ P5 owns runnable stack configuration, version-controlled dashboards, PromQL/reco
 | Prometheus | Metric storage and PromQL | Enable its OTLP metrics receiver; pin metric-name translation, resource-label promotion, retention and late-sample policy |
 | OpenTelemetry Collector | One local OTLP ingress and signal routing | Route metrics to Prometheus and traces to Tempo using separate durable sending queues |
 | Grafana Tempo | Trace storage and search | Proposed trace backend for the existing metrics-and-traces requirement; provision trace searches and links from Grafana |
-| Mission Control daemon | Capture, source semantics and derived metrics | P1 owns durable capture/export; P5 adds analytical reducers through that facility when the dashboards need them |
+| Mission Control daemon | Capture, source semantics and derived metrics | P1 defines durable capture/export; Phase 6 implements P5's analytical reducers through that facility |
 
 The operator selected Grafana and Prometheus. Tempo and an upstream Collector are the recommended companion components. Prometheus documents an explicitly enabled HTTP receiver at `/api/v1/otlp/v1/metrics`, configurable resource promotion and late ingestion. Pin the translation policy and verify the emitted names. [Prometheus OTLP guide](https://prometheus.io/docs/guides/opentelemetry/).
 
@@ -57,7 +57,7 @@ Proposed paths are implementation targets, not files already created by this pla
 | `e2e/` dashboard coverage and backend assertions | Exercise Grafana panels, filters and trace navigation; query real Prometheus/Tempo to verify semantics |
 | Local observability guide | Setup and connection steps, panel definitions, freshness/coverage limits, upgrade and troubleshooting instructions |
 
-Each panel has a manifest entry connecting its question to source events, instruments, query, units, allowed filters, expected fixture result and test. If a required panel lacks a usable signal, P5 implements the missing projection or lands a coordinated owner change in P0-P4. An unexplained empty panel is not a delivered dashboard.
+Each panel has a manifest entry connecting its question to source events, instruments, query, units, allowed filters, expected fixture result and test. If a required panel lacks a usable signal, Phase 6 implements the missing projection or Phase 7 coordinates an instrumentation change with its source owner. An unexplained empty panel is not a delivered dashboard.
 
 ## Three analytical layers
 
@@ -107,7 +107,7 @@ For time-window incident metrics, use events that occurred in the window. For st
 
 ## Metrics needed for the dashboards
 
-P5 must implement the analytical summaries missing from P0-P4, through P1's daemon-owned projection interface. They consume the same accepted domain facts and checkpoint atomically. Run/session/operation IDs may key bounded local reducer state, but must not become Prometheus metric labels.
+Phase 6 must implement the analytical summaries specified by P5 and missing from P0-P4, through P1's daemon-owned projection interface. They consume the same accepted domain facts and checkpoint atomically. Run/session/operation IDs may key bounded local reducer state, but must not become Prometheus metric labels.
 
 | Projection | State and output |
 | --- | --- |
@@ -275,11 +275,11 @@ These are design-level delivery boundaries. The [seven-phase implementation inde
 | D1. Durable/profile foundation | Disabled/local-only/two-profile state, bounded journal/projection/outbox, restart/replay, consent and status | DB migrations, configuration registry, routes, SSE |
 | D2. Session and workflow core | P2 attribution, P3 verdict/repair/intervention semantics and source reconciliation | Registry, supervisor, dispatcher, workflow manager/store |
 | D3. Action/error breadth | P4 primary-action manifest, error handling, settings and browser coverage | Browser API, action owners, MCP and automation context |
-| D4. Dashboard implementation and rollout | Six provisioned dashboards, bounded analytical projectors, PromQL/rules, trace navigation, local stack package, end-to-end fixtures, measured budgets and setup guide | P5 owns these artifacts; P0-P4 owners review required contract/instrumentation changes |
+| D4. Dashboard implementation and rollout | Six provisioned dashboards, bounded analytical projectors, PromQL/rules, trace navigation, local stack package, end-to-end fixtures, measured budgets and setup guide | P5 defines requirements/contracts and acceptance; Phase 6 implements projectors and Phase 7 implements dashboard delivery, extending Phase 1's stack; P0-P4 owners review contract/instrumentation changes |
 
-Each boundary may require several small pull requests. Plan exact dependency edges after the shared contract and prototype pass. Do not start several independent migrations or route/schema edits in parallel; shared files have one integrator, and feature owners add instrumentation through its agreed interface.
+The [implementation index](../phased-plan.html) and [task map](../schedule.html) define the seven scheduled merge units and their dependency edges. Reconcile downstream guides if Phase 1's shared contract or prototype requires a change. Do not start several independent migrations or route/schema edits in parallel; shared files have one integrator, and feature owners add instrumentation through its agreed interface.
 
-Within P5, deliver the stack/provisioning skeleton in D0; develop dashboards and required projectors as D2/D3 signals become available; finish cross-dashboard checks and documentation in D4. Source semantics, consent and durability tests remain acceptance criteria of P0-P4 as well. P5 does not defer their validation until the final phase.
+For P5's delivery, Phase 1 supplies the D0 stack/provisioning skeleton, Phase 6 implements projectors after Phase 4, and Phase 7 completes dashboards, cross-dashboard checks and documentation after Phases 5 and 6. Source semantics, consent and durability tests remain acceptance criteria of their introducing phases. Their validation is not deferred until Phase 7.
 
 The product ingest endpoint needs separately scoped enrollment/authentication, quotas, retention/access rules and backend storage. It cannot rely on a secret in the desktop binary. Client development can proceed against a local fake endpoint; public product sharing cannot be enabled until the actual service contract is ready. No hosting or release configuration change is implied by this plan.
 
@@ -295,7 +295,7 @@ The product ingest endpoint needs separately scoped enrollment/authentication, q
 | Task status failed after departure appears to prove bad work | Preserve task status and completion evidence separately; unknown completion stays unknown |
 | Replaying after upgrade could look like new-release activity | Original resource/version/timestamps retained and tested |
 | Trace sampling could skew persona acceptance rates | Unsampled core event projection owns those metrics and analytical denominators |
-| Grafana panels describe cohorts that PromQL cannot derive from action counts | P5 implements bounded daemon cohort projectors and exports their summaries as OTel metrics |
+| Grafana panels describe cohorts that PromQL cannot derive from action counts | Phase 6 implements P5's bounded daemon cohort projectors and exports their summaries as OTel metrics |
 | P1's seven-day payload retention is shorter than rolling cohort state needs | Bound and charge separate minimal projection retention, with explicit completeness on expiry |
 | P5 looks like a report with no build output | Six dashboards, local stack, analytical code, queries and executable end-to-end tests are mandatory deliverables |
 | Scheduled consumers could start before contracts or plan paths exist | Every phase waits for the planning PR and its direct implementation prerequisites to merge |

@@ -22,7 +22,7 @@ HTTP mutations use schemas in `src/shared/protocol.ts` and `parseBody`. Browser 
 
 1. Finalize the minimal Phase 1 configuration into explicit local capture and independent user/product export state. Retain default-off behavior and per-profile consent/endpoint generations. Document combinations and transitions before wiring controls; an unenrolled product service is unavailable, not silently redirected to the user's backend.
 2. Add validated read/update/state/test/retry/purge/reset operations through the Phase 1 telemetry router/module. Use revision checks where settings can race. Reuse the facade for writes and return small status objects; do not expose queue payloads or credentials in API/SSE.
-3. Choose credential references/storage compatible with daemon-only and packaged modes using existing mechanisms where available. Keep secrets out of ordinary app configuration backups, logs, diagnostic errors and child environments. A config read exposes only whether a secret is configured. Endpoint changes do not silently transfer backlog or forward credentials on redirects.
+3. Choose credential references/storage compatible with daemon-only and packaged modes using existing mechanisms where available. Keep secrets out of ordinary app configuration backups, logs, diagnostic errors and child environments. A config read exposes only whether a secret is configured. Require HTTPS for credential-bearing non-loopback exports in both daemon validation and the form, while allowing loopback HTTP Collectors. Endpoint changes do not silently transfer backlog or forward credentials on redirects.
 4. Integrate status into the existing bounded snapshot/SSE channel and comparator. Update shared wire types, Registry comparison, settings status provider, client handling and necessary Settings registry/search metadata together. Do not add browser polling or duplicate stores for queue state.
 5. Build the Telemetry Settings section: local-only, healthy, offline, paused, invalid credentials/configuration, loss/incomplete coverage, and off. Show per-profile pending count/bytes/oldest age and last accepted export. Distinguish queued, saved locally and delivered; local saved means committed.
 6. Implement explicit backlog policy on destination changes, profile-specific purge and identity reset. Consent withdrawal stops new product sends and purges unsent product state without touching sessions/workflows/usage or the user profile. Restoring settings on another installation must not enable collection/sharing or restore identity/credentials implicitly.
@@ -39,6 +39,8 @@ Actor context carries operation ID, surface, basis and causal link, not a truste
 
 Focused tests cover transition tables, same-operation replay, oversized/malicious ingress, endpoint generations, duplicate configuration updates, credential redaction, independent failures and settings restore. Use the mandated root `AGENTS.md` runner for relevant existing `test/settings-status.test.ts`, backup/restore tests and new telemetry profile/route tests.
 
+Validate remote HTTP plus credentials is rejected consistently by the form and API, loopback HTTP remains usable, and redirect handling cannot send credentials to another destination. Keep the Phase 1 exporter checks as the final enforcement boundary.
+
 Add Playwright coverage for every visible control/state, including local-only capture across daemon restart, separate opt-ins, paused versus disabled, connection probe, keep/discard backlog, purge/reset, secret masking and offline status. Use fake agents and accessible selectors; every new modal uses the inset helper.
 
 Run `npm run typecheck`, `npm run lint`, `npm run build`, `npm run smoke`, then the focused specs with `npm run test:e2e -- e2e/specs/telemetry-settings.spec.ts` or the actual spec names introduced. Run Phase 1's reference-stack smoke with both isolated profiles, keeping product fixtures separate from real data. Capture current UI evidence outside Git.
@@ -54,3 +56,5 @@ Open the phase PR, keep it compatible with current main, address valid scoped fe
 ## Cross-phase audit
 
 2026-09-13: re-read the source, index and Phase 1. Durable storage and default-off fencing remain in Phase 1; this phase owns their UI/API operations and typed ingress. No duplicate exporter, secret store or action identity is introduced. Registry/SSE edits finish before Phase 3 touches lifecycle hooks. Source control actions owned here are excluded from Phase 5's success-counter hooks.
+
+Review reconciliation: validation and user-facing endpoint behavior mirror Phase 1's credential-bearing remote HTTPS and redirect contract. The supported local HTTP setup and independent consent semantics are unchanged.

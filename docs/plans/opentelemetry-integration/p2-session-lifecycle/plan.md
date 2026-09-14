@@ -101,7 +101,7 @@ Registry's `session_exit` fires before the removal timer and still has access to
 
 `ended_while_work_open` is an observed relationship at departure, not a moral judgment or a failed outcome. “Abandoned” is an optional derived cohort: ended work with no completion or linked continuation after a proposed seven-day grace period. Display the horizon and observation quality, and exclude known suspensions/handoffs. Later continuation can revise the cohort result without rewriting raw events.
 
-Do not emit abandonment as a one-way counter from a timer. A count that cannot be corrected when a user returns is unsuitable for retention/cohort analysis. P5 owns query-time classification.
+Do not emit abandonment as a one-way counter from a timer. A count that cannot be corrected when a user returns is unsuitable for retention/cohort analysis. P5 defines the classification contract; Phases 6 and 7 implement the corresponding summaries and queries.
 
 ## PR and completion provenance
 

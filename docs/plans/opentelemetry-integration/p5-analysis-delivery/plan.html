@@ -5,11 +5,11 @@
 main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
 h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
 </style></head><body><main><h1>P5. Local Grafana dashboards and end-to-end telemetry</h1>
-<p>Implementation scope for review. Parent: <a href="../plan.html">planning brief</a>. P5 builds the local observability stack and six working dashboards using the contracts and signals from <a href="../p0-data-contract/plan.html">P0</a>, <a href="../p1-durable-export/plan.html">P1</a>, <a href="../p2-session-lifecycle/plan.html">P2</a>, <a href="../p3-workflow-insights/plan.html">P3</a> and <a href="../p4-interactions-errors-settings/plan.html">P4</a>. Validation supports these deliverables; it is not P5&#39;s only output.</p>
+<p>Design area P5. Parent: <a href="../plan.html">planning brief</a>. P5 specifies the local observability stack and six working dashboards using the contracts and signals from <a href="../p0-data-contract/plan.html">P0</a>, <a href="../p1-durable-export/plan.html">P1</a>, <a href="../p2-session-lifecycle/plan.html">P2</a>, <a href="../p3-workflow-insights/plan.html">P3</a> and <a href="../p4-interactions-errors-settings/plan.html">P4</a>. The numbered implementation phases build these deliverables; validation supports their delivery.</p>
 <p>Confirmed requirements: independent user-backend/product opt-ins, restart-safe capture of accepted core telemetry in the first usable release, and actual dashboards on a local Grafana/Prometheus installation. On 2026-09-13 the operator also requested scheduling. The <a href="../phased-plan.html">phased plan</a> owns the implementation sequence; this design specifies the dashboard behavior.</p>
 <nav aria-label="Contents"><ul><li><a href="#concrete-outcome">Concrete outcome</a></li><li><a href="#local-reference-stack">Local reference stack</a></li><li><a href="#deliverables-to-build">Deliverables to build</a></li><li><a href="#three-analytical-layers">Three analytical layers</a></li><li><a href="#six-dashboards-to-deliver">Six dashboards to deliver</a></li><li><a href="#query-definitions">Query definitions</a></li><li><a href="#metrics-needed-for-the-dashboards">Metrics needed for the dashboards</a></li><li><a href="#sql-oracle-for-fixture-semantics">SQL oracle for fixture semantics</a></li><li><a href="#shared-golden-fixture">Shared golden fixture</a></li><li><a href="#release-and-optimization-comparisons">Release and optimization comparisons</a></li><li><a href="#freshness-quality-and-exclusions">Freshness, quality and exclusions</a></li><li><a href="#performance-and-compatibility-gates">Performance and compatibility gates</a></li><li><a href="#dashboard-acceptance-scenarios">Dashboard acceptance scenarios</a></li><li><a href="#integration-order-and-ownership">Integration order and ownership</a></li><li><a href="#cross-area-conflicts-resolved">Cross-area conflicts resolved</a></li><li><a href="#remaining-implementation-decisions">Remaining implementation decisions</a></li></ul></nav><h2 id="concrete-outcome">Concrete outcome</h2>
 <p>An operator starts the supplied local stack, selects its OTLP endpoint in Mission Control, performs application actions and opens six already-provisioned Grafana dashboards showing real metrics and linked traces. A separate synthetic demo mode makes the same dashboards useful for development and acceptance testing without paid model calls or private operator data.</p>
-<p>P5 owns runnable stack configuration, version-controlled dashboards, PromQL/recording rules, trace navigation, any missing bounded analytical projections, fixture replay and browser/API checks. A document containing dashboard ideas or screenshots alone does not complete P5.</p>
+<p>P5 owns the requirements, contracts and acceptance criteria for these deliverables. <a href="../phase-1-durable-walking-slice.md">Phase 1</a> builds the compatible local stack and walking slice; <a href="../phase-6-analytical-projections.md">Phase 6</a> implements bounded analytical projections; <a href="../phase-7-grafana-dashboards.md">Phase 7</a> implements the six dashboards, PromQL/recording rules, trace navigation, fixture replay, browser/API checks and final setup guide. A document containing dashboard ideas or screenshots alone does not complete P5&#39;s delivery requirements.</p>
 <h2 id="local-reference-stack">Local reference stack</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -42,7 +42,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <tr>
 <td>Mission Control daemon</td>
 <td>Capture, source semantics and derived metrics</td>
-<td>P1 owns durable capture/export; P5 adds analytical reducers through that facility when the dashboards need them</td>
+<td>P1 defines durable capture/export; Phase 6 implements P5&#39;s analytical reducers through that facility</td>
 </tr>
 </tbody></table></div>
 <p>The operator selected Grafana and Prometheus. Tempo and an upstream Collector are the recommended companion components. Prometheus documents an explicitly enabled HTTP receiver at <code>/api/v1/otlp/v1/metrics</code>, configurable resource promotion and late ingestion. Pin the translation policy and verify the emitted names. <a href="https://prometheus.io/docs/guides/opentelemetry/">Prometheus OTLP guide</a>.</p>
@@ -94,7 +94,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <td>Setup and connection steps, panel definitions, freshness/coverage limits, upgrade and troubleshooting instructions</td>
 </tr>
 </tbody></table></div>
-<p>Each panel has a manifest entry connecting its question to source events, instruments, query, units, allowed filters, expected fixture result and test. If a required panel lacks a usable signal, P5 implements the missing projection or lands a coordinated owner change in P0-P4. An unexplained empty panel is not a delivered dashboard.</p>
+<p>Each panel has a manifest entry connecting its question to source events, instruments, query, units, allowed filters, expected fixture result and test. If a required panel lacks a usable signal, Phase 6 implements the missing projection or Phase 7 coordinates an instrumentation change with its source owner. An unexplained empty panel is not a delivered dashboard.</p>
 <h2 id="three-analytical-layers">Three analytical layers</h2>
 <div class="table-wrap"><table>
 <thead>
@@ -227,7 +227,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <p>Do not mix denominators between charts. A completion rate among only already-completed runs is always 100% and says nothing. A recovery count divided by finished runs excludes exactly the stalled work most likely to need improvement.</p>
 <p>For time-window incident metrics, use events that occurred in the window. For start-cohort measures, follow runs that started in the window through a fixed horizon. These are different views and must be named accordingly. Recently started runs are immature; ones observed after opt-in with an earlier start are left-censored and excluded from start-based funnels by default.</p>
 <h2 id="metrics-needed-for-the-dashboards">Metrics needed for the dashboards</h2>
-<p>P5 must implement the analytical summaries missing from P0-P4, through P1&#39;s daemon-owned projection interface. They consume the same accepted domain facts and checkpoint atomically. Run/session/operation IDs may key bounded local reducer state, but must not become Prometheus metric labels.</p>
+<p>Phase 6 must implement the analytical summaries specified by P5 and missing from P0-P4, through P1&#39;s daemon-owned projection interface. They consume the same accepted domain facts and checkpoint atomically. Run/session/operation IDs may key bounded local reducer state, but must not become Prometheus metric labels.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -474,11 +474,11 @@ FROM cohort LEFT JOIN recovered USING (run_id);
 <tr>
 <td>D4. Dashboard implementation and rollout</td>
 <td>Six provisioned dashboards, bounded analytical projectors, PromQL/rules, trace navigation, local stack package, end-to-end fixtures, measured budgets and setup guide</td>
-<td>P5 owns these artifacts; P0-P4 owners review required contract/instrumentation changes</td>
+<td>P5 defines requirements/contracts and acceptance; Phase 6 implements projectors and Phase 7 implements dashboard delivery, extending Phase 1&#39;s stack; P0-P4 owners review contract/instrumentation changes</td>
 </tr>
 </tbody></table></div>
-<p>Each boundary may require several small pull requests. Plan exact dependency edges after the shared contract and prototype pass. Do not start several independent migrations or route/schema edits in parallel; shared files have one integrator, and feature owners add instrumentation through its agreed interface.</p>
-<p>Within P5, deliver the stack/provisioning skeleton in D0; develop dashboards and required projectors as D2/D3 signals become available; finish cross-dashboard checks and documentation in D4. Source semantics, consent and durability tests remain acceptance criteria of P0-P4 as well. P5 does not defer their validation until the final phase.</p>
+<p>The <a href="../phased-plan.html">implementation index</a> and <a href="../schedule.html">task map</a> define the seven scheduled merge units and their dependency edges. Reconcile downstream guides if Phase 1&#39;s shared contract or prototype requires a change. Do not start several independent migrations or route/schema edits in parallel; shared files have one integrator, and feature owners add instrumentation through its agreed interface.</p>
+<p>For P5&#39;s delivery, Phase 1 supplies the D0 stack/provisioning skeleton, Phase 6 implements projectors after Phase 4, and Phase 7 completes dashboards, cross-dashboard checks and documentation after Phases 5 and 6. Source semantics, consent and durability tests remain acceptance criteria of their introducing phases. Their validation is not deferred until Phase 7.</p>
 <p>The product ingest endpoint needs separately scoped enrollment/authentication, quotas, retention/access rules and backend storage. It cannot rely on a secret in the desktop binary. Client development can proceed against a local fake endpoint; public product sharing cannot be enabled until the actual service contract is ready. No hosting or release configuration change is implied by this plan.</p>
 <h2 id="cross-area-conflicts-resolved">Cross-area conflicts resolved</h2>
 <div class="table-wrap"><table>
@@ -522,7 +522,7 @@ FROM cohort LEFT JOIN recovered USING (run_id);
 </tr>
 <tr>
 <td>Grafana panels describe cohorts that PromQL cannot derive from action counts</td>
-<td>P5 implements bounded daemon cohort projectors and exports their summaries as OTel metrics</td>
+<td>Phase 6 implements P5&#39;s bounded daemon cohort projectors and exports their summaries as OTel metrics</td>
 </tr>
 <tr>
 <td>P1&#39;s seven-day payload retention is shorter than rolling cohort state needs</td>

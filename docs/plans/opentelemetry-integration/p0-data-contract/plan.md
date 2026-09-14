@@ -105,7 +105,7 @@ Suggested specialized views rather than one giant label set:
 
 Cross-dimensional author/reviewer comparisons belong in traces or a supported analytical projection. Do not silently omit the user's desired joins and then claim metrics alone cover them.
 
-The selected local Grafana/Prometheus deliverable in [P5](../p5-analysis-delivery/plan.html) also requires bounded analytical snapshot gauges for distinct-run recovery, horizon outcomes and repeat feature use. P5 owns the reducers and panels; P0 owns their catalog entries, cohort definitions and dimension budgets. Keep window/horizon enums bounded, timestamp bounds as values, and individual run/operation IDs out of metric labels. Raw action counters do not substitute for these cohort summaries.
+The selected local Grafana/Prometheus deliverable in [P5](../p5-analysis-delivery/plan.html) also requires bounded analytical snapshot gauges for distinct-run recovery, horizon outcomes and repeat feature use. P5 defines reducer and panel requirements; Phase 6 implements reducers and Phase 7 implements panels. P0 owns their catalog entries, cohort definitions and dimension budgets. Keep window/horizon enums bounded, timestamp bounds as values, and individual run/operation IDs out of metric labels. Raw action counters do not substitute for these cohort summaries.
 
 Illustrative cardinality, not a measurement: 12 persona families × 8 models × 2 verdicts = 192 active dimension combinations. Adding 8 author models × 6 efforts × 20 workflow revisions makes 184,320 combinations before resource identity. Histogram buckets and backend resource-to-label promotion add further series. P5 measures the real budget.
 

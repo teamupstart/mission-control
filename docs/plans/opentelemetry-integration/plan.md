@@ -29,7 +29,7 @@ Start with session outcomes and workflow repair loops. They directly answer whet
 
 Recommend an application-owned durable queue, with an optional external Collector. Restart-safe capture is required in v1. Confirm the mechanism with a small durability prototype before broad instrumentation; a failed prototype must lead to another durable mechanism, not an in-memory-only release.
 
-P5 must deliver a runnable local Grafana/Prometheus setup and six provisioned dashboards. Its proposed supporting components are an OpenTelemetry Collector for routing and Tempo for trace storage/search. The same stack supplies P1's early compatibility test. P5 also builds the bounded cohort projectors required by its panels; dashboard delivery is a concrete implementation outcome, not just a final validation report. See [the revised P5 scope](p5-analysis-delivery/plan.html) for component sources and acceptance criteria.
+P5 requires a runnable local Grafana/Prometheus setup and six provisioned dashboards. Its proposed supporting components are an OpenTelemetry Collector for routing and Tempo for trace storage/search. Phase 1 builds the stack for P1's early compatibility test; Phase 6 implements the bounded cohort projectors and Phase 7 delivers the six dashboards. These are concrete implementation outcomes. See [the revised P5 scope](p5-analysis-delivery/plan.html) for component sources and acceptance criteria.
 
 Confirmed audience decision: support both user-owned backends and aggregate product analytics, with separate opt-ins. The operator selected this in Mission Control on 2026-09-12. Each destination has its own export policy, queue and identity; configuring a personal backend does not enable product sharing. This decision specifies the future feature, not permission to export present operator data.
 
@@ -48,7 +48,7 @@ An installation is not necessarily a person. Until an explicit account identity 
 
 ## What the repository already provides
 
-These are verified source observations, not claims from a running telemetry system. The [implementation index](phased-plan.md#repository-findings-and-reconciliations) records current-baseline evidence and reconciliations. The local investigation report is excluded from publication.
+These are verified source observations, not claims from a running telemetry system. The [implementation index](phased-plan.html#repository-findings-and-reconciliations) records current-baseline evidence and reconciliations. The local investigation report is excluded from publication.
 
 | Existing seam | Useful facts | Planning consequence |
 | --- | --- | --- |
@@ -255,7 +255,7 @@ Ship query definitions with instrumentation. A new counter without a decision it
 
 Keep denominator definitions, time windows, eligibility, unknown values and sample sizes beside the charts. Compare matured cohorts and show pending/cancelled/lost work rather than silently dropping it. Installation opt-in is a selection bias. Version correlation does not establish causality; use within-installation comparisons or a separately approved experiment for stronger conclusions. Do not claim a model is better because it was chosen for easier tasks.
 
-OTel provides transport and signal semantics. The selected local dashboards run on Grafana/Prometheus, with Tempo proposed for trace drill-down. P5 implements bounded daemon cohort summaries where raw metric counters cannot answer a required question; it does not leave the six dashboards dependent on a future warehouse. Arbitrary retrospective joins remain outside this local reference scope.
+OTel provides transport and signal semantics. The selected local dashboards run on Grafana/Prometheus, with Tempo proposed for trace drill-down. Phase 6 implements P5's bounded daemon cohort summaries where raw metric counters cannot answer a required question, so Phase 7's six dashboards do not depend on a future warehouse. Arbitrary retrospective joins remain outside this local reference scope.
 
 ## Six bounded planning sessions
 
@@ -279,7 +279,7 @@ Suggested implementation sequence after those designs are approved:
 3. **Primary-action and error coverage:** dashboard/MCP/automation origins, integration use, errors, settings and telemetry health, plus broader queues/ensembles/pipelines coverage.
 4. **Dashboard implementation and rollout:** runnable local Grafana/Prometheus stack, six provisioned dashboards, bounded cohort projectors, tested queries and trace navigation, performance measurements and setup guide. Start the minimal stack in the walking slice. A hosted product ingest service has its own infrastructure scope.
 
-No backlog tasks are created by this draft. It proposes planning boundaries; implementation sessions should not be dispatched until their contracts and dependencies are resolved.
+Seven dependency-linked backlog tasks are now scheduled in the [implementation index](phased-plan.html) and [task map](schedule.html). Their dispatch waits for the planning PR and the direct phase prerequisites to merge; the compatibility phase resolves foundational contracts before its consumers are released.
 
 ## Verification bar for the eventual implementation
 

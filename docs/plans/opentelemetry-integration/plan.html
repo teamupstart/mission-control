@@ -54,7 +54,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <p>Build one daemon-owned telemetry facility that records meaningful application outcomes, projects them into OpenTelemetry metrics and traces, and can retain a bounded backlog locally. Instrument the owners of state transitions, then add browser interaction signals where the daemon cannot see intent or friction.</p>
 <p>Start with session outcomes and workflow repair loops. They directly answer whether changes make the app more useful and workflows more efficient. Treat offline delivery as its own early design exercise: adding an exporter is straightforward compared with preserving correct counts and attribution through restarts, retries, model changes, and long-running workflows.</p>
 <p>Recommend an application-owned durable queue, with an optional external Collector. Restart-safe capture is required in v1. Confirm the mechanism with a small durability prototype before broad instrumentation; a failed prototype must lead to another durable mechanism, not an in-memory-only release.</p>
-<p>P5 must deliver a runnable local Grafana/Prometheus setup and six provisioned dashboards. Its proposed supporting components are an OpenTelemetry Collector for routing and Tempo for trace storage/search. The same stack supplies P1&#39;s early compatibility test. P5 also builds the bounded cohort projectors required by its panels; dashboard delivery is a concrete implementation outcome, not just a final validation report. See <a href="p5-analysis-delivery/plan.html">the revised P5 scope</a> for component sources and acceptance criteria.</p>
+<p>P5 requires a runnable local Grafana/Prometheus setup and six provisioned dashboards. Its proposed supporting components are an OpenTelemetry Collector for routing and Tempo for trace storage/search. Phase 1 builds the stack for P1&#39;s early compatibility test; Phase 6 implements the bounded cohort projectors and Phase 7 delivers the six dashboards. These are concrete implementation outcomes. See <a href="p5-analysis-delivery/plan.html">the revised P5 scope</a> for component sources and acceptance criteria.</p>
 <p>Confirmed audience decision: support both user-owned backends and aggregate product analytics, with separate opt-ins. The operator selected this in Mission Control on 2026-09-12. Each destination has its own export policy, queue and identity; configuring a personal backend does not enable product sharing. This decision specifies the future feature, not permission to export present operator data.</p>
 <h2 id="what-success-looks-like">What success looks like</h2>
 <p>The first useful analysis should answer these questions, grouped by app version, task kind, workflow version, authoring model and effort, and reviewer model where applicable:</p>
@@ -68,7 +68,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 </ol>
 <p>An installation is not necessarily a person. Until an explicit account identity exists and is approved for this use, report active installations and sessions rather than unique users. Offline telemetry also makes recent cohorts incomplete; every dashboard should show data freshness and coverage.</p>
 <h2 id="what-the-repository-already-provides">What the repository already provides</h2>
-<p>These are verified source observations, not claims from a running telemetry system. The <a href="phased-plan.md#repository-findings-and-reconciliations">implementation index</a> records current-baseline evidence and reconciliations. The local investigation report is excluded from publication.</p>
+<p>These are verified source observations, not claims from a running telemetry system. The <a href="phased-plan.html#repository-findings-and-reconciliations">implementation index</a> records current-baseline evidence and reconciliations. The local investigation report is excluded from publication.</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -454,7 +454,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 </tr>
 </tbody></table></div>
 <p>Keep denominator definitions, time windows, eligibility, unknown values and sample sizes beside the charts. Compare matured cohorts and show pending/cancelled/lost work rather than silently dropping it. Installation opt-in is a selection bias. Version correlation does not establish causality; use within-installation comparisons or a separately approved experiment for stronger conclusions. Do not claim a model is better because it was chosen for easier tasks.</p>
-<p>OTel provides transport and signal semantics. The selected local dashboards run on Grafana/Prometheus, with Tempo proposed for trace drill-down. P5 implements bounded daemon cohort summaries where raw metric counters cannot answer a required question; it does not leave the six dashboards dependent on a future warehouse. Arbitrary retrospective joins remain outside this local reference scope.</p>
+<p>OTel provides transport and signal semantics. The selected local dashboards run on Grafana/Prometheus, with Tempo proposed for trace drill-down. Phase 6 implements P5&#39;s bounded daemon cohort summaries where raw metric counters cannot answer a required question, so Phase 7&#39;s six dashboards do not depend on a future warehouse. Arbitrary retrospective joins remain outside this local reference scope.</p>
 <h2 id="six-bounded-planning-sessions">Six bounded planning sessions</h2>
 <p>Do not split by telemetry signal alone. Metrics and traces must agree on identity and semantics. Split by the questions and owners below, and share one approved data contract.</p>
 <div class="table-wrap"><table>
@@ -511,7 +511,7 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <li><strong>Primary-action and error coverage:</strong> dashboard/MCP/automation origins, integration use, errors, settings and telemetry health, plus broader queues/ensembles/pipelines coverage.</li>
 <li><strong>Dashboard implementation and rollout:</strong> runnable local Grafana/Prometheus stack, six provisioned dashboards, bounded cohort projectors, tested queries and trace navigation, performance measurements and setup guide. Start the minimal stack in the walking slice. A hosted product ingest service has its own infrastructure scope.</li>
 </ol>
-<p>No backlog tasks are created by this draft. It proposes planning boundaries; implementation sessions should not be dispatched until their contracts and dependencies are resolved.</p>
+<p>Seven dependency-linked backlog tasks are now scheduled in the <a href="phased-plan.html">implementation index</a> and <a href="schedule.html">task map</a>. Their dispatch waits for the planning PR and the direct phase prerequisites to merge; the compatibility phase resolves foundational contracts before its consumers are released.</p>
 <h2 id="verification-bar-for-the-eventual-implementation">Verification bar for the eventual implementation</h2>
 <div class="table-wrap"><table>
 <thead>

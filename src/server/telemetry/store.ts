@@ -1093,12 +1093,37 @@ export function pruneTerminalDeliveries(
   return Number(result.changes);
 }
 
-/** Drop contexts and resources nothing references any more. */
+/** Drop contexts no journal row references any more. */
 export function pruneOrphanedContexts(d: DatabaseSync): number {
   const result = d
     .prepare(
       `DELETE FROM telemetry_contexts
         WHERE id NOT IN (SELECT DISTINCT context_id FROM telemetry_journal)`,
+    )
+    .run();
+  return Number(result.changes);
+}
+
+/**
+ * Drop resources nothing references any more.
+ *
+ * Counted separately from contexts rather than folded in with them: they are referenced by
+ * different things and shed at different times, and one number would hide which.
+ *
+ * BOTH references have to be checked. A resource outlives the journal rows that introduced it
+ * whenever a cumulative series is still keyed by it - which is the normal case, since a stream
+ * runs for as long as that app version keeps reporting. Deleting one out from under a live
+ * series would leave the series unaddressable and its points unexportable, which is the exact
+ * failure `Collector.apply` now records a gap for. Queued batches are safe either way: they
+ * embed their resource in the payload rather than pointing at this table, which is what lets a
+ * batch drain after an upgrade under the version that actually produced it.
+ */
+export function pruneOrphanedResources(d: DatabaseSync): number {
+  const result = d
+    .prepare(
+      `DELETE FROM telemetry_resources
+        WHERE id NOT IN (SELECT DISTINCT resource_id FROM telemetry_journal)
+          AND id NOT IN (SELECT DISTINCT resource_id FROM telemetry_series)`,
     )
     .run();
   return Number(result.changes);

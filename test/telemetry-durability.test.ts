@@ -216,6 +216,82 @@ test("a loss counter that could not be written becomes an unknown gap at the nex
   assert.ok(gap, "health reports it rather than absorbing it");
 });
 
+test("retention sheds orphaned resources, but never one a live series still needs", async () => {
+  // `usedBytes` charges `telemetry_resources` against the 256 MiB budget, and nothing ever
+  // removed a row from it: every app version an installation has ever run stayed for good. The
+  // sweep now covers it - and has to check BOTH references, because a resource routinely
+  // outlives the journal rows that introduced it while a cumulative series is still keyed by
+  // it. Dropping that one would leave the series unaddressable and its points unexportable.
+  const { pruneOrphanedResources, putResource, telemetryTransaction } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+  runProjectionPass(2_000);
+
+  const d = openDb();
+  const live = (
+    d.prepare(`SELECT DISTINCT resource_id FROM telemetry_series`).all() as unknown as Array<{
+      resource_id: string;
+    }>
+  ).map((row) => row.resource_id);
+  assert.ok(live.length > 0, "there is a live series to protect");
+
+  // An orphan: a resource no journal row and no series points at.
+  const orphan = telemetryTransaction((tx) =>
+    putResource(tx, { "service.name": "mission-control", "service.version": "0.0.0-orphan" }, 1_000),
+  );
+  assert.ok(!live.includes(orphan));
+
+  const dropped = telemetryTransaction((tx) => pruneOrphanedResources(tx));
+  assert.equal(dropped, 1, "the unreferenced resource is shed");
+  assert.equal(
+    (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(orphan) as {
+      n: number;
+    }).n,
+    0,
+  );
+  for (const id of live) {
+    assert.equal(
+      (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(id) as {
+        n: number;
+      }).n,
+      1,
+      "a resource a live series is keyed by survives",
+    );
+  }
+
+  // The journal reference alone is enough, with no series involved.
+  const journalResource = (
+    d.prepare(`SELECT resource_id FROM telemetry_journal LIMIT 1`).get() as {
+      resource_id: string;
+    }
+  ).resource_id;
+  telemetryTransaction((tx) => pruneOrphanedResources(tx));
+  assert.equal(
+    (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(
+      journalResource,
+    ) as { n: number }).n,
+    1,
+    "a resource a journal row still names survives",
+  );
+
+  // And the series reference alone is enough, which is the case that actually bites: past the
+  // 30-day window the journal rows are gone while the cumulative stream keyed by that resource
+  // is still running. Checking only the journal would delete it out from under a live series.
+  d.exec("DELETE FROM telemetry_journal");
+  telemetryTransaction((tx) => pruneOrphanedResources(tx));
+  for (const id of live) {
+    assert.equal(
+      (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(id) as {
+        n: number;
+      }).n,
+      1,
+      "a resource only a live series still names survives",
+    );
+  }
+});
+
 test("a metric emitted from the snapshot hook is exportable, not durably unaddressable", async () => {
   // The gauge seam Phase 6's cohort reducers publish through. `snapshot` runs after the event
   // loop, so there is no contributing event to take a resource from - and an empty resource id

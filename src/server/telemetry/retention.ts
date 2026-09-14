@@ -25,6 +25,7 @@ import {
   pruneJournalPayloads,
   pruneJournalRows,
   pruneOrphanedContexts,
+  pruneOrphanedResources,
   pruneSourceIdentities,
   pruneTerminalDeliveries,
   releaseTerminalBatchPayloads,
@@ -55,6 +56,7 @@ export interface RetentionPassResult {
   prunedRows: number;
   prunedIdentities: number;
   prunedContexts: number;
+  prunedResources: number;
   /** Payloads of terminal batches released past the window, including retained ones. */
   releasedTerminalBatches: number;
   /** Settled delivery rows dropped once nothing referenced them. */
@@ -70,6 +72,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       prunedRows: 0,
       prunedIdentities: 0,
       prunedContexts: 0,
+      prunedResources: 0,
       releasedTerminalBatches: 0,
       prunedDeliveries: 0,
       underPressure: false,
@@ -125,6 +128,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     result.prunedRows = pruneJournalRows(d, stateCutoff, BATCH_LIMIT);
     result.prunedIdentities = pruneSourceIdentities(d, stateCutoff, BATCH_LIMIT);
     result.prunedContexts = pruneOrphanedContexts(d);
+    result.prunedResources = pruneOrphanedResources(d);
 
     return result;
   });

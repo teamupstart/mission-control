@@ -99,7 +99,10 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   ship: () => SHIP_COMPLETION_HANDOFF,
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
-  plan: (task, inputs) => planContractAppendix(requirePlanSkills(task, inputs)),
+  plan: (task, inputs) => [
+    planContractAppendix(requirePlanSkills(task, inputs)),
+    ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
+  ].join("\n\n"),
   pipeline: () => null,
   chat: () => null,
 };
@@ -148,7 +151,6 @@ export function withTaskKindContract(
     // order: handing over the report is what its kind means, and registering proof is what
     // the workflow waiting behind it needs.
     inputs.workflowEvidence ? workflowEvidenceContractAppendix() : null,
-    inputs.workflowEvidence && task.kind === "plan" ? planWorkflowEvidenceAppendix() : null,
   ].filter((value): value is string => value !== null);
   return `${composedIntent}\n\n${appendices.join("\n\n")}`;
 }

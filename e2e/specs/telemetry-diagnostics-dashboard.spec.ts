@@ -6,9 +6,6 @@ import { expect, test } from "../fixtures/test.ts";
 const EVIDENCE = artifactsDir("telemetry-diagnostics-dashboard");
 
 /**
- * The walking slice through a browser: a captured fact reaching a panel a person can read, and
- * the trace navigation from that panel to the span explaining it.
- *
  * PREREQUISITE, and an explicit one rather than a silent skip. It needs the local reference
  * stack, which needs Docker:
  *

@@ -192,6 +192,20 @@ for the operator to fix.
 > the installer unloads the old one for you) and, if you use the review channel,
 > re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
+## Desktop update channel
+
+**Settings → Setup → Application updates → Alpha updates** opts a managed desktop app into
+updates from the latest commit on `main`. It defaults off. Alpha checks about every five
+minutes and on **Check for updates**; stable mode retains its six-hour release checks.
+Both modes require an explicit **Update Now**, followed by **Restart and Install**.
+
+The desktop shell owns `update-preferences.json` in `MISSION_HOME`, containing
+`{"alpha":false}` by default. The preference survives updates and restarts and is separate
+from daemon settings snapshots, so repair updates do not depend on a healthy daemon.
+Missing or invalid preferences select stable mode. Change this setting through the desktop
+UI; browser-only dashboards do not offer application updates. See
+[alpha updates](desktop-and-packaging.md#alpha-updates) for source identity and channel changes.
+
 ## Automatic settings snapshots
 
 After the daemon successfully starts serving, it ensures one logical snapshot for the current

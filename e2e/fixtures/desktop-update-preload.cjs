@@ -4,7 +4,10 @@ const path = require("node:path");
 const dashboardUrl = process.argv[2];
 if (!dashboardUrl) throw new Error("the desktop update fixture needs a dashboard URL");
 
-const snapshot = {
+const alphaMode = process.argv[3] === "alpha";
+let snapshot = alphaMode ? {
+  phase: "idle", currentVersion: "1.9.0", lastCheckedAt: null, lastOutcome: null, alpha: false,
+} : {
   phase: "preparing",
   currentVersion: "1.9.0",
   newVersion: "1.9.1",
@@ -34,6 +37,12 @@ app.whenReady().then(async () => {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  ipcMain.handle("mission:update-set-alpha", (event, alpha) => {
+    if (event.sender !== window.webContents || typeof alpha !== "boolean") throw new Error("Invalid alpha change");
+    snapshot = { ...snapshot, alpha };
+    window.webContents.send("mission:update-state", snapshot);
+    return snapshot;
   });
   await window.loadURL(dashboardUrl);
 });

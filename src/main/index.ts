@@ -34,6 +34,7 @@ import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
 import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
 import { UpdateDialogPresenter } from "./update-dialog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
+import { appSourceCommit } from "./bundle-version.ts";
 
 app.setName("Mission Control");
 
@@ -44,6 +45,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
 const appRoot = app.getAppPath();
+// Keep the identity of this running process if another installer replaces its path on disk.
+const runningCommit = appSourceCommit(appRoot);
 const paths = {
   serverEntry: join(appRoot, "dist", "server", "index.mjs"),
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
@@ -177,6 +180,10 @@ function registerIpc(updateController: UpdateController): void {
   });
   ipcMain.handle("mission:update-get-state", () => updateController.getSnapshot());
   ipcMain.handle("mission:update-check", () => updateController.check(true));
+  ipcMain.handle("mission:update-set-alpha", (event, alpha: boolean) => {
+    if (event.sender !== getMainWindow()?.webContents) throw new Error("Only the dashboard can change alpha mode.");
+    return updateController.setAlpha(alpha);
+  });
   ipcMain.handle("mission:update-apply", () => updateController.apply());
   ipcMain.handle("mission:update-install", () => updateController.install());
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
@@ -262,6 +269,7 @@ app.whenReady().then(async () => {
     createDefaultUpdaterPort({
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
+      currentCommit: () => runningCommit,
       helperSource: join(appRoot, "scripts", "apply-update.mjs"),
       stateDirectory: stateDir(),
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),

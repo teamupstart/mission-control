@@ -274,6 +274,9 @@ There are two paths through this repository:
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
   command in a visible terminal, with **Re-check** to confirm the repair.
+  To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
+  updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
+  release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh

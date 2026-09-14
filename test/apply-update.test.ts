@@ -215,6 +215,44 @@ test("the helper waits, backs up, installs the exact tag, records success, and r
   assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
 });
 
+test("a stable upgrade from a legacy bundle succeeds when the new app has commit metadata", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-stable-legacy-helper-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const f = operations({ installedVersion: "1.2.4", backupVersion: "1.2.3" });
+
+  const result = await runApplyUpdate(args(state), {
+    ...f.ops,
+    bundleCommit: (path) => path.includes("previous-app.bundle") ? null : "b".repeat(40),
+  });
+
+  assert.deepEqual(result, { ok: true, message: null });
+  assert.ok(!f.actions.some((action) => action.startsWith("restore:")));
+  assert.ok(f.actions.includes("launch:/Applications/Mission Control.app"));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.result, "success");
+  assert.equal(outcome.targetVersion, "1.2.4");
+});
+
+test("alpha verifies the installed SHA and rolls back a wrong commit even at the same version", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "mission-alpha-helper-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const target = "b".repeat(40);
+  const f = operations({ installedVersion: "1.2.3", backupVersion: "1.2.3" });
+  const failed = await runApplyUpdate({ ...args(state), targetTag: target }, {
+    ...f.ops,
+    bundleCommit: (path) => path.includes("previous-app.bundle") ? "a".repeat(40) : "c".repeat(40),
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.message!, /requested main commit/);
+  assert.ok(f.actions.some((action) => action.startsWith("restore:")));
+  const g = operations({ installedVersion: "1.2.3", backupVersion: "1.2.3" });
+  const installed = await runApplyUpdate({ ...args(state), targetTag: target }, { ...g.ops, bundleCommit: () => target });
+  assert.equal(installed.ok, true);
+  assert.ok(g.actions.some((action) => action.includes(`:${target}:`)));
+  const outcome = JSON.parse(await readFile(join(state, "update-outcome.json"), "utf8"));
+  assert.equal(outcome.targetVersion, "alpha bbbbbbb");
+});
+
 test("the rebuild targets the directory the receipt names, not /Applications by default", async (t) => {
   // The backup, the rollback, and the relaunch all read `appPath` from the receipt, but the
   // rebuild used to be spawned without `--apps-dir` and so always landed in `/Applications`.
@@ -606,6 +644,29 @@ test("an install that did replace the app is rolled back", async (t) => {
 
   assert.equal(result.ok, false);
   assert.ok(f.actions.some((action) => action.startsWith("restore:")), "the rollback ran");
+});
+
+test("commit identity affects alpha rollback while stable rollback remains version-based", () => {
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  const cases = [
+    { installedCommit: a, backupCommit: a, alphaRollback: false },
+    { installedCommit: a, backupCommit: b, alphaRollback: true },
+    { installedCommit: a, backupCommit: undefined, alphaRollback: true },
+    { installedCommit: a, backupCommit: null, alphaRollback: true },
+    { installedCommit: null, backupCommit: a, alphaRollback: true },
+    { installedCommit: undefined, backupCommit: undefined, alphaRollback: true },
+  ];
+  for (const { installedCommit, backupCommit, alphaRollback } of cases) {
+    const identity = { installedCommit, backupCommit, installedVersion: "1.2.3", backupVersion: "1.2.3" };
+    assert.equal(rollbackIsNeeded(identity), false, "stable defaults to version-only recovery");
+    assert.equal(rollbackIsNeeded({ ...identity, requireCommit: false }), false);
+    assert.equal(rollbackIsNeeded({ ...identity, requireCommit: true }), alphaRollback);
+    assert.equal(rollbackIsNeeded({ ...identity, installedVersion: "1.2.4" }), true,
+      "stable still rolls back a replaced version after failure");
+    assert.equal(rollbackIsNeeded({ ...identity, installedVersion: null }), true,
+      "stable still restores a missing or unreadable app");
+  }
 });
 
 test("a bundle whose version cannot be read is rolled back", () => {

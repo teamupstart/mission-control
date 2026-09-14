@@ -24,6 +24,8 @@ declare global {
     updates: {
       getState(): Promise<UpdateSnapshot>;
       check(): Promise<UpdateSnapshot>;
+      /** Optional for an older preload beside a newer dashboard. */
+      setAlpha?(alpha: boolean): Promise<UpdateSnapshot>;
       /** Start the build; the app stays open and reports progress. */
       apply(): Promise<boolean>;
       /** Restart into the prepared build. */

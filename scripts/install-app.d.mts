@@ -127,6 +127,7 @@ export function packagedVersionProblem(input: {
   packagedVersion: string | null;
   sourceVersion: string;
 }): string | null;
+export function packagedSourceCommit(bundle: string): string | null;
 export function parseArgs(argv: string[]): {
   options: {
     ref: string | null;

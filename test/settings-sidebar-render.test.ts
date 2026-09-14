@@ -160,14 +160,14 @@ test("before the daemon answers, the permanent Conductor category is already dra
   assert.match(html, />Conductor</);
 });
 
-test("Setup is a routed category with its read-only remedy boundary visible", () => {
+test("Setup is a routed category with its installation scope visible", () => {
   const html = render("setup");
   assert.match(html, SETUP_ONLY);
   assert.match(
     html,
-    /<div class="settings-panel-head"><h2>Setup<\/h2><span class="settings-scope settings-scope-home-read"[^>]*>Reads ~\/<\/span>/,
+    /<div class="settings-panel-head"><h2>Setup<\/h2><span class="settings-scope settings-scope-installation"[^>]*>This installation<\/span>/,
   );
-  assert.match(html, /Inspects tools and configuration in your home directory without changing them\./);
+  assert.match(html, /Checks local tools and configures application updates and integrations\./);
   assert.doesNotMatch(html, />Writes ~\/<\/span>/);
   assert.doesNotMatch(html, HARNESSES_ONLY);
 });

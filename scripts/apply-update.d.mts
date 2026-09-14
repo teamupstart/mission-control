@@ -61,6 +61,7 @@ export interface ApplyOperations {
   ): void;
   restoreApp(backupApp: string, appPath: string, pid: number): string | null;
   bundleVersion(path: string): string | null;
+  bundleCommit?(path: string): string | null;
   lock: HelperLockOps;
   launch(appPath: string): void;
   log(line: string): void;
@@ -103,7 +104,11 @@ export function realHelperLockOperations(): HelperLockOps;
 export function rollbackIsNeeded(input: {
   installedVersion: string | null;
   backupVersion: string | null;
+  installedCommit?: string | null;
+  backupCommit?: string | null;
+  requireCommit?: boolean;
 }): boolean;
+export function bundleSourceCommit(appPath: string): string | null;
 export function parseArgs(argv: string[]): {
   args: ApplyUpdateArgs | null;
   problem: string | null;

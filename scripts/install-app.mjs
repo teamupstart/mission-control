@@ -89,6 +89,7 @@ import {
   isTrustedInstallRepo,
 } from "../src/shared/install-receipt-schema.mjs";
 import { receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
+import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
 import {
   archPrerequisiteMessage,
   ghPrerequisiteMessage,
@@ -460,6 +461,16 @@ export function packagedVersionProblem({ packagedVersion, sourceVersion }) {
   return null;
 }
 
+/** Source identity is embedded in the app before signing, never inferred from a later checkout. */
+export function packagedSourceCommit(bundle) {
+  try {
+    const value = JSON.parse(readFileSync(join(bundle, "Contents", "Resources", "app", "package.json"), "utf8")).missionCommit;
+    return isCommitSha(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------------------
@@ -673,6 +684,11 @@ function swapAndRecord({
   stagedRevision = null,
   progress,
 }) {
+  const sourceCommit = dryRun ? null : packagedSourceCommit(bundle);
+  if (!dryRun) {
+    const problem = sourceCommitProblem(ref, sourceCommit);
+    if (problem) fail(problem);
+  }
   progress("install");
   heading("Install");
   const appPath = join(appsDir, APP_BUNDLE_NAME);
@@ -755,6 +771,7 @@ function swapAndRecord({
       repo,
       releaseTag: receiptReleaseTag({ ref, source }),
       installedVersion: sourceVersion,
+      ...(sourceCommit ? { installedCommit: sourceCommit } : {}),
       sourceClone: clone,
       appPath,
       installedAt: new Date().toISOString(),
@@ -947,6 +964,8 @@ function installApp(options) {
   }
 
   // 6. Build -----------------------------------------------------------------------------
+  const sourceCommit = dryRun ? null : capture("git", ["-C", clone, "rev-parse", "HEAD"]).stdout.trim();
+  if (!dryRun && !isCommitSha(sourceCommit)) fail("Could not identify the source commit to build.");
   heading("Build");
   // Two markers for one heading. These are the minutes - dependency install, then the
   // packaged build - and a bar that could not tell them apart would sit still for both.
@@ -954,7 +973,7 @@ function installApp(options) {
   const npm = envVar("NPM_BIN") || "npm";
   run(npm, ["ci"], { cwd: clone });
   progress("build");
-  run(npm, ["run", "package"], { cwd: clone });
+  run(npm, ["run", "package", ...(sourceCommit ? ["--", `--config.extraMetadata.missionCommit=${sourceCommit}`] : [])], { cwd: clone });
 
   // 7. Verify ----------------------------------------------------------------------------
   progress("verify");
@@ -971,6 +990,11 @@ function installApp(options) {
     );
     const problem = packagedVersionProblem({ packagedVersion, sourceVersion });
     if (problem) fail(problem);
+    if (capture("git", ["-C", clone, "rev-parse", "HEAD"]).stdout.trim() !== sourceCommit) {
+      fail("The source checkout changed while the app was being built. Prepare the update again.");
+    }
+    const sourceProblem = sourceCommitProblem(sourceCommit, packagedSourceCommit(packagedApp));
+    if (sourceProblem) fail(sourceProblem);
     ok(`packaged version ${packagedVersion}`);
   }
 

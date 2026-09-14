@@ -462,7 +462,7 @@ class Collector implements TelemetryEmitter {
         scope: TELEMETRY_SCOPE,
         metrics: list.map((series) => toPoint(series)),
       };
-      if (this.writeBatch(d, "metrics", payload, list.length, oldestOf(list))) batches += 1;
+      batches += this.writeBatch(d, "metrics", payload, list.length, oldestOf(list));
     }
 
     const spansByResource = new Map<string, EmittedSpan[]>();
@@ -491,7 +491,7 @@ class Collector implements TelemetryEmitter {
         })),
       };
       const oldest = Math.min(...list.map((s) => s.startTime));
-      if (this.writeBatch(d, "traces", payload, list.length, oldest)) batches += 1;
+      batches += this.writeBatch(d, "traces", payload, list.length, oldest);
     }
 
     return { batches, spans: this.spans.length };
@@ -503,7 +503,9 @@ class Collector implements TelemetryEmitter {
     payload: MetricsBatchPayload | TracesBatchPayload,
     itemCount: number,
     oldestEventAt: number,
-  ): boolean {
+    // How many batch rows were persisted, not whether any were. A split writes several, and a
+    // boolean made the pass report one however many it actually created.
+  ): number {
     const destination = getDestination(d, this.profile);
     const json = JSON.stringify(payload);
     const bytes = Buffer.byteLength(json, "utf8");
@@ -526,7 +528,7 @@ class Collector implements TelemetryEmitter {
         `one ${signal} item exceeds the ${TELEMETRY_LIMITS.maxRequestBytes} byte request limit`,
         this.now,
       );
-      return false;
+      return 0;
     }
     insertBatch(
       d,
@@ -547,7 +549,7 @@ class Collector implements TelemetryEmitter {
       },
       this.now,
     );
-    return true;
+    return 1;
   }
 
   /**
@@ -562,23 +564,25 @@ class Collector implements TelemetryEmitter {
     signal: "metrics" | "traces",
     payload: MetricsBatchPayload | TracesBatchPayload,
     oldestEventAt: number,
-  ): boolean {
+  ): number {
     if (signal === "metrics") {
       const full = payload as MetricsBatchPayload;
       const half = Math.floor(full.metrics.length / 2);
       const left = { ...full, metrics: full.metrics.slice(0, half) };
       const right = { ...full, metrics: full.metrics.slice(half) };
-      const a = this.writeBatch(d, signal, left, left.metrics.length, oldestEventAt);
-      const b = this.writeBatch(d, signal, right, right.metrics.length, oldestEventAt);
-      return a || b;
+      return (
+        this.writeBatch(d, signal, left, left.metrics.length, oldestEventAt) +
+        this.writeBatch(d, signal, right, right.metrics.length, oldestEventAt)
+      );
     }
     const full = payload as TracesBatchPayload;
     const half = Math.floor(full.spans.length / 2);
     const left = { ...full, spans: full.spans.slice(0, half) };
     const right = { ...full, spans: full.spans.slice(half) };
-    const a = this.writeBatch(d, signal, left, left.spans.length, oldestEventAt);
-    const b = this.writeBatch(d, signal, right, right.spans.length, oldestEventAt);
-    return a || b;
+    return (
+      this.writeBatch(d, signal, left, left.spans.length, oldestEventAt) +
+      this.writeBatch(d, signal, right, right.spans.length, oldestEventAt)
+    );
   }
 
   /** Apply one contribution to its durable cumulative stream, honouring the series ceilings. */

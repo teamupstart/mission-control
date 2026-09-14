@@ -48,7 +48,12 @@ export interface TelemetryCycleResult {
    * a non-2xx response.
    */
   ok: boolean;
-  /** Bounded reason when `ok` is false. Never a stack trace. */
+  /**
+   * A fixed public string when `ok` is false, never the underlying message.
+   *
+   * The reason is logged rather than returned: a projection or delivery rejection can name an
+   * endpoint, a path or a SQL fragment, and this value is served over HTTP.
+   */
   error: string | null;
 }
 
@@ -117,15 +122,18 @@ export function telemetryCycle(
   if (inFlightCycle) return inFlightCycle;
   inFlightCycle = runTelemetryCycle(deps)
     .catch((error: unknown) => {
+      // The DETAIL goes to the daemon log; the RESULT carries a fixed string. An unhandled
+      // projection or delivery rejection can name an endpoint, a file path or a SQL fragment,
+      // and `/api/telemetry/drain` returns this body to its caller. The same rule the rest of
+      // this facility follows: bounded, non-identifying error vocabulary, never raw detail.
       console.warn("[telemetry] export cycle failed:", error);
-      const detail = error instanceof Error ? error.message : String(error);
       return {
         consumed: 0,
         batches: 0,
         sent: 0,
         accepted: 0,
         ok: false,
-        error: detail.slice(0, 256),
+        error: "the telemetry export cycle failed; see the daemon log for the reason",
       };
     })
     .finally(() => {

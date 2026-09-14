@@ -41,6 +41,9 @@ const EVIDENCE = artifactsDir("workflow-persona-model-overrides");
 
 const BUILTIN = "No-Mistakes Review (High Rigor)";
 const COPY = `${BUILTIN} copy`;
+// The button also announces its badge and draft status. Anchor the built-in badge so a
+// copied workflow cannot match; copies are addressed by their exact visible heading.
+const BUILTIN_BUTTON = /^No-Mistakes Review \(High Rigor\)\s*built-in\b/i;
 
 /**
  * One evidence frame, of the page or of one element.
@@ -102,13 +105,13 @@ async function copyId(daemon: DaemonHandle): Promise<string> {
 /** Open the builder on the shipped workflow and Duplicate it into an editable copy. */
 async function duplicateBuiltin(page: Page, daemon: DaemonHandle): Promise<string> {
   await page.goto(`${daemon.baseURL}/#/workflows`);
-  await page.getByRole("button", { name: BUILTIN }).first().click();
+  await page.getByRole("button", { name: BUILTIN_BUTTON }).click();
   // The shipped workflow is read-only, and its routing is still READABLE: that split is the
   // whole reason Duplicate exists rather than an "unlock" control.
   await expect(page.locator(".wf-state.builtin, .workflow-state.builtin").first())
     .toContainText("Duplicate");
   await page.getByRole("button", { name: "Duplicate", exact: true }).click();
-  await expect(page.getByRole("button", { name: COPY }).first()).toBeVisible({
+  await expect(page.getByRole("button").filter({ has: page.getByText(COPY, { exact: true }) })).toBeVisible({
     timeout: 15_000,
   });
   return await copyId(daemon);
@@ -196,7 +199,7 @@ test("a duplicated workflow routes one reviewer, and both views agree after a mo
   // Reload the whole dashboard: what comes back is what the daemon stored, not what a
   // component happened to keep.
   await dashboard.reload();
-  await dashboard.getByRole("button", { name: COPY }).first().click();
+  await dashboard.getByRole("button").filter({ has: dashboard.getByText(COPY, { exact: true }) }).click();
   await expect(reviewerRow(dashboard, intent)).toContainText("codex · gpt-5.6-sol · this workflow");
 
   // Moving the reviewer into the stage above carries its choice with it. The compiler rebuilds
@@ -382,7 +385,7 @@ test("publishing freezes the override beside the Persona snapshot, and a later e
     .toEqual({ runner: "codex", model: "gpt-5.6-sol" });
 
   // And the shipped workflow is still read-only, with its routing still readable.
-  await dashboard.getByRole("button", { name: BUILTIN }).first().click();
+  await dashboard.getByRole("button", { name: BUILTIN_BUTTON }).click();
   await expect(dashboard.getByRole("button", { name: "Publish" })).toBeDisabled();
   const builtinRow = reviewerRow(dashboard, intent);
   await expect(builtinRow).toContainText("Persona default");

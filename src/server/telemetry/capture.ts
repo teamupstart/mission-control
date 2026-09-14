@@ -156,7 +156,7 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
     // limit and push the store past its total budget without tripping admission control - the
     // one check that runs before the write. Dormant while Phase 1's two callers pass none, and
     // exactly the kind of thing a later phase trips without noticing.
-    const context = boundContext(request.context ?? {});
+    const { context, omitted: contextOmitted } = boundContext(request.context ?? {});
     const traceId = request.trace?.traceId ?? newTraceId();
     const spanId = newSpanId();
     refs[TRACE_REF] = traceId;
@@ -209,6 +209,7 @@ export function captureTelemetry<Facts extends z.ZodTypeAny>(
         actor,
         refs,
         refsOmitted: omitted,
+        contextOmitted,
         facts,
         profiles: eligible as TelemetryProfileId[],
         epochs,
@@ -286,15 +287,26 @@ export function boundString(value: string): string {
  *
  * The same ceiling as `refs`, because a context is the same kind of thing - a small map of
  * short identifiers - and giving it its own looser limit would just move the problem.
+ *
+ * And the same tracked omission, for the same reason `boundRefs` carries one: dropping entries
+ * silently is how a denominator changes without anyone noticing. Inert while Phase 1's two
+ * callers pass no context at all, which is exactly when it is cheap to get right.
  */
-function boundContext(context: Record<string, string>): Record<string, string> {
+function boundContext(
+  context: Record<string, string>,
+): { context: Record<string, string>; omitted: number } {
   const out: Record<string, string> = {};
+  let omitted = 0;
   for (const [key, value] of Object.entries(context)) {
-    if (Object.keys(out).length >= TELEMETRY_LIMITS.maxRefs) break;
-    if (typeof value !== "string") continue;
+    // A non-string value is a caller mistake rather than a ceiling being hit, but it is still
+    // an entry that asked to be recorded and was not.
+    if (typeof value !== "string" || Object.keys(out).length >= TELEMETRY_LIMITS.maxRefs) {
+      omitted += 1;
+      continue;
+    }
     out[boundString(key)] = boundString(value);
   }
-  return out;
+  return { context: out, omitted };
 }
 
 /**

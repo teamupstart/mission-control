@@ -206,6 +206,14 @@ export const TelemetryEnvelopeSchema = z.object({
   refs: z.record(z.string()).default({}),
   /** How many refs were dropped to stay inside `maxRefs`. */
   refsOmitted: z.number().int().min(0).default(0),
+  /**
+   * How many context entries were dropped to stay inside the same ceiling.
+   *
+   * Counted separately from `refsOmitted` rather than folded into it: the two answer different
+   * questions - a lost ref breaks a correlation, a lost context entry narrows what a record can
+   * be sliced by - and one number that could mean either is a number nobody can act on.
+   */
+  contextOmitted: z.number().int().min(0).default(0),
   /** The event-specific facts, validated by that entry's own schema. */
   facts: z.record(z.unknown()).default({}),
 });

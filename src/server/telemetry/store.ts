@@ -104,6 +104,7 @@ export interface StoredTelemetryEvent {
   actor: TelemetryActor;
   refs: Record<string, string>;
   refsOmitted: number;
+  contextOmitted: number;
   facts: Record<string, unknown>;
   /** The profiles eligible AT CAPTURE. Never recomputed from today's config. */
   profiles: TelemetryProfileId[];
@@ -130,6 +131,7 @@ interface JournalRow {
   actor_json: string;
   refs_json: string;
   refs_omitted: number;
+  context_omitted: number;
   facts_json: string;
   profiles_json: string;
   epochs_json: string;
@@ -151,6 +153,7 @@ function toEvent(row: JournalRow): StoredTelemetryEvent {
     actor: JSON.parse(row.actor_json) as TelemetryActor,
     refs: JSON.parse(row.refs_json) as Record<string, string>,
     refsOmitted: row.refs_omitted,
+    contextOmitted: row.context_omitted,
     facts: JSON.parse(row.facts_json) as Record<string, unknown>,
     profiles: JSON.parse(row.profiles_json) as TelemetryProfileId[],
     epochs: JSON.parse(row.epochs_json) as Record<string, number>,
@@ -193,9 +196,9 @@ export function appendJournal(
          event_id, envelope_version, name, event_version,
          source_kind, source_id, source_revision,
          occurred_at, observed_at, resource_id, context_id,
-         actor_json, refs_json, refs_omitted, facts_json,
+         actor_json, refs_json, refs_omitted, context_omitted, facts_json,
          profiles_json, epochs_json, bytes
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .run(
       event.eventId,
@@ -212,6 +215,7 @@ export function appendJournal(
       JSON.stringify(event.actor),
       JSON.stringify(event.refs),
       event.refsOmitted,
+      event.contextOmitted,
       JSON.stringify(event.facts),
       JSON.stringify(event.profiles),
       JSON.stringify(event.epochs),

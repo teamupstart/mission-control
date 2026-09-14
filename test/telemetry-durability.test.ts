@@ -216,6 +216,31 @@ test("a loss counter that could not be written becomes an unknown gap at the nex
   assert.ok(gap, "health reports it rather than absorbing it");
 });
 
+test("context entries dropped at the ceiling are counted rather than silently lost", async () => {
+  // `refs` has always carried its omitted count, on the grounds that truncating links silently
+  // is how a denominator changes without anyone noticing. Context is the same kind of map under
+  // the same ceiling and had no counter at all. Inert while Phase 1's callers pass no context,
+  // and precisely the thing a later phase would trip without seeing.
+  enableLocalOnly();
+  const context: Record<string, string> = {};
+  for (let i = 0; i < TELEMETRY_LIMITS.maxRefs + 5; i += 1) context[`k${i}`] = `v${i}`;
+
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "boot-ctx", revision: 1 },
+    facts: { startup_ms: 12, schema_upgraded: false, launch_mode: "daemon" },
+    context,
+    now: 1_000,
+  });
+  assert.equal(result.kind, "accepted");
+
+  const row = openDb()
+    .prepare(`SELECT refs_omitted, context_omitted FROM telemetry_journal LIMIT 1`)
+    .get() as { refs_omitted: number; context_omitted: number };
+  assert.equal(row.context_omitted, 5, "the five entries over the ceiling are on the record");
+  assert.equal(row.refs_omitted, 0, "and are not conflated with a lost correlation");
+});
+
 test("an owed gap is not written by a capture call made while collection is off", async () => {
   // Default-off is a property of the whole capture path, not just the journal write. Settling
   // the owed counter before reading the enabled flag meant an installation that had opted out

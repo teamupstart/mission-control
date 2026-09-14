@@ -196,6 +196,7 @@ function envelopeOf(event: StoredTelemetryEvent): TelemetryEnvelope {
     actor: event.actor,
     refs: event.refs,
     refsOmitted: event.refsOmitted,
+    contextOmitted: event.contextOmitted,
     facts: event.facts,
   };
 }

@@ -64,6 +64,7 @@ export function createTelemetryTables(d: DatabaseSync): void {
       actor_json       TEXT NOT NULL,
       refs_json        TEXT NOT NULL,
       refs_omitted     INTEGER NOT NULL DEFAULT 0,
+      context_omitted  INTEGER NOT NULL DEFAULT 0,
       facts_json       TEXT NOT NULL,
       -- Which profiles were eligible AT CAPTURE. Enabling a profile later cannot retroactively
       -- widen this row's audience; that is the whole "no historical sharing on opt-in" rule.

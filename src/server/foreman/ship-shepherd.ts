@@ -304,11 +304,12 @@ function structuralPayload(cause: RecoveryCause, workflowEvidenceEligible: boole
   }
 }
 
-/** Legacy gaps have prose rather than a registration category. Keep ambiguous work requests. */
+/** Only discard complete, standalone registration statements; arbitrary legacy prose stays. */
 function workflowRegistrationOnly(detail: string): boolean {
-  if (/(?:^|[.!?;]\s*|\b(?:and|then)\s+)(?:implement|fix|repair|add|cover|test|document|run|verify)\b/i.test(detail.trim())) return false;
-  return /\b(?:submit_workflow_evidence|workflow evidence|evidence registration|evidence is registered|registered evidence)\b/i.test(detail)
-    && /\b(?:register|submit|attach|upload|required|missing|absent|no|not|unregistered|incomplete|403|workflow_unbound)\b/i.test(detail);
+  const text = detail.trim().replace(/\s+/g, " ").replace(/[.!?]$/, "");
+  return /^(?:register|submit|attach|upload) workflow evidence(?: before handoff)?$/i.test(text)
+    || /^(?:register|submit|attach|upload) (?:workflow evidence|evidence|(?:focused )?test output) (?:via|through|using) submit_workflow_evidence$/i.test(text)
+    || /^(?:Mission Control reports that )?(?:no (?:workflow )?evidence is registered|(?:required )?workflow evidence(?: registration)? is (?:missing|required|absent|incomplete))$/i.test(text);
 }
 
 function escalationSummary(cause: RecoveryCause): string {

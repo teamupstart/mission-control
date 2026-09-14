@@ -215,7 +215,9 @@ change during verification discards that verdict so the next check uses the curr
 Recovery instructions and the bounded recovery reviewer use the same eligibility policy, and
 recovery rechecks it before delivering a continuation. Structural recovery omits obsolete
 registration-only gaps and summaries after unbinding, while retaining implementation and test
-gaps. If registration was the only gap, it asks the session to recheck the task and report completion.
+gaps. Only complete, standalone registration statements are omitted; compound or unrecognized
+legacy prose is retained for normal verification. If registration was the only gap, recovery asks
+the session to recheck the task and report completion.
 
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,

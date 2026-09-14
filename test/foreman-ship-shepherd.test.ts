@@ -240,6 +240,30 @@ test("a registration-only hold does not return through the summary fallback afte
   }
 });
 
+test("recovery retains compound and unrecognized evidence gaps after unbinding", () => {
+  const details = [
+    "Workflow evidence is missing; the checkout script fails when run twice.",
+    "Workflow evidence is missing. The checkout script fails when run twice.",
+    "Workflow evidence is missing and the checkout script fails when run twice.",
+    "Register workflow evidence, but the checkout script still fails.",
+    "The missing workflow evidence breaks checkout retries.",
+    "Register workflow evidence to diagnose the failing checkout script.",
+  ];
+  for (const detail of details) {
+    // Both persisted gap details and legacy summary-only holds can contain real work.
+    for (const gaps of [[{ id: "compound", path: "", detail }], []]) {
+      const held = { ...decision("held"), summary: detail, gaps };
+      for (const decide of [decideShipShepherd, decideImmediateHeldGapDelivery]) {
+        const out = decide(input({ queue: queue({ promptedDecision: held }), diffHasChanges: true }));
+        assert.equal(out.kind, "recover");
+        if (out.kind !== "recover") continue;
+        assert.ok(out.payload?.includes(detail), `lost substantive gap: ${detail}`);
+        assert.doesNotMatch(out.payload ?? "", /previous evidence-registration hold no longer applies/);
+      }
+    }
+  }
+});
+
 test("all pre-PR owners and authority gates fail closed", () => {
   const cases: Array<[string, Partial<Parameters<typeof decideShipShepherd>[0]>]> = [
     ["off", { featureEnabled: false }],

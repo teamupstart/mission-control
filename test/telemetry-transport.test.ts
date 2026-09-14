@@ -319,6 +319,30 @@ test("a 401 pauses the destination visibly instead of hammering it", async () =>
   assert.equal(second.attempts.length, 0);
 });
 
+test("a pause stops the rest of the SAME pass, not just the next one", async () => {
+  // The pause was read once per profile, before the signal loop. A 401 answering the metrics
+  // batch paused the destination, and then the traces loop ran anyway - up to eight more
+  // requests to an endpoint just established as refusing this credential. Exactly the
+  // hammering the pause exists to stop, inside the very pass that discovered it.
+  enableUser("https://otlp.example.com", "token");
+  captureAndProject("boot-1", 1_000);
+  assert.equal(
+    (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_batches`).get() as { n: number }).n,
+    2,
+    "there is a metrics batch AND a traces batch queued, so a second signal exists to stop",
+  );
+
+  // 401 first, then an endpoint that would happily accept anything else offered to it.
+  const f = fixture([() => status(401), ok]);
+  await runDeliveryPass({ fetch: f.fetch, now: () => 2_000 });
+
+  assert.equal(f.attempts.length, 1, "nothing was sent after the refusal was understood");
+  assert.equal(
+    telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!.pausedReason,
+    "auth",
+  );
+});
+
 test("a 404 pauses the destination as a configuration problem, not an auth one", async () => {
   enableUser();
   captureAndProject("boot-1", 1_000);
@@ -371,9 +395,12 @@ test("a backend that throttles without Retry-After still pauses the destination"
     now += 200_000;
   }
 
+  // One batch reaching the threshold is what pauses the destination, and the pause then stops
+  // the pass - so the OTHER queued batch deliberately stops short of it. Asserting every row
+  // reached ten would now be asserting the absence of that.
   assert.ok(
-    deliveryRows().every((row) => row.attempts >= 10),
-    "every queued batch really did reach the threshold, rather than being held back by backoff",
+    deliveryRows().some((row) => row.attempts >= 10),
+    "a batch really did reach the threshold, rather than being held back by backoff",
   );
   assert.equal(
     telemetryHealth(now).profiles.find((p) => p.profile === "user")!.pausedReason,

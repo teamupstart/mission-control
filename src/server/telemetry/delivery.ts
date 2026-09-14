@@ -96,10 +96,15 @@ export async function runDeliveryPass(deps: Partial<DeliveryDeps> = {}): Promise
     if (d.abort?.aborted) break;
     if (!profileIsExporting(config, profile)) continue;
     const endpoint = profile === "user" ? config.user.endpoint : config.product.endpoint;
-    const paused = telemetryTransaction((tx) => getDestination(tx, profile).pausedReason);
-    if (paused !== null) continue;
 
     for (const signal of TELEMETRY_SIGNALS) {
+      // Re-read for EVERY signal, not once per profile. The metrics loop can pause this
+      // destination itself - a 401 or 404 through `settle`, or the tenth consecutive throttle -
+      // and a check taken before it ran would then let the traces loop send up to eight more
+      // requests to an endpoint we have just established is refusing us. That is the hammering
+      // the pause exists to stop, and the guide promises it does not happen.
+      if (telemetryTransaction((tx) => getDestination(tx, profile).pausedReason) !== null) break;
+
       for (let i = 0; i < TELEMETRY_LIMITS.deliveryBatchesPerTick; i += 1) {
         if (d.abort?.aborted) break;
         const outcome = await deliverOne(profile, signal, endpoint, d);

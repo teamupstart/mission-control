@@ -226,7 +226,7 @@ limit will normally reach first.
 
 | Limit | Value | Why |
 | --- | --- | --- |
-| Payload retention | 7 days | Bounds the bytes: journal facts and undelivered batches are the large objects. |
+| Payload retention | 7 days | Bounds the bytes: journal facts and undelivered batches are the large objects. Settled delivery bookkeeping is swept on the same window, so the per-batch `accepted`, `rejected` and `expired` counts in the health view describe the retention window rather than the installation's whole history. |
 | Reducer/dedupe state retention | 30 days | Bounds the identities. The rolling cohorts later phases need a 30-day lookback for, and an expired source must not be importable again as fresh activity. |
 | Total logical budget | 256 MiB | Charged across contexts, journal, aggregates and both destination queues. |
 | Series per instrument / per profile | 2,000 / 10,000 | Beyond it, dimension values fold into an explicit overflow bucket. The total stays correct; only the breakdown degrades, and a gap counter says so. |
@@ -235,7 +235,14 @@ limit will normally reach first.
 | Collection and export cadence | 30 s | |
 | Retry backoff | 1 s to 60 s, jittered, `Retry-After` honoured | |
 
-The stricter of age and capacity wins. Loss is always counted and visible in the health view - and
+A batch parked for a superseded endpoint keeps its payload so Phase 2 can offer the keep,
+discard or transfer choice, and is released on the same seven-day window once that choice has
+gone stale.
+
+The stricter of age and capacity wins. Shedding under capacity pressure re-checks the budget
+between every drop and stops as soon as it is back under the mark, so a brief overshoot costs
+the oldest batch or two rather than the whole queue. Loss is always counted and visible in the
+health view - and
 where a failure prevented even the counter from being written, recovery reports an **unknown** gap
 rather than claiming a precise number.
 

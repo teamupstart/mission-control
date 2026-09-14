@@ -612,6 +612,89 @@ test("capacity shedding stops as soon as the budget is back under the mark", asy
   );
 });
 
+test("settled delivery bookkeeping does not accumulate for ever", async () => {
+  // `settleDelivery` updates a row rather than inserting one, and releasing a payload removed
+  // only the payload, so every batch an installation ever produced left a small permanent row -
+  // an unbounded table that neither retention window bounded and that nothing charged to the
+  // byte budget. Low volume in Phase 1; multiplied by every source phase after it.
+  const { telemetryTransaction, settleDelivery, releaseBatchPayload, usedBytes } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(1_100);
+
+  const ids = openDb()
+    .prepare(`SELECT batch_id FROM telemetry_delivery`)
+    .all() as unknown as Array<{ batch_id: string }>;
+  assert.ok(ids.length > 0);
+
+  // Deliver them, the way a successful export does.
+  telemetryTransaction((d) => {
+    for (const { batch_id } of ids) {
+      settleDelivery(
+        d,
+        batch_id,
+        { state: "accepted", attempts: 1, nextAttemptAt: 1_200, lastError: null },
+        1_200,
+      );
+      releaseBatchPayload(d, batch_id);
+    }
+  });
+  const bytesWhileRetained = telemetryTransaction((d) => usedBytes(d));
+  assert.ok(bytesWhileRetained > 0, "the surviving rows are charged to the budget");
+
+  const later = 1_200 + TELEMETRY_LIMITS.payloadRetentionMs + 1_000;
+  const result = runRetentionPass(later);
+  assert.equal(result.prunedDeliveries, ids.length, "the settled rows are swept");
+
+  const remaining = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_delivery`)
+    .get() as { n: number };
+  assert.equal(remaining.n, 0, "nothing is left behind for the next decade of batches");
+});
+
+test("a batch retained for a superseded endpoint keeps its payload until the window closes", async () => {
+  // The one terminal state that keeps its bytes on purpose, so Phase 2 can offer the operator
+  // the keep / discard / transfer choice. Its bookkeeping must NOT be pruned while the payload
+  // is still there, or the payload is orphaned with nothing describing it.
+  const { telemetryTransaction, settleDelivery, pruneTerminalDeliveries } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(1_100);
+  const ids = openDb()
+    .prepare(`SELECT batch_id FROM telemetry_delivery`)
+    .all() as unknown as Array<{ batch_id: string }>;
+
+  // Rejected, payload deliberately RETAINED.
+  telemetryTransaction((d) => {
+    for (const { batch_id } of ids) {
+      settleDelivery(
+        d,
+        batch_id,
+        { state: "rejected", attempts: 1, nextAttemptAt: 1_200, lastError: "stale generation" },
+        1_200,
+      );
+    }
+  });
+
+  const later = 1_200 + TELEMETRY_LIMITS.payloadRetentionMs + 1_000;
+  const pruned = telemetryTransaction((d) => pruneTerminalDeliveries(d, later, 500));
+  assert.equal(pruned, 0, "bookkeeping stays while the payload it describes is still retained");
+  assert.equal(batchCount("user"), ids.length);
+
+  // The full sweep releases the payload first, then the row.
+  const result = runRetentionPass(later);
+  assert.ok(result.releasedTerminalBatches > 0);
+  assert.equal(batchCount("user"), 0);
+  const remaining = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_delivery`)
+    .get() as { n: number };
+  assert.equal(remaining.n, 0);
+});
+
 test("an expired batch is counted as loss rather than deleted quietly", () => {
   enableUserBackend();
   capture("boot-1", 1_000);

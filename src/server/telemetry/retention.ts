@@ -26,6 +26,8 @@ import {
   pruneJournalRows,
   pruneOrphanedContexts,
   pruneSourceIdentities,
+  pruneTerminalDeliveries,
+  releaseTerminalBatchPayloads,
   recordGap,
   releaseBatchPayload,
   settleDelivery,
@@ -53,6 +55,10 @@ export interface RetentionPassResult {
   prunedRows: number;
   prunedIdentities: number;
   prunedContexts: number;
+  /** Payloads of terminal batches released past the window, including retained ones. */
+  releasedTerminalBatches: number;
+  /** Settled delivery rows dropped once nothing referenced them. */
+  prunedDeliveries: number;
   underPressure: boolean;
 }
 
@@ -64,6 +70,8 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       prunedRows: 0,
       prunedIdentities: 0,
       prunedContexts: 0,
+      releasedTerminalBatches: 0,
+      prunedDeliveries: 0,
       underPressure: false,
     };
 
@@ -105,7 +113,14 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
       result.prunedPayloads += relieved.prunedPayloads;
     }
 
-    // 4. The long window. Identities and their emptied rows finally go, together, so a
+    // 4. Settled delivery bookkeeping. The payload of a terminal batch past the window goes
+    //    first - including the retained stale-generation case, whose keep/discard/transfer
+    //    window has by then expired - and then the row that described it. Without this, every
+    //    batch an installation ever produced left a permanent row behind.
+    result.releasedTerminalBatches = releaseTerminalBatchPayloads(d, payloadCutoff, BATCH_LIMIT);
+    result.prunedDeliveries = pruneTerminalDeliveries(d, payloadCutoff, BATCH_LIMIT);
+
+    // 5. The long window. Identities and their emptied rows finally go, together, so a
     //    reconciliation cannot resurrect an expired source as new activity in between.
     result.prunedRows = pruneJournalRows(d, stateCutoff, BATCH_LIMIT);
     result.prunedIdentities = pruneSourceIdentities(d, stateCutoff, BATCH_LIMIT);

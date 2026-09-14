@@ -916,6 +916,9 @@ export function usedBytes(d: DatabaseSync): number {
          (SELECT COALESCE(SUM(bytes),0) FROM telemetry_journal WHERE payload_pruned_at IS NULL)
          + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_batches)
          + (SELECT COALESCE(SUM(LENGTH(state_json)),0) FROM telemetry_projection_state)
+         -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and
+         -- docs/observability.md charges "both destination queues" to this budget.
+         + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)
          + (SELECT COALESCE(SUM(LENGTH(dimensions_json) + 64),0) FROM telemetry_series)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_contexts)
          + (SELECT COALESCE(SUM(LENGTH(attributes_json)),0) FROM telemetry_resources)
@@ -968,6 +971,63 @@ export function pruneSourceIdentities(d: DatabaseSync, olderThan: number, limit:
     .prepare(
       `DELETE FROM telemetry_source_identities WHERE rowid IN (
          SELECT rowid FROM telemetry_source_identities WHERE captured_at < ? LIMIT ?
+       )`,
+    )
+    .run(olderThan, limit);
+  return Number(result.changes);
+}
+
+/**
+ * Release the payload of a TERMINAL batch that is past the window.
+ *
+ * One terminal state keeps its payload on purpose: a batch built for a superseded endpoint or
+ * consent epoch is parked in `rejected` with its bytes intact, so Phase 2 can offer the
+ * operator the documented keep / discard / approve-transfer choice over it. That choice has a
+ * shelf life. Past the retention window the payload goes like any other, which is also what
+ * makes the bookkeeping row below prunable.
+ */
+export function releaseTerminalBatchPayloads(
+  d: DatabaseSync,
+  olderThan: number,
+  limit: number,
+): number {
+  const result = d
+    .prepare(
+      `DELETE FROM telemetry_batches WHERE id IN (
+         SELECT dl.batch_id FROM telemetry_delivery dl
+          WHERE dl.state IN ('accepted','rejected','expired') AND dl.updated_at < ?
+          LIMIT ?
+       )`,
+    )
+    .run(olderThan, limit);
+  return Number(result.changes);
+}
+
+/**
+ * Drop delivery bookkeeping for batches that no longer exist.
+ *
+ * `settleDelivery` updates a row rather than inserting one, and `releaseBatchPayload` removes
+ * only the payload, so without this every batch an installation ever produced left a small
+ * permanent row - an unbounded table that the seven-day and thirty-day windows did not
+ * actually bound, and that nothing charged to the byte budget.
+ *
+ * Only rows whose batch is already gone are pruned. A terminal row whose payload is still
+ * retained is the Phase 2 keep/discard/transfer case, and deleting its bookkeeping would
+ * orphan the payload it describes.
+ */
+export function pruneTerminalDeliveries(
+  d: DatabaseSync,
+  olderThan: number,
+  limit: number,
+): number {
+  const result = d
+    .prepare(
+      `DELETE FROM telemetry_delivery WHERE batch_id IN (
+         SELECT dl.batch_id FROM telemetry_delivery dl
+          WHERE dl.state IN ('accepted','rejected','expired')
+            AND dl.updated_at < ?
+            AND dl.batch_id NOT IN (SELECT id FROM telemetry_batches)
+          LIMIT ?
        )`,
     )
     .run(olderThan, limit);

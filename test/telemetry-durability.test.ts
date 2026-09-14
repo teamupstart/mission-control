@@ -468,8 +468,51 @@ test("an owed gap is not written by a capture call made while collection is off"
 
 test("an owed gap that still cannot be written keeps the run marked unclean", async () => {
   // The fallback when the store itself is the thing at fault: rather than declare a clean
-  // shutdown and lose the incident, leave the marker set so the next start reports it.
-  const { noteTelemetryRunStopped, resetPendingUnknownGap, noteTelemetryRunStart } = await import(
+  // shutdown and lose the incident, leave the marker unset so the NEXT start reports it.
+  //
+  // The failure has to be real for this to mean anything. An earlier version of this test
+  // asserted `cleanShutdown === true` on an ordinary shutdown with nothing owed - the opposite
+  // of what its own name promises - so it would have passed with the fallback deleted.
+  const {
+    markUnknownGapPending,
+    noteTelemetryRunStart,
+    noteTelemetryRunStopped,
+    resetPendingUnknownGap,
+  } = await import("../src/server/telemetry/retention.ts");
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  enableLocalOnly();
+  resetPendingUnknownGap();
+  noteTelemetryRunStart(true, 1_000);
+
+  // Take the gap table away, so the flush inside shutdown genuinely cannot write.
+  const d = openDb();
+  d.exec("ALTER TABLE telemetry_gaps RENAME TO telemetry_gaps_unavailable");
+  try {
+    markUnknownGapPending();
+    noteTelemetryRunStopped(true, 2_000);
+    assert.equal(
+      getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown,
+      false,
+      "a shutdown that could not settle what it owed does not get to call itself clean",
+    );
+  } finally {
+    d.exec("ALTER TABLE telemetry_gaps_unavailable RENAME TO telemetry_gaps");
+  }
+
+  // Which is the whole point: the next start finds the run still in progress and says so,
+  // instead of booting quietly over a loss nobody counted.
+  assert.equal(
+    noteTelemetryRunStart(true, 3_000),
+    true,
+    "the next start reports the incident the failed flush could not record",
+  );
+  resetPendingUnknownGap();
+});
+
+test("an orderly shutdown with nothing owed is still recorded as clean", async () => {
+  // The other half, kept separate so neither case can stand in for the other.
+  const { noteTelemetryRunStart, noteTelemetryRunStopped, resetPendingUnknownGap } = await import(
     "../src/server/telemetry/retention.ts"
   );
   const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
@@ -480,6 +523,7 @@ test("an owed gap that still cannot be written keeps the run marked unclean", as
   noteTelemetryRunStart(true, 1_000);
   noteTelemetryRunStopped(true, 2_000);
   assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, true);
+  assert.equal(noteTelemetryRunStart(true, 3_000), false, "and the next start is silent");
   resetPendingUnknownGap();
 });
 

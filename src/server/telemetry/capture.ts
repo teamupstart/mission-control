@@ -93,7 +93,9 @@ export function resourceAttributes(): Record<string, string> {
     "mission.identity.epoch": String(identity.epoch),
     // P5 requires an explicit environment marker so demo, development and test signals can be
     // kept out of adoption. Default `local`, because that is what an ordinary install is.
-    "deployment.environment.name": envVar("TELEMETRY_ENVIRONMENT") ?? "local",
+    // Bounded like any other string: this is operator-supplied and lands in the resource of
+    // EVERY batch, so an unbounded value would be paid for on every request rather than once.
+    "deployment.environment.name": boundString(envVar("TELEMETRY_ENVIRONMENT") ?? "local"),
   };
 }
 
@@ -220,12 +222,35 @@ function recordCaptureGap(detail: string, now: number): void {
 function truncateStrings(facts: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(facts)) {
-    out[key] =
-      typeof value === "string" && Buffer.byteLength(value, "utf8") > TELEMETRY_LIMITS.maxStringBytes
-        ? `${value.slice(0, TELEMETRY_LIMITS.maxStringBytes - 1)}…`
-        : value;
+    out[key] = typeof value === "string" ? boundString(value) : value;
   }
   return out;
+}
+
+/**
+ * Cut a string to the byte budget WITHOUT splitting a character.
+ *
+ * Measuring in bytes and then slicing by UTF-16 code units gets both halves wrong: for
+ * multi-byte text the result can still exceed the budget, and a cut between the halves of a
+ * surrogate pair produces a lone surrogate - an unpaired code unit that is not valid UTF-8, and
+ * that a protobuf encoder or a backend is entitled to reject. One emoji in a fact is enough.
+ *
+ * Iterating the string yields whole code points, which is all that is needed to keep every
+ * character intact on a path that runs at capture time.
+ */
+export function boundString(value: string): string {
+  if (Buffer.byteLength(value, "utf8") <= TELEMETRY_LIMITS.maxStringBytes) return value;
+  const ellipsis = "…";
+  const budget = TELEMETRY_LIMITS.maxStringBytes - Buffer.byteLength(ellipsis, "utf8");
+  let used = 0;
+  let cut = "";
+  for (const character of value) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (used + size > budget) break;
+    cut += character;
+    used += size;
+  }
+  return `${cut}${ellipsis}`;
 }
 
 /**
@@ -250,7 +275,7 @@ function boundRefs(
       omitted += 1;
       continue;
     }
-    out[key] = value.slice(0, TELEMETRY_LIMITS.maxStringBytes);
+    out[key] = boundString(value);
   }
   return { refs: out, omitted };
 }

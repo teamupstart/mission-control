@@ -113,11 +113,25 @@ test("a captured fact reaches a provisioned Grafana panel and its trace", async 
 
   await shoot(dashboard, "01-diagnostics-dashboard");
 
-  // And with the filter widened, the same panel finds the starts other installations exported -
-  // which is what proves the filter was filtering rather than the series being absent.
-  await dashboard.goto(`${DASHBOARD}?from=now-6h&to=now&var-environment=local&var-installation=$__all`);
-  await expect(startsPanel).toContainText(/\d/, { timeout: 90_000 });
-  await shoot(dashboard, "01b-unfiltered");
+  // And the filter is proved to FILTER using only telemetry this test created.
+  //
+  // The obvious check - widen to All and expect a number - quietly depended on some earlier run
+  // having left data in Prometheus. On a freshly reset stack this daemon is the only
+  // installation and it started before telemetry was enabled, so widening still shows "no
+  // exports yet" and the documented standalone command fails. Pointing the filter at an
+  // installation that does not exist proves the same thing and depends on nothing.
+  await dashboard.goto(
+    `${DASHBOARD}?from=now-6h&to=now&var-environment=local&var-installation=no-such-installation`,
+  );
+  const probesWhenFilteredOut = dashboard
+    .locator("section", { hasText: "Export connection probes" })
+    .first();
+  await expect(probesWhenFilteredOut).toContainText("no probes run yet", { timeout: 60_000 });
+  await shoot(dashboard, "01b-filtered-out");
+
+  // Back to this installation, and the probe returns: the panel was filtered, not empty.
+  await dashboard.goto(`${DASHBOARD}?${scoped}`);
+  await expect(probesPanel).toContainText("accepted", { timeout: 90_000 });
 
   // 6. Trace navigation, bound to THE trace this test produced.
   //

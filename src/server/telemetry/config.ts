@@ -85,6 +85,29 @@ export function getTelemetryConfig(): TelemetryConfig {
   return TelemetryConfigSchema.parse(getAppConfig(CONFIG_ENTRY) ?? {});
 }
 
+/**
+ * The stored identity, or null when there is nothing usable there.
+ *
+ * Both fields are checked, not just the id. A row written by a build that lacked `epoch`, or
+ * one hand-edited, would otherwise flow through as `epoch: undefined` and be digested into
+ * every profile salt and stamped on every resource as the string "undefined" - a silent,
+ * permanent corruption of this installation's exported identity.
+ */
+function storedIdentity(): TelemetryIdentity | null {
+  const stored = getAppConfig(IDENTITY_ENTRY);
+  if (
+    stored &&
+    typeof stored === "object" &&
+    typeof stored.installationId === "string" &&
+    stored.installationId.length > 0 &&
+    Number.isSafeInteger(stored.epoch) &&
+    stored.epoch >= 1
+  ) {
+    return stored as TelemetryIdentity;
+  }
+  return null;
+}
+
 export interface TelemetryIdentity {
   /** A local random seed. Not an account, not a device fingerprint, not a person. */
   installationId: string;
@@ -101,10 +124,8 @@ export interface TelemetryIdentity {
  * than hidden.
  */
 export function telemetryIdentity(): TelemetryIdentity {
-  const stored = getAppConfig(IDENTITY_ENTRY);
-  if (stored && typeof stored === "object" && typeof stored.installationId === "string") {
-    return stored as TelemetryIdentity;
-  }
+  const stored = storedIdentity();
+  if (stored) return stored;
   const minted: TelemetryIdentity = {
     installationId: digest([Date.now(), Math.random(), process.pid]).slice(0, 24),
     epoch: 1,
@@ -121,10 +142,8 @@ export function telemetryIdentity(): TelemetryIdentity {
  * pseudonym would break that on the very first dashboard poll.
  */
 export function peekTelemetryIdentity(): TelemetryIdentity | null {
-  const stored = getAppConfig(IDENTITY_ENTRY);
-  if (stored && typeof stored === "object" && typeof stored.installationId === "string") {
-    return stored as TelemetryIdentity;
-  }
+  const stored = storedIdentity();
+  if (stored) return stored;
   return null;
 }
 

@@ -110,9 +110,17 @@ services:
     image: grafana/grafana:12.4.10
     environment:
       # Anonymous viewing, on loopback only, because a login wall on a single-operator local
-      # stack is a password to lose rather than a boundary to hold. Admin is still gated.
+      # stack is a password to lose rather than a boundary to hold.
+      #
+      # VIEWER, not Admin. Loopback narrows who can reach Grafana; it does not narrow what they
+      # can do once they have, and Admin grants organisation administration - data sources,
+      # users, teams - to anyone who loads the page, including any local process. `Viewer` plus
+      # `viewers_can_edit` keeps everything this stack is for: Explore, ad-hoc queries, trace
+      # drill-down and unsaved dashboard edits, with no persistent write access. The dashboards
+      # are provisioned from files and not editable in place anyway.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_VIEWERS_CAN_EDIT: "true"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_USERS_DEFAULT_THEME: dark
       # Provisioning only. An operator should never have to import a dashboard or point a data

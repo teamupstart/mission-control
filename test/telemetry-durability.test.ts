@@ -1,7 +1,7 @@
 import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The durable core: capture, the crash boundaries, cumulative state across restarts, consent
@@ -525,7 +525,32 @@ test("the installation identity is a local pseudonym, not an account or a hostna
   enableLocalOnly();
   const identity = telemetryIdentity();
   assert.equal(identity.epoch, 1);
+  // An opaque fixed-width hex seed, so it can carry nothing but itself.
   assert.match(identity.installationId, /^[0-9a-f]{24}$/);
-  // Nothing about the machine or the person is derivable from it.
-  assert.ok(!identity.installationId.includes(process.env.USER ?? "\u0000"));
+
+  // And it derives from none of the obvious machine or account facts. Checking only $USER left
+  // the test narrower than its own name claimed.
+  for (const secret of [process.env.USER, process.env.LOGNAME, hostname(), homedir()]) {
+    if (!secret) continue;
+    assert.ok(
+      !identity.installationId.includes(secret.toLowerCase()),
+      `the pseudonym must not embed ${secret}`,
+    );
+  }
+});
+
+test("a stored identity missing its epoch is not used", () => {
+  // A row written by an older build, or hand-edited, would otherwise flow through as
+  // `epoch: undefined` and be digested into every profile salt and stamped on every exported
+  // resource as the string "undefined" - a silent, permanent corruption of this installation's
+  // identity that nothing downstream could unpick.
+  enableLocalOnly();
+  openDb()
+    .prepare(`INSERT INTO app_config (key, value) VALUES (?, ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .run("telemetry.identity", JSON.stringify({ installationId: "abc" }));
+
+  const identity = telemetryIdentity();
+  assert.equal(identity.epoch, 1, "a fresh, valid identity replaces the unusable one");
+  assert.match(identity.installationId, /^[0-9a-f]{24}$/);
 });

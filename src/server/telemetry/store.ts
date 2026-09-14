@@ -679,15 +679,26 @@ export function deliveryCounts(d: DatabaseSync, profile: TelemetryProfileId): De
 }
 
 /** Undelivered batches older than the retention window, oldest first. */
-export function expiredBatchIds(d: DatabaseSync, olderThan: number, limit: number): string[] {
+export function expiredBatchIds(
+  d: DatabaseSync,
+  olderThan: number,
+  now: number,
+  limit: number,
+): string[] {
   const rows = d
     .prepare(
       `SELECT dl.batch_id AS id FROM telemetry_delivery dl
          JOIN telemetry_batches b ON b.id = dl.batch_id
-        WHERE dl.state IN ('pending','retry','leased') AND b.created_at < ?
+        WHERE dl.state IN ('pending','retry','leased')
+          -- A batch whose lease is still live is IN FLIGHT: a request carrying it is awaiting
+          -- a response right now. Expiring it would delete the payload from under the sender,
+          -- so its settlement would then update accounting for a batch that no longer exists.
+          -- A lease that has already expired is fair game; that sender is gone.
+          AND (dl.state != 'leased' OR dl.lease_expires_at IS NULL OR dl.lease_expires_at <= ?)
+          AND b.created_at < ?
         ORDER BY b.created_at ASC LIMIT ?`,
     )
-    .all(olderThan, limit) as unknown as Array<{ id: string }>;
+    .all(now, olderThan, limit) as unknown as Array<{ id: string }>;
   return rows.map((r) => r.id);
 }
 

@@ -501,14 +501,21 @@ test("a fact captured while the backend is down survives a restart and is delive
   const stopped = composeService("stop", "collector");
   assert.ok(stopped.ok, `could not stop the collector: ${stopped.output}`);
   const stoppedAt = Date.now();
-  checkpoint("backend stopped", `collector container down; ${ENDPOINTS.otlp} is unreachable`);
-  assert.equal(
-    await reachable(ENDPOINTS.collectorHealth),
-    false,
-    "the collector should not answer while it is stopped",
-  );
-  checkpoint("backend unreachable", `health probe to ${ENDPOINTS.collectorHealth} got no response`);
+
+  // The `try` opens IMMEDIATELY after the stop, so every step below is covered by the `finally`
+  // that brings the collector back. An assertion between the stop and the `try` - the probe
+  // below was one - would leave the stack down for every test that runs afterwards if it failed.
   try {
+    checkpoint("backend stopped", `collector container down; ${ENDPOINTS.otlp} is unreachable`);
+    assert.equal(
+      await reachable(ENDPOINTS.collectorHealth),
+      false,
+      "the collector should not answer while it is stopped",
+    );
+    checkpoint(
+      "backend unreachable",
+      `health probe to ${ENDPOINTS.collectorHealth} got no response`,
+    );
     // 1. Capture and project while there is nowhere to send. Acceptance is a LOCAL commit, so
     //    this must succeed with the backend on the floor.
     const accepted = capture("offline-1", happenedAt, 265);

@@ -62,7 +62,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
 
     // 1. Undelivered batches past the age window. Expired, not silently deleted: an operator
     //    who was offline for eight days is told what did not make it.
-    const stale = expiredBatchIds(d, payloadCutoff, BATCH_LIMIT);
+    const stale = expiredBatchIds(d, payloadCutoff, now, BATCH_LIMIT);
     for (const id of stale) {
       settleDelivery(
         d,
@@ -89,7 +89,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     //    steps run again against the byte budget, oldest first.
     if (usedBytes(d) > TELEMETRY_LIMITS.maxTotalBytes * PRESSURE_RATIO) {
       result.underPressure = true;
-      const pressured = expiredBatchIds(d, now, BATCH_LIMIT);
+      const pressured = expiredBatchIds(d, now, now, BATCH_LIMIT);
       for (const id of pressured) {
         settleDelivery(
           d,

@@ -79,6 +79,28 @@ export function composeService(action, service) {
   return { ok: result.status === 0, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
+/**
+ * Turn a `spawnSync` result into an exit code, without reporting success for a command that
+ * never ran.
+ *
+ * `spawnSync` sets `status` to null when it could not execute at all - Docker not installed,
+ * not on PATH, not running - and leaves the reason in `error`. `status ?? 0` therefore exits 0
+ * and tells the caller the stack is fine when nothing happened. A wrapper whose whole job is
+ * to be the reliable entry point must not do that.
+ */
+function finish(result, successMessage) {
+  if (result.error) {
+    process.stderr.write(`[observability] could not run docker: ${result.error.message}\n`);
+    process.exit(1);
+  }
+  if (result.status === null || result.status === undefined) {
+    process.stderr.write("[observability] docker exited without a status (killed by a signal?)\n");
+    process.exit(1);
+  }
+  if (result.status === 0 && successMessage) process.stdout.write(`${successMessage}\n`);
+  process.exit(result.status);
+}
+
 async function probe(url) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(3_000) });
@@ -110,6 +132,10 @@ export async function waitUntilReady(timeoutMs = 180_000) {
 
 async function up() {
   const result = compose(["up", "-d", "--wait-timeout", "180"]);
+  if (result.error) {
+    process.stderr.write(`[observability] could not run docker: ${result.error.message}\n`);
+    process.exit(1);
+  }
   if (result.status !== 0) process.exit(result.status ?? 1);
   process.stdout.write("[observability] waiting for every component to report ready\n");
   const ready = await waitUntilReady();
@@ -141,6 +167,10 @@ async function up() {
  */
 function verify() {
   const config = compose(["config", "-q"], { quiet: true });
+  if (config.error) {
+    process.stderr.write(`[observability] could not run docker: ${config.error.message}\n`);
+    process.exit(1);
+  }
   if (config.status !== 0) {
     process.stderr.write(config.stderr ?? "");
     process.exit(config.status ?? 1);
@@ -195,21 +225,17 @@ async function main() {
     case "down": {
       // Volumes survive. Stopping the stack and destroying stored metrics are different
       // intentions and must be different commands.
-      const result = compose(["down"]);
-      process.exit(result.status ?? 0);
+      finish(compose(["down"]));
       return;
     }
-    case "reset": {
-      const result = compose(["down", "-v"]);
-      process.stdout.write("[observability] stopped and removed every data volume\n");
-      process.exit(result.status ?? 0);
+    case "reset":
+      // The success line prints only on a zero exit. Announcing a destroy that did not happen
+      // is worse than a plain failure, because the next command is run believing it did.
+      finish(compose(["down", "-v"]), "[observability] stopped and removed every data volume");
       return;
-    }
-    case "status": {
-      const result = compose(["ps"]);
-      process.exit(result.status ?? 0);
+    case "status":
+      finish(compose(["ps"]));
       return;
-    }
     case "ready": {
       const ready = await waitUntilReady(60_000);
       if (!ready.ok) {

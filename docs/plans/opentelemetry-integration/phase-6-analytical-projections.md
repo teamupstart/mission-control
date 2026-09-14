@@ -43,6 +43,8 @@ The Phase 5/6 concurrency contract is an entry gate. If the base lacks a require
 
 Use the root `AGENTS.md` isolated unit-runner contract. Add deterministic clock/property fixtures for replay order, duplicate delivery, restart between state and output, late outcomes, consent reset, expired state, zero eligible runs, overflow/custom dimensions, mixed models, multiple PRs and unknown actor/visibility. Assert bounded state/series at the agreed limits.
 
+Consume Phase 3's ownership-removal/late-merge fixture. Within the retained horizon, the verified delivery fact revises the current PR/outcome cohort exactly once while original session-end evidence and operational task status remain distinct. An expired association marks coverage incomplete. Projection replay cannot complete a task or satisfy any dependency.
+
 The six-run oracle must produce 8 executed reviews, 6 pass, 2 fail, 4 completed runs, 1 pending, 1 cancelled and confirmed recovery in 1 of 6. R2 alone is known human-free; R6 remains ambiguous. Excluding R5's authored approval leaves 5 automation-eligible runs. Position timestamps against a frozen matured-cohort horizon; short SQL examples require the full after-start/horizon/consent filters in actual reducers.
 
 Run `npm run typecheck`, `npm run lint`, `npm run build` and `npm run smoke`. Run real-stack metric assertions with same calculation metadata, reload/replay, metric name translation and partial/stale snapshots. No UI changes are needed; if a visible surface is added, supply its Playwright coverage in this phase rather than deferring it.
@@ -58,3 +60,5 @@ Open a reviewable PR, meet the verification bar and resolve current-main conflic
 ## Cross-phase audit
 
 2026-09-13: re-read source/index and Phases 1-5. Retained payload and cohort state have separate bounded lifetimes under one owner/budget. No new source events, common migrations or source-registration edits are needed. Phase 5's broad callers are optional inputs until they land, not an implementation prerequisite. Added explicit snapshot-coherence/partial-delivery handling so the final dashboards cannot pair different cohort calculations.
+
+Review reconciliation: Phase 3 now explicitly owns durable late-PR observation after ownership invalidation. This phase tests cohort revision from that input without adding polling, operational bindings or dependency-release authority.

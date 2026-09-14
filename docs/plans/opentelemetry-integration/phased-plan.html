@@ -56,6 +56,10 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <td>Session removal, task outcome and verified per-repository PR facts remain distinct. Unknown completion cannot be exported as proven failed work.</td>
 </tr>
 <tr>
+<td><code>src/server/db.ts</code> <code>invalidateTaskOwnershipInTransaction</code>; <code>mergedPrFor</code>; <code>taskPrPollTargets</code></td>
+<td>Invalidation drops bindings without archival. Phase 3 retains bounded observation-only PR context and shares daemon polling so late delivery survives removal without broadening operational task completion or selection-time dependency release. Phase 6 verifies cohort revision from those facts.</td>
+</tr>
+<tr>
 <td>Browser API, action owners, MCP and worker boundaries</td>
 <td>Phase 5 completes an explicit action manifest. HTTP retries and SSE replay cannot become extra logical actions; caller provenance is not authorization.</td>
 </tr>
@@ -259,4 +263,5 @@ h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(-
 <p>Planning verification checks all referenced artifact paths, graph acyclicity/direct edges, complete ownership, concurrency write sets, Markdown/HTML consistency and offline desktop/mobile rendering. No passing runtime prototype is claimed by these documents.</p>
 <p>Audit record, 2026-09-13: all seven guides were reviewed in dependency order against the source and previously written guides. The complete-set audit passes: each required source/delivery behavior has one introducing owner; consumers follow prerequisites; Phase 5/6 write sets and registration are separate; phase-specific tests stay with behavior; and the final state includes every required dashboard. Phase 6 explicitly checks snapshot coherence so Phase 7 cannot combine different calculations. No unconfirmed successful prototype is assumed: Phase 1&#39;s measured adapter/backend acceptance is a merge gate before consumers. Publication-path and rendered-artifact checks run before task creation.</p>
 <p>Review reconciliation: P1/P4 and Phases 1/2 now state the same credential-bearing remote HTTPS and redirect contract. P5&#39;s design ownership is distinguished from implementation ownership in Phases 1, 6 and 7. The root reflects the seven scheduled tasks and links to the rendered repository findings. These clarifications preserve the dependency graph, restart-safe capture and concrete dashboard deliverables.</p>
+<p>Late-outcome review reconciliation: P2 and Phase 3 explicitly cover ownership invalidation, durable observation-only associations and shared-poller routing. Phase 3 owns the source/retention fixture; Phase 6 owns final cohort revision. Existing historical bindings and operational completion/dependency rules retain their current authority. No phase edge or operational policy change is required.</p>
 </main></body></html>

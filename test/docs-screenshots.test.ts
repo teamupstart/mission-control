@@ -15,7 +15,7 @@ import {
   type CapturePage,
 } from "../scripts/docs-screenshots.mjs";
 import { SETUP_FAMILY_INFO, type SetupFamilyId } from "../src/shared/setup-catalog.ts";
-import { UPDATE_PHASES } from "../src/shared/update.ts";
+import { UPDATE_PHASES, isNewerVersion } from "../src/shared/update.ts";
 
 /**
  * The committed-imagery registry's pure half.
@@ -132,7 +132,13 @@ test("the update snapshot is a phase the shipped union actually has", () => {
   assert.equal(AVAILABLE_UPDATE.phase, "available");
   // The banner renders `newVersion`; a snapshot that is not strictly newer is not an offer the
   // real updater would ever make, since it never provides a downgrade path.
-  assert.ok(AVAILABLE_UPDATE.newVersion > AVAILABLE_UPDATE.currentVersion);
+  //
+  // Asked through the shipped `isNewerVersion` rather than with `>`, which is a STRING compare:
+  // it happens to agree for 1.17.0 over 1.16.1 and disagrees for 1.10.0 over 1.9.0, so editing
+  // these literals to a pair that straddles a ten could leave this passing while asserting the
+  // opposite of what it says. Using the updater's own predicate also means the snapshot is held
+  // to the rule the product actually applies, rather than to a second copy of it here.
+  assert.ok(isNewerVersion(AVAILABLE_UPDATE.currentVersion, AVAILABLE_UPDATE.newVersion));
   assert.equal(typeof AVAILABLE_UPDATE.releaseNotes, "string");
   assert.ok(AVAILABLE_UPDATE.releaseNotes.length > 0);
 });

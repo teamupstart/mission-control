@@ -6,12 +6,8 @@ import { expect, test } from "../fixtures/test.ts";
 const EVIDENCE = artifactsDir("telemetry-diagnostics-dashboard");
 
 /**
- * The walking slice, end to end, through a browser.
- *
- * This is the only layer that can answer the question the whole phase turns on: does a fact
- * this daemon captured reach a panel a person can read, and can they get from that panel to
- * the trace that explains it? Every other layer stops short - the unit tests stop at the bytes
- * the exporter produced, and the integration test stops at a Prometheus query result.
+ * The walking slice through a browser: a captured fact reaching a panel a person can read, and
+ * the trace navigation from that panel to the span explaining it.
  *
  * PREREQUISITE, and an explicit one rather than a silent skip. It needs the local reference
  * stack, which needs Docker:

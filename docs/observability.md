@@ -153,9 +153,13 @@ rather than by review.
 
 ## The local reference stack
 
-Four pinned containers, all published on loopback only. Optional, independent of the app's
-lifecycle, and not part of the Electron package: Mission Control goes on capturing when the whole
-stack is stopped.
+Four pinned long-running containers, all published on loopback only, plus a one-shot
+`queue-permissions` initializer that runs to completion before the Collector starts and then exits.
+It reuses the Grafana image to `chown` the Collector's persistent queue volume, because the
+Collector runs as uid 10001 and refuses to start rather than falling back to an in-memory queue.
+
+The stack is optional, independent of the app's lifecycle, and not part of the Electron package:
+Mission Control goes on capturing when the whole thing is stopped.
 
 ```sh
 npm run observability:up       # start, then wait until every component reports ready

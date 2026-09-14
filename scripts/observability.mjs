@@ -80,15 +80,6 @@ export function composeService(action, service) {
 }
 
 /**
- * Turn a `spawnSync` result into an exit code, without reporting success for a command that
- * never ran.
- *
- * `spawnSync` sets `status` to null when it could not execute at all - Docker not installed,
- * not on PATH, not running - and leaves the reason in `error`. `status ?? 0` therefore exits 0
- * and tells the caller the stack is fine when nothing happened. A wrapper whose whole job is
- * to be the reliable entry point must not do that.
- */
-/**
  * Exit with an explanation when docker itself could not be run.
  *
  * `spawnSync` reports a missing or stopped Docker as `error` set and `status: null`, so a check
@@ -103,11 +94,17 @@ export function requireDocker(result) {
   process.exit(1);
 }
 
+/**
+ * Turn a `spawnSync` result into an exit code, without reporting success for a command that
+ * never ran.
+ *
+ * `spawnSync` sets `status` to null when it could not execute at all - Docker not installed,
+ * not on PATH, not running - and leaves the reason in `error`. `status ?? 0` therefore exits 0
+ * and tells the caller the stack is fine when nothing happened. A wrapper whose whole job is
+ * to be the reliable entry point must not do that.
+ */
 function finish(result, successMessage) {
-  if (result.error) {
-    process.stderr.write(`[observability] could not run docker: ${result.error.message}\n`);
-    process.exit(1);
-  }
+  requireDocker(result);
   if (result.status === null || result.status === undefined) {
     process.stderr.write("[observability] docker exited without a status (killed by a signal?)\n");
     process.exit(1);

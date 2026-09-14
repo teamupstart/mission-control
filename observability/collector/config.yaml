@@ -1,0 +1,97 @@
+# The local Collector: one OTLP ingress, two backends, and a durable queue in front of each.
+#
+# Mission Control's own store guarantees that an accepted fact survives a restart of Mission
+# Control. It cannot guarantee anything about a hop it has already been told succeeded. So the
+# reference Collector has to close its own post-acknowledgement window - otherwise stopping
+# Prometheus for a minute would lose data that the app has already released, and the durable
+# design would be undone one hop downstream of itself.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        # 0.0.0.0 INSIDE the container only. The published port in compose.yaml binds to
+        # 127.0.0.1 on the host, which is where the actual exposure decision is made.
+        endpoint: 0.0.0.0:4318
+
+extensions:
+  # The persistent queue's storage. Backed by the `collector-queue` volume, so an accepted
+  # batch survives a Collector restart.
+  file_storage:
+    directory: /var/lib/otelcol/queue
+    # The volume mounts as an empty root, not as this subdirectory, so the extension has to be
+    # told to create it. Without this the Collector refuses to start at all - which is the
+    # correct behaviour on its part, and a good sign: it will not silently fall back to the
+    # in-memory queue this stack exists to avoid.
+    create_directory: true
+    timeout: 10s
+    compaction:
+      on_start: true
+      directory: /var/lib/otelcol/queue
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+processors:
+  # Bounded, and low: this Collector runs beside a developer's actual work, and an OTLP ingress
+  # that can take 2 GiB during a backlog drain is a Collector that gets uninstalled.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+exporters:
+  # Prometheus's own OTLP receiver, rather than a scrape endpoint.
+  #
+  # Deliberate: a `prometheusremotewrite` or scrape path would re-timestamp or re-derive the
+  # points, and the whole claim being tested here is that ORIGINAL timestamps and ORIGINAL
+  # resource attributes survive from a queued batch to a query result.
+  otlphttp/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      num_consumers: 1
+      queue_size: 5000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 60s
+      # Longer than a coffee break and shorter than a weekend. Past this the Collector reports
+      # a permanent failure, which is a visible loss rather than an unbounded queue.
+      max_elapsed_time: 1h
+
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      num_consumers: 1
+      queue_size: 5000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 60s
+      max_elapsed_time: 1h
+
+service:
+  extensions: [file_storage, health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+  telemetry:
+    logs:
+      level: info

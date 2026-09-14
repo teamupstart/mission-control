@@ -112,6 +112,11 @@ test("the initial app_config key and value-class partition is pinned", () => {
       "shipping",
       "skills",
       "taskSources",
+      // Telemetry consent and the installation pseudonym. Both are `operational` with NO backup
+      // domain: restoring either from another installation, or from before a withdrawal, could
+      // turn collection on or merge two installations' identities. See docs/observability.md.
+      "telemetry",
+      "telemetry.identity",
       "terminals",
       "ui",
       "workflows",

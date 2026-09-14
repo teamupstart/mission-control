@@ -1,0 +1,320 @@
+{
+  "uid": "mission-telemetry-diagnostics",
+  "title": "Mission Control: telemetry diagnostics",
+  "description": "The walking slice's own dashboard. Every panel here is fed by a real captured fact travelling Mission Control's durable path - journal, projection, outbox, exporter, Collector, backend - so an empty panel means that path is broken, not that a fixture was forgotten. Phase 7 owns the six product dashboards; this one stays as the compatibility proof.",
+  "tags": [
+    "mission-control",
+    "diagnostics"
+  ],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Explore Mission Control traces",
+      "type": "link",
+      "icon": "external link",
+      "url": "/explore?left=%7B%22datasource%22:%22mission-tempo%22,%22queries%22:%5B%7B%22queryType%22:%22traceql%22,%22query%22:%22%7B%20resource.service.name%3D%5C%22mission-control%5C%22%20%7D%22%7D%5D%7D",
+      "targetBlank": false
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "label_values(mission_daemon_starts_total, deployment_environment_name)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      },
+      {
+        "name": "installation",
+        "label": "Installation",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "mission-prometheus"
+        },
+        "query": "label_values(mission_daemon_starts_total, service_instance_id)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "allValue": ".*"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What this dashboard means",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Each panel below is a **cumulative** total exported by Mission Control's durable projection, not a sample of live process state. A restart continues the same stream rather than resetting it, and a batch drained after an outage carries the timestamps and the app version it was recorded under - so a spike here is activity that actually happened then, not a reconnect.\n\n**Genuine zero vs. no data.** An empty panel means nothing has been exported for the selected range. That is different from a zero value, which means the stream exists and its total has not moved. Check **Telemetry queue health** in Mission Control's own API (`GET /api/telemetry/health`) to tell a stopped export apart from a quiet installation."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Daemon starts observed",
+      "description": "Cumulative count of daemon starts this installation has exported. Denominator: none - this is a census of observed starts, not a rate. Read with last_over_time over the selected range rather than as an instant query: these are cumulative totals written only when something happens, and Prometheus marks a series stale five minutes after its last sample - so a plain instant query blanks this panel on any quiet installation, which reads as a broken export rather than as a quiet week.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum(last_over_time(mission_daemon_starts_total{deployment_environment_name=~\"$environment\", service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "legendFormat": "starts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no exports yet",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Startup time, p95",
+      "description": "95th percentile of daemon startup duration over the whole retained histogram. Buckets are explicit and declared in the metric catalog, so this is comparable across app versions. Read with last_over_time over the selected range rather than as an instant query: these are cumulative totals written only when something happens, and Prometheus marks a series stale five minutes after its last sample - so a plain instant query blanks this panel on any quiet installation, which reads as a broken export rather than as a quiet week.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (last_over_time(mission_daemon_startup_duration_milliseconds_bucket{deployment_environment_name=~\"$environment\", service_instance_id=~\"$installation\"}[$__range])))",
+          "instant": true,
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "decimals": 0,
+          "noValue": "no exports yet"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Daemon starts by launch mode and app version",
+      "description": "Cumulative series, one per launch mode and app version. A NEW line appearing at an upgrade is correct: a changed service.version is a different OTLP resource and therefore a different stream, which is what stops replayed work being credited to a new release.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (launch_mode, service_version) (mission_daemon_starts_total{deployment_environment_name=~\"$environment\", service_instance_id=~\"$installation\"})",
+          "legendFormat": "{{launch_mode}} \u00b7 {{service_version}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no exports yet",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 8,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Export connection probes",
+      "description": "Synthetic connection probes by destination profile and outcome. A probe sends a real, empty OTLP request and then captures its result through the ordinary durable path, so a row here proves both halves. Read with last_over_time over the selected range rather than as an instant query: these are cumulative totals written only when something happens, and Prometheus marks a series stale five minutes after its last sample - so a plain instant query blanks this panel on any quiet installation, which reads as a broken export rather than as a quiet week.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mission-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mission-prometheus"
+          },
+          "expr": "sum by (profile, outcome) (last_over_time(mission_telemetry_probes_total{deployment_environment_name=~\"$environment\", service_instance_id=~\"$installation\"}[$__range]))",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "probes"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "no probes run yet"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Mission Control traces",
+      "description": "Every completed operation Mission Control exported, searchable at the time it actually ran. Select a Trace ID to open the trace. Honours the Environment and Installation filters above, like every other panel here: a global filter that silently left one panel unfiltered would make this table the one place where a scoped dashboard still shows another installation's traces. A replayed batch appears at its ORIGINAL timestamp, which is why the default range reaches back 24 hours.",
+      "datasource": {
+        "type": "tempo",
+        "uid": "mission-tempo"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "mission-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name = \"mission-control\" && resource.deployment.environment.name =~ \"$environment\" && resource.service.instance.id =~ \"$installation\" }",
+          "limit": 50,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "no traces in this range"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}

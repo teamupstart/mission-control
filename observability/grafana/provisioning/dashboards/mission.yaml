@@ -1,0 +1,19 @@
+# Dashboards are loaded from files and are not editable in place.
+#
+# `allowUiUpdates: false` on purpose. A dashboard edited in the browser would diverge from the
+# file in Git with nothing to reconcile them, and the next `observability:reset` would silently
+# discard the edit. Change the JSON, restart Grafana.
+
+apiVersion: 1
+
+providers:
+  - name: mission-control
+    orgId: 1
+    folder: Mission Control
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

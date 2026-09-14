@@ -1,0 +1,139 @@
+# The local reference observability stack.
+#
+# Optional, and deliberately independent of Mission Control's own lifecycle: nothing in the app
+# starts it, nothing in the app waits for it, and Mission Control goes on capturing when the
+# whole stack is stopped. It is not part of the Electron package.
+#
+# Start it with `npm run observability:up` rather than by hand - that wrapper is what keeps the
+# project name, the volume set and the readiness check consistent between an operator's machine
+# and the integration test.
+#
+# Four decisions worth knowing before changing anything here:
+#
+# 1. **Every published port binds to 127.0.0.1.** A default `ports: "3300:3000"` publishes on
+#    every interface, which on a laptop on a conference network means an open Grafana. The
+#    explicit loopback prefix is the difference.
+# 2. **Container-to-container traffic uses service names; the host uses the published ports.**
+#    `http://collector:4318` is correct inside this network and wrong from Mission Control;
+#    `http://127.0.0.1:14318` is the opposite. Mixing them up is the single most common way a
+#    local stack appears broken.
+# 3. **Versions are pinned exactly.** This stack is a compatibility PROOF - old timestamps,
+#    duplicate batches, historical resources, cumulative resets - and a floating tag turns a
+#    proof into a coincidence.
+# 4. **Every hop persists its queue or its data.** A default in-memory Collector queue would
+#    introduce a brand new loss window immediately downstream of a store that exists to have
+#    none, which is the one thing the durable design cannot tolerate in its own reference
+#    deployment.
+#
+# Host budget, MEASURED on an Apple M-series laptop and recorded in docs/observability.md:
+# about 290 MiB RSS across the four containers at idle (Tempo 103, Grafana 101, Prometheus 51,
+# Collector 36) and roughly 1% CPU in total.
+
+name: mission-observability
+
+services:
+  # One-shot: give the Collector's queue volume to the Collector's user.
+  #
+  # The Collector image runs as uid 10001 and Docker creates a fresh named volume owned by
+  # root, so the persistent queue cannot be written without this. The Collector is right to
+  # refuse rather than fall back to an in-memory queue - a silent fallback would reintroduce
+  # exactly the loss window this stack exists to close - so the fix belongs here rather than in
+  # its configuration.
+  #
+  # It reuses the Grafana image purely because that one is already being pulled and has a
+  # shell; adding a fifth image to download for two `chown` calls would be worse.
+  queue-permissions:
+    image: grafana/grafana:12.4.10
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /queue && chown -R 10001:10001 /queue"]
+    volumes:
+      - collector-queue:/queue
+    restart: "no"
+
+  # The single OTLP ingress. Mission Control talks only to this: routing metrics to Prometheus
+  # and traces to Tempo is the Collector's job, not the app's, which is what keeps the app's
+  # transport contract to one endpoint and one protocol.
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../collector/config.yaml:/etc/otelcol/config.yaml:ro
+      # The persistent sending queue. Without this volume a Collector restart silently drops
+      # everything it had accepted but not yet forwarded - a loss window Mission Control's own
+      # store has no way to see or repair, because from the app's point of view those batches
+      # were acknowledged.
+      - collector-queue:/var/lib/otelcol
+    ports:
+      - "127.0.0.1:14318:4318" # OTLP/HTTP, the endpoint Mission Control is pointed at
+      - "127.0.0.1:14133:13133" # health check
+    depends_on:
+      queue-permissions:
+        condition: service_completed_successfully
+      prometheus:
+        condition: service_started
+      tempo:
+        condition: service_started
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Longer than the app's seven-day queue, so a backlog drained after a week of being
+      # offline lands inside the retention window rather than just outside it.
+      - --storage.tsdb.retention.time=30d
+      # The OTLP receiver is OFF by default and has to be asked for explicitly. Without this
+      # flag `/api/v1/otlp/v1/metrics` 404s, which the exporter correctly reports as a
+      # configuration fault - and which looks exactly like a wrong URL.
+      - --web.enable-otlp-receiver
+      - --web.enable-lifecycle
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:19090:9090"
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ../tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "127.0.0.1:13200:3200" # query API, which Grafana's data source uses
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.10
+    environment:
+      # Anonymous viewing, on loopback only, because a login wall on a single-operator local
+      # stack is a password to lose rather than a boundary to hold. Admin is still gated.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+      # Provisioning only. An operator should never have to import a dashboard or point a data
+      # source by hand, and a dashboard edited in the UI would drift from the file in Git.
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+# Named volumes rather than bind mounts, so `down` leaves the data alone and reset is an
+# explicit, separate action. `npm run observability:reset` is the only thing that removes them.
+volumes:
+  collector-queue:
+  prometheus-data:
+  tempo-data:
+  grafana-data:

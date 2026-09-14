@@ -35,6 +35,7 @@ import type { WorkflowPolicy } from "./workflow.ts";
 import type { SettingsBackupDomainId } from "./settings-backup-domains.ts";
 import { SetupBannerDismissalSchema } from "./setup-catalog.ts";
 import { RepoIndexConfigSchema, type RepoIndexConfig } from "./repo-index.ts";
+import { TelemetryConfigSchema } from "./telemetry.ts";
 
 export const APP_CONFIG_VALUE_CLASSES = ["setting", "derived", "operational"] as const;
 export type AppConfigValueClass = (typeof APP_CONFIG_VALUE_CLASSES)[number];
@@ -262,6 +263,12 @@ const ForemanLeaseSchema = z.object({
   expiresAt: z.number(),
 });
 
+/** This installation's telemetry pseudonym and its reset epoch. Never an account or a person. */
+const TelemetryIdentitySchema = z.object({
+  installationId: z.string(),
+  epoch: z.number().int().min(1),
+});
+
 const StoredBacklogPlanSchema = BacklogPlanSchema.extend({ generatedAt: z.number() });
 
 /**
@@ -316,6 +323,22 @@ export const APP_CONFIG_ENTRIES = {
     "repoIndex", RepoIndexConfigSchema, "repo-index", repoIndexFields,
   ),
   terminals: fieldsEntry("terminals", TerminalsConfigSchema, "terminals", terminalsFields),
+  /**
+   * General telemetry collection and export.
+   *
+   * `operational` with NO backup domain, and that classification is the privacy contract
+   * rather than an oversight. This value is consent: which audiences this operator agreed to
+   * send their own activity to, from this machine. A settings snapshot restored from another
+   * installation - or from before a withdrawal - must not be able to turn collection back on
+   * or point it somewhere it was never pointed, which is exactly what including it in a backup
+   * domain would allow. `setup.banner` is excluded for the same shape of reason.
+   *
+   * The export credential is not here at all; it lives in the daemon-owned `telemetry_secrets`
+   * table, so neither a snapshot nor a config API read can carry one.
+   */
+  telemetry: wholeEntry("telemetry", TelemetryConfigSchema, "operational", null),
+  /** The installation pseudonym. Restoring one onto another machine would merge two installations. */
+  telemetryIdentity: wholeEntry("telemetry.identity", TelemetryIdentitySchema, "operational", null),
 } as const;
 
 export type AppConfigEntry = (typeof APP_CONFIG_ENTRIES)[keyof typeof APP_CONFIG_ENTRIES];

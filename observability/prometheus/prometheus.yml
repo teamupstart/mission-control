@@ -1,0 +1,50 @@
+# Prometheus, configured to accept OTLP directly and to tolerate a laptop's backlog.
+#
+# Two settings here are the difference between "the receiver returned 200" and "the dashboard
+# can find the data", which are not the same claim and are tested separately.
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    # So a multi-producer rollup can tell this reference installation from a real one. P5
+    # requires demo, development and test signals stay out of adoption; this is one half of
+    # that, the other being the `deployment.environment.name` resource attribute the app sets.
+    stack: mission-local
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+# Nothing is scraped. Every series here arrives over OTLP from the Collector, which is what
+# lets a metric keep the timestamp it was recorded at rather than the time it was collected.
+scrape_configs: []
+
+otlp:
+  # PINNED, not left to the default, because a dashboard query names an exact series.
+  #
+  # `UnderscoreEscapingWithSuffixes` is the strategy that turns `mission.daemon.starts` into
+  # `mission_daemon_starts_total` and `mission.daemon.startup.duration` (unit `ms`) into
+  # `mission_daemon_startup_duration_milliseconds`. `promMetricName` in
+  # src/shared/telemetry-catalog.ts states the same mapping in code, and a unit test asserts it,
+  # so a receiver default moving shows up as a failing test rather than as an empty panel.
+  translation_strategy: UnderscoreEscapingWithSuffixes
+  # Which OTLP resource attributes become labels. Deliberately short: every promoted attribute
+  # multiplies series, and these four are the ones a dashboard actually filters on.
+  promote_resource_attributes:
+    - service.name
+    - service.version
+    - service.instance.id
+    - deployment.environment.name
+  # Keep the full resource available as a target_info series for drill-down, without promoting
+  # everything onto every series.
+  keep_identifying_resource_attributes: true
+
+storage:
+  tsdb:
+    # The late-sample window, and the setting that makes a drained backlog usable.
+    #
+    # Mission Control retains an undelivered payload for seven days. Without an out-of-order
+    # window at least that long, a laptop that was offline for a week drains successfully, gets
+    # 200s the whole way, and has every sample silently refused as too old - which is exactly
+    # the "the receiver accepted it, so it must be fine" failure this stack exists to catch.
+    out_of_order_time_window: 8d

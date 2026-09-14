@@ -340,9 +340,22 @@ export function realHelperLockOperations() {
  * answers the question directly. An unreadable or missing bundle is "unknown", and unknown
  * restores, because a bundle whose identity cannot be established is the one worth restoring.
  */
-export function rollbackIsNeeded({ installedVersion, backupVersion }) {
+export function rollbackIsNeeded({ installedVersion, backupVersion, installedCommit, backupCommit, requireCommit = false }) {
+  if (requireCommit && (!installedCommit || !backupCommit)) return true;
+  if (requireCommit && installedCommit !== backupCommit) return true;
   if (installedVersion === null || backupVersion === null) return true;
   return installedVersion !== backupVersion;
+}
+
+// The detached helper can carry only builtins and app-bundle-swap.mjs, so this reader
+// deliberately mirrors main/bundle-version.ts rather than reaching back into the old app.
+export function bundleSourceCommit(appPath) {
+  try {
+    const value = JSON.parse(readFileSync(join(appPath, "Contents", "Resources", "app", "package.json"), "utf8")).missionCommit;
+    return typeof value === "string" && /^[0-9a-f]{40}$/.test(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export function parseArgs(argv) {
@@ -550,6 +563,7 @@ export function realApplyOperations(
       return restored.failedBundle;
     },
     bundleVersion: (path) => bundleShortVersion(path),
+    bundleCommit: bundleSourceCommit,
     lock: realHelperLockOperations(),
     launch: (appPath) => {
       const result = spawnSync("open", [appPath], { encoding: "utf8" });
@@ -571,7 +585,8 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
   const backupReceipt = join(tempDirectory, "previous-receipt.json");
   const retained = join(args.stateDirectory, RETAINED_FAILURE_DIR_NAME);
   const lockDirectory = join(args.stateDirectory, HELPER_LOCK_DIR_NAME);
-  const targetVersion = args.targetTag.replace(/^v/, "");
+  const alpha = /^[0-9a-f]{40}$/.test(args.targetTag);
+  const targetVersion = alpha ? `alpha ${args.targetTag.slice(0, 7)}` : args.targetTag.replace(/^v/, "");
   let backupReady = false;
   let hadReceipt = false;
   let keepTemporaryBackup = false;
@@ -614,6 +629,9 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       const needed = rollbackIsNeeded({
         installedVersion: ops.exists(args.appPath) ? ops.bundleVersion(args.appPath) : null,
         backupVersion: ops.bundleVersion(backupApp),
+        installedCommit: ops.bundleCommit?.(args.appPath),
+        backupCommit: ops.bundleCommit?.(backupApp),
+        requireCommit: alpha,
       });
       try {
         let failedBundle = null;
@@ -699,6 +717,9 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
       args.stagedBundle ?? null,
       args.stagedRevision ?? null,
     );
+    if (alpha && ops.bundleCommit?.(args.appPath) !== args.targetTag) {
+      throw new Error("The installed app does not match the requested main commit.");
+    }
     record({ result: "success", targetVersion, recordedAt: ops.nowIso() });
     try {
       ops.launch(args.appPath);

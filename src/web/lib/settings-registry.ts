@@ -30,16 +30,20 @@ export const SETTINGS_GROUPS = [
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number]["id"];
 
 /**
- * How far a category reaches, as five claims a human can act on.
+ * How far a category reaches, as claims a human can act on.
  *
  * A group carries the scope of its members in general; a CATEGORY carries its own, which
- * is sometimes more precise - Setup reads tool configuration under `~/`, while Skills sits
+ * is sometimes more precise - Setup checks and configures this installation, while Skills sits
  * in the same *Sessions* group but symlinks into `~/`. Their panel headers therefore say
- * `Reads ~/` and `Writes ~/` respectively, where the rail's group label says This machine.
+ * `This installation` and `Writes ~/` respectively, where the rail's group label says This machine.
  * The rail is the summary, the panel header is the precise claim, and neither is allowed to
  * be softer than the truth.
  */
 export const SETTINGS_SCOPES = {
+  installation: {
+    label: "This installation",
+    hint: "Checks local tools and configures application updates and integrations.",
+  },
   browser: {
     label: "This browser",
     hint: "Stored on this machine for the dashboard. Nothing here reaches the daemon.",
@@ -142,10 +146,10 @@ export const SETTINGS_CATEGORIES = [
     id: "setup",
     label: "Setup",
     icon: "✓",
-    blurb: "External tools this machine can use and what is still missing",
+    blurb: "Application updates, external tools, and what is still missing",
     group: "sessions",
-    scope: "home-read",
-    keywords: ["install", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
+    scope: "installation",
+    keywords: ["install", "alpha", "updates", "main", "release", "agent cli", "terminal", "tmux", "cmux", "github", "plugins", "conductor"],
   },
   {
     id: "harnesses",

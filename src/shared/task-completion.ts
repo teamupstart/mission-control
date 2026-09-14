@@ -92,12 +92,13 @@ const SHIP_CONTRACT: TaskCompletionContract = {
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
  * uses one: a new task kind does not compile until it has said what its completion
- * boundary is, including saying it has none. Only `ship` defers post-completion work
- * today; scout, plan, pipeline and chat finish inside their own delivered turn and are
+ * boundary is, including saying it has none. Ship and Bugfix defer post-completion work;
+ * scout, plan, pipeline and chat finish inside their own delivered turn and are
  * judged against their objective unchanged.
  */
 const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> = {
   ship: SHIP_CONTRACT,
+  bugfix: { ...SHIP_CONTRACT, kind: "bugfix", boundary: "the initial implementation handoff of a dispatched bugfix task" },
   scout: null,
   plan: null,
   pipeline: null,

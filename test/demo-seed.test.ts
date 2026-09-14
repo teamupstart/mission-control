@@ -360,7 +360,7 @@ test("the seeded workflow is No-Mistakes Review v3's shape, minus the Inspector 
   // which `enterInspectorGate` would record `blocked` on a machine with the Inspector off, and
   // which cannot be satisfied here at all because every read of a pull request's state goes
   // through `gh` against a real GitHub.
-  const builtin = BUILTIN_WORKFLOWS.find((w) => w.definition.name === "No-Mistakes Review");
+  const builtin = BUILTIN_WORKFLOWS.find((w) => w.definition.id === "builtin-workflow:no-mistakes-review");
   assert.ok(builtin, "this build must still ship No-Mistakes Review");
   const v3 = builtin.versions.find((version) => version.version === 3);
   assert.ok(v3, "version 3 is the one whose graph the demo copies");

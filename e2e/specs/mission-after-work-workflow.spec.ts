@@ -112,7 +112,7 @@ async function publishDefaultWorkflow(daemon: DaemonHandle): Promise<string> {
 }
 
 /** A mission saved WITHOUT the field, which is what an older caller sends. */
-async function seedMission(daemon: DaemonHandle, name: string): Promise<StoredSchedule> {
+async function seedMission(daemon: DaemonHandle, name: string, kind = "ship", workflowId?: string): Promise<StoredSchedule> {
   return api<StoredSchedule>(daemon, "/api/schedules", {
     method: "POST",
     body: {
@@ -125,7 +125,8 @@ async function seedMission(daemon: DaemonHandle, name: string): Promise<StoredSc
         title: `${name} task`,
         intent: `Whatever ${name} is for.`,
         repoRoot: daemon.repo,
-        kind: "ship",
+        kind,
+        ...(workflowId === undefined ? {} : { workflowId }),
       },
     },
   });
@@ -250,3 +251,93 @@ test("a mission can be saved with no Workflow selected, and the daemon stores no
 
   await shoot(dashboard, "06-saved-with-none", dashboard.getByText("Quiet sweep").first());
 });
+
+
+for (const [kind, workflowId] of [
+  ["bugfix", "builtin-workflow:bug-fix-review"],
+  ["plan", "builtin-workflow:plan-validation"],
+] as const) {
+  for (const optOut of [false, true]) {
+    test(`selecting ${kind} on a mission persists ${optOut ? "explicit None" : "its default review"}`, async ({ dashboard, daemon }) => {
+      await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+      await dashboard.getByRole("button", { name: "Create mission" }).click();
+      const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+      await dashboard.getByRole("combobox", { name: "Task kind" }).selectOption(kind);
+      await expect(afterWork).toBeEnabled();
+      await expect(afterWork).toHaveValue(workflowId);
+      if (!optOut) await shoot(dashboard, `${kind}-review-default`, afterWork);
+      if (optOut) await afterWork.selectOption("");
+      const missionName = `${kind} ${optOut ? "without review" : "with default review"}`;
+      await dashboard.getByPlaceholder("e.g. Dependency audit").fill(missionName);
+      await dashboard.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+      await dashboard.keyboard.press("Escape");
+      await dashboard.getByPlaceholder("e.g. Run dependency audit and update unsafe packages").fill("Review optional");
+      await dashboard.getByPlaceholder("What should the agent do each run?").fill("Do the requested work");
+      await dashboard.getByRole("button", { name: "Save paused" }).click();
+      await expect.poll(async () => {
+        const all = await api<StoredSchedule[]>(daemon, "/api/schedules");
+        const saved = all.find((entry) => entry.name === missionName);
+        return saved ? saved.template?.workflowId ?? null : "not-saved";
+      }).toBe(optOut ? null : workflowId);
+    });
+  }
+}
+
+for (const kind of ["bugfix", "plan"] as const) {
+  test(`returning from ${kind} restores the mission's prior workflow choice`, async ({ dashboard, daemon }) => {
+    const customWorkflowId = await publishDefaultWorkflow(daemon);
+    await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+    await dashboard.getByRole("button", { name: "Create mission" }).click();
+    const kindSelect = dashboard.getByRole("combobox", { name: "Task kind" });
+    const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+
+    await kindSelect.selectOption(kind);
+    await expect(afterWork).not.toHaveValue("");
+    await kindSelect.selectOption("ship");
+    await expect(afterWork).toHaveValue("");
+
+    await afterWork.selectOption(customWorkflowId);
+    await kindSelect.selectOption(kind);
+    await kindSelect.selectOption(kind === "bugfix" ? "plan" : "bugfix");
+    await kindSelect.selectOption("scout");
+    await expect(afterWork).toBeDisabled();
+    await kindSelect.selectOption("ship");
+    await expect(afterWork).toHaveValue(customWorkflowId);
+
+    await kindSelect.selectOption(kind);
+    await afterWork.selectOption("");
+    await kindSelect.selectOption("ship");
+    await expect(afterWork).toHaveValue("");
+    await shoot(dashboard, `${kind}-return-to-ship`, afterWork);
+
+    await dashboard.getByPlaceholder("e.g. Dependency audit").fill(`${kind} returned to ship`);
+    await dashboard.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+    await dashboard.keyboard.press("Escape");
+    await dashboard.getByPlaceholder("e.g. Run dependency audit and update unsafe packages").fill("Ship after changing kind");
+    await dashboard.getByPlaceholder("What should the agent do each run?").fill("Do the requested work");
+    await dashboard.getByRole("button", { name: "Save paused" }).click();
+    await expect.poll(async () => {
+      const all = await api<Array<StoredSchedule & { template: { kind: string; workflowId: string | null } }>>(daemon, "/api/schedules");
+      const saved = all.find((entry) => entry.name === `${kind} returned to ship`);
+      return saved?.template;
+    }).toMatchObject({ kind: "ship", workflowId: null });
+  });
+}
+
+for (const [kind, workflowId] of [
+  ["bugfix", "builtin-workflow:bug-fix-review"],
+  ["plan", "builtin-workflow:plan-validation"],
+] as const) {
+  test(`editing a saved ${kind} mission clears its default when switching to ship`, async ({ dashboard, daemon }) => {
+    const mission = await seedMission(daemon, `Saved ${kind} mission`, kind, workflowId);
+    await dashboard.getByRole("button", { name: "Recurring missions" }).click();
+    await dashboard.getByRole("button", { name: `Saved ${kind} mission`, exact: false }).first().click();
+    await dashboard.getByRole("button", { name: "Edit" }).first().click();
+    const afterWork = dashboard.getByRole("combobox", { name: AFTER_WORK });
+    await expect(afterWork).toHaveValue(workflowId);
+    await dashboard.getByRole("combobox", { name: "Task kind" }).selectOption("ship");
+    await expect(afterWork).toHaveValue("");
+    await dashboard.getByRole("button", { name: "Save paused" }).click();
+    await expect.poll(() => storedWorkflowId(daemon, mission.id)).toBe(null);
+  });
+}

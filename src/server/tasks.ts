@@ -2638,7 +2638,7 @@ export class TaskManager {
             );
           }
         } else {
-          const workflowId = resolveTaskWorkflowId(input.workflowId);
+          const workflowId = resolveTaskWorkflowId(input.workflowId, input.kind);
           if (
             existing.repoRoot !== input.repoRoot ||
             existing.intent !== input.intent ||
@@ -2662,7 +2662,7 @@ export class TaskManager {
       if (!input.backlog) throw new Error(`internally created task ${id} must be backlog`);
       if (!explicitTitle) throw new Error(`internally created task ${id} must carry a title`);
     }
-    const workflowId = resolveTaskWorkflowId(input.workflowId);
+    const workflowId = resolveTaskWorkflowId(input.workflowId, input.kind);
     const dependencies = this.resolveDependencies(input.dependencies ?? [], id);
     const mustBacklog = dependencies.some((dependency) => dependency.satisfiedAt === null);
     const backlogged = Boolean(input.backlog) || mustBacklog;

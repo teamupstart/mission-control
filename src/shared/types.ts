@@ -1841,7 +1841,7 @@ export type PrChecks = "passing" | "failing" | "pending";
  * APPEND, never reorder: `ship` at index 0 is the default every automated writer takes,
  * and the read paths that degrade an unknown persisted kind land on it.
  */
-export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat"] as const;
+export const TASK_KINDS = ["ship", "scout", "plan", "pipeline", "chat", "bugfix"] as const;
 
 export type TaskKind = (typeof TASK_KINDS)[number];
 

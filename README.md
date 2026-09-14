@@ -36,6 +36,11 @@ that handles the routine interruptions you don't want, a verification workflow t
 and repository memory so the next agent does not repeat the last one's mistake. When an external SDLC engine 
 drives the work, Mission Control watches that too.
 
+Prefer one page? The
+[Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)
+is this same tour as a single self-contained document, with 25 screenshots from a running
+fleet.
+
 - [The board](#the-board)
 - [Every agent's desk](#every-agents-desk)
 - [Dispatch and task types](#dispatch-and-task-types)
@@ -274,6 +279,9 @@ There are two paths through this repository:
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
   command in a visible terminal, with **Re-check** to confirm the repair.
+  To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
+  updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
+  release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh
@@ -371,6 +379,7 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 ## Go deeper
 
+- [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.

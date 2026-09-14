@@ -1,3 +1,4 @@
+import { isShippingTaskKind } from "@shared/task.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
@@ -5567,10 +5568,10 @@ export function buildApp(
       !queue
       || !task
       || session.task?.id !== task.id
-      || task.kind !== "ship"
+      || !isShippingTaskKind(task.kind)
       || !["running", "dispatching"].includes(task.status)
     ) {
-      return c.json({ error: "the managed ship task is no longer current" }, 409);
+      return c.json({ error: "the managed task is no longer current" }, 409);
     }
     const diff = await computeSessionDiff(session.cwd);
     if (!diff.ok) return c.json({ error: "the current checkout diff is unavailable" }, 409);
@@ -6806,7 +6807,7 @@ export function buildApp(
   app.post("/api/tasks", async (c) => {
     const parsed = await parseBody(c, DispatchSchema);
     if (!parsed.ok) return parsed.res;
-    const workflowId = resolveTaskWorkflowId(parsed.data.workflowId);
+    const workflowId = resolveTaskWorkflowId(parsed.data.workflowId, parsed.data.kind);
     const prepared = await prepareTaskRepositories({
       primary: parsed.data.repoRoot,
       extras: parsed.data.extraRepoRoots,

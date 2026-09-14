@@ -1,3 +1,4 @@
+import { isShippingTaskKind } from "@shared/task.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { settledIdle } from "@shared/session.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
@@ -126,8 +127,8 @@ function decideShipRecovery(
   const { session: s, queue, now } = input;
   const task = s.task;
   if (!input.featureEnabled) return skip("pre-PR ship recovery is off");
-  if (!task || task.kind !== "ship" || !["running", "dispatching"].includes(task.status)) {
-    return skip("no running managed ship task is bound");
+  if (!task || !isShippingTaskKind(task.kind) || !["running", "dispatching"].includes(task.status)) {
+    return skip("no running managed task is bound");
   }
   if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
   if (!capabilitiesFor(s.agent).workQueue || s.state === "exited" || s.state === "stopping") {
@@ -294,7 +295,7 @@ function structuralPayload(cause: RecoveryCause, workflowEvidenceEligible: boole
       return `${heading}\n\n${detail}\n\n${workflowEvidenceRequirement(workflowEvidenceEligible)}\n\nAddress only these applicable implementation, documentation, test, or evidence gaps. Do not commit, push, create a pull request, merge, or expand repository scope. When the requested work is verified, report completion and end the turn so Mission Control can re-run the normal handoff.`;
     }
     case "idle_empty":
-      return `This invited ship task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation and focused verification, then report completion and end the turn. ${workflowEvidenceRequirement(workflowEvidenceEligible)} Do not commit, push, create a pull request, merge, delete work, or expand repository scope.`;
+      return `This invited task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation and focused verification, then report completion and end the turn. ${workflowEvidenceRequirement(workflowEvidenceEligible)} Do not commit, push, create a pull request, merge, delete work, or expand repository scope.`;
     case "direct_handoff_missing_pr":
       return "Continue the task's existing Straight-to-PR handoff on this same branch. First check whether this task already has an open pull request in any attached repository; if one exists, do not create another. If none exists, finish the already-authorized commit, push, and pull-request creation for the task-owned changes only, then follow its CI on the same branch. Do not merge, delete work, create another task, or expand repository scope.";
     case "idle_ambiguous":

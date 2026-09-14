@@ -3575,7 +3575,7 @@ export class WorkflowManager {
     // Awaiting every target would put N sequential evidence captures on the request path, and
     // this path is not a dashboard click: `POST /api/sessions/:id/workflow-completion` is the
     // Foreman worker's, it fails CLOSED on a lost response, and a capture reads git and can
-    // include a 45-second compaction attempt. A three-repo task would have staked the
+    // include a 150-second compaction attempt. A three-repo task would have staked the
     // completion boundary - and the shipping that follows it - on three of those finishing
     // inside one HTTP timeout. The lead alone is awaited because the reply still has to be
     // able to answer `blocked` when ITS capture fails, which is the single-repo contract and

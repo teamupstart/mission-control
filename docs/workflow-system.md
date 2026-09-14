@@ -35,13 +35,20 @@ Markdown sources are compiled into generated modules by
 [`scripts/builtin-session-actions.ts`](../scripts/builtin-session-actions.ts), so installed
 defaults and operator-managed copies remain distinct.
 
-The current built-in No-Mistakes Review is version 15. After its deterministic checks, it runs the
-compiled `builtin:intent-conformance-judge` and `builtin:test-coverage-judge` Personas together as
-stage 2. Their All-pass Join gates the parallel code-review and evidence-review stages before the
-verified Pull Request action. The workflow completes under the existing `none` policy. Older
-immutable versions and custom workflows may still use the `inspector` completion policy, which is
-presented as the GitHub Inspector final gate. GitHub Inspector remains the daemon-owned remote
-reviewer and the source of exact-head Shipping proof.
+The built-in catalog contains General Review, Bug Fix Review, Plan Validation, and No-Mistakes
+Review (High Rigor). The latter's current version is 18. It retains version 17's local review
+graph and verified Pull Request action, then uses the existing `inspector` completion policy
+with `inspector_only` repairs and `wait` for a missing PR. Earlier versions remain immutable.
+General and Bug Fix use the same check, Persona, and Session action primitives with fewer roles.
+Plan Validation uses only Personas and completes locally. Its task contract requests complete
+registered plan text because Persona calls cannot read checkout files. No new engine node,
+submission format, or database table is introduced.
+
+Task workflow defaults resolve through `taskDefaultWorkflowId` in `src/shared/task.ts`, used by
+both the dispatch form and server task creation. Plan defaults to Plan Validation; Bugfix defaults
+to Bug Fix Review; Ship retains the machine workflow setting. Explicit IDs and null opt-outs win.
+Bugfix shares Ship's completion contract, automatic wrap-up, backlog eligibility, and recovery
+through the existing registries and `isShippingTaskKind` predicate.
 
 Ensembles coordinate multiple agent attempts and hand a selected result back through
 workflow and task seams. The [ensemble manager](../src/server/ensembles/manager.ts) owns

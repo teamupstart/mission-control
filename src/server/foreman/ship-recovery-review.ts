@@ -107,7 +107,7 @@ export function buildShipRecoveryReviewPrompt(input: ShipRecoveryReviewInput): s
   const transcript = formatTranscript(input.transcript, "(no recent transcript turns)")
     .slice(0, TRANSCRIPT_MAX);
   const lines = [
-    "You are Foreman's bounded recovery reviewer for one already-eligible managed ship task.",
+    "You are Foreman's bounded recovery reviewer for one already-eligible managed task.",
     "The session is quiet, its checkout has changes, no task-owned pull request exists, and no",
     "human, queue item, pending turn, or Workflow currently owns it. Choose the safest ONE next",
     "implementation turn. You cannot use tools and must not claim to have inspected anything",

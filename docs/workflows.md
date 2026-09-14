@@ -100,7 +100,7 @@ plugin's to version, and an imported Persona is your database's content.
 
 ### Built-in Personas
 
-Eight ready-made review roles ship with the application. Nothing has to be
+Twelve ready-made review roles ship with the application. Nothing has to be
 imported: they are in the Personas tab of a fresh install, and any workflow stage can pick
 one immediately.
 
@@ -108,6 +108,10 @@ one immediately.
 |---|---|
 | Intent Conformance Judge | Whether the intended feature and explicit interfaces and constraints are satisfied. Allows plan deviations, extra tests, and accompanying bug fixes |
 | Test Coverage Judge | Whether tests appropriately cover changed material executable behavior, including happy paths, boundaries, and exception cases, and whether each test actually proves what its name claims |
+| Root Cause & Regression Judge | Whether the fix addresses the demonstrated cause and regression tests fail before the fix and pass afterward |
+| Plan Consistency Judge | Agreement among plan files, requirements, interfaces, and decisions, including sections within one phase |
+| Phase Dependencies Judge | Valid sequencing, producer/consumer contracts, and safe intermediate states across phases or tasks |
+| Plan Feasibility Judge | Whether the proposed work fits repository constraints and has achievable validation steps |
 | Code Risk Reviewer | Risk the changed code introduces: bugs, security, performance, breaking changes, error handling. Never style, formatting, linting, or types |
 | Test Evidence Auditor | Whether the evidence shows the intent working end to end, with visual evidence required for anything a user will see |
 | Documentation Steward | Documentation this change made stale, against a one-owner-per-fact placement policy |
@@ -158,10 +162,34 @@ copy changes what that role judges, not how it replies.
 
 ### Built-in workflows
 
-One ready-made review workflow ships with the application: **No-Mistakes Review**. Versions 1
-through 16 are preserved for bindings that already pin them, and version 17 is current. There is
-nothing to author and nothing to import - it is in the Workflows tab of a fresh install,
-already published, and can be bound to a session immediately.
+Four ready-made workflows ship already published in the Library:
+
+| Workflow | Judges, in stage order | Finishes with |
+| --- | --- | --- |
+| **General Review** | Intent Conformance; then Code Risk, Code Quality, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
+| **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
+| **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
+| **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Review completion |
+
+General suits ordinary changes. Bug Fix trades general quality review for causal and regression
+proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
+complex work. The three implementation workflows begin with configured typecheck and test Commands.
+Unconfigured slots skip and pass. All presets use Foreman complete, live repair delivery, automatic
+resumption, and up to five repair rounds, subject to the existing trust and execution settings.
+General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
+Codex Sol for Code Design and Terra for its other judges.
+
+Plan Validation has no code-test Commands, Slop Filter, PR action, or Inspector gate. It compares
+complete relevant plan files, not just changed hunks: repeated requirements and interfaces, phase
+producers and consumers, safe intermediate states, and feasible validation steps. Single-phase
+plans receive the same checks across their sections and tasks. Missing or truncated comparison
+material is reported as a gap. Plan tasks with Persona review receive instructions to register a
+frozen text artifact containing the root plan, phase files, relevant unchanged references, and
+recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
+
+No-Mistakes version 18 is current. Versions 1 through 17 remain available with their original
+review graphs and completion policies. The durable workflow ID remains
+`builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
 The **Author what runs** guided tour walks this workflow - its five stages, its disabled
 Publish, and its binding control - after teaching the three assets it is composed of, and then
@@ -229,17 +257,17 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 17 preserve that verified publication
-contract. Versions 10 through 17 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 17.
+would ask for one the run already has. Versions 9 through 18 preserve that verified publication
+contract. Versions 10 through 18 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 18.
 
-A passed review in versions 1 through 8 is then gated on the
+A passed review in versions 1 through 8 and version 18 is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
-Versions 9 onward instead complete when their Pull Request action reaches End, so the default
-workflow does not wait for optional remote review. GitHub Inspector remains independently available for
+Versions 9 through 17 complete when their Pull Request action reaches End. Version 18 waits
+for Inspector after that action. GitHub Inspector remains independently available for
 reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.
 
-In versions 4 through 8, findings require the session to fix, verify, commit and push, then
+In versions 4 through 8 and version 18, findings require the session to fix, verify, commit and push, then
 GitHub Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
 through 3 retain their original whole-workflow restart behavior. Versions 5 through 7
 automatically return a passed, PR-less review to the session to prepare the pull request;
@@ -262,7 +290,7 @@ an upgrade. Duplicating changes nothing about the built-in, which stays listed a
 bindable.
 
 Because it always exists, its name is reserved: creating or renaming a workflow to
-`No-Mistakes Review` is refused the way any duplicate name is. The one exception is
+`No-Mistakes Review (High Rigor)` is refused the way any duplicate name is. The one exception is
 historical - a workflow you authored under that name before it shipped built-in keeps the name
 it already reserved, and the built-in it shadows stays hidden behind your copy while remaining
 addressable, so bindings and runs pinned to it keep resolving. Archive or rename your copy to
@@ -291,7 +319,8 @@ routing as the other non-design reviewers; version 16 keeps that graph and routi
 freezing new Test Coverage Judge guidance that qualitatively assesses test adequacy; and version 17
 keeps the same graph and routing while updating Intent Conformance Judge to prioritize the requested
 outcome and explicit interfaces over plan details. It allows extra tests and accompanying bug fixes,
-including unrelated bugs explained in supplied comments or submission notes. Versions 1 through 16
+including unrelated bugs explained in supplied comments or submission notes. Version 18 adds the final
+Inspector gate while retaining version 17's graph and guidance. Versions 1 through 16
 retain their original intent guidance. Version 15 retains the percentage-based guidance it was
 published with. Every earlier version remains in the
 catalog and still resolves, so an existing binding keeps its pinned graph, policies, and
@@ -300,7 +329,7 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 17 because it is current. Adopting the newer version on an
+take version 18 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 
@@ -891,7 +920,7 @@ Repository state, transcript evidence, evidence metadata, prior Persona feedback
 deliveries, and author coverage never enter criterion extraction. A separate source reconciliation call receives only those stable criteria
 and bounded author claim ids and text. Its schema and failure boundary are independent, so invalid
 mapping output leaves stable extraction intact and fails closed to deterministic mappings. Each
-45-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 45-second
+150-second attempt cannot replace the raw evidence. An unparsable reply gets one fresh 150-second
 attempt; invalid, timed-out, or unavailable stable compaction produces a deterministic visible
 fallback.
 
@@ -1109,7 +1138,7 @@ nothing to choose between them. The repair packet names the competing claim ids.
 
 Reconciliation records its input fingerprint, completion status, consumed attempts and failure
 cause separately from readiness. Each operation allows two actual provider executions, including
-parse correction and interrupted calls, with a 45-second timeout per call. Successful identical
+parse correction and interrupted calls, with a 150-second timeout per call. Successful identical
 inputs are cached, including a successful no-match result. A failed mapping preserves deterministic
 matches and, when material claims remain unresolved under enforced policy, parks the run in
 `evidence_reconciliation_error` before any Persona or author repair delivery. A successful mapping

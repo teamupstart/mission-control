@@ -37,6 +37,7 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 /** What each runner was actually asked to spawn, in call order. */
 let spawned: { runner: LlmRunnerId; model: string | undefined }[] = [];
+let timeouts: (number | undefined)[] = [];
 /** What the next `run` on any runner replies with. */
 let reply = "";
 
@@ -47,12 +48,14 @@ beforeEach(() => {
   for (const job of Object.values(LLM_JOB_SPECS)) delete process.env[job.envVar];
   delete process.env.MISSION_LLM_RUNNER;
   spawned = [];
+  timeouts = [];
   reply = "";
   // Stubbed per runner rather than through one shared fake, because the whole question here
   // is WHICH runner was reached, and a single fake standing in for both cannot answer it.
   for (const id of LLM_RUNNER_IDS) {
     LLM_RUNNERS[id].run = async (_prompt, opts) => {
       spawned.push({ runner: id, model: opts?.model });
+      timeouts.push(opts?.timeoutMs);
       return reply;
     };
   }
@@ -173,6 +176,7 @@ test("the compaction stamp records the provider the call used, not the app-wide 
   const snapshot = await compactWorkflowContext(RAW);
 
   assert.equal(snapshot.compaction.status, "model");
+  assert.deepEqual(timeouts, [150_000]);
   assert.deepEqual(spawned, [{ runner: "codex", model: "gpt-5.6-luna" }]);
   assert.equal(snapshot.compaction.runner, "codex", "the stamp named the app-wide provider");
   assert.equal(snapshot.compaction.model, "gpt-5.6-luna");
@@ -185,6 +189,7 @@ test("a failed compaction stamps the provider it tried, on the same evidence", a
   const snapshot = await compactWorkflowContext(RAW);
 
   assert.equal(snapshot.compaction.status, "fallback");
+  assert.deepEqual(timeouts, [150_000, 150_000]);
   assert.equal(snapshot.compaction.runner, "codex");
   assert.equal(snapshot.compaction.model, "gpt-5.6-luna");
 });
@@ -196,8 +201,9 @@ for (const scenario of ["parse", "transport", "corrected", "cancelled"] as const
     assert.equal(LLM_RUNNERS.codex.structuredOutput, null);
     let calls = 0;
     let active = true;
-    LLM_RUNNERS.codex.run = async () => {
+    LLM_RUNNERS.codex.run = async (_prompt, opts) => {
       calls++;
+      timeouts.push(opts?.timeoutMs);
       if (scenario === "transport") throw new Error("provider unavailable");
       if (scenario === "cancelled") active = false;
       return scenario === "corrected" && calls === 2 ? '{"criterionMappings":[]}' : "invalid JSON";
@@ -214,6 +220,7 @@ for (const scenario of ["parse", "transport", "corrected", "cancelled"] as const
       reconciliationObserver: { start: (attempt) => { starts.push(attempt); }, finish: (attempt) => { finishes.push(attempt); } },
     });
     assert.equal(calls, scenario === "cancelled" ? 1 : 2);
+    assert.deepEqual(timeouts, scenario === "cancelled" ? [150_000] : [150_000, 150_000]);
     assert.deepEqual(starts, scenario === "cancelled" ? [1] : [1, 2]);
     assert.deepEqual(finishes, starts);
     assert.equal(result.reconciliation?.attempts, calls);

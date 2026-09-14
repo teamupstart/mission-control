@@ -289,6 +289,13 @@ function automationPayloads(): Array<{ label: string; text: string }> {
   ];
 }
 
+test("current and historical idle recovery prompts remain automation", () => {
+  for (const task of ["task", "ship task"]) {
+    const prompt = `This invited ${task} is still open, but its checkout has no changes and the session has been quiet. Resume the requested implementation.`;
+    assert.equal(classify(prompt).verdict, "automation");
+  }
+});
+
 test("every payload Mission Control types itself classifies as automation", () => {
   for (const { label, text } of automationPayloads()) {
     const verdict = classify(text);

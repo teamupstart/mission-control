@@ -18703,7 +18703,8 @@ button.wf-carried.is-link:focus-visible {
   border-color: color-mix(in oklab, var(--working) 40%, var(--border));
   background: color-mix(in oklab, var(--working) 9%, transparent);
 }
-.settings-scope-machine {
+.settings-scope-machine,
+.settings-scope-installation {
   color: var(--idle);
   border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
   background: color-mix(in oklab, var(--idle) 9%, transparent);
@@ -27435,7 +27436,8 @@ span.line-run-prov {
   border: 1px solid var(--border-soft);
   border-radius: 999px;
 }
-.bl-kind-ship {
+.bl-kind-ship,
+.bl-kind-bugfix {
   color: var(--idle);
 }
 .bl-kind-scout {

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoAllowlisted } from "../src/shared/allowlist.ts";
-import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
+import { NO_MISTAKES_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID, BUG_FIX_REVIEW_WORKFLOW_ID } from "../src/shared/builtin-workflow.ts";
 import { DEFAULT_WORKFLOW_CONFIG, DEFAULT_WORKFLOW_POLICY } from "../src/shared/workflow.ts";
 import { WorkflowConfigSchema } from "../src/shared/protocol.ts";
 import { APP_CONFIG_ENTRIES } from "../src/shared/app-config-entries.ts";
@@ -91,6 +91,11 @@ test("task creation owns Workflow inheritance and preserves explicit opt-outs", 
   };
 
   assert.equal(tasks.create(input).workflowId, "workflow-review");
+  for (const [kind, expected] of [["plan", PLAN_VALIDATION_WORKFLOW_ID], ["bugfix", BUG_FIX_REVIEW_WORKFLOW_ID]] as const) {
+    assert.equal(tasks.create({ ...input, kind }).workflowId, expected);
+    assert.equal(tasks.create({ ...input, kind, workflowId: null }).workflowId, null);
+    assert.equal(tasks.create({ ...input, kind, workflowId: "workflow-custom" }).workflowId, "workflow-custom");
+  }
   assert.equal(tasks.create({ ...input, workflowId: null }).workflowId, null);
   const scheduledOptions = {
     id: "scheduled-workflow-default",

@@ -429,3 +429,14 @@ test("both delivery seams gate the plan contract, not just the dispatcher", () =
 function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+
+test("a plan with Persona review requests complete frozen comparison material", () => {
+  const inputs = { planSkills: { htmlPlans: "/html-plans", phasedPlan: "/phased-plan" } };
+  const reviewed = withTaskKindContract(mkTask(), "Review the plan", { ...inputs, workflowEvidence: true });
+  assert.match(reviewed, /complete current text of the root plan, all in-scope phase files/);
+  assert.match(reviewed, /Include unchanged files/);
+  assert.match(reviewed, /Register the final revised text after every repair/);
+  assert.doesNotMatch(withTaskKindContract(mkTask(), "Review the plan", inputs), /Plan validation evidence/);
+  assert.doesNotMatch(withTaskKindContract(mkTask({ kind: "bugfix" }), "Fix it", { workflowEvidence: true }), /Plan validation evidence/);
+});

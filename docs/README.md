@@ -4,6 +4,9 @@ Mission Control's product reference is organized by feature below.
 
 ## Features
 
+- [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html):
+  the whole product tour as one self-contained page, with screenshots from a running fleet.
+  Published from `site/` - see [the site README](../site/README.md).
 - [Product overview](overview.md)
 - [Sessions and conversations](sessions.md)
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.

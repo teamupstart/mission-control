@@ -9,7 +9,7 @@ import type { DaemonHandle } from "../fixtures/daemon.ts";
 /**
  * A dispatched session NAMES the workflow it is armed with, and the bind dialog opens on it.
  *
- * The reported bug: dispatching with "No-Mistakes Review · v8" selected looked like it
+ * The reported bug: dispatching with "No-Mistakes Review (High Rigor) · v8" selected looked like it
  * attached nothing. The chip on the session read "＋ workflow" - an offer to attach one - and
  * clicking it opened a dialog pre-selected on a completely different workflow. Every server-side
  * fact was correct the whole time; three UI defects stacked into one confident wrong reading:
@@ -173,7 +173,7 @@ async function dispatchWithNoMistakes(page: Page, daemon: DaemonHandle): Promise
   // Chosen BY HAND rather than left on the dispatch default, because that is what the report
   // described: the operator picked No-Mistakes Review and got something else.
   // Skipping the sentinels deliberately: the "Dispatch default" option NAMES the default
-  // workflow too ("Dispatch default — No-Mistakes Review · v8"), so matching on label alone
+  // workflow too ("Dispatch default — No-Mistakes Review (High Rigor) · v8"), so matching on label alone
   // selects the sentinel and proves nothing about choosing the workflow by hand.
   const noMistakesId = await afterWork.evaluate((el) => {
     const option = [...(el as HTMLSelectElement).options]
@@ -253,7 +253,7 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
   const detail = await selectOnlySession(page);
   // 1. The chip names the workflow instead of offering to add one. This is the line the
   //    operator read as "nothing is attached".
-  const chip = detail.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first();
+  const chip = detail.getByRole("button", { name: /No-Mistakes Review \(High Rigor\) v\d+/ }).first();
   await expect(chip).toBeVisible();
   await expect(detail.getByRole("button", { name: "＋ workflow" })).toHaveCount(0);
   seen("session chip", await accessibleName(chip));
@@ -277,7 +277,7 @@ test("a dispatched session names its armed workflow, and the bind dialog opens o
 
   // 3. The dialog says what it is bound to in words. The truncated id used to read "builtin-",
   //    which is the failure that let a correct binding look like a wrong one.
-  await expect(bind.getByText(/Already bound to No-Mistakes Review · v\d+/)).toBeVisible();
+  await expect(bind.getByText(/Already bound to No-Mistakes Review \(High Rigor\) · v\d+/)).toBeVisible();
   await expect(bind.getByText("builtin-", { exact: false })).toHaveCount(0);
 
   // 4. The sentence describing the version must not contradict the field beside it. `defaults`
@@ -330,7 +330,7 @@ test("a version picked while bindings are still loading is not reverted", async 
   });
 
   const detail = await selectOnlySession(page);
-  await detail.getByRole("button", { name: /No-Mistakes Review v\d+/ }).first().click();
+  await detail.getByRole("button", { name: /No-Mistakes Review \(High Rigor\) v\d+/ }).first().click();
   const bind = page.getByRole("dialog", { name: "Bind workflow" });
   await expect(bind).toBeVisible();
 
@@ -344,7 +344,7 @@ test("a version picked while bindings are still loading is not reverted", async 
   // The conflict notice is the deterministic proof the bindings landed AND that the pick
   // survived them: it only renders once this session's active binding is known and is a
   // DIFFERENT version from the one selected. Waiting on it removes any need to sleep.
-  await expect(bind.getByText(/already bound to No-Mistakes Review · v\d+/i)).toBeVisible();
+  await expect(bind.getByText(/already bound to No-Mistakes Review \(High Rigor\) · v\d+/i)).toBeVisible();
   seen("dialog > selection after the fetch settled", await selectedLabel(published));
   await expect.poll(() => selectedLabel(published)).toContain("Aardvark");
   await expect.poll(() => selectedLabel(published)).not.toContain("No-Mistakes");
@@ -446,12 +446,12 @@ test("a session bound to a superseded version still gets its defaults hint", asy
 
   await page.reload();
   const detail = await selectOnlySession(page);
-  await detail.getByRole("button", { name: /No-Mistakes Review v8/ }).first().click();
+  await detail.getByRole("button", { name: /No-Mistakes Review \(High Rigor\) v8/ }).first().click();
   const bind = page.getByRole("dialog", { name: "Bind workflow" });
   await expect(bind).toBeVisible();
 
   const published = bind.getByRole("combobox", { name: "Published workflow", exact: true });
-  await expect.poll(() => selectedLabel(published)).toBe("No-Mistakes Review · v8");
+  await expect.poll(() => selectedLabel(published)).toBe("No-Mistakes Review (High Rigor) · v8");
 
   // The hint the broken lookup silently withheld. Its presence is the assertion; the exact
   // words belong to v8's own published defaults, which this test does not get to choose.

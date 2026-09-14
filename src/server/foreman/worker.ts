@@ -1,3 +1,4 @@
+import { isShippingTaskKind } from "@shared/task.ts";
 import { randomUUID } from "node:crypto";
 import type {
   ForemanConfig,
@@ -1102,7 +1103,7 @@ async function resolveShipRecoveryCandidate(
   deliveryRoute: ShipRecoveryDeliveryRoute,
 ): Promise<ShipRecoveryCandidate | null> {
   const task = session.task;
-  if (!task || task.kind !== "ship") return null;
+  if (!task || !isShippingTaskKind(task.kind)) return null;
 
   // Queue and Workflow are durable owners outside the card snapshot. Failure to read
   // either holds this candidate: missing evidence can never become permission to type.
@@ -1206,7 +1207,7 @@ async function runShipShepherd(
               transcriptTruncated: window.truncated,
               standards: standards.docs,
               standardsTruncated: standards.truncated,
-              completionContract: taskCompletionContract("ship")!,
+              completionContract: taskCompletionContract(task.kind)!,
               workflowEvidenceEligible: candidate.workflowEvidenceEligible,
               idleMinutes: (Date.now() - (session.lastActivity ?? session.firstSeen)) / 60_000,
               priorRecoverySummary: queue?.promptedRecovery?.payloadSummary ?? null,
@@ -1578,7 +1579,7 @@ async function recordShipRecovery(
     marker: decision.marker,
     situation: "ship-recovery",
     surface: "terminal",
-    question: `Keep managed ship task moving before its first pull request: ${reasonLabel(decision.reason)}.`,
+    question: `Keep managed task moving before its first pull request: ${reasonLabel(decision.reason)}.`,
     pane: null,
     purpose,
     brief,
@@ -2354,7 +2355,7 @@ async function processPromptedWrapup(
   if (plan.kind === "hold") {
     if (
       cfg.keepShipTasksMoving
-      && current.session.task?.kind === "ship"
+      && current.session.task && isShippingTaskKind(current.session.task.kind)
       && ["running", "dispatching"].includes(current.session.task.status)
     ) {
       const latestSessions = await client.sessions().catch(() => null);

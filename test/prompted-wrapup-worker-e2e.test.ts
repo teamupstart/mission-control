@@ -2529,6 +2529,10 @@ process.stdin.on("end", () => {
   const episodes = stub.to("POST", "/api/sessions/s1/foreman-episode");
   assert.equal(episodes.length, 1, `one ship-recovery episode should audit the delivery\n${out}`);
   assert.equal((episodes[0]!.body as { situation?: string }).situation, "ship-recovery");
+  assert.equal(
+    (episodes[0]!.body as { question?: string }).question,
+    "Keep managed task moving before its first pull request: held completion gaps.",
+  );
   assert.equal(stub.calls.filter((c) => c.path.endsWith("/wrapup/asked")).length, 0, out);
   assert.equal(stub.to("POST", "/api/sessions/s1/workflow-completion").length, 0, out);
 });

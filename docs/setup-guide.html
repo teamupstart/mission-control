@@ -204,8 +204,13 @@
     border-bottom-color: var(--line);
     font-weight: 600;
   }
-  td:first-child { white-space: nowrap; }
-  td.cmd { white-space: nowrap; }
+  /* `nowrap` keeps a short label and a command on one line where there is room for them.
+     Below this width it is the wrong trade: the longest first-column label is a sentence, and
+     holding it on one line scrolls the whole page sideways on a phone. */
+  @media (min-width: 700px) {
+    td:first-child { white-space: nowrap; }
+    td.cmd { white-space: nowrap; }
+  }
   tbody tr:hover { background: var(--surface-1); }
 
   .chip {
@@ -457,9 +462,10 @@ make install</code></pre>
         at the final swap, once the new bundle is complete and verified.
       </p>
       <p>
-        Both the app and its updater build on your own Mac, so nothing crosses a download boundary
-        and Gatekeeper never quarantines the bundle. It opens normally, with no right-click
-        <strong>Open</strong> and no <code>xattr</code> workaround.
+        Both the app and its updater build the bundle on your own Mac. The source, the release
+        metadata and the npm dependencies are all fetched, but the application itself is never
+        downloaded as a prebuilt bundle, so Gatekeeper has nothing to quarantine. It opens
+        normally, with no right-click <strong>Open</strong> and no <code>xattr</code> workaround.
       </p>
       <p>
         Closing the window hides the app so alerts keep firing; quit from the tray menu. The tray

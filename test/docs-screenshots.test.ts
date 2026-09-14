@@ -197,23 +197,38 @@ test("trustCell matches the accessible name TrustPanel actually builds", () => {
   assert.doesNotMatch(`Grant: Workflows act for ${repo}`, trustCell("Grant", "Foreman", repo));
 });
 
-/** A `Page` that records what was asked of it. Enough for the two locator paths above. */
+/**
+ * A `Page` that records what was asked of it.
+ *
+ * Deliberately implements the WHOLE of `CapturePage` and `CaptureLocator` rather than the two
+ * members these cases exercise. The declarations are the parameter types of exported callbacks,
+ * so a fake that satisfies only part of them would let the contract narrow without anything
+ * noticing - which is the failure `scripts/docs-screenshots.d.mts` exists to prevent. Making
+ * this the one full implementation means widening the contract breaks here first.
+ */
 function fakePage(
   hooks: { onRole?: (name: unknown) => void; onLocator?: (selector: string) => void } = {},
 ): CapturePage {
   const locator: CaptureLocator = {
     click: async () => {},
     waitFor: async () => {},
+    fill: async () => {},
+    isVisible: async () => false,
+    first: () => locator,
+    scrollIntoViewIfNeeded: async () => {},
   };
   return {
     getByRole: (_role: string, options?: Record<string, unknown>) => {
       hooks.onRole?.((options?.name as RegExp | undefined)?.source);
       return locator;
     },
-    getByPlaceholder: () => ({ ...locator, fill: async () => {} }),
+    getByPlaceholder: () => locator,
+    getByText: () => locator,
     locator: (selector: string) => {
       hooks.onLocator?.(selector);
       return locator;
     },
+    keyboard: { press: async () => {} },
+    waitForTimeout: async () => {},
   };
 }

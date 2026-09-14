@@ -5,20 +5,34 @@ import type { SetupFamilyId } from "@shared/setup-catalog.ts";
 import type { UpdateSnapshot } from "@shared/update.ts";
 
 /**
- * A Playwright `Page`, narrowed to what the registry actually asks of one.
+ * A Playwright `Page` and `Locator`, narrowed to what the registry's own callbacks ask of one.
  *
  * Typed structurally rather than imported from `@playwright/test`: this declaration is read by
  * a `test/` file, and `test/` runs against `src/` with no browser anywhere in it.
+ *
+ * It has to cover EVERY member `ready`, `prepare` and `cleanup` reach for, not just the ones a
+ * test happens to exercise. These are the parameter types of exported callbacks, so anything
+ * omitted is a method a caller can satisfy the declaration without providing and then have a
+ * callback invoke - a missing-method failure at runtime that typechecked cleanly. `capture()`'s
+ * own calls (`goto`, `addStyleTag`, `addInitScript`, `screenshot`, `mouse`) are deliberately
+ * absent: it is handed a real Playwright page and is not part of this contract.
  */
 export interface CaptureLocator {
   waitFor(options?: { state?: string }): Promise<void>;
   click(): Promise<void>;
+  fill(value: string): Promise<void>;
+  isVisible(): Promise<boolean>;
+  first(): CaptureLocator;
+  scrollIntoViewIfNeeded(): Promise<void>;
 }
 
 export interface CapturePage {
   getByRole(role: string, options?: Record<string, unknown>): CaptureLocator;
-  getByPlaceholder(text: string): CaptureLocator & { fill(value: string): Promise<void> };
+  getByPlaceholder(text: string): CaptureLocator;
+  getByText(text: string, options?: Record<string, unknown>): CaptureLocator;
   locator(selector: string): CaptureLocator;
+  keyboard: { press(key: string): Promise<void> };
+  waitForTimeout(ms: number): Promise<void>;
 }
 
 /** What `prepare` is handed about the run it is part of. */

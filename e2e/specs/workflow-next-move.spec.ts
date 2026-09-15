@@ -153,7 +153,7 @@ test("recovery controls follow daemon capabilities and fail closed for an unknow
   await expect(header.locator("button.btn-primary")).toHaveCount(0);
   await expect(header.getByRole("button", { name: "Cancel run" })).toHaveCount(0);
 
-  await dashboard.unroute(url);
+  await dashboard.unrouteAll({ behavior: "wait" });
   // A new explanatory phase must not withdraw an operation explicitly offered by that daemon.
   await dashboard.route(url, async (route) => {
     const response = await route.fetch();
@@ -163,7 +163,8 @@ test("recovery controls follow daemon capabilities and fail closed for an unknow
   });
   await dashboard.reload();
   await expect(header.getByRole("button", { name: "Preview fresh evidence" })).toBeVisible();
-  await dashboard.unroute(url);
+  // SSE can request another detail while an assertion passes. Drain its handler before reload.
+  await dashboard.unrouteAll({ behavior: "wait" });
 
   // Now the stored phase itself is unknown to the daemon. Its projection permits cancellation only.
   withDaemonDb(daemon, (db) => db.prepare(

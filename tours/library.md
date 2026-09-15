@@ -64,7 +64,7 @@ Pipeline and Graph are two views of one workflow, and the toolbar offers both fo
 ## No-Mistakes Review
 <!-- stage: workflow-no-mistakes -->
 
-Five stages, in order: typecheck and test together; Intent Conformance alone as a cheap gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; then the verified Pull Request action before End and the final GitHub Inspector gate. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
+Five stages, in order: typecheck, test, and lint together; Intent Conformance and Test Coverage together as the first review gate; Code Risk, Code Quality and Code Design in parallel; Test Evidence, Documentation and Slop Filter in parallel; then the verified Pull Request action before End and the final GitHub Inspector gate. Every failure returns to the session for a repair round, up to five. It is a built-in, so its versions stay addressable exactly as shipped and your changes live in a Duplicate.
 
 ## Binding it
 <!-- stage: workflow-bind -->

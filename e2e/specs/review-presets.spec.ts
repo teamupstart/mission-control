@@ -17,7 +17,7 @@ for (const [name, judges] of [
     const pipeline = dashboard.locator(".wf-pipeline-strip");
     await expect(pipeline.locator(".wf-pipeline-reviewer-name")).toHaveText(name === "Plan Validation"
       ? [...judges]
-      : ["Commandtypecheck", "Commandtest", ...judges, "Session actionPull Request"]);
+      : ["Commandtypecheck", "Commandtest", "Commandlint", ...judges, "Session actionPull Request"]);
     await expect(pipeline.locator(".wf-pipeline-inspector")).toHaveCount(0);
     if (name === "Plan Validation") {
       await expect(pipeline.locator(".wf-pipeline-stage-name").filter({ hasText: /^Pull Request$/ })).toHaveCount(0);

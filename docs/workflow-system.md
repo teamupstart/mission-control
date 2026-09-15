@@ -36,8 +36,9 @@ Markdown sources are compiled into generated modules by
 defaults and operator-managed copies remain distinct.
 
 The built-in catalog contains General Review, Bug Fix Review, Plan Validation, and No-Mistakes
-Review (High Rigor). The latter's current version is 18. It retains version 17's local review
-graph and verified Pull Request action, then uses the existing `inspector` completion policy
+Review (High Rigor). The latter's current version is 19. General Review and Bug Fix Review version 2
+and No-Mistakes version 19 run typecheck, test, and lint together in their first All-pass gate.
+No-Mistakes retains its verified Pull Request action and uses the existing `inspector` completion policy
 with `inspector_only` repairs and `wait` for a missing PR. Earlier versions remain immutable.
 General and Bug Fix use the same check, Persona, and Session action primitives with fewer roles.
 Plan Validation uses only Personas and completes locally. Its task contract requests complete

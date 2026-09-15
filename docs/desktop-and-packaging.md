@@ -557,8 +557,11 @@ and retrying. After verifying the migration, those private recovery directories 
 A custom CLI configuration home blocks automatic inventory so the CLI cannot
 read one file while migration changes another. MCP paths are read back through the configured
 harness adapter.
-MCP inventory stores comparison digests instead of credentials or command arguments. Repair
-rereads those values from the existing configuration and preserves them there. Skills stay
+MCP inventory stores file identity and owned bundle path locations, with no credentials or
+credential-derived hashes. Configuration adapters reread credentials from their existing owner
+and preserve them there. Only the packaged MCP entry point and app executable count as owned
+MCP paths; other arguments and environment values remain untouched. A file changed before its first repair requires manual reconciliation;
+later retries verify the owned destination paths without overwriting custom values. Skills stay
 with the daemon's existing enabled/disabled configuration and reconciler; resolve reported
 conflicts in **Settings > Skills**. Login startup preserves its prior on/off setting and is
 reported as pending when the platform cannot verify it. On macOS a nonce-bound cleanup launch

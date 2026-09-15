@@ -1250,10 +1250,16 @@ export class UpdateController {
 
   retryMigrationRepair(): Promise<void> {
     if (this.repairPromise) return this.repairPromise;
+    const previous = this.snapshot;
     this.repairPromise = (async () => {
-      try { await this.port.repairMigration?.(); }
-      catch (error) { await this.reportFailure("integration repair failed", {currentVersion: this.currentLabel(), lastOutcome: this.snapshot.lastOutcome}, error); }
-      this.publish(this.snapshot);
+      try {
+        await this.port.repairMigration?.();
+        this.publish(this.snapshot === previous && previous.phase === "error"
+          ? idleSnapshot(this.currentLabel(), previous.lastOutcome, null)
+          : this.snapshot);
+      } catch (error) {
+        await this.reportFailure("integration repair failed", {currentVersion: this.currentLabel(), lastOutcome: this.snapshot.lastOutcome}, error);
+      }
     })().finally(() => { this.repairPromise = null; });
     return this.repairPromise;
   }

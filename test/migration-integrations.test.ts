@@ -89,12 +89,13 @@ test('retry revalidates completed hooks and MCP after another surface failed', a
   assert.deepEqual(JSON.parse(readFileSync(mcpPath, 'utf8')), mcp);
 });
 
-test('MCP inventory carries only digests while repair preserves credentials in the original configuration', async (t) => {
+test('MCP inventory excludes credentials while repair preserves them in the original configuration', async (t) => {
   const f = fixture(t);
   const path = join(f.home, '.claude.json');
   const config = JSON.parse(readFileSync(path, 'utf8'));
   const entry = config.mcpServers['mission-control'];
   entry.env.API_TOKEN = 'fixture-private-token-do-not-persist';
+  entry.env.PATH_SHAPED_SECRET = `${f.plan.source}/private-fixture-value`;
   entry.args.push('--credential', 'fixture-private-argument');
   writeFileSync(path, JSON.stringify(config));
   const journal = f.journal();
@@ -102,12 +103,63 @@ test('MCP inventory carries only digests while repair preserves credentials in t
   assert.ok(!serialized.includes(entry.env.API_TOKEN));
   assert.ok(!serialized.includes('fixture-private-argument'));
   assert.ok(!serialized.includes('API_TOKEN'));
+  assert.ok(!serialized.includes('private-fixture-value'));
   const results = await repairMigrationIntegrations(journal, f.ports);
   assert.ok(results.every((r) => r.status === 'complete'));
   const repaired = JSON.parse(readFileSync(path, 'utf8')).mcpServers['mission-control'];
   assert.equal(repaired.env.API_TOKEN, entry.env.API_TOKEN);
+  assert.equal(repaired.env.PATH_SHAPED_SECRET, entry.env.PATH_SHAPED_SECRET);
   assert.deepEqual(repaired.args, [f.oldMcp.replace(f.plan.source, f.plan.target), '--credential', 'fixture-private-argument']);
   assert.ok((await repairMigrationIntegrations({...journal, repairs: results}, f.ports)).every((r) => r.status === 'complete'));
+});
+
+test('persisted MCP comparison facts do not depend on secret values, even for low-entropy credentials', (t) => {
+  const f = fixture(t);
+  const path = join(f.home, '.claude.json');
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  const facts = (secret: string) => {
+    config.mcpServers['mission-control'].env.PASSWORD = secret;
+    config.mcpServers['mission-control'].args = [f.oldMcp, '--password', secret];
+    writeFileSync(path, JSON.stringify(config));
+    const inventory = inspectMigrationIntegrations(f.plan, f.ports);
+    return inventory.mcp.map(({revision: _revision, ...facts}) => facts);
+  };
+  assert.deepEqual(facts('1234'), facts('5678'));
+});
+
+test('a credential edit after inventory is preserved and blocks automatic MCP repair', async (t) => {
+  const f = fixture(t);
+  const journal = f.journal();
+  const path = join(f.home, '.claude.json');
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  config.mcpServers['mission-control'].env.PASSWORD = 'new-private-value';
+  const changed = JSON.stringify(config);
+  writeFileSync(path, changed);
+  const results = await repairMigrationIntegrations(journal, f.ports);
+  assert.equal(results.find((r) => r.id === 'mcp:claude')?.status, 'pending');
+  assert.equal(readFileSync(path, 'utf8'), changed);
+});
+
+test('integration policy consumes normalized snapshots without reaching filesystem or CLI access', async (t) => {
+  const f = fixture(t);
+  f.ports.home = join(f.home, 'does-not-exist');
+  let entry = {command: f.oldExe, args: [f.oldMcp], env: {SECRET: 'preserve'}};
+  let writes = 0;
+  f.ports.config = {
+    readHooks: () => ({entries: [], revision: 'missing'}),
+    writeHooks: () => {throw new Error('No hooks were inventoried');},
+    readMcp: (spec) => ({registration: spec.migration.kind === 'jsonc' ? entry : null, revision: '1:2:3:4:5'}),
+    writeMcp: (_spec, _nonce, _before, desired) => {
+      writes++;
+      entry = {...desired, env: {...desired.env, SECRET: 'preserve'}};
+      return {registration: entry, revision: '1:6:7:8:9'};
+    },
+  };
+  const results = await repairMigrationIntegrations(f.journal(), f.ports);
+  assert.ok(results.every((result) => result.status === 'complete'));
+  assert.equal(writes, 1);
+  assert.equal(entry.args[0], f.oldMcp.replace(f.plan.source, f.plan.target));
+  assert.equal(entry.env.SECRET, 'preserve');
 });
 
 test('the CLI-backed TOML adapter preserves registration options and reads back changed paths', async (t) => {
@@ -132,6 +184,19 @@ test('the CLI-backed TOML adapter preserves registration options and reads back 
   assert.ok(after.includes(`# old script ${JSON.stringify(f.oldMcp)}`));
   assert.ok(after.includes(`command = ${JSON.stringify(f.oldExe)}`), 'unrelated table keeps its old executable');
   assert.equal(reads, 3);
+});
+
+test('a CLI snapshot cannot inventory a configuration that changed while the CLI read it', (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.home, '.codex'));
+  const path = join(f.home, '.codex/config.toml');
+  writeFileSync(path, '# before');
+  f.ports.command = () => {
+    writeFileSync(path, '# concurrent replacement');
+    return JSON.stringify([{name: 'mission-control', transport: {command: 'node', args: [f.oldMcp]}}]);
+  };
+  assert.throws(() => f.journal(), /changed while its CLI was reading/);
+  assert.equal(readFileSync(path, 'utf8'), '# concurrent replacement');
 });
 
 test('disabled registrations stay disabled, null CLI env is accepted, and custom TOML is preserved on repair failure', async (t) => {

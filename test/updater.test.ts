@@ -1650,6 +1650,36 @@ test('a failed system preference write cannot quit or relocate, and accepted mig
   assert.deepEqual(f.handoffs[0]?.migrationInventory, {login: false});
 });
 
+test('a successful migration repair retry clears the prior failure and publishes completion', async (t) => {
+  let complete = false;
+  let fail = true;
+  const f = fixture({
+    migrationStatus: () => ({source: receipt.appPath, target: '/Users/Fixture/Applications/Mission Control.app', status: complete ? 'complete' : 'repair-required', repairs: []}),
+    repairMigration: async () => {if (fail) throw new Error('temporary failure'); complete = true;},
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.retryMigrationRepair();
+  assert.equal(f.controller.getSnapshot().phase, 'error');
+  fail = false;
+  await f.controller.retryMigrationRepair();
+  assert.equal(f.controller.getSnapshot().phase, 'idle');
+  assert.equal(f.controller.getSnapshot().migration?.status, 'complete');
+});
+
+test('a finishing repair retry does not discard an update offer published while it waited', async (t) => {
+  let finish!: () => void;
+  const f = fixture({repairMigration: () => new Promise<void>((resolve) => {finish = resolve;})});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const retry = f.controller.retryMigrationRepair();
+  await f.controller.check(true);
+  assert.equal(f.controller.getSnapshot().phase, 'available');
+  finish();
+  await retry;
+  assert.equal(f.controller.getSnapshot().phase, 'available');
+});
+
 for (const operation of ['migration preflight', 'integration repair'] as const) {
   test(`${operation} keeps raw failure details out of the snapshot and dialog`, async (t) => {
     const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');

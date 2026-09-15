@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import type { UpdateSnapshot, UpdateMigration } from '../../src/shared/update.ts';
 import { UPDATE_DIALOGS, type UpdateDialogRequest } from '../../src/shared/update-dialog.ts';
+import { UpdateController } from '../../src/main/updater.ts';
 import { expectContentClearsBorder } from '../fixtures/modal-inset.ts';
 import { expect, test } from '../fixtures/test.ts';
 
@@ -12,6 +13,7 @@ const ready: UpdateSnapshot = {phase: 'ready', currentVersion: '1.17.0', newVers
 declare global {
   interface Window {
     migrationFixture: { push(snapshot: UpdateSnapshot): void; dialog(request: UpdateDialogRequest): void; actions: string[]; answers: string[] };
+    retryMigrationInMain(): Promise<UpdateSnapshot>;
   }
 }
 
@@ -114,4 +116,46 @@ test('committed installation distinguishes incomplete integration repair and tar
   await expect(banner.getByRole('button', {name: 'Retry integration repair'})).toHaveCount(0);
   expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['repair']);
   await capture(dashboard, 'complete.png');
+});
+
+test('a failed repair followed by a successful retry shows completion from the main controller', async ({dashboard}) => {
+  let attempts = 0;
+  const unexpected = (): never => {throw new Error('This repair fixture must not check, build, or install an update');};
+  const controller = new UpdateController({
+    packaged: false, arch: 'arm64',
+    readAlpha: () => false, writeAlpha: unexpected,
+    currentVersion: () => '1.17.1',
+    currentCommit: () => null,
+    latestMainCommit: unexpected, installSnapshot: unexpected, runtime: unexpected,
+    latestRelease: unexpected, stage: unexpected, stagedBundleIdentity: unexpected,
+    readOutcome: unexpected, clearOutcome: unexpected, now: Date.now, random: () => 0,
+    helperSource: unexpected, stateDirectory: unexpected, handoff: unexpected, requestQuit: unexpected,
+    log: () => {},
+    dialogs: {error: async () => {}, available: unexpected, upToDate: unexpected, preparing: unexpected, ready: unexpected, applying: unexpected, outcome: unexpected},
+    migrationStatus: () => ({...migration, status: attempts >= 2 ? 'complete' : 'repair-required', repairs: []}),
+    repairMigration: async () => {if (++attempts === 1) throw new Error('temporary fixture failure');},
+  });
+  try {
+    await controller.start();
+    await dashboard.exposeFunction('retryMigrationInMain', async () => {
+      await controller.retryMigrationRepair();
+      return controller.getSnapshot();
+    });
+    await bridge(dashboard);
+    await dashboard.evaluate((snapshot) => {
+      window.missionDesktop!.updates!.repairMigration = async () => {
+        window.migrationFixture.push(await window.retryMigrationInMain());
+      };
+      window.migrationFixture.push(snapshot);
+    }, controller.getSnapshot());
+    const banner = dashboard.getByRole('status', {name: 'Mission Control update'});
+    await banner.getByRole('button', {name: 'Retry integration repair'}).click();
+    await expect.poll(() => controller.getSnapshot().phase).toBe('error');
+    await banner.getByRole('button', {name: 'Retry integration repair'}).click();
+    await expect(banner).toContainText('Personal installation complete');
+    await expect(banner.getByRole('button', {name: 'Retry integration repair'})).toHaveCount(0);
+    await capture(dashboard, 'repair-retry-complete.png');
+  } finally {
+    controller.stop();
+  }
 });

@@ -223,13 +223,6 @@ export function recordTelemetryPrMerges(
           )
           .all(url, now) as unknown as ObservationRow[];
         for (const row of rows) {
-          // Stamped INSIDE the transaction that selected it, so a repeated poll result - the
-          // same merge observed on two consecutive ticks - finds nothing the second time and
-          // produces exactly one late-delivery fact.
-          d.prepare(
-            `UPDATE telemetry_pr_observations SET merged_at = ?
-             WHERE task_id = ? AND pr_key = ? AND merged_at IS NULL`,
-          ).run(mergedAt, row.task_id, row.pr_key);
           out.push(toObservation({ ...row, merged_at: mergedAt }));
         }
       }
@@ -257,6 +250,17 @@ export function recordTelemetryPrMerges(
       now,
     });
     if (result.kind === "accepted") recorded += 1;
+    if (result.kind !== "accepted" && result.kind !== "duplicate") continue;
+    // Retire only after durable capture. A refusal leaves the URL pollable; if this stamp
+    // fails or the process stops here, durable source deduplication makes the retry harmless.
+    try {
+      telemetryTransaction((d) => d.prepare(
+        `UPDATE telemetry_pr_observations SET merged_at = ?
+         WHERE task_id = ? AND pr_key = ? AND merged_at IS NULL`,
+      ).run(observation.mergedAt, observation.taskId, observation.prKey));
+    } catch (error) {
+      console.warn("[telemetry] could not retire captured pull request merge:", error);
+    }
   }
   return recorded;
 }

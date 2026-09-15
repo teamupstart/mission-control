@@ -307,6 +307,9 @@ observation-only result emits the late-delivery fact and nothing else: it does n
 Live delivery requires the retained author's current task/session binding to own that PR;
 secondary repositories also match the current episode and repository. Another task or a
 dependency polling the same URL does not make an old author's observation live.
+Merge observations remain pollable until capture is durably accepted or recognized as a
+duplicate. A transient capture refusal or failed completion stamp can therefore retry after
+a restart without losing or double-counting the merge.
 
 ## The local reference stack
 

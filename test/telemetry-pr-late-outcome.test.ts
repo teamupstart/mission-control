@@ -250,8 +250,8 @@ test("a repeated poll result produces exactly one late-delivery fact", () => {
   invalidateTaskWorkEpisodeBindings(SESSION_ID);
 
   assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), () => false, 10_000), 1);
-  // The same merge on the next tick, and the one after. The stamp is taken inside the
-  // transaction that selected the row, so the second pass finds nothing.
+  // The same merge on the next tick, and the one after. Successful capture stamps the row,
+  // so the second pass finds nothing.
   assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), () => false, 11_000), 0);
   assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_500]]), () => false, 12_000), 0);
   assert.equal(prFacts().filter((f) => f.fact === "merged").length, 1);
@@ -265,6 +265,78 @@ test("a repeated poll result produces exactly one late-delivery fact", () => {
     .all() as unknown as Array<{ value: number }>;
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.value, 1);
+});
+
+test("a refused merge capture stays pollable and recovers exactly once after restart", async () => {
+  enableLocalOnly();
+  seedTask();
+  retain();
+  const d = openDb();
+  d.exec(`CREATE TRIGGER refuse_merge_capture BEFORE INSERT ON telemetry_journal
+    WHEN NEW.name = 'mission.pr.observed'
+    BEGIN SELECT RAISE(FAIL, 'fixture capture unavailable'); END`);
+  const registry = stubRegistry([]);
+  const poll = (now: number) => pollAndReconcilePrs(registry as never, async () => null,
+    async () => ({ state: "merged", mergedAt: 9_000 }), undefined, now, async () => null);
+  try {
+    await poll(10_000);
+    assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 0);
+    assert.deepEqual(telemetryPrPollTargets(10_001), [PR_URL], "failed capture must remain retryable");
+    assert.equal(telemetryPrCohortInputs(10_001)[0]?.mergedAt, null);
+  } finally {
+    d.exec("DROP TRIGGER refuse_merge_capture");
+  }
+  closeDb();
+  openDb();
+  await poll(11_000);
+  await poll(12_000);
+  const merged = prFacts().filter((fact) => fact.fact === "merged");
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]?.delivery, "late");
+  assert.equal(telemetryPrCohortInputs(12_001)[0]?.mergedAt, 9_000);
+  assert.deepEqual(telemetryPrPollTargets(12_001), []);
+  assert.ok(registry.merges.every((merges) => merges.size === 0));
+});
+
+test("an accepted merge whose completion stamp fails retires on duplicate capture", () => {
+  enableLocalOnly();
+  seedTask();
+  retain();
+  const d = openDb();
+  d.exec(`CREATE TRIGGER refuse_merge_stamp BEFORE UPDATE OF merged_at ON telemetry_pr_observations
+    BEGIN SELECT RAISE(FAIL, 'fixture stamp unavailable'); END`);
+  try {
+    assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), undefined, 10_000), 1);
+    assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 1);
+    assert.deepEqual(telemetryPrPollTargets(10_001), [PR_URL]);
+  } finally {
+    d.exec("DROP TRIGGER refuse_merge_stamp");
+  }
+  closeDb();
+  openDb();
+  assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), undefined, 11_000), 0);
+  assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 1);
+  assert.deepEqual(telemetryPrPollTargets(11_001), []);
+  assert.equal(telemetryPrCohortInputs(11_001)[0]?.mergedAt, 9_000);
+});
+
+test("journal pressure leaves a verified merge pending until capture has room", () => {
+  enableLocalOnly();
+  seedTask();
+  retain();
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 1;
+  try {
+    assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), undefined, 10_000), 0);
+    assert.deepEqual(telemetryPrPollTargets(10_001), [PR_URL]);
+    assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 0);
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+  assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), undefined, 11_000), 1);
+  assert.deepEqual(telemetryPrPollTargets(11_001), []);
+  assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 1);
 });
 
 test("a second sighting of the same association is not a second association", () => {

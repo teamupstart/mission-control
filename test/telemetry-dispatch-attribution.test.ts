@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { mkMuxHandle, mkTask } from "./helpers/session-fixture.ts";
+import { writeMcpFixture } from "./helpers/mcp-fixture.ts";
 
 // The dispatcher's OWN telemetry branches, driven through `Dispatcher.dispatch` rather than by
 // calling the observation helper.
@@ -38,6 +39,11 @@ const { setHarnessesConfig } = await import("../src/server/harnesses.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
 const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
+const { MISSION_MCP_TOOLS } = await import("../src/server/mission-mcp.ts");
+
+// Scout launch must pass its real MCP preflight before reaching the injected spawn failure.
+// CI runs these source tests before build, so never inherit a developer's dist/ bundle.
+process.env.MISSION_MCP_SERVER = writeMcpFixture(join(home, "mcp-fixture.mjs"), MISSION_MCP_TOOLS);
 
 registerBuiltinTelemetry();
 
@@ -46,6 +52,7 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env.MISSION_CLAUDE_BIN;
   delete process.env.MISSION_PI_BIN;
+  delete process.env.MISSION_MCP_SERVER;
 });
 
 beforeEach(() => {

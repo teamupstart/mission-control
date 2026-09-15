@@ -4681,6 +4681,15 @@ export class WorkflowStore {
     return row ? parseWorkflowBindingRow(row) : null;
   }
 
+  /** Includes paused/archived ownership so a missing dispatch binding is not an opt-out. */
+  latestBindingForNote(noteKey: string): WorkflowBinding | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_bindings WHERE note_key = ? AND repo_root = ''
+       ORDER BY created_at DESC, updated_at DESC, id ASC LIMIT 1`,
+    ).get(noteKey);
+    return row ? parseWorkflowBindingRow(row) : null;
+  }
+
   /**
    * Every active binding on this conversation - the session's own first, then one per
    * secondary repository in path order.

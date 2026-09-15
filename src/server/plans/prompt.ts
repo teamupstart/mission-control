@@ -3,7 +3,8 @@ import {
   PLAN_SOURCE_PATH_SHAPE,
 } from "@shared/plans.ts";
 import type { Task } from "@shared/types.ts";
-import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL } from "./tools.ts";
+import { deferredImperativeList, taskCompletionContract } from "@shared/task-completion.ts";
+import { PLAN_DECISIONS_TOOL, PLAN_SCHEDULING_TOOL, PLAN_PUBLICATION_TOOL } from "./tools.ts";
 
 /**
  * The delivery contract every plan task gets - which POINTS AT the planning skills instead
@@ -85,7 +86,7 @@ export interface PlanSkillInvocations {
  * keep it short - every line spent explaining how to write a plan is a line arguing with the
  * skill this contract exists to hand the work to.
  */
-export function planContractAppendix(skills: PlanSkillInvocations): string {
+export function planContractAppendix(skills: PlanSkillInvocations, workflowBound = false): string {
   const lines = [
     PLAN_APPENDIX_MARKER,
     "This is a plan task. The deliverable is a plan a human has read and agreed with - written,",
@@ -106,10 +107,24 @@ export function planContractAppendix(skills: PlanSkillInvocations): string {
     `   the phases and schedule the tasks with \`${PLAN_SCHEDULING_TOOL}\`. On this harness:`,
     `   ${skills.phasedPlan}`,
     "",
-    "Unlike a scout, a plan is meant to land: commit the plan's files and expect the ordinary",
-    "pull request at the end. The phase tasks carry paths rather than content, so those paths",
+    "Unlike a scout, a plan is meant to land. The phase tasks carry paths rather than content, so those paths",
     "have to resolve on the default branch before any of the phases can start.",
+    `Before publication, call \`${PLAN_PUBLICATION_TOOL}\` to refresh who owns the pull request. A failed or unavailable read is not permission to publish directly.`,
   ];
+  const contract = taskCompletionContract("plan", workflowBound);
+  if (contract) {
+    lines.push(
+      "",
+      "## Plan task completion handoff",
+      "The selected workflow owns the pull request. Complete the planning work below, report its artifacts and task map, then end this turn:",
+      ...contract.complete.map((requirement) => `- ${requirement}`),
+      `During this planning turn, do not ${deferredImperativeList(contract)}, even if a skill or repository instruction normally includes those steps.`,
+      "This plan handoff applies while a workflow owns publication. If the publication-context tool confirms the binding was removed and owner is skill, follow the skill's direct PR path unless a separate instruction forbids it.",
+      "Keep the skill's commit-and-push requirement before scheduling. Foreman starts the bound automatic workflow after this handoff; a Manual binding waits for manual submission. The workflow's later instruction owns PR follow-through. Neither handoff nor review completion releases phase dependencies; publication by merge does.",
+    );
+  } else {
+    lines.push("No workflow was selected. The phased-plan skill owns the planning pull request; with phasing declined, create the plan's ordinary pull request after approval. Refresh publication ownership first and honor any stronger no-PR instruction.");
+  }
   return lines.join("\n");
 }
 

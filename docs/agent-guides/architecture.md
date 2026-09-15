@@ -202,8 +202,8 @@ legacy intent/evidence columns as a fallback trigger.
 
 ### Task completion contract
 
-`src/shared/task-completion.ts` owns one browser-safe, exhaustive `Record<TaskKind,
-TaskCompletionContract | null>` describing what "complete" means for a task kind's initial
+`src/shared/task-completion.ts` owns the browser-safe completion policy, with an exhaustive
+`Record<TaskKind, TaskCompletionContract | null>` describing what "complete" means for a task kind's initial
 delivered turn: what must be done, and what post-completion work is explicitly deferred to a
 later owner. `ship` and `bugfix` share this implementation handoff. The delivered handoff appendix
 (`src/server/task-contract.ts`) and Foreman's verify prompt render from that one record, so the
@@ -214,6 +214,14 @@ resolved from the durable task kind on the live session. It is rendered above th
 evidence fence, alongside the objective and never in place of it. Queue-item verification and
 personal sessions pass no contract, so their behavior is unchanged. Trusted policy is never
 derived from transcript prose.
+
+Plans additionally defer PR follow-through while a workflow owns publication. Delivery uses
+the selected task workflow, while Foreman and `get_plan_publication_context` read the Workflow
+manager's current binding projection. A Persona-free workflow is still an owner. Pending or
+paused bindings and failed reads are unavailable, not unbound; explicit archival permits the
+skill's direct path. Foreman rechecks identity, immutable version, and trigger mode around
+verification. Plan commit/push remains required before scheduling path-only tasks; dependency
+release still follows observed merge. No second workflow trigger or SQLite writer is added.
 
 ### Prompted completion disposition
 

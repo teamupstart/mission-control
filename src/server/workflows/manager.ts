@@ -6,6 +6,7 @@ import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
@@ -1418,6 +1419,34 @@ export class WorkflowManager {
       ? this.store.getWorkflowVersionById(workflow.currentVersionId)
       : null;
     return Boolean(version && versionSupportsWorkflowEvidence(version));
+  }
+
+  /** Current PR ownership for planning, independent of whether the graph has a Persona. */
+  planPublicationContext(sessionId: string): PlanPublicationContext {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") {
+      return { owner: "unavailable", reason: "The planning session is not live" };
+    }
+    const key = noteKeyFor(session);
+    const binding = this.store.activeBindingForNote(key);
+    if (binding) {
+      if (!this.store.getWorkflowVersionById(binding.workflowVersionId)) {
+        return { owner: "unavailable", reason: "The bound workflow version is unavailable" };
+      }
+      return {
+        owner: "workflow", bindingId: binding.id, workflowVersionId: binding.workflowVersionId,
+        triggerMode: binding.triggerMode,
+      };
+    }
+    const previous = this.store.latestBindingForNote(key);
+    if (previous && previous.state !== "archived") {
+      return { owner: "unavailable", reason: "The workflow binding is paused or orphaned; resolve its ownership before publication" };
+    }
+    const task = this.registry.taskForSession(session.id, session.cwd);
+    if (!previous && task?.workflowId) {
+      return { owner: "unavailable", reason: "The task selected a workflow but its binding has not been established" };
+    }
+    return { owner: "skill" };
   }
 
   /** The same live authority for agent registration and Foreman's evidence obligation. */

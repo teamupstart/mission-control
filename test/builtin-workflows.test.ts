@@ -1250,6 +1250,7 @@ test("the review presets ship the agreed judges and delivery boundaries", () => 
     "plan-validation": [
       ["builtin:intent-conformance-judge"],
       ["builtin:plan-consistency-judge", "builtin:phase-dependencies-judge", "builtin:plan-feasibility-judge"],
+      ["action:builtin:pull-request"],
     ],
   };
   for (const [slug, stages] of Object.entries(expected)) {
@@ -1261,6 +1262,17 @@ test("the review presets ship the agreed judges and delivery boundaries", () => 
       triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5,
     });
   }
+});
+
+test("Plan Validation appends publication without changing its existing version", () => {
+  const builtin = BUILTIN_WORKFLOWS.find((entry) => entry.definition.id === builtinWorkflowId("plan-validation"))!;
+  assert.equal(builtin.versions.length, 2);
+  assert.equal(createHash("sha256").update(JSON.stringify(builtin.versions[0])).digest("hex"),
+    "a58d4a956619419b693461dffd9e48f42110a69545b2b2d39b216d6ef8995899");
+  assert.equal(builtin.definition.currentVersionId, builtinWorkflowVersionId("plan-validation", 2));
+  const graph = builtin.versions[1]!.graph;
+  assert.ok(graph.nodes.some((node) => node.id === "pv-pull-request" && node.kind === "session_action"));
+  assert.ok(graph.edges.some((edge) => edge.source === "pv-pull-request" && edge.sourcePort === "complete" && edge.target === "pv-end"));
 });
 
 test("version 18 adds only the Inspector gate to version 17", () => {

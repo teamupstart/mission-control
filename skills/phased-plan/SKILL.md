@@ -291,13 +291,41 @@ created. Never fall back to the source repository, drop an attachment, or recrea
 speculatively, because a wrongly scoped or duplicate implementation task is worse than an incomplete
 graph.
 
-## Ship the artifacts and watch the pull request
+## Resolve who owns the planning pull request
+
+After scheduling, call Mission Control's `get_plan_publication_context` tool. It reads the
+calling session's current workflow binding, including a workflow attached after dispatch.
+Do not infer ownership from whether a run has started, whether evidence registration is
+available, or a task's earlier selection. A workflow without Personas still owns publication.
+
+- `owner: "workflow"`: finish the approved artifacts, requested task map, and applicable plan
+  evidence, then report that planning is complete and end the turn. Do not create or update a PR,
+  act on PR review feedback, wait for PR CI, or merge during this planning turn. Foreman starts
+  an automatic binding after completion; a Manual binding waits for manual submission. The
+  workflow's later PR instruction owns publication. A workflow without a PR action needs its
+  configuration corrected, not a competing PR path from this skill.
+- `owner: "skill"`: follow the direct publication section below. This includes explicit removal
+  of a previous binding. A separate no-PR instruction or task handoff still takes precedence.
+- `owner: "unavailable"`, a failed call, or a missing tool: report the exact issue and stop before
+  PR work. Do not treat an unknown binding as absent or read Mission Control's SQLite yourself.
+
+The commit-and-push requirement before scheduling applies to both owners. Keep every
+`dependsOnCurrentSession` edge: neither the planning handoff, workflow success, nor an open PR
+releases those phase tasks. Only the existing publication/merge condition does.
+
+When bound, finish with the artifact paths, phase-to-task-id map, direct dependency edges,
+possible concurrency, and the workflow handoff. Do not claim a PR exists or that phase tasks
+have been released.
+
+## Direct publication when no workflow is bound
 
 The scheduled tasks are gated on the planning session, so the plan is not delivered until the
 artifacts reach the default branch. Merging is the act that publishes the paths every task names.
-After task creation succeeds:
+After task creation succeeds and the context confirms `owner: "skill"`:
 
-1. Open a pull request containing exactly the artifact commit this run pushed before scheduling (the
+1. Refresh `get_plan_publication_context` immediately before PR work. If ownership changed or the
+   read fails, follow the ownership section above. With ownership still confirmed, open a pull
+   request containing exactly the artifact commit this run pushed before scheduling (the
    source plan and its HTML, the phased-plan index and its HTML, every phase file), on a branch
    following the repository's branch and commit conventions. Commit and push anything the run
    produced after that point, so the branch holds every artifact the tasks reference. Follow the

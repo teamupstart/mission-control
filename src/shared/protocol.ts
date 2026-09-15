@@ -778,6 +778,13 @@ const mcpTaskDependencyRefinement = {
   message: "at most 50 task dependencies are allowed",
 };
 
+/** MCP supplies its own launch identity; the agent cannot choose a publication owner. */
+export const McpPlanPublicationSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+}).strict();
+
 /**
  * MCP `create_task`: create a backlogged implementation task and optionally bind it
  * to the session making the call. The daemon resolves that session from the same

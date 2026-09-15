@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PlanPublicationContextSchema, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import {
   existsSync,
   mkdirSync,
@@ -1176,6 +1177,11 @@ export class ForemanClient implements ForemanActions {
   diff(id: string, base?: string | null): Promise<SessionDiff> {
     const q = base ? `?base=${enc(base)}` : "";
     return get<SessionDiff>(`/api/sessions/${enc(id)}/diff${q}`);
+  }
+
+  /** Current planning PR owner; malformed or unavailable daemon responses never mean unbound. */
+  async planPublicationContext(id: string): Promise<PlanPublicationContext> {
+    return PlanPublicationContextSchema.parse(await get(`/api/sessions/${enc(id)}/plan-publication`));
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */

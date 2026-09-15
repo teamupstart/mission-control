@@ -182,9 +182,18 @@ evidence registration are what "complete" means on the first delivered turn, whi
 pull-request creation, review follow-through and CI are explicitly deferred to whoever owns
 completion next. So a Goal that also says "open a pull request" is satisfied when the
 implementation is, because that clause was deferred - and nothing else about the bar changes.
-The contract comes from the task's durable `Kind`, never from transcript prose, so personal
-sessions and every other kind are judged exactly as before. See
+The Ship/Bugfix contract comes from the task's durable `Kind`, never from transcript prose.
+Personal sessions retain their ordinary completion boundary. See
 [work queues](work-queues.md) for the whole prompted path.
+
+**A workflow-bound `plan` task has a planning handoff.** Its approved Markdown/HTML, requested
+phase files and scheduling, verification, and applicable plan evidence must be ready. Its PR,
+review follow-through, CI waiting, and merge belong to the workflow. Commit and push remain
+part of planning when needed to make scheduled task paths durable. An unbound plan retains the
+skill's direct PR path. Foreman reads live publication ownership independently of Persona
+evidence eligibility and discards the verdict if binding identity, version, or trigger mode
+changes during verification or before the completion check. Unknown ownership holds without
+consuming the work generation. Manual workflow bindings retain manual submission.
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow
 evidence from the current resolved intent episode and whether its current active binding accepts

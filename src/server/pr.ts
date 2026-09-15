@@ -396,14 +396,9 @@ export async function pollAndReconcilePrs(
   // And the observation-only half, which has authority over nothing. It emits the verified
   // late-delivery fact and stamps the retained row, carrying the attribution frozen when the
   // pull request was first associated rather than whatever the task is bound to today.
-  recordTelemetryPrMerges(
-    mergedUrls,
-    // "Live" means the producing session still owns the operational binding, which is
-    // exactly what `taskPrPollTargets` harvesting the URL proves. Everything else is late -
-    // including the ownership-invalidation case this whole path exists for.
-    (observation) => operationalUrls.has(observation.prUrl),
-    now,
-  );
+  // Delivery is resolved against each observation's current task/session/repository binding.
+  // A URL can remain operational for another task or a dependency after this author lost it.
+  recordTelemetryPrMerges(mergedUrls, undefined, now);
 }
 
 /**

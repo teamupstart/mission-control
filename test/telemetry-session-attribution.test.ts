@@ -177,6 +177,56 @@ function upsert(overrides: Record<string, unknown> = {}): void {
 
 // ---- how a session comes to exist ----
 
+test("opting in first observes an already-published working session at the consent boundary", (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  noteDispatchLaunch("task-before-consent", "/tmp/checkout");
+  const working = { state: "working", meta: metaAt("claude-opus-5", "medium") };
+  upsert(working);
+  assert.equal(journal().length, 0);
+
+  now = 5_000;
+  enableLocalOnly();
+  upsert(working);
+  upsert(working);
+  const starts = journal("mission.session.started");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0]?.facts.start_observation, "first_observed");
+  assert.equal(starts[0]?.occurredAt, 5_000);
+  assert.equal(starts[0]?.refs.task_id, undefined, "an unconsented launch is not replayed");
+  assert.equal(journal("mission.session.segment.opened").length, 1);
+
+  now = 6_000;
+  upsert({ ...working, state: "idle" });
+  const [turn] = journal("mission.session.turn.finished");
+  assert.equal(turn?.facts.duration_ms, 1_000);
+  assert.equal(turn?.facts.observation_bounded, true);
+  host().emit({ type: "session_remove", id: session().id });
+  const [end] = journal("mission.session.ended");
+  assert.equal(end?.facts.observed_ms, 1_000);
+  assert.equal(end?.facts.observation_bounded, true);
+});
+
+test("re-enabling collection without an intervening publication discards the old turn", (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  enableLocalOnly();
+  noteDispatchLaunch("task-1", "/tmp/checkout");
+  upsert({ state: "working", meta: metaAt("claude-opus-5", "medium") });
+  assert.equal(setTelemetryConfig({ enabled: false }).ok, true);
+  now = 5_000;
+  enableLocalOnly();
+  upsert({ state: "idle", meta: metaAt("claude-opus-5", "medium") });
+  assert.equal(journal("mission.session.turn.finished").length, 0, "no turn spans a collection gap");
+  const segments = journal("mission.session.segment.opened");
+  assert.equal(segments.length, 2);
+  assert.notEqual(segments[0]?.refs.segment_id, segments[1]?.refs.segment_id);
+  assert.equal(journal("mission.session.started").length, 1, "re-consent does not double-count adoption");
+  now = 6_000;
+  host().emit({ type: "session_remove", id: session().id });
+  assert.equal(journal("mission.session.ended")[0]?.facts.observed_ms, 1_000);
+});
+
 test("a discovered session does not fabricate a start it never saw", () => {
   enableLocalOnly();
   upsert();

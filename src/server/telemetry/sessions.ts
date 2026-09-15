@@ -23,8 +23,8 @@
  *    the kill intent that precedes an ending the session may well survive.
  *
  * Nothing in here can fail a business operation. `captureTelemetry` returns rather than throws,
- * every listener is wrapped, and an installation with collection off does no work beyond a few
- * map writes that are never read.
+ * every listener is wrapped, and collection changes discard in-memory observations so a later
+ * opt-in cannot replay activity from before consent.
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -58,6 +58,7 @@ import type {
 } from "@shared/types.ts";
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
 import { captureTelemetry } from "./capture.ts";
+import { getTelemetryConfig } from "./config.ts";
 import { registerTelemetrySource } from "./registration.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
 
@@ -534,6 +535,7 @@ export function noteDaemonShuttingDown(): void {
 export function attachSessionTelemetry(host: SessionTelemetryHost): () => void {
   const unsubscribe = host.subscribe((event) => {
     try {
+      if (!getTelemetryConfig().enabled) return;
       if (event.type === "session_upsert") {
         onSession(host, event.session as Session);
       } else if (event.type === "session_remove") {
@@ -550,8 +552,8 @@ export function attachSessionTelemetry(host: SessionTelemetryHost): () => void {
   };
 }
 
-/** Test-only: drop every tracked session so one fixture cannot leak into another's. */
-export function resetSessionTelemetryForTesting(): void {
+/** Start a fresh observation window after collection consent changes. */
+export function resetSessionTelemetryObservations(): void {
   tracks.clear();
   launchIntents.length = 0;
   departedTasks.clear();
@@ -559,6 +561,11 @@ export function resetSessionTelemetryForTesting(): void {
   settledTaskIds.clear();
   dispatchStarts.clear();
   restoringSessions.clear();
+}
+
+/** Test-only: drop every tracked session so one fixture cannot leak into another's. */
+export function resetSessionTelemetryForTesting(): void {
+  resetSessionTelemetryObservations();
   shuttingDown = false;
 }
 

@@ -24,6 +24,7 @@ import { digest } from "./identity.ts";
 import { isLoopbackHost, validateEndpoint } from "./endpoint.ts";
 import { registeredProjections } from "./registration.ts";
 import { noteTelemetryCollectionChanged } from "./retention.ts";
+import { resetSessionTelemetryObservations } from "./sessions.ts";
 import {
   clearSecret,
   getDestination,
@@ -314,7 +315,7 @@ export function setTelemetryConfig(
     }
   }
 
-  return telemetryTransaction((d) => {
+  const applied = telemetryTransaction((d) => {
     // Did the STORED credential actually move? A PUT that echoes the same secret back - which
     // is what a form re-submit does - must not count as a change, or a second tab's open edit
     // is invalidated by somebody pressing Save twice.
@@ -420,6 +421,10 @@ export function setTelemetryConfig(
 
     return { ok: true, config: next, changed } satisfies TelemetryConfigApplied;
   });
+  // Only after the consent write commits. Live sessions are first observed again on their
+  // next publication; neither turns nor launch intents may bridge a collection gap.
+  if (previous.enabled !== next.enabled) resetSessionTelemetryObservations();
+  return applied;
 }
 
 /** Whether the operator has stored a credential for their own backend. Never the value. */

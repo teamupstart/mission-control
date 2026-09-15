@@ -29,6 +29,7 @@ const {
   bindTaskWorkEpisode,
   historicalTaskWorkEpisodeBindings,
   invalidateTaskWorkEpisodeBindings,
+  recordWorkEpisodeRepoPr,
   taskWorkEpisodeForTask,
 } = await import("../src/server/db.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
@@ -72,6 +73,7 @@ beforeEach(() => {
     "telemetry_pr_observations",
     "task_work_episode_bindings",
     "historical_task_work_episode_bindings",
+    "work_episode_prs",
   ]) {
     d.exec(`DELETE FROM ${table}`);
   }
@@ -455,6 +457,7 @@ test("a telemetry-only URL is polled but never reaches operational reconciliatio
 test("a URL with BOTH reasons keeps its operational eligibility unchanged", async () => {
   enableLocalOnly();
   seedTask();
+  seedBinding();
   retain();
 
   const registry = stubRegistry([PR_URL]);
@@ -478,3 +481,86 @@ test("a URL with BOTH reasons keeps its operational eligibility unchanged", asyn
   assert.deepEqual([...(registry.merges[0] ?? [])], [[PR_URL, 9_000]]);
   assert.equal(prFacts().at(-1)?.delivery, "live");
 });
+
+test("a shared URL attributes an invalidated author as late and its current owner as live", async () => {
+  enableLocalOnly();
+  seedTask();
+  seedBinding();
+  retain();
+  invalidateTaskWorkEpisodeBindings(SESSION_ID);
+  bindTaskWorkEpisode({
+    taskId: "task-current", episodeId: "episode-current", sessionId: "sdk:current",
+    agentSessionId: "conv-current", branch: "feature/widgets", prUrl: PR_URL,
+    prHeadSha: null, mergedAt: null, boundAt: 3_000, updatedAt: 3_000,
+  });
+  retainPrObservation({
+    taskId: "task-current", taskKind: "ship", repoRoot: REPO, primaryRepoRoot: REPO,
+    prUrl: PR_URL, sessionId: "sdk:current", creationVerified: false, now: 3_000,
+  });
+  const registry = stubRegistry([PR_URL]);
+  const asked: string[] = [];
+  await pollAndReconcilePrs(registry as never, async () => null, async (url) => {
+    asked.push(url);
+    return { state: "merged", mergedAt: 9_000 };
+  }, undefined, 10_000, async () => null);
+
+  assert.deepEqual(asked, [PR_URL], "shared observations still use one lookup");
+  const merged = prFacts().filter((fact) => fact.fact === "merged");
+  assert.deepEqual(merged.map((fact) => [
+    (fact.refs as Record<string, string>).task_id, fact.delivery,
+  ]), [[TASK_ID, "late"], ["task-current", "live"]]);
+  assert.deepEqual([...(registry.merges[0] ?? [])], [[PR_URL, 9_000]]);
+  assert.equal(taskWorkEpisodeForTask(TASK_ID), null);
+  assert.equal((openDb().prepare("SELECT status FROM tasks WHERE id = ?").get(TASK_ID) as { status: string }).status, "cancelled");
+});
+
+test("a dependency polling an invalidated author's URL cannot make its observation live", async () => {
+  enableLocalOnly();
+  seedTask();
+  seedBinding();
+  retain();
+  invalidateTaskWorkEpisodeBindings(SESSION_ID);
+  const registry = { ...stubRegistry([]), dependencyPrPollTargets: () => [PR_URL] };
+  await pollAndReconcilePrs(registry as never, async () => null,
+    async () => ({ state: "merged", mergedAt: 9_000 }), undefined, 10_000, async () => null);
+  assert.equal(prFacts().at(-1)?.delivery, "late");
+  assert.deepEqual([...(registry.merges[0] ?? [])], [[PR_URL, 9_000]], "dependency eligibility is unchanged");
+});
+
+test("a task rebound to a new session cannot claim its previous author's live delivery", async () => {
+  enableLocalOnly();
+  seedTask();
+  seedBinding();
+  retain();
+  bindTaskWorkEpisode({
+    ...taskWorkEpisodeForTask(TASK_ID)!, sessionId: "sdk:replacement", episodeId: "replacement",
+  });
+  const registry = stubRegistry([PR_URL]);
+  await pollAndReconcilePrs(registry as never, async () => null,
+    async () => ({ state: "merged", mergedAt: 9_000 }), undefined, 10_000, async () => null);
+  assert.equal(prFacts().at(-1)?.delivery, "late");
+  assert.equal((prFacts().at(-1)?.refs as Record<string, string>).session_id, SESSION_ID);
+});
+
+for (const currentEpisode of [true, false]) {
+  test(`secondary delivery is ${currentEpisode ? "live in the current" : "late in a previous"} work episode`, async () => {
+    enableLocalOnly();
+    seedTask();
+    seedBinding();
+    const secondaryUrl = "https://github.com/acme/tools/pull/3";
+    const secondaryRepo = "/fixture/tools";
+    recordWorkEpisodeRepoPr({
+      taskId: TASK_ID, sessionId: SESSION_ID, episodeId: currentEpisode ? "episode-1" : "older-episode",
+      repoRoot: secondaryRepo, prUrl: secondaryUrl, prState: "open", prHeadSha: null,
+    }, 2_000);
+    retainPrObservation({
+      taskId: TASK_ID, taskKind: "ship", sessionId: SESSION_ID, repoRoot: secondaryRepo,
+      primaryRepoRoot: REPO, prUrl: secondaryUrl, creationVerified: false, now: 2_000,
+    });
+    const registry = stubRegistry([secondaryUrl]);
+    await pollAndReconcilePrs(registry as never, async () => null,
+      async () => ({ state: "merged", mergedAt: 9_000 }), undefined, 10_000, async () => null);
+    assert.equal(prFacts().at(-1)?.delivery, currentEpisode ? "live" : "late");
+    assert.equal(prFacts().at(-1)?.repo_role, "secondary");
+  });
+}

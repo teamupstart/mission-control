@@ -275,6 +275,10 @@ open on an OBSERVED change only, `quality` says how strongly the value is known,
 and `unsupported` are never narrowed into a level - a harness with no effort knob and a
 session nobody has read yet are different answers. Dispatch model and resolution source
 come from one evaluation of the shared model ladder.
+Changing collection consent clears in-memory observation windows. After opt-in, the next
+publication of an existing session opens a bounded first observation and segment. Turns and
+launch intents from before consent are not replayed, and re-consent does not count another
+session adoption.
 
 **A session ending is not a task outcome.** They are separate events with separate owners.
 `TaskManager` settles a departed task as `failed` while documenting that a clean exit cannot be
@@ -294,6 +298,9 @@ deduplicated, so a pull request wanted by both harvests still costs one `gh` cal
 observation-only result emits the late-delivery fact and nothing else: it does not enter
 `mergedPrFor`, complete a task, or satisfy a dependency edge. The URL never leaves the daemon;
 `test/telemetry-pr-late-outcome.test.ts` pins both halves.
+Live delivery requires the retained author's current task/session binding to own that PR;
+secondary repositories also match the current episode and repository. Another task or a
+dependency polling the same URL does not make an old author's observation live.
 
 ## The local reference stack
 

@@ -23,6 +23,7 @@
  * this operator have" is not.
  */
 import type { DatabaseSync } from "node:sqlite";
+import { taskWorkEpisodeForTask, workEpisodeRepoPrsForTask } from "../db.ts";
 import { SYSTEM_ACTOR, TELEMETRY_LIMITS } from "@shared/telemetry.ts";
 import { PR_OBSERVED_EVENT } from "@shared/telemetry-catalog.ts";
 import { TASK_KINDS, type TaskKind } from "@shared/types.ts";
@@ -205,7 +206,7 @@ export function telemetryPrPollTargets(now = Date.now()): string[] {
  */
 export function recordTelemetryPrMerges(
   mergedUrls: Map<string, number>,
-  isLive: (observation: RetainedPrObservation) => boolean = () => false,
+  isLive: (observation: RetainedPrObservation) => boolean = ownsCurrentPrBinding,
   now = Date.now(),
 ): number {
   if (mergedUrls.size === 0 || !getTelemetryConfig().enabled) return 0;
@@ -258,6 +259,17 @@ export function recordTelemetryPrMerges(
     if (result.kind === "accepted") recorded += 1;
   }
   return recorded;
+}
+
+/** A URL's other authors and dependency consumers do not establish this author's ownership. */
+function ownsCurrentPrBinding(observation: RetainedPrObservation): boolean {
+  const binding = taskWorkEpisodeForTask(observation.taskId);
+  if (!binding || binding.sessionId !== observation.sessionId) return false;
+  if (observation.repoRole === "primary") return binding.prUrl === observation.prUrl;
+  return workEpisodeRepoPrsForTask(observation.taskId).some((pr) =>
+    pr.episodeId === binding.episodeId && pr.sessionId === observation.sessionId &&
+    pr.prUrl === observation.prUrl && repoKeyFor(pr.repoRoot) === observation.repoKey,
+  );
 }
 
 /**

@@ -1,3 +1,4 @@
+import { withWorkflowRecovery } from "./helpers/workflow-recovery.ts";
 /**
  * What is at stake: a run has to stay watchable, and it has to stay watchable in NAMES.
  *
@@ -415,7 +416,7 @@ const render = (
   detail: WorkflowRunDetail,
   props: Record<string, unknown> = {},
 ): string => renderToStaticMarkup(createElement(WorkflowRunView, {
-  detail,
+  detail: withWorkflowRecovery(detail),
   onCancel: async () => {},
   ...props,
 }));
@@ -2698,7 +2699,7 @@ test("scrubbing to an earlier round never withdraws a live recovery action", () 
   const gated = {
     ...base,
     summary: { ...base.summary, status: "waiting_for_inspector", round: 3, gate: "waiting_inspector" },
-    run: { ...base.run, status: "waiting_for_inspector", currentPhase: "inspector_gate" },
+    run: { ...base.run, status: "waiting_for_inspector", currentPhase: "inspector_missing_pr" },
     submissions: [...base.submissions, inspectorOnly],
     inspectorGate: {
       state: {
@@ -2740,7 +2741,7 @@ test("the PR handoff and the provider retry are each the primary only in their o
         missingPrAction: "offer_prepare_pr",
       },
     },
-    run: { ...base.run, status: "waiting_for_pr", currentPhase: "inspector_gate" },
+    run: { ...base.run, status: "waiting_for_pr", currentPhase: "inspector_missing_pr" },
     inspectorGate: {
       state: {
         prKey: null,
@@ -2776,6 +2777,8 @@ test("the PR handoff and the provider retry are each the primary only in their o
     ...base,
     summary: { ...base.summary, status: "blocked" },
     run: { ...base.run, status: "blocked", currentPhase: "infrastructure_error" },
+    submissions: base.submissions.map((item) => item.id === "submission-2"
+      ? { ...item, status: "failed" as const } : item),
     attempts: base.attempts.map((item) => item.id === "attempt-3"
       ? { ...item, state: "error" as const, error: "provider_timeout" }
       : item),

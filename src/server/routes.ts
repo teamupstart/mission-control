@@ -2603,7 +2603,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const result = manager.enqueueSubmit(c.req.param("id"), parsed.data);
       return result.ok
         ? c.json(
-            { ...result.value, idempotent: result.idempotent ?? false },
+            { ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false },
             result.idempotent ? 200 : 202,
           )
         : workflowRuntimeFailure(c, result);
@@ -2621,7 +2621,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!result.ok) return workflowRuntimeFailure(c, result);
     const queue = queues.get(sessionId);
     if (queue) queues.setWrapupAnswer(queue.noteKey, "workflow:no-mistakes-review");
-    return c.json({ ...result.value, idempotent: result.idempotent ?? false });
+    return c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false });
   });
   app.post("/api/workflow-bindings/:id/reattach", async (c) => {
     const manager = workflowManager();
@@ -2747,7 +2747,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     try {
       const result = await manager.resubmit(c.req.param("id"), parsed.data);
       return result.ok
-        ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+        ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false })
         : workflowRuntimeFailure(c, result);
     } catch (error) {
       return workflowImageFailure(c, error, "Workflow evidence could not be staged");
@@ -2763,7 +2763,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       const parsed = await parseBody(c, RetryWorkflowEvidenceReadinessSchema);
       if (!parsed.ok) return parsed.res;
       const result = await manager.recoverEvidence(c.req.param("id"), c.req.param("submissionId"), parsed.data.requestId);
-      return result.ok ? c.json({ ...result.value, idempotent: result.idempotent ?? false }) : workflowRuntimeFailure(c, result);
+      return result.ok ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false }) : workflowRuntimeFailure(c, result);
     });
   app.post(
     "/api/workflow-runs/:id/submissions/:submissionId/evidence-readiness/retry",
@@ -2782,7 +2782,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
         parsed.data.requestId,
       );
       return result.ok
-        ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+        ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false })
         : workflowRuntimeFailure(c, result);
     },
   );
@@ -2836,7 +2836,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.retry(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/cancel", async (c) => {
@@ -2846,7 +2846,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.cancel(c.req.param("id"), parsed.data.requestId);
     return result.ok
-      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/grant-rounds", async (c) => {
@@ -2872,7 +2872,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
      * halves are pinned end to end in `test/workflow-resumption.test.ts`.
      */
     return result.ok
-      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/prepare-pr", async (c) => {
@@ -2892,7 +2892,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.recheckInspector(c.req.param("id"), parsed.data.requestId);
     return result.ok
-      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/set-nodes-disabled", async (c) => {
@@ -2902,7 +2902,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.setNodesDisabled(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ run: result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ run: manager.presentRun(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/set-persona-directive", async (c) => {
@@ -2912,7 +2912,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.setPersonaDirective(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/remove-persona-directive", async (c) => {
@@ -2922,7 +2922,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = manager.removePersonaDirective(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-runs/:id/restart-full", async (c) => {
@@ -2932,7 +2932,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = await manager.restartFull(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ ...result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ ...manager.presentRunResult(result.value), idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/workflow-deliveries/:id/retry", async (c) => {
@@ -2952,7 +2952,7 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     if (!parsed.ok) return parsed.res;
     const result = await manager.resolveDelivery(c.req.param("id"), parsed.data);
     return result.ok
-      ? c.json({ value: result.value, idempotent: result.idempotent ?? false })
+      ? c.json({ value: "run" in result.value ? manager.presentRunResult(result.value) : result.value, idempotent: result.idempotent ?? false })
       : workflowRuntimeFailure(c, result);
   });
   app.post("/api/sessions/:id/workflow-completion", async (c) => {

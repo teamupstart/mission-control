@@ -3516,24 +3516,7 @@ export function runRowIdentity(
   return { name: run.noteKey, isIdentifier: true };
 }
 
-/**
- * The single argument-free action a parked run's state actually takes, or `null`.
- *
- * A descriptor rather than a click handler so the decision is testable without rendering,
- * and so the Line's Review drawer and any later batch surface cannot disagree about which
- * runs may be dismissed.
- *
- * Two rules decide what is here, and both are narrow on purpose:
- *
- *  1. **The route must need nothing but a run id.** That is what keeps `Reattach` out (it
- *     needs a session id, which means a picker), `Resolve delivery` out (a delivery id and a
- *     choice) and `Disable a reviewer` out (a node id). A triage row has no room for a form,
- *     and a control that opens one is the run page wearing a disguise.
- *  2. **The SUMMARY must prove the daemon will accept it.** A button that always answers 409
- *     is worse than no button, so each guard below mirrors the manager's own refusals rather
- *     than the run page's - the run page reads run DETAIL, which a fleet-wide summary does
- *     not carry.
- */
+/** The daemon-selected argument-free recovery for the Review drawer. */
 export interface RunRemedy {
   /**
    * Stable, and doubles as the `RunActionId` the action store keys pending state and request
@@ -3601,14 +3584,12 @@ export function runRemedy(
    */
   name: string = run.sessionName || run.noteKey,
 ): RunRemedy | null {
+  const recovery = run.recovery;
+  if (!recovery?.triage || !recovery.operations.includes(recovery.triage)) return null;
   const runPath = (action: string): string =>
     `/api/workflow-runs/${encodeURIComponent(run.id)}/${action}`;
 
-  // Reattached and parked. `manager.resubmit` accepts an attached, waiting run with budget
-  // left that nobody else claimed; `sessionId` is the summary's proof the binding is still
-  // attached, since orphaning is what nulls it.
-  if (run.status === "waiting_for_session" && run.phase === "reattached_resubmit_required") {
-    if (!run.sessionId || run.externalSource || run.round > run.maxRepairRounds) return null;
+  if (recovery.triage === "resubmit") {
     return {
       kind: "resubmit",
       label: "Resubmit",
@@ -3619,18 +3600,10 @@ export function runRemedy(
     };
   }
 
-  // The one state `restart-full` genuinely accepts. Its other arm - an Inspector-only repair
-  // still in flight - is `latest.mode`, which lives on run detail; this arm is a status, so
-  // the summary can prove it on its own. Both of the manager's numeric refusals are checked
-  // here too, which is why a run out of rounds is NOT offered a restart: `restartFull`
-  // refuses when `round > maxRepairRounds`, and that inequality is the definition of the
-  // `round_limit` block, so the button could never once have succeeded there.
-  if (run.status === "waiting_for_new_head" && run.round <= run.maxRepairRounds) {
+  if (recovery.triage === "restart-full") {
     return {
       kind: "restart-full",
-      // The ellipsis is the promise that a dialog follows. The daemon demands the phrase
-      // itself (`manager.restartFull`), so this is not a confirmation the drawer chose.
-      label: "Restart…",
+              label: "Restart…",
       tooltip: "Abandon this GitHub Inspector-only repair and rerun every Persona from fresh evidence",
       path: runPath("restart-full"),
       body: { confirmation: RESTART_FULL_PHRASE },
@@ -3646,12 +3619,8 @@ export function runRemedy(
     };
   }
 
-  if (run.status !== "blocked") return null;
 
-  // `manager.retry` is available for exactly this phase, and the optional `nodeAttemptId` is
-  // omitted: it comes off run detail's attempts, and leaving it out makes the daemon pick the
-  // newest errored attempt itself - which is the one the run page's own default picks too.
-  if (run.phase === "infrastructure_error") {
+  if (recovery.triage === "retry") {
     return {
       kind: "retry",
       label: "Retry",
@@ -3662,14 +3631,7 @@ export function runRemedy(
     };
   }
 
-  // The two blocks nothing argument-free revives. `session_disappeared` needs a Reattach,
-  // which needs a session picker; `round_limit` needs a bigger repair budget, which is the
-  // run page's grant. Both are a click away through "Open run" - so what the drawer offers
-  // is the other honest move: stop counting a run that is never going to move again.
-  //
-  // Which, for a run out of rounds, is also the RETIRE half of the two controls that clear
-  // a spent gate. See `cancelReleasesGate`.
-  if (run.phase === "session_disappeared" || run.phase === "round_limit") {
+  if (recovery.triage === "cancel") {
     const release = cancelReleasesGate(run);
     return {
       kind: "dismiss",
@@ -3689,8 +3651,5 @@ export function runRemedy(
     };
   }
 
-  // Everything else - Inspector findings, a closed pull request, an unresolved delivery -
-  // is blocked on a DECISION, and the material for that decision is the run page's. The row
-  // still says why; it just does not pretend one button settles it.
   return null;
 }

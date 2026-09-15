@@ -1661,12 +1661,18 @@ a bug report, never instead of them. The timeline names Personas and rounds rath
 the complete durable JSON records sit beside it under **Audit and bug reports**, collapsed,
 because they answer a bug report rather than a reader.
 
-**The header offers one next move, derived from the run's own state.** Not every control the
+**The header offers one next move, supplied by the daemon from the run's current state.** Not every control the
 run might accept: a single primary, in the language of the person reading the page rather than
 of the route behind it. A parked run offers **Start repair round N**, naming the round it
 opens; a GitHub Inspector gate waiting on a pull request offers **Ask the session to open a
 PR**, or **Check again** when its immutable policy declines the handoff; a run blocked on an
 exhausted provider call offers **Retry the failed call**.
+
+The daemon reports allowed run recovery operations with every summary and run response. The
+header, GitHub Inspector controls, and Review drawer use that projection. Renaming a phase does
+not change the browser's action choice. An open run with a phase the daemon cannot recognize
+remains inspectable and offers **Cancel run** only. A response from an older daemon without
+recovery capabilities shows an explanation and no recovery controls.
 
 That primary used to read **Resume review**, over a tooltip promising to "resume this run
 where it stalled". It does no such thing: the daemon computes `latest.round + 1`, re-runs the

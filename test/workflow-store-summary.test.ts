@@ -111,3 +111,38 @@ test("a binding that captured no title emits no key at all, rather than an empty
   assert.ok(summary);
   assert.equal("sessionName" in summary, false);
 });
+
+test("detail and every summary path carry the same current recovery operations", () => {
+  clearWorkflowTables(db);
+  seedVersion();
+  const store = new WorkflowStore(db);
+  seedRun(store, "Recovery contract");
+  store.setRunState("run", "waiting_for_session", "reattached_resubmit_required", null, 4);
+  const recovery = store.runSummary("run")!.recovery;
+  assert.ok(recovery);
+  assert.deepEqual(recovery.operations, ["cancel", "resubmit"]);
+  assert.equal(recovery.primary, "resubmit");
+  assert.equal(recovery.triage, "resubmit");
+  assert.deepEqual(store.runDetail("run")!.run.recovery, recovery);
+  assert.deepEqual(store.listRunSummaries()[0]!.recovery, recovery);
+  assert.deepEqual(store.listRunSummaryPage({ limit: 10, cursor: null }).items[0]!.recovery, recovery);
+  store.setRunStateCarryingPhase("run", "blocked", "phase_from_a_new_daemon", null, 5);
+  const unknown = store.runSummary("run")!.recovery!;
+  assert.equal(unknown.phaseKnown, false);
+  assert.deepEqual(unknown.operations, ["cancel"]);
+  assert.equal(unknown.primary, null);
+});
+
+test("a malformed pinned policy keeps the run inspectable without offering recovery", () => {
+  clearWorkflowTables(db);
+  seedVersion();
+  const store = new WorkflowStore(db);
+  seedRun(store, "Unreadable policy");
+  store.setRunState("run", "waiting_for_session", "reattached_resubmit_required", null, 4);
+  assert.equal(store.runSummary("run")?.recovery?.primary, "resubmit");
+  db.prepare("UPDATE workflow_versions SET completion_policy_json = '{broken' WHERE id = 'v'").run();
+  const summary = store.runSummary("run");
+  assert.ok(summary);
+  assert.deepEqual(summary.recovery?.operations, ["cancel"]);
+  assert.equal(summary.recovery?.primary, null);
+});

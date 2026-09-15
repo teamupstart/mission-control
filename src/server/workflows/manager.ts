@@ -191,6 +191,7 @@ import {
   type WorkflowStoreWrite,
 } from "./store.ts";
 import { workflowJson } from "./store.ts";
+import { infrastructureRecoveryAvailable, inspectorRecoveryCanRecheck } from "./recovery.ts";
 import { getWorkflowPolicy } from "./config.ts";
 import {
   renderInspectorFeedback,
@@ -1093,6 +1094,18 @@ export class WorkflowManager {
     return result.kind === "found"
       ? { kind: "found", detail: this.decorateRun(result.detail) }
       : result;
+  }
+
+  /** Add current recovery facts at the response boundary, never to persisted run rows. */
+  presentRun(run: WorkflowRun): WorkflowRun {
+    const current = this.store.getRun(run.id) ?? run;
+    return { ...current, recovery: this.store.runSummary(run.id)?.recovery ?? {
+      operations: [], primary: null, triage: null, phaseKnown: false, resubmit: null, grantRounds: 0,
+    } };
+  }
+
+  presentRunResult<T extends { run: WorkflowRun }>(value: T): T {
+    return { ...value, run: this.presentRun(value.run) };
   }
 
   private decorateRun(detail: WorkflowRunDetail): WorkflowRunDetail {
@@ -2082,7 +2095,7 @@ export class WorkflowManager {
           ok: false,
           reason: "unchanged_evidence",
           message: "The evidence snapshot is unchanged; confirm this same resubmission to continue",
-          current: { run: existingRun, submission: existing },
+          current: this.presentRunResult({ run: existingRun, submission: existing }),
         };
       }
       return {
@@ -2091,7 +2104,8 @@ export class WorkflowManager {
         idempotent: true,
       };
     }
-    if (!["waiting_for_session", "blocked"].includes(run.status) || binding.state !== "active") {
+    if (!workflowRunPhaseRecognized(run.currentPhase)
+      || !["waiting_for_session", "blocked"].includes(run.status) || binding.state !== "active") {
       return {
         ok: false,
         reason: "run_not_waiting",
@@ -2453,14 +2467,18 @@ export class WorkflowManager {
       return { ok: true, value: { run, submission }, idempotent: true };
     }
     const attempts = this.store.listAttempts(submission.id);
+    const latestAttempts = new Map<string, WorkflowNodeAttempt>();
+    for (const attempt of attempts) {
+      const prior = latestAttempts.get(attempt.nodeId);
+      if (!prior || attempt.attempt > prior.attempt) latestAttempts.set(attempt.nodeId, attempt);
+    }
     const failed = input.nodeAttemptId
       ? attempts.find((attempt) => attempt.id === input.nodeAttemptId)
-      : [...attempts].reverse().find((attempt) => attempt.state === "error");
+      : [...latestAttempts.values()].reverse().find((attempt) => attempt.state === "error");
     if (
-      run.status !== "blocked" ||
-      run.currentPhase !== "infrastructure_error" ||
-      !failed ||
-      failed.state !== "error"
+      !failed || !infrastructureRecoveryAvailable(
+        { status: run.status, phase: run.currentPhase }, submission, failed.state === "error",
+      )
     ) {
       return {
         ok: false,
@@ -2941,7 +2959,7 @@ export class WorkflowManager {
     if (replay) return { ok: true, value: run, idempotent: true };
     const latest = this.store.latestSubmission(run.id);
     if (!latest) return { ok: false, reason: "not_found", message: "The run has no submission" };
-    if (!workflowRunGaveUp({
+    if (!workflowRunPhaseRecognized(run.currentPhase) || !workflowRunGaveUp({
       status: run.status,
       phase: run.currentPhase,
       round: latest.round,
@@ -3165,11 +3183,7 @@ export class WorkflowManager {
         message: "This GitHub Inspector gate is already terminal",
       };
     }
-    const canEvaluate = run.status === "waiting_for_pr"
-      || run.status === "waiting_for_inspector"
-      || run.status === "waiting_for_new_head"
-      || (run.status === "waiting_for_session" && run.currentPhase === "pr_handoff")
-      || (run.status === "blocked" && run.currentPhase === "inspector_disabled");
+    const canEvaluate = inspectorRecoveryCanRecheck({ status: run.status, phase: run.currentPhase });
     if (!canEvaluate) {
       return {
         ok: false,
@@ -3220,7 +3234,7 @@ export class WorkflowManager {
     const abandoningBypass =
       run.status === "waiting_for_new_head"
       || latest.mode === "inspector_only";
-    if (!abandoningBypass) {
+    if (runIsTerminal(run) || !workflowRunPhaseRecognized(run.currentPhase) || !abandoningBypass) {
       return {
         ok: false,
         reason: "run_not_waiting",
@@ -3289,7 +3303,7 @@ export class WorkflowManager {
         ok: false,
         reason: "invalid_delivery_state",
         message: "A terminal workflow run cannot deliver another repair packet",
-        current: run,
+        current: run ? this.presentRun(run) : null,
       };
     }
     const prior = this.deliveryActionEvent(delivery.runId, "delivery_retry_completed", input.requestId);
@@ -3898,7 +3912,7 @@ export class WorkflowManager {
           message:
             "This external run has no pinned artifact, so the result it was started for "
             + "cannot be established; start a new result rather than reviewing another commit",
-          current: existingRun,
+          current: this.presentRun(existingRun),
         };
       }
       if (pinned.expectedHeadSha !== expectation.data.expectedHeadSha) {

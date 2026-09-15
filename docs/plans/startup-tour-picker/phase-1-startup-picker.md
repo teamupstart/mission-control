@@ -30,6 +30,8 @@ No tour editor, enable/disable catalog management, new tours, progress/resume/co
 | `src/web/components/Overlay.tsx` | Registration is synchronous with mount and global shortcut guards consume the host. The primitive handles topmost Escape/backdrop dismissal; it is not a general focus trap. |
 | `src/web/tour/focus-containment.ts` | Existing containment and bookmark conventions are available. Preserve semantic replacement and late-frame focus safeguards. |
 | `src/shared/protocol.ts`, `src/server/ui-config.ts`, `src/web/lib/uiConfig.ts`, `src/web/lib/uiCache.ts` | Daemon-owned UI config, schema defaults, legacy browser adoption, authoritative hydration, and optimistic per-field rollback. |
+| `src/web/App.tsx`, `src/web/components/SetupBanner.tsx`, `src/web/components/SettingsRestoredBanner.tsx`, `src/web/styles.css` | App renders banners after the header and before AppPageShell, outside route content. Reuse `.app-banner`, `.app-banner-error`, copy/actions classes, and the existing narrow-screen stacking for the proposed preference-error notice. |
+| `src/web/useNotifier.ts` | Private permission-gated desktop notifications for attention transitions, not a reusable in-app error API. App's timed launcher error flash is also launcher-specific. No generic dashboard-toast owner was found. |
 | `src/web/lib/guided-tour.ts` | One-time consumption with a local retry marker. This is the superseded startup consumer, not a source for the new boolean's value. |
 | `e2e/fixtures/test.ts` | Unrelated dashboard tests currently pin guidedTour off. The new default needs an explicit independent test-fixture override. |
 
@@ -80,7 +82,13 @@ Replace App's direct automatic Setup effect with the approved picker gate. Wait 
 
 Manual opening may show the catalog before hydration while disabling the preference checkbox with explanatory copy. Every actual picker opening consumes this document's automatic offer. A disabled preference settles that offer; re-enabling takes effect on the next new document.
 
-Use updateUiConfig for checkbox writes. Disable only the checkbox while a single save is pending; preserve start and dismissal. On rejection, roll back to the accepted value and show an inline error if still open or a dashboard toast if closed. Do not add a local durable pending marker or hidden retry loop. New windows observe the daemon's stored preference; already-open windows do not need live sync.
+Keep the checkbox's single in-flight flag and transient error in App, not inside the unmounting picker. Pass them and an App-owned save callback to TourPicker. The callback clears any prior error, marks saving, awaits `updateUiConfig({ showToursOnStartup: next })`, and clears saving. That existing function calls `api.setUiConfig` through `PUT /api/ui/config` and returns false after per-field rollback on rejection. Read the boolean from `useUiConfig`, never a second local copy. Disable only the checkbox while pending, including after dismissal and manual reopening; preserve start and dismissal. New windows observe the daemon's stored preference; already-open windows do not need live sync.
+
+#### Preference-save failure surface (TP-05)
+
+On false, App retains **Could not save your tour preference. Your previous setting still applies.** for the life of the document until explicitly cleared. While the picker is open, show it once inline with `role="alert"`. After dismissal, show the proposed `src/web/components/TourPreferenceNotice.tsx` after SetupBanner and before AppPageShell in App's existing banner region. This stateless renderer receives the message and actions from App, uses `.app-banner.app-banner-error`, `.app-banner-copy`, and `.app-banner-actions`, and places `role="alert"` on the message. It adds no notification context, queue, service, desktop-permission dependency, timer, or persistence mechanism.
+
+Reuse the existing overlay/active-tour idle guard to defer this notice while another overlay or walkthrough owns the screen; keep its error in App until idle. Reporting never opens a modal, changes route, or moves focus. An inline failure survives subsequent picker dismissal and appears in the same notice. **Browse tours** calls the same guarded manual opener, hides the notice, and carries the error into the picker. **Dismiss** clears only the error, without writing config or changing the startup latch. The next explicit checkbox save clears the old error before trying again; a successful retry leaves no stale notice. Do not add hidden retries or a durable pending marker.
 
 ### 5. Reuse the existing launch lifecycle
 
@@ -135,6 +143,14 @@ The new `e2e/specs/tour-picker.spec.ts` must prove TP-01 through TP-10 alongside
 - Light/dark, reduced motion, 390 by 844 and 1024 by 600 layouts, zoom, reachable controls, and `expectContentClearsBorder` for the dialog.
 - Fake agents in all walkthrough launches; opening, browsing, and dismissing produce zero new tour tasks; See the work's actual launch still cleans up its temporary sessions.
 
+Required post-dismissal rejection scenario in `e2e/specs/tour-picker.spec.ts`:
+
+1. Seed startup display true and desktop notifications off. Hold only the `PUT /api/ui/config` request whose patch includes showToursOnStartup.
+2. Uncheck the startup checkbox; assert Saving and a disabled checkbox. Dismiss the picker while the request is pending and navigate to Library. Record the focused navigation control after navigation.
+3. Fulfill that held request with HTTP 503. Assert exactly one visible alert with the specified error copy in the App banner, the picker remains closed, the Library route is unchanged, and focus remains on the recorded control. The daemon's GET config still reports true because the intercepted write never reached it.
+4. Select the banner's Browse tours action. Assert the restored checkbox is checked, the same error is inline, and no duplicate banner is visible. Retry the change with the next PUT allowed through; assert success clears the error, GET reports false, and reload does not show the startup picker.
+5. Cover related branches separately: failure while open followed by dismissal; reopen while still pending keeps the checkbox disabled; notice Dismiss clears only the error and leaves the saved value true; a failure after starting a tour waits until tour exit; an intervening overlay likewise defers the notice. Check the banner actions remain reachable at the narrow viewport.
+
 Capture final rendered runtime screenshots in a gitignored directory and register them with exact focused command results. These prove the implementation, whereas this plan's mockups prove only the agreed design. Do not commit evidence files or report.html artifacts.
 
 ## Merge and exit criteria
@@ -152,3 +168,5 @@ There are no later phases. Future tour registrations can rely on automatic catal
 2026-09-15: compared this phase with the complete approved root plan and phased index. TP-01 through TP-10 are all owned here exactly once. B, every-open with opt-out, and the new/existing-profile default are preserved. The one-time guidedTour field is explicitly distinguished from the new setting; no conflicting startup consumer remains. The actual same-route return value, route-only confirmation, overlay focus limitations, and E2E suppression seeds are accounted for. No multi-repository dependency, schema ordering hazard, parallel merge contention, or undocumented later work remains. No approved behavior changed during decomposition.
 
 Review repair on 2026-09-15: removed the operator-specific local checkout path from the guide. The repository identity and all task-relative plan paths remain unchanged; no behavior, dependency, or acceptance criterion was revised.
+
+Plan Validation v1 repair, run `5a07bf04-605f-4442-82f0-2b1af91a7035`, round 1: replaced the unverified dashboard-toast assumption with a minimal App-owned notice in the verified banner region. This explicitly supersedes the earlier failure-surface wording in the root and phase. App owns request/error lifetime; the existing store owns rollback; this phase owns the renderer and the held-request browser scenario. TP-05 and all recorded human choices, including Dismiss, remain intact. No implementation or additional phase was introduced.

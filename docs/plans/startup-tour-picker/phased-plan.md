@@ -38,6 +38,7 @@ All root, index, phase, rendering, and mockup files are committed and pushed bef
 - `guidedTour` currently means unconsumed one-time onboarding. It is incompatible with every-open behavior, so Phase 1 introduces the approved separate flag, retires the browser consumer, and preserves serialized compatibility.
 - `Overlay` supplies stacking and dismissal, but not a general focus trap. Phase 1 explicitly owns focus containment and handoff rather than assuming the shell supplies them.
 - The UI-config store hydrates from the daemon and rolls back rejected field writes. No cross-window live sync exists; new windows read the saved value and already-open windows do not need synchronization for this feature.
+- There is no general dashboard-toast API: useNotifier owns permission-gated desktop alerts, and App's launcher flash is specific to launch errors. App already renders SetupBanner and SettingsRestoredBanner before AppPageShell. Phase 1 places the proposed TourPreferenceNotice in that existing region, with request/error state in App and existing `.app-banner` styles. The small renderer is included in this phase's UI/integration scope and estimate.
 - Shared E2E fixtures currently suppress guidedTour. Phase 1 updates those fixtures and hand-built settings seeds for the new default, preventing the modal from unexpectedly covering unrelated browser tests.
 - There are no worker, packaging, native, release, or CI changes required. Existing server tour recipes and their token-consuming behavior remain behind the explicit walkthrough launch.
 
@@ -49,6 +50,7 @@ All of these are owned once by Phase 1 and inherited from the approved root plan
 | --- | --- |
 | Catalog and recommendation | Existing tour registry, no copied tour list; title source remains tours Markdown; stop count derives from definition stops. |
 | Startup preference | `showToursOnStartup`, boolean default true including upgraded profiles; explicit false persists in existing app_config.ui. Legacy guidedTour is not the new eligibility gate. |
+| Save failures | App owns the in-flight flag and transient error across picker dismissal/routes; updateUiConfig owns rollback. Show one inline alert while open or the proposed App banner when closed and idle. Browse tours transfers the error inline; Dismiss clears only the error; explicit retry clears it. No generic notification service or hidden retry. |
 | Launch | Existing startTour preflight, one active run, accepted launch closes picker, rejected launch leaves the existing route confirmation authoritative. |
 | Overlay and focus | Shared overlay registration, picker-only focus containment while topmost, origin bookmark passed to the engine, no unmount refocus during handoff. |
 | Exit and resources | Existing tour cleanup and snapshot behavior, including Setup on Trust. No automatic picker reopening after a tour. |
@@ -62,7 +64,7 @@ All of these are owned once by Phase 1 and inherited from the approved root plan
 | TP-02 full catalog and preview | Phase 1 | Registry/count checks and browser selection |
 | TP-03 explicit safe launch | Phase 1 | Each actual tour and double-start test |
 | TP-04 dismissal | Phase 1 | Four dismissal paths, unchanged route/state |
-| TP-05 durable opt-out | Phase 1 | Store/cache upgrade and browser save/reload/failure cases |
+| TP-05 durable opt-out | Phase 1 | Store/cache upgrade; hold PUT, dismiss, navigate, reject, verify banner/focus/restored value, reopen and retry; inline, notice-dismiss, pending-reopen, and overlay/tour deferral cases |
 | TP-06 manual discovery | Phase 1 | Settings and palette opening, retained direct entries |
 | TP-07 focus and stacking | Phase 1 | Keyboard, overlay ordering, launch/dismiss/exit focus |
 | TP-08 existing engine contracts | Phase 1 | Dirty preflight, three complete walkthrough regressions and cleanup |
@@ -82,3 +84,5 @@ Final audit on 2026-09-15: reread the approved root plan and Phase 1; every TP r
 The complete plan set was pushed as commit `ecff01eb77c256675f222d328d44d789fb8f0cd4` before task creation. All referenced paths were verified in that commit and the remote branch was confirmed at the same SHA. Mission Control then created task `3c1dc325-ddf6-402d-9d7c-5176c433e672` in backlog, returning the expected canonical repository, no attachments, no task-ID prerequisites, and `dependsOnCurrentSession: true`. This record is a follow-up artifact update; the task remains gated on this planning session's PR merge.
 
 Review repair on 2026-09-15: replaced operator-specific checkout locations with the Mission Control-issued repository scope. The published relative task pointers, canonical scope verification, dependency, requirements, and exit criteria are unchanged.
+
+Plan Validation v1 repair, run `5a07bf04-605f-4442-82f0-2b1af91a7035`, round 1: the root and Phase 1 now replace the unsupported dashboard-toast assumption with a verified App banner placement, explicit save/error ownership, and a delayed-rejection browser scenario. This supersedes only the prior failure-surface wording. Human decisions and the single scheduled phase remain unchanged; no application code was changed by this repair.

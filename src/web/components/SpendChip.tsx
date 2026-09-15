@@ -73,7 +73,9 @@ export function fleetCostHasContent(fleet: FleetCost | null): boolean {
     // chip must not be missing. Without this clause the one figure that had moved would
     // be the one nobody could see.
     automationHasContent(fleet) ||
-    !!limits?.fiveHour || !!limits?.sevenDay || !!fleet.rateLimitSources?.some((s) => s.windows.length);
+    !!limits?.fiveHour || !!limits?.sevenDay ||
+    !!fleet.lastKnownRateLimits?.fiveHour || !!fleet.lastKnownRateLimits?.sevenDay ||
+    !!fleet.rateLimitSources?.some((s) => s.windows.length);
 }
 
 /** Whether the loops have anything to report today. One predicate, three readers. */
@@ -164,6 +166,7 @@ function worstWindow(
   const ranked = { ok: 0, warn: 1, high: 2 } as const;
   let worst: { label: string; window: RateLimitWindow; tone: ContextTone } | null = null;
   for (const { label, window, windowMs } of rateLimitWindows(fleet)) {
+    if (window.resetsAt * 1000 <= Date.now()) continue;
     const tone = runwayTone(window, windowMs);
     if (!worst || ranked[tone] > ranked[worst.tone]) worst = { label, window, tone };
   }
@@ -172,6 +175,7 @@ function worstWindow(
 
 /** One meter's tone. A window the current pace does not exhaust is calm at any percentage. */
 function runwayTone(window: RateLimitWindow, windowMs: number): ContextTone {
+  if (window.resetsAt * 1000 <= Date.now()) return "ok";
   const runway = projectRunway(window, windowMs, Date.now());
   // `contextTone` rather than a private set of rate-limit thresholds: the amber/red
   // escalation is already defined for the card's context meter, and a second copy of
@@ -188,7 +192,10 @@ function rateLimitWindows(
   fleet: FleetCost,
 ): { key: string; label: string; window: RateLimitWindow; windowMs: number }[] {
   const out: { key: string; label: string; window: RateLimitWindow; windowMs: number }[] = [];
-  const limits = fleet.rateLimits;
+  const limits = {
+    fiveHour: fleet.rateLimits?.fiveHour ?? fleet.lastKnownRateLimits?.fiveHour,
+    sevenDay: fleet.rateLimits?.sevenDay ?? fleet.lastKnownRateLimits?.sevenDay,
+  };
   if (limits?.fiveHour) {
     out.push({ key: "claude:5h", label: "Claude · 5-hr window", window: limits.fiveHour, windowMs: FIVE_HOUR_MS });
   }
@@ -476,10 +483,16 @@ function AutomationRow({ fleet }: { fleet: FleetCost }): React.JSX.Element | nul
 /** The rate-limit half: one runway per window we have been told about. */
 function SpendWindows({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
   const windows = rateLimitWindows(fleet);
-  if (!windows.length) return null;
+  const hasClaude = windows.some(({ key }) => key.startsWith("claude:"));
   return (
     <div className="spend-runways">
       <span className="spend-sec">Rate-limit runway</span>
+      {!hasClaude && (
+        <div className="runway-unavailable">
+          <span>Claude utilization unavailable</span>
+          <small>Waiting for a usage report from Claude.</small>
+        </div>
+      )}
       {windows.map(({ key, label, window, windowMs }) => (
         <Runway key={key} window={window} windowMs={windowMs} label={label} />
       ))}
@@ -511,10 +524,16 @@ function Runway({
   label: string;
 }): React.JSX.Element {
   const pct = Math.min(100, Math.max(0, window.usedPercentage));
-  const runway = projectRunway(window, windowMs, Date.now());
-  const headline = `${Math.round(pct)}%${runway ? ` · ${runway.clears ? "clears" : fmtRunway(runway.ms)}` : ""}`;
-  const tip =
-    `${Math.round(window.usedPercentage)}% used, resets ${untilReset(window.resetsAt)}.\n` +
+  const now = Date.now();
+  const expired = window.resetsAt * 1000 <= now;
+  const runway = projectRunway(window, windowMs, now);
+  const headline = expired
+    ? `${Math.round(pct)}% last reported`
+    : `${Math.round(pct)}%${runway ? ` · ${runway.clears ? "clears" : fmtRunway(runway.ms)}` : ""}`;
+  const recorded = window.recordedAt === undefined ? null : new Date(window.recordedAt).toLocaleString();
+  const tip = expired
+    ? "This saved reading is from a window whose reset time has passed. Current utilization is unknown until Claude reports again."
+    : `${Math.round(window.usedPercentage)}% used, resets ${untilReset(window.resetsAt)}.\n` +
     (!runway
       ? `Not enough of the window has been spent to project a runway.`
       : runway.clears
@@ -522,7 +541,7 @@ function Runway({
         : `At this rate it is exhausted in ${fmtRunway(runway.ms).replace("~", "about ")}.`);
   return (
     <Tooltip label={tip}>
-      <div className="spend-runway" data-tone={runwayTone(window, windowMs)}>
+      <div className="spend-runway" data-tone={runwayTone(window, windowMs)} data-expired={expired || undefined}>
         <div className="runway-head">
           <span>{label}</span>
           <b>{headline}</b>
@@ -536,6 +555,12 @@ function Runway({
             style={{ width: `${pct}%`, ["--pct" as string]: Math.max(1, pct) }}
           />
         </div>
+        {(recorded || expired) && (
+          <div className="runway-note">
+            {expired ? "Reset passed · awaiting update" : `Resets ${untilReset(window.resetsAt)}`}
+            {recorded && <span>Recorded {recorded}</span>}
+          </div>
+        )}
       </div>
     </Tooltip>
   );

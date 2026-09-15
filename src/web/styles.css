@@ -4277,6 +4277,27 @@ body {
 .spend-runway[data-tone="high"] .runway-head b {
   color: var(--danger);
 }
+.runway-note,
+.runway-unavailable {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.runway-note {
+  margin-top: 5px;
+}
+.runway-note span,
+.runway-unavailable small {
+  display: block;
+  margin-top: 2px;
+  color: var(--dim);
+  font-size: 10px;
+}
+.spend-runway[data-expired] .runway-head b {
+  color: var(--muted);
+}
+.spend-runway[data-expired] .runway-fill {
+  background: var(--dim);
+}
 .runway-meter {
   height: 6px;
   border-radius: 999px;

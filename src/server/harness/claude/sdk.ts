@@ -689,10 +689,9 @@ class ClaudeSdkSession implements SdkSessionHandle {
   /**
    * Reacquire the account's live plan windows from the pane-less SDK session.
    *
-   * The Registry deliberately does not persist this gauge. Refresh on init so a resumed
-   * idle session repopulates it after a daemon restart, and after each result so active
-   * usage moves the runway. Failure is an honest absence: this control is experimental
-   * upstream and must never end or degrade the conversation it observes.
+   * Refresh on init and after each result so a saved Registry reading is replaced when
+   * live usage is available. This control is experimental upstream; failure keeps the
+   * saved reading and must never end or degrade the conversation it observes.
    */
   private refreshRateLimits(): void {
     const query = this.query;

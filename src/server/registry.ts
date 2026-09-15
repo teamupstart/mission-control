@@ -117,6 +117,7 @@ import type {
 // renders. Pure and its own module - see `sdk/dialog.ts`.
 import { driverDialog } from "./sdk/dialog.ts";
 import { settingsStatus } from "./settings-status.ts";
+import { loadClaudeRateLimits, saveClaudeRateLimits } from "./claude-rate-limit-cache.ts";
 import { hooksFor } from "./harness/index.ts";
 import type { HookSpec } from "./harness/types.ts";
 // Who typed a given user turn, reserved at delivery by every non-human sender. Read here so
@@ -1022,9 +1023,8 @@ export class Registry extends EventEmitter {
    *
    * ONE value for the whole registry, not one per session, because that is what the fact
    * is: a five-hour window is a property of the ACCOUNT, and every session on the machine
-   * reports the same one. Held in memory and never persisted - it is a live gauge with a
-   * server-supplied reset time, and a stored percentage would be read as current long
-   * after it stopped being true.
+   * reports the same one. Persisted so a restart during quota exhaustion does not erase
+   * the only reading available. Expired windows travel separately as last-known readings.
    */
   private latestRateLimits: RateLimits | null = null;
   private latestRateLimitSources = new Map<AgentType, RateLimitSource>();
@@ -1079,6 +1079,7 @@ export class Registry extends EventEmitter {
 
   constructor() {
     super();
+    this.latestRateLimits = loadClaudeRateLimits();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
@@ -5502,7 +5503,15 @@ export class Registry extends EventEmitter {
     if (prev && rateWindowEqual(prev.fiveHour, fiveHour) && rateWindowEqual(prev.sevenDay, sevenDay)) {
       return;
     }
-    this.latestRateLimits = { fiveHour, sevenDay, updatedAt: Date.now() };
+    const now = Date.now();
+    const recorded = (window: RateLimitWindow | null, previous: RateLimitWindow | null | undefined) =>
+      window && (previous && rateWindowEqual(window, previous) ? previous : { ...window, recordedAt: now });
+    this.latestRateLimits = {
+      fiveHour: recorded(fiveHour, prev?.fiveHour),
+      sevenDay: recorded(sevenDay, prev?.sevenDay),
+      updatedAt: now,
+    };
+    saveClaudeRateLimits(this.latestRateLimits);
     this.recomputeFleetCost();
   }
 
@@ -5686,6 +5695,7 @@ export class Registry extends EventEmitter {
       // Expired at READ, not on a timer: nothing then depends on a tick having fired,
       // and a snapshot served between recomputes is as honest as an emitted one.
       rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
+      lastKnownRateLimits: this.latestRateLimits,
       rateLimitSources: [...this.latestRateLimitSources.values()]
         .map((source) => ({ ...source, windows: source.windows.filter((w) => w.resetsAt * 1000 > now) }))
         .filter((source) => source.windows.length > 0),
@@ -5726,6 +5736,7 @@ export class Registry extends EventEmitter {
       // automation line whenever the loops spent but the fleet did not.
       JSON.stringify(this.lastFleetCost.automation) === JSON.stringify(fleet.automation) &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
+      rateLimitsDisplayEqual(this.lastFleetCost.lastKnownRateLimits ?? null, fleet.lastKnownRateLimits ?? null) &&
       rateLimitSourcesEqual(this.lastFleetCost.rateLimitSources, fleet.rateLimitSources);
     this.lastFleetCost = fleet;
     if (same) return;

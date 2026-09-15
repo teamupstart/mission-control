@@ -289,7 +289,8 @@ is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 gra
 v13 graph runs it alongside Code Risk Reviewer and Code Design Reviewer in stage 3, followed by
 Test Evidence Auditor, Documentation Steward and Slop Filter in stage 4, all inside the local
 repair loop before the Pull Request action. Version 13 also enforces criterion-mapped evidence
-readiness before that graph can create its first attempt.
+readiness before that graph can create its first attempt. Exhausting a round's evidence
+refinements advances the final packet with its gaps intact so the judges can evaluate it.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.
 

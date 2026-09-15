@@ -44,14 +44,10 @@ import {
 export const WORKFLOW_CHECK_CLEANUP_UNRESOLVED_PHASE = "check_cleanup_unresolved";
 
 /**
- * The phase a run blocks in when one round has spent its consecutive evidence-preflight
- * refinements without closing the readiness gaps.
- *
- * Named rather than spelled at its call sites because three of them have to agree: the store
- * writes it, the readiness override reads it to decide that a blocked run may still be
- * continued despite gaps, and the dashboard reads it to keep the operator's decision panel on
- * screen at the one moment the operator is being asked to make that decision. A run parked
- * here is waiting for a person, not for the session.
+ * Historical block for a round that exhausted evidence-preflight refinements.
+ * New runs advance to review with their gaps intact. Keep this persisted phase readable for
+ * old runs: the readiness sweep recovers them, and an operator override remains valid until
+ * that automatic handoff takes ownership.
  */
 export const WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE = "preflight_refinement_exhausted";
 

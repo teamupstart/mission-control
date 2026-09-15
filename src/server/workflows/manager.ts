@@ -101,6 +101,7 @@ import {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_INSPECTOR_ENTRY_PHASE,
+  WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
   withInspectorGate,
   workflowInspectorGate,
   workflowRoundLimitParkedPhase,
@@ -2254,6 +2255,11 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     const binding = run ? this.store.getBinding(run.bindingId) : null;
     if (!run || !binding) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    if (this.continueExhaustedEvidenceReadiness(runId, submissionId, binding, now)) {
+      return { ok: true, value: {
+        run: this.store.getRun(runId)!, submission: this.store.getSubmission(submissionId)!,
+      } };
+    }
     const reserved = this.store.reserveEvidenceReadinessRefinement({
       id: randomUUID(),
       runId,
@@ -2263,9 +2269,6 @@ export class WorkflowManager {
       now,
     });
     if (!reserved.ok) {
-      // The cap blocked the run inside the reservation, so the operator's page has to hear
-      // about it: this refusal is the one that changes durable run state.
-      if (reserved.reason === "refinement_exhausted") this.publishRun(runId);
       return {
         ok: false,
         reason: reserved.reason === "no_change" ? "unchanged_evidence" : "conflict",
@@ -2277,7 +2280,7 @@ export class WorkflowManager {
               ? "Stage new evidence before retrying evidence preflight"
               : reserved.reason === "refinement_exhausted"
                 ? `This round has spent its ${reserved.limit} evidence`
-                  + " preflight refinements; continue despite gaps or start a new round"
+                  + " preflight refinements; review will continue once evidence delivery settles"
                 : "The submission is no longer waiting for evidence readiness",
       };
     }
@@ -6871,6 +6874,9 @@ export class WorkflowManager {
         return { ok: true, value: { run: blocked, submission: this.store.getSubmission(submission.id)! } };
       }
       if (enforcingReadiness && readiness?.status === "gaps") {
+        if (this.continueExhaustedEvidenceReadiness(run.id, submission.id, binding, Date.now())) {
+          return { ok: true, value: { run: this.store.getRun(run.id)!, submission: runnable } };
+        }
         const waitedAt = Date.now();
         const waitingSubmission = this.store.setSubmissionState(
           submission.id,
@@ -7196,9 +7202,9 @@ export class WorkflowManager {
    * The order of the gates below is deliberate: every free in-memory question is asked before
    * the one that spawns git. Generic repair still admits `waiting_for_session` and nothing
    * else through `resumableRun`. Evidence readiness additionally re-drives its own exact
-   * capturing child because its reservation commits before capture begins. An overridden
-   * submission left in the durable `activating` handoff is also eligible because the override
-   * commits before graph activation.
+   * capturing child because its reservation commits before capture begins. An override or an
+   * exhausted preflight left in the durable `activating` handoff also resumes graph activation.
+   * Historical exhaustion blocks advance through the same bounded handoff.
    */
   async sweepResumptions(now = Date.now()): Promise<void> {
     if (this.resumptionRunning) return;
@@ -7208,6 +7214,7 @@ export class WorkflowManager {
       for (const run of this.store.listRuns()) {
         if (
           run.status === "waiting_for_evidence_readiness"
+          || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE)
           || run.status === "capturing"
           || (run.status === "running" && run.currentPhase === "activating")
         ) {
@@ -7261,6 +7268,7 @@ export class WorkflowManager {
     // before capture yields, and disappears with the process, so skipping it prevents a sweep
     // from joining live work without weakening restart recovery for an orphaned reservation.
     if (this.captureLocks.has(binding.noteKey)) return;
+    if (this.continueExhaustedEvidenceReadiness(run.id, latest.id, binding, now)) return;
 
     let parent: WorkflowSubmission;
     let triggerKey: string;
@@ -7299,9 +7307,6 @@ export class WorkflowManager {
       now,
     });
     if (!reserved.ok) {
-      // Every other refusal here leaves the run exactly as the sweep found it. The cap does
-      // not: it parked the run for the operator, and nothing else will publish that.
-      if (reserved.reason === "refinement_exhausted") this.publishRun(run.id);
       return;
     }
     if (reserved.idempotent && reserved.submission.status !== "capturing") return;
@@ -7309,6 +7314,18 @@ export class WorkflowManager {
     const current = this.store.getRun(run.id);
     if (!current) return;
     await this.captureAndActivate(binding, current, reserved.submission, undefined, true);
+  }
+
+  private continueExhaustedEvidenceReadiness(
+    runId: string, submissionId: string, binding: WorkflowBinding, now: number,
+  ): boolean {
+    if (binding.state !== "active"
+        || this.store.getSubmission(submissionId)?.runId !== runId
+        || !this.store.continueExhaustedEvidenceReadiness(submissionId, now)) return false;
+    this.engine.activateSubmission(submissionId);
+    this.publishRun(runId);
+    this.scheduleQueuedDeliveries(binding.noteKey);
+    return true;
   }
 
   /**

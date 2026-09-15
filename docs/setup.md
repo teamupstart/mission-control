@@ -40,6 +40,13 @@ have no install or repair button: their **Pi extension** warning supplies a manu
 command, with durable-clone and desktop guidance. The warning disappears after a healthy
 **Re-check**. A machine that never installed Pi integration has no required Pi warning.
 
+When the UpstartClaw core plugin is installed, this family also keeps an **UpstartClaw core
+setup** row visible. A completed setup reads **Ready**; missing, unfinished, malformed, or
+unreadable setup state reads **Needs setup** and offers the interactive setup skill command.
+The row links to [Running Mission Control at Upstart](upstart.md), which includes the marketplace,
+plugin installation, sign-in, restart, daemon certificate, and verification steps. Machines
+without the plugin remain free of Upstart-specific setup chrome.
+
 The **Runtime** family checks the selected system **Node.js**, using the same minimum as the
 installer and update preflight (currently Node.js 24). It reports a missing or older runtime as
 **Needs setup**, and failed or unparseable version probes as **Unknown**. **Run in a terminal**

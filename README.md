@@ -292,7 +292,9 @@ There are two paths through this repository:
   ```
 
   Then open `http://127.0.0.1:5173`. See [First-run setup](docs/setup.md) and
-  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path.
+  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path. Upstart
+  operators should also follow [Running Mission Control at Upstart](docs/upstart.md) for the
+  UpstartClaw marketplace, plugin, sign-in, and daemon environment steps.
 
 Mission Control's app-owned headless calls can use either provider transport. Choose the stored
 setting in the app or use the environment variable as a process-level fallback:

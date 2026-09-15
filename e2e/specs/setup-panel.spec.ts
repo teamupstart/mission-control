@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
@@ -131,6 +132,74 @@ test("Setup warns when the installed GitHub CLI is older than the required minim
   writeGhProductScript(daemon.home, { preflight: "ok", issueCreate: "created" });
   await page.getByRole("button", { name: "Re-check" }).click();
   await expectRowStatus(page, "dependency-gh-cli", "Ready");
+});
+
+test("Setup keeps a completed UpstartClaw configuration visible", async ({ page, daemon }) => {
+  const plugins = join(daemon.home, ".claude", "plugins");
+  mkdirSync(join(plugins, "cache", "upstartclaw", "upstartclaw-core", "1.1.7"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(plugins, "installed_plugins.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: { "upstartclaw-core@upstartclaw": [{ scope: "user", version: "1.1.7" }] },
+    }),
+  );
+  writeFileSync(join(daemon.home, ".claude", "upstartclaw-core-setup"), "completed\n");
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "extensions");
+
+  const upstartclaw = setupRow(page, "environment-check-upstartclaw-core-setup");
+  await expect(upstartclaw).toContainText("UpstartClaw core setup");
+  await expectRowStatus(page, "environment-check-upstartclaw-core-setup", "Ready");
+  await expect(upstartclaw).toContainText("Core plugin setup completed");
+  await expect(
+    upstartclaw.getByRole("link", { name: "Open UpstartClaw setup guide" }),
+  ).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("upstartclaw-setup");
+    mkdirSync(evidence, { recursive: true });
+    await page.screenshot({ path: `${evidence}/ready.png`, fullPage: true });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/upstartclaw-setup/ready.png");
+  }
+});
+
+test("Setup keeps the UpstartClaw guide beside an incomplete setup remedy", async ({ page, daemon }) => {
+  const plugins = join(daemon.home, ".claude", "plugins");
+  mkdirSync(join(plugins, "cache", "upstartclaw", "upstartclaw-core", "1.1.7"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(plugins, "installed_plugins.json"),
+    JSON.stringify({
+      version: 2,
+      plugins: { "upstartclaw-core@upstartclaw": [{ scope: "user", version: "1.1.7" }] },
+    }),
+  );
+  writeFileSync(join(daemon.home, ".claude", "upstartclaw-core-setup"), "no_setup\n");
+
+  await page.goto(`${daemon.baseURL}/#/settings/setup`);
+  await openSetupFamily(page, "extensions");
+
+  const upstartclaw = setupRow(page, "environment-check-upstartclaw-core-setup");
+  await expectRowStatus(page, "environment-check-upstartclaw-core-setup", "Needs setup");
+  await expect(upstartclaw.getByText("/upstartclaw-core:setup", { exact: true })).toBeVisible();
+  await expect(upstartclaw.getByRole("button", { name: "Copy", exact: true })).toBeVisible();
+  const guide = upstartclaw.getByRole("link", { name: "Open UpstartClaw setup guide" });
+  await expect(guide).toBeVisible();
+
+  if (process.env.MC_E2E_EVIDENCE === "1") {
+    const evidence = artifactsDir("upstartclaw-setup");
+    mkdirSync(evidence, { recursive: true });
+    await guide.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${evidence}/needs-setup.png`, fullPage: true });
+    // eslint-disable-next-line no-console
+    console.log("CAPTURED e2e/.artifacts/upstartclaw-setup/needs-setup.png");
+  }
 });
 
 test.describe("login-shell binaries", () => {

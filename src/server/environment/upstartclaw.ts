@@ -273,7 +273,7 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
     // The cost of asking first is one small read on the common path. The cost of asking second
     // was a false positive, which is the expensive kind of wrong here: a note the operator
     // cannot act on is what teaches them to stop reading notes in this dialog.
-    if (!(await pluginInstalled(deps))) return { warning: null, detail: null };
+    if (!(await pluginInstalled(deps))) return { warning: null, detail: null, ready: false };
 
     const path = join(deps.homeDir, ...STATE_FILE);
     const state = await deps.readText(path);
@@ -281,12 +281,13 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
     if (state.ok) {
       const value = gateValue(state.text);
       const detail = describeState(path, value, state.truncated);
-      if (value === COMPLETED) return { warning: null, detail: null };
+      if (value === COMPLETED) return { warning: null, detail: null, ready: true };
       if (value === IN_PROGRESS) {
         return {
           warning:
             `${fix("Finish")} UpstartClaw requires its interactive sign-ins to finish before agents can reliably use its tools.`,
           detail: null,
+          ready: false,
         };
       }
       if (isNearMiss(value)) {
@@ -297,17 +298,18 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
         return {
           warning: `The setup state file holds ${JSON.stringify(value.trim())} wrapped in whitespace UpstartClaw's gate will not accept, since it matches the bare word and its shell strips only trailing newlines. The gate therefore refuses every core MCP call and an unattended dispatched agent stalls. Rewrite the file as the bare word, or re-run ${SETUP_COMMAND} in an interactive Claude Code session.`,
           detail,
+          ready: false,
         };
       }
       // `no_setup` is the ordinary first-run state. Keep its operator-facing note focused on
       // the action instead of exposing the state file implementation detail.
-      if (value === "no_setup") return { warning: blockedWarning(), detail: null };
+      if (value === "no_setup") return { warning: blockedWarning(), detail: null, ready: false };
 
       // Any other value - empty or something nobody expected - is the gate's `*` branch,
       // which exits 2. Reported as the blocked case rather than as an unknown state, because
       // that is what the machine will actually do. Its detail remains useful because setup
       // cannot produce these values normally.
-      return { warning: blockedWarning(), detail };
+      return { warning: blockedWarning(), detail, ready: false };
     }
 
     if (!state.missing) {
@@ -318,6 +320,7 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
       return {
         warning: `The setup state file cannot be read, so this machine cannot be shown to be set up - and UpstartClaw's own gate, reading the same file, will refuse core MCP calls. ${fix("Repair the file or re-run")}`,
         detail: `${path}: ${state.reason}`,
+        ready: false,
       };
     }
 
@@ -328,6 +331,7 @@ export const upstartclawSetupCheck: EnvironmentCheckImpl = {
     return {
       warning: blockedWarning(),
       detail: null,
+      ready: false,
     };
   },
 };

@@ -610,6 +610,15 @@ function SetupRow({
           <Remedy row={row} onRepaired={onRepaired} />
         </>
       )}
+      {row.guide && (
+        <div className="setup-guide">
+          <Tooltip label={row.guide.label}>
+            <a className="setup-link" href={row.guide.url} target="_blank" rel="noreferrer">
+              {row.guide.label}<span aria-hidden> ↗</span>
+            </a>
+          </Tooltip>
+        </div>
+      )}
     </div>
   );
   return (

@@ -586,8 +586,11 @@ const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTur
 // Named rather than positional. Every service below reaches its route domain by field name,
 // so adding one here cannot re-point another domain's dependency, and a misspelled field is
 // rejected by `buildApp` naming the offending key instead of arriving as a silent `undefined`.
-// The fields this omits - `handoffDeps`, `launchSessionTerminal`, `paneDeps`, `setupDeps`,
-// `setupInstallDeps` - are test seams whose production defaults live in `buildApp`.
+//
+// A `RouteDeps` field this omits is a seam with a production default, and the default is named
+// at that field's own declaration in `routes.ts` rather than listed here - an inventory kept in
+// this comment goes stale the next time a dependency is added, which is exactly how
+// `focusTerminals` came to be missing from it.
 const app = buildApp({
   registry,
   reviews,

@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
@@ -45,17 +45,14 @@ import {
   identityUpdateBlock,
   type InstallIdentity,
 } from "./install-identity.ts";
+import { decideStartup, runningBundlePath } from "./startup-handover.ts";
 
 app.setName("Mission Control");
 
 const appRoot = app.getAppPath();
 // Keep the identity of this running process if another installer replaces its path on disk.
 const runningCommit = appSourceCommit(appRoot);
-/**
- * The `.app` this process came out of: `<bundle>/Contents/Resources/app` in a packaged build,
- * and the checkout itself in development, where there is no bundle and nothing to classify.
- */
-const runningBundle = app.isPackaged ? dirname(dirname(dirname(appRoot))) : null;
+const runningBundle = runningBundlePath(appRoot, app.isPackaged);
 
 /**
  * Which installed Mission Control this process is, asked before anything else happens.
@@ -78,46 +75,31 @@ function currentIdentity(): InstallIdentity {
 }
 
 /**
- * Hand a launch of the retained system copy over to this account's personal installation.
+ * `open` against one bundle, which reveals an already-running instance rather than starting a
+ * second one - the behavior wanted when someone clicks a stale Dock entry for a live app.
  *
- * Deliberately ahead of `requestSingleInstanceLock()`. The old copy is a complete Mission
- * Control: if it took the lock first, the personal app it then opened would lose the lock,
- * quit, and hand the person back the very bundle they were being moved off - with the old
- * app's daemon already running against the shared state. Taking no lock at all is what makes
- * the hand-over a hand-over.
- *
- * `open` reveals an already-running instance rather than starting a second one, which is the
- * behavior wanted when someone clicks a stale Dock entry for an app that is already up. A
- * failure here is NOT fatal: this copy keeps running, with the updater off, and says why.
+ * The catalog's fixed absolute path, not a bare name: this runs before `app.whenReady()` and
+ * therefore before the locator snapshot exists, so there is no resolved PATH to search and
+ * nothing to select between.
  */
-function redirectToInstalledApp(target: string): boolean {
-  // The catalog's fixed absolute path, not a bare name: this runs before `app.whenReady()` and
-  // therefore before the locator snapshot exists, so there is no resolved PATH to search and
-  // nothing to select between.
+function openInstalledApp(target: string): { ok: boolean; detail: string | null } {
   const executable = FIXED_OS_EXECUTABLES.open;
   const result = spawnSync(executable, [target], { encoding: "utf8", timeout: 30_000 });
-  return !result.error && result.status === 0;
+  const detail = result.error?.message ?? (result.stderr || null);
+  return { ok: !result.error && result.status === 0, detail };
 }
 
-const identity = currentIdentity();
-/**
- * Whether this launch now belongs to another bundle. Nothing has been started yet - no lock,
- * no window, no daemon - so leaving is just leaving.
- */
-const handedOver = identity.state === "redirect" && redirectToInstalledApp(identity.target);
-if (handedOver) app.exit(0);
-
-// One app instance only; a second launch just reveals the running window (see the
-// "second-instance" handler). Quitting before `ready` fires means whenReady()
-// below never runs in the losing instance, so no second daemon is started.
-//
-// A hand-over takes the same road rather than trusting `app.exit` to have already ended this
-// process. Both cases want exactly the same thing - this process starting nothing - and the
-// losing-instance path is the one that is already known to deliver it. Asking for the lock at
-// all would be worse than pointless here: the app just opened would lose it, quit, and hand
-// the person straight back to the copy they were being moved off.
-const gotLock = handedOver ? false : app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
+// The one decision taken before anything is started: see `startup-handover.ts` for why a
+// hand-over asks for no lock at all, and why a failed one keeps running.
+const startup = decideStartup({
+  identity: currentIdentity,
+  open: openInstalledApp,
+  requestSingleInstanceLock: () => app.requestSingleInstanceLock(),
+  exit: (code) => app.exit(code),
+  quit: () => app.quit(),
+  log: (line) => console.error(line),
+});
+const gotLock = startup.proceed;
 const paths = {
   serverEntry: join(appRoot, "dist", "server", "index.mjs"),
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),

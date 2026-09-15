@@ -184,6 +184,13 @@ test("the detached updater carries its narrowly scoped bundle-swap support modul
     [
       "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
       "/Applications/Mission Control.app/Contents/Resources/scripts/app-bundle-swap.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/update-lock.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/install-migration.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/migration-runtime.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/scripts/install-destination.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/src/shared/install-receipt-schema.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/src/shared/update-source.mjs",
+      "/Applications/Mission Control.app/Contents/Resources/src/shared/staged-bundle.mjs",
     ],
   );
 });
@@ -1588,4 +1595,68 @@ test("cancelling says so, refuses a second build, and comes back only when the b
   await flush();
   assert.equal(started, 2);
   f.controller.stop();
+});
+
+test('migration deferral does not save policy, acceptance carries both paths, and system opt-out stays in place', async (t) => {
+  const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+  const plan = migrationPlanFixture(receipt);
+  let current = receipt;
+  let writes = 0;
+  const f = fixture({
+    installSnapshot: () => ({receipt: current, problem: null}),
+    migrationPlan: () => current.installScope ? null : plan,
+    migrationInventory: () => ({schema: 1, hooks: [], mcp: [], login: false}),
+    keepSystem: async () => {writes++; current = {...current, installScope: 'system'}; return current;},
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().migration?.target, plan.target);
+  f.controller.defer();
+  assert.equal(writes, 0);
+  assert.equal(f.handoffs.length, 0);
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.keepSystem(), true);
+  assert.equal(writes, 1);
+  assert.equal(f.handoffs[0]?.appPath, receipt.appPath);
+  assert.equal(f.handoffs[0]?.migration, undefined);
+});
+
+test('a failed system preference write cannot quit or relocate, and accepted migration carries its inventory', async (t) => {
+  const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+  const plan = migrationPlanFixture(receipt);
+  const f = fixture({migrationPlan: () => plan, keepSystem: async () => {throw new Error('receipt write failed');}, migrationInventory: () => ({login: false})});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.keepSystem(), false);
+  assert.equal(f.handoffs.length, 0);
+  assert.equal(f.events.includes('quit'), false);
+  const failed = f.controller.getSnapshot();
+  assert.equal(failed.phase, 'error');
+  if (failed.phase === 'error') assert.match(failed.message, /receipt write failed/);
+  await f.controller.check(true);
+  await f.controller.apply();
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.migration?.source, plan.source);
+  assert.equal(f.handoffs[0]?.migration?.target, plan.target);
+  assert.deepEqual(f.handoffs[0]?.migrationInventory, {login: false});
+});
+
+test('completed migration does not hide the next ordinary update offer or ready action', async (t) => {
+  const f = fixture({migrationStatus: () => ({source: '/Applications/Mission Control.app', target: '/Users/Fixture/Applications/Mission Control.app', status: 'complete', repairs: []})});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal(f.controller.getSnapshot().migration?.status, 'complete');
+  await f.controller.check(true);
+  assert.equal(f.controller.getSnapshot().phase, 'available');
+  assert.equal(f.controller.getSnapshot().migration, undefined);
+  await f.controller.apply();
+  assert.equal(f.controller.getSnapshot().phase, 'ready');
+  assert.equal(f.controller.getSnapshot().migration, undefined);
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.migration, undefined);
 });

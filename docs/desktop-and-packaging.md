@@ -60,7 +60,7 @@ destination needs no administrator password at any point.
 not a preference for the system folder.** That distinction is load-bearing: every update helper
 ever shipped forwards the receipt's own directory to the installer as `--apps-dir`, so reading
 that argument as system consent would quietly convert every pre-existing install into a
-deliberate one. Only `--scope system` records system consent.
+deliberate one. `--scope system` and the migration confirmation's **Keep system installation** action record system consent.
 
 The personal default and the administrator boundary are two different things and now live in two
 different modules. [`install-destination.mjs`](../scripts/install-destination.mjs) resolves and
@@ -503,3 +503,70 @@ and the failure signatures that are easy to misread.
 See [Configuration and commands](configuration.md) for operating the app. Packaging and
 build-surface rules are authoritative in the [Electron and build surfaces contract](agent-guides/change-contracts.md#electron-and-build-surfaces)
 and [process-boundary guide](agent-guides/architecture.md#process-boundaries).
+
+
+## Moving an existing system installation
+
+Automatic relocation is implemented behind packaged capability metadata, but remains disabled
+in this build pending the disposable-account macOS verification described below. Updates
+continue at their existing location. A fresh personal install already defaults to
+`~/Applications/Mission Control.app`.
+
+When automatic relocation is enabled, an eligible legacy managed `/Applications` installation
+shows both locations before restart. **Install and restart** accepts the update and move;
+**Later**, Escape, and the backdrop change no installation policy. **Keep system installation**
+records explicit system scope and continues in place. A failure to save that choice stops the
+update. Explicit system/custom installations, untrusted receipts, unsupported target builds,
+and an occupied personal destination do not relocate.
+
+Older running helpers install capable code in place first, even when skipping a release.
+The subsequent accepted update can move. The transition update may still need the existing
+system-folder authorization; relocation and later personal updates need no elevation.
+The same account's state home, database, tasks and sessions remain in place. The system app is
+retained for other accounts and already-running agents; it is never deleted or replaced with a
+home-directory symlink. Replace an old Dock shortcut with the personal app after completion.
+
+### Recovery and existing integrations
+
+Before the receipt commits, the target checks its packaged modules and native lock addon without
+starting a daemon or agents. A failure stops the verified attempt-owned process, removes only
+its owned target, and reopens the unchanged system app. Reopen the system app after an interrupted
+pre-commit attempt to run recovery. Invalid records stop startup with a recovery message.
+
+Receipt commitment is the recovery boundary. After that, open or reinstall the personal app;
+Mission Control will not automatically start an older system runtime against potentially upgraded
+state. A receipt renamed just before helper failure is recognized and completed forward. Stop an
+old standalone daemon if the personal app reports that it still owns the runtime port.
+
+**Personal installation committed; integrations need repair** means the bundle and receipt
+are already at the personal location. **Retry integration repair** retries unresolved surfaces
+without moving the app again. Only inventoried Mission-owned hook/MCP paths change. JSONC
+comments, unrelated hooks, custom runtimes, environment settings, disabled registrations and
+other MCP options are preserved. Custom configuration syntax and concurrent edits are left for
+manual attention. A custom CLI configuration home blocks automatic inventory so the CLI cannot
+read one file while migration changes another. MCP paths are read back through the configured
+harness adapter. Skills stay
+with the daemon's existing enabled/disabled configuration and reconciler; resolve reported
+conflicts in **Settings > Skills**. Login startup preserves its prior on/off setting and is
+reported as pending when the platform cannot verify it. Existing external sessions keep using
+the retained satellites until new sessions are started.
+
+### Transaction ownership and release verification
+
+`scripts/install-migration.mjs` owns the versioned, private `install-migration.json` journal.
+The detached helper holds `update-helper.lock.d` for preparation and the receipt commit.
+The target writes a separate nonce/PID/start-identity acknowledgment and waits. Startup recovery
+and post-start integration repair take the same lock after the helper releases it. Managed
+installers share that lock, including unchanged legacy helper invocations. Successful repair
+clears the private integration inventory; the next ordinary install retires the completed journal.
+
+The receipt-deferred path uses the existing bundle-swap primitive in a private sibling directory,
+then publishes its verified Contents into an exclusively reserved target. It does not add a
+public installer flag. All detached dependencies are listed in
+`scripts/update-helper-files.mjs`, copied with their relative layout, and checked by bundle smoke.
+
+The release gate is `missionInstallMigration.automatic: false` in `electron-builder.yml`.
+Change it only after the Phase 2 disposable-account/VM exercise proves real legacy bootstrap,
+personal launch, login on/off across restart, old Dock launch, pre-/post-commit interruption,
+integration retry, and later personal update/rollback. Fixture and Playwright results do not
+replace that exercise. This checkout has not completed that account/VM exercise.

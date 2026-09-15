@@ -14,6 +14,12 @@ copyright: Copyright © 2026 Jordan Mance
 
 asar: false
 
+# Automatic moves remain gated until the isolated packaged macOS exercise passes.
+extraMetadata:
+  missionInstallMigration:
+    protocol: 1
+    automatic: false
+
 directories:
   output: release
   buildResources: build
@@ -44,10 +50,17 @@ files:
   # from the repository under review, never from the install.
   - personas/FOREMAN.md
   # Copied to a temp directory before it outlives and replaces the app bundle.
-  # Keep these as unbundled plain files with asar disabled. The bundle-swap module is the
-  # detached helper's only sibling and owns the narrowly scoped macOS authorization prompt.
+  # Keep the detached helper and its dependency graph as plain files with asar disabled.
+  # The bundle-swap module owns the narrowly scoped in-place macOS authorization prompt.
   - scripts/apply-update.mjs
   - scripts/app-bundle-swap.mjs
+  - scripts/update-lock.mjs
+  - scripts/install-migration.mjs
+  - scripts/migration-runtime.mjs
+  - scripts/install-destination.mjs
+  - src/shared/install-receipt-schema.mjs
+  - src/shared/update-source.mjs
+  - src/shared/staged-bundle.mjs
   - LICENSE
   - NOTICE
   - package.json

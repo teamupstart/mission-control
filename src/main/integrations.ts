@@ -40,6 +40,34 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
 import { findSystemNode } from "./system-node.ts";
+import { BASE_URL, readClientToken } from "@shared/harness-runtime.mjs";
+import { type MigrationIntegrationPorts } from "./migration-integrations.ts";
+
+/** Uses existing executable, Electron login, and daemon skill owners. No SQLite in main. */
+export function migrationIntegrationPorts(): MigrationIntegrationPorts {
+  return {
+    home: homedir(),
+    environment: process.env,
+    command: (spec, args) => {
+      const executable = locateCommandSync(spec.cli);
+      if (!executable) throw new Error(`${spec.cli} is unavailable. Install it or repair its configured path, then retry.`);
+      try {
+        return execFileSync(executable.path, args, {encoding: "utf8", timeout: 15_000, maxBuffer: 256 * 1024, env: executable.env, stdio: ["ignore", "pipe", "pipe"]});
+      } catch { throw new Error(`${spec.cli} could not inspect its MCP registrations. Check the CLI configuration, then retry.`); }
+    },
+    login: () => app.getLoginItemSettings({path: process.execPath}),
+    setLogin: (openAtLogin) => app.setLoginItemSettings({openAtLogin, path: process.execPath}),
+    skills: async () => {
+      const response = await fetch(`${BASE_URL}/api/skills/config`, {
+        method: "PUT", headers: {"content-type": "application/json", "x-harness-token": readClientToken()},
+        body: "{}", signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error("The daemon could not reconcile existing skill settings. Open Settings > Skills, then retry.");
+      const view = await response.json() as {blocked?: unknown[]; problems?: unknown[]};
+      return [...(view.blocked ?? []), ...(view.problems ?? [])].map(String);
+    },
+  };
+}
 
 /**
  * The harness this installer wires. Named once, as a variable, because everything below

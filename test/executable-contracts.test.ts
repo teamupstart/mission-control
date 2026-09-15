@@ -54,6 +54,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
   ],
   "src/main/integrations.ts": [
+    { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "Migration MCP inspection uses the configured harness CLI and its resolved child environment." },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI registration" },
   ],

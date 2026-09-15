@@ -65,6 +65,7 @@
 // and checkout may rewrite this file on disk while its process is alive. Node loads the full
 // static module graph before execution; a later dynamic import would break that safety property.
 
+import { claimInstallReceiptWriter } from "./install-migration.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   accessSync,
@@ -820,6 +821,10 @@ function swapAndRecord({
 
 function installApp(options) {
   const { dryRun } = options;
+  if (!dryRun && !options.stageOnly) {
+    const release = claimInstallReceiptWriter(stateDir());
+    process.on("exit", release);
+  }
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
   // Which half of the run this is. A staged bundle already exists, so everything up to and
   // including the build has happened and only the swap and the receipt are left.

@@ -291,6 +291,8 @@ repository:
   To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
   updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
   release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
+  Fresh installs use `~/Applications`. Automatic moves of legacy system installations remain
+  disabled pending packaged macOS validation; see [migration and recovery](docs/desktop-and-packaging.md#moving-an-existing-system-installation).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh

@@ -1,8 +1,13 @@
+import { UPDATE_HELPER_FILES } from "../../scripts/update-helper-files.mjs";
+import { prepareMigration, keepSystemInstallation, readMigrationJournal, atomicMigrationJson, receiptDigest, type MigrationPlan } from "../../scripts/install-migration.mjs";
+import { processIdentity } from "../../scripts/update-lock.mjs";
+import { PORT } from "../shared/harness-runtime.mjs";
+import type { UpdateMigration } from "../shared/update.ts";
 import { execFile, spawn } from "node:child_process";
-import { closeSync, copyFileSync, openSync, rmSync, statSync } from "node:fs";
+import { closeSync, copyFileSync, openSync, rmSync, statSync, mkdirSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
@@ -73,7 +78,7 @@ export interface UpdateDialogs {
   /** A build is already running, with the stage it last reached. */
   preparing(version: string, stage: string): Promise<void>;
   /** Built, verified, and waiting: the only remaining question is whether to restart now. */
-  ready(version: string): Promise<"install" | "defer">;
+  ready(version: string, migration?: UpdateMigration): Promise<"install" | "defer" | "system">;
   applying(version: string): Promise<void>;
   error(message: string): Promise<void>;
   outcome(outcome: UpdateApplyOutcome): Promise<void>;
@@ -111,6 +116,8 @@ export interface HelperHandoff {
    * token travels so the last reader before the swap can refuse a bundle that changed.
    */
   stagedRevision: string | null;
+  migration?: MigrationPlan;
+  migrationInventory?: unknown;
 }
 
 /**
@@ -167,6 +174,11 @@ export interface UpdaterPort {
   stage(request: UpdateStageRequest): Promise<StageOutcome>;
   /** What is at a staged bundle's path now, so a caller can tell it is still the same build. */
   stagedBundleIdentity(path: string): StagedBundleIdentity;
+  migrationPlan?(receipt: InstallReceipt, bundle: string, revision: string): MigrationPlan | null;
+  migrationInventory?(plan: MigrationPlan): unknown;
+  keepSystem?(plan: MigrationPlan): Promise<InstallReceipt>;
+  migrationStatus?(): UpdateMigration | undefined;
+  repairMigration?(): Promise<void>;
   requestQuit(): void;
   readOutcome(): UpdateApplyOutcome | null;
   clearOutcome(): void;
@@ -398,15 +410,25 @@ export function sanitizeReleaseNotes(notes: string): string {
 }
 
 export function detachedUpdateHelperSources(helperSource: string): string[] {
-  return [helperSource, join(dirname(helperSource), "app-bundle-swap.mjs")];
+  const root = dirname(dirname(helperSource));
+  return UPDATE_HELPER_FILES.map((path) => join(root, path));
 }
 
 export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "mission-control-update-"));
   try {
-    const helper = join(directory, basename(args.helperSource));
+    const root = dirname(dirname(args.helperSource));
+    const helper = join(directory, relative(root, args.helperSource));
     for (const source of detachedUpdateHelperSources(args.helperSource)) {
-      copyFileSync(source, join(directory, basename(source)));
+      const target = join(directory, relative(root, source));
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(source, target);
+    }
+    const migrationFile = join(directory, "migration-plan.json");
+    if (args.migration) {
+      const identity = processIdentity(process.pid);
+      if (!identity) throw new Error("Could not identify the app before migration.");
+      atomicMigrationJson(migrationFile, {plan: args.migration, parent: {pid: process.pid, identity}, port: PORT, inventory: args.migrationInventory});
     }
     const logFd = openSync(args.logPath, "a", 0o600);
     try {
@@ -427,6 +449,7 @@ export async function spawnDetachedUpdateHelper(args: HelperHandoff): Promise<vo
             args.stateDirectory,
             "--log-path",
             args.logPath,
+            ...(args.migration ? ["--source-app", args.migration.source, "--target-app", args.migration.target, "--migration-plan", migrationFile] : []),
             ...(args.stagedBundle ? ["--staged-bundle", args.stagedBundle] : []),
             ...(args.stagedBundle && args.stagedRevision
               ? ["--staged-revision", args.stagedRevision]
@@ -498,6 +521,10 @@ export function updateIneligibility(snapshot: InstallSnapshot): string | null {
 }
 
 export class UpdateController {
+  private migration: MigrationPlan | null = null;
+  private systemPromise: Promise<boolean> | null = null;
+  private policyPending = false;
+  private repairPromise: Promise<void> | null = null;
   private alpha: boolean;
   private snapshot: UpdateSnapshot;
   private receipt: InstallReceipt | null = null;
@@ -543,7 +570,10 @@ export class UpdateController {
   }
 
   private publish(snapshot: UpdateSnapshot): UpdateSnapshot {
-    this.snapshot = { ...snapshot, alpha: this.alpha };
+    const status = this.port.migrationStatus?.();
+    const migration = status?.status === "repair-required" || (status?.status === "complete" && ["idle", "disabled"].includes(snapshot.phase))
+      ? status : snapshot.migration?.status === "offered" ? snapshot.migration : undefined;
+    this.snapshot = { ...snapshot, migration, alpha: this.alpha };
     for (const listener of this.listeners) listener(this.snapshot);
     return this.snapshot;
   }
@@ -658,6 +688,7 @@ export class UpdateController {
   }
 
   check(manual: boolean): Promise<UpdateSnapshot> {
+    if (this.snapshot.migration?.status === "repair-required") return Promise.resolve(this.snapshot);
     if (this.checkPromise) {
       if (manual) this.manualCheckRequested = true;
       return this.checkPromise;
@@ -865,6 +896,7 @@ export class UpdateController {
       releaseTag: offer.releaseTag,
       stagedAt: this.port.now(),
       lastOutcome,
+      ...(this.migration ? {migration: {source: this.migration.source, target: this.migration.target, status: "offered" as const, repairs: []}} : {}),
     });
 
     // Already built, still there, and still the same build. Reached by preparing an update,
@@ -874,6 +906,8 @@ export class UpdateController {
       this.staged?.releaseTag === offer.releaseTag &&
       this.stagedBundleIsIntact(this.staged)
     ) {
+      try { this.refreshMigration(); }
+      catch (error) { return this.reportFailure("migration preflight failed", offer, error); }
       this.publish(ready());
       return Promise.resolve(true);
     }
@@ -937,6 +971,7 @@ export class UpdateController {
             bundlePath: outcome.staged.bundlePath,
             revision: acceptance.revision,
           };
+          this.refreshMigration();
           this.publish(ready());
           return true;
         }
@@ -971,6 +1006,7 @@ export class UpdateController {
    * relaunches - seconds of work, against the minutes that used to happen here.
    */
   install(): Promise<boolean> {
+    if (this.policyPending) return Promise.resolve(false);
     if (this.installPromise) return this.installPromise;
     if (this.snapshot.phase !== "ready" || !this.receipt) return Promise.resolve(false);
     const target = this.snapshot;
@@ -1017,6 +1053,10 @@ export class UpdateController {
     }
     // The revision travels with the path. This app's check above is the last one it can make -
     // the swap happens after it has quit - so the install script gets what to compare against.
+    try {
+      if (this.migration && receiptDigest(this.receipt!) !== receiptDigest(this.migration.oldReceipt)) throw new Error("The installation policy changed after preparation. Check for updates again.");
+      this.refreshMigration();
+    } catch (error) { return this.reportFailure("migration preflight failed", target, error); }
     this.installPromise = this.handOff(target, staged.bundlePath, staged.revision).finally(() => {
       this.installPromise = null;
     });
@@ -1129,6 +1169,7 @@ export class UpdateController {
         logPath: join(this.port.stateDirectory(), "update.log"),
         stagedBundle,
         stagedRevision,
+        ...(this.migration ? {migration: this.migration, migrationInventory: this.port.migrationInventory?.(this.migration)} : {}),
       });
       this.publish({
         phase: "applying",
@@ -1163,7 +1204,7 @@ export class UpdateController {
     context: { currentVersion: string; lastOutcome: UpdateApplyOutcome | null },
     error: unknown,
   ): Promise<false> {
-    const safe = safeUpdateError(error);
+    const safe = safeUpdateError(what.includes("migration") || what.includes("preference") || what.includes("repair") ? new UpdateError(error instanceof Error ? error.message : String(error)) : error);
     // The real message goes to the log, where absolute paths and credentials are redacted;
     // the safe one goes to the person.
     this.port.log(`${what}: ${error instanceof Error ? error.message : String(error)}`);
@@ -1179,16 +1220,51 @@ export class UpdateController {
     return false;
   }
 
+  private refreshMigration(): void {
+    this.migration = this.receipt && this.staged?.revision
+      ? this.port.migrationPlan?.(this.receipt, this.staged.bundlePath, this.staged.revision) ?? null : null;
+  }
+
+  keepSystem(): Promise<boolean> {
+    if (this.systemPromise) return this.systemPromise;
+    if (this.installPromise || this.snapshot.phase !== "ready" || !this.migration || !this.port.keepSystem) return Promise.resolve(false);
+    const target = this.snapshot;
+    const plan = this.migration;
+    this.policyPending = true;
+    this.systemPromise = (async () => {
+      try {
+        this.receipt = await this.port.keepSystem!(plan);
+        this.migration = null;
+        this.publish({...target, migration: undefined});
+        this.policyPending = false;
+        return await this.install();
+      } catch (error) { return this.reportFailure("system installation preference failed", target, error); }
+      finally { this.policyPending = false; }
+    })().finally(() => { this.systemPromise = null; });
+    return this.systemPromise;
+  }
+
+  retryMigrationRepair(): Promise<void> {
+    if (this.repairPromise) return this.repairPromise;
+    this.repairPromise = (async () => {
+      try { await this.port.repairMigration?.(); }
+      catch (error) { await this.reportFailure("integration repair failed", {currentVersion: this.currentLabel(), lastOutcome: this.snapshot.lastOutcome}, error); }
+      this.publish(this.snapshot);
+    })().finally(() => { this.repairPromise = null; });
+    return this.repairPromise;
+  }
+
   /** The native half of the ready state: ask for the restart, then do it. */
   private async confirmReady(version: string): Promise<void> {
-    let choice: "install" | "defer";
+    let choice: "install" | "defer" | "system";
     this.releaseDecisionPending = true;
     try {
-      choice = await this.port.dialogs.ready(version);
+      choice = await this.port.dialogs.ready(version, this.snapshot.migration);
     } finally {
       this.releaseDecisionPending = false;
     }
     if (choice === "install") await this.install();
+    else if (choice === "system") await this.keepSystem();
     else this.defer();
   }
 
@@ -1223,10 +1299,21 @@ export function createDefaultUpdaterPort(options: {
   stateDirectory: string;
   requestQuit: () => void;
   dialogs: UpdateDialogs;
+  migrationInventory?: (plan: MigrationPlan) => unknown;
+  repairMigration?: () => Promise<void>;
 }): UpdaterPort {
   const logPath = join(options.stateDirectory, "update.log");
   const log = createRotatingUpdateLogger(logPath);
   return {
+    migrationPlan: (receipt, stagedBundle, stagedRevision) => prepareMigration({receipt, stagedBundle, stagedRevision, stateDirectory: options.stateDirectory}),
+    migrationInventory: options.migrationInventory,
+    keepSystem: keepSystemInstallation,
+    repairMigration: options.repairMigration,
+    migrationStatus: () => {
+      const journal = readMigrationJournal(options.stateDirectory);
+      if (!journal || !["receipt-committed", "repair-required", "complete"].includes(journal.stage)) return undefined;
+      return {source: journal.plan.source, target: journal.plan.target, status: journal.stage === "complete" ? "complete" : "repair-required", repairs: journal.repairs.filter((item) => item.status === "pending")};
+    },
     packaged: options.packaged,
     arch: options.arch ?? process.arch,
     currentVersion: options.currentVersion,

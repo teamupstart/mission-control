@@ -1,8 +1,9 @@
+import { detachedUpdateHelperSources } from "../src/main/updater.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, relative } from "node:path";
 import test from "node:test";
 import {
   acquireHelperLock,
@@ -389,13 +390,13 @@ test("a failed install surfaces the decisive child-process tail", async (t) => {
 test("the copied helper recognizes an aliased direct-execution path", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mission-apply-alias-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const realHelper = join(root, "apply-update.mjs");
+  const realHelper = join(root, "scripts/apply-update.mjs");
   const aliasHelper = join(root, "helper-alias.mjs");
-  await writeFile(realHelper, await readFile(join(process.cwd(), "scripts", "apply-update.mjs")));
-  await writeFile(
-    join(root, "app-bundle-swap.mjs"),
-    await readFile(join(process.cwd(), "scripts", "app-bundle-swap.mjs")),
-  );
+  for (const source of detachedUpdateHelperSources(join(process.cwd(), "scripts/apply-update.mjs"))) {
+    const target = join(root, relative(process.cwd(), source));
+    await mkdir(dirname(target), {recursive: true});
+    await writeFile(target, await readFile(source));
+  }
   await symlink(realHelper, aliasHelper);
 
   const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
@@ -1170,4 +1171,12 @@ test("a staged install is bounded in minutes and forwards the bundle to the inst
     /the install did not finish within .* minutes and was stopped/,
   );
   assert.equal(STAGED_INSTALL_TIMEOUT_MS, 10 * 60 * 1000);
+});
+
+test('migration helper argv rejects incomplete tuples and duplicate arguments without changing old argv', () => {
+  const base = ['--source-clone', '/source', '--target-tag', 'v1.2.4', '--app-path', '/Applications/Mission Control.app', '--parent-pid', '42', '--state-dir', '/state', '--log-path', '/state/update.log'];
+  assert.equal(parseArgs(base).problem, null);
+  assert.match(parseArgs([...base, '--source-app', '/Applications/Mission Control.app']).problem!, /complete/);
+  assert.match(parseArgs([...base, '--app-path', '/other']).problem!, /invalid/);
+  assert.equal(parseArgs([...base, '--source-app', '/Applications/Mission Control.app', '--target-app', '/Users/Fixture/Applications/Mission Control.app', '--migration-plan', '/private/plan.json', '--staged-bundle', '/build/app', '--staged-revision', 'pinned']).problem, null);
 });

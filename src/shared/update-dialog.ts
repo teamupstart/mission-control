@@ -17,8 +17,8 @@
 // Browser-safe by construction: no `node:` imports, so the renderer and the Electron main
 // process read one owner rather than two copies.
 
-import { UPDATE_COPY } from "./update-copy.ts";
-import type { UpdateApplyOutcome } from "./update.ts";
+import { UPDATE_COPY, migrationReadyDetail } from "./update-copy.ts";
+import type { UpdateApplyOutcome, UpdateMigration } from "./update.ts";
 
 /** Which conversation this is. Carried on the wire so a surface can style or find one. */
 export const UPDATE_DIALOG_KINDS = [
@@ -40,7 +40,7 @@ export type UpdateDialogKind = (typeof UPDATE_DIALOG_KINDS)[number];
  * not the modal's, and keeping them out of the wire means the dashboard renders any of the
  * seven without a per-kind branch. `main/index.ts` translates at the seam it owns.
  */
-export type UpdateDialogChoice = "confirm" | "dismiss";
+export type UpdateDialogChoice = "confirm" | "dismiss" | "system";
 
 /** Info, a finished update, or a failure. Drives the accent, never the words. */
 export type UpdateDialogTone = "info" | "success" | "error";
@@ -125,19 +125,20 @@ export const UPDATE_DIALOGS = {
       actions: acknowledge("Close this notice and watch the progress in the dashboard"),
     };
   },
-  ready(version: string): UpdateDialogContent {
+  ready(version: string, migration?: UpdateMigration): UpdateDialogContent {
     return {
       kind: "ready",
       tone: "success",
       title: UPDATE_COPY.ready.title(version),
-      detail: UPDATE_COPY.ready.detail,
+      detail: migration ? migrationReadyDetail(migration.source, migration.target) : UPDATE_COPY.ready.detail,
       actions: [
         {
           choice: "confirm",
-          label: "Restart and Install",
+          label: migration ? "Install and restart" : "Restart and Install",
           hint: `Restart into Mission Control ${version}`,
           tone: "primary",
         },
+        ...(migration ? [{choice: "system" as const, label: "Keep system installation", hint: "Keep installing updates in the shared system folder", tone: "ghost" as const}] : []),
         {
           choice: "dismiss",
           label: "Later",
@@ -207,7 +208,7 @@ export function isUpdateDialogRequest(value: unknown): value is UpdateDialogRequ
       (action) =>
         typeof action?.label === "string" &&
         typeof action?.hint === "string" &&
-        (action?.choice === "confirm" || action?.choice === "dismiss") &&
+        (action?.choice === "confirm" || action?.choice === "dismiss" || action?.choice === "system") &&
         (action?.tone === "primary" || action?.tone === "ghost"),
     )
   );

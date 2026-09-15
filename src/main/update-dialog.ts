@@ -100,9 +100,10 @@ export class UpdateDialogPresenter {
   /** An answer came back from the dashboard. Unknown ids are ignored, not guessed at. */
   answer(id: unknown, choice: unknown): void {
     if (typeof id !== "string") return;
-    if (choice !== "confirm" && choice !== "dismiss") return;
+    if (choice !== "confirm" && choice !== "dismiss" && choice !== "system") return;
     const entry = this.pending.get(id);
     if (!entry) return;
+    if (!entry.content.actions.some((action) => action.choice === choice)) return;
     this.pending.delete(id);
     entry.settle(choice);
   }

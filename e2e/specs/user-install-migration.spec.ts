@@ -32,7 +32,7 @@ async function bridge(page: Page): Promise<void> {
         onDialog: (listener: (request: UpdateDialogRequest) => void) => {dialogs.add(listener); return () => dialogs.delete(listener);},
         answerDialog: (_id: string, choice: string) => answers.push(choice),
         install: async () => {actions.push('install'); return true;},
-        keepSystem: async () => {actions.push('system'); push({phase: 'error', currentVersion: '1.17.0', message: 'The installation policy could not be saved. Nothing was moved.', manual: true, retryable: true, lastOutcome: null}); return false;},
+        keepSystem: async () => {actions.push('system'); push({phase: 'error', currentVersion: '1.17.0', message: 'The installation change could not finish. Check the update log and try again.', manual: true, retryable: true, lastOutcome: null}); return false;},
         defer: async () => {actions.push('later'); push({phase: 'idle', currentVersion: '1.17.0', lastCheckedAt: null, lastOutcome: null});},
         repairMigration: async () => {actions.push('repair'); push({phase: 'idle', currentVersion: '1.17.1', lastCheckedAt: null, lastOutcome: null, migration: {...initial.migration!, status: 'complete', repairs: []}});},
       },
@@ -65,8 +65,8 @@ test('migration names both paths, preserves Later, sends explicit acceptance, an
   await expect(dashboard.locator('.tooltip')).toHaveText('Keep installing updates in the shared system folder');
   await capture(dashboard, 'system-choice-tooltip.png');
   await banner.getByRole('button', {name: 'Keep system installation', exact: true}).click();
-  await expect(banner).toContainText('policy could not be saved');
-  await expect(banner).toContainText('Nothing was moved');
+  await expect(banner).toContainText('The installation change could not finish. Check the update log and try again.');
+  await capture(dashboard, 'safe-error-banner.png');
   const browser = await context.newPage();
   await browser.goto(daemon.baseURL);
   await expect(browser.getByRole('button', {name: 'Keep system installation'})).toHaveCount(0);

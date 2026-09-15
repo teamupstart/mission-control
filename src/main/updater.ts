@@ -1204,7 +1204,11 @@ export class UpdateController {
     context: { currentVersion: string; lastOutcome: UpdateApplyOutcome | null },
     error: unknown,
   ): Promise<false> {
-    const safe = safeUpdateError(what.includes("migration") || what.includes("preference") || what.includes("repair") ? new UpdateError(error instanceof Error ? error.message : String(error)) : error);
+    const safe = safeUpdateError(
+      what.includes("migration") || what.includes("preference") || what.includes("repair")
+        ? new UpdateError("The installation change could not finish. Check the update log and try again.")
+        : error,
+    );
     // The real message goes to the log, where absolute paths and credentials are redacted;
     // the safe one goes to the person.
     this.port.log(`${what}: ${error instanceof Error ? error.message : String(error)}`);

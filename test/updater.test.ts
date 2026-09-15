@@ -1627,7 +1627,8 @@ test('migration deferral does not save policy, acceptance carries both paths, an
 test('a failed system preference write cannot quit or relocate, and accepted migration carries its inventory', async (t) => {
   const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
   const plan = migrationPlanFixture(receipt);
-  const f = fixture({migrationPlan: () => plan, keepSystem: async () => {throw new Error('receipt write failed');}, migrationInventory: () => ({login: false})});
+  const failure = 'receipt write failed at /Users/Private/.mission-control token=private-fixture-secret';
+  const f = fixture({migrationPlan: () => plan, keepSystem: async () => {throw new Error(failure);}, migrationInventory: () => ({login: false})});
   t.after(() => f.controller.stop());
   await f.controller.start();
   await f.controller.check(true);
@@ -1637,7 +1638,10 @@ test('a failed system preference write cannot quit or relocate, and accepted mig
   assert.equal(f.events.includes('quit'), false);
   const failed = f.controller.getSnapshot();
   assert.equal(failed.phase, 'error');
-  if (failed.phase === 'error') assert.match(failed.message, /receipt write failed/);
+  const safeMessage = 'The installation change could not finish. Check the update log and try again.';
+  if (failed.phase === 'error') assert.equal(failed.message, safeMessage);
+  assert.deepEqual(f.events.filter((event) => event.startsWith('error-dialog:')), [`error-dialog:${safeMessage}`]);
+  assert.ok(f.events.includes(`log:system installation preference failed: ${failure}`));
   await f.controller.check(true);
   await f.controller.apply();
   assert.equal(await f.controller.install(), true);
@@ -1645,6 +1649,37 @@ test('a failed system preference write cannot quit or relocate, and accepted mig
   assert.equal(f.handoffs[0]?.migration?.target, plan.target);
   assert.deepEqual(f.handoffs[0]?.migrationInventory, {login: false});
 });
+
+for (const operation of ['migration preflight', 'integration repair'] as const) {
+  test(`${operation} keeps raw failure details out of the snapshot and dialog`, async (t) => {
+    const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+    const failure = 'cannot read /Users/Private/.config/agent.json token=private-fixture-secret';
+    const f = fixture({migrationPlan: () => migrationPlanFixture(receipt)});
+    t.after(() => f.controller.stop());
+    await f.controller.start();
+    if (operation === 'migration preflight') {
+      await f.controller.check(true);
+      await f.controller.apply();
+      f.port.migrationPlan = () => {throw new Error(failure);};
+      assert.equal(await f.controller.install(), false);
+    } else {
+      // Non-Error rejections must cross the same safe boundary.
+      f.port.repairMigration = async () => {throw failure;};
+      await f.controller.retryMigrationRepair();
+    }
+    const snapshot = f.controller.getSnapshot();
+    assert.equal(snapshot.phase, 'error');
+    const safeMessage = 'The installation change could not finish. Check the update log and try again.';
+    if (snapshot.phase === 'error') {
+      assert.equal(snapshot.message, safeMessage);
+      assert.equal(snapshot.retryable, true);
+    }
+    assert.deepEqual(f.events.filter((event) => event.startsWith('error-dialog:')), [`error-dialog:${safeMessage}`]);
+    assert.ok(f.events.includes(`log:${operation} failed: ${failure}`));
+    assert.equal(f.handoffs.length, 0);
+    assert.equal(f.events.includes('quit'), false);
+  });
+}
 
 test('Later cannot dismiss an accepted system choice while its receipt write is pending', async (t) => {
   const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');

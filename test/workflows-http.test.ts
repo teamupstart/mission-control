@@ -90,8 +90,13 @@ test("HTTP recovery capabilities track accepted retries, grants and cancellation
     context: {}, evidence: {}, now: 2,
   });
   store.insertAttempt({
-    id: "recovery-attempt", submissionId: "recovery-submission", nodeId: "judge",
+    id: "superseded-error", submissionId: "recovery-submission", nodeId: "judge",
     attempt: 1, state: "error", persona: null, inputFingerprint: "recovery-fingerprint",
+    error: "earlier provider failure", now: 2,
+  });
+  store.insertAttempt({
+    id: "recovery-attempt", submissionId: "recovery-submission", nodeId: "judge",
+    attempt: 2, state: "error", persona: null, inputFingerprint: "recovery-fingerprint",
     error: "provider unavailable", now: 3,
   });
   // A later historical error on another node must not hide the live retry target.
@@ -112,6 +117,14 @@ test("HTTP recovery capabilities track accepted retries, grants and cancellation
   assert.deepEqual(page.items[0]!.recovery, detail.summary.recovery);
   const exported = await (await request("/api/workflow-runs/recovery-run/export")).json() as { data: WorkflowRunDetail };
   assert.deepEqual(exported.data.run.recovery, detail.summary.recovery);
+  for (const nodeAttemptId of ["resolved-error", "superseded-error"]) {
+    const staleRetry = await request("/api/workflow-runs/recovery-run/retry", {
+      method: "POST", body: JSON.stringify({ requestId: `retry-${nodeAttemptId}`, nodeAttemptId }),
+    });
+    assert.equal(staleRetry.status, 409, `historical attempt ${nodeAttemptId} must not authorize a retry`);
+    assert.equal(store.listAttempts("recovery-submission").length, 4);
+    assert.deepEqual((await read()).summary.recovery, detail.summary.recovery);
+  }
   const retry = await request("/api/workflow-runs/recovery-run/retry", {
     method: "POST", body: JSON.stringify({ requestId: "retry-recovery" }),
   });

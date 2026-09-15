@@ -5036,6 +5036,7 @@ export class WorkflowStore {
             "completion_policy_json", row.recovery_completion_policy, WorkflowCompletionPolicySchema);
         } catch (error) {
           // Keep the run inspectable even when its pinned policy cannot authorize recovery.
+          recoveryPolicy = null;
           diagnose(error);
         }
       }

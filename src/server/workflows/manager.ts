@@ -2472,9 +2472,10 @@ export class WorkflowManager {
       const prior = latestAttempts.get(attempt.nodeId);
       if (!prior || attempt.attempt > prior.attempt) latestAttempts.set(attempt.nodeId, attempt);
     }
+    const currentAttempts = [...latestAttempts.values()];
     const failed = input.nodeAttemptId
-      ? attempts.find((attempt) => attempt.id === input.nodeAttemptId)
-      : [...latestAttempts.values()].reverse().find((attempt) => attempt.state === "error");
+      ? currentAttempts.find((attempt) => attempt.id === input.nodeAttemptId)
+      : currentAttempts.reverse().find((attempt) => attempt.state === "error");
     if (
       !failed || !infrastructureRecoveryAvailable(
         { status: run.status, phase: run.currentPhase }, submission, failed.state === "error",

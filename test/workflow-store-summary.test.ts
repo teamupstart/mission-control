@@ -26,6 +26,7 @@ process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
+const { BUILTIN_WORKFLOWS } = await import("../src/server/workflows/builtin-workflows.ts");
 
 const db = openDb();
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -58,10 +59,10 @@ function seedVersion(): void {
   ).run(JSON.stringify(GRAPH), DEFAULTS);
 }
 
-function seedRun(store: InstanceType<typeof WorkflowStore>, sessionName: string) {
+function seedRun(store: InstanceType<typeof WorkflowStore>, sessionName: string, workflowVersionId = "v") {
   const binding = store.insertBinding({
     id: "b",
-    workflowVersionId: "v",
+    workflowVersionId,
     noteKey: "claude:9f1c-4d2a-8e77",
     sessionId: "session",
     sessionAgent: "claude",
@@ -141,6 +142,23 @@ test("a malformed pinned policy keeps the run inspectable without offering recov
   store.setRunState("run", "waiting_for_session", "reattached_resubmit_required", null, 4);
   assert.equal(store.runSummary("run")?.recovery?.primary, "resubmit");
   db.prepare("UPDATE workflow_versions SET completion_policy_json = '{broken' WHERE id = 'v'").run();
+  const summary = store.runSummary("run");
+  assert.ok(summary);
+  assert.deepEqual(summary.recovery?.operations, ["cancel"]);
+  assert.equal(summary.recovery?.primary, null);
+});
+
+test("a malformed pinned policy cannot fall back to a matching built-in policy", () => {
+  clearWorkflowTables(db);
+  seedVersion();
+  const versionId = BUILTIN_WORKFLOWS[0]!.versions[0]!.id;
+  // A damaged durable row can shadow a catalog version while its definition is missing.
+  db.prepare("UPDATE workflow_versions SET id = ?, workflow_id = 'missing' WHERE id = 'v'").run(versionId);
+  const store = new WorkflowStore(db);
+  seedRun(store, "Unreadable built-in policy", versionId);
+  store.setRunState("run", "waiting_for_session", "reattached_resubmit_required", null, 4);
+  assert.equal(store.runSummary("run")?.recovery?.primary, "resubmit");
+  db.prepare("UPDATE workflow_versions SET completion_policy_json = '{broken' WHERE id = ?").run(versionId);
   const summary = store.runSummary("run");
   assert.ok(summary);
   assert.deepEqual(summary.recovery?.operations, ["cancel"]);

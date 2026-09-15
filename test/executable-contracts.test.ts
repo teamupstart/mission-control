@@ -34,6 +34,7 @@ interface ChildProcessBoundary {
   contract:
     | "bootstrap-login-shell"
     | "current-runtime"
+    | "fixed-os-utility"
     | "locator-result"
     | "operator-command"
     | "resolved-path-parameter"
@@ -48,6 +49,9 @@ interface ChildProcessBoundary {
 const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBoundary[]>> = {
   "src/pi/mcp-client.ts": [
     { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
+  ],
+  "src/main/index.ts": [
+    { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
   ],
   "src/main/integrations.ts": [
     { operation: "execFileSync", command: "executable.path", contract: "locator-result", reason: "resolved integration CLI removal" },
@@ -245,6 +249,11 @@ function validBoundaryCommand(boundary: ChildProcessBoundary): boolean {
       return boundary.command === "shell";
     case "current-runtime":
       return ["args.node", "descriptor.command", "request.node", "process.execPath"].includes(boundary.command);
+    // A path the catalog pins rather than finds. It is still read out of `FIXED_OS_EXECUTABLES`
+    // into a variable, so a literal never reaches the call and the declaration above names the
+    // one reason a fixed utility is invoked directly.
+    case "fixed-os-utility":
+      return boundary.command === "executable";
     case "locator-result":
       return boundary.command === "executable.path" || boundary.command === "resolved";
     case "operator-command":

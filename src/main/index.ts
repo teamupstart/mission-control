@@ -7,8 +7,11 @@
 // open. The daemon and UI are reused unchanged.
 
 import { app, dialog, ipcMain, session, shell } from "electron";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
@@ -33,20 +36,88 @@ import type { UpdateSnapshot } from "../shared/update.ts";
 import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
 import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
 import { UpdateDialogPresenter } from "./update-dialog.ts";
+import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
-import { appSourceCommit } from "./bundle-version.ts";
+import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
+import { readReceipt } from "../shared/install-receipt.mjs";
+import {
+  classifyInstallIdentity,
+  identityUpdateBlock,
+  type InstallIdentity,
+} from "./install-identity.ts";
 
 app.setName("Mission Control");
-
-// One app instance only; a second launch just reveals the running window (see the
-// "second-instance" handler). Quitting before `ready` fires means whenReady()
-// below never runs in the losing instance, so no second daemon is started.
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
 
 const appRoot = app.getAppPath();
 // Keep the identity of this running process if another installer replaces its path on disk.
 const runningCommit = appSourceCommit(appRoot);
+/**
+ * The `.app` this process came out of: `<bundle>/Contents/Resources/app` in a packaged build,
+ * and the checkout itself in development, where there is no bundle and nothing to classify.
+ */
+const runningBundle = app.isPackaged ? dirname(dirname(dirname(appRoot))) : null;
+
+/**
+ * Which installed Mission Control this process is, asked before anything else happens.
+ *
+ * Re-read rather than cached, because every caller after the first wants the answer as it is
+ * NOW: the receipt is a file another install can rewrite while this app is open, and the
+ * updater checks again before it hands a bundle to the helper.
+ */
+function currentIdentity(): InstallIdentity {
+  if (!runningBundle) return { state: "unmanaged" };
+  return classifyInstallIdentity({
+    runningBundle,
+    runningCommit,
+    receipt: readReceipt(),
+    home: homedir(),
+    exists: existsSync,
+    bundleCommit: (path) => appSourceCommit(join(path, "Contents", "Resources", "app")),
+    bundleVersion: bundleShortVersion,
+  });
+}
+
+/**
+ * Hand a launch of the retained system copy over to this account's personal installation.
+ *
+ * Deliberately ahead of `requestSingleInstanceLock()`. The old copy is a complete Mission
+ * Control: if it took the lock first, the personal app it then opened would lose the lock,
+ * quit, and hand the person back the very bundle they were being moved off - with the old
+ * app's daemon already running against the shared state. Taking no lock at all is what makes
+ * the hand-over a hand-over.
+ *
+ * `open` reveals an already-running instance rather than starting a second one, which is the
+ * behavior wanted when someone clicks a stale Dock entry for an app that is already up. A
+ * failure here is NOT fatal: this copy keeps running, with the updater off, and says why.
+ */
+function redirectToInstalledApp(target: string): boolean {
+  // The catalog's fixed absolute path, not a bare name: this runs before `app.whenReady()` and
+  // therefore before the locator snapshot exists, so there is no resolved PATH to search and
+  // nothing to select between.
+  const executable = FIXED_OS_EXECUTABLES.open;
+  const result = spawnSync(executable, [target], { encoding: "utf8", timeout: 30_000 });
+  return !result.error && result.status === 0;
+}
+
+const identity = currentIdentity();
+/**
+ * Whether this launch now belongs to another bundle. Nothing has been started yet - no lock,
+ * no window, no daemon - so leaving is just leaving.
+ */
+const handedOver = identity.state === "redirect" && redirectToInstalledApp(identity.target);
+if (handedOver) app.exit(0);
+
+// One app instance only; a second launch just reveals the running window (see the
+// "second-instance" handler). Quitting before `ready` fires means whenReady()
+// below never runs in the losing instance, so no second daemon is started.
+//
+// A hand-over takes the same road rather than trusting `app.exit` to have already ended this
+// process. Both cases want exactly the same thing - this process starting nothing - and the
+// losing-instance path is the one that is already known to deliver it. Asking for the lock at
+// all would be worse than pointless here: the app just opened would lose it, quit, and hand
+// the person straight back to the copy they were being moved off.
+const gotLock = handedOver ? false : app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
 const paths = {
   serverEntry: join(appRoot, "dist", "server", "index.mjs"),
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
@@ -270,6 +341,7 @@ app.whenReady().then(async () => {
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
       currentCommit: () => runningCommit,
+      identityProblem: () => identityUpdateBlock(currentIdentity()),
       helperSource: join(appRoot, "scripts", "apply-update.mjs"),
       stateDirectory: stateDir(),
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),

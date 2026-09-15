@@ -18,6 +18,7 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => null,
+    identityProblem: () => null,
     readAlpha: () => false,
     writeAlpha: () => {},
     latestMainCommit: async () => { throw new Error("Stable mode must not query main"); },

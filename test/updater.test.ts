@@ -217,6 +217,7 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => null,
+    identityProblem: () => null,
     readAlpha: () => false,
     writeAlpha: () => {},
     latestMainCommit: async () => ({ sha: "b".repeat(40), message: "New main commit", committedAt: "2026-08-19T13:00:00.000Z" }),
@@ -311,6 +312,13 @@ test("ineligible installations disable before any release query", async () => {
     [{ arch: "x64" }, /Apple silicon/],
     [{ readReceipt: () => null }, /managed install/],
     [{ readReceipt: () => ({ ...receipt, repo: "someone/fork" }) }, /someone\/fork/],
+    // A running bundle that is not the one the receipt describes. Personal installs make two
+    // Mission Controls on one Mac ordinary, and the only bundle this app could update is not
+    // itself - so it stands down rather than swapping somebody else's app.
+    [
+      { identityProblem: () => "Updates are disabled because this copy of Mission Control is at /Applications/Mission Control.app." },
+      /this copy of Mission Control is at/,
+    ],
   ];
   for (const [over, reason] of cases) {
     let queries = 0;
@@ -321,6 +329,27 @@ test("ineligible installations disable before any release query", async () => {
     assert.equal(queries, 0);
     f.controller.stop();
   }
+});
+
+test("a receipt that stops describing this app stops the install that was already prepared", async () => {
+  // Startup is not the last word. An update can sit ready for hours, and the helper it hands
+  // off to swaps whatever the receipt names - so another install rewriting that receipt in
+  // between would otherwise send this app off to replace a bundle it is not.
+  let problem: string | null = null;
+  const f = fixture({ identityProblem: () => problem });
+  await f.controller.start();
+  await f.controller.check(false);
+  assert.equal((await f.controller.apply()), true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+
+  problem = "Updates are disabled because the managed installation is at /Users/someone/Applications/Mission Control.app.";
+  assert.equal(await f.controller.install(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  assert.match((snapshot as { message: string }).message, /managed installation is at/);
+  // Nothing was handed to a helper, which is the whole point: no bundle was swapped anywhere.
+  assert.deepEqual(f.handoffs, []);
+  f.controller.stop();
 });
 
 test("Node preflight prevents incompatible build attempts", async () => {

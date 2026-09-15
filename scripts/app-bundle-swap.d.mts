@@ -16,7 +16,7 @@ export interface SwapAttempt {
 }
 
 export const APP_BUNDLE_NAME: string;
-export const DEFAULT_APPS_DIR: string;
+export const SYSTEM_APPS_DIR: string;
 export const ADMINISTRATOR_AUTHORIZATION_PROMPT: string;
 export const RESTORE_AUTHORIZATION_PROMPT: string;
 export const PRIVILEGED_SWAP_APPLESCRIPT: string;

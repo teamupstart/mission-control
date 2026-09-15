@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   CANONICAL_REPO,
   INSTALL_RECEIPT_SCHEMA,
+  INSTALL_SCOPES,
   validateReceipt,
 } from "../src/shared/install-receipt-schema.mjs";
 import { readReceipt, receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
@@ -99,6 +100,34 @@ test("a rejected write leaves the previous receipt and no temp file behind", () 
 
   assert.equal(readFileSync(path, "utf8"), before);
   assert.deepEqual(readdirSync(home), ["install-receipt.json"]);
+});
+
+test("the recorded install scope is optional, additive, and absent on every legacy receipt", () => {
+  // Additive under schema 1 rather than a new schema number: a receipt without the field must
+  // stay readable by this build and by every build after it.
+  assert.deepEqual([...INSTALL_SCOPES], ["user", "system", "custom"]);
+  for (const installScope of INSTALL_SCOPES) {
+    assert.equal(validateReceipt(receipt({ installScope })), null);
+  }
+  assert.equal(validateReceipt(receipt()), null);
+  assert.equal(Object.hasOwn(receipt(), "installScope"), false);
+  assert.match(
+    String(validateReceipt(receipt({ installScope: "everyone" }))),
+    /installScope is not one of user, system, custom/,
+  );
+  assert.match(String(validateReceipt(receipt({ installScope: 1 }))), /installScope/);
+});
+
+test("a recorded install scope survives a write and the read that follows it", () => {
+  const path = join(stateHome(), "install-receipt.json");
+  const written = receipt({ installScope: "user" });
+  writeReceipt(written as never, path);
+  assert.deepEqual(readReceipt(path), written);
+  // And the absence of one survives too: nothing may invent a scope for a legacy install,
+  // because absence is what keeps it eligible to be moved later.
+  const legacy = join(stateHome(), "install-receipt.json");
+  writeReceipt(receipt() as never, legacy);
+  assert.equal(readReceipt(legacy)?.installScope, undefined);
 });
 
 test("the trusted repository slug is exported once, from the browser-safe module", () => {

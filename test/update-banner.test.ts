@@ -58,6 +58,14 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     stage: "starting",
     lastOutcome: null,
   });
+  const ready = render({
+    phase: "ready",
+    currentVersion: "0.1.0",
+    newVersion: "0.2.0",
+    releaseTag: "v0.2.0",
+    stagedAt: Date.parse("2026-08-19T12:00:00.000Z"),
+    lastOutcome: null,
+  });
   const manualError = render({
     phase: "error",
     currentVersion: "0.1.0",
@@ -127,7 +135,13 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     text(applying).includes(UPDATE_COPY.applying.title("0.2.0")),
     text(applying).includes(UPDATE_COPY.applying.detail),
     text(applying).includes("administrator permission"),
-    text(applying).includes("/Applications"),
+    // No directory, on purpose. An install now lives in the signed-in account's own
+    // ~/Applications by default, in /Applications only when somebody opted into it, or
+    // somewhere else entirely - so naming one of those to everybody states something false for
+    // most readers, and promises an administrator prompt a personal install never raises.
+    !text(applying).includes("/Applications"),
+    !text(ready).includes("/Applications"),
+    text(ready).includes("administrator permission"),
     controls(applying).length === 0,
     text(manualError).includes("Could not check for updates. Try again."),
     controls(manualError).join(",") === "Retry,Dismiss",
@@ -142,7 +156,7 @@ test("the banner covers transient, outcome, empty, and truncated states", () => 
     idle === "",
     text(longNotes).includes("VISIBLE_RELEASE_SUMMARY"),
     !text(longNotes).includes(distinctiveSuffix),
-  ], Array.from({ length: 17 }, () => true));
+  ], Array.from({ length: 19 }, () => true));
 });
 
 

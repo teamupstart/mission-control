@@ -55,6 +55,33 @@ async function openModels(page: Page, baseURL: string): Promise<void> {
   await expect(page.getByRole("combobox", { name: "Goal provider" })).toBeEnabled();
 }
 
+/**
+ * Change one select, and wait for the daemon to have taken the change.
+ *
+ * Every assertion in this file reads the daemon back, through a reload or through
+ * `/api/llm/config` directly, and `useLlm`'s `update` turns one commit into exactly one
+ * `PUT /api/llm/config`. That PUT is an in-flight fetch belonging to a document the very next
+ * `openModels` tears down: `page.goto` reloads, the request is cancelled, and the write the
+ * test is about never lands. On an idle machine the PUT wins that race almost every time,
+ * which is why this read as solid for so long; under the full suite's four workers it does
+ * not, and the failure arrives as `runners.goal` undefined - indistinguishable from the real
+ * product defect the test exists to catch.
+ *
+ * So the wait is registered BEFORE the change and awaited after it. That is the actual
+ * contract the test means - the panel's write reached the daemon - rather than a timeout
+ * widened around a race, and it is deterministic: no retry loop can recover a request the
+ * navigation already cancelled.
+ */
+async function save(page: Page, name: string, value: string): Promise<void> {
+  const written = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/llm/config"
+      && response.request().method() === "PUT",
+  );
+  await page.getByRole("combobox", { name }).selectOption(value);
+  await written;
+}
+
 test("each background job picks its own provider", async ({
   dashboard,
   daemon,
@@ -72,7 +99,7 @@ test("each background job picks its own provider", async ({
 
   // One job leaves the app-wide answer behind. The write goes to the daemon, so read it back
   // off a fresh load rather than believing the panel's optimistic paint.
-  await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("codex");
+  await save(dashboard, "Goal provider", "codex");
   await openModels(dashboard, daemon.baseURL);
   await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("codex");
 
@@ -100,10 +127,8 @@ test("a row's own provider change resets only that row's stranded model, and say
   await openModels(dashboard, daemon.baseURL);
 
   // Two rows pinned to Claude models, so the second can prove the reset is not a wipe.
-  await dashboard.getByRole("combobox", { name: "Goal model" }).selectOption("claude-sonnet-5");
-  await dashboard
-    .getByRole("combobox", { name: "Task title model" })
-    .selectOption("claude-opus-5");
+  await save(dashboard, "Goal model", "claude-sonnet-5");
+  await save(dashboard, "Task title model", "claude-opus-5");
   await openModels(dashboard, daemon.baseURL);
   await expect(dashboard.getByRole("combobox", { name: "Goal model" })).toHaveValue(
     "claude-sonnet-5",
@@ -112,7 +137,7 @@ test("a row's own provider change resets only that row's stranded model, and say
   // The row's OWN provider is a statement about that row, so its model has to follow. Codex
   // has no `claude-sonnet-5`, so the pin goes back to Inherit rather than being handed to a
   // provider that cannot run it - and the row says which id it dropped, in the same paint.
-  await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("codex");
+  await save(dashboard, "Goal provider", "codex");
   await expect(dashboard.getByText(/claude-sonnet-5 isn't offered by this provider/)).toBeVisible();
   await shoot(dashboard, "04-row-provider-reset-says-so");
 
@@ -144,7 +169,7 @@ test("pinning a model records the provider it belongs to, in the same write", as
   await openModels(dashboard, daemon.baseURL);
   await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("");
 
-  await dashboard.getByRole("combobox", { name: "Goal model" }).selectOption("claude-sonnet-5");
+  await save(dashboard, "Goal model", "claude-sonnet-5");
   await openModels(dashboard, daemon.baseURL);
 
   const config = await (await fetch(`${daemon.baseURL}/api/llm/config`)).json();
@@ -160,7 +185,7 @@ test("pinning a model records the provider it belongs to, in the same write", as
 
   // Clearing the model back to the ladder records nothing: a provider for a model that no
   // longer exists would be a choice the operator never made.
-  await dashboard.getByRole("combobox", { name: "Away digest model" }).selectOption("");
+  await save(dashboard, "Away digest model", "");
   await openModels(dashboard, daemon.baseURL);
   const after = await (await fetch(`${daemon.baseURL}/api/llm/config`)).json();
   expect(after.runners["away-digest"] ?? "").toBe("");
@@ -187,7 +212,7 @@ test("a provider change keeps a model no catalog recognises, because ids are fre
     "gpt-6-unreleased",
   );
 
-  await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("codex");
+  await save(dashboard, "Goal provider", "codex");
   await openModels(dashboard, daemon.baseURL);
   await expect(dashboard.getByRole("combobox", { name: "Goal provider" })).toHaveValue("codex");
   await expect(
@@ -214,8 +239,8 @@ test("choosing Inherit judges the model against the app-wide provider, not the o
   await openModels(dashboard, daemon.baseURL);
 
   // The app-wide default stays Claude throughout. One row goes to Codex and pins a Codex model.
-  await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("codex");
-  await dashboard.getByRole("combobox", { name: "Goal model" }).selectOption("gpt-5.6-sol");
+  await save(dashboard, "Goal provider", "codex");
+  await save(dashboard, "Goal model", "gpt-5.6-sol");
   await openModels(dashboard, daemon.baseURL);
   await expect(dashboard.getByRole("combobox", { name: "Goal model" })).toHaveValue("gpt-5.6-sol");
 
@@ -225,7 +250,7 @@ test("choosing Inherit judges the model against the app-wide provider, not the o
     dashboard.getByRole("combobox", { name: "Goal provider" }).getByRole("option").first(),
   ).toHaveText("Inherit - Claude Code");
 
-  await dashboard.getByRole("combobox", { name: "Goal provider" }).selectOption("");
+  await save(dashboard, "Goal provider", "");
   await expect(dashboard.getByText(/gpt-5\.6-sol isn't offered by this provider/)).toBeVisible();
 
   await openModels(dashboard, daemon.baseURL);

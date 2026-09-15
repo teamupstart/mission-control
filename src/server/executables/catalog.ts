@@ -135,6 +135,11 @@ export const FIXED_OS_EXECUTABLES = {
   env: "/usr/bin/env",
   sh: "/bin/sh",
   osascript: "/usr/bin/osascript",
+  // Launch Services, which is the only thing that can hand a launch to an app bundle and reveal
+  // an instance that is already running rather than starting a second one. Not searched, and
+  // deliberately not overridable: the desktop shell uses it before `app.whenReady()`, so there
+  // is no locator snapshot yet and nothing to select between.
+  open: "/usr/bin/open",
 } as const;
 
 export type FixedOsExecutableId = keyof typeof FIXED_OS_EXECUTABLES;

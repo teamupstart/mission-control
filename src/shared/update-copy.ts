@@ -6,6 +6,12 @@
 // draft of this split already had one surface saying "administrator password" while the other
 // said "administrator permission" and named `/Applications`.
 //
+// Neither of them names a directory any more, and that is a correctness fix rather than a
+// wording preference: an install now lives in the signed-in account's own `~/Applications` by
+// default, in `/Applications` when somebody opted into it, or somewhere else entirely. Copy
+// that asserts one of those to everybody is wrong for most of them, and it is wrong about the
+// administrator prompt too - a personal install never raises one.
+//
 // Browser-safe by construction: no `node:` imports, so the renderer and the Electron main
 // process read the same strings rather than two copies of them.
 
@@ -37,11 +43,11 @@ export const UPDATE_COPY: {
   ready: {
     title: (version) => `Mission Control ${version} is ready to install`,
     detail:
-      "Mission Control will close, install the new version in /Applications, and reopen. This takes a few seconds, and macOS may ask for administrator permission.",
+      "Mission Control will close, install the new version where Mission Control is already installed, and reopen. This takes a few seconds, and macOS may ask for administrator permission if that is a shared system folder.",
   },
   applying: {
     title: (version) => `Installing Mission Control ${version}`,
     detail:
-      "Mission Control will close and reopen on the new version in a few seconds. If macOS asks for administrator permission, it is Mission Control installing the update in /Applications.",
+      "Mission Control will close and reopen on the new version in a few seconds. If macOS asks for administrator permission, it is Mission Control installing the update into the shared system folder it was installed in.",
   },
 };

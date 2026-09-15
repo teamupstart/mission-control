@@ -140,6 +140,16 @@ export interface UpdaterPort {
   readAlpha(): boolean;
   writeAlpha(alpha: boolean): void;
   readReceipt(): InstallReceipt | null;
+  /**
+   * Why this running bundle may not update anything, or null when it may.
+   *
+   * Asked rather than assumed. The receipt names an absolute app path, and until personal
+   * installs existed nothing compared it to the bundle the process came out of - so a retained
+   * copy at the old location would happily build an update and swap it into the app somebody
+   * else is running. See `install-identity.ts`; the port keeps this a string so the updater
+   * reports the reason without knowing how it was reached.
+   */
+  identityProblem(): string | null;
   latestRelease(): Promise<ReleaseInfo | null>;
   latestMainCommit(): Promise<MainCommitInfo>;
   runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
@@ -562,10 +572,12 @@ export class UpdateController {
     if (this.port.arch !== "arm64") disable("Updates require an Apple silicon Mac.");
     else {
       this.receipt = this.port.readReceipt();
+      const identity = this.port.identityProblem();
       if (!this.receipt) disable("This app was not installed with the managed install command.");
       else if (!isTrustedInstallRepo(this.receipt.repo)) {
         disable(`Updates are disabled because this app was installed from ${this.receipt.repo}.`);
-      } else {
+      } else if (identity) disable(identity);
+      else {
         this.lastBackgroundAttempt = this.port.now();
         this.publish(idleSnapshot(this.currentLabel(), lastOutcome, null));
       }
@@ -940,6 +952,22 @@ export class UpdateController {
     if (this.installPromise) return this.installPromise;
     if (this.snapshot.phase !== "ready" || !this.receipt) return Promise.resolve(false);
     const target = this.snapshot;
+    // Asked again here, and not only at startup. An update prepared hours ago is installed by a
+    // helper that swaps whatever `receipt.appPath` names, and between those two moments another
+    // install can rewrite the receipt or replace a bundle. A stale answer would send the helper
+    // to swap a bundle this process is not.
+    const identity = this.port.identityProblem();
+    if (identity) {
+      this.publish({
+        phase: "error",
+        currentVersion: target.currentVersion,
+        message: identity,
+        manual: true,
+        retryable: false,
+        lastOutcome: target.lastOutcome,
+      });
+      return Promise.resolve(false);
+    }
     const staged = this.staged;
     if (!staged || staged.releaseTag !== target.releaseTag) return Promise.resolve(false);
     // Checked again here, not only when it was built. A person can leave an update ready for
@@ -1160,6 +1188,8 @@ export function createDefaultUpdaterPort(options: {
   packaged: boolean;
   currentVersion: () => string;
   currentCommit: () => string | null;
+  /** Re-read on every call: the receipt and both bundles can change while the app is open. */
+  identityProblem: () => string | null;
   arch?: string;
   helperSource: string;
   stateDirectory: string;
@@ -1173,6 +1203,7 @@ export function createDefaultUpdaterPort(options: {
     arch: options.arch ?? process.arch,
     currentVersion: options.currentVersion,
     currentCommit: options.currentCommit,
+    identityProblem: options.identityProblem,
     readAlpha: () => readUpdatePreferences(join(options.stateDirectory, "update-preferences.json")).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(join(options.stateDirectory, "update-preferences.json"), { alpha }); },
     readReceipt,

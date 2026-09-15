@@ -4,6 +4,8 @@ import type { Page } from '@playwright/test';
 import type { UpdateSnapshot, UpdateMigration } from '../../src/shared/update.ts';
 import { UPDATE_DIALOGS, type UpdateDialogRequest } from '../../src/shared/update-dialog.ts';
 import { UpdateController } from '../../src/main/updater.ts';
+import { repairMigrationIntegrations } from '../../src/main/migration-integrations.ts';
+import { migrationPlanFixture } from '../../test/helpers/migration-plan.ts';
 import { expectContentClearsBorder } from '../fixtures/modal-inset.ts';
 import { expect, test } from '../fixtures/test.ts';
 
@@ -158,4 +160,23 @@ test('a failed repair followed by a successful retry shows completion from the m
   } finally {
     controller.stop();
   }
+});
+
+test('integration repair status displays safe guidance instead of private diagnostics', async ({dashboard, daemon}) => {
+  const plan = migrationPlanFixture({schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.17.0', installedVersion: '1.17.0', sourceClone: daemon.home, appPath: migration.source, installedAt: '2026-09-15T00:00:00Z'});
+  const repairs = await repairMigrationIntegrations({plan, owner: {pid: 1, identity: 'fixture'}, ownerRole: 'recovery', stage: 'receipt-committed', targetProcess: null, repairs: [], inventory: {schema: 3, hooks: [], mcp: [], login: false}}, {
+    home: daemon.home,
+    log: () => {},
+    command: () => {throw new Error('No MCP registration was inventoried');},
+    login: () => ({openAtLogin: false}),
+    retargetLogin: async () => {},
+    skills: async () => {throw new Error('EACCES /Users/Private/.config/credentials token=fixture-secret');},
+  });
+  await bridge(dashboard);
+  await dashboard.evaluate((repairs) => window.migrationFixture.push({phase: 'idle', currentVersion: '1.17.1', lastCheckedAt: null, lastOutcome: null, migration: {source: '/Applications/Mission Control.app', target: '/Users/Fixture/Applications/Mission Control.app', status: 'repair-required', repairs}}), repairs.filter((item) => item.status === 'pending'));
+  const banner = dashboard.getByRole('status', {name: 'Mission Control update'});
+  await expect(banner).toContainText('Enabled skill links need attention in Settings > Skills. Resolve their conflicts, then retry.');
+  await expect(banner).not.toContainText('/Users/Private');
+  await expect(banner).not.toContainText('fixture-secret');
+  await capture(dashboard, 'safe-repair-status.png');
 });

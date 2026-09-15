@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'jsonc-parser';
 import { inspectMigrationIntegrations, repairMigrationIntegrations, type MigrationIntegrationPorts } from '../src/main/migration-integrations.ts';
+import { createMigrationConfigPort } from '../src/main/migration-integration-config.ts';
+import { createRotatingUpdateLogger } from '../src/main/update-log.ts';
 import type { MigrationPlan, MigrationJournal } from '../scripts/install-migration.mjs';
 
 function fixture(t: test.TestContext) {
@@ -25,6 +27,7 @@ function fixture(t: test.TestContext) {
   let login = false;
   const ports: MigrationIntegrationPorts = {
     home,
+    log: (message) => calls.push(`log:${message}`),
     command: () => { throw new Error('No CLI should be queried without its configuration'); },
     login: () => ({openAtLogin: login, executableWillLaunchAtLogin: login}),
     retargetLogin: async (_plan, value) => { login = value; calls.push(`login:${value}`); },
@@ -247,4 +250,27 @@ test('inventory failures block before the move; skill conflicts and unverifiable
   f.ports.retargetLogin = async () => { throw new Error('login could not be verified'); };
   const results = await repairMigrationIntegrations(f.journal(), f.ports);
   assert.deepEqual(results.filter((r) => r.status === 'pending').map((r) => r.id), ['skills', 'login']);
+});
+
+test('persisted repair failures use fixed guidance while detailed diagnostics go through the redacting log', async (t) => {
+  const f = fixture(t);
+  const journal = f.journal();
+  const path = join(f.home, 'update.log');
+  const fail = (): never => {throw new Error('EACCES /Users/Private/.config/credentials token=fixture-secret');};
+  f.ports.config = {...createMigrationConfigPort(f.ports), readHooks: fail, readMcp: fail};
+  f.ports.skills = fail;
+  f.ports.retargetLogin = fail;
+  f.ports.log = createRotatingUpdateLogger(path);
+  const results = await repairMigrationIntegrations(journal, f.ports);
+  assert.equal(results.length, 4);
+  assert.ok(results.every((item) => item.status === 'pending'));
+  const persisted = JSON.stringify(results);
+  assert.ok(!persisted.includes('/Users/Private'));
+  assert.ok(!persisted.includes('fixture-secret'));
+  assert.ok(!persisted.includes('EACCES'));
+  assert.match(persisted, /Settings > Skills/);
+  const logged = readFileSync(path, 'utf8');
+  assert.match(logged, /EACCES <path> token=<redacted>/);
+  assert.ok(!logged.includes('/Users/Private'));
+  assert.ok(!logged.includes('fixture-secret'));
 });

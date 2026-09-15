@@ -2,7 +2,8 @@ import type { App } from "electron";
 import { execFile, execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { BASE_URL, readClientToken } from "@shared/harness-runtime.mjs";
+import { BASE_URL, readClientToken, stateDir } from "@shared/harness-runtime.mjs";
+import { createRotatingUpdateLogger } from "./update-log.ts";
 import { locateCommandSync } from "../server/executables/locator.ts";
 import { type MigrationPlan, type MigrationPolicy, readMigrationJournal, migrationBundleIdentity, migrationIsCommitted, migrationReceipt, validateMigrationTarget } from "../../scripts/install-migration.mjs";
 import { sameMigrationProcess } from "../../scripts/migration-runtime.mjs";
@@ -52,6 +53,7 @@ export function createMigrationIntegrationPorts(app: LoginApp, options: {
   const platform = options.platform ?? process.platform;
   return {
     home: homedir(), environment: process.env,
+    log: createRotatingUpdateLogger(join(stateDir(), "update.log")),
     command: (spec, args) => {
       const command = locateCommandSync(spec.cli);
       if (!command) throw new Error(`${spec.cli} is unavailable. Install it or repair its configured path, then retry.`);

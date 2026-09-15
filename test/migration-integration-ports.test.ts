@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { stateDir } from '../src/shared/harness-runtime.mjs';
 import type { App } from 'electron';
 import { createMigrationIntegrationPorts } from '../src/main/migration-integration-ports.ts';
 import { migrationPlanFixture } from './helpers/migration-plan.ts';
@@ -7,6 +10,15 @@ import { migrationPlanFixture } from './helpers/migration-plan.ts';
 const receipt = {schema: 1, repo: 'teamupstart/mission-control', releaseTag: 'v1.2.3', installedVersion: '1.2.3', sourceClone: '/source', appPath: '/Applications/Mission Control.app', installedAt: '2026-09-15T00:00:00.000Z'};
 const plan = migrationPlanFixture(receipt);
 const executable = `${plan.target}/Contents/MacOS/Mission Control`;
+
+test('the production integration port routes diagnostics through the private redacting update logger', () => {
+  const app = {getLoginItemSettings: () => ({openAtLogin: false}), setLoginItemSettings: () => {}} as unknown as App;
+  createMigrationIntegrationPorts(app).log('repair failed /Users/Private/.config/credentials token=fixture-secret');
+  const log = readFileSync(join(stateDir(), 'update.log'), 'utf8');
+  assert.match(log, /repair failed <path> token=<redacted>/);
+  assert.ok(!log.includes('/Users/Private'));
+  assert.ok(!log.includes('fixture-secret'));
+});
 
 for (const enabled of [false, true]) {
   test(`macOS removes the source login registration before preserving login ${enabled ? 'on' : 'off'}`, async () => {

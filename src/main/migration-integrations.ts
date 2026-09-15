@@ -21,6 +21,7 @@ export interface MigrationIntegrationPorts {
   login(): { openAtLogin: boolean; executableWillLaunchAtLogin?: boolean };
   retargetLogin(plan: MigrationPlan, openAtLogin: boolean): Promise<void>;
   skills(): Promise<string[]>;
+  log(message: string): void;
 }
 
 function retargetPath(value: string, plan: MigrationPlan): string {
@@ -119,16 +120,19 @@ export async function repairMigrationIntegrations(journal: MigrationJournal, por
     inventory.mcp.some((item) => !item || typeof item.id !== "string" || typeof item.revision !== "string" || !/^\d+(?::\d+){4}$/.test(item.revision) || !Array.isArray(item.paths) || item.paths.length === 0 || item.paths.length > 1024 || item.paths.some((path) => !validBundlePath(path)) || !item.paths.some((path) => path.path[0] === "args" && path.suffix === "/Contents/Resources/app/dist/mcp/server.mjs"))) throw new Error("The integration inventory is invalid or unsupported. Recover the personal installation manually.");
   const config = ports.config ?? createMigrationConfigPort(ports);
   const results: MigrationRepair[] = [];
-  const run = async (id: string, action: () => void | Promise<void>): Promise<void> => {
+  const run = async (id: string, action: () => void | Promise<void>, safeMessage: string): Promise<void> => {
     try { await action(); results.push({id, status: "complete", message: `${id}: verified`}); }
-    catch (error) { results.push({id, status: "pending", message: `${id}: ${error instanceof Error ? error.message.slice(0, 300) : "repair failed"}`}); }
+    catch (error) {
+      ports.log(`migration integration ${id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      results.push({id, status: "pending", message: safeMessage});
+    }
   };
-  await run("hooks", () => repairHooks(inventory, journal.plan, config));
-  for (const item of inventory.mcp) await run(item.id, () => repairMcp(item, journal.plan, config));
+  await run("hooks", () => repairHooks(inventory, journal.plan, config), "Hook repair could not be verified. Retarget existing Mission Control hooks manually, then retry.");
+  for (const item of inventory.mcp) await run(item.id, () => repairMcp(item, journal.plan, config), "MCP repair could not be verified. Retarget the existing Mission Control registration manually, then retry.");
   await run("skills", async () => {
     const problems = await ports.skills();
     if (problems.length) throw new Error("Enabled skill links need attention in Settings > Skills. Resolve their conflicts, then retry.");
-  });
-  await run("login", () => ports.retargetLogin(journal.plan, inventory.login));
+  }, "Enabled skill links need attention in Settings > Skills. Resolve their conflicts, then retry.");
+  await run("login", () => ports.retargetLogin(journal.plan, inventory.login), "Login startup could not be verified. Check the personal app's Open at Login setting, then retry.");
   return results;
 }

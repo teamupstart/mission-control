@@ -2472,7 +2472,8 @@ export class WorkflowManager {
       const prior = latestAttempts.get(attempt.nodeId);
       if (!prior || attempt.attempt > prior.attempt) latestAttempts.set(attempt.nodeId, attempt);
     }
-    const currentAttempts = [...latestAttempts.values()];
+    // Keep attempt chronology: replacing a Map value preserves the node's first position.
+    const currentAttempts = attempts.filter((attempt) => latestAttempts.get(attempt.nodeId)?.id === attempt.id);
     const failed = input.nodeAttemptId
       ? currentAttempts.find((attempt) => attempt.id === input.nodeAttemptId)
       : currentAttempts.reverse().find((attempt) => attempt.state === "error");

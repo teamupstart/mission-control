@@ -95,21 +95,26 @@ test("HTTP recovery capabilities track accepted retries, grants and cancellation
     error: "earlier provider failure", now: 2,
   });
   store.insertAttempt({
+    id: "another-error", submissionId: "recovery-submission", nodeId: "another-node",
+    attempt: 1, state: "error", persona: null, inputFingerprint: "another-fingerprint",
+    error: "another provider failure", now: 3,
+  });
+  store.insertAttempt({
     id: "recovery-attempt", submissionId: "recovery-submission", nodeId: "judge",
     attempt: 2, state: "error", persona: null, inputFingerprint: "recovery-fingerprint",
-    error: "provider unavailable", now: 3,
+    error: "provider unavailable", now: 4,
   });
   // A later historical error on another node must not hide the live retry target.
   store.insertAttempt({
     id: "resolved-error", submissionId: "recovery-submission", nodeId: "resolved-node",
-    attempt: 1, state: "error", persona: null, inputFingerprint: "resolved", now: 4,
+    attempt: 1, state: "error", persona: null, inputFingerprint: "resolved", now: 5,
   });
   store.insertAttempt({
     id: "resolved-success", submissionId: "recovery-submission", nodeId: "resolved-node",
-    attempt: 2, state: "completed", persona: null, inputFingerprint: "resolved", now: 5,
+    attempt: 2, state: "completed", persona: null, inputFingerprint: "resolved", now: 6,
   });
-  store.setSubmissionState("recovery-submission", "failed", 6);
-  store.setRunState("recovery-run", "blocked", "infrastructure_error", null, 4);
+  store.setSubmissionState("recovery-submission", "failed", 7);
+  store.setRunState("recovery-run", "blocked", "infrastructure_error", null, 7);
   const read = async () => await (await request("/api/workflow-runs/recovery-run")).json() as WorkflowRunDetail;
   const detail = await read();
   assert.equal(runNextMove(detail)?.kind, "retry");
@@ -122,7 +127,7 @@ test("HTTP recovery capabilities track accepted retries, grants and cancellation
       method: "POST", body: JSON.stringify({ requestId: `retry-${nodeAttemptId}`, nodeAttemptId }),
     });
     assert.equal(staleRetry.status, 409, `historical attempt ${nodeAttemptId} must not authorize a retry`);
-    assert.equal(store.listAttempts("recovery-submission").length, 4);
+    assert.equal(store.listAttempts("recovery-submission").length, 5);
     assert.deepEqual((await read()).summary.recovery, detail.summary.recovery);
   }
   const retry = await request("/api/workflow-runs/recovery-run/retry", {
@@ -132,6 +137,11 @@ test("HTTP recovery capabilities track accepted retries, grants and cancellation
   const retried = await retry.json() as { run: WorkflowRun };
   assert.ok(retried.run.recovery);
   assert.ok(!retried.run.recovery.operations.includes("retry"));
+  assert.deepEqual(store.listEvents("recovery-run").find((event) =>
+    event.kind === "manual_infrastructure_retry")?.payload, {
+    requestId: "retry-recovery", nodeAttemptId: "recovery-attempt",
+    reactivatedNodeAttemptIds: ["recovery-attempt", "another-error"],
+  });
 
   db.prepare("UPDATE workflow_submissions SET round = 6 WHERE id = 'recovery-submission'").run();
   store.blockForRoundLimit(store.getRun("recovery-run")!, 6);

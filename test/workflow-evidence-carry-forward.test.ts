@@ -290,7 +290,7 @@ test("registering only the pieces a preflight named accumulates instead of repla
     // The preflight names the gaps and the author registers ONLY those.
     store.setSubmissionState(first.submission.id, "waiting_for_evidence_readiness", 4);
     store.setRunState(runId, "waiting_for_evidence_readiness", "evidence_readiness", {}, 4);
-    stage("second", 4, 5);
+    stage("second", 7, 5);
     const child = store.reserveEvidenceReadinessRefinement({
       id: "resubmit-2",
       runId,
@@ -306,14 +306,33 @@ test("registering only the pieces a preflight named accumulates instead of repla
 
     assert.equal(
       store.listSubmissionTextArtifacts(child.submission.id).length,
-      7,
-      "the segment holds the first three AND the four just registered, not only the four",
+      10,
+      "all ten artifacts survive, including the first three already covered",
     );
     assert.equal(
       store.listSubmissionCoverage(child.submission.id).length,
-      7,
+      10,
       "and every coverage claim, which is what a preflight gap actually asks for",
     );
+    const claims = store.listSubmissionCoverage(child.submission.id);
+    const readiness = evaluateWorkflowEvidenceReadiness({
+      canonicalCriteria: claims.map((claim) => ({
+        id: claim.clientCriterionId,
+        text: claim.criterion,
+        material: true,
+        suggestedProofClass: null,
+      })),
+      criterionMappings: claims.map((claim) => ({
+        criterionId: claim.clientCriterionId,
+        matchedClientCriterionIds: [claim.clientCriterionId],
+      })),
+      coverage: claims,
+      evidence: store.submissionFrozenEvidenceIdentities(child.submission.id),
+      unavailableReason: null,
+      enforceCoverage: true,
+    });
+    assert.deepEqual(readiness.gapCodes, [], "repairing seven criteria does not unlink the first three");
+    assert.ok(claims.every((claim) => claim.links.length === 1));
   } finally {
     rmSync(checkout, { recursive: true, force: true });
   }
@@ -488,8 +507,8 @@ test("when the cap binds, a carry gives up old ancestry before the parent's own 
       store.stageWorkflowEvidence(noteKey, writes, at);
     };
 
-    // Round 1 proves four things, so round 2 can carry them as ancestry.
-    stage("ancestry", 4, 2);
+    // Leave four slots for the next round's own captures.
+    stage("ancestry", max - 4, 2);
     const first = store.createInitialSubmission(
       { id: runId, binding, intent: FIXTURE_RUN_INTENT, triggerSource: "manual", triggerKey: "prio-root", now: 3 },
       { id: "prio-first", triggerSource: "manual", triggerKey: "prio-root", context: {}, evidence: {}, now: 3 },
@@ -499,7 +518,7 @@ test("when the cap binds, a carry gives up old ancestry before the parent's own 
       context: {}, evidence: {}, fingerprint: "prio-1", repositoryFingerprint: "tree-1", status: "running",
     }, 3);
 
-    // Round 2 captures four of its own and carries round 1's four: eight, exactly the cap.
+    // Round 2 captures four of its own and fills the cap with round 1's ancestry.
     stage("captured", 4, 4);
     const second = store.createRepairSubmission({
       id: "prio-second", runId, round: 2, triggerSource: "manual",
@@ -545,8 +564,8 @@ test("when the cap binds, a carry gives up old ancestry before the parent's own 
     }
     assert.equal(
       names.filter((name) => name.startsWith("ancestry-")).length,
-      2,
-      "and exactly the two oldest ancestry items are what the cap refused",
+      max - 6,
+      "exactly two ancestry items are refused while the newest captures survive",
     );
   } finally {
     rmSync(checkout, { recursive: true, force: true });
@@ -989,7 +1008,8 @@ test("a parent claim survives a link whose evidence the limit refused", async ()
       const body = `partial round one item ${index}\n`;
       writeFileSync(join(checkout, `p${index}.log`), body);
       writes.push(logWrite({
-        id: `partial-${index}`,
+        // Reservation breaks equal timestamps by id; preserve numeric order above nine items.
+        id: `partial-${String(index).padStart(3, "0")}`,
         clientItemId: `partial-${index}`,
         root: checkout,
         locator: `p${index}.log`,

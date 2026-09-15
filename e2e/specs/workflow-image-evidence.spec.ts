@@ -7,6 +7,7 @@ import { expect, test } from "../fixtures/test.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 import { withDaemonDb } from "../fixtures/daemon-db.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 
 /**
  * Native image evidence, through the product rather than around it.
@@ -190,6 +191,65 @@ async function shoot(page: Page, name: string, target?: Locator): Promise<void> 
   // eslint-disable-next-line no-console
   console.log(`CAPTURED e2e/.artifacts/workflow-image-evidence/${name}.png`);
 }
+
+test("48 dashboard images reach both native providers and a 49th blocks submission", async ({ dashboard, daemon }) => {
+  test.setTimeout(180_000);
+  const sessionId = await dispatch(dashboard, daemon);
+  const published = await createWorkflow(daemon);
+  await dashboard.goto(`${daemon.baseURL}/#/runs`);
+  await dashboard.getByRole("button", { name: "Bind to a session…" }).click();
+  const bind = dashboard.getByRole("dialog", { name: "Bind workflow" });
+  await bind.getByLabel("Session").selectOption(sessionId);
+  await bind.getByLabel("Published workflow").selectOption(published.versionId);
+  const files = Array.from({ length: 48 }, (_, index) => ({
+    name: `count-proof-${index}.png`, mimeType: "image/png", buffer: PNG,
+  }));
+  await bind.getByLabel("Choose workflow evidence images").setInputFiles(files);
+  await expect(bind.getByText("48 / 48 images", { exact: false })).toBeVisible();
+  for (const file of files) {
+    await bind.getByLabel(`Caption for ${file.name}`).fill(`Count boundary evidence ${file.name}`);
+    await bind.getByLabel(`Repository scope for ${file.name}`).selectOption("repo-01");
+  }
+  await expect(bind.getByRole("button", { name: "Bind and submit" })).toBeEnabled();
+  await expectContentClearsBorder(bind);
+
+  // Drag/drop and paste can still add a file when the choose button is disabled at the cap.
+  await addEvidence(bind, { name: "overflow-proof.png", mimeType: "image/png", buffer: PNG }, "Overflow evidence");
+  await expect(bind).toContainText("At most 48 images can be submitted.");
+  await expect(bind.getByRole("button", { name: "Bind and submit" })).toBeDisabled();
+  await bind.getByRole("button", { name: "Remove overflow-proof.png", exact: true }).click();
+  await expect(bind.getByRole("button", { name: "Bind and submit" })).toBeEnabled();
+  const accepted = dashboard.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && /\/api\/workflow-bindings\/[^/]+\/submit$/.test(new URL(response.url()).pathname));
+  await bind.getByRole("button", { name: "Bind and submit" }).click();
+  const response = await accepted;
+  expect(response.ok()).toBe(true);
+  const { run } = await response.json() as { run: { id: string } };
+  await expect(bind).toBeHidden();
+  await expect.poll(async () => (
+    await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.id}`)
+  ).run.status, { timeout: 90_000 }).toBe("waiting_for_session");
+  for (const provider of ["claude", "codex"] as const) {
+    const proof = providerBoundary(daemon, provider);
+    expect(proof?.valid).toBe(true);
+    expect(proof?.manifest).toHaveLength(48);
+    expect(proof?.observed).toHaveLength(48);
+    expect(proof?.observed).toEqual(Array.from({ length: 48 }, () => ({
+      bytes: PNG.byteLength,
+      mimeType: "image/png",
+      sha256: createHash("sha256").update(PNG).digest("hex"),
+    })));
+  }
+  const pane = await evidencePane(dashboard);
+  const cards = pane.getByRole("button", { name: /^Preview count-proof-/ });
+  await expect(cards).toHaveCount(48);
+  await expect(cards.locator("img")).toHaveCount(48);
+  await expect.poll(() => cards.locator("img").evaluateAll((images: HTMLImageElement[]) =>
+    images.every((image) => image.complete && image.naturalWidth > 0))).toBe(true);
+  await cards.first().scrollIntoViewIfNeeded();
+  await shoot(dashboard, "48-images-retained");
+});
 
 test("dashboard evidence reaches both native providers and remains auditable per submission", async ({
   dashboard,

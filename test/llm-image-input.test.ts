@@ -50,7 +50,7 @@ test("runner image limits record raw and base64 ceilings for the next phase", ()
     "image/gif",
     "image/webp",
   ]);
-  assert.equal(LLM_IMAGE_LIMITS.maxCount, 8);
+  assert.equal(LLM_IMAGE_LIMITS.maxCount, 48);
   assert.equal(LLM_IMAGE_LIMITS.maxBytesPerImage, 5 * 1024 * 1024);
   assert.equal(LLM_IMAGE_LIMITS.maxAggregateBytes, 20 * 1024 * 1024);
   assert.equal(
@@ -96,6 +96,17 @@ test("validation accepts every provider-compatible MIME signature", () => {
     "image/gif",
     "image/webp",
   ]);
+});
+
+test("48 small images reach the runner and a 49th is refused", () => {
+  const dir = fixtureDir("count-boundary");
+  const inputs = Array.from({ length: 48 }, (_, index) =>
+    writeImageDescriptor(dir, `${index}.png`, PNG_IMAGE, "image/png", `image-${index}`));
+  assert.deepEqual(validateLlmImages(inputs).map((image) => image.id), inputs.map((image) => image.id));
+  assert.throws(
+    () => validateLlmImages([...inputs, { ...inputs[0]!, id: "image-49" }]),
+    /maximum is 48/,
+  );
 });
 
 test("validation refuses missing, non-regular, symlinked, changed, and spoofed files", () => {
@@ -155,7 +166,7 @@ test("collection, item, aggregate, id, and descriptor bounds fail before file ac
       { length: LLM_IMAGE_LIMITS.maxCount + 1 },
       (_, index) => ({ ...base, id: `image-${index}` }),
     )),
-    /maximum is 8/,
+    /maximum is 48/,
   );
   assert.throws(
     () => validateLlmImages([{ ...base, bytes: LLM_IMAGE_LIMITS.maxBytesPerImage + 1 }]),

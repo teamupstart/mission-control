@@ -935,7 +935,7 @@ its exact output directly through the existing evidence tool, so normalized tran
 ordinary tool-result bodies do not lose the proof. This is a bounded evidence intake, not a daemon
 command-execution endpoint; Check nodes remain the server-observed execution path.
 
-Text artifacts and completed-command outputs share an eight-item limit, with at most 64 KiB
+Text artifacts and completed-command outputs share a 48-item limit, with at most 64 KiB
 per artifact and 384 KiB combined. Command and exit-code framing counts toward these byte
 limits. The complete serialized workflow context must also fit its 2,000,000-byte limit.
 
@@ -985,7 +985,7 @@ before capture, including in the initial binding dialog before that conversation
 The daemon resolves that initial packet from the live session, so creating a placeholder binding
 is not required and a stale registration cannot reach the first review unseen. The dashboard
 blocks submission while an upload is pending or failed, a caption
-or scope is missing, registered evidence cannot be read, or the packet exceeds 8 images, 5 MiB
+or scope is missing, registered evidence cannot be read, or the packet exceeds 48 images, 5 MiB
 per image, or 20 MiB in aggregate. PNG, JPEG, static GIF, and WebP are accepted. Closing a dialog
 or receiving a failed request keeps the draft intact for correction and retry. Once accepted,
 the count and byte total shown in the composer become part of that immutable submission.
@@ -1048,7 +1048,7 @@ frozen image and artifact arrays at the same counts, so a carry that ignored the
 entire capture as a stale capture and lose every item rather than the few at the margin. The
 image count is stricter still: `WORKFLOW_IMAGE_LIMITS.maxCount` is `LLM_IMAGE_LIMITS.maxCount`,
 the number of images a single model call accepts, and `validateLlmImages` refuses a call that
-exceeds it. A submission carrying a ninth image could not be sent to the Persona that has to read
+exceeds it. A submission carrying a 49th image could not be sent to the Persona that has to read
 it. When a limit does refuse part of a carry the run records `evidence_carry_truncated` naming
 how many images, artifacts, and claims it refused, so a shortened carry is inspectable rather
 than silent.

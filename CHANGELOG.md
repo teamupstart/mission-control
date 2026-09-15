@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.18.0](https://github.com/teamupstart/mission-control/compare/v1.17.0...v1.18.0) (2026-09-15)
+
+
+### Features
+
+* **install:** default personal installs to ~/Applications ([#1058](https://github.com/teamupstart/mission-control/issues/1058)) ([9c4a54a](https://github.com/teamupstart/mission-control/commit/9c4a54ac3ae5f0d8b6f4efc3d09f471e1d1509e0))
+* **setup:** show UpstartClaw configuration status ([#1055](https://github.com/teamupstart/mission-control/issues/1055)) ([dd6dcff](https://github.com/teamupstart/mission-control/commit/dd6dcff31432a2960e3cf0e57d8d296e7a64cf03))
+* **telemetry:** export profiles, consent and Settings controls ([#1053](https://github.com/teamupstart/mission-control/issues/1053)) ([1fc3e84](https://github.com/teamupstart/mission-control/commit/1fc3e84fc60323b10a5fd6532b37798b7db46c2f))
+* **workflows:** add lint to initial review gates ([#1049](https://github.com/teamupstart/mission-control/issues/1049)) ([7e66dcb](https://github.com/teamupstart/mission-control/commit/7e66dcbc6f25ff2cee68054dd781f963ab729e1a))
+* **workflows:** lead the Evidence pane with canonical reconciliation ([#1057](https://github.com/teamupstart/mission-control/issues/1057)) ([37b94f5](https://github.com/teamupstart/mission-control/commit/37b94f52e8846ee119b7647540c077229fc1270a))
+
+
+### Bug Fixes
+
+* **pi:** read Pi's own toolCall part so its commands reach the dashboard ([#1059](https://github.com/teamupstart/mission-control/issues/1059)) ([c25b29e](https://github.com/teamupstart/mission-control/commit/c25b29ef61c4a3833cdf4c57d12854e596dfd651))
+* **workflows:** allow 48 evidence items per type ([#1056](https://github.com/teamupstart/mission-control/issues/1056)) ([36d55f2](https://github.com/teamupstart/mission-control/commit/36d55f2382cd1580a10b57f56a8228644efe6652))
+* **workflows:** continue review after evidence preflight exhaustion ([#1050](https://github.com/teamupstart/mission-control/issues/1050)) ([1aee5d4](https://github.com/teamupstart/mission-control/commit/1aee5d4f32b1f56ec2a418a16bec9f3a2129d60f))
+
 ## [1.17.0](https://github.com/teamupstart/mission-control/compare/v1.16.1...v1.17.0) (2026-09-14)
 
 

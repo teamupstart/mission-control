@@ -1,10 +1,9 @@
 // Load the BUILT Electron main bundle with Electron and the child process stood in for.
 //
 // `src/main/index.ts` is the entry point: it reaches for `app` at import time and starts a
-// window, a daemon and an updater as a side effect of being loaded, so it cannot be imported
-// by a test in-process. Everything it does before that, though - deciding which installed app
-// this is and handing the launch over - happens at module scope, which means loading the
-// bundle IS the way to observe it.
+// window, a daemon and an updater after Electron readiness, so it cannot be imported by a test
+// in-process. Load the bundle and signal readiness to observe the real migration gate and
+// hand-over. Deny the single-instance lock to stop before any runtime can start.
 //
 // So this runs as its own process. `electron` is external in the bundle and reached through
 // `require`, and `node:child_process` is required as a namespace whose property is read at
@@ -18,6 +17,21 @@ const Module = require("node:module");
 const childProcess = require("node:child_process");
 
 const observed = { app: [], spawn: [], loadError: null };
+const deadline = setTimeout(() => {
+  process.stderr.write("The entry point did not finish its startup decision.\n");
+  process.exit(1);
+}, 5000);
+let finishing = false;
+function finish() {
+  if (finishing) return;
+  finishing = true;
+  // An exit may be followed by quit in the same decision. Capture both before reporting.
+  setImmediate(() => {
+    clearTimeout(deadline);
+    process.stdout.write(`${JSON.stringify({ ...observed, logged })}\n`);
+    process.exit(0);
+  });
+}
 
 /** Stand in for anything a bundled module reaches for, without having to enumerate Electron. */
 function stub(name) {
@@ -48,18 +62,20 @@ const app = {
   getVersion: () => "1.2.3",
   requestSingleInstanceLock() {
     observed.app.push("requestSingleInstanceLock");
-    return process.env.HARNESS_LOCK !== "0";
+    return false;
   },
   exit(code) {
     observed.app.push(`exit(${code})`);
+    finish();
   },
   quit() {
     observed.app.push("quit");
+    finish();
   },
   on() {},
-  // Never resolves, so the window, daemon, Foreman and updater that live inside
-  // `app.whenReady().then(...)` are never started by this harness.
-  whenReady: () => new Promise(() => {}),
+  // Startup first awaits the migration gate inside this callback. The denied lock above
+  // prevents the window, daemon, Foreman and updater from starting after that decision.
+  whenReady: () => Promise.resolve(),
 };
 
 const electron = new Proxy(
@@ -95,9 +111,5 @@ try {
   require(process.env.HARNESS_MAIN_BUNDLE);
 } catch (error) {
   observed.loadError = error instanceof Error ? error.message : String(error);
+  finish();
 }
-
-process.stdout.write(`${JSON.stringify({ ...observed, logged })}\n`);
-// The bundle registers timers and listeners it never gets to clean up here, and the daemon it
-// would have started is deliberately unreachable, so end the process rather than waiting.
-process.exit(0);

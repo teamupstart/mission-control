@@ -170,7 +170,8 @@ test("the entry point launches nothing when it is already the installed app", ()
 
   assert.equal(observed.loadError, null);
   assert.deepEqual(observed.spawn, []);
-  assert.deepEqual(observed.app, ["requestSingleInstanceLock"]);
+  // The harness denies this lock so the real entry point cannot start a daemon.
+  assert.deepEqual(observed.app, ["requestSingleInstanceLock", "quit"]);
   rmSync(paths.home, { recursive: true, force: true });
 });
 
@@ -193,6 +194,6 @@ test("an unmanaged entry point is untouched by any of this", () => {
 
   assert.equal(observed.loadError, null);
   assert.deepEqual(observed.spawn, []);
-  assert.deepEqual(observed.app, ["requestSingleInstanceLock"]);
+  assert.deepEqual(observed.app, ["requestSingleInstanceLock", "quit"]);
   rmSync(root, { recursive: true, force: true });
 });

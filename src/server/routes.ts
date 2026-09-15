@@ -1291,6 +1291,16 @@ function nameDistance(a: string, b: string): number {
   return prev[b.length] ?? 0;
 }
 
+/**
+ * Whether a name is close enough to a dependency to be worth refusing.
+ *
+ * An exact name, or one near enough that `suggestRouteDep` would name it. Everything else is
+ * somebody else's property and none of this seam's business.
+ */
+function dependencyShaped(name: string): boolean {
+  return ROUTE_DEP_NAME_SET.has(name) || suggestRouteDep(name) !== "";
+}
+
 function suggestRouteDep(name: string): string {
   let best: string | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
@@ -1360,6 +1370,11 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
   // A name that DOES match a dependency is refused for the same reason rather than adopted:
   // a polluted prototype is indistinguishable from a supplied field, and silently declining
   // to honour one would be its own quiet miswiring.
+  //
+  // Only DEPENDENCY-SHAPED names are refused, though. A library or polyfill that adds
+  // `Object.prototype.foo` has not tried to supply a route dependency, and refusing every
+  // construction over it would take the daemon down for a reason that has nothing to do with
+  // `RouteDeps` - while reporting `foo` as a route dependency name, which it is not.
   const inheritedKeys: string[] = [];
   for (
     let proto: object | null = Object.getPrototypeOf(deps) as object | null;
@@ -1372,6 +1387,7 @@ export function resolveRouteDeps(deps: RouteDeps): RouteDeps {
     for (const key of Reflect.ownKeys(proto)) {
       if (typeof key === "string" && PRISTINE_OBJECT_PROTOTYPE_KEYS.has(key)) continue;
       const name = typeof key === "string" ? key : String(key);
+      if (!dependencyShaped(name)) continue;
       if (!inheritedKeys.includes(name)) inheritedKeys.push(name);
     }
   }

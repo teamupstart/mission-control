@@ -14,10 +14,10 @@ import { fileURLToPath, URL } from "node:url";
  * change fails here against a fixture written down in the repository.
  *
  * Every route asserts its values - `{"error":"keep-awake manager unavailable"}` is checked as
- * written - except the four in HOST_PROBING, whose bodies report what is installed on the
- * machine and whose status is asserted while their body is reduced to field names. Only genuinely unstable values are replaced,
- * each by a visible token - `<uuid>`, `<timestamp>`, `<path>`, `<epoch>`, and the per-process
- * or per-release keys named in VOLATILE_KEYS.
+ * written - except those in HOST_PROBING, whose bodies report what is installed on the machine
+ * and whose status is asserted while their body is reduced to field names. Otherwise only
+ * genuinely unstable or authored values are replaced, each by a visible token: `<uuid>`,
+ * `<timestamp>`, `<path>`, `<epoch>`, `<prose>`, and the keys named in VOLATILE_KEYS.
  *
  * Three host readings are pinned rather than recorded, because a fixture describing THIS
  * machine could not pass on another one, and one holding the operator's home directory has no
@@ -37,7 +37,8 @@ process.env.HARNESS_HOME = home;
 // Pin the one host reading the daemon takes from the environment. Without this the repo
 // index resolves `~/workspace` against the real home and reports the operator's checkouts,
 // which differ per machine and must not be recorded in a committed fixture.
-process.env.MISSION_WORKSPACE_DIRS = mkdtempSync(join(tmpdir(), "mission-route-oracle-repos-"));
+const repos = mkdtempSync(join(tmpdir(), "mission-route-oracle-repos-"));
+process.env.MISSION_WORKSPACE_DIRS = repos;
 
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
@@ -47,7 +48,10 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { openDb } = await import("../src/server/db.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+after(() => {
+  rmSync(home, { recursive: true, force: true });
+  rmSync(repos, { recursive: true, force: true });
+});
 
 const LOOPBACK = { host: "127.0.0.1:7317" };
 const ORACLE = fileURLToPath(new URL("./fixtures/route-surface.json", import.meta.url));
@@ -103,6 +107,29 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})/;
 const ABSOLUTE_PATH = /^(~|\/)[^\s]*\//;
 /**
+ * Keys carrying authored copy rather than route behavior.
+ *
+ * `/api/foreman/instructions` returns the whole of FOREMAN.md, and `/api/skills` returns the
+ * catalog's descriptions. Pinning those bytes would fail this test - and demand a fixture
+ * regeneration - on any edit to documentation that has nothing to do with route composition,
+ * which is the one thing the oracle is here to watch.
+ *
+ * Note what is NOT here: `error`. Those long strings are Zod's rendered validation output, so
+ * they encode a route's accepted schema, and a change to one is a change to behavior. That is
+ * how this fixture caught main widening a setup id enum.
+ */
+const PROSE_KEYS = new Set(["defaultText", "description", "text", "why"]);
+
+/**
+ * A content digest of the prose above, which moves with it.
+ *
+ * `/api/foreman/instructions` returns `foreman-instructions-v1:<sha>` over FOREMAN.md, so
+ * tokenising the text while pinning its hash would leave the fixture just as sensitive to a
+ * documentation edit, only less obviously.
+ */
+const DIGEST = /^[\w-]*:?[0-9a-f]{32,}$/;
+
+/**
  * Keys whose value is inherently per-process, per-release, or per-machine.
  *
  * `installed` is the last of those: `/api/cost/config` reports whether the operator's Claude
@@ -125,6 +152,7 @@ function normalize(value: unknown): unknown {
     if (UUID.test(value)) return "<uuid>";
     if (TIMESTAMP.test(value)) return "<timestamp>";
     if (ABSOLUTE_PATH.test(value)) return "<path>";
+    if (DIGEST.test(value)) return "<digest>";
     return value;
   }
   // Epoch milliseconds. Below this a number is a count, a port or an index, all worth asserting.
@@ -134,7 +162,11 @@ function normalize(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, inner]) => [key, VOLATILE_KEYS.has(key) ? `<${key}>` : normalize(inner)]),
+        .map(([key, inner]) => {
+          if (VOLATILE_KEYS.has(key)) return [key, `<${key}>`];
+          if (PROSE_KEYS.has(key) && typeof inner === "string") return [key, "<prose>"];
+          return [key, normalize(inner)];
+        }),
     );
   }
   return value;

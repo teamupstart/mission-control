@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { fileURLToPath, URL } from "node:url";
 import {
   buildApp,
@@ -216,6 +217,20 @@ test("a NON-enumerable misspelling on Object.prototype is refused too", () => {
   }
 });
 
+test("unrelated prototype pollution is ignored, not reported as a dependency", () => {
+  // A library or polyfill adding `Object.prototype.foo` has not tried to supply a route
+  // dependency. Refusing every construction over it would take the daemon down for a reason
+  // that has nothing to do with RouteDeps, and would name `foo` as a dependency it is not.
+  const polluted = Object.prototype as unknown as Record<string, unknown>;
+  polluted.unrelatedLibraryField = 1;
+  try {
+    const resolved = resolveUnchecked({ registry, reviews, tasks, queues });
+    assert.equal(resolved.registry, registry);
+  } finally {
+    delete polluted.unrelatedLibraryField;
+  }
+});
+
 test("a symbol installed on Object.prototype is refused", () => {
   // A pristine Object.prototype carries no symbol keys at all, so any symbol found on the
   // chain is an installed one and is reported by description.
@@ -386,41 +401,50 @@ function sourceFiles(dir: string): string[] {
 }
 
 /**
- * Call sites that hand `buildApp` more than one argument.
+ * Call sites that hand `buildApp` more than one argument, found by PARSING rather than by
+ * counting brackets in raw text.
  *
- * A separator at bracket depth one is the whole signal: `buildApp(deps)` and
- * `buildApp({ registry, reviews })` are both single-argument and safe, because identity comes
- * from field names either way, while `buildApp(a, b)` is the positional shape by definition.
- * Commas nested inside the object literal never reach depth one.
+ * Text scanning cannot tell a call from prose: a comment anywhere under `src/` or `test/`
+ * that merely mentions `buildApp(a, b)` - the kind this change writes about the old
+ * signature - tripped a depth counter and failed this test for nothing. It also missed the
+ * case this test exists for, because `(buildApp as never)(a, b)` contains no `buildApp(`
+ * substring at all.
+ *
+ * The callee is unwrapped through parentheses and casts for that reason, and a parse means
+ * the guard needs no exemptions: `buildApp(deps, ...extra)` in routes.ts is a declaration,
+ * not a call.
  */
-function positionalCallsIn(source: string): string[] {
-  const found: string[] = [];
-  for (const match of source.matchAll(/\bbuildApp\(/g)) {
-    let depth = 1;
-    let separated = false;
-    let i = match.index + match[0].length;
-    for (; i < source.length && depth > 0; i++) {
-      const ch = source[i];
-      if (ch === "(" || ch === "{" || ch === "[") depth++;
-      else if (ch === ")" || ch === "}" || ch === "]") depth--;
-      else if (ch === "," && depth === 1) separated = true;
-    }
-    if (separated) found.push(source.slice(match.index, Math.min(i, match.index + 60)));
+function calleeIsBuildApp(expression: ts.Expression): boolean {
+  let node: ts.Expression = expression;
+  for (;;) {
+    if (ts.isParenthesizedExpression(node)) node = node.expression;
+    else if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) node = node.expression;
+    else if (ts.isNonNullExpression(node)) node = node.expression;
+    else break;
   }
+  return ts.isIdentifier(node) && node.text === "buildApp";
+}
+
+function positionalCallsIn(file: string, source: string): string[] {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.ESNext, true);
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && calleeIsBuildApp(node.expression) && node.arguments.length > 1) {
+      found.push(node.getText(parsed).replace(/\s+/g, " ").slice(0, 70));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
   return found;
 }
 
 test("no caller anywhere composes routes by position", () => {
-  // A cast can still reach a positional call that the signature refuses, so this scans the
-  // tree rather than trusting the type checker alone.
+  // A cast reaches a positional call the signature refuses - `{} as never` satisfies the
+  // `never[]` rest parameter - so this reads the tree rather than trusting the type checker.
   const root = fileURLToPath(new URL("..", import.meta.url));
-  // This file is excluded because it is the guard: it necessarily contains the pattern it
-  // looks for, in `unchecked(registry, reviews, tasks, queues)` above.
-  const exempt = new Set([join(root, "src/server/routes.ts"), fileURLToPath(import.meta.url)]);
   const offenders: string[] = [];
   for (const file of [...sourceFiles(join(root, "src")), ...sourceFiles(join(root, "test"))]) {
-    if (exempt.has(file)) continue;
-    for (const call of positionalCallsIn(readFileSync(file, "utf8"))) {
+    for (const call of positionalCallsIn(file, readFileSync(file, "utf8"))) {
       offenders.push(`${file.slice(root.length)}: ${call}`);
     }
   }

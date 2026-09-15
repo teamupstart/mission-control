@@ -347,7 +347,7 @@ export async function runApplyUpdate(args, ops = realApplyOperations(args.logPat
     const privateManifest = join(dirname(dirname(fileURLToPath(import.meta.url))), "migration-plan.json");
     if (resolve(args.migrationPlan) === privateManifest) rmSync(privateManifest, {force: true});
     const result = await runMigration(plan, migrationRuntimePorts(handoff));
-    if (result.error) ops.log(`migration: ${result.error}`);
+    if (result.error) ops.log(`migration: ${result.diagnostic ?? result.error}`);
     return {ok: result.committed, message: result.error ?? null};
   }
   const outcomePath = join(args.stateDirectory, "update-outcome.json");

@@ -39,7 +39,7 @@ export interface MigrationPorts {
   launchTarget(plan: MigrationPlan): Promise<ProcessRecord>; waitForReady(journal: MigrationJournal): Promise<void>;
   stopTarget(journal: MigrationJournal): Promise<void>; launchSource(source: string): Promise<void>;
 }
-export function runMigration(plan: MigrationPlan, ports: MigrationPorts, options?: {policy?: MigrationPolicy; lock?: LockOperations}): Promise<{ committed: boolean; journal: MigrationJournal; error?: string }>;
+export function runMigration(plan: MigrationPlan, ports: MigrationPorts, options?: {policy?: MigrationPolicy; lock?: LockOperations}): Promise<{ committed: boolean; journal: MigrationJournal; error?: string; diagnostic?: string }>;
 export function recoverMigration(stateDirectory: string, ports: Pick<MigrationPorts, 'stopTarget' | 'launchSource'>, options?: {policy?: MigrationPolicy; lock?: LockOperations}): Promise<MigrationJournal | null>;
 export function repairMigration(stateDirectory: string, repair: (journal: MigrationJournal) => Promise<MigrationRepair[]>, options?: {policy?: MigrationPolicy; lock?: LockOperations}): Promise<MigrationJournal | null>;
 

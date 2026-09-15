@@ -221,11 +221,19 @@ export function commandName(command: string): string | null {
   return scaffold;
 }
 
-/** Keys worth showing, per tool. First one present wins. */
+/**
+ * Keys worth showing, per tool. First one present wins.
+ *
+ * `path` sits beside `file_path` on the three file tools because two harnesses spell the same
+ * argument differently: Claude's `Read`/`Write`/`Edit` take `file_path`, pi's take `path`
+ * (measured against `@earendil-works/pi-coding-agent` 0.84.2's tool schemas, and captured in
+ * `PI_TOOL_SESSION_LINES`). A name listed here never falls through to `GENERIC_KEYS`, so
+ * naming only Claude's spelling left every pi file call as a bare chip.
+ */
 const DETAIL_KEYS: Record<string, readonly string[]> = {
-  read: ["file_path"],
-  write: ["file_path"],
-  edit: ["file_path"],
+  read: ["file_path", "path"],
+  write: ["file_path", "path"],
+  edit: ["file_path", "path"],
   notebookedit: ["notebook_path"],
   glob: ["pattern"],
   grep: ["pattern"],

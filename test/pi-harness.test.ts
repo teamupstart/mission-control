@@ -22,7 +22,12 @@ import {
 } from "../src/server/harness/pi/meta.ts";
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import { COST_UNSUPPORTED } from "../src/shared/cost.ts";
-import { PI_SESSION_LINES, PI_SESSION_JSONL } from "./fixtures/pi-sessions.ts";
+import {
+  PI_SESSION_LINES,
+  PI_SESSION_JSONL,
+  PI_TOOL_SESSION_JSONL,
+} from "./fixtures/pi-sessions.ts";
+import { observedActivity } from "../src/web/lib/conversation-activity.ts";
 import { preparePiLaunch } from "../src/server/harness/pi/launch.ts";
 
 // ---- the capability shape: what pi declares vs what it disables ----
@@ -305,6 +310,31 @@ test("text turns parse; thinking is dropped; the aborted turn has an interrupt m
     assert.equal(win.messages[1]!.text, "Could you clarify what you'd like me to do?");
     assert.equal(win.messages[3]!.text, "Goodbye.");
     assert.equal(win.messages[5]!.text, "[Request interrupted by user]");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a tool-only assistant turn survives, so its command reaches the activity rail", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-tools-"));
+  const path = join(dir, "session.jsonl");
+  writeFileSync(path, PI_TOOL_SESSION_JSONL);
+  try {
+    const win = piTranscript.messages!.window(path);
+    // The prompt, the two tool-only turns, and the closing reply. The `toolResult` records
+    // between them are the machine's answers under a third role and are not turns.
+    assert.deepEqual(win.messages.map((m) => m.role), ["user", "assistant", "assistant", "assistant"]);
+    assert.deepEqual(win.messages.map((m) => m.tools.map((t) => t.name)), [[], ["read"], ["bash"], []]);
+    // The arguments ride along under pi's own key, which is what lets a chip name the file
+    // and the command rather than repeating the tool's name back.
+    assert.equal(win.messages[1]!.tools[0]!.input, `{"path":"notes.txt"}`);
+    assert.equal(win.messages[2]!.tools[0]!.input, `{"command":"echo done"}`);
+    // Both tool-only turns carry no prose, so before the discriminator was measured they
+    // were dropped whole and the rail had nothing to show for a session that ran two tools.
+    assert.deepEqual(
+      observedActivity(win.messages).map((row) => [row.name, row.detail]),
+      [["read", "notes.txt"], ["bash", "echo"]],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -114,20 +114,22 @@ export function locatePiTranscript(s: Session, sessionsDir = piSessionsDir()): s
 }
 
 /**
- * Normalize one pi `tool_call` content part into a `ToolCall`, mirroring Claude's `toolCall`:
+ * Normalize one pi `toolCall` content part into a `ToolCall`, mirroring Claude's `toolCall`:
  * an input that serializes to nothing meaningful carries no `input` at all.
  *
- * The `tool_call` part type and its `name`/`input` fields are taken from pi-ai's content-part
- * type definitions, and are best-effort: the verified fixture is a text-only session (pi was
- * not logged in to a provider to drive a tool call), so this path is defensive rather than
- * captured. Getting it wrong drops a tool chip, never a whole turn - the text is parsed
- * independently below.
+ * `toolCall` and its `name`/`arguments` fields are pi-ai's own `ToolCall` content part
+ * (`@earendil-works/pi-ai`, `types.d.ts`), captured verbatim in `PI_TOOL_SESSION_LINES`.
+ * Getting the discriminator wrong is not a dropped chip but a dropped TURN: an assistant
+ * turn that only calls a tool has no text, so an unrecognized part leaves nothing to render
+ * and the whole invocation disappears from the conversation and the activity rail. `tool_call`
+ * - the snake_case name pi uses for its EXTENSION EVENT, not for this part - was read here
+ * until it was measured against a session that had actually driven a tool.
  */
 function piToolCall(block: Record<string, unknown>): ToolCall {
   const name = String(block.name ?? "tool");
   let json: string | undefined;
   try {
-    json = JSON.stringify(block.input ?? block.arguments);
+    json = JSON.stringify(block.arguments);
   } catch {
     return { name };
   }
@@ -139,7 +141,8 @@ function piToolCall(block: Record<string, unknown>): ToolCall {
  * Turn one parsed pi JSONL record into renderable messages. Keeps
  * `message` records (user prompts and assistant turns with text and/or tool calls); drops the
  * `session` / `model_change` / `thinking_level_change` bookkeeping records, `thinking` parts
- * (not conversation) and `tool_result` parts (the machine's answer, not a turn).
+ * (not conversation), and whole `toolResult` messages - pi gives a tool's answer its own
+ * record under a third role, so the role guard below is what drops it, not a part filter.
  */
 export function piToMessages(o: unknown): TranscriptMessage[] {
   if (!o || typeof o !== "object") return [];
@@ -162,7 +165,7 @@ export function piToMessages(o: unknown): TranscriptMessage[] {
       } else if (b && typeof b === "object") {
         const block = b as Record<string, unknown>;
         if (block.type === "text") text += String(block.text ?? "");
-        else if (block.type === "tool_call") tools.push(piToolCall(block));
+        else if (block.type === "toolCall") tools.push(piToolCall(block));
       }
     }
   }

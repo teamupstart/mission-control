@@ -148,6 +148,22 @@ test("path tools chip the basename, keeping the full path on hover", () => {
   assert.deepEqual(chip, { name: "edit", detail: "review-workflow.test.ts", title: path });
 });
 
+// The same three tools, as pi spells them. Their argument is `path`, and because a name
+// listed in DETAIL_KEYS never falls through to the generic key list, naming only Claude's
+// `file_path` left every pi file call chipped as a bare tool name - a column of
+// "read / read / edit" beside a Claude session's "read tools.ts / edit registry.ts".
+test("pi's file tools chip their file too, under pi's own argument name", () => {
+  assert.deepEqual(toolChip(call("read", { path: "notes.txt" })), {
+    name: "read",
+    detail: "notes.txt",
+    title: "notes.txt",
+  });
+  // Pi writes its paths relative to the session's cwd, which the basename rule leaves alone -
+  // the directories are the useful part of a short relative path, not row-eating noise.
+  assert.equal(toolChip(call("write", { path: "src/server/registry.ts", content: "x" })).detail, "src/server/registry.ts");
+  assert.equal(toolChip(call("edit", { path: "/repo/src/web/lib/tools.ts", edits: [] })).detail, "tools.ts");
+});
+
 test("known tools chip their most telling field", () => {
   assert.equal(toolChip(call("Grep", { pattern: "tool_use", output_mode: "content" })).detail, "tool_use");
   assert.equal(toolChip(call("Task", { description: "Find flaky tests" })).detail, "Find flaky tests");

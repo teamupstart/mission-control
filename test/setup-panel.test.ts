@@ -153,6 +153,48 @@ test("a satisfied executable row names its resolver source", () => {
   assert.match(html, /class="setup-source">Source: login shell/);
 });
 
+test("a Setup guide remains available on a satisfied integration row", () => {
+  const upstartclaw = row({
+    rowId: { source: "environment-check", id: "upstartclaw-core-setup" },
+    family: "extensions",
+    label: "UpstartClaw core setup",
+    status: { state: "satisfied", evidence: "Core plugin setup completed" },
+    guide: {
+      url: "https://github.com/teamupstart/mission-control/blob/main/docs/upstart.md",
+      label: "Open UpstartClaw setup guide",
+    },
+  });
+  const html = render([upstartclaw], "setup/family-extensions");
+  assert.match(html, /Core plugin setup completed/);
+  assert.match(html, /Open UpstartClaw setup guide/);
+  assert.match(html, /target="_blank"/);
+  assert.match(html, /rel="noreferrer"/);
+});
+
+test("an UpstartClaw setup gap keeps its guide beside the interactive remedy", () => {
+  const upstartclaw = row({
+    rowId: { source: "environment-check", id: "upstartclaw-core-setup" },
+    family: "extensions",
+    label: "UpstartClaw core setup",
+    status: {
+      state: "needs-setup",
+      why: "Run setup before dispatching.",
+      evidence: null,
+    },
+    remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
+    guide: {
+      url: "https://github.com/teamupstart/mission-control/blob/main/docs/upstart.md",
+      label: "Open UpstartClaw setup guide",
+    },
+  });
+  const html = render([upstartclaw], "setup/family-extensions");
+  assert.match(html, /setup-status-needs-setup/);
+  assert.match(html, /Run setup before dispatching/);
+  assert.match(html, /class="setup-command"><code>\/upstartclaw-core:setup<\/code>/);
+  assert.match(html, /class="setup-guide"/);
+  assert.match(html, /Open UpstartClaw setup guide/);
+});
+
 test("evidence outside the home directory gets no tooltip repeating what is on screen", () => {
   const brew = { ...CMUX, status: { state: "satisfied", evidence: "/opt/homebrew/bin/cmux" } } as SetupRowView;
   const html = render([CLAUDE, brew, GH_CLI], "setup/family-terminals");

@@ -33417,7 +33417,8 @@ body.foreman-sidecar-open .modal-backdrop {
 .setup-row-needs-setup .setup-why,
 .setup-row-needs-setup .setup-evidence,
 .setup-row-satisfied .setup-evidence,
-.setup-row .setup-remedy-actions {
+.setup-row .setup-remedy-actions,
+.setup-row .setup-guide {
   padding-left: 16px;
 }
 

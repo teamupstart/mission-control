@@ -99,6 +99,7 @@ test("a machine with no UpstartClaw at all says nothing", async () => {
   const view = await claw({});
   assert.equal(view.warning, null);
   assert.equal(view.detail, null);
+  assert.equal(view.ready, false);
 });
 
 test("an unattended UpstartClaw query requires both the installed plugin and completed setup", async () => {
@@ -150,6 +151,7 @@ test("a finished setup says nothing", async () => {
   const view = await claw({ files: { [STATE]: text("completed\n") }, dirs: INSTALLED_LAYOUT });
   assert.equal(view.warning, null);
   assert.equal(view.detail, null);
+  assert.equal(view.ready, true);
 });
 
 test("no_setup gives the setup action and a brief reason without file details", async () => {
@@ -159,6 +161,7 @@ test("no_setup gives the setup action and a brief reason without file details", 
     "Run /upstartclaw-core:setup in an interactive Claude Code session before dispatching. UpstartClaw requires an interactive sign-in before agents can use its tools.",
   );
   assert.equal(view.detail, null);
+  assert.equal(view.ready, false);
 });
 
 // `check-setup.sh` exits 0 for `in_progress` - so the honest warning for this state is NOT

@@ -89,6 +89,12 @@ one-shot task, even when that work crosses application layers. The HTML Plans re
 this as its final selectable follow-up; choosing it passes the approved plan and submitted decisions
 into [`skills/phased-plan/SKILL.md`](../skills/phased-plan/SKILL.md).
 
+Phased Plan commits and pushes its artifacts before scheduling. It then reads
+`get_plan_publication_context`: a bound workflow owns the PR and the planning turn ends;
+without a binding, the skill opens and follows the PR itself. Manual bindings wait for manual
+submission. Missing tools, unreadable context, pending bindings, and paused bindings do not
+permit direct publication. Phase tasks stay blocked until the planning PR merges.
+
 Repository analysis now drives each phase task's `create_task` selectors. Work in the source-plan
 repository keeps the current-repository default. Work implemented only in repository B makes B the
 primary; when its plan files remain in source repository A, A is attached and marked context-only so

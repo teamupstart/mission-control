@@ -1,5 +1,6 @@
 import { WorkflowPersonaReviewInputSchema } from "@shared/protocol.ts";
 import type { WorkflowPersonaReviewInput } from "@shared/workflow.ts";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { clipUtf8Bytes } from "../util/utf8.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -2792,6 +2793,8 @@ export interface ForemanCompletionStoreInput {
   /** Same completion boundary across every repository sibling. */
   evidenceGroupKey?: string;
   expectedIntent: SessionIntentGuard | null;
+  /** Verified conversation ownership, including when this run targets a secondary repo. */
+  expectedPlanPublication?: PlanPublicationContext;
   runId: string;
   submissionId: string;
   /**
@@ -4677,6 +4680,15 @@ export class WorkflowStore {
     const row = this.db.prepare(
       `SELECT * FROM workflow_bindings
         WHERE note_key = ? AND repo_root = '' AND state = 'active'`,
+    ).get(noteKey);
+    return row ? parseWorkflowBindingRow(row) : null;
+  }
+
+  /** Includes paused/archived ownership so a missing dispatch binding is not an opt-out. */
+  latestBindingForNote(noteKey: string): WorkflowBinding | null {
+    const row = this.db.prepare(
+      `SELECT * FROM workflow_bindings WHERE note_key = ? AND repo_root = ''
+       ORDER BY created_at DESC, updated_at DESC, id ASC LIMIT 1`,
     ).get(noteKey);
     return row ? parseWorkflowBindingRow(row) : null;
   }
@@ -6595,13 +6607,26 @@ export class WorkflowStore {
 
   /**
    * Claim one Foreman proof and retire its matching once-only guard atomically.
-   * The worker never supplies durable workflow identity, and this transaction never creates
-   * any: the manager resolves the already-bound workflow before the claim reaches here.
+   * The manager selects the already-bound workflow; this transaction never creates a binding.
+   * A worker's expected plan ownership can only reject that selection, never replace it.
    */
   claimForemanCompletion(input: ForemanCompletionStoreInput): ForemanCompletionStoreResult {
     return transaction(this.db, () => {
       const binding = input.binding;
       const noteKey = binding.noteKey;
+      // The manager's read cannot authorize a later write. Check the active conversation
+      // binding under the same write lock as run creation and completion consumption.
+      // Secondary repo bindings derive from this anchor and share its verified ownership.
+      const expected = input.expectedPlanPublication;
+      if (expected) {
+        const anchor = this.activeBindingForNote(noteKey);
+        if (expected.owner !== "workflow" || !anchor ||
+          anchor.id !== expected.bindingId ||
+          anchor.workflowVersionId !== expected.workflowVersionId ||
+          anchor.triggerMode !== expected.triggerMode) {
+          throw new Error("Foreman plan publication ownership is no longer current");
+        }
+      }
       const triggerKey = `foreman:${binding.id}:${input.completionKind}:${input.marker}`;
       const expectedIntent = input.expectedIntent;
       const currentIntent = expectedIntent || input.completionKind === "prompted"

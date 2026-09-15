@@ -238,7 +238,7 @@ export function buildVerifyPrompt(input: VerifyInput): string {
       ...contract.deferred.map((action) => `- ${action.noun}`),
       "",
       "Therefore: if the objective also asks for any of that deferred work, its absence is NOT a",
-      "gap and NOT a reason to answer complete=false. Judge only whether the implementation work",
+      "gap and NOT a reason to answer complete=false. Judge only whether the required work",
       "above was actually done. Everything else about your bar is unchanged - missing",
       "implementation, an untested new code path, missing required documentation and a regression",
       "are all still blocking, and you must not credit deferred work as done either.",

@@ -169,7 +169,7 @@ Four ready-made workflows ship already published in the Library:
 | **General Review** | Intent Conformance; then Code Risk, Code Quality, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **Bug Fix Review** | Intent Conformance; then Root Cause & Regression, Code Risk, and Test Coverage; then Test Evidence and Slop Filter | Verified Pull Request action |
 | **No-Mistakes Review (High Rigor)** | Intent Conformance and Test Coverage; then Code Risk, Code Quality, and Code Design; then Test Evidence, Documentation, and Slop Filter | Verified Pull Request action, then GitHub Inspector |
-| **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Review completion |
+| **Plan Validation** | Intent Conformance; then Plan Consistency, Phase Dependencies, and Plan Feasibility | Verified Pull Request action |
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
@@ -180,7 +180,10 @@ resumption, and up to five repair rounds, subject to the existing trust and exec
 General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
 Codex Sol for Code Design and Terra for its other judges.
 
-Plan Validation has no code-test Commands, Slop Filter, PR action, or Inspector gate. It compares
+Plan Validation v2 follows its judges with the verified Pull Request action. It has no code-test
+Commands, Slop Filter, or Inspector gate. Existing v1 bindings retain their review-only graph;
+upgrade or rebind them explicitly to add publication. Custom workflows retain their own authored
+completion behavior. Plan Validation compares
 complete relevant plan files, not just changed hunks: repeated requirements and interfaces, phase
 producers and consumers, safe intermediate states, and feasible validation steps. Single-phase
 plans receive the same checks across their sections and tasks. Missing or truncated comparison
@@ -2369,6 +2372,14 @@ taken before the upgrade, then start the matching older build. Do not open the u
 with that build or relabel recovery rows as author refinements. A downgrade loses history recorded
 after the backup; retain exports for audit before restoring. Settings-only backups do not restore
 workflow history.
+
+The same downgrade restriction applies after creating bindings or runs for a built-in version
+that the older build did not ship, including Plan Validation v2. Built-in versions come from
+the application catalog, so an older build cannot resolve a newer version id from the upgraded
+database. Before upgrading, keep an offline database backup. To return to a build that only
+ships Plan Validation v1 after using v2, stop the application, restore that pre-upgrade backup,
+and start the matching older build. Restoring only the previous app bundle does not restore
+workflow compatibility or preserve history written since the backup.
 
 ### Canvas and accessibility controls
 

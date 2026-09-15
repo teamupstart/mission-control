@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PlanPublicationContextSchema } from "./plan-publication.ts";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import {
   HARNESS_LAUNCHED_TASK_KINDS,
@@ -777,6 +778,13 @@ const mcpTaskDependencyRefinement = {
   path: ["dependsOnTaskIds"],
   message: "at most 50 task dependencies are allowed",
 };
+
+/** MCP supplies its own launch identity; the agent cannot choose a publication owner. */
+export const McpPlanPublicationSchema = z.object({
+  env: EnvSchema,
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+}).strict();
 
 /**
  * MCP `create_task`: create a backlogged implementation task and optionally bind it
@@ -4332,6 +4340,7 @@ export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
   generation: z.number().int().min(1),
   expectedIntent: SessionIntentGuardSchema,
+  expectedPlanPublication: PlanPublicationContextSchema.optional(),
   // The human-decision path must consume the generation and raise its Ship it?
   // card in one durable write. If that write fails, neither fact lands and the worker
   // can retry the whole verified boundary on its next unhurried tick.
@@ -6149,9 +6158,8 @@ export const WorkflowCheckOutcomeSchema = z.object({
  * Foreman's proof that a completion episode is verified, offered to whatever workflow is
  * already bound to the conversation.
  *
- * The claim carries no workflow identity at all. A claim can only ever start a run on a
- * binding an operator or a dispatch already made, so it can never be the thing that puts a
- * second PR-producing path on a branch.
+ * The daemon selects the existing binding. A plan may supply its verified ownership as a
+ * comparison guard, never as a request to select or create a binding.
  */
 export const WorkflowCompletionClaimSchema = z.object({
   completionKind: z.enum(WORKFLOW_COMPLETION_KINDS),
@@ -6163,6 +6171,7 @@ export const WorkflowCompletionClaimSchema = z.object({
   summary: z.string().min(1).max(WORKFLOW_EXECUTION_LIMITS.verdictSummary),
   evidenceFingerprint: z.string().min(1).max(200),
   expectedIntent: SessionIntentGuardSchema.nullable().optional().default(null),
+  expectedPlanPublication: PlanPublicationContextSchema.optional(),
 }).superRefine((claim, ctx) => {
   if (claim.completionKind === "prompted" && !claim.expectedWorkCycle) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Prompted completion requires a work cycle" });

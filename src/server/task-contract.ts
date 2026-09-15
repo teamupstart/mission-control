@@ -100,7 +100,7 @@ const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) =
   bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
   plan: (task, inputs) => [
-    planContractAppendix(requirePlanSkills(task, inputs)),
+    planContractAppendix(requirePlanSkills(task, inputs), task.workflowId !== null),
     ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
   ].join("\n\n"),
   pipeline: () => null,

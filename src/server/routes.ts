@@ -55,6 +55,7 @@ import {
   InspectorConfigPatchSchema,
   LlmConfigPatchSchema,
   McpCreateTaskSchema,
+  McpPlanPublicationSchema,
   McpCreateTaskV2Schema,
   type McpCreateTaskV2,
   McpAdoptPipelineRunSchema,
@@ -2461,6 +2462,11 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
       ? c.json(manager.bindings())
       : c.json({ error: "Workflow manager unavailable" }, 503);
   });
+  app.get("/api/sessions/:id/plan-publication", (c) => {
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    return c.json(manager.planPublicationContext(c.req.param("id")));
+  });
   app.post("/api/workflow-bindings", async (c) => {
     const manager = workflowManager();
     if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
@@ -4705,6 +4711,17 @@ export function buildApp(deps: RouteDeps, ...extra: never[]): Hono {
     const result = tasks.reportPipelineWorkspace(task.id, parsed.data.path);
     if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ task: result.task, replayed: result.replayed });
+  });
+
+  app.post("/mcp/plan-publication", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const manager = workflowManager();
+    if (!manager) return c.json({ error: "Workflow manager unavailable" }, 503);
+    const parsed = await parseBody(c, McpPlanPublicationSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.findSessionByEnv(parsed.data.env, parsed.data.sessionId, parsed.data.cwd);
+    if (!session || session.state === "exited") return c.json({ error: "no matching active session" }, 404);
+    return c.json(manager.planPublicationContext(session.id));
   });
 
   app.post("/mcp/workflow-evidence", bodyLimit({

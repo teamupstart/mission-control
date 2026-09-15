@@ -87,14 +87,33 @@ const SHIP_CONTRACT: TaskCompletionContract = {
   ],
 };
 
+const PLAN_CONTRACT: TaskCompletionContract = {
+  kind: "plan",
+  owner: "Mission Control",
+  boundary: "the planning handoff to the bound workflow",
+  complete: [
+    "the human has reviewed and approved the plan, and their decisions are incorporated; dismissal is not approval",
+    "the plan's Markdown and rendered HTML are complete and consistent",
+    "when requested, phase files, the audited dependency graph, and the phase-to-task-id map are complete; declined phasing requires no phase tasks",
+    "artifacts referenced by phase tasks are committed and pushed, with exact paths verified before scheduling, and every phase task depends on the planning session",
+    "the verification the planning work requires has been run",
+    "workflow evidence registration the task asked for is done when an active Persona workflow accepts it, including the current plan text and required cross-file context",
+  ],
+  // Plans need durable artifacts before scheduling. Commit/push are deliberately retained.
+  deferred: [
+    ...SHIP_CONTRACT.deferred.filter((action) => !["commit", "push"].includes(action.id)),
+    { id: "merge", imperative: "merge the pull request", noun: "merging the pull request" },
+  ],
+};
+
 /**
  * The contract per kind, or null for a kind that draws no such boundary.
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
  * uses one: a new task kind does not compile until it has said what its completion
  * boundary is, including saying it has none. Ship and Bugfix defer post-completion work;
- * scout, plan, pipeline and chat finish inside their own delivered turn and are
- * judged against their objective unchanged.
+ * workflow-bound plans defer publication follow-through. Other kinds and unbound plans
+ * are judged against their objective unchanged.
  */
 const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> = {
   ship: SHIP_CONTRACT,
@@ -108,12 +127,15 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
 /**
  * The trusted initial completion contract for a durable task kind, or null.
  *
- * Keyed by KIND alone, deliberately. Not by agent, not by the selected workflow, and not
- * by whether a workflow is bound at all: the binding decides what happens AFTER
- * completion, never what implementation-complete means. A `ship` task heading for
- * Straight-to-PR and one heading for No-Mistakes Review are complete at the same line.
+ * Ship/Bugfix keep a kind-only boundary. Plans defer PR work only when a workflow owns it;
+ * an unbound phased-plan skill retains its direct publication path. Callers resolve the
+ * binding structurally, never from transcript prose or Persona evidence eligibility.
  */
-export function taskCompletionContract(kind: TaskKind | null | undefined): TaskCompletionContract | null {
+export function taskCompletionContract(
+  kind: TaskKind | null | undefined,
+  workflowBound = false,
+): TaskCompletionContract | null {
+  if (kind === "plan" && workflowBound) return PLAN_CONTRACT;
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
 }
 

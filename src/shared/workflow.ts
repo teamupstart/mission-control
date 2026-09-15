@@ -1,6 +1,7 @@
 import { LLM_IMAGE_LIMITS, type LlmRunnerId, type ResolvedLlmRunner } from "./llm.ts";
 import type { RasterImageMimeType } from "./images.ts";
 import type { InspectorPosture } from "./inspector.ts";
+import type { PlanPublicationContext } from "./plan-publication.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type {
   InspectorComment,
@@ -3634,6 +3635,8 @@ export interface WorkflowCompletionClaim {
   summary: string;
   evidenceFingerprint: string;
   expectedIntent: SessionIntentGuard | null;
+  /** Comparison guard for verified plan ownership; never selects or creates a binding. */
+  expectedPlanPublication?: PlanPublicationContext;
 }
 
 export type WorkflowCompletionClaimResult =

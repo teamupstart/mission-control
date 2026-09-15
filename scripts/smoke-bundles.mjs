@@ -452,6 +452,7 @@ async function declaredMcpTools() {
       COMPLETE_RETRO_NO_CHANGE_TOOL: "src/server/retro-tool.ts",
       PLAN_DECISIONS_TOOL: "src/server/plans/tools.ts",
       PLAN_SCHEDULING_TOOL: "src/server/plans/tools.ts",
+      PLAN_PUBLICATION_TOOL: "src/server/plans/tools.ts",
     }[ref[1]];
     if (!from) {
       fail(`MISSION_MCP_TOOLS names ${ref[1]}, which this smoke does not know how to resolve`);

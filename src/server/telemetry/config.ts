@@ -24,6 +24,7 @@ import { digest } from "./identity.ts";
 import { isLoopbackHost, validateEndpoint } from "./endpoint.ts";
 import { registeredProjections } from "./registration.ts";
 import { noteTelemetryCollectionChanged } from "./retention.ts";
+import { resetSessionTelemetryObservations } from "./sessions.ts";
 import {
   clearSecret,
   getDestination,
@@ -33,6 +34,7 @@ import {
   purgeProfileQueue,
   putProjectionState,
   putSecret,
+  retirePrObservationWindows,
   telemetryTransaction,
   updateDestination,
 } from "./store.ts";
@@ -314,7 +316,7 @@ export function setTelemetryConfig(
     }
   }
 
-  return telemetryTransaction((d) => {
+  const applied = telemetryTransaction((d) => {
     // Did the STORED credential actually move? A PUT that echoes the same secret back - which
     // is what a form re-submit does - must not count as a change, or a second tab's open edit
     // is invalidated by somebody pressing Save twice.
@@ -353,7 +355,12 @@ export function setTelemetryConfig(
     // Collection starting or stopping mid-run is a run boundary for the unclean-shutdown
     // detector, exactly as process start and shutdown are. Arming it only at boot meant a
     // daemon that was told to start collecting through the API never armed it at all.
-    if (previous.enabled !== next.enabled) noteTelemetryCollectionChanged(next.enabled);
+    if (previous.enabled !== next.enabled) {
+      noteTelemetryCollectionChanged(next.enabled);
+      // In the consent transaction: neither a late merge nor a pending association from
+      // the old window may be captured after collection resumes. Journal facts stay intact.
+      retirePrObservationWindows(d);
+    }
 
     for (const profile of TELEMETRY_PROFILE_IDS) {
       const wasCapturing = profileIsCapturing(previous, profile);
@@ -420,6 +427,10 @@ export function setTelemetryConfig(
 
     return { ok: true, config: next, changed } satisfies TelemetryConfigApplied;
   });
+  // Only after the consent write commits. Live sessions are first observed again on their
+  // next publication; neither turns nor launch intents may bridge a collection gap.
+  if (previous.enabled !== next.enabled) resetSessionTelemetryObservations();
+  return applied;
 }
 
 /** Whether the operator has stored a credential for their own backend. Never the value. */

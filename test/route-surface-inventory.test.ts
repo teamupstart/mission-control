@@ -69,7 +69,9 @@ test("every route registered in source is present in the composed surface", () =
   console.log(`route surface: ${declared} declared in source, ${composed} composed`);
 });
 
-test("every registered route answers identically however the deps are ordered", async () => {
+test("every registered route answers identically however the deps are ordered", async (t) => {
+  // Compare dependency ordering under the same clock, including repo-index scan timestamps.
+  t.mock.method(Date, "now", () => 1_700_000_000_000);
   const forward = buildApp(FORWARD);
   const reversed = buildApp(REVERSED);
   const keys = routeKeys(forward);

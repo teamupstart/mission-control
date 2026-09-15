@@ -1,4 +1,5 @@
 import { recordAutomationUsage } from "./db.ts";
+import { observeUsageRecorded } from "./telemetry/index.ts";
 import { LLM_RUNNERS } from "./llm/index.ts";
 import { spendReportIsRecordable } from "./llm/spend.ts";
 import { isLlmRunnerId } from "@shared/llm.ts";
@@ -76,5 +77,28 @@ export function recordSpendReport(report: LlmSpendReport): SpendRecordOutcome {
     ts: report.ts,
     models,
   });
+  // The automation half of canonical usage, kept SEPARATE from authoring rather than folded
+  // into one total. These runs have no card and no session; mixing them into a per-session
+  // spend figure would attribute the Inspector's cost to whatever conversation happened to be
+  // open, and one combined total answers neither question.
+  //
+  // The run id is the ledger's own conflict target, so a Foreman worker retrying a POST it
+  // never saw the response to produces a duplicate here rather than a second set of tokens.
+  for (const m of models) {
+    observeUsageRecorded({
+      identity: `${report.role}|${report.runId}|${m.modelId}`,
+      usageOrigin: "automation",
+      costBasis: m.costUsd === null ? "unpriced" : m.basis === "reported" ? "reported" : "api-equivalent",
+      modelId: m.modelId,
+      input: m.input,
+      output: m.output,
+      reasoningOutput: m.reasoningOutput,
+      cacheRead: m.cacheRead,
+      cacheWrite: m.cacheWrite,
+      costUsd: m.costUsd,
+      agent: report.runner,
+      occurredAt: report.ts,
+    });
+  }
   return { kind: "recorded" };
 }

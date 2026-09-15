@@ -30,6 +30,7 @@ import {
 } from "../injections.ts";
 import { getStandingInstructions } from "../db.ts";
 import type { StandingInstructionsDelivery } from "@shared/standing-instructions.ts";
+import { noteSessionRestoring, observeSessionRestore } from "../telemetry/index.ts";
 import {
   cleanupDisposableAgentStateHome,
   createDisposableAgentStateHome,
@@ -235,11 +236,44 @@ export class SdkSupervisor {
         // Shutdown owns the in-flight row below. It must also prevent the next prepared row
         // from launching, which is why this check sits immediately before each serial step.
         if (this.shuttingDown) break;
+        // BEFORE the resume, so the card this row produces is recognised as a continuation
+        // rather than reported as a session somebody just started. An inert restoring
+        // projection is not yet a usable session, and the two must not share one count.
+        noteSessionRestoring(row.id, row.taskId);
+        const restoreStartedAt = Date.now();
         try {
           await this.resume(row);
+          observeSessionRestore({
+            sessionId: row.id,
+            taskId: row.taskId,
+            // A row whose harness this build no longer has is the documented unresumable
+            // case. It still gets an observation - the restoration was attempted and it
+            // failed - and `claude` is the catalog's fallback rather than a claim about
+            // which harness it was; the outcome is what the fact is for.
+            agent: row.agent ?? "claude",
+            // `shuttingDown` here means the resume returned without adopting anything,
+            // because a signal arrived mid-handshake. That is not a success and not a
+            // failure of the row, and folding it into either would misreport how often
+            // restoration actually works.
+            outcome: this.shuttingDown ? "interrupted" : "succeeded",
+            durationMs: Date.now() - restoreStartedAt,
+            turnInProgress: row.turnInProgress,
+          });
         } catch (err) {
           const why = err instanceof Error ? err.message : String(err);
           console.error(`[sdk] could not resume ${row.id}: ${why}`);
+          observeSessionRestore({
+            sessionId: row.id,
+            taskId: row.taskId,
+            // A row whose harness this build no longer has is the documented unresumable
+            // case. It still gets an observation - the restoration was attempted and it
+            // failed - and `claude` is the catalog's fallback rather than a claim about
+            // which harness it was; the outcome is what the fact is for.
+            agent: row.agent ?? "claude",
+            outcome: "failed",
+            durationMs: Date.now() - restoreStartedAt,
+            turnInProgress: row.turnInProgress,
+          });
           if (!this.shuttingDown) this.registerAndEvict(row, why);
         } finally {
           // Success has already emitted `session_upsert`; failure has already registered and

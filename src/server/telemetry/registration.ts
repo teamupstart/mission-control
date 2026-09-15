@@ -28,6 +28,18 @@ export interface EmittedSpan {
   status: "unset" | "ok" | "error";
   statusMessage: string | null;
   attributes: Record<string, string | number | boolean>;
+  /**
+   * Internal correlation ids to promote as span attributes, translated per destination.
+   *
+   * RAW here and scoped by the engine, because the per-profile salt is what makes the same
+   * session unjoinable across two audiences - and a projection cannot know it. A projection
+   * that hashed them itself would either leak the mapping or invent a second one.
+   *
+   * Catalog entries have declared `refAttributes` since Phase 1; nothing read them until
+   * Phase 3 needed a trace to say which session and which task a span belongs to, so a
+   * declared ref silently reached no span at all.
+   */
+  refs?: Record<string, string>;
 }
 
 /**

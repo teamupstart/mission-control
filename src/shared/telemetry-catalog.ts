@@ -18,10 +18,18 @@ import { z } from "zod";
 import {
   AUDIENCE_ALL,
   AUDIENCE_OPERATOR,
+  TELEMETRY_ACTOR_BASES,
   TELEMETRY_CATALOG_VERSION,
+  TELEMETRY_UNKNOWN_VALUE,
   type TelemetryAudience,
   type TelemetryEnvelope,
 } from "./telemetry.ts";
+// The shared registries, imported rather than restated. A telemetry schema that wrote out
+// "claude" | "codex" | "pi" would be a second source of truth for the harness list, and the
+// day a fourth one lands it would silently refuse every fact about it.
+import { EMULATOR_IDS, MULTIPLEXER_IDS } from "./terminal.ts";
+import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "./types.ts";
+import { MODEL_CATALOG } from "./model.ts";
 
 // ---- feature groups ----
 
@@ -420,6 +428,611 @@ export const TELEMETRY_SETTINGS_OPENED_EVENT = defineEvent({
   span: null,
 });
 
+// ---- Phase 3 events ----
+//
+// Session attribution, in the shape P2 argues for: what was actually KNOWN about a session
+// when the work happened, split into facts that are independently true. A model choice, a
+// session existing, a task finishing and a pull request landing are four different
+// observations with four different owners, and collapsing any pair of them is how a chart
+// ends up claiming a model "failed" because its session was killed.
+//
+// Every vocabulary below is imported from the shared registries rather than written out.
+// A fourth harness, a third runtime or a seventh task kind then widens these schemas by
+// existing, instead of by somebody remembering to edit a telemetry file.
+
+/**
+ * How a session came to be observed, and how much of its life this installation saw.
+ *
+ * Two fields rather than one, because they answer different questions and P2 requires both.
+ * `origin` is provenance - did Mission Control launch this, adopt it, or bring it back? -
+ * and `start_observation` is COVERAGE: whether the start itself was witnessed. A session
+ * discovered mid-flight has a real start time that nothing here can know, and reporting it
+ * as though capture had been running from the beginning is what would quietly put it in a
+ * complete-from-start cohort it does not belong to.
+ */
+export const SESSION_STARTED_EVENT = defineEvent({
+  name: "mission.session.started",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "core",
+  question: "How do sessions come into existence, on which harness and runtime, and for what kind of work?",
+  owner: "src/server/telemetry/sessions.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      /**
+       * `dispatch` is an app-owned launch, `discovered` an external session this
+       * installation adopted, `restored` a managed session brought back across a restart.
+       *
+       * ONE event with an origin rather than P2's proposed `session.created` /
+       * `session.first_observed` pair. The two would have carried an identical fact schema,
+       * an identical dedupe identity and an identical instrument, and the distinction they
+       * exist to preserve is exactly what this field states - while a single entry makes
+       * "exactly one start per session id" a property the dedupe table enforces, rather
+       * than an invariant split across two tables nobody joins.
+       */
+      origin: z.enum(["dispatch", "discovered", "restored"]),
+      /**
+       * Whether the START was witnessed, or only the session's existence.
+       *
+       * `observed_start` for a launch this installation performed with capture already
+       * running; `first_observed` for a session that already existed - its real start is
+       * unknowable and is NOT guessed at; `after_restart` for one re-adopted across a
+       * daemon boot, where continuity is proven but the original start is not this
+       * observation's.
+       */
+      start_observation: z.enum(["observed_start", "first_observed", "after_restart"]),
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      /** The existing task vocabulary, plus an explicit no-task state. A personal session is not `chat`. */
+      task_kind: z.enum([...TASK_KINDS, "none", "unknown", "unsupported"]),
+      /** Multiplexer and emulator INDEPENDENTLY: one nests inside the other, so neither implies the other. */
+      multiplexer: z.enum([...MULTIPLEXER_IDS, "none", "unknown", "not_applicable"]),
+      emulator: z.enum([...EMULATOR_IDS, "none", "unknown", "not_applicable"]),
+      /** How many repositories this session may write to. One on an ordinary dispatch. */
+      repo_count: z.number().int().min(0).max(64),
+    })
+    .strict(),
+  refKeys: ["session_id", "task_id", "conversation_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.start",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["origin", "start_observation", "agent", "runtime", "task_kind"],
+    refAttributes: ["session_id", "task_id", "conversation_id"],
+    errorWhen: null,
+  },
+});
+
+/**
+ * A managed session's restoration was attempted, and how it ended.
+ *
+ * Its own event rather than an outcome on the start above, because a restoration that FAILS
+ * never becomes a session at all - there is no start to hang it off. P2's rule stated as a
+ * schema: an inert restoring projection is not yet a usable session, and only the supervisor
+ * knows which of the two it produced.
+ */
+export const SESSION_RESTORE_EVENT = defineEvent({
+  name: "mission.session.restore.finished",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "core",
+  question: "Do managed sessions survive a daemon restart, and how long does coming back take?",
+  owner: "src/server/sdk/supervisor.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      outcome: z.enum(["succeeded", "failed", "interrupted"]),
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      /** Wall time for this one row's resume. Serial across rows, so it is not the whole restart. */
+      duration_ms: z.number().int().min(0),
+      /** Whether the row carried a turn that was in flight when the previous daemon stopped. */
+      turn_in_progress: z.boolean(),
+    })
+    .strict(),
+  refKeys: ["session_id", "task_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.restore",
+    kind: "internal",
+    durationFactKey: "duration_ms",
+    attributes: ["outcome", "agent", "turn_in_progress"],
+    refAttributes: ["session_id", "task_id"],
+    errorWhen: { factKey: "outcome", values: ["failed", "interrupted"] },
+  },
+});
+
+/**
+ * A dispatch attempt finished, carrying what it RESOLVED and what happened to it.
+ *
+ * Resolution and outcome in one fact because they are one operation: an admitted dispatch
+ * that never reaches a running agent is the single most interesting row here, and splitting
+ * it would make "which resolved model fails to launch" a join rather than a filter. The
+ * resolved values are frozen at the dispatcher's own resolution boundary and carried
+ * forward, so a settings change between resolution and failure cannot rewrite them.
+ *
+ * `resolved_model` is deliberately absent from every instrument below and present on the
+ * span: model ids multiplied by outcome, kind, agent and runtime is the label cross-product
+ * P0 forbids, and the question it answers is a trace question.
+ */
+export const DISPATCH_FINISHED_EVENT = defineEvent({
+  name: "mission.dispatch.finished",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "core",
+  question: "Which dispatches reach a running agent, on which resolved model and effort, and which fail before that?",
+  owner: "src/server/dispatcher.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      /**
+       * `launched` means an agent session was admitted and its first turn delivered.
+       * `failed` covers every refusal, including the ones that never spawned anything -
+       * which is the point: a launch request that fails never becomes a started session.
+       * `superseded` is a dispatch the operator settled underneath, and is not a failure.
+       */
+      outcome: z.enum(["launched", "failed", "superseded"]),
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      task_kind: z.enum([...TASK_KINDS, "unknown", "unsupported"]),
+      /** The model this launch resolved to, or empty when the harness's own default was left to decide. */
+      resolved_model: z.string(),
+      /** The effort this launch resolved to. `unsupported` when the harness has no effort parameter. */
+      resolved_effort: z.enum([...THINKING_LEVELS, "unsupported", "unknown"]),
+      /**
+       * Where the resolved values came from, which is what separates a deliberate pin from
+       * a default nobody chose. `task` is the row's own pin; `automation` is Foreman's
+       * launch-only choice; `kind` is the task-kind tier; `harness_default` is the panel
+       * default; `harness` means nothing was resolved and the CLI decides for itself.
+       */
+      resolution_source: z.enum(["task", "automation", "kind", "harness_default", "harness"]),
+      repo_count: z.number().int().min(0).max(64),
+      duration_ms: z.number().int().min(0),
+    })
+    .strict(),
+  refKeys: ["session_id", "task_id"],
+  ingress: null,
+  span: {
+    name: "mission.dispatch",
+    kind: "internal",
+    durationFactKey: "duration_ms",
+    attributes: [
+      "outcome",
+      "agent",
+      "runtime",
+      "task_kind",
+      "resolved_model",
+      "resolved_effort",
+      "resolution_source",
+    ],
+    refAttributes: ["session_id", "task_id"],
+    errorWhen: { factKey: "outcome", values: ["failed"] },
+  },
+});
+
+/**
+ * A new execution segment opened: the interval over which effective model and effort are
+ * stable, and the unit every model-comparison question is actually asked of.
+ *
+ * Opened on a MEANINGFUL observed change, never on a metadata refresh. A repeated identical
+ * observation refreshes quality and opens nothing, because a segment per poll would make
+ * "turns per segment" a fact about the poller.
+ *
+ * `quality` is what stops a configured value being reported as an executed one. P2's rule -
+ * do not set `effective_effort=high` merely because the API accepted a request - is enforced
+ * by the source refusing to open a segment until something OBSERVES the level, and by this
+ * field saying which of the two happened when it does.
+ */
+export const SESSION_SEGMENT_EVENT = defineEvent({
+  name: "mission.session.segment.opened",
+  version: 1,
+  group: "model_effort",
+  priority: "core",
+  question: "What model and effort was a session ACTUALLY executing, over which intervals?",
+  owner: "src/server/telemetry/sessions.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      /** The reported model id, or empty when nothing has reported one yet. Trace-only. */
+      model_id: z.string(),
+      /** Normalized effort. `unknown` and `unsupported` are NEVER translated into `low`. */
+      effort: z.enum([...THINKING_LEVELS, "unknown", "unsupported"]),
+      /**
+       * `observed` means a driver, status line or transcript reported it; `launch_resolved`
+       * means only the launch choice is known; `unknown` and `unsupported` mean what they
+       * say. P2 requires these stay distinguishable forever.
+       */
+      quality: z.enum(["observed", "launch_resolved", "unknown", "unsupported"]),
+      /** Which source produced the reading, so a weak read is never mistaken for a strong one. */
+      meta_source: z.enum(["statusline", "driver", "transcript", "codex-rollout", "none"]),
+      /**
+       * Why this segment opened. `conversation_rotation` always ends the previous one: a
+       * model value must never migrate across a context clear into an unrelated conversation.
+       */
+      reason: z.enum(["first_observation", "model_changed", "effort_changed", "conversation_rotation"]),
+      /** True when the session is carrying a next-turn selection that has not taken effect. */
+      effort_pending: z.boolean(),
+    })
+    .strict(),
+  refKeys: ["session_id", "task_id", "conversation_id", "segment_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.segment",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["agent", "runtime", "model_id", "effort", "quality", "meta_source", "reason"],
+    refAttributes: ["session_id", "conversation_id", "segment_id"],
+    errorWhen: null,
+  },
+});
+
+/**
+ * Somebody asked for a different effort level, and the driver answered.
+ *
+ * The SELECTION, which is a different fact from the segment above and must never be folded
+ * into it. `applies` is the whole reason this event exists: a harness whose driver defers to
+ * the next turn leaves the running turn on its old level, and a chart that attributed that
+ * turn's tokens to the newly selected level would be measuring the wrong thing.
+ */
+export const EFFORT_SELECTED_EVENT = defineEvent({
+  name: "mission.session.effort.selected",
+  version: 1,
+  group: "model_effort",
+  priority: "core",
+  question: "When an effort change is requested, is it accepted, and when does it take effect?",
+  owner: "src/server/routes.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      requested_effort: z.enum([...THINKING_LEVELS, "unknown", "unsupported"]),
+      outcome: z.enum(["accepted", "refused"]),
+      /** `current_turn` for a pane walk, `next_turn` for a deferring driver, `unknown` when refused. */
+      applies: z.enum(["current_turn", "next_turn", "unknown"]),
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      /** Attribution, never authorization - a dashboard context is not proof of a person. */
+      actor_basis: z.enum(TELEMETRY_ACTOR_BASES),
+    })
+    .strict(),
+  refKeys: ["session_id", "operation_id", "conversation_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.effort.select",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["requested_effort", "outcome", "applies", "agent", "runtime", "actor_basis"],
+    refAttributes: ["session_id", "operation_id"],
+    errorWhen: { factKey: "outcome", values: ["refused"] },
+  },
+});
+
+/**
+ * One conversation operation reached - or failed to reach - a session.
+ *
+ * At the DELIVERY seam, not at the button. The daemon owns whether bytes were taken, and
+ * that is the only honest place to say an operation happened. `actor_basis` is carried
+ * because a user-role message does not prove a human sender: automation writes through the
+ * same routes, and the difference is exactly what this field records.
+ */
+export const SESSION_OPERATION_EVENT = defineEvent({
+  name: "mission.session.operation",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "core",
+  question: "Which conversation operations do people and automation perform, and do they land?",
+  owner: "src/server/routes.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      operation: z.enum(["send", "queued", "interrupt", "cancel", "question_response"]),
+      outcome: z.enum(["delivered", "refused"]),
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      actor_basis: z.enum(TELEMETRY_ACTOR_BASES),
+    })
+    .strict(),
+  refKeys: ["session_id", "operation_id", "conversation_id", "segment_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.operation",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["operation", "outcome", "agent", "runtime", "actor_basis"],
+    refAttributes: ["session_id", "operation_id", "conversation_id", "segment_id"],
+    errorWhen: { factKey: "outcome", values: ["refused"] },
+  },
+});
+
+/**
+ * A session finished a turn, attributed to the segment that actually ran it.
+ *
+ * `duration_ms` is OBSERVED EXECUTION - the interval between the session entering and
+ * leaving a working state - and not wall time across a laptop sleep. The two are different
+ * numbers and this facility does not pretend to the second one; see `observation_bounded`.
+ */
+export const TURN_FINISHED_EVENT = defineEvent({
+  name: "mission.session.turn.finished",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "core",
+  question: "How long do turns take on a given model and effort, and how many complete?",
+  owner: "src/server/telemetry/sessions.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      /** The segment's effort at the moment the turn started. A next-turn selection does not move it. */
+      effort: z.enum([...THINKING_LEVELS, "unknown", "unsupported"]),
+      quality: z.enum(["observed", "launch_resolved", "unknown", "unsupported"]),
+      /** How the turn left the working state. `blocked` means it stopped to ask something. */
+      outcome: z.enum(["completed", "blocked", "ended"]),
+      duration_ms: z.number().int().min(0),
+      /**
+       * True when the interval was measured across a gap this daemon cannot vouch for - a
+       * restart, or a discovery miss. The duration is then a bound rather than a measurement,
+       * and a histogram that mixed the two would be quietly wrong about the tail.
+       */
+      observation_bounded: z.boolean(),
+    })
+    .strict(),
+  refKeys: ["session_id", "task_id", "conversation_id", "segment_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.turn",
+    kind: "internal",
+    durationFactKey: "duration_ms",
+    attributes: ["agent", "runtime", "effort", "quality", "outcome", "observation_bounded"],
+    refAttributes: ["session_id", "conversation_id", "segment_id"],
+    errorWhen: null,
+  },
+});
+
+/**
+ * A session's departure was CONFIRMED by its owner.
+ *
+ * Captured at durable removal - `session_remove` - and never inferred from an `exited`
+ * projection, which is provisional and can be cancelled by a rediscovery inside the linger.
+ * It says nothing about the task: `ended_while_work_open` is an observed relationship, not a
+ * verdict, and `mission.task.outcome` is where the task's own status lives.
+ */
+export const SESSION_ENDED_EVENT = defineEvent({
+  name: "mission.session.ended",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "core",
+  question: "How do sessions end, how long do they live, and how often is work still open when they do?",
+  owner: "src/server/telemetry/sessions.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      /**
+       * `kill_requested` only when an explicit stop was observed from an owner; `unknown` is
+       * the honest answer for everything else, and is deliberately not narrowed by guessing.
+       */
+      reason: z.enum(["kill_requested", "handoff", "shutdown", "unknown"]),
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      task_kind: z.enum([...TASK_KINDS, "none", "unknown", "unsupported"]),
+      /** True when a task bound to this session was still open at removal. Not a failure. */
+      ended_while_work_open: z.boolean(),
+      /** How long this installation OBSERVED the session, which is not its lifetime when it was adopted. */
+      observed_ms: z.number().int().min(0),
+      /** True when observation started after the session did, or was interrupted mid-life. */
+      observation_bounded: z.boolean(),
+    })
+    .strict(),
+  refKeys: ["session_id", "task_id", "conversation_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.end",
+    kind: "internal",
+    durationFactKey: "observed_ms",
+    attributes: [
+      "reason",
+      "agent",
+      "runtime",
+      "task_kind",
+      "ended_while_work_open",
+      "observation_bounded",
+    ],
+    refAttributes: ["session_id", "task_id"],
+    // A session ending is not an error. Whether the WORK failed is a different fact, with a
+    // different owner, and marking every ending red would make the trace view useless.
+    errorWhen: null,
+  },
+});
+
+/**
+ * Somebody asked for a session to stop.
+ *
+ * An ACTION, captured before any ending and independently of whether one follows. P2's
+ * table requires the two be orthogonal: a kill request that the agent survives, and a
+ * session that vanishes with no request, are both real and neither implies the other.
+ */
+export const SESSION_KILL_REQUESTED_EVENT = defineEvent({
+  name: "mission.session.kill.requested",
+  version: 1,
+  group: "session_lifecycle",
+  priority: "breadth",
+  question: "How often do operators and automation stop sessions deliberately?",
+  owner: "src/server/routes.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      agent: z.enum([...AGENT_TYPES, "unknown", "unsupported"]),
+      runtime: z.enum([...SESSION_RUNTIMES, "unknown", "unsupported"]),
+      outcome: z.enum(["accepted", "refused"]),
+      actor_basis: z.enum(TELEMETRY_ACTOR_BASES),
+    })
+    .strict(),
+  refKeys: ["session_id", "operation_id", "task_id"],
+  ingress: null,
+  span: {
+    name: "mission.session.kill",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["agent", "runtime", "outcome", "actor_basis"],
+    refAttributes: ["session_id", "operation_id"],
+    errorWhen: { factKey: "outcome", values: ["refused"] },
+  },
+});
+
+/**
+ * Canonical usage, projected ONCE from the ledger that already deduplicated it.
+ *
+ * From the ledger writers rather than from a transcript or an inbound OTLP report, which is
+ * what stops the same tokens being counted twice: Claude Code exports its own OTLP cost
+ * AND writes driver rows, and summing both would roughly double a supervised session.
+ *
+ * `usage_origin` keeps authoring and automation apart, because they answer different
+ * questions and one total that mixes them answers neither. `cost_basis` carries the
+ * estimator's provenance: both priced variants are API-EQUIVALENT estimates and neither is
+ * subscription billing, which is a distinction a dashboard must never quietly drop.
+ */
+export const USAGE_RECORDED_EVENT = defineEvent({
+  name: "mission.usage.recorded",
+  version: 1,
+  group: "model_effort",
+  priority: "core",
+  question: "What do sessions and automation actually spend, by model, and how well is it known?",
+  owner: "src/server/telemetry/sessions.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      /** `authoring` is a session's own conversation; `automation` is a headless run with no card. */
+      usage_origin: z.enum(["authoring", "automation"]),
+      /** `reported` means the harness did the arithmetic; `api-equivalent` means we did; `unpriced` means nobody could. */
+      cost_basis: z.enum(["reported", "api-equivalent", "unpriced"]),
+      model_id: z.string(),
+      input: z.number().int().min(0),
+      output: z.number().int().min(0),
+      reasoning_output: z.number().int().min(0),
+      cache_read: z.number().int().min(0),
+      cache_write: z.number().int().min(0),
+      cost_usd: z.number().min(0),
+    })
+    .strict(),
+  refKeys: ["session_id", "conversation_id", "segment_id", "task_id"],
+  ingress: null,
+  // No span. A usage row is an accounting fact with no interval of its own, and inventing a
+  // zero-duration span per request would flood the trace backend with points nobody queries.
+  span: null,
+});
+
+/**
+ * A task reached a terminal state, with an explicit statement of what is KNOWN about it.
+ *
+ * `completion_evidence` is the field this event exists for. `TaskManager` settles a departed
+ * task as `failed` while documenting that a clean exit cannot be told from a crash, and
+ * exporting that as a measured correctness failure would be a lie told by a dashboard. The
+ * two travel together, always, so a consumer that wants "tasks that verifiably failed" has
+ * to say so.
+ */
+export const TASK_OUTCOME_EVENT = defineEvent({
+  name: "mission.task.outcome",
+  version: 1,
+  group: "task_outcome",
+  priority: "core",
+  question: "How do tasks of each kind end, and how much of that is actually known?",
+  owner: "src/server/telemetry/sessions.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      task_kind: z.enum([...TASK_KINDS, "unknown", "unsupported"]),
+      status: z.enum(["done", "failed", "cancelled"]),
+      /**
+       * `recorded` means an owner wrote an outcome; `missing` means the agent departed and
+       * nothing did; `unknown` covers everything this observation cannot distinguish.
+       */
+      completion_evidence: z.enum(["recorded", "missing", "unknown"]),
+      /** One task, however many repositories it touched. Counters must not multiply by this. */
+      repo_count: z.number().int().min(0).max(64),
+      /** Observed wall time from dispatch to this outcome, or 0 when the dispatch was never seen. */
+      duration_ms: z.number().int().min(0),
+      observation_bounded: z.boolean(),
+    })
+    .strict(),
+  refKeys: ["task_id", "session_id"],
+  ingress: null,
+  span: {
+    name: "mission.task.outcome",
+    kind: "internal",
+    durationFactKey: "duration_ms",
+    attributes: [
+      "task_kind",
+      "status",
+      "completion_evidence",
+      "repo_count",
+      "observation_bounded",
+    ],
+    refAttributes: ["task_id", "session_id"],
+    // Deliberately NOT an error for `failed`. A failed task with `completion_evidence:
+    // missing` is an unknown, and colouring it red in Tempo would assert the very thing the
+    // evidence field exists to withhold.
+    errorWhen: null,
+  },
+});
+
+/**
+ * A VERIFIED per-repository pull request fact.
+ *
+ * Verified means an owner observed it: the durable work-episode ledger made the association,
+ * or the poller read the state off the forge. An agent SAYING it opened a pull request, or a
+ * requested action, satisfies neither.
+ *
+ * `delivery` is the late-outcome half. A merge observed after the session that produced it
+ * was removed - and after its task binding was invalidated - is still that task's delivery,
+ * and it arrives here with its ORIGINAL attribution rather than with today's context.
+ *
+ * No URL, owner, branch or commit anywhere in the schema or the refs. The pull request is
+ * identified to the outside world by an opaque per-destination id; the URL stays local
+ * polling metadata in the daemon's own table.
+ */
+export const PR_OBSERVED_EVENT = defineEvent({
+  name: "mission.pr.observed",
+  version: 1,
+  group: "pr_outcome",
+  priority: "core",
+  question: "Does shipping work actually deliver pull requests, and do they land - including after the session is gone?",
+  owner: "src/server/telemetry/pr-observations.ts",
+  audience: AUDIENCE_ALL,
+  facts: z
+    .object({
+      /** P2's vocabulary. `associated_existing` is not `creation_verified`; nothing collapses them. */
+      fact: z.enum([
+        "associated_existing",
+        "creation_verified",
+        "updated",
+        "merged",
+        "closed_unmerged",
+      ]),
+      task_kind: z.enum([...TASK_KINDS, "unknown", "unsupported"]),
+      /** `primary` is the task's own repository; `secondary` is an attached one. */
+      repo_role: z.enum(["primary", "secondary"]),
+      /** `live` while the producing session still owned the binding; `late` after it did not. */
+      delivery: z.enum(["live", "late"]),
+      /** `unknown` when the forge would not say - never silently reported as private or public. */
+      visibility: z.enum(["known", "unknown"]),
+      /** Observed ms from first association to this fact. Zero on the association itself. */
+      age_ms: z.number().int().min(0),
+    })
+    .strict(),
+  refKeys: ["task_id", "repo_key", "pr_key", "session_id"],
+  ingress: null,
+  span: {
+    name: "mission.pr.observed",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["fact", "task_kind", "repo_role", "delivery", "visibility"],
+    refAttributes: ["task_id", "repo_key", "pr_key"],
+    errorWhen: null,
+  },
+});
+
 /** Every registered event, by name. */
 export const TELEMETRY_EVENTS: Record<string, TelemetryEventDefinition> = Object.fromEntries(
   [
@@ -427,6 +1040,18 @@ export const TELEMETRY_EVENTS: Record<string, TelemetryEventDefinition> = Object
     TELEMETRY_PROBE_EVENT,
     TELEMETRY_CONTROL_EVENT,
     TELEMETRY_SETTINGS_OPENED_EVENT,
+    SESSION_STARTED_EVENT,
+    SESSION_RESTORE_EVENT,
+    DISPATCH_FINISHED_EVENT,
+    SESSION_SEGMENT_EVENT,
+    EFFORT_SELECTED_EVENT,
+    SESSION_OPERATION_EVENT,
+    TURN_FINISHED_EVENT,
+    SESSION_ENDED_EVENT,
+    SESSION_KILL_REQUESTED_EVENT,
+    USAGE_RECORDED_EVENT,
+    TASK_OUTCOME_EVENT,
+    PR_OBSERVED_EVENT,
   ].map((e) => [e.name, e as TelemetryEventDefinition]),
 );
 
@@ -550,6 +1175,418 @@ export const TELEMETRY_SETTINGS_OPENS_METRIC = defineMetric({
   }),
 });
 
+// ---- Phase 3 instruments ----
+//
+// One instrument per question, and every dimension on this side of the line is a closed
+// vocabulary. Model ids appear on exactly two of them - the usage pair, where "what does
+// this model cost" IS the question - and nowhere else: multiplying a model list by agent,
+// runtime, kind and outcome is the label cross-product P0 forbids, and those questions are
+// answered from traces instead.
+
+/** `unknown` rather than a dropped dimension. An unobserved value stays visible. */
+function dim(value: unknown): string {
+  return typeof value === "string" && value.length > 0 ? value : TELEMETRY_UNKNOWN_VALUE;
+}
+
+// Only the shipped catalog bounds metric cardinality. Stored overrides and live discovery
+// may contain arbitrarily many valid model ids, so they must never extend this set.
+const METRIC_MODEL_IDS: ReadonlySet<string> = new Set(
+  Object.values(MODEL_CATALOG).flatMap((models) => models.map((model) => model.id)),
+);
+
+/** Preserve detailed ids in source facts and traces; metrics use at most catalog size + 2. */
+function modelDimension(value: unknown): string {
+  const model = dim(value);
+  return model === TELEMETRY_UNKNOWN_VALUE || METRIC_MODEL_IDS.has(model) ? model : "other";
+}
+
+export const SESSIONS_STARTED_METRIC = defineMetric({
+  name: "mission.sessions.started",
+  description: "Sessions observed starting, by how they came to exist and how much was witnessed.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: SESSION_STARTED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["origin", "start_observation", "agent", "runtime", "task_kind"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      origin: dim(facts.origin),
+      start_observation: dim(facts.start_observation),
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+      task_kind: dim(facts.task_kind),
+    },
+    value: 1,
+  }),
+});
+
+export const SESSIONS_ENDED_METRIC = defineMetric({
+  name: "mission.sessions.ended",
+  description: "Session departures confirmed at durable removal, by reason and whether work was open.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: SESSION_ENDED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["reason", "agent", "runtime", "task_kind", "ended_while_work_open"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      reason: dim(facts.reason),
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+      task_kind: dim(facts.task_kind),
+      ended_while_work_open: String(facts.ended_while_work_open === true),
+    },
+    value: 1,
+  }),
+});
+
+export const SESSION_OBSERVED_DURATION_METRIC = defineMetric({
+  name: "mission.session.observed.duration",
+  description: "How long this installation observed a session, from first sight to durable removal.",
+  unit: "ms",
+  kind: "histogram",
+  valueType: "double",
+  event: SESSION_ENDED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  // `observation_bounded` is a dimension rather than a filter applied later, because a
+  // bounded observation is a LOWER BOUND on a lifetime and mixing the two into one
+  // distribution quietly understates the tail.
+  dimensions: ["agent", "runtime", "observation_bounded"],
+  boundaries: [1_000, 10_000, 60_000, 300_000, 900_000, 3_600_000, 14_400_000, 86_400_000],
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => {
+    const ms = typeof facts.observed_ms === "number" ? facts.observed_ms : null;
+    if (ms === null) return null;
+    return {
+      dimensions: {
+        agent: dim(facts.agent),
+        runtime: dim(facts.runtime),
+        observation_bounded: String(facts.observation_bounded === true),
+      },
+      value: ms,
+    };
+  },
+});
+
+export const SESSION_RESTORES_METRIC = defineMetric({
+  name: "mission.session.restores",
+  description: "Managed session restorations attempted across a daemon restart, by outcome.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: SESSION_RESTORE_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["outcome", "agent", "turn_in_progress"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      outcome: dim(facts.outcome),
+      agent: dim(facts.agent),
+      turn_in_progress: String(facts.turn_in_progress === true),
+    },
+    value: 1,
+  }),
+});
+
+export const DISPATCHES_METRIC = defineMetric({
+  name: "mission.dispatches",
+  description: "Dispatch attempts, by outcome and by where the resolved model and effort came from.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: DISPATCH_FINISHED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["outcome", "agent", "runtime", "task_kind", "resolution_source", "resolved_effort"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      outcome: dim(facts.outcome),
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+      task_kind: dim(facts.task_kind),
+      resolution_source: dim(facts.resolution_source),
+      resolved_effort: dim(facts.resolved_effort),
+    },
+    value: 1,
+  }),
+});
+
+export const DISPATCH_DURATION_METRIC = defineMetric({
+  name: "mission.dispatch.duration",
+  description: "Wall time from dispatch admission to a running agent, or to the refusal that stopped it.",
+  unit: "ms",
+  kind: "histogram",
+  valueType: "double",
+  event: DISPATCH_FINISHED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["outcome", "agent", "runtime"],
+  boundaries: [500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000],
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => {
+    const ms = typeof facts.duration_ms === "number" ? facts.duration_ms : null;
+    if (ms === null) return null;
+    return {
+      dimensions: {
+        outcome: dim(facts.outcome),
+        agent: dim(facts.agent),
+        runtime: dim(facts.runtime),
+      },
+      value: ms,
+    };
+  },
+});
+
+export const SESSION_SEGMENTS_METRIC = defineMetric({
+  name: "mission.session.segments",
+  description: "Execution segments opened, by the effective effort they carry and how well it is known.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: SESSION_SEGMENT_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["agent", "runtime", "effort", "quality", "reason"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+      effort: dim(facts.effort),
+      quality: dim(facts.quality),
+      reason: dim(facts.reason),
+    },
+    value: 1,
+  }),
+});
+
+export const EFFORT_SELECTIONS_METRIC = defineMetric({
+  name: "mission.session.effort.selections",
+  description: "Effort changes requested from a session, by outcome and when they take effect.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: EFFORT_SELECTED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["requested_effort", "outcome", "applies", "agent", "runtime"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      requested_effort: dim(facts.requested_effort),
+      outcome: dim(facts.outcome),
+      applies: dim(facts.applies),
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+    },
+    value: 1,
+  }),
+});
+
+export const SESSION_OPERATIONS_METRIC = defineMetric({
+  name: "mission.session.operations",
+  description: "Conversation operations that reached a session, by kind, outcome and actor basis.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: SESSION_OPERATION_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["operation", "outcome", "agent", "runtime", "actor_basis"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      operation: dim(facts.operation),
+      outcome: dim(facts.outcome),
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+      actor_basis: dim(facts.actor_basis),
+    },
+    value: 1,
+  }),
+});
+
+export const SESSION_TURNS_METRIC = defineMetric({
+  name: "mission.session.turns",
+  description: "Turns observed finishing, attributed to the segment's effective effort.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: TURN_FINISHED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["agent", "runtime", "effort", "quality", "outcome"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      agent: dim(facts.agent),
+      runtime: dim(facts.runtime),
+      effort: dim(facts.effort),
+      quality: dim(facts.quality),
+      outcome: dim(facts.outcome),
+    },
+    value: 1,
+  }),
+});
+
+export const TURN_DURATION_METRIC = defineMetric({
+  name: "mission.session.turn.duration",
+  description: "Observed execution time of a finished turn, on the effort that actually ran it.",
+  unit: "ms",
+  kind: "histogram",
+  valueType: "double",
+  event: TURN_FINISHED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["agent", "runtime", "effort", "observation_bounded"],
+  boundaries: [1_000, 5_000, 15_000, 30_000, 60_000, 180_000, 600_000, 1_800_000],
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => {
+    const ms = typeof facts.duration_ms === "number" ? facts.duration_ms : null;
+    if (ms === null) return null;
+    return {
+      dimensions: {
+        agent: dim(facts.agent),
+        runtime: dim(facts.runtime),
+        effort: dim(facts.effort),
+        observation_bounded: String(facts.observation_bounded === true),
+      },
+      value: ms,
+    };
+  },
+});
+
+export const USAGE_TOKENS_METRIC = defineMetric({
+  name: "mission.usage.tokens",
+  description: "Billable tokens from the canonical ledger, separated by authoring and automation.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: USAGE_RECORDED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  // Both usage metrics share a closed model vocabulary: shipped catalog ids, other, unknown.
+  dimensions: ["usage_origin", "model_id"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => {
+    const total = ["input", "output", "reasoning_output", "cache_read", "cache_write"].reduce(
+      (sum, key) => sum + (typeof facts[key] === "number" ? (facts[key] as number) : 0),
+      0,
+    );
+    if (total <= 0) return null;
+    return {
+      dimensions: { usage_origin: dim(facts.usage_origin), model_id: modelDimension(facts.model_id) },
+      value: total,
+    };
+  },
+});
+
+export const USAGE_COST_METRIC = defineMetric({
+  name: "mission.usage.cost",
+  description: "API-equivalent cost from the canonical ledger. Never subscription billing.",
+  unit: "USD",
+  kind: "counter",
+  valueType: "double",
+  event: USAGE_RECORDED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  // `cost_basis` is a dimension so an unpriced row can never be silently added to a priced
+  // total: `unpriced` contributes zero and stays countable as its own series.
+  dimensions: ["usage_origin", "model_id", "cost_basis"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      usage_origin: dim(facts.usage_origin),
+      model_id: modelDimension(facts.model_id),
+      cost_basis: dim(facts.cost_basis),
+    },
+    value: typeof facts.cost_usd === "number" ? facts.cost_usd : 0,
+  }),
+});
+
+export const TASK_OUTCOMES_METRIC = defineMetric({
+  name: "mission.task.outcomes",
+  description: "Tasks reaching a terminal state, with how much is actually known about the ending.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: TASK_OUTCOME_EVENT.name,
+  audience: AUDIENCE_ALL,
+  // ONE per task, whatever its repository count - `repo_count` is deliberately not a
+  // dimension here. A multi-repo task counted once per repository would inflate every
+  // completion rate in proportion to how many repositories somebody attached.
+  dimensions: ["task_kind", "status", "completion_evidence"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      task_kind: dim(facts.task_kind),
+      status: dim(facts.status),
+      completion_evidence: dim(facts.completion_evidence),
+    },
+    value: 1,
+  }),
+});
+
+export const PR_OBSERVATIONS_METRIC = defineMetric({
+  name: "mission.pr.observations",
+  description: "Verified per-repository pull request facts, including ones observed after the session ended.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: PR_OBSERVED_EVENT.name,
+  audience: AUDIENCE_ALL,
+  dimensions: ["fact", "task_kind", "repo_role", "delivery", "visibility"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      fact: dim(facts.fact),
+      task_kind: dim(facts.task_kind),
+      repo_role: dim(facts.repo_role),
+      delivery: dim(facts.delivery),
+      visibility: dim(facts.visibility),
+    },
+    value: 1,
+  }),
+});
+
 /** Every registered instrument, by name. */
 export const TELEMETRY_METRICS: Record<string, TelemetryMetricDefinition> = Object.fromEntries(
   [
@@ -558,6 +1595,21 @@ export const TELEMETRY_METRICS: Record<string, TelemetryMetricDefinition> = Obje
     TELEMETRY_PROBES_METRIC,
     TELEMETRY_CONTROLS_METRIC,
     TELEMETRY_SETTINGS_OPENS_METRIC,
+    SESSIONS_STARTED_METRIC,
+    SESSIONS_ENDED_METRIC,
+    SESSION_OBSERVED_DURATION_METRIC,
+    SESSION_RESTORES_METRIC,
+    DISPATCHES_METRIC,
+    DISPATCH_DURATION_METRIC,
+    SESSION_SEGMENTS_METRIC,
+    EFFORT_SELECTIONS_METRIC,
+    SESSION_OPERATIONS_METRIC,
+    SESSION_TURNS_METRIC,
+    TURN_DURATION_METRIC,
+    USAGE_TOKENS_METRIC,
+    USAGE_COST_METRIC,
+    TASK_OUTCOMES_METRIC,
+    PR_OBSERVATIONS_METRIC,
   ].map((m) => [m.name, m]),
 );
 

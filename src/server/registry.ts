@@ -258,6 +258,12 @@ import {
   recordWorkEpisodePrompt,
   workEpisodePromptIdentities,
 } from "./db.ts";
+// The ONE telemetry call in this file, and deliberately so: everything else Phase 3 needs
+// from the Registry arrives through the event stream it already publishes. This is the
+// exception because the driver's per-turn usage never reaches that stream - it is written
+// straight to the ledger here - and observing it anywhere else would either miss it or
+// re-read it from a source that cannot deduplicate.
+import { observeUsageRecorded } from "./telemetry/index.ts";
 import type { ForemanInviteRow, SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import {
   launchEchoFingerprint,
@@ -5638,6 +5644,31 @@ export class Registry extends EventEmitter {
       ts: now,
       models: usage.models,
     });
+    // The third canonical writer, observed on the same terms as the other two: AFTER the
+    // ledger commit, keyed on the ledger's own conflict target. That key is the turn id, so a
+    // driver re-emitting a `result` it already reported - a resumed stream replaying its tail,
+    // a supervisor reconnecting - produces a duplicate here rather than a second set of
+    // tokens. The basis is `reported` because Claude Code priced this itself, from rates the
+    // account has and this repository does not.
+    for (const model of usage.models) {
+      observeUsageRecorded({
+        identity: `${noteKey}|${usage.turnId}|${model.modelId}`,
+        usageOrigin: "authoring",
+        costBasis: model.reportedCostUsd === null ? "unpriced" : "reported",
+        modelId: model.modelId,
+        input: model.input,
+        output: model.output,
+        reasoningOutput: model.reasoningOutput,
+        cacheRead: model.cacheRead,
+        cacheWrite: model.cacheWrite,
+        costUsd: model.reportedCostUsd,
+        agent: s.agent,
+        sessionId: s.id,
+        conversationId: s.agentSessionId,
+        occurredAt: now,
+        now,
+      });
+    }
     this.applyDurableUsage(noteKey);
   }
 

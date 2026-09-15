@@ -1,4 +1,5 @@
 import { isShippingTaskKind } from "@shared/task.ts";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -263,7 +264,7 @@ async function consumePromptedCycle(
    * generation and its reason are one durable fact - see `SessionQueue.promptedDecision`.
    */
   decision: PromptedCompletionDisposition,
-  opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
+  opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind; expectedPlanPublication?: PlanPublicationContext },
 ): Promise<boolean> {
   const expectedIntent = {
     objective: candidate.objective,
@@ -2309,7 +2310,7 @@ export async function processPromptedWrapup(
           current.session,
           current.candidate,
           { outcome: "asked", summary: claimSummary, gaps: [] },
-          { ask: true },
+          { ask: true, ...(planPublication ? { expectedPlanPublication: planPublication } : {}) },
         ))
       ) return false;
       log(`${session.name}: existing workflow is Manual - asked about wrapping up`);
@@ -2337,7 +2338,7 @@ export async function processPromptedWrapup(
         current.session,
         current.candidate,
         { outcome: "asked", summary: result.verdict.summary, gaps: [] },
-        { ask: true },
+        { ask: true, ...(planPublication ? { expectedPlanPublication: planPublication } : {}) },
       ))
     ) {
       return false;
@@ -2382,7 +2383,10 @@ export async function processPromptedWrapup(
         // own words for what is missing, and the blocking gaps beside it are what Phase 2
         // sends back - so this is the one outcome that carries them.
         : { outcome: "held", summary: plan.why, gaps: blockingDecisionGaps(trackedDecisionGaps) },
-      plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" } : undefined,
+      {
+        ...(plan.kind === "auto-wrapup" ? { directHandoff: "direct-ship" as const } : {}),
+        ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
+      },
     ))
   ) return false;
 

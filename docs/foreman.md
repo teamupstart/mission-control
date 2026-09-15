@@ -197,8 +197,10 @@ verified ownership as a comparison guard. The daemon checks it again inside the 
 that creates the run and consumes completion, so replacing a binding cannot spend the old
 verdict on a new workflow. An unbound answer does not reserve direct publication: Foreman
 refreshes ownership again immediately before recording and sending the direct handoff, and
-holds if a workflow has since been attached or ownership is unavailable. Unknown ownership holds without
-consuming the work generation. Manual workflow bindings retain manual submission.
+passes that expectation through to the SQL consumption statement. The statement refuses a
+direct handoff if a non-archived binding now exists, and checks binding identity, version, and
+trigger mode before recording a bound plan's Manual ask. Unknown or changed ownership holds
+without consuming the work generation. Manual workflow bindings retain manual submission.
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow
 evidence from the current resolved intent episode and whether its current active binding accepts

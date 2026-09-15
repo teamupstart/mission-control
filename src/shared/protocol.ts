@@ -4340,6 +4340,7 @@ export const PromptedWrapupSchema = z.object({
   logicalKey: z.string().min(1).max(NOTE_KEY_MAX),
   generation: z.number().int().min(1),
   expectedIntent: SessionIntentGuardSchema,
+  expectedPlanPublication: PlanPublicationContextSchema.optional(),
   // The human-decision path must consume the generation and raise its Ship it?
   // card in one durable write. If that write fails, neither fact lands and the worker
   // can retry the whole verified boundary on its next unhurried tick.

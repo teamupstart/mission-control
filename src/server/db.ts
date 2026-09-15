@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -12050,6 +12051,8 @@ export interface ConsumePromptedGenerationInput {
   noteKey: string;
   sessionCwd: string | null;
   generation: number;
+  /** Compared inside the consumption statement, never an authority to select a workflow. */
+  expectedPlanPublication?: PlanPublicationContext;
   /** Daemon-verified intent episode. Absent only for legacy in-process callers. */
   episodeKey?: string | null;
   ask: boolean;
@@ -12100,6 +12103,7 @@ export function consumePromptedGeneration(
   const ask = input.ask ? 1 : 0;
   const handoffKind = input.directHandoff?.kind ?? null;
   const handoffEpisode = input.directHandoff?.episodeKey ?? null;
+  const publication = input.expectedPlanPublication;
   const currentRow = d.prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`)
     .get(input.noteKey) as unknown as QueueRow | undefined;
   const previousDecision = currentRow ? toPromptedDecision(currentRow) : null;
@@ -12151,6 +12155,21 @@ export function consumePromptedGeneration(
         AND completed_at IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM foreman_queue_items WHERE note_key = ?
+        )
+        -- The read before this request is not a lock. Compare plan ownership in the
+        -- same statement as both INSERT and UPDATE consumption. A bound owner may
+        -- record a Manual ask, but can never authorize a direct-shipping latch.
+        AND (
+          ? IS NULL
+          OR (? = 'skill' AND NOT EXISTS (
+            SELECT 1 FROM workflow_bindings
+             WHERE note_key = ? AND repo_root = '' AND state <> 'archived'
+          ))
+          OR (? = 'workflow' AND ? IS NULL AND EXISTS (
+            SELECT 1 FROM workflow_bindings
+             WHERE note_key = ? AND repo_root = '' AND state = 'active'
+               AND id = ? AND workflow_version_id = ? AND trigger_mode = ?
+          ))
         )
      ON CONFLICT(note_key) DO UPDATE SET
        prompted_consumed_generation = excluded.prompted_consumed_generation,
@@ -12206,6 +12225,15 @@ export function consumePromptedGeneration(
     input.noteKey,
     input.generation,
     input.noteKey,
+    publication?.owner ?? null,
+    publication?.owner ?? null,
+    input.noteKey,
+    publication?.owner ?? null,
+    handoffKind,
+    input.noteKey,
+    publication?.owner === "workflow" ? publication.bindingId : null,
+    publication?.owner === "workflow" ? publication.workflowVersionId : null,
+    publication?.owner === "workflow" ? publication.triggerMode : null,
     ask,
     ask,
   );

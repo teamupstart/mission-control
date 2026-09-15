@@ -1413,7 +1413,7 @@ export class ForemanClient implements ForemanActions {
      * beside it, and an optional parameter is a reason that gets forgotten.
      */
     decision: PromptedCompletionDisposition,
-    opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind },
+    opts?: { ask?: boolean; directHandoff?: PromptedDirectHandoffKind; expectedPlanPublication?: PlanPublicationContext },
   ): Promise<void> {
     const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
       logicalKey,
@@ -1422,6 +1422,7 @@ export class ForemanClient implements ForemanActions {
       decision,
       ...(opts?.ask ? { ask: true } : {}),
       ...(opts?.directHandoff ? { directHandoff: opts.directHandoff } : {}),
+      ...(opts?.expectedPlanPublication ? { expectedPlanPublication: opts.expectedPlanPublication } : {}),
     });
     if (!res.ok) throw new Error(`consumePromptedGeneration ${sessionId} -> ${res.status}`);
   }

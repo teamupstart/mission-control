@@ -2373,6 +2373,14 @@ with that build or relabel recovery rows as author refinements. A downgrade lose
 after the backup; retain exports for audit before restoring. Settings-only backups do not restore
 workflow history.
 
+The same downgrade restriction applies after creating bindings or runs for a built-in version
+that the older build did not ship, including Plan Validation v2. Built-in versions come from
+the application catalog, so an older build cannot resolve a newer version id from the upgraded
+database. Before upgrading, keep an offline database backup. To return to a build that only
+ships Plan Validation v1 after using v2, stop the application, restore that pre-upgrade backup,
+and start the matching older build. Restoring only the previous app bundle does not restore
+workflow compatibility or preserve history written since the backup.
+
 ### Canvas and accessibility controls
 
 Palette buttons add a node at the current viewport center; pointer drag remains available.

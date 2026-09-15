@@ -1,3 +1,4 @@
+import type { PlanPublicationContext } from "@shared/plan-publication.ts";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
@@ -8587,6 +8588,7 @@ export class Registry extends EventEmitter {
       logicalKey: string;
       generation: number;
       expectedIntent: SessionIntentGuard;
+      expectedPlanPublication?: PlanPublicationContext;
       ask: boolean;
       /** Record a direct-shipping handoff in the same write, or null to consume only. */
       directHandoff: PromptedDirectHandoffKind | null;
@@ -8624,6 +8626,7 @@ export class Registry extends EventEmitter {
       sessionCwd: session.cwd,
       generation: input.generation,
       episodeKey: input.expectedIntent.episodeKey,
+      expectedPlanPublication: input.expectedPlanPublication,
       ask: input.ask,
       // The authorizing episode is the one this boundary just RE-VERIFIED against the
       // live goal, not the one the caller sent. `sessionIntentMatches` above already

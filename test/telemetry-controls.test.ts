@@ -223,6 +223,71 @@ test("clearing the product endpoint un-enrolls and stops that audience", () => {
   assert.equal(queued("product"), 0);
 });
 
+test("a failed purge leaves the installation identity alone", () => {
+  // The ordering guarantee, tested from its failure side. The mint writes through `app_config`
+  // and cannot join the queue transaction, so if the queues are cleared SECOND a purge that
+  // throws leaves a rotated pseudonym stored beside batches still carrying the old one - and
+  // delivering those is exactly what a reset promises not to do.
+  //
+  // The fault is injected by renaming a table the purge depends on, which is the only way to
+  // make that transaction fail without mocking the store out from under the operation.
+  assert.equal(
+    setTelemetryConfig({
+      enabled: true,
+      user: { enabled: true, endpoint: "http://127.0.0.1:14318" },
+    }).ok,
+    true,
+  );
+  capture();
+  runProjectionPass();
+  const before = telemetryIdentity();
+
+  const d = openDb();
+  d.exec("ALTER TABLE telemetry_delivery RENAME TO telemetry_delivery_hidden");
+  try {
+    assert.throws(() => runTelemetryOperation("reset_identity"));
+  } finally {
+    d.exec("ALTER TABLE telemetry_delivery_hidden RENAME TO telemetry_delivery");
+  }
+
+  const after = telemetryIdentity();
+  assert.equal(after.installationId, before.installationId, "the pseudonym did not rotate");
+  assert.equal(after.epoch, before.epoch, "and neither did its epoch");
+  // The queued batch is still there under the identity that built it, which is the consistent
+  // state: nothing was rotated, so nothing is mismatched.
+  assert.ok(queued("user") > 0);
+
+  // And the operation still works once the fault is gone, so the guard is not a dead end.
+  const result = runTelemetryOperation("reset_identity");
+  assert.notEqual(result.identity?.installationId, before.installationId);
+  assert.equal(queued("user"), 0);
+});
+
+test("a retry that clears a pause over an empty queue says the pause was lifted", () => {
+  // Three outcomes, not two. This one used to report "0 queued batches will be attempted on the
+  // next cycle", which reads as nothing having happened when the pause was in fact cleared.
+  assert.equal(
+    setTelemetryConfig({
+      enabled: true,
+      user: { enabled: true, endpoint: "http://127.0.0.1:14318" },
+    }).ok,
+    true,
+  );
+  const d = openDb();
+  d.prepare(
+    `INSERT INTO telemetry_destinations
+       (profile, generation, policy_epoch, endpoint_digest, paused_reason,
+        last_accepted_at, last_error, updated_at)
+     VALUES ('user', 1, 1, '', 'auth', NULL, NULL, 0)
+     ON CONFLICT(profile) DO UPDATE SET paused_reason = 'auth'`,
+  ).run();
+
+  const result = runTelemetryOperation("retry", "user");
+  assert.equal(result.resumed, true);
+  assert.match(result.detail, /resumed/i, "the sentence says the pause was lifted");
+  assert.doesNotMatch(result.detail, /^0 queued/, "and does not read as a no-op");
+});
+
 test("re-entering an address cannot silently resume product sharing", () => {
   // The consent hazard behind forcing the switch off when the address is cleared. If `enabled`
   // survived an empty endpoint, typing an address back in would resume sharing without anybody

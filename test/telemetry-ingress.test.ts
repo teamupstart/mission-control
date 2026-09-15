@@ -198,6 +198,29 @@ test("the rate limit is enforced across every browser, not per connection", () =
   assert.equal(later.accepted, 1);
 });
 
+test("a record refused for bad facts is still charged against the rate limit", () => {
+  // The expensive half of the endpoint is everything past the allowlist check: a strict schema
+  // parse, and for a valid record a transaction. Charging only on ACCEPTANCE left that half
+  // uncapped - a browser-eligible event name carrying facts its schema refuses reached
+  // `captureTelemetry` on every submission and was never counted, so the same malformed payload
+  // could be resubmitted forever straight past the documented ceiling.
+  const now = Date.now();
+  const malformed = {
+    event: TELEMETRY_SETTINGS_OPENED_EVENT.name,
+    facts: { collection_enabled: "yes", destinations_enabled: 0 },
+  };
+  for (let i = 0; i < TELEMETRY_INGRESS_LIMITS.maxRecordsPerMinute; i += 1) {
+    const result = admitBrowserTelemetry([malformed], FROM_APP, now);
+    assert.deepEqual(result.rejected, [{ index: 0, reason: "invalid_facts" }]);
+  }
+
+  // The budget is now spent, so a WELL-FORMED record from a different operation is refused for
+  // rate rather than admitted. Without the charge it would sail through.
+  const good = admitBrowserTelemetry([OPENED], operation("aaaaaaaaaaaaaaaa"), now);
+  assert.deepEqual(good.rejected, [{ index: 0, reason: "rate_limited" }]);
+  assert.equal(good.accepted, 0);
+});
+
 test("a stream of unknown event names cannot exhaust a real caller's budget", () => {
   const now = Date.now();
   for (let i = 0; i < TELEMETRY_INGRESS_LIMITS.maxRecordsPerMinute * 2; i += 1) {

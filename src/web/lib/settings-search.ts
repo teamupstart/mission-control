@@ -477,7 +477,8 @@ export const SETTINGS_CONTROLS: readonly SettingsControl[] = [
   {
     id: "telemetry-product",
     label: "Share anonymous product analytics",
-    description: "A separate opt-in with its own identity, unavailable in this build.",
+    description:
+      "A separate opt-in with its own identity and queue. Needs the address of a collector you run.",
     category: "telemetry",
     anchor: "telemetry/product",
     keywords: ["analytics", "anonymous", "product", "share", "opt in", "privacy"],

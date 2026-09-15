@@ -97,6 +97,13 @@ function admitOne(
   // rejected unknown name costs a map lookup, so counting it against the budget would let a
   // stream of nonsense names exhaust a real caller's allowance.
   if (usedInWindow(now) >= TELEMETRY_INGRESS_LIMITS.maxRecordsPerMinute) return "rate_limited";
+  // And charged HERE rather than on acceptance. Everything past this line costs a strict schema
+  // parse and, for a valid record, a transaction - so the budget has to cover the attempt, not
+  // the outcome. Charging only on success left the expensive half uncapped: a record naming a
+  // browser-eligible event with facts its schema refuses was never counted, so the same
+  // malformed payload could be resubmitted forever and reach `captureTelemetry` every time,
+  // straight past the ceiling this limit exists to hold.
+  admitted.push(now);
 
   const captured = captureTelemetry({
     event: definition,
@@ -126,7 +133,6 @@ function admitOne(
 
   switch (captured.kind) {
     case "accepted":
-      admitted.push(now);
       return null;
     // A duplicate is a REPLAY, not a failure, and it is reported as its own reason rather than
     // as an acceptance. Counting it as accepted would tell a caller its second attempt landed

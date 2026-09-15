@@ -123,8 +123,13 @@ function retry(profile: TelemetryProfileId, now: number): TelemetryOperationResu
       resumed,
       identity: null,
       detail:
-        released === 0 && !resumed
-          ? "Nothing was waiting on a retry for this destination."
+        // Three outcomes, not two. A destination that had paused ITSELF and holds an empty
+        // queue is the case the earlier pair collapsed: it reported "0 queued batches will be
+        // attempted", which reads as nothing having happened when in fact the pause was lifted.
+        released === 0
+          ? resumed
+            ? "This destination was resumed. Nothing is queued for it right now."
+            : "Nothing was waiting on a retry for this destination."
           : `${released} queued batch${released === 1 ? "" : "es"} will be attempted on the next cycle.`,
     };
   });
@@ -155,9 +160,15 @@ function purge(profile: TelemetryProfileId, now: number): TelemetryOperationResu
 }
 
 function resetIdentity(now: number): TelemetryOperationResult {
-  // Minted OUTSIDE the queue transaction, because it writes through `app_config` rather than
-  // the telemetry tables and the two are separate stores with separate owners.
-  const identity = resetTelemetryIdentity();
+  // The QUEUES GO FIRST, and the order is the guarantee rather than a preference.
+  //
+  // The mint writes through `app_config` rather than the telemetry tables, so it cannot join
+  // this transaction and cannot be rolled back with it. Minting first meant a purge that threw
+  // left a rotated pseudonym stored beside batches still carrying the old one - and delivering
+  // those is precisely what a reset promises not to do, because it ties the two identities
+  // together at the backend. Purging first inverts the failure: the worst case is unsent
+  // telemetry dropped without the identity rotating, which costs data nobody has seen rather
+  // than the one property this operation exists to provide.
   const purged = telemetryTransaction((d) => {
     let total = 0;
     for (const profile of TELEMETRY_PROFILE_IDS) {
@@ -171,6 +182,7 @@ function resetIdentity(now: number): TelemetryOperationResult {
     }
     return total;
   });
+  const identity = resetTelemetryIdentity();
   return {
     action: "reset_identity" as const,
     profile: null,

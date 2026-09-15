@@ -23,7 +23,6 @@ const { WorkflowContextSnapshotSchema } = await import("../src/shared/protocol.t
 const { setWorkflowPolicy } = await import("../src/server/workflows/config.ts");
 const { normalizePersonaName, normalizeWorkflowName } = await import("../src/shared/workflow.ts");
 const { openDb } = await import("../src/server/db.ts");
-const { EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT } = await import("../src/server/workflows/store.ts");
 
 const repositoryRoot = process.cwd();
 setWorkflowPolicy({ liveEnabled: true, repoAllowlist: [repositoryRoot] });
@@ -84,6 +83,7 @@ async function harness(
     /** The Persona verdict this run's single reviewer returns. Defaults to a pass. */
     runner?: LlmRunner;
     evidenceReadinessPolicy?: "off" | "criterion_mapped_v1";
+    head?: { sha: string };
   } = {},
 ) {
   const registry = new Registry();
@@ -170,7 +170,7 @@ async function harness(
         priorPersonaFeedback: [],
         session: { agent: "claude" as const, name: id, cwd: repositoryRoot, branch: "feature" },
         evidence: {
-          headSha: "abc",
+          headSha: options.head?.sha ?? "abc",
           diffFingerprint: "diff",
           diff: "patch",
           diffTruncated: false,
@@ -198,6 +198,10 @@ async function harness(
       };
     },
     boundaryChanged: async () => false,
+    readEvidenceProbe: async () => ({
+      headSha: options.head?.sha ?? "abc",
+      workingTreeStatus: [" M src/file.ts"], diffFingerprint: "diff",
+    }),
     reconcileContext: options.reconcileContext,
     ...(options.compactContext ? {
       compactContext: options.compactContext,
@@ -229,7 +233,7 @@ async function harness(
   return { registry, store, manager, binding: binding.value, injected };
 }
 
-test("replacement evidence packets reuse stable intent criteria up to the refinement cap", async (t) => {
+test("round 1 can close gaps on its sixth evidence attempt while retaining earlier proof and intent", async (t) => {
   const h = await harness(t, "stable-evidence-preflight", undefined, {
     recordCompactionLedger: true,
   });
@@ -282,11 +286,12 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
     "initial packet did not wait for missing rendered output",
   );
 
-  // The cap is what bounds this loop now, so the run gets exactly the refinements it is
-  // allowed and the last one closes the gap. The refusal past the cap is its own test below.
+  // Six total attempts means the initial packet plus five refinements. Close the gap on
+  // the last allowed attempt to prove the budget includes a usable final capture.
+  const refinementLimit = 5;
   let parentId = submitted.value.submission.id;
-  for (let ordinal = 1; ordinal <= EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT; ordinal++) {
-    const ready = ordinal === EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT;
+  for (let ordinal = 1; ordinal <= refinementLimit; ordinal++) {
+    const ready = ordinal === refinementLimit;
     await stageReplacement(ordinal, ready);
     const retry = await h.manager.retryEvidenceReadiness(
       runId,
@@ -304,14 +309,14 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   await waitFor(() => h.store.getRun(runId)?.status === "completed", "final packet did not activate");
 
   const submissions = h.store.listSubmissions(runId);
-  assert.equal(submissions.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(submissions.length, refinementLimit + 1);
   const contexts = submissions.map((submission) => WorkflowContextSnapshotSchema.parse(submission.context));
   const stableCriteria = contexts.map((context) => context.canonicalCriteria);
   for (const criteria of stableCriteria.slice(1)) assert.deepEqual(criteria, stableCriteria[0]);
   assert.deepEqual(submissions[0]?.readiness?.gapCodes, ["missing_rendered_output"]);
   assert.equal(submissions.at(-1)?.readiness?.status, "ready");
   // Phase 2's cap names the last segment; carry-forward decides what that segment holds.
-  const lastClaim = `claim-${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT}`;
+  const lastClaim = `claim-${refinementLimit}`;
   const finalClaims = h.store.listSubmissionCoverage(submissions.at(-1)!.id);
   assert.deepEqual(
     finalClaims.filter((claim) => !claim.inheritedFromSubmissionId)
@@ -322,7 +327,7 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   assert.deepEqual(
     finalClaims.filter((claim) => claim.inheritedFromSubmissionId)
       .map((claim) => claim.clientCriterionId).sort(),
-    Array.from({ length: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT }, (_unused, index) => `claim-${index}`),
+    Array.from({ length: refinementLimit }, (_unused, index) => `claim-${index}`),
     "and every frozen ancestor claim is retained beside it by id, marked as carried",
   );
   // Retained ancestry is provenance, not a competing assertion: the claim the author declared
@@ -340,8 +345,8 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   assert.deepEqual(
     finalEvidence.filter((item) => !item.inheritedFrom).map((item) => item.caption).sort(),
     [
-      `Replacement ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} execution`,
-      `Replacement ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} rendered output`,
+      `Replacement ${refinementLimit} execution`,
+      `Replacement ${refinementLimit} rendered output`,
     ],
   );
   assert.equal(
@@ -354,7 +359,7 @@ test("replacement evidence packets reuse stable intent criteria up to the refine
   }
   const captureEvents = h.store.listEvents(runId)
     .filter((event) => event.kind === "submission_captured");
-  assert.equal(captureEvents.length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(captureEvents.length, refinementLimit + 1);
   assert.match(JSON.stringify(captureEvents[0]?.payload), /"criteriaReused":false/);
   for (const event of captureEvents.slice(1)) {
     assert.match(JSON.stringify(event.payload), /"criteriaReused":true/);
@@ -571,9 +576,7 @@ test("a mid-run change to the live decisions never moves the run's frozen criter
     "the criteria a submission is judged by never move inside a run",
   );
 
-  // The round has now spent its consecutive preflight refinements, so a third one is refused
-  // rather than reviewed. That bound is asserted on its own below; what matters here is that
-  // the two submissions the round did produce carry one intent identity between them.
+  // Both refinements still carry the original intent identity despite the new decision.
   assert.deepEqual(
     new Set(h.store.listSubmissions(runId)
       .map((row) => WorkflowContextSnapshotSchema.parse(row.context).intentFingerprint)),
@@ -909,13 +912,19 @@ test("workflow event ids replay exact writes and reject conflicting reuse", () =
   );
 });
 
-test("the round's third consecutive preflight refinement blocks the run for the operator", async (t) => {
-  const h = await harness(t, "capped-evidence-preflight");
+for (const { round, refinementLimit } of [
+  { round: 1, refinementLimit: 5 },
+  { round: 2, refinementLimit: 2 },
+  { round: 6, refinementLimit: 2 },
+  { round: 7, refinementLimit: 2 },
+]) for (const manualRetry of [true, false]) test(`round ${round} allows ${refinementLimit + 1} evidence attempts then automatically reviews gaps via ${manualRetry ? "manual retry" : "automatic sweep"}`, async (t) => {
+  const sessionId = `capped-evidence-${round}-${manualRetry}`;
+  const h = await harness(t, sessionId);
   const criterion = "Rendered workflow state is inspectable";
   const stagePacket = async (ordinal: number, ready: boolean) => {
     const executionId = `capped-execution-${ordinal}`;
     const renderedId = `capped-rendered-${ordinal}`;
-    await h.manager.stageAgentEvidence("capped-evidence-preflight", {
+    await h.manager.stageAgentEvidence(sessionId, {
       images: [],
       commandOutputs: [
         {
@@ -960,71 +969,174 @@ test("the round's third consecutive preflight refinement blocks the run for the 
     "the first gapped packet did not wait for evidence readiness",
   );
 
-  // Refinements one and two are the repair the cap leaves room for, and neither blocks.
+  // Seed the current workflow round without spending unrelated Persona repair rounds.
+  openDb().prepare("UPDATE workflow_submissions SET round = ? WHERE id = ?")
+    .run(round, submitted.value.submission.id);
+
+  // Every allowed refinement stays in this round, including the final available retry.
   let parentId = submitted.value.submission.id;
-  for (let ordinal = 1; ordinal <= EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT; ordinal++) {
+  let lastParentId = parentId;
+  for (let ordinal = 1; ordinal <= refinementLimit; ordinal++) {
     await stagePacket(ordinal, false);
-    const retry = await h.manager.retryEvidenceReadiness(runId, parentId, `capped-${ordinal}`, ordinal);
-    assert.equal(retry.ok, true, `refinement ${ordinal} was refused`);
-    if (!retry.ok) return;
-    parentId = retry.value.submission.id;
+    lastParentId = parentId;
+    if (manualRetry) {
+      const retry = await h.manager.retryEvidenceReadiness(runId, parentId, `capped-${ordinal}`, ordinal);
+      assert.equal(retry.ok, true, `refinement ${ordinal} was refused`);
+      if (!retry.ok) return;
+    } else {
+      await h.manager.sweepResumptions(Date.now() + ordinal * 60_000);
+    }
+    const latest = h.store.latestSubmission(runId)!;
+    assert.equal(latest.parentSubmissionId, parentId);
+    assert.equal(latest.round, round);
+    assert.equal(latest.segment, ordinal);
+    parentId = latest.id;
     await waitFor(
-      () => h.store.getRun(runId)?.status === "waiting_for_evidence_readiness",
-      `refinement ${ordinal} did not wait for evidence readiness`,
+      () => h.store.getRun(runId)?.status === (ordinal === refinementLimit
+        ? "completed" : "waiting_for_evidence_readiness"),
+      `refinement ${ordinal} did not reach its expected state`,
     );
-    assert.equal(h.store.getRun(runId)?.currentPhase, "evidence_readiness");
+    if (ordinal < refinementLimit) {
+      assert.equal(h.store.getRun(runId)?.currentPhase, "evidence_readiness");
+      assert.equal(h.store.listAttempts(latest.id).length, 0);
+    }
   }
-  assert.equal(h.store.listSubmissions(runId).length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
+  assert.equal(h.store.listSubmissions(runId).length, refinementLimit + 1);
 
-  await stagePacket(EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1, false);
-  const exhausted = await h.manager.retryEvidenceReadiness(
-    runId,
-    parentId,
-    "capped-over-limit",
-    EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1,
-  );
-  assert.equal(exhausted.ok, false);
-  if (exhausted.ok) return;
-  assert.equal(exhausted.reason, "conflict");
-  assert.match(exhausted.message, /continue despite gaps or start a new round/);
-  assert.equal(
-    h.store.listSubmissions(runId).length,
-    EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1,
-    "the refused refinement must not create a submission",
-  );
-  const blocked = h.store.getRun(runId);
-  assert.equal(blocked?.status, "blocked");
-  assert.equal(blocked?.currentPhase, "preflight_refinement_exhausted");
-  const event = h.store.listEvents(runId)
-    .find((entry) => entry.kind === "preflight_refinement_exhausted");
-  assert.ok(event, "the block must be readable on the run's own timeline");
-  assert.deepEqual(event.payload, {
-    submissionId: parentId,
-    round: 1,
-    segment: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
-    refinements: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
-    limit: EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
-    manualRetry: true,
+  // Reopening the store and replaying the final reservation cannot spend another attempt.
+  const reopened = new WorkflowStore(openDb());
+  const latest = reopened.getSubmission(parentId)!;
+  const replay = reopened.reserveEvidenceReadinessRefinement({
+    id: `${sessionId}-unused-replay`, runId, waitingSubmissionId: lastParentId,
+    triggerKey: latest.triggerKey, manualRetry, now: Date.now(),
   });
-  // The automatic sweep is the loop this bound exists to stop: it must not reopen the round.
-  await h.manager.sweepResumptions(Date.now() + 60_000);
-  assert.equal(h.store.listSubmissions(runId).length, EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT + 1);
-  assert.equal(h.store.getRun(runId)?.status, "blocked");
+  assert.equal(replay.ok, true);
+  if (replay.ok) {
+    assert.equal(replay.idempotent, true);
+    assert.equal(replay.submission.id, parentId);
+  }
+  assert.equal(reopened.consecutiveEvidencePreflightRefinements(parentId), refinementLimit);
 
-  // The block asks the operator a question, so the answer stays reachable from it.
-  const override = h.manager.overrideEvidenceReadiness(
-    runId,
-    parentId,
-    "capped-override",
-    "The mapping is right; the preflight and the packet disagree about the proof class.",
-    true,
-  );
-  assert.equal(override.ok, true);
-  await waitFor(
-    () => h.store.getRun(runId)?.status === "completed",
-    "the overridden submission did not activate out of the refinement block",
-  );
-  assert.equal(h.store.getSubmission(parentId)?.readiness?.status, "overridden");
+  // No extra upload or operator override is needed to let the judges inspect this packet.
+  assert.equal(h.store.getSubmission(parentId)?.readiness?.status, "gaps");
+  assert.equal(h.store.listReadinessOverrides(runId).length, 0);
+  assert.equal(h.store.listAttempts(parentId).filter((attempt) => attempt.nodeId === "persona").length, 1);
+  const event = h.store.listEvents(runId)
+    .find((entry) => entry.kind === "evidence_preflight_exhausted_continued");
+  assert.ok(event, "the automatic continuation must be recorded on the run timeline");
+  assert.deepEqual(event.payload, {
+    submissionId: parentId, round, segment: refinementLimit,
+    refinements: refinementLimit, limit: refinementLimit,
+    gapCodes: h.store.getSubmission(parentId)!.readiness!.gapCodes,
+  });
+  assert.equal(h.store.listDeliveries(runId).filter((delivery) =>
+    delivery.submissionId === parentId && delivery.kind === "evidence_readiness").length, 0);
+  await stagePacket(refinementLimit + 1, false);
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  assert.equal(h.store.listSubmissions(runId).length, refinementLimit + 1);
+  assert.equal(h.store.getRun(runId)?.status, "completed");
+  assert.equal(h.store.listEvents(runId)
+    .filter((entry) => entry.kind === "evidence_preflight_exhausted_continued").length, 1);
+});
+
+/** Recreate an older daemon's final waiting packet through real capture and refinement. */
+async function exhaustedWaitingRun(
+  t: TestContext, id: string, options: Parameters<typeof harness>[3] = {},
+) {
+  const h = await harness(t, id, undefined, options);
+  const advance = h.store.continueExhaustedEvidenceReadiness.bind(h.store);
+  h.store.continueExhaustedEvidenceReadiness = () => false;
+  t.after(() => { h.store.continueExhaustedEvidenceReadiness = advance; });
+  let runId = "";
+  let parentId = "";
+  for (let ordinal = 0; ordinal < 3; ordinal++) {
+    await h.manager.stageAgentEvidence(id, {
+      images: [],
+      commandOutputs: [{ kind: "command", clientItemId: `execution-${ordinal}`,
+        command: `verify ${ordinal}`, output: "passed", exitCode: 0,
+        caption: "Execution without rendered proof", repositoryScope: "all" }],
+      coverage: [{ clientCriterionId: `claim-${ordinal}`,
+        criterion: "Rendered workflow state is inspectable", proofClass: "visual",
+        repositoryScope: "all", links: [{ clientItemId: `execution-${ordinal}`, role: "execution" }] }],
+    });
+    const result = ordinal === 0
+      ? await h.manager.submit(h.binding.id, { requestId: "root" })
+      : await h.manager.retryEvidenceReadiness(runId, parentId, `refine-${ordinal}`);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("evidence capture was refused");
+    runId = result.value.run.id;
+    parentId = result.value.submission.id;
+    if (ordinal === 0) {
+      openDb().prepare("UPDATE workflow_submissions SET round = 2 WHERE id = ?").run(parentId);
+    }
+    await waitFor(() => h.store.listDeliveries(runId).some((delivery) =>
+      delivery.submissionId === parentId && delivery.state === "delivered"), "packet was not delivered");
+  }
+  h.store.continueExhaustedEvidenceReadiness = advance;
+  return { ...h, runId, submissionId: parentId };
+}
+
+for (const phase of ["waiting", "blocked", "activating"] as const) {
+  test(`exhausted preflight recovers ${phase} state once without new evidence`, async (t) => {
+    const h = await exhaustedWaitingRun(t, `recover-exhausted-${phase}`);
+    if (phase === "blocked") {
+      h.store.setRunState(h.runId, "blocked", "preflight_refinement_exhausted", {
+        submissionId: h.submissionId, round: 2, refinements: 2,
+      }, Date.now());
+    }
+    const reopened = new WorkflowStore(openDb());
+    const readiness = reopened.getSubmission(h.submissionId)!.readiness;
+    const delivery = reopened.listDeliveries(h.runId).findLast((item) => item.submissionId === h.submissionId)!;
+    // A sent-but-unconfirmed packet must settle before recovery can take ownership.
+    for (const state of ["sending", "uncertain"]) {
+      openDb().prepare("UPDATE workflow_deliveries SET state = ? WHERE id = ?").run(state, delivery.id);
+      assert.equal(reopened.continueExhaustedEvidenceReadiness(h.submissionId, Date.now()), false);
+    }
+    openDb().prepare("UPDATE workflow_deliveries SET state = 'prepared' WHERE id = ?").run(delivery.id);
+    if (phase === "activating") {
+      assert.equal(reopened.continueExhaustedEvidenceReadiness(h.submissionId, Date.now()), true);
+      assert.equal(reopened.getRun(h.runId)?.currentPhase, "activating");
+      assert.equal(reopened.listAttempts(h.submissionId).length, 0);
+    }
+    await h.manager.sweepResumptions();
+    await waitFor(() => h.store.getRun(h.runId)?.status === "completed", "recovery did not reach the judge");
+    assert.deepEqual(h.store.getSubmission(h.submissionId)?.readiness, readiness);
+    assert.equal(h.store.listDeliveries(h.runId).find((item) => item.id === delivery.id)?.state, "cancelled");
+    assert.equal(h.store.listSubmissions(h.runId).length, 3);
+    assert.equal(h.store.listReadinessOverrides(h.runId).length, 0);
+    await h.manager.sweepResumptions();
+    assert.equal(h.store.listAttempts(h.submissionId).filter((attempt) => attempt.nodeId === "persona").length, 1);
+    assert.equal(h.store.listEvents(h.runId).filter((event) => event.kind === "evidence_preflight_exhausted_continued").length, 1);
+    assert.equal(reopened.continueExhaustedEvidenceReadiness(h.submissionId, Date.now()), false);
+  });
+}
+
+test("a judge can reject exhausted evidence, deliver feedback, and automatically open the next repair round", async (t) => {
+  const head = { sha: "abc" };
+  const h = await exhaustedWaitingRun(t, "exhausted-judge-failure", {
+    head,
+    runner: { ...passingRunner, async run() {
+      return JSON.stringify({ verdict: "fail", summary: "Rendered proof is missing",
+        requestedChanges: [{ basis: "substantive", title: "Demonstrate the rendered result",
+          rationale: "The available execution output does not show the result.",
+          evidence: [{ kind: "goal", quote: "Render the final workflow state" }] }], confidence: 1 });
+    } },
+  });
+  await h.manager.sweepResumptions();
+  await waitFor(() => h.store.getRun(h.runId)?.currentPhase === "persona_feedback"
+    && h.store.listDeliveries(h.runId).some((delivery) =>
+      delivery.kind === "persona_feedback" && delivery.submissionId === h.submissionId && delivery.state === "delivered"),
+  "the judge's feedback did not reach the session");
+  assert.ok(h.injected.some((packet) => packet.includes("Demonstrate the rendered result")));
+  head.sha = "repaired-head";
+  h.registry.getSession("exhausted-judge-failure")!.state = "idle";
+  await h.manager.sweepResumptions(Date.now() + 60_000);
+  const next = h.store.latestSubmission(h.runId)!;
+  assert.equal(next.round, 3);
+  assert.equal(next.segment, 0);
+  assert.equal(next.triggerSource, "session");
+  assert.equal(next.status, "waiting_for_evidence_readiness");
+  assert.equal(h.store.listAttempts(next.id).length, 0, "the new round gets its own preflight budget");
 });
 
 test("a Persona failing a submission the preflight passed records an operator-visible disagreement", async (t) => {

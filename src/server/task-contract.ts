@@ -4,7 +4,7 @@ import {
   taskCompletionContract,
   type TaskCompletionContract,
 } from "@shared/task-completion.ts";
-import { planContractAppendix, type PlanSkillInvocations } from "./plans/prompt.ts";
+import { planContractAppendix, planWorkflowEvidenceAppendix, type PlanSkillInvocations } from "./plans/prompt.ts";
 import { scoutReportAppendix } from "./scouts/prompt.ts";
 import { scoutRepoSlots } from "./scouts/repos.ts";
 import { executionAuthorizationContract } from "./execution-authorization.ts";
@@ -97,8 +97,12 @@ function requireCompletionContract(kind: TaskKind): TaskCompletionContract {
 
 const KIND_CONTRACT: Record<TaskKind, (task: Task, inputs: TaskContractInputs) => string | null> = {
   ship: () => SHIP_COMPLETION_HANDOFF,
+  bugfix: () => SHIP_COMPLETION_HANDOFF,
   scout: (task, inputs) => scoutReportAppendix(scoutRepoSlots(task, inputs.fallbackRoot ?? null)),
-  plan: (task, inputs) => planContractAppendix(requirePlanSkills(task, inputs)),
+  plan: (task, inputs) => [
+    planContractAppendix(requirePlanSkills(task, inputs)),
+    ...(inputs.workflowEvidence ? [planWorkflowEvidenceAppendix()] : []),
+  ].join("\n\n"),
   pipeline: () => null,
   chat: () => null,
 };

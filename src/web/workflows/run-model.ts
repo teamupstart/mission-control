@@ -24,6 +24,7 @@ import type {
   SessionActionBlockCode,
   SessionActionContinuationExpectation,
   SessionActionDeliveryAnchor,
+  SessionActionWarning,
   SessionActionWaitReason,
   WorkflowNodeAttemptState,
   WorkflowRunDetail,
@@ -522,9 +523,11 @@ function submissionIsVerifiedShipping(
     || detail.version === null
   ) return false;
   const continuation = continuationSourceAttempt(detail, submission.id);
-  const proof = continuation ? provenPullRequest(sessionActionProgress(continuation)) : null;
+  const progress = continuation ? sessionActionProgress(continuation) : null;
+  const proof = provenPullRequest(progress);
   return continuation?.state === "completed"
     && proof?.acceptedContentTreeOid != null
+    && progress?.warnings.length === 0
     && sessionActionContinuationReachesOnlyEnd(
       detail.version.graph,
       submission.continuationNodeId,
@@ -2534,6 +2537,8 @@ export interface SessionActionProgress {
   expectation: SessionActionContinuationExpectation | null;
   /** The action ran to completion and authorized a continuation segment. */
   complete: boolean;
+  /** Durable advisories that did not stop the action from advancing. */
+  warnings: SessionActionWarning[];
 }
 
 export function sessionActionProgress(
@@ -2549,6 +2554,7 @@ export function sessionActionProgress(
       settledAt: waiting.settledAt,
       expectation: waiting.expectation,
       complete: false,
+      warnings: waiting.warnings ?? [],
     };
   }
   const done = SessionActionCompletedOutputSchema.safeParse(attempt.output);
@@ -2561,6 +2567,7 @@ export function sessionActionProgress(
     settledAt: done.data.settledAt,
     expectation: done.data.expectation,
     complete: true,
+    warnings: done.data.warnings,
   };
 }
 

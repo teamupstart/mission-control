@@ -428,6 +428,8 @@ test("the palette starts the tour, and it walks the Library's four authoring sur
   await dialog.getByRole("button", { name: "Next" }).click();
 
   dialog = step(dashboard, "No-Mistakes Review");
+  await expect(dialog).toContainText("typecheck, test, and lint together");
+  await expect(dialog).toContainText("Intent Conformance and Test Coverage together");
   await expect(dialog).toContainText("Step 11 of 15");
   const authoredStrip = dashboard.getByRole("group", { name: "Workflow pipeline editor" });
   await expect(authoredStrip).toHaveCSS("outline-width", "2px");

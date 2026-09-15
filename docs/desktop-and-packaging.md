@@ -88,6 +88,7 @@ The install ends by writing a **receipt** to `install-receipt.json` in the state
   "repo": "teamupstart/mission-control",
   "releaseTag": "v0.1.0",
   "installedVersion": "0.1.0",
+  "installedCommit": "0123456789abcdef0123456789abcdef01234567",
   "sourceClone": "/Users/you/.mission-control/app-src",
   "appPath": "/Applications/Mission Control.app",
   "installedAt": "2026-08-18T00:00:00.000Z"
@@ -113,6 +114,12 @@ Three contracts hold for readers:
   bundle's `CFBundleShortVersionString` against the source tree's `package.json` before it
   replaces anything in `/Applications`, so a build that did not come from the checked-out ref
   fails while the previous app is still in place.
+
+New managed builds also embed the full Git SHA as `missionCommit` in the packaged app's
+`package.json`, using electron-builder's extra metadata before signing. The installer checks
+that the checkout has not moved during the build and that the packaged identity matches,
+then records it as the optional `installedCommit` receipt field. Older receipts remain valid.
+The running app reads its own embedded identity rather than the updater clone's current HEAD.
 
 The swap itself keeps the installed app until the new one is fully on disk. The new bundle is
 copied to a hidden sibling of the destination first; only then is the existing app renamed aside
@@ -235,8 +242,40 @@ only a manual check does.
 
 Updates are deliberately inert in development, on Intel Macs, without a managed-install receipt,
 without a system Node.js binary, or when `--from-origin` installed a non-canonical repository. A
-manual check explains the applicable reason. A release is offered only when its numeric version is
-strictly newer than the running app, so the updater never provides a downgrade path.
+manual check explains the applicable reason. In stable mode, a release is offered only when its
+numeric version is strictly newer than the running app.
+
+### Alpha updates
+
+Enable **Settings → Setup → Application updates → Alpha updates** to follow unreleased source
+on `main`. The setting defaults off, persists across restarts and upgrades, and starts an
+immediate background check when changed. Alpha then checks every five minutes with up to
+30 seconds of jitter, including a check after waking if that interval has elapsed. Checks
+recommend an upgrade when the main SHA differs from the running app's embedded SHA, even when
+the version number is unchanged. Multiple commits between checks produce one offer for the
+latest tip. An older installation without source metadata is offered the latest main build
+once to establish its identity.
+
+**Check for updates** in Settings and **Check for Updates…** in the menu or tray query the
+selected channel immediately. An alpha offer names the commit, shows its message, and includes
+news and notes for a newer stable release when available. Every alpha upgrade installs the
+selected main commit. A release-news lookup failure does not block a main update, while a
+main lookup failure never substitutes a stable release. After installing the current tip,
+checking again reports that it is up to date.
+
+The offer pins a full SHA from the canonical repository's `commits/main` endpoint. Preparation
+and installation carry that same SHA, even if main advances while the build is running. The
+staged bundle and installed app must match it. The detached helper also compares source
+identity during rollback, so two alpha builds with the same version remain distinguishable.
+
+Turn alpha off to resume stable-release recommendations. This clears the old offer and checks
+releases again; it does not reinstall or downgrade the running app. A newer numeric stable
+version is required for the next stable offer. During a check, build, or pending installation,
+the toggle is unavailable; finish, cancel, or defer the current update first.
+
+The setting is owned by Electron in `update-preferences.json` beside the receipt and update log.
+It uses the existing desktop IPC update channel and does not require SQLite or a daemon route.
+The plain browser dashboard and older desktop bridges have no alpha setting.
 
 ### Where the work happens, and why it splits
 

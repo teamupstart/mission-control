@@ -1441,7 +1441,7 @@ test("a terminal pull request continuation reaches End without starting a new re
   }
 });
 
-test("changed pull request content blocks instead of completing on the parent verdict", async () => {
+test("changed pull request content warns and still reaches End", async () => {
   const h = await harness("terminal-pr-content-changed", { pullRequest: true });
   try {
     const runId = await runToAction(h);
@@ -1455,17 +1455,23 @@ test("changed pull request content blocks instead of completing on the parent ve
     h.adoptPr({ atHead: "packaging-head" });
     await h.manager.sweepSessionActions(SETTLED());
     await waitFor(
-      () => h.store.getRun(runId)?.currentPhase === "session_action_blocked",
-      "changed published content did not block shipping",
+      () => h.store.getRun(runId)?.status === "completed",
+      "changed published content stopped the completed PR action",
     );
 
     const attempt = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
-    assert.equal(attempt.state, "error");
-    assert.match(attempt.error ?? "", /published_content_changed/);
+    assert.equal(attempt.state, "completed");
+    const output = attempt.output as { warnings?: Array<{ code: string; detail: string }> };
+    assert.equal(output.warnings?.[0]?.code, "pull_request_review_mismatch");
+    assert.match(output.warnings?.[0]?.detail ?? "", /workflow continued/);
     const child = h.store.listSubmissions(runId)[1]!;
     assert.equal(
       h.store.listAttempts(child.id).some((item) => item.nodeId === "end"),
-      false,
+      true,
+    );
+    assert.equal(
+      h.store.listEvents(runId).some((event) => event.kind === "session_action_warning"),
+      true,
     );
     assert.equal(
       h.store.listDeliveries(runId).some((delivery) => delivery.kind === "evidence_readiness"),
@@ -1544,7 +1550,7 @@ test("terminal pull request recovery remains idempotent after verified completio
   }
 });
 
-test("a pull request action waits after its turn until a matching pull request is adopted", async () => {
+test("a pull request action waits for adoption, then warns and advances on a different pushed ref", async () => {
   const h = await harness("pr-wait", { pullRequest: true, downstream: true });
   try {
     const runId = await runToAction(h);
@@ -1562,18 +1568,13 @@ test("a pull request action waits after its turn until a matching pull request i
     assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pull_request");
     assert.equal(h.store.listSubmissions(runId).length, 1, "a segment was captured with no proof");
 
-    // A pull request appears on the branch, but the poller last saw it at the OLD commit.
+    // A pull request appears on the branch, but the poller last saw it at the old commit. The
+    // publication is complete, so the mismatch is advisory and downstream review starts.
     h.adoptPr({ atHead: "head-1" });
     await h.manager.sweepSessionActions(SETTLED());
-    assert.equal(h.store.runSummary(runId)?.actionWait, "awaiting_pushed_head");
-    assert.equal(h.store.listSubmissions(runId).length, 1);
-
-    // The push lands and the next poll sees it. Only now does the graph advance.
-    h.adopted[0]!.observedHeadOid = h.full("head-2");
-    await h.manager.sweepSessionActions(SETTLED());
-        await waitFor(
+    await waitFor(
       () => h.store.listSubmissions(runId).length === 2,
-      "a proven pull request never captured a continuation segment",
+      "an adopted pull request never captured a continuation segment",
     );
     const child = h.store.listSubmissions(runId)[1]!;
     assert.equal(child.segment, 1);
@@ -1582,22 +1583,26 @@ test("a pull request action waits after its turn until a matching pull request i
       "the downstream reviewer never activated on the child evidence",
     );
 
-    // One packet, whatever the wait cost. Waiting for a pull request must never retype.
+    // One packet, whatever the adoption wait cost. The mismatch never retypes the instruction.
     assert.equal(h.injected.length, 1);
 
-    // And what was proven is on the completed attempt, which is the only durable record of it.
+    // The observed PR and warning are both durable on the completed attempt.
     const done = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
     assert.equal(done.state, "completed");
-    const output = done.output as { expectation?: { kind: string; expectedHeadOid?: string; pullRequestUrl?: string } };
+    const output = done.output as {
+      expectation?: { kind: string; expectedHeadOid?: string; pullRequestUrl?: string };
+      warnings?: Array<{ detail: string }>;
+    };
     assert.equal(output.expectation?.kind, "pull_request");
-    assert.equal(output.expectation?.expectedHeadOid, h.full("head-2"));
+    assert.equal(output.expectation?.expectedHeadOid, h.full("head-1"));
     assert.equal(output.expectation?.pullRequestUrl, "https://github.com/owner/repo/pull/7");
+    assert.match(output.warnings?.[0]?.detail ?? "", /pushed ref/);
   } finally {
     await h.stop();
   }
 });
 
-test("a pull request on another branch never satisfies the action, and says which mistake it was", async () => {
+test("a pull request opened on another branch warns and still completes the action", async () => {
   const h = await harness("pr-wrong", { pullRequest: true });
   try {
     const runId = await runToAction(h);
@@ -1609,34 +1614,21 @@ test("a pull request on another branch never satisfies the action, and says whic
 
     // Same commit, wrong branch - a stacked branch, or one that was never switched.
     h.adoptPr({ branch: "some-other-branch" });
-    for (let tick = 0; tick < 3; tick += 1) await h.manager.sweepSessionActions(SETTLED());
-    // Reported as its own state and NOT as `awaiting_pull_request`: an operator watching for a
-    // pull request that has already been opened somewhere else is the failure this separates.
-    assert.equal(h.store.runSummary(runId)?.actionWait, "pull_request_wrong_branch");
-    assert.equal(h.store.listSubmissions(runId).length, 1);
-    assert.equal(h.injected.length, 1);
-
-    // Same commit and branch, another checkout entirely: the larger mistake wins.
-    h.adoptPr({ key: "owner/other#1", number: 1, repositoryRoot: "/elsewhere" });
-    await h.manager.sweepSessionActions(SETTLED());
-    assert.equal(h.store.runSummary(runId)?.actionWait, "pull_request_wrong_repository");
-
-    // A WAIT throughout, never a block: the turn may still open the right pull request, and
-    // when it does the run advances without anything being retyped.
-    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
-    h.adoptPr();
     await h.manager.sweepSessionActions(SETTLED());
     await waitFor(
-      () => h.store.listSubmissions(runId).length === 2,
-      "the right pull request never rescued a run that had reported a stray one",
+      () => h.store.getRun(runId)?.status === "completed",
+      "the branch warning stopped the pull request action",
     );
+    const attempt = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
+    const output = attempt.output as { warnings?: Array<{ detail: string }> };
+    assert.match(output.warnings?.[0]?.detail ?? "", /not the checked branch/);
     assert.equal(h.injected.length, 1);
   } finally {
     await h.stop();
   }
 });
 
-test("a closed pull request at the reviewed commit blocks the run without spending a round", async () => {
+test("a pull request closed after opening warns without blocking the run", async () => {
   const h = await harness("pr-closed", { pullRequest: true });
   try {
     const runId = await runToAction(h);
@@ -1647,22 +1639,22 @@ test("a closed pull request at the reviewed commit blocks the run without spendi
     h.runActionTurn();
     h.adoptPr({ observedState: "CLOSED" });
     await h.manager.sweepSessionActions(SETTLED());
+    await waitFor(() => h.store.getRun(runId)?.status === "completed", "the closed PR warning blocked");
 
     const attempt = h.store.getAttempt(waitingActionAttemptId(h, runId))!;
-    assert.equal(attempt.state, "error");
-    assert.equal(attempt.verdict, null, "a block must never become a verdict");
-    assert.equal(h.store.getRun(runId)?.status, "blocked");
-    // The round is untouched: an action's block never spends repair budget, and nothing was
-    // sent back to Session as a requested change.
+    assert.equal(attempt.state, "completed");
+    assert.equal(attempt.verdict, null, "an action warning must never become a verdict");
+    const output = attempt.output as { warnings?: Array<{ detail: string }> };
+    assert.match(output.warnings?.[0]?.detail ?? "", /closed/);
     assert.equal(h.store.runSummary(runId)?.round, 1);
-    assert.equal(h.store.listSubmissions(runId).length, 1);
+    assert.equal(h.store.listSubmissions(runId).length, 2);
     assert.equal(h.injected.length, 1);
   } finally {
     await h.stop();
   }
 });
 
-test("a head that moves between the proof and the capture converges on the captured commit", async () => {
+test("a head that moves between PR observation and capture warns and advances", async () => {
   const h = await harness("pr-head-moved", { pullRequest: true, downstream: true });
   try {
     const runId = await runToAction(h);
@@ -1681,27 +1673,13 @@ test("a head that moves between the proof and the capture converges on the captu
     h.captureHead.sha = "head-3";
     await h.manager.sweepSessionActions(SETTLED());
 
-    // A child was reserved and captured, and the attempt is back to waiting rather than sealed
-    // on evidence the pull request does not contain.
-    assert.equal(waitingAttempt(h, runId)?.state, "waiting");
+    // The child seals immediately. The mismatch is retained as an advisory, not a moving target
+    // the action waits for the pull request to catch up with.
+    assert.equal(h.store.getAttempt(waitingActionAttemptId(h, runId))?.state, "completed");
     assert.equal(h.store.listSubmissions(runId).length, 2, "the reservation was not reused");
     assert.equal(
-      h.store.listEvents(runId).some((event) => event.kind === "session_action_expectation_unmet"),
+      h.store.listEvents(runId).some((event) => event.kind === "session_action_warning"),
       true,
-    );
-    assert.deepEqual(h.store.listReceipts(h.store.listSubmissions(runId)[1]!.id), []);
-
-    // Re-deciding against the CAPTURED head is what converges: the checkout has moved on, so
-    // the question is now "has the pull request caught up with what we captured", and a push
-    // answers it. Deciding against the live head instead would chase a moving target forever -
-    // and `head-4` below is exactly that moving target, present so this cannot pass by
-    // accidentally agreeing with the live head.
-    h.head.sha = "head-4";
-    h.adopted[0]!.observedHeadOid = h.full("head-3");
-    await h.manager.sweepSessionActions(SETTLED());
-    await waitFor(
-      () => h.store.getAttempt(waitingActionAttemptId(h, runId))?.state === "completed",
-      "the action never sealed against the head its child had captured",
     );
 
     // Still exactly one child segment, one packet, and one receipt.
@@ -1714,8 +1692,10 @@ test("a head that moves between the proof and the capture converges on the captu
     );
     const output = h.store.getAttempt(waitingActionAttemptId(h, runId))!.output as {
       expectation?: { expectedHeadOid?: string };
+      warnings?: Array<{ detail: string }>;
     };
-    assert.equal(output.expectation?.expectedHeadOid, h.full("head-3"));
+    assert.equal(output.expectation?.expectedHeadOid, h.full("head-2"));
+    assert.match(output.warnings?.[0]?.detail ?? "", /did not match/);
   } finally {
     await h.stop();
   }

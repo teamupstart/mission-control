@@ -37,3 +37,25 @@ test("the sandboxed desktop preload carries update progress into the dashboard",
     await application.close();
   }
 });
+
+test("the sandboxed desktop preload carries the alpha preference through IPC", async ({ daemon }) => {
+  const application = await electron.launch({ args: [
+    fileURLToPath(new URL("../fixtures/desktop-update-preload.cjs", import.meta.url)),
+    `${daemon.baseURL}/#/settings/setup`, "alpha",
+  ] });
+  try {
+    const dashboard = await application.firstWindow();
+    const alpha = dashboard.getByRole("checkbox", { name: "Alpha updates" });
+    await expect(alpha).not.toBeChecked();
+    await expect(alpha).toBeEnabled();
+    await alpha.click();
+    await expect(alpha).toBeChecked();
+    expect(await dashboard.evaluate(async () => (await window.missionDesktop!.updates.getState()).alpha)).toBe(true);
+    await dashboard.reload();
+    await expect(alpha).toBeChecked();
+    await alpha.click();
+    await expect(alpha).not.toBeChecked();
+  } finally {
+    await application.close();
+  }
+});

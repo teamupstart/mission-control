@@ -1,0 +1,267 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenTelemetry: seven implementation phases</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>OpenTelemetry implementation phases</h1>
+<p>Source: <a href="plan.md">approved design</a>, including its <a href="plan.html">six detailed areas</a>. Implementation baseline inspected: <code>16369e60</code> on 2026-09-13. The operator requested the phased-plan skill and scheduling all implementation work. The P0-P5 names identify design areas; the seven numbered phases below are independently reviewable implementation units.</p>
+<nav aria-label="Contents"><ul><li><a href="#incorporated-decisions">Incorporated decisions</a></li><li><a href="#repository-findings-and-reconciliations">Repository findings and reconciliations</a></li><li><a href="#size-and-phase-count-rationale">Size and phase-count rationale</a></li><li><a href="#phase-index-and-direct-prerequisites">Phase index and direct prerequisites</a></li><li><a href="#cross-phase-contracts">Cross-phase contracts</a></li><li><a href="#requirements-ownership">Requirements ownership</a></li><li><a href="#publication-and-scheduling">Publication and scheduling</a></li><li><a href="#verification-strategy-and-complete-set-audit">Verification strategy and complete-set audit</a></li></ul></nav><h2 id="incorporated-decisions">Incorporated decisions</h2>
+<ul>
+<li>Collect primary-action, session/model/effort, workflow/stage/persona, intervention, error and verified outcome telemetry as metrics and traces.</li>
+<li>Support local capture without an endpoint and restart-safe retention after durable acceptance in the first usable release.</li>
+<li>Support user-owned and minimized product export profiles with independent opt-ins and identities.</li>
+<li>Build six real dashboards on local Grafana/Prometheus. Use a local Collector and Tempo as the proposed routing/trace companions, validating their versions/topology in Phase 1.</li>
+<li>Schedule implementation now. Every phase waits for this planning PR to merge, as well as its direct phase prerequisites.</li>
+</ul>
+<p>Scope is this Mission Control repository only. The client and local reference stack support both audience policies. Deployment of a public product-ingest service remains separately scoped in the approved design; this sequence does not invent an external repository, hosting account or production endpoint. Product enrollment unavailable in an installation is displayed honestly and tested with an isolated local receiver.</p>
+<h2 id="repository-findings-and-reconciliations">Repository findings and reconciliations</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Verified source</th>
+<th>Consequence for the implementation sequence</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>package.json</code>; <code>src/server/routes.ts</code> <code>/v1/metrics</code>; <code>src/server/usage.ts</code>; <code>src/server/spend-ledger.ts</code></td>
+<td>Existing OTel is inbound cost ingest. Add the general outbound facility separately and consume the canonical usage ledger once. No general OTel SDK dependency is declared today.</td>
+</tr>
+<tr>
+<td><code>src/server/db.ts</code> startup backup/schema revision, synchronous writer and WAL; <code>src/server/workflows/store.ts</code> transaction helper</td>
+<td>Phase 1 owns telemetry migration/transaction policy and versioned projection storage. Never nest an arbitrary telemetry transaction inside workflow writes or let a worker write SQLite.</td>
+</tr>
+<tr>
+<td><code>src/server/index.ts</code> database opening and shutdown</td>
+<td>Initialize capture after state ownership; complete bounded local work before database close; network availability cannot delay exit indefinitely.</td>
+</tr>
+<tr>
+<td><code>src/shared/app-config-entries.ts</code>; <code>src/server/settings-backups/</code>; <code>src/server/settings-status.ts</code>; Registry settings-status comparison; <code>src/web/useEventStream.ts</code></td>
+<td>Consent, credentials and derived queue state need explicit classification. Phase 2 owns their complete API/SSE/Settings integration and restoration behavior.</td>
+</tr>
+<tr>
+<td><code>src/shared/types.ts</code> SessionMeta/pendingEffort; effort route; SDK/Registry owners</td>
+<td>Phase 3 freezes event-time effective attribution, including pending-next-turn effort and missing observations. Configuration is not evidence of execution.</td>
+</tr>
+<tr>
+<td><code>src/shared/workflow.ts</code>; workflow engine/store; <code>src/shared/workflow-stages.ts</code>; <code>src/shared/workflow-lifecycle.ts</code></td>
+<td>Phase 4 preserves executed versus reused verdicts, actual execution model, decoded waits and projected stage occurrences. It adds observation, not another workflow engine.</td>
+</tr>
+<tr>
+<td>Current main <code>16369e60</code>, <code>docs/workflows.md</code>, evidence preflight tests</td>
+<td>First-round evidence attempts were doubled after the original design baseline. Telemetry must observe the current budget and distinguish evidence attempts from semantic reviews; it must not restore the older behavior.</td>
+</tr>
+<tr>
+<td><code>src/server/registry.ts</code> eviction and <code>src/server/tasks.ts</code> departure handling; work-episode/PR persistence</td>
+<td>Session removal, task outcome and verified per-repository PR facts remain distinct. Unknown completion cannot be exported as proven failed work.</td>
+</tr>
+<tr>
+<td><code>src/server/db.ts</code> <code>invalidateTaskOwnershipInTransaction</code>; <code>mergedPrFor</code>; <code>taskPrPollTargets</code></td>
+<td>Invalidation drops bindings without archival. Phase 3 retains bounded observation-only PR context and shares daemon polling so late delivery survives removal without broadening operational task completion or selection-time dependency release. Phase 6 verifies cohort revision from those facts.</td>
+</tr>
+<tr>
+<td>Browser API, action owners, MCP and worker boundaries</td>
+<td>Phase 5 completes an explicit action manifest. HTTP retries and SSE replay cannot become extra logical actions; caller provenance is not authorization.</td>
+</tr>
+<tr>
+<td><code>e2e/README.md</code>, fake-agent fixtures and <code>AGENTS.md</code></td>
+<td>Every new visible surface gets Playwright coverage with fake agents. Unit tests use the repository&#39;s mandated isolated runner. No tests may touch operator state or spend model tokens.</td>
+</tr>
+<tr>
+<td>Mission Control <code>/mcp/tasks</code> implementation and live read-only task inventory</td>
+<td>Task creation supports durable prerequisite edges and resolves this worktree to the canonical Mission Control checkout. No existing OpenTelemetry implementation tasks were found before scheduling.</td>
+</tr>
+</tbody></table></div>
+<p>These are verified code/document observations. SDK replay behavior, seven-day backend ingestion, physical storage overhead and performance are unproven and belong to Phase 1&#39;s compatibility gate. Candidate limits from P0/P1/P5 remain measured design targets. An unsuccessful prototype cannot release consumers against an in-memory substitute or an undocumented adapter.</p>
+<h2 id="size-and-phase-count-rationale">Size and phase-count rationale</h2>
+<p>Estimate: <strong>7,500-12,300 gross non-test implementation lines</strong>, including TypeScript, SQL/migrations, Compose/provisioning, Prometheus rules and dashboard definitions; excluding tests and explanatory docs. This is a sizing signal, not a delivery promise. It assumes maintained public OTel components, reuse of current owners and generic dashboard definitions, no new hosted service, and no hand-written OTLP codec. Generated dashboard JSON can materially affect the count; count either its maintained source or the material definition, not both.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th align="right">Non-test lines</th>
+<th>Why this separate merge boundary is warranted</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1. Durable walking slice and local reference stack</td>
+<td align="right">1,800-2,600</td>
+<td>Resolve adapter, transaction, restart and backend uncertainty before many owners depend on them. A live daemon diagnostic reaches a provisioned panel and trace.</td>
+</tr>
+<tr>
+<td>2. Export profiles, consent and Settings</td>
+<td align="right">700-1,100</td>
+<td>Complete the user control surface and failure states before adding broad behavioral capture; combining it with storage/protocol proof makes the first change too broad.</td>
+</tr>
+<tr>
+<td>3. Session, model and outcome telemetry</td>
+<td align="right">700-1,150</td>
+<td>Session identity, pending effort, usage and late PR outcomes form one coherent lifecycle slice with substantial regression exposure.</td>
+</tr>
+<tr>
+<td>4. Workflow stages, verdicts and recovery</td>
+<td align="right">900-1,500</td>
+<td>Graph/review/delivery semantics and evidence-budget compatibility need their own source-owner review; they consume Phase 3 attribution.</td>
+</tr>
+<tr>
+<td>5. Primary actions, automation and errors</td>
+<td align="right">1,000-1,800</td>
+<td>The remaining 21-group coverage audit spans UI/MCP/worker owners; combining it with workflow semantics would obscure duplicate-event and actor regressions.</td>
+</tr>
+<tr>
+<td>6. Bounded analytical projections</td>
+<td align="right">800-1,350</td>
+<td>Stateful cohorts and late outcomes require restart/retention validation independent of wide instrumentation. This exports useful OTLP summaries before dashboards land.</td>
+</tr>
+<tr>
+<td>7. Six Grafana dashboards and local operator experience</td>
+<td align="right">1,600-2,800</td>
+<td>Provisioned visualizations, real PromQL/Tempo navigation and local-stack browser tests form a substantial deliverable beyond reducers. This is not a tests/docs-only phase.</td>
+</tr>
+</tbody></table></div>
+<p>All layers needed for a phase&#39;s working behavior, tests and documentation land together. Seven phases are justified by protocol uncertainty, independently testable source semantics, stateful analytics and the separate visual deliverable, not by file count or one phase per application layer.</p>
+<h2 id="phase-index-and-direct-prerequisites">Phase index and direct prerequisites</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Implementation guide</th>
+<th>Direct prerequisites</th>
+<th>Operable result</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td><a href="phase-1-durable-walking-slice.md">Durable walking slice</a></td>
+<td>Planning PR</td>
+<td>Opt-in daemon diagnostic, durable metrics/traces, local stack and a working compatibility panel</td>
+</tr>
+<tr>
+<td>2</td>
+<td><a href="phase-2-profiles-and-settings.md">Profiles and Settings</a></td>
+<td>Phase 1 + planning PR</td>
+<td>Complete independent capture/export controls and bounded live health</td>
+</tr>
+<tr>
+<td>3</td>
+<td><a href="phase-3-session-attribution.md">Session attribution and outcomes</a></td>
+<td>Phase 2 + planning PR</td>
+<td>Event-time session/model/effort, turns, usage, endings and PR facts</td>
+</tr>
+<tr>
+<td>4</td>
+<td><a href="phase-4-workflow-insights.md">Workflow insights</a></td>
+<td>Phase 3 + planning PR</td>
+<td>Correct stages, reviews, reasons, repairs and human-recovery signals</td>
+</tr>
+<tr>
+<td>5</td>
+<td><a href="phase-5-actions-and-errors.md">Actions, automation and errors</a></td>
+<td>Phase 4 + planning PR</td>
+<td>Full primary-action manifest, browser signals and correlated safe errors</td>
+</tr>
+<tr>
+<td>6</td>
+<td><a href="phase-6-analytical-projections.md">Analytical projections</a></td>
+<td>Phase 4 + planning PR</td>
+<td>Restart-safe bounded cohort/retention summaries exported through OTel</td>
+</tr>
+<tr>
+<td>7</td>
+<td><a href="phase-7-grafana-dashboards.md">Grafana dashboards</a></td>
+<td>Phases 5 and 6 + planning PR</td>
+<td>Six populated dashboards, trace drill-down, demo and operator setup</td>
+</tr>
+</tbody></table></div>
+<div class="diagram"><svg viewBox="0 0 1100 755" role="img" aria-label="Seven-phase dependency graph; all phases depend on the planning PR. Phases five and six run in parallel after phase four and both precede phase seven."><defs><marker id="phase-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z"/></marker></defs><text x="28" y="32" class="title">Merge prerequisites and permitted concurrency</text><rect x="28" y="65" width="1044" height="90" rx="8"/><text x="550" y="100" text-anchor="middle">Planning PR merge</text><text x="550" y="128" class="small" text-anchor="middle">A direct prerequisite of all seven tasks</text><rect x="28" y="225" width="220" height="90" rx="8"/><text x="138" y="260" text-anchor="middle">1. Durable slice</text><text x="138" y="288" class="small" text-anchor="middle">Capture + local stack</text><rect x="303" y="225" width="220" height="90" rx="8"/><text x="413" y="260" text-anchor="middle">2. Profiles / Settings</text><text x="413" y="288" class="small" text-anchor="middle">Consent + controls</text><rect x="578" y="225" width="220" height="90" rx="8"/><text x="688" y="260" text-anchor="middle">3. Sessions</text><text x="688" y="288" class="small" text-anchor="middle">Model + outcomes</text><rect x="853" y="225" width="220" height="90" rx="8"/><text x="963" y="260" text-anchor="middle">4. Workflows</text><text x="963" y="288" class="small" text-anchor="middle">Stages + reviews</text><rect x="578" y="420" width="220" height="90" rx="8"/><text x="688" y="455" text-anchor="middle">5. Actions / errors</text><text x="688" y="483" class="small" text-anchor="middle">Source coverage</text><rect x="853" y="420" width="220" height="90" rx="8"/><text x="963" y="455" text-anchor="middle">6. Analytics</text><text x="963" y="483" class="small" text-anchor="middle">Bounded cohorts</text><rect x="716" y="625" width="220" height="90" rx="8"/><text x="826" y="660" text-anchor="middle">7. Six dashboards</text><text x="826" y="688" class="small" text-anchor="middle">Grafana + trace links</text><path d="M138 155 V215" marker-end="url(#phase-arrow)"/><path d="M248 270 H293" marker-end="url(#phase-arrow)"/><path d="M523 270 H568" marker-end="url(#phase-arrow)"/><path d="M798 270 H843" marker-end="url(#phase-arrow)"/><path d="M963 315 V410" marker-end="url(#phase-arrow)"/><path d="M915 315 V365 H688 V410" marker-end="url(#phase-arrow)"/><path d="M688 510 V580 H780 V615" marker-end="url(#phase-arrow)"/><path d="M963 510 V580 H873 V615" marker-end="url(#phase-arrow)"/><text x="28" y="455" class="title">Parallel work</text><text x="28" y="485" class="small">Separate source and projection write sets.</text><text x="28" y="508" class="small">Both must merge before dashboard delivery.</text></svg></div>
+<p>Concurrency groups are <code>{1}</code>, <code>{2}</code>, <code>{3}</code>, <code>{4}</code>, <code>{5,6}</code>, <code>{7}</code>. Phases 5 and 6 can merge in either order. Phase 5 owns source/action/error/browser instrumentation and its coverage guide; Phase 6 owns analytical reducers, their catalog/registration subtree, focused tests and analytical guide. Neither edits the other&#39;s files or needs a new common migration. Phase 4 freezes the handoff before the fork. If implementation discovers a shared edit or missing contract, land the common change before either branch starts or revise the dependency edges before dispatch; do not preserve fictional concurrency.</p>
+<h2 id="cross-phase-contracts">Cross-phase contracts</h2>
+<ol>
+<li><strong>Domain facts and context:</strong> one versioned typed registry, immutable resource/context references, stable semantic event/operation identity and explicit actor basis. New semantic revisions are new facts; original timestamps and model context survive replay.</li>
+<li><strong>Durability:</strong> accepted means local commit. Bounded fail-open capture has a documented pre-acceptance gap. Projection/checkpoint/output commit together; delivery retries immutable batches. No repeated SDK increments on replay. Per-profile identities, consent epochs and endpoint generations never mix.</li>
+<li><strong>Extension boundary:</strong> Phase 1 supplies namespaced source and projection registration plus bounded versioned state/checkpoints. Phase 4 freezes source contracts used by both forked phases. Phase 5 adds callers and feature-local definitions; Phase 6 registers analytical reducers through a separate projection entry point. State migrations remain with the one daemon owner.</li>
+<li><strong>Controls and privacy:</strong> local-only needs no endpoint; disabling differs from pausing; ordinary settings restore cannot opt in; secrets and raw content never enter records. Product and personal export retain independent opt-ins, queues and failure handling.</li>
+<li><strong>Source semantics:</strong> effective versus pending effort, session versus task outcome, executed review versus invalid/reused response, and human recovery versus required approval remain separate. Evidence preflight budgets stay as current main defines them.</li>
+<li><strong>Retention and completeness:</strong> candidate seven-day payload retention and 30-day minimal cohort state share the bounded byte budget. Window/horizon and late-data limits are fixed together, with explicit unknown/incomplete states after gaps. No unbounded run IDs or date labels on metrics.</li>
+<li><strong>Backend contract:</strong> public supported SDK path; selected metric translation/resource promotion; historical timestamps; durable Collector queues; tested old-sample/trace search behavior. Prometheus activity trends and exact projected cohort snapshots have distinct meanings.</li>
+<li><strong>Compatibility:</strong> defaults off, additive migrations beside their upgrade path, append-only persisted IDs, no competing eviction/history system, no outbound environment leakage into agent cost ingest, no production deployment changes.</li>
+</ol>
+<h2 id="requirements-ownership">Requirements ownership</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Source requirement or selection</th>
+<th>Sole implementation owner</th>
+<th>Consumers / verification</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>P0 envelope, dimensions, schemas, identity, minimization and budgets</td>
+<td>Phase 1</td>
+<td>Every phase; additive source definitions follow the same registry</td>
+</tr>
+<tr>
+<td>P1 journal, projection/checkpoint, outbox, restart/retry and compatibility</td>
+<td>Phase 1</td>
+<td>Phase 2 controls and Phase 7 end-to-end replay</td>
+</tr>
+<tr>
+<td>P4 consent, endpoint controls, credentials, settings restore and live health UI</td>
+<td>Phase 2</td>
+<td>All later sources; isolated product-policy fixture</td>
+</tr>
+<tr>
+<td>P2 session/turn/dispatch/model/effort/terminal/usage/end/task/PR facts</td>
+<td>Phase 3</td>
+<td>Phase 4 context and Phase 6 cohorts</td>
+</tr>
+<tr>
+<td>P3 workflow/stage/persona/reason/delivery/repair/intervention facts</td>
+<td>Phase 4</td>
+<td>Phase 5 shared action context; Phase 6 reducers</td>
+</tr>
+<tr>
+<td>P4 remaining primary actions, navigation, automation and safe cross-layer errors</td>
+<td>Phase 5</td>
+<td>Phase 7 coverage panels and real-action tests</td>
+</tr>
+<tr>
+<td>P5 distinct-run, outcome-horizon, repeat-use and quality aggregation</td>
+<td>Phase 6</td>
+<td>Phase 7 exact snapshot panels</td>
+</tr>
+<tr>
+<td>P5 local stack baseline and version/OTLP proof</td>
+<td>Phase 1</td>
+<td>Phase 7 owns expansion and operator packaging</td>
+</tr>
+<tr>
+<td>P5 six real dashboards, queries/rules, trace navigation and final local setup</td>
+<td>Phase 7</td>
+<td>Complete reference user experience</td>
+</tr>
+<tr>
+<td>Verification of each phase&#39;s migrations, privacy, behavior and docs</td>
+<td>That introducing phase</td>
+<td>Phase 7 adds cross-system acceptance; it does not replace earlier checks</td>
+</tr>
+<tr>
+<td>Hosted product service, account enrollment and production deployment</td>
+<td>Explicitly outside this approved local/client sequence</td>
+<td>Separate service scope required; no public sharing is silently enabled</td>
+</tr>
+</tbody></table></div>
+<p>P4&#39;s action inventory is partitioned at operation level: telemetry controls belong to Phase 2; dispatch/conversation/session/model/end/PR facts to Phase 3; workflow/persona control to Phase 4; Phase 5 owns remaining actions and audits every inventory row without re-emitting those earlier facts. Phase 6 derives aggregate summaries only and cannot create a second source event for an action.</p>
+<h2 id="publication-and-scheduling">Publication and scheduling</h2>
+<p>All seven tasks have been created and their durable dependency records verified. Open the <a href="schedule.html">task schedule</a> for the phase-to-task-ID map and publication record.</p>
+<p>Commit and push the approved source briefs, this index/HTML and all seven phase guides before creating any task. Verify each exact repo-relative path in the pushed commit. Every task gets <code>dependsOnCurrentSession: true</code>, plus only the direct task prerequisites shown above, using default agent/model/effort. Verify the returned canonical repository and persist the phase-to-task map in <code>schedule.md</code> after successful creation. No duplicate task is recreated on a timeout without checking its recorded result.</p>
+<p>Open the planning PR, record the map in its description and wait for green CI. The operator merges the planning PR; no merge permission is implied by scheduling. Its merge publishes the paths and releases Phase 1. Subsequent phase PR merges release their dependents. The active planning task is <code>029710f7-b160-45dd-9080-955b2939dcfb</code>; use the MCP&#39;s current-session edge rather than copying that identity into task inputs.</p>
+<p>The companion <code>report.html</code> is local investigation output and is never committed. Durable findings needed by implementers are in this index and the source briefs. Runtime data and visual/test evidence are also excluded from the plan commit.</p>
+<h2 id="verification-strategy-and-complete-set-audit">Verification strategy and complete-set audit</h2>
+<p>Use the focused files/scenarios named in each guide and the exact isolated unit-runner contract in root <code>AGENTS.md</code>; do not copy or weaken its preload command. Typecheck/lint apply to implementation; build/smoke to runtime surfaces; Playwright to every visible app or Grafana change. All agent calls are fake. Compatibility tests use isolated local services and temporary state, never live operator history.</p>
+<p>Phase 1 proves durable metrics/traces through the reference stack; each source phase proves semantic identity and privacy. Phase 6 checks the six-run oracle and late/censored cohorts. Phase 7 drives real source actions through the same pipeline into all six dashboards, checks filters/zeros/gaps/trace navigation and restart-at-each-hop behavior, and publishes measured daemon and stack budgets separately.</p>
+<p>Planning verification checks all referenced artifact paths, graph acyclicity/direct edges, complete ownership, concurrency write sets, Markdown/HTML consistency and offline desktop/mobile rendering. No passing runtime prototype is claimed by these documents.</p>
+<p>Audit record, 2026-09-13: all seven guides were reviewed in dependency order against the source and previously written guides. The complete-set audit passes: each required source/delivery behavior has one introducing owner; consumers follow prerequisites; Phase 5/6 write sets and registration are separate; phase-specific tests stay with behavior; and the final state includes every required dashboard. Phase 6 explicitly checks snapshot coherence so Phase 7 cannot combine different calculations. No unconfirmed successful prototype is assumed: Phase 1&#39;s measured adapter/backend acceptance is a merge gate before consumers. Publication-path and rendered-artifact checks run before task creation.</p>
+<p>Review reconciliation: P1/P4 and Phases 1/2 now state the same credential-bearing remote HTTPS and redirect contract. P5&#39;s design ownership is distinguished from implementation ownership in Phases 1, 6 and 7. The root reflects the seven scheduled tasks and links to the rendered repository findings. These clarifications preserve the dependency graph, restart-safe capture and concrete dashboard deliverables.</p>
+<p>Late-outcome review reconciliation: P2 and Phase 3 explicitly cover ownership invalidation, durable observation-only associations and shared-poller routing. Phase 3 owns the source/retention fixture; Phase 6 owns final cohort revision. Existing historical bindings and operational completion/dependency rules retain their current authority. No phase edge or operational policy change is required.</p>
+</main></body></html>

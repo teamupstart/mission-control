@@ -119,11 +119,11 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
   const updatePreload = objectBlock(preload, "updates");
   const updateHandlers = functionBlock(main, "registerIpc");
   const updatePush = functionBlock(main, "pushUpdateSnapshot");
-  // Six, because an update now happens in two acts: `apply` builds while the app stays open
-  // (with `cancel` as the way out), and `install` is the restart that swaps the built bundle in.
+  // The update lifecycle plus the persisted desktop channel preference.
   const channels = [
     "mission:update-get-state",
     "mission:update-check",
+    "mission:update-set-alpha",
     "mission:update-apply",
     "mission:update-install",
     "mission:update-cancel",
@@ -150,6 +150,7 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
         main.includes("registerIpc(updater)") &&
         /mission:update-get-state[\s\S]{0,160}updateController\.getSnapshot\(\)/.test(updateHandlers) &&
         /mission:update-check[\s\S]{0,160}updateController\.check\(true\)/.test(updateHandlers) &&
+        /mission:update-set-alpha[\s\S]{0,300}event.sender !== getMainWindow\(\)\?\.webContents[\s\S]{0,160}updateController\.setAlpha\(alpha\)/.test(updateHandlers) &&
         /mission:update-apply[\s\S]{0,160}updateController\.apply\(\)/.test(updateHandlers) &&
         /mission:update-install[\s\S]{0,160}updateController\.install\(\)/.test(updateHandlers) &&
         /mission:update-cancel[\s\S]{0,160}updateController\.cancel\(\)/.test(updateHandlers) &&
@@ -184,10 +185,11 @@ test("the desktop update bridge exposes one safe, grouped IPC contract", () => {
       preloadUsesOnlySandboxSafeImports: sandboxedPreloadUsesOnlySafeImports(preload),
       preloadExposesExactMethods:
         Array.from(updatePreload.matchAll(/^\s{4}(\w+):/gm), ([, method]) => method).join(",") ===
-          "getState,check,apply,install,cancel,defer,onState,onDialog,answerDialog" &&
+          "getState,check,setAlpha,apply,install,cancel,defer,onState,onDialog,answerDialog" &&
         [
           ["getState", "mission:update-get-state"],
           ["check", "mission:update-check"],
+          ["setAlpha", "mission:update-set-alpha"],
           ["apply", "mission:update-apply"],
           ["install", "mission:update-install"],
           ["cancel", "mission:update-cancel"],

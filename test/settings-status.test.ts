@@ -7,6 +7,12 @@ import type { ReviewManager } from "../src/server/reviews.ts";
 import type { QueueManager } from "../src/server/queue.ts";
 import type { ServerEvent, SettingsStatus } from "../src/shared/types.ts";
 import type { TaskSourceInstance } from "../src/shared/task-source.ts";
+import {
+  TELEMETRY_LIMITS,
+  TELEMETRY_PROFILE_IDS,
+  type TelemetryProfileSummary,
+  type TelemetrySettingsSummary,
+} from "../src/shared/telemetry.ts";
 
 // What is at stake: the Settings rail dots and the topbar gear are meant to be right
 // whenever the app is open, which is only true if the daemon PUSHES the small status tuple
@@ -115,7 +121,41 @@ const ALL_OFF: SettingsStatus = {
     observedRepoKeys: [],
     launchRuntime: "agent-sdk",
   },
+  // Telemetry off, which is the shipped default and the state an existing database opens in.
+  // Every figure here is answered without touching a telemetry table: no identity has been
+  // minted, so nothing has ever been captured. See `telemetrySettingsSummary`.
+  telemetry: {
+    enabled: false,
+    configRevision: 0,
+    productEnrollment: "unavailable",
+    usedBytes: 0,
+    maxBytes: TELEMETRY_LIMITS.maxTotalBytes,
+    gaps: 0,
+    profiles: TELEMETRY_PROFILE_IDS.map((profile) => ({
+      profile,
+      capturing: false,
+      exporting: false,
+      paused: false,
+      pausedReason: null,
+      pending: 0,
+      pendingBytes: 0,
+      oldestPendingAgeMs: null,
+      lastAcceptedAt: null,
+      failing: false,
+    })),
+  },
 };
+
+/**
+ * The telemetry sub-tuple, non-null.
+ *
+ * Optional on the wire so a dashboard talking to a daemon too old to send it reads "unknown"
+ * rather than "off" - but this daemon always composes it, so the tests may say so.
+ */
+function telemetry(status: SettingsStatus): TelemetrySettingsSummary {
+  assert.ok(status.telemetry, "this daemon always composes the telemetry summary");
+  return status.telemetry;
+}
 
 // ---- compose ----
 
@@ -277,12 +317,70 @@ test("the suppression compares every field, so no change can be dropped in silen
         observedRepoKeys: [...(base.pipelines.observedRepoKeys ?? []), "ai-conductor::/moved"],
       },
     },
+    "telemetry.enabled": { ...base, telemetry: { ...telemetry(base), enabled: !telemetry(base).enabled } },
+    "telemetry.configRevision": {
+      ...base,
+      telemetry: { ...telemetry(base), configRevision: telemetry(base).configRevision + 1 },
+    },
+    "telemetry.productEnrollment": {
+      ...base,
+      telemetry: {
+        ...telemetry(base),
+        productEnrollment:
+          telemetry(base).productEnrollment === "available" ? "unavailable" : "available",
+      },
+    },
+    "telemetry.usedBytes": {
+      ...base,
+      telemetry: { ...telemetry(base), usedBytes: telemetry(base).usedBytes + 1 },
+    },
+    "telemetry.maxBytes": {
+      ...base,
+      telemetry: { ...telemetry(base), maxBytes: telemetry(base).maxBytes + 1 },
+    },
+    "telemetry.gaps": { ...base, telemetry: { ...telemetry(base), gaps: telemetry(base).gaps + 1 } },
+    // The list, which is where the real risk is: a per-profile field left out of the compare is
+    // a destination that pauses itself and never says so. Every leaf of a profile is moved
+    // individually below rather than swapping the whole array, which any compare would catch.
+    ...Object.fromEntries(
+      (
+        [
+          ["capturing", (p) => ({ ...p, capturing: !p.capturing })],
+          ["exporting", (p) => ({ ...p, exporting: !p.exporting })],
+          ["paused", (p) => ({ ...p, paused: !p.paused })],
+          ["pausedReason", (p) => ({ ...p, pausedReason: p.pausedReason === null ? "auth" : null })],
+          ["pending", (p) => ({ ...p, pending: p.pending + 1 })],
+          ["pendingBytes", (p) => ({ ...p, pendingBytes: p.pendingBytes + 1 })],
+          // Bucketed at ten seconds in the comparator, so the move has to clear a bucket.
+          ["oldestPendingAgeMs", (p) => ({ ...p, oldestPendingAgeMs: (p.oldestPendingAgeMs ?? 0) + 60_000 })],
+          ["lastAcceptedAt", (p) => ({ ...p, lastAcceptedAt: (p.lastAcceptedAt ?? 0) + 1 })],
+          ["failing", (p) => ({ ...p, failing: !p.failing })],
+          ["profile", (p) => ({ ...p, profile: p.profile === "local" ? "user" : "local" })],
+        ] as [string, (p: TelemetryProfileSummary) => TelemetryProfileSummary][]
+      ).map(([field, move]) => [
+        `telemetry.profiles.${field}`,
+        {
+          ...base,
+          telemetry: {
+            ...telemetry(base),
+            profiles: telemetry(base).profiles.map((p, i) => (i === 0 ? move(p) : p)),
+          },
+        } satisfies SettingsStatus,
+      ]),
+    ),
   };
   // Every leaf of the tuple has a case above. A new field with none is a field this test
   // cannot speak for, which is exactly the state `pipelines` was in.
   const leaves = Object.entries(base).flatMap(([group, value]) =>
-    Object.keys(value as Record<string, unknown>).map((field) => `${group}.${field}`),
-  );
+    Object.keys(value as Record<string, unknown>).map((field) =>
+      // The profile LIST's own leaves are enumerated from a profile rather than from the array,
+      // so a field added to `TelemetryProfileSummary` lands in this test the moment it exists -
+      // which is the property that made this test worth having for `pipelines`.
+      group === "telemetry" && field === "profiles"
+        ? Object.keys(telemetry(base).profiles[0] ?? {}).map((leaf) => `telemetry.profiles.${leaf}`)
+        : [`${group}.${field}`],
+    ),
+  ).flat();
   assert.deepEqual(
     leaves.filter((leaf) => !(leaf in moved)),
     [],

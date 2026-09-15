@@ -474,7 +474,7 @@ test("Ship it starts No-Mistakes Review through the workflow route", async ({
       }>;
     }>(daemon, "/api/workflow-runs");
     const run = page.items.find((candidate) =>
-      candidate.workflowName === "No-Mistakes Review" && candidate.sessionId === sessionId
+      candidate.workflowName === "No-Mistakes Review (High Rigor)" && candidate.sessionId === sessionId
     );
     runId = run?.id ?? "";
     runVersion = run?.workflowVersion ?? 0;
@@ -775,7 +775,7 @@ test("Foreman recovers one settled pre-PR ship turn, records it, and stops at th
   await expect(detail.getByRole("button", { name: /Foreman · 1/ })).toBeVisible({ timeout: 30_000 });
   await detail.getByRole("button", { name: /Foreman · 1/ }).click();
   await detail.getByRole("button", {
-    name: /Keep managed ship task moving before its first pull request/,
+    name: /Keep managed task moving before its first pull request/,
   }).click();
   const recoveryRecord = detail.getByRole("complementary");
   await expect(recoveryRecord.getByText("pre-PR ship recovery", { exact: true })).toBeVisible();

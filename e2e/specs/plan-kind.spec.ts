@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 
 import { expect, test } from "../fixtures/test.ts";
+import { expectContentClearsBorder } from "../fixtures/modal-inset.ts";
 import { artifactsDir } from "../fixtures/artifacts.ts";
 import type { DaemonHandle } from "../fixtures/daemon.ts";
 
@@ -58,13 +59,6 @@ async function shoot(
  * renders in body text and looks like a bug in the card. Both are green in `test/` and
  * wrong on screen, so they are pinned in a browser or they are not pinned.
  *
- * The after-work rule gets the most room because it is the one thing here with STATE. It
- * is not "plan means None" - it is a stash-and-restore that has to survive the operator
- * changing their mind, including through the case that only exists now that there are two
- * diffless kinds: ship to scout to plan and back, where the naive implementation puts the
- * `null` scout just set into the stash and hands that back as an explicit "no handoff"
- * over a task that had one.
- *
  * No dispatch is submitted and no task is dispatched by any test in this file - the modal
  * is opened, driven and closed, and the seeded tasks stay in the backlog. Nothing here
  * launches an agent binary, faked or otherwise, and nothing spends model tokens.
@@ -79,6 +73,7 @@ async function openDispatch(page: Page): Promise<{
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await expect(dialog).toBeVisible();
+  await expectContentClearsBorder(dialog);
 
   // By accessible name, not by position. `getByRole` rather than `getByLabel`, which finds
   // neither: each select is wrapped in a `Tooltip`, and the merged-handler child is not the
@@ -217,6 +212,7 @@ test("the Kind picker keeps plan after ship and scout, before chat", async ({ da
     ["scout", "scout"],
     ["plan", "plan"],
     ["chat", "chat"],
+    ["bugfix", "bugfix"],
   ]);
   await expect(kind).toHaveValue("ship");
 });
@@ -234,13 +230,13 @@ test("the guided pass offers plan as a listed option, with its blurb", async ({ 
 
   const picker = dialog.getByRole("listbox", { name: "What kind of run is this?" });
   await expect(picker).toBeVisible();
-  await expect(picker.getByRole("option")).toHaveCount(4);
+  await expect(picker.getByRole("option")).toHaveCount(5);
   const planOption = picker.getByRole("option", { name: /^plan/ });
   await expect(planOption).toBeVisible();
   // The blurb, not just the word - this is the copy `TASK_KIND_INFO` exists to carry, and
   // the thing that tells a person what choosing `plan` will get them.
   await expect(planOption).toContainText("Produce a reviewed plan");
-  await expect(planOption).toContainText("no after-work");
+  await expect(planOption).toContainText("Plan Validation");
   // And its mnemonic, which is the letter the pass prints and a keyboard user presses.
   await expect(planOption).toContainText("l");
 
@@ -255,7 +251,7 @@ test("the guided pass offers plan as a listed option, with its blurb", async ({ 
   await expect(kind).toHaveValue("plan");
 });
 
-test("choosing plan defaults the after-work Workflow to None", async ({ dashboard }) => {
+test("choosing plan defaults the after-work Workflow to Plan Validation", async ({ dashboard }) => {
   const { dialog, kind, afterWork } = await openDispatch(dashboard);
 
   // Precondition, asserted rather than assumed: a fresh ship dispatch defers to the
@@ -266,22 +262,22 @@ test("choosing plan defaults the after-work Workflow to None", async ({ dashboar
 
   await kind.selectOption("plan");
 
-  await expect(afterWork).toHaveValue("__none");
+  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
   // The option a person actually reads, not just the value behind it.
-  expect(await selectedLabel(afterWork)).toContain("finish without a Workflow");
+  expect(await selectedLabel(afterWork)).toContain("Plan Validation");
   // And the rail beside the select agrees, so the consequence is legible without opening
   // the dropdown.
-  await expect(dialog.getByText("No handoff")).toBeVisible();
-  await expect(dialog.getByText("Foreman complete")).toBeHidden();
+  await expect(dialog.getByText("No handoff")).toBeHidden();
+  await expect(dialog.getByText("Foreman complete")).toBeVisible();
 
-  await shoot(dashboard, "01-plan-clears-after-work", dialog);
+  await shoot(dashboard, "01-plan-validation-default", dialog);
 });
 
 test("switching back to ship hands the plan switch's stash back", async ({ dashboard }) => {
   const { dialog, kind, afterWork } = await openDispatch(dashboard);
 
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("__none");
+  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
 
   await kind.selectOption("ship");
 
@@ -296,13 +292,13 @@ test("plan only defaults the Workflow, it does not lock it", async ({ dashboard 
   const { dialog, kind, afterWork } = await openDispatch(dashboard);
 
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("__none");
+  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
 
   const builtinId = await workflowOptionId(afterWork, "No-Mistakes Review");
   await afterWork.selectOption(builtinId);
 
   // A plan CAN still hand off - the kind picks the default, it does not remove the choice -
-  // and the pick survives rather than being snapped back to None.
+  // and the pick survives rather than being snapped back to its default.
   await expect(afterWork).toHaveValue(builtinId);
   await expect(kind).toHaveValue("plan");
   await expect(dialog.getByText("Foreman complete")).toBeVisible();
@@ -325,21 +321,16 @@ test("a Workflow picked by hand after choosing plan is not reverted by a later k
   await expect(afterWork).toHaveValue(builtinId);
 });
 
-test("a trip through both diffless kinds still returns the original selection", async ({
+test("a trip through scout and plan still returns the original selection", async ({
   dashboard,
 }) => {
   const { dialog, kind, afterWork } = await openDispatch(dashboard);
   await expect(afterWork).toHaveValue("__default");
 
-  // The case that only exists because there are now TWO kinds with no diff. Both sides of
-  // the scout-to-plan switch want None, and an implementation that stashes on every entry
-  // to a diffless kind stashes the `null` scout just set - overwriting the real selection,
-  // and then handing that `null` back on the way out as an explicit "no handoff" saved over
-  // a task that had one. Nothing is decided between two diffless kinds, so nothing moves.
   await kind.selectOption("scout");
   await expect(afterWork).toHaveValue("__none");
   await kind.selectOption("plan");
-  await expect(afterWork).toHaveValue("__none");
+  await expect(afterWork).toHaveValue("builtin-workflow:plan-validation");
 
   await kind.selectOption("ship");
 
@@ -411,4 +402,34 @@ test("a plan task draws its own kind chip on the backlog card", async ({ dashboa
     Math.abs(planHue - nextHue),
     `plan (${Math.round(planHue)}deg) and next up (${Math.round(nextHue)}deg) share a hue today - if this now differs, the family-wide colour pass landed and the note on .bl-kind-plan is stale`,
   ).toBeLessThan(20);
+});
+
+
+test("plan validation can be explicitly disabled and the choice is saved", async ({ dashboard, daemon }) => {
+  const { dialog, kind, afterWork } = await openDispatch(dashboard);
+  await kind.selectOption("plan");
+  await afterWork.selectOption("__none");
+  await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
+  await dashboard.keyboard.press("Escape");
+  await dialog.getByPlaceholder("What should this agent do?").fill("Plan the retry changes");
+  const responsePromise = dashboard.waitForResponse((response) =>
+    response.url().endsWith("/api/tasks") && response.request().method() === "POST");
+  await dialog.getByRole("button", { name: "Add to backlog" }).click();
+  const response = await responsePromise;
+  expect(response.ok()).toBe(true);
+  const task = await response.json();
+  expect(task.kind).toBe("plan");
+  expect(task.workflowId).toBeNull();
+  const saved = await fetch(`${daemon.baseURL}/api/tasks`).then((value) => value.json());
+  expect(saved.find((candidate: { id: string }) => candidate.id === task.id).workflowId).toBeNull();
+});
+
+
+test("an API-created plan defaults to Plan Validation when its workflow is omitted", async ({ daemon }) => {
+  const response = await fetch(`${daemon.baseURL}/api/tasks`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repoRoot: daemon.repo, title: "Validate the phase plan", intent: "Plan the change", kind: "plan", backlog: true }),
+  });
+  expect(response.ok).toBe(true);
+  expect((await response.json()).workflowId).toBe("builtin-workflow:plan-validation");
 });

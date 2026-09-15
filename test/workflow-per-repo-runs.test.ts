@@ -645,7 +645,7 @@ test("one settled turn spends ONE completion episode and starts a run per change
 
 test("the completion boundary answers on the lead alone, never on every repo's capture", async () => {
   // `POST /api/sessions/:id/workflow-completion` is the Foreman worker's, and it fails CLOSED
-  // on a lost response. A capture reads git and can include a 45-second compaction attempt,
+  // on a lost response. A capture reads git and can include a 150-second compaction attempt,
   // so awaiting one per attached repository would stake the completion boundary - and the
   // shipping that follows it - on N of those finishing inside one HTTP timeout.
   //

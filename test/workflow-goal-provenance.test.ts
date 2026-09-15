@@ -111,6 +111,7 @@ function shipInput(over: Partial<Parameters<typeof decideShipShepherd>[0]> = {})
     episodeKey: "intent:1:1",
     humanOwnsSession: false,
     workflowOwnsSession: false,
+    workflowEvidenceEligible: false,
     hasTaskOwnedOpenPr: false,
     diffHasChanges: false,
     featureEnabled: true,
@@ -287,6 +288,13 @@ function automationPayloads(): Array<{ label: string; text: string }> {
     { label: "foreman: the wrap-up instruction", text: WRAPUP_PR },
   ];
 }
+
+test("current and historical idle recovery prompts remain automation", () => {
+  for (const task of ["task", "ship task"]) {
+    const prompt = `This invited ${task} is still open, but its checkout has no changes and the session has been quiet. Resume the requested implementation.`;
+    assert.equal(classify(prompt).verdict, "automation");
+  }
+});
 
 test("every payload Mission Control types itself classifies as automation", () => {
   for (const { label, text } of automationPayloads()) {

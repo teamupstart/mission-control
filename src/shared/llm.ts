@@ -239,12 +239,13 @@ export interface LlmImageInput {
  *
  * The installed Codex CLI accepts repeated `exec --image` inputs. Claude accepts the same
  * four raster MIME types, with base64 image blocks capped below its request envelope. Five
- * MiB raw expands to at most 6,990,508 base64 bytes, and 20 MiB raw expands to at most
- * 27,962,028 bytes, leaving room inside Claude's 32 MB standard request limit for the prompt
- * and JSON framing. Eight images is deliberately well below both providers' count ceilings.
+ * MiB raw expands to at most 6,990,508 base64 bytes, and 20 MiB raw expands to about
+ * 28 MB including per-image padding, leaving room inside Claude's 32 MB request limit for the prompt
+ * and JSON framing. The item count accommodates small, separate proofs while the aggregate
+ * byte limit keeps the transport envelope bounded.
  */
 export const LLM_IMAGE_LIMITS = {
-  maxCount: 8,
+  maxCount: 48,
   maxBytesPerImage: 5 * 1024 * 1024,
   maxAggregateBytes: 20 * 1024 * 1024,
   maxIdChars: 128,

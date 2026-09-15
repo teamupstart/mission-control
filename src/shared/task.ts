@@ -1,3 +1,4 @@
+import { BUG_FIX_REVIEW_WORKFLOW_ID, PLAN_VALIDATION_WORKFLOW_ID } from "./builtin-workflow.ts";
 // Kind, priority and label vocabulary for dispatched tasks, shared by the server (route
 // validation, the roundup report, task sources) and the web app (the dispatch form,
 // the board's backlog column, the roundup panel) so the two can never disagree about
@@ -56,6 +57,7 @@ export interface TaskKindInfo {
    * Kept parallel across the kinds - verb, then object - because these are read as a list.
    */
   purpose: string;
+  afterWorkHint?: string;
 }
 
 export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
@@ -64,6 +66,12 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
     blurb: "Deliver a change, as a pull request.",
     purpose: "deliver a change",
   },
+  bugfix: {
+    label: "bugfix",
+    blurb: "Fix a bug, with Bug Fix Review before the pull request.",
+    purpose: "fix a bug",
+    afterWorkHint: "Bug Fix Review checks the cause, regression proof, and code risk.",
+  },
   scout: {
     label: "scout",
     blurb: "Investigate and report. No diff, so no after-work.",
@@ -71,8 +79,9 @@ export const TASK_KIND_INFO: Record<TaskKind, TaskKindInfo> = {
   },
   plan: {
     label: "plan",
-    blurb: "Produce a reviewed plan, and optionally schedule the work. No diff, so no after-work.",
+    blurb: "Produce a reviewed plan with Plan Validation, and optionally schedule the work.",
     purpose: "produce a reviewed plan",
+    afterWorkHint: "Plan Validation checks agreement across plan files and phases.",
   },
   pipeline: {
     label: "pipeline",
@@ -105,6 +114,12 @@ export interface TaskKindBehavior {
  */
 export const TASK_KIND_BEHAVIOR = {
   ship: {
+    repoAvailability: "workspace",
+    launch: "harness",
+    autopilot: true,
+    constraint: null,
+  },
+  bugfix: {
     repoAvailability: "workspace",
     launch: "harness",
     autopilot: true,
@@ -183,16 +198,14 @@ export function allowsBacklogAutopilot(kind: TaskKind): boolean {
  * value. Mixing them would put "what is this choice?" and "what follows from it?" in one
  * record and lose the reason either is written down.
  *
- * A `Record` and not `kind !== "ship"`: those happen to agree today and are not the same
- * claim. `ship` is the default kind, which is why the pill stays silent for it; having a
- * diff is why an after-work Workflow can run over it. A new kind that produced a diff
- * without being the default would have to answer these two questions differently, and the
- * record is what makes it answer this one at all.
+ * Ship and Bugfix produce implementation diffs; Plan produces reviewable documents.
+ * This record keeps that property independent from which kind is the dispatch default.
  */
 const KIND_PRODUCES_A_DIFF: Record<TaskKind, boolean> = {
   ship: true,
+  bugfix: true,
   scout: false,
-  plan: false,
+  plan: true,
   pipeline: false,
   chat: false,
 };
@@ -211,6 +224,7 @@ export function hasReviewableDiff(kind: TaskKind): boolean {
 /** Whether this kind can be stored in the backlog or produced by backlog automation. */
 const KIND_ALLOWS_BACKLOG: Record<TaskKind, boolean> = {
   ship: true,
+  bugfix: true,
   scout: true,
   plan: true,
   pipeline: true,
@@ -449,4 +463,27 @@ export function taskPillParts(session: Pick<Session, "name" | "task">): TaskPill
     // (`scheduleProvenance`). `task-pill.test.ts` pins the two answering together.
     silent: !kind && !title && !task.outcome && !task.scheduleId,
   };
+}
+
+/** Kinds that share implementation handoff, PR follow-through, and ship recovery. */
+export function isShippingTaskKind(kind: TaskKind | null | undefined): boolean {
+  return kind === "ship" || kind === "bugfix";
+}
+
+const KIND_WORKFLOW_DEFAULTS: Record<TaskKind, string | undefined> = {
+  ship: undefined,
+  scout: undefined,
+  plan: PLAN_VALIDATION_WORKFLOW_ID,
+  pipeline: undefined,
+  chat: undefined,
+  bugfix: BUG_FIX_REVIEW_WORKFLOW_ID,
+};
+
+export function taskHasOwnDefaultWorkflow(kind: TaskKind): boolean {
+  return KIND_WORKFLOW_DEFAULTS[kind] !== undefined;
+}
+
+/** Explicit None and workflow choices bypass this default at the caller. */
+export function taskDefaultWorkflowId(kind: TaskKind, machineDefault: string | null): string | null {
+  return KIND_WORKFLOW_DEFAULTS[kind] ?? machineDefault;
 }

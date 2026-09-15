@@ -1,0 +1,267 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>P4. Primary actions, errors and telemetry settings</title><style>
+:root {color-scheme:dark;--bg:#10151d;--surface:#192330;--ink:#edf3fa;--muted:#b9c8d9;--line:#52677e;--link:#8dccff;--accent:#a8e6cd;}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f7f9fc;--surface:#eaf0f7;--ink:#142337;--muted:#40516a;--line:#8495ab;--link:#00569b;--accent:#186246;}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+main{max-width:1160px;margin:auto;padding:52px 28px 100px;min-width:0}h1{font-size:clamp(28px,4vw,44px);line-height:1.15;letter-spacing:-.025em;max-width:900px;margin:0 0 28px}
+h2{font-size:26px;line-height:1.25;margin:55px 0 20px;border-top:1px solid var(--line);padding-top:27px}h3{font-size:20px;margin:30px 0 14px}p,li{max-width:92ch}p{margin:14px 0}li{margin:8px 0}a{color:var(--link);text-underline-offset:3px;overflow-wrap:anywhere}strong{font-weight:650}code{background:var(--surface);padding:2px 4px;border-radius:4px;font: .88em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}pre{padding:20px;background:var(--surface);overflow:auto;border:1px solid var(--line);border-radius:8px}pre code{white-space:pre;overflow-wrap:normal;padding:0}.table-wrap{overflow:auto;margin:22px 0;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:710px}th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--line)}th{background:var(--surface);font-weight:650}tr:last-child td{border-bottom:0}td{min-width:145px}td:first-child{font-weight:550}blockquote{margin:24px 0;padding:6px 24px;background:var(--surface);border-left:4px solid var(--accent)}.diagram{overflow:auto;border:1px solid var(--line);background:var(--surface);border-radius:8px;margin:26px 0}.diagram svg{display:block;width:100%;min-width:860px;height:auto}.diagram rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.diagram text{fill:var(--ink);font-size:16px;font-family:inherit}.diagram .small{fill:var(--muted);font-size:13px}.diagram path{stroke:var(--accent);stroke-width:2;fill:none}.diagram marker path{fill:var(--accent);stroke:none}.diagram .title{font-weight:650;font-size:18px}nav{padding:18px 22px;background:var(--surface);border-radius:8px;margin:28px 0}nav ul{columns:2;margin:0;padding-left:20px}nav a{font-size:14px}header p{color:var(--muted)}@media(max-width:620px){main{padding:30px 18px 70px}nav ul{columns:1}h2{font-size:23px}}
+</style></head><body><main><h1>P4. Primary actions, errors and telemetry settings</h1>
+<p>Draft design recommendation. Parent: <a href="../plan.html">planning brief</a>. Depends on <a href="../p0-data-contract/plan.html">P0 contract</a>, <a href="../p1-durable-export/plan.html">P1 durable export</a> and <a href="../p3-workflow-insights/plan.html">P3 interventions</a>.</p>
+<p>Confirmed: user-backend and product sharing have separate opt-ins; accepted core telemetry survives restarts. This area defines how those behaviors appear in the app and how actions are measured across dashboard, MCP, worker and terminal paths.</p>
+<nav aria-label="Contents"><ul><li><a href="#decision-this-area-owns">Decision this area owns</a></li><li><a href="#one-logical-action-through-several-layers">One logical action through several layers</a></li><li><a href="#primary-action-coverage-inventory">Primary-action coverage inventory</a></li><li><a href="#actor-attribution-without-changing-authorization">Actor attribution without changing authorization</a></li><li><a href="#browser-only-signal-ingress">Browser-only signal ingress</a></li><li><a href="#error-taxonomy-and-deduplication">Error taxonomy and deduplication</a></li><li><a href="#settings-experience">Settings experience</a></li><li><a href="#important-user-flows">Important user flows</a></li><li><a href="#verification-and-unresolved-details">Verification and unresolved details</a></li></ul></nav><h2 id="decision-this-area-owns">Decision this area owns</h2>
+<p>Capture user intent where it is observable, record authoritative results once, and make collection/export understandable and controllable. Route timing alone cannot say whether a user successfully used a feature; browser click counts alone cannot say whether the requested work happened.</p>
+<h2 id="one-logical-action-through-several-layers">One logical action through several layers</h2>
+<p>Proposed flow:</p>
+<div class="diagram"><svg viewBox="0 0 1100 655" role="img" aria-label="Action outcomes, browser-only signals and profile status"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z"/></marker></defs><text class="title" x="28" y="35">Action outcomes, browser-only signals and profile status</text><rect x="28" y="70" width="260" height="90" rx="8"/><text x="158" y="105" text-anchor="middle">Dashboard gesture</text><text class="small" x="158" y="131" text-anchor="middle">App-issued operation context</text><rect x="28" y="225" width="260" height="90" rx="8"/><text x="158" y="260" text-anchor="middle">Agent / MCP / worker</text><text class="small" x="158" y="286" text-anchor="middle">Caller and causal owner context</text><rect x="408" y="70" width="260" height="90" rx="8"/><text x="538" y="105" text-anchor="middle">Existing action API</text><text class="small" x="538" y="131" text-anchor="middle">Logical request and retries</text><rect x="788" y="70" width="280" height="90" rx="8"/><text x="928" y="105" text-anchor="middle">Authoritative owner</text><text class="small" x="928" y="131" text-anchor="middle">Operation result</text><rect x="788" y="225" width="280" height="90" rx="8"/><text x="928" y="260" text-anchor="middle">Canonical telemetry</text><text class="small" x="928" y="286" text-anchor="middle">Validated, minimized facts</text><rect x="28" y="380" width="260" height="90" rx="8"/><text x="158" y="415" text-anchor="middle">Browser-only entry / error</text><text class="small" x="158" y="441" text-anchor="middle">Bounded signal buffer</text><rect x="408" y="380" width="260" height="90" rx="8"/><text x="538" y="415" text-anchor="middle">Typed telemetry ingress</text><text class="small" x="538" y="441" text-anchor="middle">Acknowledge after durable commit</text><rect x="788" y="380" width="280" height="90" rx="8"/><text x="928" y="415" text-anchor="middle">Durable export profiles</text><text class="small" x="928" y="441" text-anchor="middle">Independent consent and delivery</text><rect x="408" y="535" width="260" height="90" rx="8"/><text x="538" y="570" text-anchor="middle">Settings</text><text class="small" x="538" y="596" text-anchor="middle">API snapshot / SSE health</text><path d="M288 115 H398" marker-end="url(#arr)"/><path d="M288 270 H345 V140 H398" marker-end="url(#arr)"/><path d="M668 115 H778" marker-end="url(#arr)"/><path d="M928 160 V215" marker-end="url(#arr)"/><path d="M288 425 H398" marker-end="url(#arr)"/><path d="M668 425 H720 V270 H778" marker-end="url(#arr)"/><path d="M928 315 V370" marker-end="url(#arr)"/><path d="M928 470 V580 H678" marker-end="url(#arr)"/></svg></div>
+<p>Use one operation ID across a logical request&#39;s retries. Record <code>requested</code>, <code>refused</code>, <code>failed</code>, <code>cancelled</code>, <code>completed</code> or <code>pending</code> according to the operation&#39;s real lifecycle. A 200 response acknowledging queued work is not completion. Existing operations that already carry request IDs retain them; do not add a competing idempotency system.</p>
+<p>The browser can report a gesture/feature entry, while the server records the result. These are related facts, not duplicate success counters. An idempotent replay contributes no second successful action; optional HTTP-attempt metrics can still describe transport retries.</p>
+<p>The existing workflow routes already return idempotency results for resubmit/retry and repair-round grants. The shared browser API module is a useful origin/correlation seam, but it cannot infer all feature semantics from URLs. <a href="../../../../src/server/routes.ts">Workflow routes</a>, <a href="../../../../src/web/lib/api.ts">browser API</a>.</p>
+<h2 id="primary-action-coverage-inventory">Primary-action coverage inventory</h2>
+<p>This inventory is the starting acceptance map. During implementation, enumerate exported browser API actions, relevant MCP methods and owner entry points against these rows. Each primary operation receives a catalog entry or an explicit exclusion; an unreviewed operation cannot disappear behind “etc.”</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Feature group</th>
+<th>Semantic actions to cover</th>
+<th>Result owner / special rule</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Setup and integrations</td>
+<td>Detection, configure, connect, disconnect, installation requested/result</td>
+<td>Setup/integration owner; installed is separate from used</td>
+</tr>
+<tr>
+<td>Task intake and backlog</td>
+<td>Create, import, edit, prioritize, reorder, assign, retry, cancel</td>
+<td>Task/source owner; no title, issue text or search query</td>
+</tr>
+<tr>
+<td>Dispatch</td>
+<td>Request, preparation, launch, readiness, failure, dependency refusal</td>
+<td>Dispatcher; scheduled/automatic dispatch is not human adoption</td>
+</tr>
+<tr>
+<td>Conversation</td>
+<td>Send, queue, edit/cancel pending message, interrupt, respond to question</td>
+<td>Delivery/driver owner; no message contents</td>
+</tr>
+<tr>
+<td>Session management</td>
+<td>Resume, takeover/handoff, kill, rename, archive/reclaim where available</td>
+<td>Existing session/task owners; rename value excluded</td>
+</tr>
+<tr>
+<td>Model and effort</td>
+<td>Configure defaults, select model/effort, accepted/rejected/pending/applied</td>
+<td>P2 distinguishes requested from effective</td>
+</tr>
+<tr>
+<td>Permissions and attention</td>
+<td>Permission answer, explicit approval, dismiss, Foreman invite/withdraw</td>
+<td>Actor and decision intent required</td>
+</tr>
+<tr>
+<td>Workflows</td>
+<td>Bind, unbind, start, resubmit, retry, cancel, restart, grant rounds</td>
+<td>Workflow owner; source operation ID determines uniqueness</td>
+</tr>
+<tr>
+<td>Persona control</td>
+<td>Disable/enable node, edit directive, override readiness, recheck</td>
+<td>Mutation result and blocked context at action time</td>
+</tr>
+<tr>
+<td>Runs inspection</td>
+<td>Enter run detail, open stage/attempt/evidence, filter</td>
+<td>Browser-only navigation; one entry event per actual transition</td>
+</tr>
+<tr>
+<td>Files and Diff</td>
+<td>Open meaningful view, preview, save, compare, comment, resolve comment</td>
+<td>UI entry plus authoritative mutation result; paths/content excluded</td>
+</tr>
+<tr>
+<td>Library</td>
+<td>Create/edit/publish/clone/import/archive workflow/persona/action/command</td>
+<td>Catalog owner; IDs classified builtin/custom, no prose</td>
+</tr>
+<tr>
+<td>Search and command navigation</td>
+<td>Open, execute selection, no-results, dismiss</td>
+<td>Counts/category only; no query or result text</td>
+</tr>
+<tr>
+<td>Queues and schedules</td>
+<td>Configure, enable/disable, enqueue/dequeue, dispatch occurrence</td>
+<td>Queue/scheduler owner; config change separate from occurrence</td>
+</tr>
+<tr>
+<td>Ensembles</td>
+<td>Create, candidate results, evaluate, human decision, apply/cancel, workflow handoff</td>
+<td>Ensemble generic stage/driver owners; avoid strategy-name branches</td>
+</tr>
+<tr>
+<td>Pipelines</td>
+<td>Start/adopt, stage observation, action, recovery, completion</td>
+<td>Provider-owned normalized records; unknown external actions remain unknown</td>
+</tr>
+<tr>
+<td>Foreman and away mode</td>
+<td>Configure/invite, automated answer, handoff, completion claim, user correction</td>
+<td>Explicit automation role and outcome</td>
+</tr>
+<tr>
+<td>Shipping and Inspector</td>
+<td>PR action, verification, review observation, repair, merge/close observation</td>
+<td>Verified per-repository source; no URL or comment body</td>
+</tr>
+<tr>
+<td>Archives and reports</td>
+<td>Open, restore/export where supported, cleanup</td>
+<td>Existing owner; document content excluded</td>
+</tr>
+<tr>
+<td>Settings and help</td>
+<td>Enter section, save/reset, restore settings, help/tour meaningful completion</td>
+<td>Section/action IDs, no arbitrary setting values</td>
+</tr>
+<tr>
+<td>Telemetry</td>
+<td>Configure profile, enable/disable, pause, retry, purge, test connection</td>
+<td>Self-diagnostics bounded; exporting does not create recursive action telemetry</td>
+</tr>
+</tbody></table></div>
+<p>Every row distinguishes feature exposure, meaningful entry, attempted use and successful use. Repeated renders, background refreshes, SSE replay, heartbeat traffic, cursor movement and every keystroke are excluded. Active use may include a bounded foreground visit; it must not be implemented as a continuous input stream.</p>
+<h2 id="actor-attribution-without-changing-authorization">Actor attribution without changing authorization</h2>
+<p>Propose an operation context carrying ID, initiating surface, declared actor, provenance basis and causal parent. Server-owned automation stamps its actor at the owner. Browser action code stamps the app context. MCP identifies the agent entry surface; it does not make all subsequent responses agent-authored, because a human may resolve the request in the dashboard later.</p>
+<p>Existing <code>by</code>/<code>origin</code> fields on several routes already separate human, Foreman and workflow behavior. These are not uniform across all operations. Preserve them as declared attribution where appropriate; unknown or conflicting provenance remains unknown. Do not retrofit an authorization decision to trust new telemetry metadata. <a href="../../../../src/server/routes.ts">Action/Foreman boundary</a>.</p>
+<p>Direct terminal keystrokes are outside this action pipeline. Hooks/driver/transcript observations may establish a turn or model change, but may not establish who initiated it. Report that limitation in manual-intervention coverage. Do not infer a human merely because a new user-role transcript message appeared; automation also sends messages.</p>
+<h2 id="browser-only-signal-ingress">Browser-only signal ingress</h2>
+<p>Propose one small typed ingress for feature navigation, abandoned UI operations and renderer errors, using existing daemon authentication/origin protections. Proposed request contains schema version, client instance, event/operation IDs, event type, bounded event time and event-specific allowed fields. It never accepts an arbitrary attribute dictionary.</p>
+<p>Candidate budgets: 64 KiB per ingress batch, 32 events per batch, and a short bounded in-memory browser buffer with per-client rate limits. The receiver validates IDs/types and applies its own clock/size checks. These are proposed values to verify against actual payloads. Reject unsupported fields/types with a bounded result, never echo private payloads in an error.</p>
+<p>No browser persistence is required initially. A gesture lost before daemon acceptance is outside the restart-safe guarantee; an accepted event is persisted by P1. Show this honestly in coverage. The browser must remain usable while telemetry ingress is disconnected and must not replay navigation events on every SSE reconnect or React mount.</p>
+<p>An ingress acknowledgement may report an event as accepted only after its durable commit. “Saved locally” in status has the same meaning; an in-memory staging buffer is not saved. Telemetry refusal/loss does not change a separately successful application action into a failure.</p>
+<h2 id="error-taxonomy-and-deduplication">Error taxonomy and deduplication</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Error family</th>
+<th>Examples</th>
+<th>Measurement</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>validation</code> / <code>policy_refusal</code></td>
+<td>Invalid input, stale request, denied capability</td>
+<td>Expected operation refusal; separate from unexpected application error</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td>Auth, quota, throttle, timeout, unavailable model</td>
+<td>Bounded provider code, retryability, role, actual model context if known</td>
+</tr>
+<tr>
+<td><code>execution</code></td>
+<td>Check/command process failure, malformed persona response</td>
+<td>Attempt state and stable class; not an executed work rejection</td>
+</tr>
+<tr>
+<td><code>workflow</code></td>
+<td>Capture/delivery/engine error, unreadable state</td>
+<td>Correlated run/attempt, decoded state and source code</td>
+</tr>
+<tr>
+<td><code>storage</code> / <code>filesystem</code></td>
+<td>Failed persistence or artifact access</td>
+<td>Operation failure; no path or SQL text</td>
+</tr>
+<tr>
+<td><code>transport</code></td>
+<td>Daemon/API disconnect, lost SSE connection</td>
+<td>User-visible interruption and recovery duration</td>
+</tr>
+<tr>
+<td><code>renderer</code></td>
+<td>Unhandled UI error or rejected action promise</td>
+<td>App build, bounded app-frame fingerprint and operation link</td>
+</tr>
+<tr>
+<td><code>process</code></td>
+<td>Daemon/worker/driver crash or failed restoration</td>
+<td>Observed termination/recovery, not an invented exception</td>
+</tr>
+<tr>
+<td><code>export</code></td>
+<td>Telemetry endpoint/replay failure</td>
+<td>Dedicated bounded self-health path</td>
+</tr>
+</tbody></table></div>
+<p>Assign a shared error occurrence ID when the same failure crosses layers. Record one authoritative error occurrence plus propagation observations if needed. Do not count the same provider failure at runner, workflow manager, route and browser as four distinct incidents. Independent retries are separate executions, linked to the same logical operation.</p>
+<p>Default error payload: timestamp, component, operation kind, stable code/family, handled/unhandled, retryability, occurrence identity and allowed context. An optional fingerprint uses sanitized application frames and bounded type codes, not hashes of raw messages that contain private paths/text. Export raw stack/message details only under a future separately designed diagnostic policy.</p>
+<p>Expected work rejection is a domain result, not an exception. Refused permission is not a crash. Preserve normal failure semantics: telemetry observation must not catch-and-continue an unhandled fatal error or prevent process exit. A dead daemon cannot reliably report its own death; the supervisor/next startup can report an interrupted boot with unknown cause. Native crash dumps and core files are out of scope.</p>
+<p>Standalone errors can be represented by short error spans linked to an operation when available. Keep the payload compatible with a future OTLP log projection, but metrics and traces remain the v1 requirement. Use a bounded repetition rate and suppressed-occurrence counts for a renderer error loop so telemetry cannot amplify a failure.</p>
+<h2 id="settings-experience">Settings experience</h2>
+<p>Propose a Telemetry section with three explicit controls: local capture, user-owned export, and product analytics sharing. Explain the relationships in ordinary language: local capture can work offline; each export destination is optional; sharing one profile does not enable the other.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>UI state</th>
+<th>What the person sees</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Off</td>
+<td>Collection off; no pending export</td>
+<td>No new telemetry capture or export</td>
+</tr>
+<tr>
+<td>Local capture only</td>
+<td>Saved locally; storage use and oldest record</td>
+<td>Records survive restart up to configured limits</td>
+</tr>
+<tr>
+<td>Export configured and healthy</td>
+<td>Destination summary, last accepted export, queued size/age</td>
+<td>Background drain under P1 budget</td>
+</tr>
+<tr>
+<td>Temporarily offline</td>
+<td>Retaining locally; last success and retry state</td>
+<td>Automatic bounded retry; no repeated modal</td>
+</tr>
+<tr>
+<td>Paused</td>
+<td>Export paused; capture policy shown</td>
+<td>Buffer within limit, do not send</td>
+</tr>
+<tr>
+<td>Configuration/auth problem</td>
+<td>Actionable bounded explanation</td>
+<td>Pause affected destination; other profile continues</td>
+</tr>
+<tr>
+<td>Storage/retention loss</td>
+<td>Records expired/dropped and coverage gap</td>
+<td>Explain limit; never present queue-empty as complete delivery</td>
+</tr>
+</tbody></table></div>
+<p>User-backend configuration: endpoint, signal availability, credential reference and necessary TLS/proxy settings. Require HTTPS for credential-bearing non-loopback exports; support local loopback HTTP Collectors and prefer HTTPS for other remote exports. Validate the rule in the daemon as well as the form, and never disable TLS verification globally. Secrets are write-only in the UI after save; status reports only that a credential is configured. Redirects must not forward credentials to a changed destination.</p>
+<p>“Test connection” sends a clearly identified synthetic diagnostic payload after configuration, not live buffered history. A successful test establishes endpoint acceptance, not that the user&#39;s dashboard has indexed the data. Product endpoint details and enrollment are a separate service contract; no secret embedded in the distributed app can serve as private service authentication.</p>
+<p>Proposed API operations, subject to the existing route/schema review: read configuration/status; update profile configuration with revision check; set collection/export state; test connection; retry bounded drain; purge unsent profile data; reset telemetry identity. Keep secrets out of status and ordinary settings backup payloads. Classify consent, identities, queue state and endpoint generations explicitly in the existing configuration registry. A restored settings snapshot cannot silently opt in another installation. <a href="../../../../src/shared/app-config-entries.ts">Configuration classification</a>.</p>
+<p>Queue health uses an initial API snapshot and bounded SSE updates. Add the exhaustive shared event/client handling and comparison rules only where the current architecture requires it. Do not add browser polling or ship every queued record through the SSE snapshot.</p>
+<h2 id="important-user-flows">Important user flows</h2>
+<ol>
+<li>Enable local capture while offline, perform an action, restart the app, and see retained data with no endpoint configured.</li>
+<li>Configure a personal endpoint and choose whether compatible local history should be sent. Product sharing remains off.</li>
+<li>Enable product analytics separately. Explain its minimized fields and that new sharing starts now; prior local activity is not silently uploaded.</li>
+<li>Pause one destination while the other continues. Show separate lag and a combined storage budget.</li>
+<li>Change endpoint. Keep pending data pinned to the old generation until the user chooses keep, discard or a permitted transfer.</li>
+<li>Withdraw product consent. Stop new sends, purge unsent product data and explain that already accepted remote data is not recalled by a local purge.</li>
+<li>Purge or reset identity using the app&#39;s ordinary explicit destructive-action affordance. Do not delete sessions, tasks, usage or workflow history.</li>
+</ol>
+<h2 id="verification-and-unresolved-details">Verification and unresolved details</h2>
+<p>Every new or changed visible behavior needs Playwright coverage: consent independence, local-only restart, status updates, connection test, pause/retry, purge, endpoint change, disabled operation, secret masking and offline interaction. Tests select by role/label and fake every agent. New modals use the existing inset helper. See <a href="../../../../e2e/README.md">E2E guide</a>.</p>
+<p>Focused contract tests cover field allowlists, malicious/oversized ingress, repeated error suppression, operation replay, unknown actors, settings restore and privacy sentinels in every destination. Runtime tests verify failed telemetry never blocks the real action.</p>
+<p>Implementation gates: complete the owner/action manifest, choose credential storage consistent with daemon-only and packaged modes, define exact settings defaults/limits, and verify the bounded SSE schema. The policy and interaction semantics are specified here; final UI layout and all endpoint paths remain reviewable implementation design.</p>
+</main></body></html>

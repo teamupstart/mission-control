@@ -14,6 +14,17 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isCommitSha } from "../shared/update-source.mjs";
+
+/** Identity embedded by electron-builder before signing, independent of the mutable clone. */
+export function appSourceCommit(appRoot: string): string | null {
+  try {
+    const value = JSON.parse(readFileSync(join(appRoot, "package.json"), "utf8")).missionCommit;
+    return isCommitSha(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 export function plistShortVersion(text: string): string | null {
   const match = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]*)<\/string>/.exec(

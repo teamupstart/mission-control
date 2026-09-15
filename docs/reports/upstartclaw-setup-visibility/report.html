@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UpstartClaw Setup: why it was absent and what now ships</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0b0f14;
+    --surface: #131a22;
+    --surface-strong: #1a2430;
+    --line: #354151;
+    --text: #f3f6fa;
+    --secondary: #c1c9d4;
+    --muted: #99a4b3;
+    --accent: #68a8ff;
+    --accent-surface: #152d49;
+    --good: #62dda9;
+    --good-surface: #12382b;
+    --warn: #ffd166;
+    --warn-surface: #3e3011;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --page: #f5f7fa;
+      --surface: #ffffff;
+      --surface-strong: #edf2f7;
+      --line: #c7d0dc;
+      --text: #17202b;
+      --secondary: #435167;
+      --muted: #596779;
+      --accent: #0757a6;
+      --accent-surface: #dcecff;
+      --good: #096b47;
+      --good-surface: #d8f3e7;
+      --warn: #794b00;
+      --warn-surface: #fff0c2;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--page); }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 28px 96px; }
+  header { padding: 54px 0 34px; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    margin: 0 0 12px;
+    color: var(--accent);
+    font: 700 11px/1.2 var(--mono);
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+  h1 { margin: 0 0 14px; font-size: 40px; line-height: 1.12; letter-spacing: -.025em; }
+  .question { margin: 0 0 22px; max-width: 78ch; color: var(--secondary); font-size: 16px; }
+  .answer {
+    max-width: 82ch;
+    margin: 0;
+    padding: 17px 19px;
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--good);
+    border-radius: 8px;
+    background: var(--surface);
+    font-size: 17px;
+  }
+  main { padding-top: 34px; }
+  h2 { margin: 54px 0 8px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 25px; letter-spacing: -.015em; }
+  h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  h3 { margin: 28px 0 8px; font-size: 17px; }
+  p { max-width: 80ch; margin: 0 0 14px; }
+  .sub { color: var(--secondary); margin-bottom: 22px; }
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    color: var(--text);
+    background: var(--surface-strong);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 24px 0 12px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 17px; }
+  .card .label { color: var(--muted); font: 700 10px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .card .value { margin: 8px 0 5px; font-size: 21px; font-weight: 700; line-height: 1.2; }
+  .card p { margin: 0; color: var(--secondary); font-size: 13px; line-height: 1.45; }
+  .pill {
+    display: inline-block;
+    margin: 0 6px 6px 0;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 3px 9px;
+    background: var(--surface-strong);
+    color: var(--text);
+    font: 700 11px/1.35 var(--mono);
+  }
+  .pill.good { color: var(--good); background: var(--good-surface); }
+  .pill.warn { color: var(--warn); background: var(--warn-surface); }
+  .note {
+    margin: 22px 0;
+    padding: 15px 17px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 7px;
+    background: var(--accent-surface);
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .tw { overflow-x: auto; margin: 20px 0 28px; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 720px; background: var(--surface); font-size: 13.5px; }
+  th, td { padding: 11px 13px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  th { background: var(--surface-strong); color: var(--secondary); font: 700 10.5px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+  tbody tr:last-child td { border-bottom: 0; }
+  ul, ol { max-width: 82ch; padding-left: 22px; }
+  li { margin: 7px 0; }
+  pre {
+    overflow-x: auto;
+    margin: 18px 0;
+    padding: 15px 17px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface-strong);
+    color: var(--text);
+    font: 13px/1.55 var(--mono);
+  }
+  .diagram { overflow-x: auto; margin: 24px 0 28px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .diagram svg { display: block; min-width: 760px; width: 100%; height: auto; }
+  .diagram text { font-family: var(--sans); fill: var(--text); }
+  .diagram .small { fill: var(--secondary); font-size: 12px; }
+  .diagram .title { font-size: 14px; font-weight: 700; }
+  .diagram .box { fill: var(--surface-strong); stroke: var(--line); stroke-width: 1.5; }
+  .diagram .decision { fill: var(--warn-surface); stroke: var(--warn); stroke-width: 1.5; }
+  .diagram .arrow { stroke: var(--accent); stroke-width: 2; fill: none; marker-end: url(#arrow); }
+  .source { color: var(--muted); font-size: 12px; }
+  .source code { white-space: normal; }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  @media (max-width: 760px) {
+    .wrap { padding-inline: 18px; }
+    h1 { font-size: 32px; }
+    .grid { grid-template-columns: 1fr; }
+  }
+  @media print {
+    .wrap { max-width: none; padding: 0; }
+    header { padding-top: 0; }
+    h2 { break-after: avoid; }
+    .card, .note, .diagram, .tw, pre { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Scout investigation and delivered follow-up · 14 September 2026</p>
+    <h1>UpstartClaw Setup: why it was absent and what now ships</h1>
+    <p class="question"><strong>Question:</strong> Why is the UpstartClaw integration not showing under Setup, what is the Claude Code extensions item, and is there an UpstartClaw setup guide?</p>
+    <p class="answer"><strong>Finding and delivered result:</strong> The pre-change implementation hid UpstartClaw after successful setup because it projected only warnings into Setup. The delivered implementation now keeps a detected <strong>UpstartClaw core setup</strong> row visible: <code>completed</code> reads <strong>Ready</strong>, while missing, unfinished, malformed, or unreadable setup reads <strong>Needs setup</strong> beside the interactive remedy. The separate <strong>Claude Code plugins</strong> row remains a generic count of all Claude plugins, not an UpstartClaw status. The guide at <code>docs/upstart.md</code> now contains the complete first-run sequence and is linked from the UpstartClaw row and Setup documentation.</p>
+  </header>
+
+  <main>
+    <h2>Reproducing the pre-change behavior with an anonymized fixture</h2>
+    <p class="sub">An isolated fixture modeled a readable Claude plugin registry, a detected UpstartClaw core plugin, and a completed setup sentinel. It reproduced the pre-change Setup behavior without retaining operator inventory or filesystem data.</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">Claude plugins</div>
+        <div class="value">Registry readable</div>
+        <p>The generic plugin inventory has at least one usable entry.</p>
+      </div>
+      <div class="card">
+        <div class="label">UpstartClaw core</div>
+        <div class="value">Installed</div>
+        <p>The fixture includes the core plugin entry.</p>
+      </div>
+      <div class="card">
+        <div class="label">Setup state</div>
+        <div class="value"><code>completed</code></div>
+        <p>The fixture provides the setup sentinel's accepted completed state.</p>
+      </div>
+    </div>
+
+    <p><span class="pill good">Pre-change result</span> The daemon returned <strong>Claude Code plugins</strong> and <strong>Mission Control skills</strong> in the Agent extensions family, but no <strong>UpstartClaw core setup</strong> row. That exactly matched the filtering rules at the investigated baseline.</p>
+
+    <p class="source">Evidence: isolated setup-route and environment-check fixtures in <code>test/setup-checks-route.test.ts</code> and <code>test/environment-checks.test.ts</code>, plus browser fixtures in <code>e2e/specs/setup-panel.spec.ts</code>.</p>
+
+    <h2>Why the row disappeared before the change</h2>
+    <p>At the investigated baseline, Setup had two different sources of rows. The dependency catalog produced permanent rows such as Claude Code, GitHub CLI, Claude Code plugins, and Node.js. UpstartClaw was absent from that catalog. Instead, it was one of the environment checks that produced a row only when it had a warning.</p>
+
+    <div class="diagram" role="img" aria-label="Pre-change flow showing why the UpstartClaw row was omitted when setup was complete">
+      <svg viewBox="0 0 920 250" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+        <rect class="box" x="18" y="35" rx="9" width="215" height="78"/>
+        <text class="title" x="35" y="64">Environment check</text>
+        <text class="small" x="35" y="87">Detect plugin, then read</text>
+        <text class="small" x="35" y="104">the setup state file</text>
+
+        <path class="arrow" d="M 233 74 L 330 74"/>
+        <rect class="decision" x="330" y="25" rx="9" width="220" height="98"/>
+        <text class="title" x="350" y="57">Warning is non-null?</text>
+        <text class="small" x="350" y="82">Only absent, unfinished,</text>
+        <text class="small" x="350" y="100">malformed, or unreadable states warn</text>
+
+        <path class="arrow" d="M 550 59 L 666 59"/>
+        <rect class="box" x="666" y="22" rx="9" width="232" height="74"/>
+        <text class="title" x="685" y="51">Yes: render a Setup row</text>
+        <text class="small" x="685" y="74">“UpstartClaw core setup”</text>
+
+        <path class="arrow" d="M 440 123 L 440 173 L 666 173"/>
+        <rect class="box" x="666" y="136" rx="9" width="232" height="74"/>
+        <text class="title" x="685" y="165">No: omit the row</text>
+        <text class="small" x="685" y="188">The completed-state fixture followed this path</text>
+
+        <text class="small" x="576" y="48">yes</text>
+        <text class="small" x="453" y="153">no</text>
+      </svg>
+    </div>
+
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>Observed state</th><th>Environment check result</th><th>Pre-change Setup result</th><th>Delivered Setup result</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Plugin is not installed</td><td>Silent by design</td><td>No UpstartClaw row</td><td>No UpstartClaw row</td></tr>
+          <tr><td>Plugin is installed, setup is missing or unfinished</td><td>Warning with <code>/upstartclaw-core:setup</code></td><td>Problem row appears</td><td><strong>Needs setup</strong>, with remedy and guide</td></tr>
+          <tr><td>Plugin is installed, state is <code>completed</code></td><td>Positive readiness</td><td>No UpstartClaw row</td><td><strong>Ready</strong>, with completion evidence and guide</td></tr>
+          <tr><td>Plugin state is malformed or unreadable</td><td>Warning with diagnostic detail</td><td>Problem row appears</td><td><strong>Needs setup</strong>, with diagnostic detail, remedy, and guide</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>At the baseline, the key line was the early return in <code>src/server/setup/index.ts:332-340</code>: a check with <code>warning === null</code> became no row at all. The delivered projection now distinguishes positive readiness from absence: a detected completed plugin produces a satisfied row, an unfinished plugin produces a Needs setup row, and an uninstalled plugin remains silent. The behavior stays registry-driven through the UpstartClaw metadata in <code>src/shared/setup-catalog.ts</code> and the shared environment-row projection in <code>src/server/setup/index.ts</code>.</p>
+
+    <h2>What “Claude Code plugins” means</h2>
+    <p><strong>It is not another name for UpstartClaw.</strong> It is a vendor-neutral health check for Claude Code's whole plugin registry. The probe reads <code>installed_plugins.json</code>, reports Missing when it has no usable entries, Unknown when the record cannot be parsed, and Ready with the total installed count when at least one plugin exists.</p>
+
+    <div class="note">
+      <p><strong>What it proves:</strong> Claude Code has a readable plugin record with one or more usable entries.</p>
+      <p><strong>What it does not prove:</strong> that UpstartClaw is installed, that its OAuth and VPN setup is complete, or that any individual MCP server can authenticate.</p>
+    </div>
+
+    <p>The row is defined as <strong>Claude Code plugins</strong> in <code>src/shared/setup-catalog.ts:333-343</code>. Its probe counts every parsed plugin in <code>src/server/setup/index.ts:180-190</code>. The related <strong>Mission Control skills</strong> row is different again: it checks the app-owned workflow skills that Mission Control links into agent skill directories. UpstartClaw's domain skills are deliberately not copied into that catalog.</p>
+
+    <h2>What the UpstartClaw integration actually is</h2>
+    <p>Mission Control does not call an UpstartClaw service. Dispatched Claude sessions inherit the operator's Claude configuration, so installed UpstartClaw plugins, skills, MCP servers, and guard hooks load in those sessions. Mission Control adds three narrow integration points around that composition:</p>
+
+    <ol>
+      <li>A non-blocking environment warning before dispatch and in Setup when the core plugin is installed but not reliably configured.</li>
+      <li>An explicit <strong>UpstartClaw Claude skill</strong> query mode for read-only Upstart Jira task sources, gated on the installed plugin and completed setup.</li>
+      <li>Optional Persona import from the installed <code>agent-team</code> plugin, with UpstartClaw provenance.</li>
+    </ol>
+
+    <p class="source">Evidence: <code>docs/upstart.md:3-29</code>, <code>src/server/environment/upstartclaw.ts:11-25</code>, <code>docs/upstart.md:97-130</code>, and <code>src/server/task-sources/jira.ts</code>.</p>
+
+    <h2>The guide now exists as a complete, discoverable setup path</h2>
+    <p><span class="pill good">Guide complete</span> <code>docs/upstart.md</code> is titled <strong>Running Mission Control at Upstart</strong>. It explains the composition model, the interactive setup requirement, the <code>NODE_EXTRA_CA_CERTS</code> daemon concern, the dispatch warning, overlapping-feature boundaries, Persona import, and the complete first-run sequence.</p>
+
+    <p><span class="pill good">Discoverable</span> The delivered UpstartClaw row links directly to the guide in both Ready and Needs setup states. <code>docs/setup.md</code> and the root <code>README.md</code> also point operators to it. The generic Claude Code plugins row remains deliberately generic.</p>
+
+    <p>The guide now includes the authoritative marketplace, plugin installation, setup, and restart sequence:</p>
+
+    <pre>/plugin marketplace add teamupstart/claude-code-extensions
+/plugin install upstartclaw-core@upstartclaw
+/upstartclaw-core:setup
+# Restart Claude Code after setup completes</pre>
+
+    <p class="source">The sequence was verified against the UpstartClaw source checkout at <code>README.md:19-28</code> and <code>plugins/core/README.md:20-31</code>, then added to Mission Control's <code>docs/upstart.md</code>.</p>
+
+    <h2>Delivered follow-up</h2>
+    <p>The investigation was initially produced as an answer-only Scout. The same task then delivered the product and documentation correction while keeping UpstartClaw optional for machines that do not install it:</p>
+
+    <ol>
+      <li><strong>The generic Claude Code plugins row stayed generic.</strong> Its count remains separate from individual UpstartClaw readiness.</li>
+      <li><strong>Detected UpstartClaw gained a persistent status row.</strong> The row reads Ready for <code>completed</code> and Needs setup for unfinished states. A machine with no UpstartClaw remains silent.</li>
+      <li><strong>The row links to the setup guide.</strong> The guide remains visible beside the interactive skill command when setup needs attention and beside completion evidence when it is ready.</li>
+      <li><strong>The guide now carries the complete first-run path.</strong> It includes the marketplace command, plugin install command, setup command, restart instruction, and verification in Settings &gt; Setup &gt; Agent extensions. <code>docs/setup.md</code> and the root README link to it.</li>
+    </ol>
+
+    <h2>What this investigation did not establish</h2>
+    <ul>
+      <li>It did not run Glean, Slack, Jira, Guru, or Atlassian authentication probes. A completed state is the plugin's readiness signal, not proof that every credential is currently valid.</li>
+      <li>The initial Scout observation described the pre-change product. This revised report also records the UI and documentation delivered afterward.</li>
+      <li>It did not test a relocated <code>CLAUDE_CONFIG_DIR</code>. Source inspection shows the generic plugin reader honors that variable while the UpstartClaw environment check uses the default Claude directory directly, so relocated configurations deserve a focused follow-up test before any implementation.</li>
+      <li>The report establishes state transitions with anonymized fixtures, not any operator's current environment. Operators can legitimately see different rows based on their local installation and setup state.</li>
+    </ul>
+  </main>
+
+  <footer>
+    Scope: Mission Control baseline commit <code>85a8b07081d0b4f92ffb85475d539b271618bf50</code>, anonymized pre-change fixtures, the delivered implementation, and UpstartClaw source documentation. Report contains no external requests, scripts, frames, linked files, or operator-specific state.
+  </footer>
+</div>
+</body>
+</html>

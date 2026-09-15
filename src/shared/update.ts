@@ -36,6 +36,8 @@ export type UpdateApplyOutcome =
 
 interface SnapshotBase {
   lastOutcome: UpdateApplyOutcome | null;
+  /** Absent on older desktop bridges; alpha is opt-in. */
+  alpha?: boolean;
 }
 
 export type UpdateSnapshot =
@@ -52,6 +54,8 @@ export type UpdateSnapshot =
       currentVersion: string;
       newVersion: string;
       releaseTag: string;
+      /** Full main commit for an alpha offer; releaseTag carries the same pinned build ref. */
+      commitSha?: string;
       releaseName: string;
       releaseNotes: string;
       publishedAt: string;

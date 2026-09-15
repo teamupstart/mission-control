@@ -145,6 +145,12 @@ const AUTOMATION_SIGNATURES: readonly AutomationSignature[] = [
       + " state before acting, do not repeat completed work, and ask again for any approval or"
       + " input you still need.",
   },
+  {
+    label: "a Foreman idle task nudge",
+    match: "prefix",
+    text: "This invited task is still open, but its checkout has no changes and the"
+      + " session has been quiet.",
+  },
 ] as const;
 
 function automationLabel(ask: string): string | null {

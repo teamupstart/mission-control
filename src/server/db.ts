@@ -10,6 +10,7 @@ import {
   type AppConfigValue,
 } from "@shared/app-config-entries.ts";
 import { DB_PATH } from "./config.ts";
+import { createTelemetryTables, migrateTelemetry } from "./telemetry/schema.ts";
 import { assertTestStateIsolation } from "./state/isolation.ts";
 import { DatabaseBackupService, type DatabaseBackupRecord } from "./database-backups/service.ts";
 import { RANK_STEP, repairBacklogRanks } from "./backlog-rank.ts";
@@ -158,8 +159,12 @@ let db: DatabaseSync | undefined;
  * The old value is what makes `openDb` capture one verified recovery point before that upgrade.
  * The new value is written only after the entire upgrade succeeds, so an interrupted migration
  * remains pending on the next start. A database from a newer build is never stamped backwards.
+ *
+ * 2: the general telemetry facility's tables (`src/server/telemetry/schema.ts`). Additive and
+ *    default-off: an upgraded database gains empty tables and captures nothing until an
+ *    operator enables collection.
  */
-export const CURRENT_DATABASE_SCHEMA_VERSION = 1;
+export const CURRENT_DATABASE_SCHEMA_VERSION = 2;
 
 function databaseSchemaVersion(d: DatabaseSync): number {
   const row = d.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -227,8 +232,22 @@ export function openDb(): DatabaseSync {
       { cause: error },
     );
   }
+  ranMigrationOnOpen = pendingMigration;
   db = opened;
   return opened;
+}
+
+let ranMigrationOnOpen = false;
+
+/**
+ * Whether THIS process's open ran a forward schema migration.
+ *
+ * Read by the daemon's own start observation, so a slow first boot after an upgrade is
+ * distinguishable from a slow boot generally. Derived here rather than guessed at by comparing
+ * versions afterwards, because by then the marker has already been advanced.
+ */
+export function databaseMigratedOnOpen(): boolean {
+  return ranMigrationOnOpen;
 }
 
 /**
@@ -2912,6 +2931,13 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
   `);
   d.exec(inFlightIndexSql());
   d.exec(outstandingFileCommentIndexSql());
+  // The general telemetry facility's tables and their own forward migrations, on THIS upgrade
+  // path rather than in a second database with a second version lifecycle. The SQL lives in
+  // `telemetry/schema.ts`, which documents why the store shares this file - the short version
+  // is that a projection checkpoint, its aggregate state and its output batch must commit in
+  // one transaction with the writer that already serializes everything else here.
+  createTelemetryTables(d);
+  migrateTelemetry(d);
   migrate(d);
   markDatabaseSchemaCurrent(d);
 }

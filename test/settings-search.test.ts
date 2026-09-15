@@ -301,11 +301,18 @@ test("guided dispatch is reachable by the words someone would half-remember", ()
 // switch authorizes running a command that loads scripts and source from the branch under
 // review, with the daemon's own filesystem authority. Flipping that from a one-line search
 // row would grant it without the paragraph that explains what was granted ever being read.
-test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, and Workflow's two", () => {
+//
+// The two telemetry switches join them because they are CONSENT, which is the same rule read
+// from the other end: the copy that says local-only means local-only, that a destination is a
+// separate decision, and that a withdrawal drops the backlog is the whole substance of the
+// choice. A consent flipped anonymously from a search row is consent nobody gave.
+test("the risky set is exactly the D5 exemption - YOLO, the Inspector's two, Workflow's two, and the two consents", () => {
   const risky = SETTINGS_CONTROLS.filter((c) => c.risky).map((c) => c.id).sort();
   assert.deepEqual(risky, [
     "inspector-enabled",
     "inspector-mode",
+    "telemetry-collect",
+    "telemetry-product",
     "workflow-checks",
     "workflow-live-delivery",
     "yolo",

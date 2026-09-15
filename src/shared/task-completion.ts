@@ -68,7 +68,7 @@ const SHIP_CONTRACT: TaskCompletionContract = {
     "the requested implementation is done",
     "repository documentation the change requires is updated",
     "the focused tests and verification the change requires have been run",
-    "evidence registration the task asked for is done",
+    "workflow evidence registration the task asked for is done when an active Persona workflow accepts it",
   ],
   deferred: [
     { id: "commit", imperative: "commit", noun: "committing the work" },
@@ -92,12 +92,13 @@ const SHIP_CONTRACT: TaskCompletionContract = {
  *
  * `Record<TaskKind, …>` for the same reason `KIND_CONTRACT` in `server/task-contract.ts`
  * uses one: a new task kind does not compile until it has said what its completion
- * boundary is, including saying it has none. Only `ship` defers post-completion work
- * today; scout, plan, pipeline and chat finish inside their own delivered turn and are
+ * boundary is, including saying it has none. Ship and Bugfix defer post-completion work;
+ * scout, plan, pipeline and chat finish inside their own delivered turn and are
  * judged against their objective unchanged.
  */
 const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> = {
   ship: SHIP_CONTRACT,
+  bugfix: { ...SHIP_CONTRACT, kind: "bugfix", boundary: "the initial implementation handoff of a dispatched bugfix task" },
   scout: null,
   plan: null,
   pipeline: null,
@@ -114,6 +115,13 @@ const KIND_COMPLETION_CONTRACT: Record<TaskKind, TaskCompletionContract | null> 
  */
 export function taskCompletionContract(kind: TaskKind | null | undefined): TaskCompletionContract | null {
   return kind ? KIND_COMPLETION_CONTRACT[kind] ?? null : null;
+}
+
+/** Current daemon authority overrides an evidence demand retained in an older prompt or gap. */
+export function workflowEvidenceRequirement(eligible: boolean): string {
+  return eligible
+    ? "An active Persona workflow accepts evidence. Complete the workflow evidence registration the task requires before handoff."
+    : "No active Persona workflow accepts evidence. Workflow evidence registration is not required for this handoff. Do not request it or treat its absence as a blocking gap, even if an earlier instruction or review requested it. Implementation, required documentation, and focused verification are still required.";
 }
 
 /** "commit, push, create or update a pull request, … or wait for pull-request CI". */

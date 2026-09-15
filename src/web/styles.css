@@ -18703,7 +18703,8 @@ button.wf-carried.is-link:focus-visible {
   border-color: color-mix(in oklab, var(--working) 40%, var(--border));
   background: color-mix(in oklab, var(--working) 9%, transparent);
 }
-.settings-scope-machine {
+.settings-scope-machine,
+.settings-scope-installation {
   color: var(--idle);
   border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
   background: color-mix(in oklab, var(--idle) 9%, transparent);
@@ -27435,7 +27436,8 @@ span.line-run-prov {
   border: 1px solid var(--border-soft);
   border-radius: 999px;
 }
-.bl-kind-ship {
+.bl-kind-ship,
+.bl-kind-bugfix {
   color: var(--idle);
 }
 .bl-kind-scout {
@@ -33415,7 +33417,8 @@ body.foreman-sidecar-open .modal-backdrop {
 .setup-row-needs-setup .setup-why,
 .setup-row-needs-setup .setup-evidence,
 .setup-row-satisfied .setup-evidence,
-.setup-row .setup-remedy-actions {
+.setup-row .setup-remedy-actions,
+.setup-row .setup-guide {
   padding-left: 16px;
 }
 
@@ -33872,4 +33875,38 @@ body.foreman-sidecar-open .modal-backdrop {
 
 .artifact-refusal strong {
   color: var(--fg);
+}
+
+/* ---- Telemetry settings ----
+   Three small rules, and all three exist because this panel's controls sit INSIDE a card
+   rather than beside its title. `.kb-row-controls` puts a control in the row's trailing
+   gutter, which is right for one switch per row and wrong for a sub-decision that needs its
+   own sentence: two bare switches in that gutter cannot say which of them pauses and which
+   disables, and that distinction is the whole reason both exist. */
+.tele-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  cursor: pointer;
+}
+/* A row of buttons under a form, wrapping rather than overflowing a narrow panel. */
+.tele-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+/* The live queue readout, set apart from the form it belongs to. */
+.tele-queue {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+}
+.tele-queue p {
+  margin: 0 0 4px;
 }

@@ -205,7 +205,7 @@ legacy intent/evidence columns as a fallback trigger.
 `src/shared/task-completion.ts` owns one browser-safe, exhaustive `Record<TaskKind,
 TaskCompletionContract | null>` describing what "complete" means for a task kind's initial
 delivered turn: what must be done, and what post-completion work is explicitly deferred to a
-later owner. `ship` is the only kind that defers anything today. The delivered handoff appendix
+later owner. `ship` and `bugfix` share this implementation handoff. The delivered handoff appendix
 (`src/server/task-contract.ts`) and Foreman's verify prompt render from that one record, so the
 boundary an agent is told and the boundary it is judged against cannot drift apart.
 
@@ -289,7 +289,8 @@ is a normal tool-less Persona introduced in the frozen No-Mistakes Review v9 gra
 v13 graph runs it alongside Code Risk Reviewer and Code Design Reviewer in stage 3, followed by
 Test Evidence Auditor, Documentation Steward and Slop Filter in stage 4, all inside the local
 repair loop before the Pull Request action. Version 13 also enforces criterion-mapped evidence
-readiness before that graph can create its first attempt.
+readiness before that graph can create its first attempt. Exhausting a round's evidence
+refinements advances the final packet with its gaps intact so the judges can evaluate it.
 GitHub Inspector is the optional daemon service below; its durable remote observation and review
 provenance remain the input Shipping trusts.
 

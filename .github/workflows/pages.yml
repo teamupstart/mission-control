@@ -1,0 +1,119 @@
+name: Pages
+
+# Publishes `site/` to GitHub Pages at https://teamupstart.github.io/mission-control/.
+#
+# `site/` is the published root and nothing else in the repository is served. The documents
+# under `site/artifacts/` are self-contained single pages - every image is a data URI and
+# there is no external reference - so this workflow copies bytes and builds nothing. Keep it
+# that way: a page that needs a build step needs a build step here too, and a page that
+# fetches something at load time stops working for anyone reading it offline.
+#
+# `docs/` stays markdown for reading in the repository and is deliberately not published.
+#
+# One repository setting is a prerequisite: Settings -> Pages -> Source must be "GitHub
+# Actions". It is set on this repository; a fork has to set its own. The workflow cannot set
+# it for itself, and that is not an oversight. `actions/configure-pages` has an
+# `enablement` input, but its own documentation is explicit that the input needs a credential
+# other than `GITHUB_TOKEN` - a PAT with `repo`, or an App with `administration:write` - and
+# this repository mints App tokens for contents, issues and pull requests only. Turning
+# `enablement` on with the default token buys nothing and reads like the prerequisite is
+# handled, so it stays off.
+#
+# The preflight below therefore reads the setting and fails with the exact remediation, rather
+# than letting `deploy-pages` report a missing-site error that names no fix.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# `pages: write` and `id-token: write` are what `deploy-pages` needs to mint its deployment
+# token. `contents: read` is the checkout.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deployment finish rather than cancelling it mid-publish, but keep only one
+# queued behind it - a cancelled deploy can leave the site on an older commit than main.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy site to Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Costs one API call and turns the one failure this workflow is actually likely to hit
+      # into a sentence naming the setting to change.
+      #
+      # This blocks only on a definite 404, which is the API's answer for "no Pages site".
+      # Anything else means the check could not reach a verdict - a token that cannot read the
+      # endpoint, and a request that never got an HTTP reply at all, look nothing like a
+      # misconfigured site - so it warns and steps aside rather than failing a deploy that
+      # would have worked. A preflight that can be wrong is not allowed to be the gate.
+      - name: Check the Pages source is GitHub Actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          response=$(mktemp)
+          errlog=$(mktemp)
+          remedy="A repository admin must set Settings -> Pages -> Source to 'GitHub Actions', then re-run this workflow. See site/README.md."
+
+          # The `if` is what keeps `set -e` from aborting the step here. A DNS failure, a reset
+          # connection or a TLS error exits curl non-zero with no HTTP status to inspect, and
+          # under a bare assignment that killed the job before the `case` below ever ran - the
+          # exact opposite of what the paragraph above promises. `--max-time` bounds a stalled
+          # request so the same path is taken instead of hanging.
+          if ! status=$(curl -sS --max-time 30 --retry 2 --retry-connrefused \
+            -o "$response" -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pages" 2>"$errlog"); then
+            echo "::warning::Could not reach the Pages API ($(tr '\n' ' ' < "$errlog")); leaving the verdict to the deploy steps."
+            exit 0
+          fi
+
+          case "$status" in
+            200)
+              build_type=$(jq -r '.build_type // "null"' "$response")
+              if [ "$build_type" = "workflow" ]; then
+                echo "Pages source is GitHub Actions."
+              else
+                echo "::error::Pages source for $GITHUB_REPOSITORY is '$build_type', not 'workflow'."
+                echo "::error::$remedy"
+                exit 1
+              fi
+              ;;
+            404)
+              echo "::error::GitHub Pages is not enabled for $GITHUB_REPOSITORY."
+              echo "::error::$remedy"
+              exit 1
+              ;;
+            *)
+              echo "::warning::Could not read the Pages configuration (HTTP $status); leaving the verdict to the deploy steps."
+              ;;
+          esac
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v5

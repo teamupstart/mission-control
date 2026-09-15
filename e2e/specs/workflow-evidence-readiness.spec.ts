@@ -67,10 +67,24 @@ async function dispatch(page: Page, daemon: DaemonHandle): Promise<string> {
   return sessionId;
 }
 
-async function createWorkflow(daemon: DaemonHandle): Promise<string> {
+async function createWorkflow(daemon: DaemonHandle, review = false): Promise<string> {
+  const persona = review ? await api<{ id: string }>(daemon, "/api/personas", {
+    name: "Exhausted preflight reviewer", guidanceMarkdown: "Review the available evidence. E2E_PASS_VERDICT",
+  }) : null;
   const created = await api<{ workflow: { id: string } }>(daemon, "/api/workflows", {
     name: "E2E criterion mapped evidence",
-    draft: {
+    draft: persona ? {
+      nodes: [
+        { id: "session", kind: "session", position: { x: 0, y: 0 } },
+        { id: "reviewer", kind: "persona", personaId: persona.id, position: { x: 220, y: 0 } },
+        { id: "end", kind: "end", outcome: "Complete", position: { x: 440, y: 0 } },
+      ],
+      edges: [
+        { id: "submit", source: "session", sourcePort: "submitted", target: "reviewer", targetPort: "activate" },
+        { id: "pass", source: "reviewer", sourcePort: "pass", target: "end", targetPort: "terminal" },
+        { id: "fail", source: "reviewer", sourcePort: "fail", target: "session", targetPort: "return_for_changes" },
+      ],
+    } : {
       nodes: [
         { id: "session", kind: "session", position: { x: 0, y: 0 } },
         { id: "end", kind: "end", outcome: "Complete", position: { x: 220, y: 0 } },
@@ -709,13 +723,14 @@ test("valid preflight outcomes remain visible when Auditor telemetry is unreadab
   await expect(card).not.toContainText("No Test Evidence Auditor attempt has been recorded yet");
 });
 
-test("a round's spent preflight refinements block the run and hand the decision to the operator", async ({
+for (const { round, attempts } of [{ round: 1, attempts: 6 }, { round: 2, attempts: 3 }, { round: 7, attempts: 3 }]) test(`round ${round} shows ${attempts} evidence attempts then automatically continues to review`, async ({
   dashboard,
   daemon,
 }) => {
   test.setTimeout(180_000);
+  await dashboard.setViewportSize({ width: 1440, height: 1400 });
   const sessionId = await dispatch(dashboard, daemon);
-  const versionId = await createWorkflow(daemon);
+  const versionId = await createWorkflow(daemon, true);
   const session = (await api<Array<{ id: string; agentSessionId?: string; cwd: string }>>(
     daemon,
     "/api/sessions",
@@ -749,10 +764,19 @@ test("a round's spent preflight refinements block the run and hand the decision 
   await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 })
     .toBe("waiting_for_evidence_readiness");
 
+  // Place the waiting submission in the workflow round under test without unrelated reviews.
+  withDaemonDb(daemon, (db) => {
+    db.prepare("UPDATE workflow_submissions SET round = ? WHERE id = ?")
+      .run(round, created.submission.id);
+  });
+
   // The sweep and the explicit retry share one reservation. Either can capture the newly
   // staged packet first, so await the resulting child instead of requiring this request to win.
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
+  const readiness = await evidencePane(dashboard);
+  await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   let parentId = created.submission.id;
-  for (const ordinal of [1, 2]) {
+  for (let ordinal = 1; ordinal < attempts; ordinal++) {
     stageLaterPacket(daemon, noteKey, session!.cwd, ordinal + 1, `cap-refine-${ordinal}`, false);
     const response = await fetch(
       `${daemon.baseURL}/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
@@ -766,63 +790,32 @@ test("a round's spent preflight refinements block the run and hand the decision 
       const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`);
       return { count: detail.submissions.length, parentId: detail.submissions.at(-1)?.parentSubmissionId,
         status: detail.submissions.at(-1)?.status };
-    }, { timeout: 60_000 }).toEqual({ count: ordinal + 1, parentId, status: "waiting_for_evidence_readiness" });
+    }, { timeout: 60_000 }).toEqual({ count: ordinal + 1, parentId, status: ordinal === attempts - 1 ? "completed" : "waiting_for_evidence_readiness" });
     const detail = await api<{ submissions: WorkflowSubmission[] }>(daemon, `/api/workflow-runs/${runId}`);
     parentId = detail.submissions.at(-1)!.id;
   }
 
-  // The healthy waiting round first, so the two controls the block changes are known to have
-  // been there: this is the state every earlier segment of this round rendered in.
-  await dashboard.goto(`${daemon.baseURL}/#/runs/${runId}`);
-  const readiness = await evidencePane(dashboard);
-  await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
-  await expect(readiness.getByRole("region", { name: "Evidence readiness override" }))
-    .not.toContainText("This round has spent its evidence preflight refinements");
-
-  /*
-   * The attempt that exceeds the cap, requested rather than clicked.
-   *
-   * WHICH actor spends it is genuinely a race and the daemon is right either way: the readiness
-   * sweep reserves newly staged evidence on its own tick, so it can reach the cap between the
-   * staging below and anything this spec does. Both routes are refused with 409 and both block
-   * the run identically, so this asserts the refusal and then the state both produce. Driving it
-   * through the route keeps the browser assertions below about the block's CONSEQUENCE, which is
-   * what a person sees and what no other test layer can observe. The cap's own refusal message
-   * is asserted where its ordering is deterministic, in `test/workflow-evidence-preflight.test.ts`.
-   */
-  stageLaterPacket(daemon, noteKey, session!.cwd, 4, "cap-over-limit", false);
-  const refusal = await fetch(
-    `${daemon.baseURL}/api/workflow-runs/${runId}/submissions/${parentId}/evidence-readiness/retry`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ requestId: `cap-over-limit-${Date.now()}` }),
-    },
-  );
-  expect(refusal.status).toBe(409);
-  await expect.poll(async () => (await runStatus()).currentPhase, { timeout: 60_000 })
-    .toBe("preflight_refinement_exhausted");
-  expect((await runStatus()).status).toBe("blocked");
-  // No fourth submission exists: the refusal is a refusal, not a segment that reviewed nothing.
-  expect((await api<{ submissions: unknown[] }>(daemon, `/api/workflow-runs/${runId}`)).submissions)
-    .toHaveLength(3);
-
-  // The block withdraws the loop, not the decision: the refinement button is gone, the reason
-  // is on the page, and the operator's own way through is still there.
-  const overrideBox = readiness.getByRole("region", { name: "Evidence readiness override" });
-  await expect(overrideBox).toBeVisible();
-  await expect(overrideBox).toContainText(
-    "This round has spent its evidence preflight refinements without closing these gaps",
-  );
-  await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toHaveCount(0);
-  await readiness.scrollIntoViewIfNeeded();
-  await capture(dashboard, "08-preflight-refinements-exhausted", readiness);
-
-  await overrideBox.getByRole("button", { name: "Continue to review" }).click();
   await expect.poll(async () => (await runStatus()).status, { timeout: 60_000 }).toBe("completed");
-  await expect(readiness).toContainText(
-    "Operator continued despite gaps: Proceed to review with unresolved evidence readiness gaps.",
+  const detail = await api<{ submissions: WorkflowSubmission[]; events: Array<{ kind: string }> }>(
+    daemon, `/api/workflow-runs/${runId}`,
   );
+  expect(detail.submissions).toHaveLength(attempts);
+  expect(detail.submissions.at(-1)?.readiness?.status).toBe("gaps");
+  expect(detail.events.filter((event) => event.kind === "persona_verdict")).toHaveLength(1);
+  expect(detail.events.filter((event) => event.kind === "evidence_preflight_exhausted_continued"))
+    .toHaveLength(1);
+  // Follow the latest packet after the final refinement. The old packet stays inspectable.
+  await dashboard.reload();
+  await evidencePane(dashboard);
+  const rounds = dashboard.getByRole("region", { name: "Rounds" });
+  await expect(rounds.getByRole("status")).toContainText(`Evidence ${attempts} of round ${round}`);
+  await expect(rounds.getByRole("group", { name: `Select evidence in round ${round}` })
+    .getByRole("button")).toHaveCount(attempts);
+  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
+  await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toHaveCount(0);
+  await expect(readiness.getByRole("button", { name: "Continue to review" })).toHaveCount(0);
+  await expect(readiness).not.toContainText("Operator continued despite gaps");
+  await capture(dashboard, `08-round-${round}-automatically-reviewed`);
 });
 
 for (const reviewCase of ["substantive", "corrected", "exhausted", "legacy"] as const) test(`Persona readiness shows ${reviewCase} review and its recovery`, async ({
@@ -1280,6 +1273,9 @@ test("the preflight packet names contested claims, and a cited criterion id surv
    * mapped by prose onto the same criterion and contest it all over again, so that one is
    * dropped and only the citation is left to bind.
    */
+  const waitingSubmission = (await api<{ submissions: WorkflowSubmission[] }>(
+    daemon, `/api/workflow-runs/${run.id}`,
+  )).submissions.at(-1)!;
   stageLaterPacket(daemon, noteKey, session.cwd, 4, "repair", true);
   withDaemonDb(daemon, (db) => {
     db.prepare(
@@ -1296,13 +1292,20 @@ test("the preflight packet names contested claims, and a cited criterion id surv
       { clientItemId: "repair-rendered", role: "rendered_output" },
     ],
   });
-  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
-  const repairPane = await evidencePane(dashboard);
-  await repairPane.getByRole("button", { name: "Retry evidence preflight" }).click();
+  // The automatic sweep may consume the ready packet before the retry control can be clicked.
+  // Both actors share the reservation, so accept either winner and observe the settled result.
+  const repairResponse = await fetch(
+    `${daemon.baseURL}/api/workflow-runs/${run.id}/submissions/${waitingSubmission.id}/evidence-readiness/retry`,
+    {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestId: `cited-repair-${Date.now()}` }),
+    },
+  );
+  expect([200, 409]).toContain(repairResponse.status);
   await expect.poll(async () => (
     await api<{ run: { status: string } }>(daemon, `/api/workflow-runs/${run.id}`)
   ).run.status, { timeout: 60_000 }).toBe("completed");
-  await dashboard.reload();
+  await dashboard.goto(`${daemon.baseURL}/#/runs/${run.id}`);
   const repaired = await evidencePane(dashboard);
   await expect(repaired).toContainText("ready");
   await capture(dashboard, "19-cited-criterion-repaired", repaired);

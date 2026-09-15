@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { LlmRunnerId } from "@shared/llm.ts";
-import type { TaskCompletionContract } from "@shared/task-completion.ts";
+import { workflowEvidenceRequirement, type TaskCompletionContract } from "@shared/task-completion.ts";
 import type { TranscriptMessage } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
 import { nullAsAbsent, providerJsonSchema } from "../llm/json-schema.ts";
@@ -60,6 +60,7 @@ export interface ShipRecoveryReviewInput {
   standards: StandardsDoc[];
   standardsTruncated: boolean;
   completionContract: TaskCompletionContract;
+  workflowEvidenceEligible: boolean;
   idleMinutes: number;
   priorRecoverySummary: string | null;
 }
@@ -106,7 +107,7 @@ export function buildShipRecoveryReviewPrompt(input: ShipRecoveryReviewInput): s
   const transcript = formatTranscript(input.transcript, "(no recent transcript turns)")
     .slice(0, TRANSCRIPT_MAX);
   const lines = [
-    "You are Foreman's bounded recovery reviewer for one already-eligible managed ship task.",
+    "You are Foreman's bounded recovery reviewer for one already-eligible managed task.",
     "The session is quiet, its checkout has changes, no task-owned pull request exists, and no",
     "human, queue item, pending turn, or Workflow currently owns it. Choose the safest ONE next",
     "implementation turn. You cannot use tools and must not claim to have inspected anything",
@@ -118,10 +119,11 @@ export function buildShipRecoveryReviewPrompt(input: ShipRecoveryReviewInput): s
     '{"action":"escalate","instruction":null,"reason":"why a human decision is required"}',
     "",
     "A continue instruction may resume implementation, repository documentation, focused tests,",
-    "or evidence registration only. It MUST NOT authorize or request commit, push, pull-request",
+    "or applicable evidence registration only. It MUST NOT authorize or request commit, push, pull-request",
     "creation, merge, deletion or cleanup, another task, an answer on the human's behalf, or work",
     "outside the repositories already in scope. If the next safe turn needs any of those, escalate.",
     "Do not restate this policy in the instruction. Give the agent the concrete next action.",
+    workflowEvidenceRequirement(input.workflowEvidenceEligible),
     "",
     "## Durable objective",
     input.objective,

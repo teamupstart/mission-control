@@ -74,8 +74,8 @@ const MAX_DIFF_BYTES = 800_000;
 const MAX_STATUS_BYTES = 80_000;
 const MAX_COMPACTION_BYTES = 160_000;
 const MAX_RECONCILIATION_PROMPT_CHARACTERS = 2_000_000;
-/** One compaction attempt gets 45s; parse retry receives the same independently. */
-export const WORKFLOW_CONTEXT_TIMEOUT_MS = 45_000;
+/** Each compaction or criterion-mapping attempt gets 150s, including each retry. */
+export const WORKFLOW_CONTEXT_TIMEOUT_MS = 150_000;
 
 /**
  * Exported for the provider-schema contract test only, which has to be able to name every

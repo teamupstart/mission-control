@@ -74,14 +74,15 @@ async function shoot(page: Page, card: Locator, name: string): Promise<void> {
   console.log(`CAPTURED e2e/.artifacts/foreman-recovery-posts-once/${name}.png`);
 }
 
-async function dispatch(page: Page, daemon: DaemonHandle): Promise<void> {
+async function dispatch(page: Page, daemon: DaemonHandle, kind = "ship"): Promise<void> {
   await page.getByRole("button", { name: "Dispatch" }).click();
   const dialog = page.getByRole("dialog", { name: "Dispatch an agent" });
   await dialog.getByPlaceholder("search repos or type a path…").fill(daemon.repo);
   await page.keyboard.press("Escape");
   await dialog
     .getByPlaceholder("What should this agent do?")
-    .fill("keep a managed ship task moving before its first pull request");
+    .fill("keep a managed task moving before its first pull request");
+  await dialog.getByRole("combobox", { name: "Kind", exact: true }).selectOption(kind);
   await dialog.locator("select").filter({ hasText: "finish without a Workflow" }).selectOption("__none");
   await dialog.getByRole("button", { name: "Dispatch now" }).click();
   await expect(dialog).toBeHidden();
@@ -145,7 +146,7 @@ async function foremanRecovers(daemon: DaemonHandle, id: string, sent: boolean):
     marker: MARKER,
     situation: "ship-recovery",
     surface: "terminal",
-    question: "Keep managed ship task moving before its first pull request: held completion gaps.",
+    question: "Keep managed task moving before its first pull request: held completion gaps.",
     pane: null,
     purpose,
     brief,
@@ -232,7 +233,7 @@ test("a delivered recovery instruction is posted to the conversation once", asyn
   dashboard,
   daemon,
 }) => {
-  await dispatch(dashboard, daemon);
+  await dispatch(dashboard, daemon, "bugfix");
   const id = await sessionId(daemon);
   const purpose = await foremanRecovers(daemon, id, true);
 
@@ -265,6 +266,14 @@ test("a delivered recovery instruction is posted to the conversation once", asyn
   }).toBe(1);
   await expect(log.getByText(/Quiet age: \d+ minutes\. Delivery: delivered\./)).toBeVisible();
   await shoot(dashboard, card, "01-recovery-posted-once-terminal");
+
+  await dashboard.goto(`${daemon.baseURL}/#/settings/foreman`);
+  const ledger = dashboard.locator(".sc-ledger");
+  await ledger.getByRole("button", { name: purpose }).click();
+  await expect(ledger.locator(".fe-ask")).toHaveText(
+    "Keep managed task moving before its first pull request: held completion gaps.",
+  );
+  await shoot(dashboard, ledger, "03-kind-neutral-recovery-ask");
 });
 
 test("a recovery that reached nobody still posts its instruction, in the card that holds it", async ({

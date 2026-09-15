@@ -7,6 +7,8 @@ import {
   detachedUpdateHelperEnvironment,
   detachedUpdateHelperSources,
   latestStableRelease,
+  latestMainCommit,
+  ALPHA_RECHECK_MS,
   sanitizeLogLine,
   sanitizeReleaseNotes,
   surfacesFromBackgroundCheck,
@@ -33,6 +35,126 @@ async function flush(turns = 8): Promise<void> {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+
+test("main lookup pins the canonical repository and rejects invalid commit responses", async () => {
+  const sha = "a".repeat(40);
+  const result = await latestMainCommit(async (args) => {
+    assert.deepEqual(args, ["api", "repos/teamupstart/mission-control/commits/main"]);
+    return { code: 0, stderr: "", stdout: JSON.stringify({ sha, commit: { message: "New work", committer: { date: "2026-09-14T00:00:00Z" } } }) };
+  });
+  assert.equal(result.sha, sha);
+  for (const stdout of ["not json", "null", "{}", JSON.stringify({ sha: "main", commit: {} })]) {
+    await assert.rejects(latestMainCommit(async () => ({ code: 0, stderr: "", stdout })), /invalid main commit/);
+  }
+  await assert.rejects(latestMainCommit(async () => ({ code: 1, stderr: "HTTP 401", stdout: "" })), /not authenticated/);
+});
+
+test("alpha offers each main commit at the same version, retains release news, and pins the accepted build", async (t) => {
+  let head = "b".repeat(40);
+  let now = Date.now();
+  const f = fixture({
+    readAlpha: () => true,
+    currentCommit: () => "a".repeat(40),
+    now: () => now,
+    latestMainCommit: async () => ({ sha: head, message: "Main work", committedAt: new Date(now).toISOString() }),
+    stagedBundleIdentity: () => ({ version: "1.2.4", revision: "staged-1", commit: "c".repeat(40) }),
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const first = await f.controller.check(false);
+  assert.equal(first.phase, "available");
+  if (first.phase !== "available") return;
+  assert.equal(first.newVersion, "alpha bbbbbbb");
+  assert.equal(first.commitSha, head);
+  assert.match(first.releaseNotes, /Stable release v1.2.4 is also available/);
+  assert.match(first.releaseNotes, /Safer updates/);
+  f.controller.defer();
+  head = "c".repeat(40);
+  now += ALPHA_RECHECK_MS;
+  f.controller.onActivate();
+  await flush();
+  const next = f.controller.getSnapshot();
+  assert.equal(next.phase, "available");
+  if (next.phase !== "available") return;
+  assert.equal(next.releaseTag, head);
+  head = "d".repeat(40);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.stageRequests[0]?.targetTag, "c".repeat(40));
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs[0]?.targetTag, "c".repeat(40));
+});
+
+test("alpha manual checks report the installed main commit as up to date and still offer unknown legacy identity", async (t) => {
+  const f = fixture({ readAlpha: () => true, currentCommit: () => "b".repeat(40), latestRelease: async () => null });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal((await f.controller.checkForUpdates()).phase, "up-to-date");
+  assert.ok(f.events.includes("up-to-date-dialog"));
+  f.port.currentCommit = () => null;
+  assert.equal((await f.controller.check(true)).phase, "available");
+});
+
+test("switching alpha persists, clears old offers, and restores stable-only checks", async (t) => {
+  const writes: boolean[] = [];
+  let mainQueries = 0;
+  const f = fixture({
+    writeAlpha: (alpha) => { writes.push(alpha); },
+    latestMainCommit: async () => { mainQueries++; return { sha: "b".repeat(40), message: "Main work", committedAt: "2026-09-14T00:00:00Z" }; },
+  });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal(f.controller.getSnapshot().alpha, false);
+  await f.controller.check(false);
+  assert.equal(mainQueries, 0);
+  assert.equal(f.controller.setAlpha(true).phase, "idle");
+  const alpha = await f.controller.check(true);
+  assert.equal(alpha.phase, "available");
+  assert.equal(alpha.alpha, true);
+  assert.equal(f.controller.setAlpha(false).phase, "idle");
+  const stable = await f.controller.check(true);
+  assert.equal(stable.phase, "available");
+  if (stable.phase === "available") assert.equal(stable.releaseTag, "v1.2.4");
+  assert.deepEqual(writes, [true, false]);
+  assert.equal(mainQueries, 1);
+});
+
+test("alpha never silently falls back to a stable install and release news failures do not block main", async (t) => {
+  const f = fixture({ readAlpha: () => true, latestMainCommit: async () => { throw new Error("offline"); } });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  assert.equal((await f.controller.check(true)).phase, "error");
+  assert.equal(await f.controller.apply(), false);
+  f.port.latestMainCommit = async () => ({ sha: "b".repeat(40), message: "New work", committedAt: "2026-09-14T00:00:00Z" });
+  f.port.latestRelease = async () => { throw new Error("release news unavailable"); };
+  assert.equal((await f.controller.check(false)).phase, "available");
+});
+
+test("alpha refuses a staged bundle from another commit with the same version", async (t) => {
+  const f = fixture({ readAlpha: () => true, stagedBundleIdentity: () => ({ version: "1.2.4", revision: "staged-1", commit: "c".repeat(40) }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  assert.equal(await f.controller.apply(), false);
+  const snapshot = f.controller.getSnapshot();
+  assert.equal(snapshot.phase, "error");
+  if (snapshot.phase === "error") assert.match(snapshot.message, /requested source commit/);
+  assert.equal(f.handoffs.length, 0);
+});
+
+test("alpha cannot change while a check or prepared update awaits completion", async (t) => {
+  let settle!: (value: ReleaseInfo) => void;
+  const f = fixture({ latestRelease: () => new Promise((resolve) => { settle = resolve; }) });
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  const checking = f.controller.check(true);
+  assert.throws(() => f.controller.setAlpha(true), /Finish or defer/);
+  settle(release());
+  await checking;
+  await f.controller.apply();
+  assert.throws(() => f.controller.setAlpha(true), /Finish or defer/);
+  f.controller.defer();
+  assert.equal(f.controller.setAlpha(true).alpha, true);
+});
 
 const receipt: InstallReceipt = {
   schema: 1,
@@ -94,6 +216,10 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     packaged: true,
     arch: "arm64",
     currentVersion: () => "1.2.3",
+    currentCommit: () => null,
+    readAlpha: () => false,
+    writeAlpha: () => {},
+    latestMainCommit: async () => ({ sha: "b".repeat(40), message: "New main commit", committedAt: "2026-08-19T13:00:00.000Z" }),
     readReceipt: () => receipt,
     latestRelease: async () => release(),
     runtime: async () => ({ ok: true, node: "/opt/homebrew/bin/node", env: { PATH: "/opt/homebrew/bin:/usr/bin:/bin" } }),
@@ -472,7 +598,7 @@ test("rate limiting reads as rate limiting, and does not read as a lapsed creden
       stdout: "",
       stderr: "could not resolve host github.com/login-service",
     })),
-    /cannot list releases here/,
+    /cannot check updates here/,
   );
 });
 

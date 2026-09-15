@@ -177,8 +177,8 @@ focus remains separate.
 
 **A dispatched `ship` task is judged at the boundary Mission Control gave it.** Foreman hands
 the verifier the task kind's completion contract as trusted policy beside the durable Goal:
-implementation, required repository documentation, focused verification and evidence
-registration are what "complete" means on the first delivered turn, while commit, push,
+implementation, required repository documentation, focused verification and applicable workflow
+evidence registration are what "complete" means on the first delivered turn, while commit, push,
 pull-request creation, review follow-through and CI are explicitly deferred to whoever owns
 completion next. So a Goal that also says "open a pull request" is satisfied when the
 implementation is, because that clause was deferred - and nothing else about the bar changes.
@@ -187,18 +187,37 @@ sessions and every other kind are judged exactly as before. See
 [work queues](work-queues.md) for the whole prompted path.
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow
-evidence from the current resolved intent episode. Mission Control states the registered count,
+evidence from the current resolved intent episode and whether its current active binding accepts
+agent evidence. The binding's pinned graph must contain a Persona; a task's earlier workflow
+selection and an empty evidence tray establish no such authority. With no eligible binding,
+workflow evidence registration is not required, including when an older prompt or held verdict
+asked for it. Manually attaching a Persona workflow makes registration applicable, and removing
+it retires that obligation. Implementation and verification remain required in either case.
+
+Mission Control states the registered count,
 kind, generation, timestamp and size as trusted structure; session-chosen names, file locators,
 and captions remain inside the untrusted evidence fence. Evidence from an older work
 generation remains usable within the same intent episode, while legacy unstamped evidence and
-evidence from another episode are excluded. A zero count explicitly leaves the evidence-registration
-clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
+evidence from another episode are excluded. For an eligible binding, a zero count explicitly leaves
+the evidence-registration clause unsatisfied; a nonzero count is not automatic approval, and the verifier still judges whether
 the items cover what the task requested. If the implementation is complete and every blocking gap
 only says verification proof is unavailable, registered same-episode evidence lets Foreman claim a
-`foreman_complete` Workflow anyway. The Workflow runs the authoritative checks; a Manual binding,
-no binding, no registered evidence, an incomplete verdict, or any other blocking gap still holds.
+`foreman_complete` Workflow anyway. This fallback requires an eligible binding, registered
+same-episode evidence, and a successful Workflow claim so the Workflow can run the authoritative
+checks. A Manual binding cannot start those checks automatically. If the fallback cannot claim a
+Workflow, the unresolved verification gaps still hold completion. An unbound session with a complete
+verdict and no blocking gaps follows normal completion, including direct handoff when configured;
+workflow evidence registration is not a prerequisite.
 Command evidence uses an opaque public locator, so a raw command with inline credentials cannot
 enter the staging API or Foreman prompt; the exact command remains in its bounded captured artifact.
+An unavailable eligibility read holds completion without consuming the work generation. A binding
+change during verification discards that verdict so the next check uses the current obligation.
+Recovery instructions and the bounded recovery reviewer use the same eligibility policy, and
+recovery rechecks it before delivering a continuation. Structural recovery omits obsolete
+registration-only gaps and summaries after unbinding, while retaining implementation and test
+gaps. Only complete, standalone registration statements are omitted; compound or unrecognized
+legacy prose is retained for normal verification. If registration was the only gap, recovery asks
+the session to recheck the task and report completion.
 
 **Each consumed completion records why it stopped.** The queue row carries the current
 generation's outcome - `held`, `workflow_claimed`, `asked`, `direct_handoff`, `retired`,

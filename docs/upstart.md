@@ -30,12 +30,25 @@ servers, and - the part that matters for an unattended fleet - its fail-closed g
 
 ### Set it up once, interactively
 
-Install the `upstartclaw-core` plugin and run **`/upstartclaw-core:setup` in an interactive
-Claude Code session, once, before dispatching anything**. Its sign-in flows are interactive by
-nature and cannot complete inside a dispatched session, and until they do the plugin's own
-`PreToolUse` hook refuses its MCP calls - so an unattended agent stalls on its first Glean or
-Jira call instead of finishing the task. The dispatch form warns when this machine looks
-unprepared; see below.
+Run the complete first-time path in an interactive Claude Code session:
+
+```text
+/plugin marketplace add teamupstart/claude-code-extensions
+/plugin install upstartclaw-core@upstartclaw
+/upstartclaw-core:setup
+```
+
+Restart Claude Code after setup completes so its MCP connections initialize from the finished
+configuration. Run **`/upstartclaw-core:setup` once before dispatching anything**. Its sign-in
+flows are interactive by nature and cannot complete inside a dispatched session, and until they
+do the plugin's own `PreToolUse` hook refuses its MCP calls - so an unattended agent stalls on its
+first Glean or Jira call instead of finishing the task. The dispatch form warns when this machine
+looks unprepared; see below.
+
+Open **Settings > Setup > Agent extensions** and press **Re-check**. When Mission Control detects
+the core plugin, the **UpstartClaw core setup** row stays visible: it reads **Ready** after setup
+completes and **Needs setup** while the interactive flow still needs attention. The row also links
+back to this guide. A machine without the core plugin sees no UpstartClaw row.
 
 That setup also installs the Palo Alto VPN CA certificate and exports `NODE_EXTRA_CA_CERTS`
 at it - by appending a line to your **shell profile**, which is the detail that matters here.

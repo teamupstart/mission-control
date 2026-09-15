@@ -78,6 +78,7 @@ import type {
   WorkflowUploadEvidenceLocator,
   WorkflowRetainedEvidenceLocator,
   WorkflowStagedEvidenceList,
+  WorkflowSessionEvidenceList,
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_EXTERNAL_SOURCE_KINDS,
@@ -100,6 +101,7 @@ import {
 } from "@shared/workflow.ts";
 import {
   WORKFLOW_INSPECTOR_ENTRY_PHASE,
+  WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE,
   withInspectorGate,
   workflowInspectorGate,
   workflowRoundLimitParkedPhase,
@@ -182,7 +184,6 @@ import {
   type SubmitExternalInput,
 } from "./external-binding.ts";
 import {
-  EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT,
   EVIDENCE_RECOVERY_LIMIT,
   WorkflowStore,
   type WorkflowDeleteWrite,
@@ -1419,6 +1420,15 @@ export class WorkflowManager {
     return Boolean(version && versionSupportsWorkflowEvidence(version));
   }
 
+  /** The same live authority for agent registration and Foreman's evidence obligation. */
+  agentEvidenceBinding(sessionId: string): WorkflowBinding | null {
+    const session = this.registry.getSession(sessionId);
+    if (!session || session.state === "exited") return null;
+    const binding = this.store.activeBindingForNote(noteKeyFor(session));
+    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
+    return binding && version && versionSupportsWorkflowEvidence(version) ? binding : null;
+  }
+
   /**
    * Session-attributed intake used by the bundled Mission MCP tool.
    *
@@ -1458,9 +1468,8 @@ export class WorkflowManager {
     if (!session || session.state === "exited") {
       throw new WorkflowImageEvidenceError("session_unavailable", "The evidence session is not live", 404);
     }
-    const binding = this.store.activeBindingForNote(noteKeyFor(session));
-    const version = binding ? this.store.getWorkflowVersionById(binding.workflowVersionId) : null;
-    if (!binding || !version || !versionSupportsWorkflowEvidence(version)) {
+    const binding = this.agentEvidenceBinding(sessionId);
+    if (!binding) {
       throw new WorkflowImageEvidenceError(
         "workflow_unbound",
         "This session does not have an active Persona workflow binding",
@@ -1547,10 +1556,13 @@ export class WorkflowManager {
    * ownership decision in the daemon and avoids making the browser invent a provisional
    * binding solely to list or remove evidence.
    */
-  stagedEvidenceForSession(sessionId: string): WorkflowStagedEvidenceList | null {
+  stagedEvidenceForSession(sessionId: string): WorkflowSessionEvidenceList | null {
     const session = this.registry.getSession(sessionId);
     return session && session.state !== "exited"
-      ? this.store.listWorkflowEvidence(noteKeyFor(session))
+      ? {
+        ...this.store.listWorkflowEvidence(noteKeyFor(session)),
+        registrationEligible: this.agentEvidenceBinding(sessionId) !== null,
+      }
       : null;
   }
 
@@ -2243,6 +2255,11 @@ export class WorkflowManager {
     const run = this.store.getRun(runId);
     const binding = run ? this.store.getBinding(run.bindingId) : null;
     if (!run || !binding) return { ok: false, reason: "not_found", message: "No such workflow run" };
+    if (this.continueExhaustedEvidenceReadiness(runId, submissionId, binding, now)) {
+      return { ok: true, value: {
+        run: this.store.getRun(runId)!, submission: this.store.getSubmission(submissionId)!,
+      } };
+    }
     const reserved = this.store.reserveEvidenceReadinessRefinement({
       id: randomUUID(),
       runId,
@@ -2252,9 +2269,6 @@ export class WorkflowManager {
       now,
     });
     if (!reserved.ok) {
-      // The cap blocked the run inside the reservation, so the operator's page has to hear
-      // about it: this refusal is the one that changes durable run state.
-      if (reserved.reason === "refinement_exhausted") this.publishRun(runId);
       return {
         ok: false,
         reason: reserved.reason === "no_change" ? "unchanged_evidence" : "conflict",
@@ -2265,8 +2279,8 @@ export class WorkflowManager {
             : reserved.reason === "no_change"
               ? "Stage new evidence before retrying evidence preflight"
               : reserved.reason === "refinement_exhausted"
-                ? `This round has spent its ${EVIDENCE_PREFLIGHT_REFINEMENT_LIMIT} evidence`
-                  + " preflight refinements; continue despite gaps or start a new round"
+                ? `This round has spent its ${reserved.limit} evidence`
+                  + " preflight refinements; review will continue once evidence delivery settles"
                 : "The submission is no longer waiting for evidence readiness",
       };
     }
@@ -3564,7 +3578,7 @@ export class WorkflowManager {
     // Awaiting every target would put N sequential evidence captures on the request path, and
     // this path is not a dashboard click: `POST /api/sessions/:id/workflow-completion` is the
     // Foreman worker's, it fails CLOSED on a lost response, and a capture reads git and can
-    // include a 45-second compaction attempt. A three-repo task would have staked the
+    // include a 150-second compaction attempt. A three-repo task would have staked the
     // completion boundary - and the shipping that follows it - on three of those finishing
     // inside one HTTP timeout. The lead alone is awaited because the reply still has to be
     // able to answer `blocked` when ITS capture fails, which is the single-repo contract and
@@ -5507,6 +5521,7 @@ export class WorkflowManager {
       pickedUpAt,
       settledAt: now,
       expectation: decision.continuationExpectation,
+      warnings: decision.warnings ?? [],
     }, now);
     this.publishRun(run.id);
     await this.captureSessionActionContinuation(attempt.id, now);
@@ -5548,8 +5563,8 @@ export class WorkflowManager {
    * `observedSince` is this action's delivery instant, and it is what makes a CLOSED pull
    * request reachable at all. The poller retires a closed row in the statement after the one
    * that records the closure, so the open set loses it on the very tick the adapter needed to
-   * see it - and a durable contradiction that should block would report as an ordinary missing
-   * pull request and wait for ever. Anything retired before this action was even delivered
+   * preserve the PR as a completed action with a warning. Anything retired before this action
+   * was even delivered
    * stays out, so the extra set is approximately zero rows and the cost stays the open set's:
    * one repository-identity resolution per DISTINCT root, which is a git subprocess.
    */
@@ -5702,10 +5717,10 @@ export class WorkflowManager {
     const captureRoot = binding.sessionRepoRoot ?? null;
     // A child that is already captured cannot be captured again - the capture guard requires
     // the run and the submission to both be `capturing`, and a completed capture left neither.
-    // It gets here when a previous pass captured the evidence and the adapter then refused it,
-    // which is the ordinary shape of "HEAD moved between the proof and the capture": the
-    // observer has since re-decided against the head this child actually holds, so the only
-    // thing left to do is re-check that fresh expectation against the evidence that exists.
+    // It gets here when a previous pass captured the evidence and the adapter did not seal it,
+    // which can happen when the daemon stopped between capture and completion. The observer
+    // has since re-decided against the head this child actually holds, so the only thing left
+    // to do is re-check that fresh expectation against the evidence that exists.
     // Without this the run would sit in `awaiting_proof` forever, re-reserving a row it could
     // never refill.
     if (child.status !== "capturing") {
@@ -5794,7 +5809,7 @@ export class WorkflowManager {
       this.blockSessionAction(attempt.id, validation.code, validation.detail, Date.now());
       return false;
     }
-    if (validation) {
+    if (validation?.kind === "waiting") {
       // Deliberately a WAIT rather than a block when the expectation has simply not been met
       // yet: the child row stays reserved, nothing downstream activates, and the next sweep
       // re-checks. A block here would end a run for a race.
@@ -5806,6 +5821,7 @@ export class WorkflowManager {
       }, Date.now());
       return false;
     }
+    const warnings = validation?.kind === "warning" ? [validation.warning] : [];
     const receipts = sessionActionCompleteEdges(version.graph, node.id).map((edge) => ({
       edgeId: edge.id,
       payload: workflowJson({
@@ -5819,6 +5835,7 @@ export class WorkflowManager {
       attemptId: attempt.id,
       submissionId: child.id,
       receipts,
+      warnings,
       now: Date.now(),
     }));
   }
@@ -6857,6 +6874,9 @@ export class WorkflowManager {
         return { ok: true, value: { run: blocked, submission: this.store.getSubmission(submission.id)! } };
       }
       if (enforcingReadiness && readiness?.status === "gaps") {
+        if (this.continueExhaustedEvidenceReadiness(run.id, submission.id, binding, Date.now())) {
+          return { ok: true, value: { run: this.store.getRun(run.id)!, submission: runnable } };
+        }
         const waitedAt = Date.now();
         const waitingSubmission = this.store.setSubmissionState(
           submission.id,
@@ -7182,9 +7202,9 @@ export class WorkflowManager {
    * The order of the gates below is deliberate: every free in-memory question is asked before
    * the one that spawns git. Generic repair still admits `waiting_for_session` and nothing
    * else through `resumableRun`. Evidence readiness additionally re-drives its own exact
-   * capturing child because its reservation commits before capture begins. An overridden
-   * submission left in the durable `activating` handoff is also eligible because the override
-   * commits before graph activation.
+   * capturing child because its reservation commits before capture begins. An override or an
+   * exhausted preflight left in the durable `activating` handoff also resumes graph activation.
+   * Historical exhaustion blocks advance through the same bounded handoff.
    */
   async sweepResumptions(now = Date.now()): Promise<void> {
     if (this.resumptionRunning) return;
@@ -7194,6 +7214,7 @@ export class WorkflowManager {
       for (const run of this.store.listRuns()) {
         if (
           run.status === "waiting_for_evidence_readiness"
+          || (run.status === "blocked" && run.currentPhase === WORKFLOW_PREFLIGHT_REFINEMENT_EXHAUSTED_PHASE)
           || run.status === "capturing"
           || (run.status === "running" && run.currentPhase === "activating")
         ) {
@@ -7247,6 +7268,7 @@ export class WorkflowManager {
     // before capture yields, and disappears with the process, so skipping it prevents a sweep
     // from joining live work without weakening restart recovery for an orphaned reservation.
     if (this.captureLocks.has(binding.noteKey)) return;
+    if (this.continueExhaustedEvidenceReadiness(run.id, latest.id, binding, now)) return;
 
     let parent: WorkflowSubmission;
     let triggerKey: string;
@@ -7285,9 +7307,6 @@ export class WorkflowManager {
       now,
     });
     if (!reserved.ok) {
-      // Every other refusal here leaves the run exactly as the sweep found it. The cap does
-      // not: it parked the run for the operator, and nothing else will publish that.
-      if (reserved.reason === "refinement_exhausted") this.publishRun(run.id);
       return;
     }
     if (reserved.idempotent && reserved.submission.status !== "capturing") return;
@@ -7295,6 +7314,18 @@ export class WorkflowManager {
     const current = this.store.getRun(run.id);
     if (!current) return;
     await this.captureAndActivate(binding, current, reserved.submission, undefined, true);
+  }
+
+  private continueExhaustedEvidenceReadiness(
+    runId: string, submissionId: string, binding: WorkflowBinding, now: number,
+  ): boolean {
+    if (binding.state !== "active"
+        || this.store.getSubmission(submissionId)?.runId !== runId
+        || !this.store.continueExhaustedEvidenceReadiness(submissionId, now)) return false;
+    this.engine.activateSubmission(submissionId);
+    this.publishRun(runId);
+    this.scheduleQueuedDeliveries(binding.noteKey);
+    return true;
   }
 
   /**

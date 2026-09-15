@@ -280,6 +280,7 @@ export class RegistryArchiveTaskGateway implements ArchiveTaskGateway {
  */
 const CAPTURE_KIND: Record<TaskKind, ArchiveKind | null> = {
   ship: null,
+  bugfix: null,
   scout: "scout",
   plan: "plan",
   pipeline: null,

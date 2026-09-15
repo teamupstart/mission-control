@@ -1,0 +1,65 @@
+# Tempo, as a single process with local storage.
+#
+# The version pinned in compose.yaml runs every component in one container backed by a local
+# filesystem block store, so this stack needs no object store, no separate ingester and no
+# metrics-generator. That is checked rather than assumed: `npm run observability:ready` fails if
+# Tempo does not become ready, and the integration test queries it for a trace it sent.
+#
+# The settings that matter here are all about OLD traces. Mission Control can hold an
+# undelivered batch for seven days, so a drain after a long offline period arrives with spans
+# whose timestamps are a week in the past - and Tempo's defaults are tuned for live ingest.
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # Cut blocks quickly so a span sent a moment ago is searchable a moment later. On a local
+  # stack this costs nothing and removes the "is it broken or just not flushed yet?" question
+  # from every manual check.
+  max_block_duration: 1m
+  complete_block_timeout: 15m
+  trace_idle_period: 5s
+
+compactor:
+  compaction:
+    # Longer than the app's queue window, so a replayed old trace is not compacted away before
+    # anyone can search for it.
+    block_retention: 336h # 14 days
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+    # How often the query path notices new blocks. Short, for the same reason as above.
+    blocklist_poll: 30s
+
+query_frontend:
+  search:
+    # A time-bounded search has to be able to reach back past the app's retention window, or a
+    # replayed trace exists in storage and cannot be found - which reads as data loss to
+    # everyone except the person who knows this setting exists.
+    max_duration: 336h
+    default_result_limit: 50
+
+overrides:
+  defaults:
+    ingestion:
+      burst_size_bytes: 20000000
+      rate_limit_bytes: 15000000
+    global:
+      max_bytes_per_trace: 5000000

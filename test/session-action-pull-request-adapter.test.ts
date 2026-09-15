@@ -16,11 +16,8 @@ import type {
 // What the `pull_request` completion adapter will and will not accept as proof that the work a
 // workflow just reviewed is on an open pull request.
 //
-// Every case here is a way the wrong answer is available and cheap: a pull request exists on
-// some other branch, one exists on this branch at an older commit, one exists at this commit
-// and is closed, the ledger has not been polled yet. The adapter's whole job is to keep
-// preferring "waiting" over "complete" through all of them, because completing hands the
-// downstream stages evidence and tells the Inspector there is something to review.
+// Durable adoption is the completion boundary. Provider comparison metadata may arrive later;
+// missing values and disagreements remain visible as warnings while downstream stages still run.
 
 const ADAPTER = sessionActionAdapter("pull_request");
 const REPO = "/repo";
@@ -120,30 +117,36 @@ test("no adopted pull request at all waits for one", () => {
   assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
 });
 
-test("a pull request THIS TURN opened on another branch says so, and is not mistaken for none", () => {
+test("a pull request THIS TURN opened on another branch completes with a warning", () => {
   // The state an operator most needs told apart from "no pull request yet": the turn finished
   // and put its pull request on a branch this action is not about. A stacked branch, or one
   // that was never switched, can carry this exact commit - so matching on the commit alone
   // would have let it satisfy the action, and reporting it as "awaiting" would have left
   // somebody watching for a pull request that already existed where they were not looking.
   const decision = decide([pr({ branch: "other-branch" })]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "pull_request_wrong_branch" });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /different branch|not the checked branch/);
 });
 
-test("a pull request THIS TURN opened in another repository says which mistake it was", () => {
+test("a pull request THIS TURN opened in another repository completes with a warning", () => {
   // Reported separately from the branch case because the remedy differs: the work is in the
   // wrong project rather than off the wrong head, and a branch comparison across two
   // repositories would be meaningless anyway.
   const decision = decide([pr({ repositoryRoot: "/somewhere/else" })]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "pull_request_wrong_repository" });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /different repository/);
 });
 
-test("the repository mismatch is reported ahead of a branch mismatch beside it", () => {
+test("the repository mismatch warning is selected ahead of a branch mismatch beside it", () => {
   const decision = decide([
     pr({ key: "owner/repo#8", number: 8, branch: "other-branch" }),
     pr({ key: "owner/other#1", number: 1, repositoryRoot: "/somewhere/else" }),
   ]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "pull_request_wrong_repository" });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /different repository/);
 });
 
 test("a stray pull request nobody can attribute is never reported as this session's mistake", () => {
@@ -174,22 +177,26 @@ test("a correct pull request on this branch always wins over a stray beside it",
   assert.equal(decision.kind, "complete");
 });
 
-test("an open pull request on this branch at an older head waits for the push", () => {
+test("an open pull request on this branch at an older head completes with a ref warning", () => {
   const decision = decide([pr({ observedHeadOid: OTHER_HEAD })]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pushed_head" });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /pushed ref/);
 });
 
-test("an adopted pull request the poller has never looked at waits", () => {
-  // Adoption is not observation. A row written the instant `gh pr create` returned has no
-  // head, no branch and no state, and reading any of those as a match would complete the
-  // action on the strength of the pull request merely existing.
+test("an adopted pull request the poller has never looked at completes with a warning", () => {
+  // Durable adoption is the publication boundary. A row written the instant `gh pr create`
+  // returned has no head, branch, or provider state yet, but those fields are comparison
+  // diagnostics rather than prerequisites for continuing the workflow.
   const decision = decide([pr({
     observedHeadOid: null,
     observedState: null,
     observedAt: null,
     branch: null,
   })]);
-  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pull_request" });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /branch, pushed ref, pull-request state/);
 });
 
 test("a linked worktree and its main checkout are ONE repository", () => {
@@ -222,63 +229,81 @@ test("a linked worktree and its main checkout are ONE repository", () => {
   );
 });
 
-test("an unpolled pull request is UNKNOWN, never reported as being on the wrong branch", () => {
+test("an unpolled pull request completes from adoption with unknown metadata warnings", () => {
   // The distinction the mismatch arms turn on, stated on its own because it is the one that
   // false-accuses if it is got wrong. A row adopted seconds ago by this very turn has a null
   // branch and a null repository root because the poller has not reached it - which is the
   // ORDINARY case, not a mistake. Only a known value that DIFFERS is a mismatch.
-  assert.deepEqual(
-    decide([pr({ branch: null, repositoryRoot: null, observedHeadOid: null, observedState: null })]),
-    { kind: "waiting", reason: "awaiting_pull_request" },
-  );
+  const unknown = decide([
+    pr({
+      branch: null,
+      repositoryRoot: null,
+      observedHeadOid: null,
+      observedState: null,
+      observedAt: null,
+    }),
+  ]);
+  assert.equal(unknown.kind, "complete");
+  if (unknown.kind !== "complete") return;
+  assert.match(unknown.warnings?.[0]?.detail ?? "", /repository, branch, pushed ref, pull-request state/);
+  assert.deepEqual(unknown.continuationExpectation, {
+    kind: "pull_request",
+    pullRequestKey: "owner/repo#7",
+    pullRequestUrl: "https://github.com/owner/repo/pull/7",
+    pullRequestNumber: 7,
+    repositoryRoot: null,
+    branch: null,
+    expectedHeadOid: null,
+    acceptedContentTreeOid: TREE,
+    observedAt: 20,
+  });
   // And a row whose repository is known and correct but whose branch is not yet observed is
   // still just unobserved.
-  assert.deepEqual(
-    decide([pr({ branch: null, observedHeadOid: null, observedState: null })]),
-    { kind: "waiting", reason: "awaiting_pull_request" },
-  );
+  const partlyObserved = decide([pr({ branch: null, observedHeadOid: null, observedState: null })]);
+  assert.equal(partlyObserved.kind, "complete");
+  if (partlyObserved.kind !== "complete") return;
+  assert.match(partlyObserved.warnings?.[0]?.detail ?? "", /branch, pushed ref, pull-request state/);
 });
 
-test("a repository that could not be read waits rather than deciding anything", () => {
-  // A reaped worktree is not evidence about a pull request.
-  assert.deepEqual(decide([pr()], { repository: null }), {
-    kind: "waiting",
-    reason: "awaiting_proof",
+test("an adopted pull request completes when the checkout cannot be read", () => {
+  const decision = decide([pr()], { repository: null });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /repository or branch could not be read/);
+});
+
+test("an adopted pull request completes from a detached checkout", () => {
+  const decision = decide([pr()], {
+    repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 4_000 },
   });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /repository or branch could not be read/);
 });
 
-test("a detached HEAD has no branch to match a pull request against", () => {
-  assert.deepEqual(
-    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: null, headOid: HEAD, headCommittedAt: 4_000 } }),
-    { kind: "waiting", reason: "awaiting_proof" },
-  );
+test("an adopted pull request completes when the checked ref cannot be read", () => {
+  const decision = decide([pr()], {
+    repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null },
+  });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /checked ref could not be read/);
 });
 
-test("an unborn branch has no commit to prove", () => {
-  assert.deepEqual(
-    decide([pr()], { repository: { repositoryId: REPO, root: REPO, branch: BRANCH, headOid: null, headCommittedAt: null } }),
-    { kind: "waiting", reason: "awaiting_proof" },
-  );
-});
+// ---- closed or merged after opening -------------------------------------------------------------
 
-// ---- the one case that blocks -----------------------------------------------------------------
-
-test("a closed pull request at the reviewed commit blocks for a human", () => {
-  // The one durable contradiction: no amount of waiting reopens it, and completing would
-  // hand the Inspector a pull request nobody can review.
+test("a closed pull request at the reviewed commit completes with a warning", () => {
   const decision = decide([pr({ observedState: "CLOSED" })]);
-  assert.equal(decision.kind, "blocked");
-  if (decision.kind !== "blocked") return;
-  assert.equal(decision.code, "pull_request_closed");
-  assert.match(decision.detail, /closed/);
-  assert.match(decision.detail, /pull\/7/);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /closed/);
 });
 
-test("a merged pull request at the reviewed commit says merged, not closed", () => {
+test("a merged pull request at the reviewed commit warns that it is merged", () => {
   const decision = decide([pr({ observedState: "MERGED" })]);
-  assert.equal(decision.kind, "blocked");
-  if (decision.kind !== "blocked") return;
-  assert.match(decision.detail, /already merged/);
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /merged/);
 });
 
 test("an open pull request wins over a closed one at the same commit", () => {
@@ -315,9 +340,11 @@ test("a captured head, not the moving local head, is what a re-check proves", ()
   );
 });
 
-test("a captured head the pull request has not reached still waits", () => {
+test("a captured head the pull request has not reached completes with a ref warning", () => {
   const decision = decide([pr()], { capturedHeadOid: OTHER_HEAD });
-  assert.deepEqual(decision, { kind: "waiting", reason: "awaiting_pushed_head" });
+  assert.equal(decision.kind, "complete");
+  if (decision.kind !== "complete") return;
+  assert.match(decision.warnings?.[0]?.detail ?? "", /pushed ref/);
 });
 
 // ---- what the capture is held to ----------------------------------------------------------------
@@ -358,19 +385,19 @@ test("a packaging commit may change commit identity while preserving reviewed co
   );
 });
 
-test("published content that differs from the reviewed tree is a durable block", () => {
+test("published content that differs from the reviewed tree is an advisory warning", () => {
   const validation = ADAPTER.validateCapture(expectation, {
     context: {} as WorkflowContextSnapshot,
     capturedHeadOid: HEAD,
     capturedCommitTreeOid: "d".repeat(40),
   });
-  assert.equal(validation?.kind, "blocked");
-  if (!validation || validation.kind !== "blocked") return;
-  assert.equal(validation.code, "published_content_changed");
-  assert.match(validation.detail, /prior verdict does not cover/);
+  assert.equal(validation?.kind, "warning");
+  if (!validation || validation.kind !== "warning") return;
+  assert.equal(validation.warning.code, "pull_request_review_mismatch");
+  assert.match(validation.warning.detail, /workflow continued/);
 });
 
-test("missing historical accepted-tree proof is a durable block", () => {
+test("missing historical accepted-tree proof is an advisory warning", () => {
   const validation = ADAPTER.validateCapture(
     { ...expectation, acceptedContentTreeOid: null },
     {
@@ -379,34 +406,36 @@ test("missing historical accepted-tree proof is a durable block", () => {
       capturedCommitTreeOid: TREE,
     },
   );
-  assert.equal(validation?.kind, "blocked");
-  if (!validation || validation.kind !== "blocked") return;
-  assert.equal(validation.code, "capture_failed");
-  assert.match(validation.detail, /no server-owned content-tree proof/);
+  assert.equal(validation?.kind, "warning");
+  if (!validation || validation.kind !== "warning") return;
+  assert.match(validation.warning.detail, /no content-tree proof/);
 });
 
-test("a transient failure to resolve the published tree remains retryable", () => {
+test("a failure to resolve the published tree warns without stopping the graph", () => {
   const validation = ADAPTER.validateCapture(expectation, {
     context: {} as WorkflowContextSnapshot,
     capturedHeadOid: HEAD,
     capturedCommitTreeOid: null,
   });
-  assert.equal(validation?.kind, "waiting");
-  assert.match(validation?.detail ?? "", /could not be resolved/);
+  assert.equal(validation?.kind, "warning");
+  if (!validation || validation.kind !== "warning") return;
+  assert.match(validation.warning.detail, /could not be compared/);
 });
 
-test("a capture at any other commit is refused, in the sentence a reader needs", () => {
+test("a capture at any other commit warns in the sentence a reader needs", () => {
   const problem = ADAPTER.validateCapture(expectation, {
     context: {} as WorkflowContextSnapshot,
     capturedHeadOid: OTHER_HEAD,
     capturedCommitTreeOid: TREE,
   });
   assert.ok(problem);
-  assert.match(problem?.detail ?? "", /bbbbbbbbbbbb/);
-  assert.match(problem?.detail ?? "", /aaaaaaaaaaaa/);
+  assert.equal(problem?.kind, "warning");
+  if (!problem || problem.kind !== "warning") return;
+  assert.match(problem.warning.detail, /bbbbbbbbbbbb/);
+  assert.match(problem.warning.detail, /aaaaaaaaaaaa/);
 });
 
-test("a capture whose commit could not be identified is refused, never assumed", () => {
+test("a capture whose commit could not be identified warns and continues", () => {
   // Null is "we could not name the commit", and reading it as "close enough" is exactly the
   // prefix comparison this feature refuses to make.
   const problem = ADAPTER.validateCapture(expectation, {
@@ -415,7 +444,9 @@ test("a capture whose commit could not be identified is refused, never assumed",
     capturedCommitTreeOid: null,
   });
   assert.ok(problem);
-  assert.match(problem?.detail ?? "", /could not be identified/);
+  assert.equal(problem?.kind, "warning");
+  if (!problem || problem.kind !== "warning") return;
+  assert.match(problem.warning.detail, /could not be identified/);
 });
 
 test("a pull request action refuses an expectation that is not its own", () => {

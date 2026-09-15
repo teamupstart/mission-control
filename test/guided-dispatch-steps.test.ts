@@ -223,6 +223,7 @@ test("each kind's mnemonic is a letter of its own name", () => {
   // three words, and `n` reads as "no".
   assert.deepEqual(GUIDED_KIND_KEYS, {
     ship: "p",
+    bugfix: "b",
     scout: "t",
     plan: "l",
     pipeline: "e",

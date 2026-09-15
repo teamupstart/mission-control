@@ -36,6 +36,7 @@ function deps(
   warning: string | null,
   detail: string | null,
   banner = bannerStore(),
+  ready?: boolean,
 ): SetupDeps {
   return {
     environment: { homeDir: home, readText: async () => ({ ok: false, missing: true, reason: "missing" }), subdirectories: async () => [] },
@@ -50,7 +51,13 @@ function deps(
     skills: () => ({ enabled: false, readable: true, configured: 0, directories: ["/fake/skills"], problems: [] }),
     conductorProbe: async () => { throw new Error("isolated failure"); },
     terminalTargets: () => [{ id: "cmux", label: "cmux", glyph: "", blurb: "New workspace.", detail: null, unavailable: null }],
-    environmentChecks: async () => [{ id: "upstartclaw-core-setup", label: "UpstartClaw", warning, detail }],
+    environmentChecks: async () => [{
+      id: "upstartclaw-core-setup",
+      label: "UpstartClaw",
+      warning,
+      detail,
+      ...(typeof ready === "boolean" ? { ready } : {}),
+    }],
     readBannerDismissal: () => banner.value,
     writeBannerDismissal: (value) => {
       banner.value = value;
@@ -86,6 +93,10 @@ test("the route returns every row and folds an environment warning field by fiel
     requirement: "optional",
     enables: "Until setup finishes, UpstartClaw tools cannot authenticate reliably in dispatched sessions.",
     remedy: { kind: "skill", command: "/upstartclaw-core:setup" },
+    guide: {
+      url: "https://github.com/teamupstart/mission-control/blob/main/docs/upstart.md",
+      label: "Open UpstartClaw setup guide",
+    },
     status: { state: "needs-setup", why: "Finish setup.", evidence: "State file says pending." },
   });
   const anchors = body.rows.map((row) => JSON.stringify(row.rowId));
@@ -103,6 +114,18 @@ test("null detail remains null and a silent environment check contributes no row
   assert.equal(withNull.rows.find((row) => row.rowId.source === "environment-check")?.status.evidence, null);
   const silent = await (await appFor(deps(null, "ignored")).request("/api/setup/checks", { headers: LOOPBACK })).json() as { rows: Array<{ rowId: { source: string } }> };
   assert.equal(silent.rows.some((row) => row.rowId.source === "environment-check"), false);
+});
+
+test("a positively ready environment check remains visible as a satisfied row", async () => {
+  const body = await (await appFor(deps(null, null, bannerStore(), true)).request(
+    "/api/setup/checks",
+    { headers: LOOPBACK },
+  )).json() as { rows: Array<{ rowId: { source: string; id: string }; status: unknown }> };
+  const row = body.rows.find((candidate) =>
+    candidate.rowId.source === "environment-check"
+    && candidate.rowId.id === "upstartclaw-core-setup"
+  );
+  assert.deepEqual(row?.status, { state: "satisfied", evidence: "Core plugin setup completed" });
 });
 
 test("the read prunes repaired acknowledgements before composing its banner", async () => {

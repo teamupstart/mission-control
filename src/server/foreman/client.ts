@@ -63,7 +63,7 @@ import type {
   WorkflowCompletionClaimResult,
   WorkflowRunPage,
   WorkflowRunSummary,
-  WorkflowStagedEvidenceList,
+  WorkflowSessionEvidenceList,
 } from "@shared/workflow.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
@@ -1179,12 +1179,16 @@ export class ForemanClient implements ForemanActions {
   }
 
   /** Registered workflow evidence for a live conversation; 404 means it disappeared. */
-  async workflowEvidence(id: string): Promise<WorkflowStagedEvidenceList | null> {
+  async workflowEvidence(id: string): Promise<WorkflowSessionEvidenceList | null> {
     const path = `/api/sessions/${enc(id)}/workflow-evidence`;
     const res = await fetch(BASE_URL + path);
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
-    return (await res.json()) as WorkflowStagedEvidenceList;
+    const evidence = (await res.json()) as WorkflowSessionEvidenceList | null;
+    if (!evidence || typeof evidence.registrationEligible !== "boolean") {
+      throw new Error(`GET ${path} -> workflow evidence eligibility unavailable`);
+    }
+    return evidence;
   }
 
   /**

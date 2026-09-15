@@ -4,6 +4,9 @@ Mission Control's product reference is organized by feature below.
 
 ## Features
 
+- [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html):
+  the whole product tour as one self-contained page, with screenshots from a running fleet.
+  Published from `site/` - see [the site README](../site/README.md).
 - [Product overview](overview.md)
 - [Sessions and conversations](sessions.md)
 - [Pi extension](pi-extension.md): tool bridge, lifecycle, identity, build and verification contracts.
@@ -18,6 +21,7 @@ Mission Control's product reference is organized by feature below.
 - [Models, and per task kind dispatch defaults](models.md)
 - [Foreman](foreman.md)
 - [Work queues and backlog autopilot](work-queues.md)
+- [Observability and telemetry](observability.md): what Mission Control can record about itself, and the local Grafana stack.
 - [Skills and settings](skills-and-settings.md)
 - [Automatic settings snapshots](configuration.md#automatic-settings-snapshots)
 - [Repository memory](repository-memory.md)
@@ -43,8 +47,9 @@ Mission Control's product reference is organized by feature below.
 
 ## Contributing and setup
 
+- [Setup guide](setup-guide.html): install Mission Control, set this machine up from **Settings → Setup**, and keep the app current. Illustrated, for someone installing it for the first time.
 - [Contributing](../CONTRIBUTING.md)
-- [First-run setup](setup.md)
+- [First-run setup](setup.md): clone to running checkout, plus the full verification suite.
 
 ## Support
 

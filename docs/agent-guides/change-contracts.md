@@ -388,8 +388,10 @@ The persisted proof-class, proof-role, readiness-status, gap-code, warning-code,
 values are append-only vocabularies. `evidenceReadinessPolicy` is frozen into a published
 version. `off` is advisory; `criterion_mapped_v1` parks structural gaps before any attempt and
 resumes through an immutable same-round evidence-preflight segment or an append-only operator
-override whose API request and durable row retain explicit risk acknowledgement. Model output may
-match author ids and suggest a proof class, but deterministic code owns
+override whose API request and durable row retain explicit risk acknowledgement. When the round's
+preflight refinement budget is exhausted, the daemon durably advances the final packet to review
+with its gaps intact. Recovery uses that same handoff and never fabricates an operator override.
+Model output may match author ids and suggest a proof class, but deterministic code owns
 canonical ids, role gaps, scope checks, evidence identity, and readiness status. Proof-class
 suggestions remain warnings and never become a hard gate.
 

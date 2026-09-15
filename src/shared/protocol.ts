@@ -85,6 +85,7 @@ import {
   INSPECTOR_FINDINGS_POLICIES,
   SESSION_ACTION_BLOCK_CODES,
   SESSION_ACTION_COMPLETION_KINDS,
+  SESSION_ACTION_WARNING_CODES,
   SESSION_ACTION_WAIT_REASONS,
   WORKFLOW_BINDING_STATES,
   WORKFLOW_CHECK_SLOTS,
@@ -1059,8 +1060,9 @@ export const DispatchSchema = z
     /** Reasoning-effort override; omitted follows the harness default at launch time. */
     effort: EffortLevelSchema.optional(),
     /**
-     * Published Workflow to arm for Foreman Complete. Omitted follows the machine default;
-     * explicit null opts this task out of that default.
+     * Published Workflow to arm for Foreman Complete. Omitted selects Plan Validation for
+     * plan tasks, Bug Fix Review for bugfix tasks, and the machine default for other kinds.
+     * An explicit workflow overrides that default; explicit null opts this task out.
      */
     workflowId: z.string().min(1).max(500).nullable().optional(),
     backlog: z.boolean().optional().default(false),
@@ -4802,9 +4804,9 @@ export const SessionActionContinuationExpectationSchema = z.discriminatedUnion("
     pullRequestKey: z.string().min(1).max(400),
     pullRequestUrl: z.string().min(1).max(2_000),
     pullRequestNumber: z.number().int().positive(),
-    repositoryRoot: z.string().min(1).max(4_000),
-    branch: z.string().min(1).max(400),
-    expectedHeadOid: CommitOidSchema,
+    repositoryRoot: z.string().min(1).max(4_000).nullable(),
+    branch: z.string().min(1).max(400).nullable(),
+    expectedHeadOid: CommitOidSchema.nullable(),
     acceptedContentTreeOid: CommitOidSchema.nullable().optional().default(null),
     observedAt: z.number().int(),
   }),
@@ -4816,6 +4818,11 @@ export const SessionActionDeliveryAnchorSchema = z.object({
   noteKey: z.string().min(1).max(1_000),
   deliveredAt: z.number().int(),
   transcriptBytes: z.number().int().nonnegative().nullable(),
+});
+
+export const SessionActionWarningSchema = z.object({
+  code: z.enum(SESSION_ACTION_WARNING_CODES),
+  detail: z.string().min(1).max(2_000),
 });
 
 /**
@@ -4836,6 +4843,7 @@ export const SessionActionAttemptStateSchema = z.object({
   blocked: z
     .object({ code: z.enum(SESSION_ACTION_BLOCK_CODES), detail: z.string().max(2_000) })
     .nullable(),
+  warnings: z.array(SessionActionWarningSchema).max(8).optional().default([]),
 });
 
 /** The build's per-adapter answer, as the browser receives it. Never re-derived client-side. */
@@ -4855,12 +4863,13 @@ export const SessionActionCompletedOutputSchema = z.object({
   settledAt: z.number().nullable().optional().default(null),
   continuationSubmissionId: WorkflowIdSchema.nullable().optional().default(null),
   /**
-   * What the adapter PROVED before it let the graph advance, kept past completion.
+   * What the adapter observed before it let the graph advance, kept past completion.
    *
    * Optional and defaulted for the reason every field above is: a row written by an older
    * daemon carries none, and the reader draws the absence rather than failing the card.
    */
   expectation: SessionActionContinuationExpectationSchema.nullable().optional().default(null),
+  warnings: z.array(SessionActionWarningSchema).max(8).optional().default([]),
 });
 
 export const SessionActionCompletionCapabilitySchema = z.object({

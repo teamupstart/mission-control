@@ -23,6 +23,18 @@ async function withDaemon<T>(body: unknown, fn: () => Promise<T>, ok = true): Pr
 
 const client = new ForemanClient();
 
+test("workflow evidence distinguishes explicit ineligibility from missing or unreadable authority", async () => {
+  const tray = { generation: 0, images: [], artifacts: [] };
+  for (const registrationEligible of [false, true]) {
+    const result = await withDaemon({ ...tray, registrationEligible }, () => client.workflowEvidence("session"));
+    assert.equal(result?.registrationEligible, registrationEligible);
+  }
+  for (const body of [null, tray, { ...tray, registrationEligible: "false" }]) {
+    await assert.rejects(withDaemon(body, () => client.workflowEvidence("session")), /eligibility unavailable/);
+  }
+  await assert.rejects(withDaemon(tray, () => client.workflowEvidence("session"), false), /500/);
+});
+
 test("getConfig applies the schema's defaults to a key an older daemon doesn't serve", async () => {
   // The worker is started separately from the daemon (`npm run foreman`), so a new worker
   // against a pre-triage daemon is an ordinary upgrade-window state. Parsing at the edge is

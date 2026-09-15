@@ -1,6 +1,8 @@
+import { isShippingTaskKind } from "@shared/task.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { settledIdle } from "@shared/session.ts";
 import { shipRecoveryMarker } from "@shared/ship-recovery.ts";
+import { workflowEvidenceRequirement } from "@shared/task-completion.ts";
 import type {
   PromptedCompletionDecision,
   PromptedRecoveryReason,
@@ -22,6 +24,7 @@ export interface ShipShepherdInput {
   /** Full-fleet report/input ownership, already resolved by the caller. */
   humanOwnsSession: boolean;
   workflowOwnsSession: boolean;
+  workflowEvidenceEligible: boolean;
   hasTaskOwnedOpenPr: boolean;
   /** A daemon/worker read of the current complete checkout diff. */
   diffHasChanges: boolean;
@@ -124,8 +127,8 @@ function decideShipRecovery(
   const { session: s, queue, now } = input;
   const task = s.task;
   if (!input.featureEnabled) return skip("pre-PR ship recovery is off");
-  if (!task || task.kind !== "ship" || !["running", "dispatching"].includes(task.status)) {
-    return skip("no running managed ship task is bound");
+  if (!task || !isShippingTaskKind(task.kind) || !["running", "dispatching"].includes(task.status)) {
+    return skip("no running managed task is bound");
   }
   if (s.foremanInvite === null) return skip("Foreman is not invited into this session");
   if (!capabilitiesFor(s.agent).workQueue || s.state === "exited" || s.state === "stopping") {
@@ -238,7 +241,7 @@ function decideShipRecovery(
     episodeKey: input.episodeKey,
     attempt,
     marker,
-    payload: structuralPayload(cause),
+    payload: structuralPayload(cause, input.workflowEvidenceEligible),
     needsReview: cause.reason === "idle_ambiguous",
     decision: cause.decision,
   };
@@ -271,17 +274,28 @@ function recoveryCause(
   return { reason: diffHasChanges ? "idle_ambiguous" : "idle_empty", decision: null };
 }
 
-function structuralPayload(cause: RecoveryCause): string | null {
+function structuralPayload(cause: RecoveryCause, workflowEvidenceEligible: boolean): string | null {
   switch (cause.reason) {
     case "held_gaps": {
-      const gaps = cause.decision?.gaps ?? [];
+      const storedGaps = cause.decision?.gaps ?? [];
+      const gaps = workflowEvidenceEligible ? storedGaps : storedGaps.filter((gap) =>
+        (gap.kind !== undefined && gap.kind !== "unverified" && gap.kind !== "incomplete")
+          || !workflowRegistrationOnly(gap.detail));
+      const summary = cause.decision?.summary ?? "";
+      const obsoleteHold = !workflowEvidenceEligible && gaps.length === 0
+        && (storedGaps.length > 0 || workflowRegistrationOnly(summary));
       const detail = gaps.length > 0
         ? gaps.map((gap, i) => `${i + 1}. ${gap.path ? `${gap.path}: ` : ""}${gap.detail}`).join("\n")
-        : cause.decision?.summary || "The completion review found unfinished implementation work.";
-      return `Foreman's completion review found blocking work that still belongs in this implementation turn:\n\n${detail}\n\nAddress only these implementation, documentation, test, or evidence gaps. Do not commit, push, create a pull request, merge, or expand repository scope. When the requested work is verified, report completion and end the turn so Mission Control can re-run the normal handoff.`;
+        : obsoleteHold
+          ? "Recheck the requested implementation, documentation, and focused verification against the task objective."
+          : summary || "The completion review found unfinished implementation work.";
+      const heading = obsoleteHold
+        ? "Foreman's previous evidence-registration hold no longer applies:"
+        : "Foreman's completion review found blocking work that still belongs in this implementation turn:";
+      return `${heading}\n\n${detail}\n\n${workflowEvidenceRequirement(workflowEvidenceEligible)}\n\nAddress only these applicable implementation, documentation, test, or evidence gaps. Do not commit, push, create a pull request, merge, or expand repository scope. When the requested work is verified, report completion and end the turn so Mission Control can re-run the normal handoff.`;
     }
     case "idle_empty":
-      return "This invited ship task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation, focused verification, and evidence registration, then report completion and end the turn. Do not commit, push, create a pull request, merge, delete work, or expand repository scope.";
+      return `This invited task is still open, but its checkout has no changes and the session has been quiet. Re-read the durable task objective and begin or resume the requested implementation. Complete the required documentation and focused verification, then report completion and end the turn. ${workflowEvidenceRequirement(workflowEvidenceEligible)} Do not commit, push, create a pull request, merge, delete work, or expand repository scope.`;
     case "direct_handoff_missing_pr":
       return "Continue the task's existing Straight-to-PR handoff on this same branch. First check whether this task already has an open pull request in any attached repository; if one exists, do not create another. If none exists, finish the already-authorized commit, push, and pull-request creation for the task-owned changes only, then follow its CI on the same branch. Do not merge, delete work, create another task, or expand repository scope.";
     case "idle_ambiguous":
@@ -289,6 +303,14 @@ function structuralPayload(cause: RecoveryCause): string | null {
     case "verification_failed":
       return null;
   }
+}
+
+/** Only discard complete, standalone registration statements; arbitrary legacy prose stays. */
+function workflowRegistrationOnly(detail: string): boolean {
+  const text = detail.trim().replace(/\s+/g, " ").replace(/[.!?]$/, "");
+  return /^(?:register|submit|attach|upload) workflow evidence(?: before handoff)?$/i.test(text)
+    || /^(?:register|submit|attach|upload) (?:workflow evidence|evidence|(?:focused )?test output) (?:via|through|using) submit_workflow_evidence$/i.test(text)
+    || /^(?:Mission Control reports that )?(?:no (?:workflow )?evidence is registered|(?:required )?workflow evidence(?: registration)? is (?:missing|required|absent|incomplete))$/i.test(text);
 }
 
 function escalationSummary(cause: RecoveryCause): string {

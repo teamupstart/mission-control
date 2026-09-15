@@ -42,3 +42,9 @@ export function parseBuiltinWorkflowVersionId(
 export const NO_MISTAKES_REVIEW_WORKFLOW_SLUG = "no-mistakes-review";
 export const NO_MISTAKES_REVIEW_WORKFLOW_ID =
   builtinWorkflowId(NO_MISTAKES_REVIEW_WORKFLOW_SLUG);
+
+export const GENERAL_REVIEW_WORKFLOW_SLUG = "general-review";
+export const BUG_FIX_REVIEW_WORKFLOW_SLUG = "bug-fix-review";
+export const PLAN_VALIDATION_WORKFLOW_SLUG = "plan-validation";
+export const BUG_FIX_REVIEW_WORKFLOW_ID = builtinWorkflowId(BUG_FIX_REVIEW_WORKFLOW_SLUG);
+export const PLAN_VALIDATION_WORKFLOW_ID = builtinWorkflowId(PLAN_VALIDATION_WORKFLOW_SLUG);

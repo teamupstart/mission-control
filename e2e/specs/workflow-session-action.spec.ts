@@ -59,7 +59,7 @@ test("an operator authors a session action in the library, and the daemon stores
   // Whose a row is, said once at the group head rather than as a tag on every row.
   await expect(dashboard.getByRole("heading", { name: /^Built-in\s+2$/ })).toBeVisible();
   await expect(dashboard.locator(".wf-action-list-item").filter({ hasText: "Pull Request" }))
-    .toContainText("Skill · pull-request · Pull request is opened and verified");
+    .toContainText("Skill · pull-request · Pull request is opened");
   await expect(dashboard.locator(".wf-state.builtin"))
     .toContainText("Duplicate it to make a copy you own and can edit");
 
@@ -87,7 +87,7 @@ test("an operator authors a session action in the library, and the daemon stores
     .getByRole("combobox", { name: "Completes when" });
   await expect(completion.locator("option")).toHaveText([
     "Session turn finishes",
-    "Pull request is opened and verified",
+    "Pull request is opened",
     "A commit lands in the checkout",
   ]);
   await dashboard.keyboard.press("Escape");
@@ -582,7 +582,7 @@ test("a graph naming the shipped built-in publishes, and freezes its snapshot", 
   await expect(pipeline.locator("li.wf-pipeline-reviewer")).toContainText("Skill · pull-request");
   // What the stage promises the runtime will prove, in the words the selector offered.
   await expect(pipeline.locator("li.wf-pipeline-reviewer"))
-    .toContainText("Completes when pull request is opened and verified");
+    .toContainText("Completes when pull request is opened");
   // The picker no longer has to RETAIN it under a refusal label: it is addable, so it appears
   // as an ordinary option under its own name.
   await expect(pipeline.getByLabel("Choose the session action Stage 1 sends"))

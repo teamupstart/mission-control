@@ -7,6 +7,8 @@ export interface InstallReceipt {
   releaseTag: string | null;
   /** `package.json` version of the tree the installed app was built from. */
   installedVersion: string;
+  /** Full commit embedded in the installed bundle. Absent on older installs. */
+  installedCommit?: string;
   /** Absolute path to the updater-owned clone the app was built in. */
   sourceClone: string;
   /** Absolute path to the installed app bundle. */

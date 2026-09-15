@@ -1,0 +1,1378 @@
+import { test, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { homedir, hostname, tmpdir } from "node:os";
+import { join } from "node:path";
+
+// The durable core: capture, the crash boundaries, cumulative state across restarts, consent
+// fencing, series ceilings and retention.
+//
+// A real database, and real restarts - `closeDb()` then `openDb()` is the same reopen a daemon
+// does, through the same migration path. Nothing here is mocked, because every property being
+// asserted is a property of what SQLite actually committed.
+
+const home = mkdtempSync(join(tmpdir(), "mission-telemetry-durable-"));
+// Set before importing anything that resolves the state dir.
+process.env.HARNESS_HOME = join(home, "state");
+
+const { closeDb, openDb } = await import("../src/server/db.ts");
+const { captureTelemetry } = await import("../src/server/telemetry/capture.ts");
+const { setTelemetryConfig, telemetryIdentity } = await import(
+  "../src/server/telemetry/config.ts"
+);
+const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
+const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
+const { runRetentionPass } = await import("../src/server/telemetry/retention.ts");
+const { telemetryHealth } = await import("../src/server/telemetry/health.ts");
+const { observeDaemonStart } = await import("../src/server/telemetry/diagnostics.ts");
+const { DAEMON_STARTED_EVENT } = await import("../src/shared/telemetry-catalog.ts");
+const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+
+registerBuiltinTelemetry();
+
+after(() => {
+  closeDb();
+  rmSync(home, { recursive: true, force: true });
+});
+
+const TELEMETRY_TABLES = [
+  "telemetry_journal",
+  "telemetry_source_identities",
+  "telemetry_projection_state",
+  "telemetry_series",
+  "telemetry_batches",
+  "telemetry_delivery",
+  "telemetry_destinations",
+  "telemetry_secrets",
+  "telemetry_gaps",
+  "telemetry_contexts",
+  "telemetry_resources",
+];
+
+beforeEach(() => {
+  const d = openDb();
+  for (const table of TELEMETRY_TABLES) d.exec(`DELETE FROM ${table}`);
+  d.exec("DELETE FROM app_config");
+});
+
+/** The same reopen a daemon performs, through the same upgrade path. */
+function restartDaemon(): void {
+  closeDb();
+  openDb();
+}
+
+function enableLocalOnly(): void {
+  const applied = setTelemetryConfig({ enabled: true });
+  assert.equal(applied.ok, true);
+}
+
+function enableUserBackend(endpoint = "http://127.0.0.1:14318"): void {
+  const applied = setTelemetryConfig({ enabled: true, user: { enabled: true, endpoint } });
+  assert.equal(applied.ok, true, applied.ok ? "" : applied.error);
+}
+
+function capture(id: string, now: number, startupMs = 120) {
+  return captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id, revision: 1 },
+    facts: { startup_ms: startupMs, schema_upgraded: false, launch_mode: "daemon" },
+    now,
+  });
+}
+
+interface SeriesRow {
+  value: number;
+  start_time: number;
+  dimensions_json: string;
+  hist_buckets: string | null;
+  hist_count: number | null;
+}
+
+function series(profile: string, instrument: string): SeriesRow[] {
+  return openDb()
+    .prepare(
+      `SELECT value, start_time, dimensions_json, hist_buckets, hist_count FROM telemetry_series
+        WHERE profile = ? AND instrument = ? ORDER BY dimensions_key`,
+    )
+    .all(profile, instrument) as unknown as SeriesRow[];
+}
+
+function journalCount(): number {
+  return (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_journal`).get() as { n: number }).n;
+}
+
+function batchCount(profile: string): number {
+  return (
+    openDb()
+      .prepare(`SELECT COUNT(*) AS n FROM telemetry_batches WHERE profile = ?`)
+      .get(profile) as { n: number }
+  ).n;
+}
+
+// ---- default-off and upgrade safety ----
+
+test("collection is off by default and capture writes nothing", () => {
+  const result = capture("boot-1", 1_000);
+  assert.equal(result.kind, "disabled");
+  assert.equal(journalCount(), 0);
+  // The identity is not even minted: an installation that never opts in leaves no telemetry
+  // trace of any kind, which is what "default off" has to mean to be worth anything.
+  assert.equal((openDb().prepare(`SELECT COUNT(*) AS n FROM app_config`).get() as { n: number }).n, 0);
+});
+
+test("starting the daemon with collection off mints no installation identity", () => {
+  // The regression for the leak this suite previously walked straight past: the default-off test
+  // above calls `captureTelemetry` directly, but the DAEMON calls `observeDaemonStart`, which
+  // built its source id from `bootId()` - and `bootId()` reads `telemetryIdentity()`, which mints
+  // and PERSISTS a pseudonym on first read. The capture was correctly refused afterwards, by
+  // which point the row existed. A never-opted-in installation acquired telemetry identity state
+  // simply by booting.
+  const result = observeDaemonStart({
+    startupMs: 250,
+    schemaUpgraded: false,
+    launchMode: "daemon",
+    now: 1_000,
+  });
+  assert.equal(result.kind, "disabled");
+  assert.equal(journalCount(), 0);
+
+  const keys = openDb().prepare(`SELECT key FROM app_config`).all() as unknown as Array<{
+    key: string;
+  }>;
+  assert.deepEqual(
+    keys.map((k) => k.key),
+    [],
+    "a daemon start with collection off leaves no telemetry trace of any kind, identity included",
+  );
+});
+
+test("repeated starts with collection off stay silent", () => {
+  // Because the leak was once per boot, not once ever. Every restart of a never-opted-in
+  // installation has to be as quiet as the first.
+  for (let boot = 0; boot < 3; boot += 1) {
+    assert.equal(
+      observeDaemonStart({ startupMs: 100, schemaUpgraded: false, launchMode: "daemon" }).kind,
+      "disabled",
+    );
+    restartDaemon();
+  }
+  const row = openDb().prepare(`SELECT COUNT(*) AS n FROM app_config`).get() as { n: number };
+  assert.equal(row.n, 0);
+  assert.equal(journalCount(), 0);
+});
+
+test("health reports a disabled, empty facility without minting anything", () => {
+  const health = telemetryHealth(5_000);
+  assert.equal(health.enabled, false);
+  assert.equal(health.journalBacklog, 0);
+  assert.equal(health.usedBytes, 0);
+  assert.equal(health.productEnrollment, "unavailable");
+  for (const profile of health.profiles) assert.equal(profile.capturing, false);
+});
+
+test("an unclean previous run is reported as an unknown gap, not as zero loss", async () => {
+  // The promise this closes: after a hard stop, health must say the loss is UNKNOWN rather than
+  // report zero. What is actually unquantifiable is the pre-acceptance gap - a crash between a
+  // business commit and its capture call - since everything after acceptance replays or retries.
+  const { noteTelemetryRunStart, noteTelemetryRunStopped } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  enableLocalOnly();
+  // Opting in now arms the detector itself, which is the point of the mid-run tests above. Clear
+  // the marker to get back to the state this case is about: collection already configured on
+  // from a previous install, and no run recorded yet.
+  openDb().exec("DELETE FROM app_config WHERE key = 'telemetry.runtime'");
+
+  // A run starts and is killed: the marker is left saying "in progress".
+  assert.equal(noteTelemetryRunStart(true, 1_000), false, "the first ever start reports no gap");
+  assert.equal(
+    noteTelemetryRunStart(true, 2_000),
+    true,
+    "a start that finds the previous run still marked in progress reports a gap",
+  );
+
+  const gap = telemetryHealth(3_000).gaps.find((g) => g.kind === "unknown_gap");
+  assert.ok(gap, "health reports an unknown gap rather than claiming zero");
+  assert.ok(gap!.count >= 1);
+
+  // And an orderly stop clears it, so an ordinary restart is silent.
+  noteTelemetryRunStopped(true);
+  assert.equal(noteTelemetryRunStart(true, 4_000), false);
+});
+
+test("a loss counter that could not be written becomes an unknown gap at the next chance", async () => {
+  // The double failure: a fact was refused AND its own counter failed. Relying on
+  // unclean-shutdown detection alone meant a transient write failure followed by an orderly
+  // exit recorded nothing at all, and health showed zero gaps for a real incident.
+  const { markUnknownGapPending, flushPendingUnknownGap, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  enableLocalOnly();
+  resetPendingUnknownGap();
+
+  assert.equal(flushPendingUnknownGap(1_000), false, "nothing owed, nothing written");
+
+  markUnknownGapPending();
+  assert.equal(flushPendingUnknownGap(2_000), true, "the owed gap is written once the store takes it");
+  assert.equal(flushPendingUnknownGap(3_000), false, "and is not written twice");
+
+  const gap = telemetryHealth(4_000).gaps.find((g) => g.kind === "unknown_gap");
+  assert.ok(gap, "health reports it rather than absorbing it");
+});
+
+test("retention sheds orphaned resources, but never one a live series still needs", async () => {
+  // `usedBytes` charges `telemetry_resources` against the 256 MiB budget, and nothing ever
+  // removed a row from it: every app version an installation has ever run stayed for good. The
+  // sweep now covers it - and has to check BOTH references, because a resource routinely
+  // outlives the journal rows that introduced it while a cumulative series is still keyed by
+  // it. Dropping that one would leave the series unaddressable and its points unexportable.
+  const { pruneOrphanedResources, putResource, telemetryTransaction } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+  runProjectionPass(2_000);
+
+  const d = openDb();
+  const live = (
+    d.prepare(`SELECT DISTINCT resource_id FROM telemetry_series`).all() as unknown as Array<{
+      resource_id: string;
+    }>
+  ).map((row) => row.resource_id);
+  assert.ok(live.length > 0, "there is a live series to protect");
+
+  // An orphan: a resource no journal row and no series points at.
+  const orphan = telemetryTransaction((tx) =>
+    putResource(tx, { "service.name": "mission-control", "service.version": "0.0.0-orphan" }, 1_000),
+  );
+  assert.ok(!live.includes(orphan));
+
+  const dropped = telemetryTransaction((tx) => pruneOrphanedResources(tx));
+  assert.equal(dropped, 1, "the unreferenced resource is shed");
+  assert.equal(
+    (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(orphan) as {
+      n: number;
+    }).n,
+    0,
+  );
+  for (const id of live) {
+    assert.equal(
+      (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(id) as {
+        n: number;
+      }).n,
+      1,
+      "a resource a live series is keyed by survives",
+    );
+  }
+
+  // The journal reference alone is enough, with no series involved.
+  const journalResource = (
+    d.prepare(`SELECT resource_id FROM telemetry_journal LIMIT 1`).get() as {
+      resource_id: string;
+    }
+  ).resource_id;
+  telemetryTransaction((tx) => pruneOrphanedResources(tx));
+  assert.equal(
+    (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(
+      journalResource,
+    ) as { n: number }).n,
+    1,
+    "a resource a journal row still names survives",
+  );
+
+  // And the series reference alone is enough, which is the case that actually bites: past the
+  // 30-day window the journal rows are gone while the cumulative stream keyed by that resource
+  // is still running. Checking only the journal would delete it out from under a live series.
+  d.exec("DELETE FROM telemetry_journal");
+  telemetryTransaction((tx) => pruneOrphanedResources(tx));
+  for (const id of live) {
+    assert.equal(
+      (d.prepare(`SELECT COUNT(*) AS n FROM telemetry_resources WHERE id = ?`).get(id) as {
+        n: number;
+      }).n,
+      1,
+      "a resource only a live series still names survives",
+    );
+  }
+});
+
+test("a computed dimension value is cut on a byte boundary, never mid-character", async () => {
+  // `TelemetryEmitter.metric` is the seam later phases emit COMPUTED dimension values through.
+  // A UTF-16 `slice` gets both halves wrong: for multi-byte text it can still exceed the
+  // 256-byte budget, and a cut between the halves of a surrogate pair leaves a lone surrogate
+  // that is not valid UTF-8 for the protobuf encoder. One emoji is enough.
+  const { registerTelemetryProjection, resetTelemetryRegistrations } = await import(
+    "../src/server/telemetry/registration.ts"
+  );
+  const { DAEMON_STARTS_METRIC } = await import("../src/shared/telemetry-catalog.ts");
+  // Every character is 4 UTF-8 bytes and 2 UTF-16 code units, so a code-unit slice at 256 both
+  // overshoots the byte budget and lands exactly between a surrogate pair.
+  const emoji = "\u{1F680}".repeat(200);
+  resetTelemetryRegistrations();
+  registerTelemetryProjection({
+    id: "mission.test.dimensions",
+    stateVersion: 1,
+    initialState: () => ({}),
+    migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
+    reduce(_event, state, emit) {
+      emit.metric(DAEMON_STARTS_METRIC.name, { launch_mode: emoji, schema_upgraded: "false" }, 1);
+      return state;
+    },
+  });
+
+  try {
+    enableLocalOnly();
+    assert.equal(capture("boot-1", 1_000).kind, "accepted");
+    runProjectionPass(2_000);
+
+    const row = openDb()
+      .prepare(`SELECT dimensions_json FROM telemetry_series LIMIT 1`)
+      .get() as { dimensions_json: string };
+    const value = (JSON.parse(row.dimensions_json) as Record<string, string>).launch_mode!;
+
+    assert.ok(
+      Buffer.byteLength(value, "utf8") <= TELEMETRY_LIMITS.maxStringBytes,
+      `stored ${Buffer.byteLength(value, "utf8")} bytes against a ${TELEMETRY_LIMITS.maxStringBytes} byte budget`,
+    );
+    assert.equal(
+      /[\uD800-\uDFFF]/.test(value.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")),
+      false,
+      "no half of a surrogate pair survives on its own",
+    );
+    // A lone surrogate does not survive a UTF-8 round trip; it comes back as U+FFFD.
+    assert.equal(
+      Buffer.from(value, "utf8").toString("utf8"),
+      value,
+      "and the value is valid UTF-8, which is what the protobuf encoder requires",
+    );
+  } finally {
+    resetTelemetryRegistrations();
+    registerBuiltinTelemetry();
+  }
+});
+
+test("an exported-but-empty environment variable still labels records as local", async () => {
+  // `??` only falls back on unset. An exported-but-empty variable is ordinary shell -
+  // `MISSION_TELEMETRY_ENVIRONMENT="$SOME_UNSET_VAR"` produces exactly that - and it labelled
+  // every record with no environment at all. That is worse than a visibly wrong value: the
+  // dashboard's `$environment` filter and P5's adoption cut both select ON this label, so an
+  // empty one falls outside the filtering rather than showing up in it.
+  const { resourceAttributes } = await import("../src/server/telemetry/capture.ts");
+  const original = process.env.MISSION_TELEMETRY_ENVIRONMENT;
+  try {
+    for (const empty of ["", "   "]) {
+      process.env.MISSION_TELEMETRY_ENVIRONMENT = empty;
+      assert.equal(
+        resourceAttributes()["deployment.environment.name"],
+        "local",
+        `an environment of ${JSON.stringify(empty)} is not an environment`,
+      );
+    }
+
+    // A real value is still honoured, and still trimmed.
+    process.env.MISSION_TELEMETRY_ENVIRONMENT = "  staging  ";
+    assert.equal(resourceAttributes()["deployment.environment.name"], "staging");
+
+    delete process.env.MISSION_TELEMETRY_ENVIRONMENT;
+    assert.equal(resourceAttributes()["deployment.environment.name"], "local");
+  } finally {
+    if (original === undefined) delete process.env.MISSION_TELEMETRY_ENVIRONMENT;
+    else process.env.MISSION_TELEMETRY_ENVIRONMENT = original;
+  }
+});
+
+test("a metric emitted from the snapshot hook is exportable, not durably unaddressable", async () => {
+  // The gauge seam Phase 6's cohort reducers publish through. `snapshot` runs after the event
+  // loop, so there is no contributing event to take a resource from - and an empty resource id
+  // stored the series happily, then silently skipped its export batch, because no resource row
+  // can ever have id "". A metric durably recorded and permanently unexportable, with nothing
+  // in the gap table or the health view to reveal it.
+  const { registerTelemetryProjection, resetTelemetryRegistrations } = await import(
+    "../src/server/telemetry/registration.ts"
+  );
+  const { DAEMON_STARTS_METRIC } = await import("../src/shared/telemetry-catalog.ts");
+  resetTelemetryRegistrations();
+  registerTelemetryProjection({
+    id: "mission.test.snapshot",
+    stateVersion: 1,
+    initialState: () => ({}),
+    migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
+    reduce: (_event, state) => state,
+    snapshot(_state, emit) {
+      emit.metric(DAEMON_STARTS_METRIC.name, { launch_mode: "daemon", schema_upgraded: "false" }, 1);
+    },
+  });
+
+  try {
+    enableUserBackend();
+    assert.equal(capture("boot-1", 1_000).kind, "accepted");
+    runProjectionPass(2_000);
+
+    const d = openDb();
+    // One row per capturing profile - `local` and `user` keep separate streams by design.
+    const series = d
+      .prepare(`SELECT profile, resource_id FROM telemetry_series ORDER BY profile`)
+      .all() as unknown as Array<{ profile: string; resource_id: string }>;
+    assert.deepEqual(series.map((row) => row.profile), ["local", "user"]);
+
+    for (const row of series) {
+      assert.notEqual(row.resource_id, "", `${row.profile} gauge is addressable to a resource`);
+      const resource = d
+        .prepare(`SELECT attributes_json FROM telemetry_resources WHERE id = ?`)
+        .get(row.resource_id) as { attributes_json: string } | undefined;
+      assert.ok(resource, `${row.profile} resource really exists, which is what export needs`);
+      assert.match(
+        resource!.attributes_json,
+        /"service\.name":"mission-control"/,
+        "the running process's own resource, not whichever event happened to be last in the pass",
+      );
+    }
+
+    const batches = d
+      .prepare(`SELECT COUNT(*) AS n FROM telemetry_batches WHERE signal = 'metrics'`)
+      .get() as { n: number };
+    assert.ok(batches.n > 0, "so it reaches an export batch instead of being dropped in silence");
+  } finally {
+    resetTelemetryRegistrations();
+    registerBuiltinTelemetry();
+  }
+});
+
+test("a projection is handed the semantic envelope, never the stored journal row", async () => {
+  // The extension seam later phases register through. Passing the stored row made every future
+  // reducer compile against the persistence layer, so changing how the journal is stored or
+  // hydrated would have edited reducers with no opinion about storage - and nothing stopped one
+  // reading `seq`, `profiles` or `epochs`, which answer "which pass, which consent epoch"
+  // rather than "what happened". The engine converts once and keeps that bookkeeping.
+  const { registerTelemetryProjection, resetTelemetryRegistrations } = await import(
+    "../src/server/telemetry/registration.ts"
+  );
+  const seen: Array<Record<string, unknown>> = [];
+  resetTelemetryRegistrations();
+  registerTelemetryProjection({
+    id: "mission.test.boundary",
+    stateVersion: 1,
+    initialState: () => ({}),
+    migrateState: (state, fromVersion) => (fromVersion === 1 ? (state as Record<string, never>) : null),
+    reduce(event, state) {
+      seen.push(event as unknown as Record<string, unknown>);
+      return state;
+    },
+  });
+
+  try {
+    enableLocalOnly();
+    assert.equal(capture("boot-1", 1_000).kind, "accepted");
+    runProjectionPass(2_000);
+
+    assert.equal(seen.length, 1, "the reducer ran once for the captured fact");
+    const event = seen[0]!;
+    assert.deepEqual(
+      Object.keys(event).sort(),
+      [
+        "actor",
+        "contextId",
+        "contextOmitted",
+        "envelopeVersion",
+        "eventId",
+        "eventVersion",
+        "facts",
+        "name",
+        "observedAt",
+        "occurredAt",
+        "refs",
+        "refsOmitted",
+        "resourceId",
+      ],
+      "exactly the envelope, with nothing extra to reach for",
+    );
+    for (const bookkeeping of ["seq", "profiles", "epochs", "bytes", "source"]) {
+      assert.equal(
+        bookkeeping in event,
+        false,
+        `${bookkeeping} belongs to the engine and must not reach a reducer`,
+      );
+    }
+  } finally {
+    resetTelemetryRegistrations();
+    registerBuiltinTelemetry();
+  }
+});
+
+test("context entries dropped at the ceiling are counted rather than silently lost", async () => {
+  // `refs` has always carried its omitted count, on the grounds that truncating links silently
+  // is how a denominator changes without anyone noticing. Context is the same kind of map under
+  // the same ceiling and had no counter at all. Inert while Phase 1's callers pass no context,
+  // and precisely the thing a later phase would trip without seeing.
+  enableLocalOnly();
+  const context: Record<string, string> = {};
+  for (let i = 0; i < TELEMETRY_LIMITS.maxRefs + 5; i += 1) context[`k${i}`] = `v${i}`;
+
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "boot-ctx", revision: 1 },
+    facts: { startup_ms: 12, schema_upgraded: false, launch_mode: "daemon" },
+    context,
+    now: 1_000,
+  });
+  assert.equal(result.kind, "accepted");
+
+  const row = openDb()
+    .prepare(`SELECT refs_omitted, context_omitted FROM telemetry_journal LIMIT 1`)
+    .get() as { refs_omitted: number; context_omitted: number };
+  assert.equal(row.context_omitted, 5, "the five entries over the ceiling are on the record");
+  assert.equal(row.refs_omitted, 0, "and are not conflated with a lost correlation");
+});
+
+test("an owed gap is not written by a capture call made while collection is off", async () => {
+  // Default-off is a property of the whole capture path, not just the journal write. Settling
+  // the owed counter before reading the enabled flag meant an installation that had opted out
+  // still grew a row at the next capture attempt from any source - the same shape of bug as
+  // minting an identity ahead of the consent check.
+  const { markUnknownGapPending, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  enableLocalOnly();
+  resetPendingUnknownGap();
+  markUnknownGapPending();
+
+  const off = setTelemetryConfig({ enabled: false });
+  assert.equal(off.ok, true);
+  assert.equal(capture("boot-1", 2_000).kind, "disabled");
+  assert.equal(
+    (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_gaps`).get() as { n: number }).n,
+    0,
+    "collection is off, so the capture path wrote nothing at all",
+  );
+
+  // The debt is held in memory rather than dropped, so opting back in still settles it.
+  enableLocalOnly();
+  assert.equal(capture("boot-2", 3_000).kind, "accepted");
+  assert.ok(
+    telemetryHealth(4_000).gaps.some((g) => g.kind === "unknown_gap"),
+    "and the incident is not lost by having been deferred",
+  );
+  resetPendingUnknownGap();
+});
+
+test("turning collection on mid-run arms the unclean-shutdown detector", async () => {
+  // The detector was armed once, at process start, from whatever `config.enabled` was then.
+  // Enabling telemetry through the API on a running daemon - the documented, normal way - left
+  // it unarmed, so a crash during the entire session collection was live produced a silent
+  // clean boot afterwards and no gap at all.
+  const { noteTelemetryRunStart, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  resetPendingUnknownGap();
+
+  // A daemon that booted with collection off writes no marker, by design.
+  assert.equal(noteTelemetryRunStart(false, 1_000), false);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime), undefined);
+
+  // The operator turns it on without restarting.
+  enableLocalOnly();
+  assert.equal(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown,
+    false,
+    "the run is marked in progress from the moment collection starts",
+  );
+
+  // Crash: no shutdown runs. The next boot, now starting with collection on, reports it.
+  assert.equal(
+    noteTelemetryRunStart(true, 2_000),
+    true,
+    "the loss that was possible while collection was live is not silently forgotten",
+  );
+  resetPendingUnknownGap();
+});
+
+test("opting out still succeeds when a loss counter is owed from earlier", async () => {
+  // Opting out is the one action the consent design must always honour. The mid-run marker
+  // write runs inside the config transaction, and routing it through the shutdown path meant a
+  // pending gap flush opened a SECOND `BEGIN IMMEDIATE` on the same connection. `node:sqlite`
+  // has no nested transactions, so that threw, the stray ROLLBACK took the config write with
+  // it, and `PUT /api/telemetry/config` failed with telemetry still on - after any earlier
+  // capture-side storage hiccup in the life of the process.
+  const { markUnknownGapPending, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { setTelemetryConfig, getTelemetryConfig } = await import(
+    "../src/server/telemetry/config.ts"
+  );
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  resetPendingUnknownGap();
+
+  enableLocalOnly();
+  markUnknownGapPending();
+
+  const off = setTelemetryConfig({ enabled: false });
+  assert.equal(off.ok, true, off.ok ? "" : off.error);
+  assert.equal(getTelemetryConfig().enabled, false, "collection really is off afterwards");
+  assert.equal(
+    getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown,
+    false,
+    "and a run with a gap still owed does not get to record itself as clean",
+  );
+  resetPendingUnknownGap();
+});
+
+test("a nested telemetry transaction joins the one already open instead of throwing", async () => {
+  // `node:sqlite` has no nested transactions, so a helper that opens its own while one is in
+  // progress used to throw and roll the OUTER unit of work back. An inner call now joins.
+  const { telemetryTransaction, recordGap } = await import("../src/server/telemetry/store.ts");
+  enableLocalOnly();
+
+  const value = telemetryTransaction((outer) => {
+    recordGap(outer, "capture_refused", "outer", 1_000);
+    // Same connection, one level down. This is the shape that threw.
+    return telemetryTransaction((inner) => {
+      recordGap(inner, "capture_refused", "inner", 1_000);
+      return "joined";
+    });
+  });
+  assert.equal(value, "joined");
+  assert.equal(
+    (openDb().prepare(`SELECT COUNT(*) AS n FROM telemetry_gaps`).get() as { n: number }).n >= 1,
+    true,
+    "and both writes committed together as one unit",
+  );
+
+  // An inner failure still fails the whole unit rather than being swallowed.
+  assert.throws(
+    () =>
+      telemetryTransaction(() =>
+        telemetryTransaction(() => {
+          throw new Error("inner refused");
+        }),
+      ),
+    /inner refused/,
+  );
+
+  // The depth counter unwound, so the next transaction still works.
+  assert.equal(telemetryTransaction(() => "still usable"), "still usable");
+});
+
+test("turning collection off mid-run settles the marker instead of leaving it armed", async () => {
+  // The other direction. Nothing can be lost while collection is off, so a marker left saying
+  // "in progress" would report a gap that never happened on the next boot that starts with
+  // collection on.
+  const { noteTelemetryRunStart, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  resetPendingUnknownGap();
+
+  enableLocalOnly();
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, false);
+
+  const off = setTelemetryConfig({ enabled: false });
+  assert.equal(off.ok, true);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, true);
+
+  assert.equal(noteTelemetryRunStart(true, 2_000), false, "no phantom gap on the next boot");
+  resetPendingUnknownGap();
+});
+
+test("a ref a source names with a reserved key is counted as omitted, not waved through", async () => {
+  // The engine owns `__trace_id`, `__span_id` and `__parent_span_id` and overwrites them after
+  // bounding, so a caller's value really is dropped. Every other drop in `boundRefs` travels
+  // with the record; this one did not, so it would have been invisible in `refsOmitted`.
+  enableLocalOnly();
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "boot-reserved", revision: 1 },
+    facts: { startup_ms: 10, schema_upgraded: false, launch_mode: "daemon" },
+    refs: { __trace_id: "caller-supplied", __span_id: "also-supplied" },
+    now: 1_000,
+  });
+  assert.equal(result.kind, "accepted");
+
+  const row = openDb()
+    .prepare(`SELECT refs_omitted, refs_json FROM telemetry_journal LIMIT 1`)
+    .get() as { refs_omitted: number; refs_json: string };
+  assert.equal(row.refs_omitted, 2, "both reserved-key refs are on the record as dropped");
+  const refs = JSON.parse(row.refs_json) as Record<string, string>;
+  assert.notEqual(refs.__trace_id, "caller-supplied", "and the engine's own id is what survives");
+});
+
+test("an owed gap that still cannot be written keeps the run marked unclean", async () => {
+  // The fallback when the store itself is the thing at fault: rather than declare a clean
+  // shutdown and lose the incident, leave the marker unset so the NEXT start reports it.
+  //
+  // The failure has to be real for this to mean anything. An earlier version of this test
+  // asserted `cleanShutdown === true` on an ordinary shutdown with nothing owed - the opposite
+  // of what its own name promises - so it would have passed with the fallback deleted.
+  const {
+    markUnknownGapPending,
+    noteTelemetryRunStart,
+    noteTelemetryRunStopped,
+    resetPendingUnknownGap,
+  } = await import("../src/server/telemetry/retention.ts");
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  enableLocalOnly();
+  resetPendingUnknownGap();
+  noteTelemetryRunStart(true, 1_000);
+
+  // Take the gap table away, so the flush inside shutdown genuinely cannot write.
+  const d = openDb();
+  d.exec("ALTER TABLE telemetry_gaps RENAME TO telemetry_gaps_unavailable");
+  try {
+    markUnknownGapPending();
+    noteTelemetryRunStopped(true, 2_000);
+    assert.equal(
+      getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown,
+      false,
+      "a shutdown that could not settle what it owed does not get to call itself clean",
+    );
+  } finally {
+    d.exec("ALTER TABLE telemetry_gaps_unavailable RENAME TO telemetry_gaps");
+  }
+
+  // Which is the whole point: the next start finds the run still in progress and says so,
+  // instead of booting quietly over a loss nobody counted.
+  assert.equal(
+    noteTelemetryRunStart(true, 3_000),
+    true,
+    "the next start reports the incident the failed flush could not record",
+  );
+  resetPendingUnknownGap();
+});
+
+test("an orderly shutdown with nothing owed is still recorded as clean", async () => {
+  // The other half, kept separate so neither case can stand in for the other.
+  const { noteTelemetryRunStart, noteTelemetryRunStopped, resetPendingUnknownGap } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  const { APP_CONFIG_ENTRIES } = await import("../src/shared/app-config-entries.ts");
+  const { getAppConfig } = await import("../src/server/db.ts");
+  enableLocalOnly();
+  resetPendingUnknownGap();
+
+  noteTelemetryRunStart(true, 1_000);
+  noteTelemetryRunStopped(true, 2_000);
+  assert.equal(getAppConfig(APP_CONFIG_ENTRIES.telemetryRuntime)?.cleanShutdown, true);
+  assert.equal(noteTelemetryRunStart(true, 3_000), false, "and the next start is silent");
+  resetPendingUnknownGap();
+});
+
+test("the unclean-run marker is not written while collection is off", async () => {
+  // Default-off covers this too: a never-opted-in installation writes no marker, so it can
+  // never be told on its next boot that it lost something it was never collecting.
+  const { noteTelemetryRunStart, noteTelemetryRunStopped } = await import(
+    "../src/server/telemetry/retention.ts"
+  );
+  assert.equal(noteTelemetryRunStart(false, 1_000), false);
+  noteTelemetryRunStopped(false);
+  const row = openDb().prepare(`SELECT COUNT(*) AS n FROM app_config`).get() as { n: number };
+  assert.equal(row.n, 0);
+});
+
+// ---- the acceptance boundary ----
+
+test("accepted means committed: a captured fact survives a restart", () => {
+  enableLocalOnly();
+  const result = capture("boot-1", 1_000);
+  assert.equal(result.kind, "accepted");
+  assert.equal(journalCount(), 1);
+
+  restartDaemon();
+
+  // The whole v1 requirement in one assertion: what was accepted is still here after the
+  // process that accepted it is gone.
+  assert.equal(journalCount(), 1);
+  const row = openDb()
+    .prepare(`SELECT name, occurred_at, facts_json FROM telemetry_journal`)
+    .get() as { name: string; occurred_at: number; facts_json: string };
+  assert.equal(row.name, "mission.daemon.started");
+  assert.equal(row.occurred_at, 1_000);
+  assert.deepEqual(JSON.parse(row.facts_json), {
+    startup_ms: 120,
+    schema_upgraded: false,
+    launch_mode: "daemon",
+  });
+});
+
+test("a crash between journal commit and projection contributes exactly once", () => {
+  // P1's first crash boundary. The fact is committed; the projection never ran. After a
+  // restart it must contribute once - not zero times, and not twice.
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+
+  restartDaemon();
+
+  runProjectionPass(2_000);
+  assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [1]);
+});
+
+test("replaying the journal does not re-increment a counter", () => {
+  // The failure this prevents is the one that would double every metric on every reboot:
+  // journal events replayed through live counters. The journal is consumed once, into durable
+  // state; retries operate on batches.
+  enableLocalOnly();
+  capture("boot-1", 1_000);
+  runProjectionPass(2_000);
+  runProjectionPass(3_000);
+  restartDaemon();
+  runProjectionPass(4_000);
+  runProjectionPass(5_000);
+
+  assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [1]);
+});
+
+test("a cumulative stream keeps its original start time across a restart", () => {
+  // If the start time moved, the backend would read every restart as a counter reset.
+  enableLocalOnly();
+  capture("boot-1", 1_000);
+  runProjectionPass(1_500);
+  const [before] = series("local", "mission.daemon.starts");
+
+  restartDaemon();
+  capture("boot-2", 90_000);
+  runProjectionPass(91_000);
+  const [after] = series("local", "mission.daemon.starts");
+
+  assert.equal(after!.start_time, before!.start_time);
+  assert.equal(after!.value, 2);
+});
+
+test("a fact projected long after it happened keeps its own timestamp", () => {
+  // The regression for original-time attribution, and the case the whole durable design exists
+  // for: accepted before a crash, projected after the restart. If the metric point carried the
+  // PROJECTION clock, a week-old backlog drained today would be exported as today's activity -
+  // which is the one thing a restart-safe pipeline must never do.
+  enableUserBackend();
+  const happened = 1_000;
+  const projectedMuchLater = happened + 3 * 24 * 60 * 60 * 1000;
+
+  capture("boot-1", happened);
+  restartDaemon();
+  runProjectionPass(projectedMuchLater);
+
+  const [row] = series("user", "mission.daemon.starts");
+  assert.equal(row!.start_time, happened, "the stream starts when the fact happened");
+
+  // And the exported point, which is what a backend actually stores.
+  const batch = openDb()
+    .prepare(`SELECT payload_json FROM telemetry_batches WHERE profile = 'user' AND signal = 'metrics'`)
+    .get() as { payload_json: string };
+  const payload = JSON.parse(batch.payload_json) as {
+    metrics: Array<{ name: string; startTimeMs: number; endTimeMs: number }>;
+  };
+  const point = payload.metrics.find((m) => m.name === "mission.daemon.starts");
+  assert.ok(point);
+  assert.equal(point!.startTimeMs, happened);
+  assert.equal(
+    point!.endTimeMs,
+    happened,
+    "the point ends when the last contributing fact happened, not when the projection ran",
+  );
+});
+
+test("several facts in one pass each keep their own time", () => {
+  // The pass-level version of the same defect: reading "the current event" during `apply`, after
+  // the event loop has finished, silently collapses every contribution onto one clock.
+  enableLocalOnly();
+  capture("boot-1", 1_000, 40);
+  capture("boot-2", 5_000, 300);
+  runProjectionPass(9_999_999);
+
+  const [row] = series("local", "mission.daemon.starts");
+  assert.equal(row!.start_time, 1_000, "the earliest contributing fact opens the stream");
+  assert.equal(row!.value, 2);
+});
+
+// ---- identity and idempotency ----
+
+test("the same source identity is captured once, however often it is offered", () => {
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+  const second = capture("boot-1", 1_050);
+  assert.equal(second.kind, "duplicate");
+  assert.equal(journalCount(), 1);
+
+  runProjectionPass(2_000);
+  assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [1]);
+});
+
+test("the dedupe table is charged against the budget, like every other retained table", async () => {
+  // `telemetry_source_identities` is the one table that keeps growing AFTER payloads are
+  // pruned: it is retained for 30 days against the payload window's 7, so on a busy
+  // installation it outlives everything it deduplicates. It was not in the sum at all, while
+  // the health view and the guide both call that figure exact.
+  const { telemetryTransaction, usedBytes } = await import("../src/server/telemetry/store.ts");
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+
+  const withIdentity = telemetryTransaction((d) => usedBytes(d));
+  const d = openDb();
+  const identities = (
+    d.prepare(`SELECT COUNT(*) AS n FROM telemetry_source_identities`).get() as { n: number }
+  ).n;
+  assert.equal(identities, 1, "the capture wrote a dedupe identity");
+
+  // Drop only the identity row. Everything else the budget counts is untouched.
+  d.exec("DELETE FROM telemetry_source_identities");
+  const withoutIdentity = telemetryTransaction((d2) => usedBytes(d2));
+
+  assert.ok(
+    withoutIdentity < withIdentity,
+    `the identity row was carrying ${withIdentity - withoutIdentity} bytes of the budget, not zero`,
+  );
+});
+
+test("admission control carries the byte total forward instead of re-scanning per capture", async () => {
+  // `usedBytes` is seven unindexed aggregates over tables the budget lets reach hundreds of
+  // thousands of rows, and it ran inside the capture transaction - which holds the single
+  // writer lock every other subsystem in `harness.db` queues behind. Sessions and tasks would
+  // have paid for telemetry's bookkeeping, and worse the more telemetry there was.
+  const { telemetryTransaction, usedBytes, usedBytesForAdmission, resetUsedBytesCache } =
+    await import("../src/server/telemetry/store.ts");
+  enableLocalOnly();
+  resetUsedBytesCache();
+
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+  const estimate = telemetryTransaction((d) => usedBytesForAdmission(d, 128));
+  assert.ok(estimate > 0, "the accepted event is on the books");
+
+  // Empty every accounted table behind its back. A scan would see the drop immediately; the
+  // hot path does not, because it did not run one - which is the whole point.
+  for (const table of TELEMETRY_TABLES) openDb().exec(`DELETE FROM ${table}`);
+  assert.equal(
+    telemetryTransaction((d) => usedBytes(d)),
+    0,
+    "the authoritative total really is zero now",
+  );
+  assert.equal(
+    telemetryTransaction((d) => usedBytesForAdmission(d, 128)),
+    estimate,
+    "and the capture path did not pay for a scan to find that out",
+  );
+
+  // Over-stating is the safe direction, and it is not load-bearing: the moment an estimate
+  // reaches the cap the truth is recomputed, so no refusal is ever decided on a stale number.
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = estimate;
+  try {
+    const [fresh, admission] = telemetryTransaction(
+      (d) => [usedBytes(d), usedBytesForAdmission(d, 128)] as const,
+    );
+    assert.notEqual(fresh, estimate, "the truth and the stale estimate really do differ");
+    assert.equal(admission, fresh, "near the cap the number is computed, not remembered");
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+  resetUsedBytesCache();
+});
+
+test("a duplicate at a full store is a duplicate, not a claimed loss", () => {
+  // The ordering defect: admission control ran before the dedupe lookup, so a retried capture
+  // at a full store was refused as `over_capacity` AND recorded a `capture_refused` gap. A
+  // duplicate costs zero additional bytes; it is not new data pressing on the quota, and
+  // claiming a loss for a fact that is already safely stored is the one thing this facility's
+  // honesty rests on not doing.
+  enableLocalOnly();
+  assert.equal(capture("boot-1", 1_000).kind, "accepted");
+
+  // Force "at capacity" rather than manufacturing 256 MiB. Restored in `finally`, and the
+  // limits object is the real one the capture path reads.
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 1;
+  try {
+    const again = capture("boot-1", 2_000);
+    assert.equal(again.kind, "duplicate", "the retry is recognised before the quota is consulted");
+
+    const newFact = capture("boot-2", 3_000);
+    assert.equal(newFact.kind, "refused", "genuinely new data is still refused at the cap");
+    assert.equal(newFact.kind === "refused" && newFact.reason, "over_capacity");
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+
+  const gaps = telemetryHealth(4_000).gaps;
+  const refused = gaps.find((g) => g.kind === "capture_refused");
+  assert.ok(refused, "the genuinely refused fact is counted");
+  assert.equal(refused!.count, 1, "and the duplicate contributed no phantom loss");
+});
+
+test("dedupe outlives the payload it deduplicated", () => {
+  // A unique key on a row that is later deleted is not durable deduplication. Once retention
+  // prunes the journal row, the same expired historical source must not be importable again as
+  // fresh activity - so the identity has its own table and its own longer window.
+  enableLocalOnly();
+  const captured = 1_000;
+  capture("boot-1", captured);
+  runProjectionPass(captured + 1);
+
+  // Eight days later: past the payload window, well inside the identity window.
+  const later = captured + TELEMETRY_LIMITS.payloadRetentionMs + 86_400_000;
+  runRetentionPass(later);
+
+  const payload = openDb()
+    .prepare(`SELECT facts_json, payload_pruned_at FROM telemetry_journal`)
+    .get() as { facts_json: string; payload_pruned_at: number | null } | undefined;
+  assert.ok(payload, "the row itself survives the payload prune");
+  assert.notEqual(payload!.payload_pruned_at, null);
+  assert.equal(payload!.facts_json, "{}");
+
+  assert.equal(capture("boot-1", later).kind, "duplicate");
+});
+
+// ---- histograms ----
+
+test("a histogram accumulates into its declared explicit buckets", () => {
+  enableLocalOnly();
+  // Boundaries are [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000].
+  capture("boot-1", 1_000, 40);
+  capture("boot-2", 1_100, 300);
+  capture("boot-3", 1_200, 300);
+  runProjectionPass(2_000);
+
+  const [row] = series("local", "mission.daemon.startup.duration");
+  assert.equal(row!.hist_count, 3);
+  assert.equal(row!.value, 640);
+  const buckets = JSON.parse(row!.hist_buckets!) as number[];
+  assert.equal(buckets.length, 10, "nine boundaries plus the +Inf bucket");
+  assert.equal(buckets[0], 1, "40ms falls in the <=50 bucket");
+  assert.equal(buckets[3], 2, "300ms falls in the <=500 bucket");
+});
+
+// ---- consent fencing ----
+
+test("enabling a destination later does not hand it the history it was never consented to", () => {
+  // The rule this protects: enabling an audience authorizes new data FROM THAT POINT, not
+  // automatic historical sharing. A fresh profile starts at the journal head.
+  enableLocalOnly();
+  capture("boot-1", 1_000);
+  capture("boot-2", 1_100);
+  runProjectionPass(2_000);
+  assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [2]);
+
+  enableUserBackend();
+  capture("boot-3", 3_000);
+  runProjectionPass(4_000);
+
+  // The user backend sees the one fact captured after it was enabled, not all three.
+  assert.deepEqual(series("user", "mission.daemon.starts").map((s) => s.value), [1]);
+  assert.deepEqual(series("local", "mission.daemon.starts").map((s) => s.value), [3]);
+});
+
+test("withdrawing consent purges that profile's queue and projections", () => {
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(2_000);
+  assert.ok(batchCount("user") > 0);
+
+  const off = setTelemetryConfig({ user: { enabled: false } });
+  assert.equal(off.ok, true);
+
+  assert.equal(batchCount("user"), 0);
+  assert.equal(series("user", "mission.daemon.starts").length, 0);
+  // Local data the operator separately authorized is untouched.
+  assert.ok(journalCount() > 0);
+});
+
+test("a re-enabled destination starts a new consent epoch and a new baseline", () => {
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(2_000);
+  const firstEpoch = telemetryHealth(2_100).profiles.find((p) => p.profile === "user")!.policyEpoch;
+
+  setTelemetryConfig({ user: { enabled: false } });
+  setTelemetryConfig({ user: { enabled: true } });
+  capture("boot-2", 3_000);
+  runProjectionPass(4_000);
+
+  const secondEpoch = telemetryHealth(4_100).profiles.find((p) => p.profile === "user")!.policyEpoch;
+  assert.ok(secondEpoch > firstEpoch, "a new opt-in is a new epoch");
+  assert.deepEqual(
+    series("user", "mission.daemon.starts").map((s) => s.value),
+    [1],
+    "the new epoch does not inherit the previous cumulative total",
+  );
+});
+
+test("local-only collection produces no export batches at all", () => {
+  // Local-only needs no endpoint, and building an outbox for a destination that does not exist
+  // would double the byte budget to hold data nobody asked to send.
+  enableLocalOnly();
+  capture("boot-1", 1_000);
+  runProjectionPass(2_000);
+
+  assert.ok(series("local", "mission.daemon.starts").length > 0);
+  assert.equal(batchCount("local"), 0);
+});
+
+test("an endpoint change starts a new destination generation", () => {
+  enableUserBackend("http://127.0.0.1:14318");
+  const before = telemetryHealth(1_000).profiles.find((p) => p.profile === "user")!;
+  setTelemetryConfig({ user: { endpoint: "http://127.0.0.1:24318" } });
+  const after = telemetryHealth(2_000).profiles.find((p) => p.profile === "user")!;
+  assert.ok(after.destinationGeneration > before.destinationGeneration);
+});
+
+// ---- the product audience ----
+
+test("the product audience cannot be enabled while no ingest service exists", () => {
+  const refused = setTelemetryConfig({ enabled: true, product: { enabled: true } });
+  assert.equal(refused.ok, false);
+  assert.match(refused.ok ? "" : refused.error, /no ingest service/i);
+});
+
+test("product-only eligibility never produces a user-backend batch", () => {
+  // Even with both switches conceptually independent, a fact eligible for one audience must
+  // never land in another's queue.
+  enableLocalOnly();
+  capture("boot-1", 1_000);
+  runProjectionPass(2_000);
+  assert.equal(batchCount("user"), 0);
+  assert.equal(batchCount("product"), 0);
+});
+
+// ---- capacity and gaps ----
+
+test("an undeclared ref is dropped before the journal rather than inflating the event", () => {
+  enableLocalOnly();
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "boot-big", revision: 1 },
+    // `launch_mode` is a closed enum, so the only way to get a large payload past the schema
+    // is a ref - which is where an accidental blob would come from anyway.
+    facts: { startup_ms: 1, schema_upgraded: false, launch_mode: "daemon" },
+    refs: { blob: "x".repeat(TELEMETRY_LIMITS.maxEventBytes * 2) },
+    now: 1_000,
+  });
+  // The ref is not declared on this event, so it is dropped before the size check and the
+  // event is accepted with an omission count - which is the correct, bounded behaviour.
+  assert.equal(result.kind, "accepted");
+  const row = openDb()
+    .prepare(`SELECT refs_json, refs_omitted FROM telemetry_journal`)
+    .get() as { refs_json: string; refs_omitted: number };
+  assert.equal(row.refs_omitted, 1);
+  assert.ok(!row.refs_json.includes("xxxx"), "an undeclared ref never reaches the journal");
+});
+
+test("an undeclared fact is refused rather than passed through", () => {
+  enableLocalOnly();
+  const result = captureTelemetry({
+    event: DAEMON_STARTED_EVENT,
+    source: { kind: "mission.daemon", id: "boot-bad", revision: 1 },
+    facts: {
+      startup_ms: 1,
+      schema_upgraded: false,
+      launch_mode: "daemon",
+      repoRoot: "/Users/someone/private",
+    } as never,
+    now: 1_000,
+  });
+  assert.equal(result.kind, "refused");
+  assert.equal(result.kind === "refused" && result.reason, "invalid_facts");
+  assert.equal(journalCount(), 0);
+});
+
+test("capacity shedding stops as soon as the budget is back under the mark", async () => {
+  // The defect this covers: the pressure branch took a fixed slice of up to 500 batches with no
+  // re-check, so a brief overshoot - the tail of one short outage - expired the entire
+  // undelivered queue for every destination in a single tick. The loss was counted rather than
+  // silent, but it was wildly out of proportion to the condition that caused it, and it threw
+  // away data that would have been delivered a minute later.
+  const { relievePressure } = await import("../src/server/telemetry/retention.ts");
+  const { telemetryTransaction, lowestConsumedSeq } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableUserBackend();
+  for (let i = 0; i < 4; i += 1) {
+    capture(`boot-${i}`, 1_000 + i * 100);
+    runProjectionPass(1_000 + i * 100 + 10);
+  }
+  const before = batchCount("user");
+  assert.ok(before >= 4, `expected several batches to shed from, got ${before}`);
+
+  // Over budget for exactly two checks, then under. The real predicate reads `usedBytes`;
+  // driving it directly is what lets this assert the STOPPING behaviour without manufacturing
+  // 230 MiB of telemetry.
+  let overFor = 2;
+  const relieved = telemetryTransaction((d) =>
+    relievePressure(d, 9_000, lowestConsumedSeq(d), () => overFor-- > 0),
+  );
+
+  assert.equal(relieved.expiredBatches, 2, "it sheds what the overshoot needed, not the queue");
+  assert.equal(
+    batchCount("user"),
+    before - 2,
+    "every other undelivered batch is still there to be delivered",
+  );
+});
+
+test("settled delivery bookkeeping does not accumulate for ever", async () => {
+  // `settleDelivery` updates a row rather than inserting one, and releasing a payload removed
+  // only the payload, so every batch an installation ever produced left a small permanent row -
+  // an unbounded table that neither retention window bounded and that nothing charged to the
+  // byte budget. Low volume in Phase 1; multiplied by every source phase after it.
+  const { telemetryTransaction, settleDelivery, releaseBatchPayload, usedBytes } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(1_100);
+
+  const ids = openDb()
+    .prepare(`SELECT batch_id FROM telemetry_delivery`)
+    .all() as unknown as Array<{ batch_id: string }>;
+  assert.ok(ids.length > 0);
+
+  // Deliver them, the way a successful export does.
+  telemetryTransaction((d) => {
+    for (const { batch_id } of ids) {
+      settleDelivery(
+        d,
+        batch_id,
+        { state: "accepted", attempts: 1, nextAttemptAt: 1_200, lastError: null },
+        1_200,
+      );
+      releaseBatchPayload(d, batch_id);
+    }
+  });
+  const bytesWhileRetained = telemetryTransaction((d) => usedBytes(d));
+  assert.ok(bytesWhileRetained > 0, "the surviving rows are charged to the budget");
+
+  const later = 1_200 + TELEMETRY_LIMITS.payloadRetentionMs + 1_000;
+  const result = runRetentionPass(later);
+  assert.equal(result.prunedDeliveries, ids.length, "the settled rows are swept");
+
+  const remaining = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_delivery`)
+    .get() as { n: number };
+  assert.equal(remaining.n, 0, "nothing is left behind for the next decade of batches");
+});
+
+test("a batch retained for a superseded endpoint keeps its payload until the window closes", async () => {
+  // The one terminal state that keeps its bytes on purpose, so Phase 2 can offer the operator
+  // the keep / discard / transfer choice. Its bookkeeping must NOT be pruned while the payload
+  // is still there, or the payload is orphaned with nothing describing it.
+  const { telemetryTransaction, settleDelivery, pruneTerminalDeliveries } = await import(
+    "../src/server/telemetry/store.ts"
+  );
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(1_100);
+  const ids = openDb()
+    .prepare(`SELECT batch_id FROM telemetry_delivery`)
+    .all() as unknown as Array<{ batch_id: string }>;
+
+  // Rejected, payload deliberately RETAINED.
+  telemetryTransaction((d) => {
+    for (const { batch_id } of ids) {
+      settleDelivery(
+        d,
+        batch_id,
+        { state: "rejected", attempts: 1, nextAttemptAt: 1_200, lastError: "stale generation" },
+        1_200,
+      );
+    }
+  });
+
+  const later = 1_200 + TELEMETRY_LIMITS.payloadRetentionMs + 1_000;
+  const pruned = telemetryTransaction((d) => pruneTerminalDeliveries(d, later, 500));
+  assert.equal(pruned, 0, "bookkeeping stays while the payload it describes is still retained");
+  assert.equal(batchCount("user"), ids.length);
+
+  // The full sweep releases the payload first, then the row.
+  const result = runRetentionPass(later);
+  assert.ok(result.releasedTerminalBatches > 0);
+  assert.equal(batchCount("user"), 0);
+  const remaining = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM telemetry_delivery`)
+    .get() as { n: number };
+  assert.equal(remaining.n, 0);
+});
+
+test("an expired batch is counted as loss rather than deleted quietly", () => {
+  enableUserBackend();
+  capture("boot-1", 1_000);
+  runProjectionPass(1_100);
+  assert.ok(batchCount("user") > 0);
+
+  // Measured from the BATCH's creation, which is the projection's clock, not the capture's.
+  const later = 1_100 + TELEMETRY_LIMITS.payloadRetentionMs + 1_000;
+  const result = runRetentionPass(later);
+  assert.ok(result.expiredBatches > 0);
+
+  const health = telemetryHealth(later);
+  const gap = health.gaps.find((g) => g.kind === "payload_expired");
+  assert.ok(gap, "the loss is visible in health, not inferred from an empty chart");
+  assert.ok(gap!.count > 0);
+  assert.equal(health.profiles.find((p) => p.profile === "user")!.expired > 0, true);
+});
+
+// ---- the daemon's own observation ----
+
+test("the daemon start observation flows through the same path as any other fact", () => {
+  enableLocalOnly();
+  const result = observeDaemonStart({
+    startupMs: 480,
+    schemaUpgraded: true,
+    launchMode: "daemon",
+    now: 1_000,
+  });
+  assert.equal(result.kind, "accepted");
+  runProjectionPass(2_000);
+
+  const [starts] = series("local", "mission.daemon.starts");
+  assert.equal(starts!.value, 1);
+  assert.deepEqual(JSON.parse(starts!.dimensions_json), {
+    launch_mode: "daemon",
+    schema_upgraded: "true",
+  });
+  const [duration] = series("local", "mission.daemon.startup.duration");
+  assert.equal(duration!.hist_count, 1);
+});
+
+test("the same boot cannot record its start twice", () => {
+  enableLocalOnly();
+  const first = observeDaemonStart({ startupMs: 100, schemaUpgraded: false, launchMode: "daemon", now: 1_000 });
+  const second = observeDaemonStart({ startupMs: 100, schemaUpgraded: false, launchMode: "daemon", now: 1_050 });
+  assert.equal(first.kind, "accepted");
+  assert.equal(second.kind, "duplicate");
+});
+
+test("the installation identity is a local pseudonym, not an account or a hostname", () => {
+  enableLocalOnly();
+  const identity = telemetryIdentity();
+  assert.equal(identity.epoch, 1);
+  // An opaque fixed-width hex seed, so it can carry nothing but itself.
+  assert.match(identity.installationId, /^[0-9a-f]{24}$/);
+
+  // And it derives from none of the obvious machine or account facts. Checking only $USER left
+  // the test narrower than its own name claimed.
+  for (const secret of [process.env.USER, process.env.LOGNAME, hostname(), homedir()]) {
+    if (!secret) continue;
+    assert.ok(
+      !identity.installationId.includes(secret.toLowerCase()),
+      `the pseudonym must not embed ${secret}`,
+    );
+  }
+});
+
+test("a stored identity missing its epoch is not used", () => {
+  // A row written by an older build, or hand-edited, would otherwise flow through as
+  // `epoch: undefined` and be digested into every profile salt and stamped on every exported
+  // resource as the string "undefined" - a silent, permanent corruption of this installation's
+  // identity that nothing downstream could unpick.
+  enableLocalOnly();
+  openDb()
+    .prepare(`INSERT INTO app_config (key, value) VALUES (?, ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+    .run("telemetry.identity", JSON.stringify({ installationId: "abc" }));
+
+  const identity = telemetryIdentity();
+  assert.equal(identity.epoch, 1, "a fresh, valid identity replaces the unusable one");
+  assert.match(identity.installationId, /^[0-9a-f]{24}$/);
+});

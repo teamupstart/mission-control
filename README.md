@@ -36,6 +36,11 @@ that handles the routine interruptions you don't want, a verification workflow t
 and repository memory so the next agent does not repeat the last one's mistake. When an external SDLC engine 
 drives the work, Mission Control watches that too.
 
+Prefer one page? The
+[Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html)
+is this same tour as a single self-contained document, with 25 screenshots from a running
+fleet.
+
 - [The board](#the-board)
 - [Every agent's desk](#every-agents-desk)
 - [Dispatch and task types](#dispatch-and-task-types)
@@ -179,6 +184,8 @@ By default, judges that have passed are skipped on later repair rounds of that r
 Personas each own one reviewing concern. Session actions can send authored instructions back to the
 working agent, gather fresh evidence, and continue the graph. Reports, screenshots, logs, and exact
 command output can reach reviewers without being committed to the repository.
+Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
+round, with applicable evidence carried forward between submissions.
 
 When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
 Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
@@ -264,7 +271,10 @@ and control surface stay coherent.
 
 ## Get started
 
-There are two paths through this repository:
+The illustrated [setup guide](docs/setup-guide.html) walks the whole journey in one page:
+install, set this machine up from **Settings → Setup**, tell the necessary settings apart from
+the optional ones, and keep the app current. The short version is two paths through this
+repository:
 
 - **Use Mission Control** as a managed macOS app that supervises the daemon, delivers alerts with
   the window closed, and receives updates. Updates check Node.js and npm before building and
@@ -272,6 +282,9 @@ There are two paths through this repository:
   [desktop app installation guide](docs/overview.md#desktop-app-macos).
   **Settings → Setup → Runtime** also checks Node.js and can open its Homebrew installation
   command in a visible terminal, with **Re-check** to confirm the repair.
+  To track unreleased source, enable **Alpha updates** in **Settings → Setup → Application
+  updates**. This defaults off; alpha recommends the latest `main` commit and includes stable
+  release news. See [alpha updates](docs/desktop-and-packaging.md#alpha-updates).
 - **Work on Mission Control** from this checkout with Node.js 24 or newer:
 
   ```sh
@@ -282,7 +295,12 @@ There are two paths through this repository:
   ```
 
   Then open `http://127.0.0.1:5173`. See [First-run setup](docs/setup.md) and
-  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path.
+  [Contributing](CONTRIBUTING.md) for prerequisites and the full verification path. Upstart
+  operators should also follow [Running Mission Control at Upstart](docs/upstart.md) for the
+  UpstartClaw marketplace, plugin, sign-in, and daemon environment steps.
+
+Either way, **Settings → Setup** is where Mission Control reports what this machine can already do
+and what is still missing. The [setup guide](docs/setup-guide.html) reads that panel row by row.
 
 Mission Control's app-owned headless calls can use either provider transport. Choose the stored
 setting in the app or use the environment variable as a process-level fallback:
@@ -369,6 +387,7 @@ change, describe it in an issue for the maintainers to evaluate. See
 
 ## Go deeper
 
+- [Feature Guide](https://teamupstart.github.io/mission-control/artifacts/mission-control-feature-guide.html) - the whole tour on one page, screenshots included.
 - [Documentation index](docs/README.md) - product behavior, configuration, and feature guides.
 - [Architecture overview](docs/architecture.md) - how the daemon, dashboard, integrations, and
   local state fit together.

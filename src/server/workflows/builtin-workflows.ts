@@ -24,6 +24,9 @@ import {
   builtinWorkflowId,
   builtinWorkflowVersionId,
   NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
+  GENERAL_REVIEW_WORKFLOW_SLUG,
+  BUG_FIX_REVIEW_WORKFLOW_SLUG,
+  PLAN_VALIDATION_WORKFLOW_SLUG,
 } from "@shared/builtin-workflow.ts";
 import { CreateWorkflowSchema } from "@shared/protocol.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
@@ -150,7 +153,8 @@ interface BuiltinPersonaSnapshotOverride {
 }
 
 interface BuiltinPersonaExecutionRouting {
-  default: BuiltinPersonaExecution;
+  /** Null retains the Persona's routing when only historical guidance needs freezing. */
+  default: BuiltinPersonaExecution | null;
   overrides?: Readonly<Partial<Record<PersonaId, BuiltinPersonaExecution>>>;
   snapshotOverrides?: Readonly<Partial<Record<PersonaId, BuiltinPersonaSnapshotOverride>>>;
 }
@@ -314,6 +318,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   session: "nmr-session",
   typecheck: "nmr-check-typecheck",
   test: "nmr-check-test",
+  lint: "nmr-check-lint",
   build: "nmr-build-join",
   intent: "nmr-intent-conformance",
   coverage: "nmr-test-coverage-judge",
@@ -744,6 +749,126 @@ const NO_MISTAKES_REVIEW_V15: StagePipeline = {
   ],
 };
 
+/** Version 19 adds lint to the first gate, keeping every earlier pipeline immutable. */
+const NO_MISTAKES_REVIEW_V19: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+        check(NO_MISTAKES_REVIEW_NODES.lint, "lint"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.intentCoverage,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.coverage, "test-coverage-judge"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.quality, "code-quality-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.design, "code-design-reviewer"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.evidenceDocumentation,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.slop, "slop-filter"),
+      ],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
+
+/** Versions 1-16 keep the exact intent policy they shipped with. */
+const INTENT_CONFORMANCE_JUDGE_V16_SNAPSHOT: BuiltinPersonaSnapshotOverride = {
+  description:
+    "Decides one narrow question: does this change contradict the acceptance criteria the human "
+    + "actually stated?",
+  guidanceMarkdown: `# Intent Conformance Judge
+
+Decides one narrow question: does this change contradict the acceptance criteria the human
+actually stated?
+
+## What you judge
+
+You compare the submitted change against the criteria that already exist for this work: the
+goal, the recorded human decisions, and the constraints and acceptance criteria that came
+with them. This is a closed classification, not an open review. You are checking a change
+against criteria someone else wrote, not forming an opinion about the work.
+
+Put this role first in a review graph. It is the cheap gate: there is no point spending three
+deeper reviews on a change that has drifted from what was asked. Quality, risk, evidence and
+documentation belong to other roles, so leave them alone even when you notice something.
+
+## Pass when
+
+- The change satisfies every criterion you can verify against the source in front of you.
+- The criteria are silent, vague, or open to reading on a point the change touches. Pass, and
+  say so in your summary. An unstated preference is not a criterion.
+- The change does more than the criteria required, and the extra work neither removes a
+  required behavior nor adds a forbidden one.
+- Work the criteria describe is present but imperfect. Imperfect is the next reviewer's
+  question, not yours.
+
+## Fail when
+
+Exactly two situations, both verifiable in the change itself:
+
+1. The change removes or omits a behavior the stated criteria mark as REQUIRED.
+2. The change adds a behavior the stated criteria mark as FORBIDDEN.
+
+Anything else passes.
+
+## Out of scope
+
+- Delivery outcomes. A branch that is not pushed, a pull request that is not open, and checks
+  that have not been observed are deferred steps, never contradictions of intent. Other gates
+  own delivery.
+- Criteria you infer, extrapolate, or believe the human would have wanted. If the criteria do
+  not state it, it is not a criterion, and reading one in is the exact failure mode this role
+  exists to prevent.
+- Code quality, risk, test coverage and documentation. Each has its own judge.
+
+## Requested-change discipline
+
+Every requested change carries both halves of the contradiction:
+
+- The criterion itself, quoted from the goal or from a recorded human decision.
+- The contradicting code, quoted from the diff, with path and line wherever the change makes
+  that possible. For a required behavior that is simply absent, quote the criterion and state
+  plainly what it requires that nothing in the change provides.
+
+Title each one after the criterion it violates, not after the code that violates it. Say what
+would satisfy the criterion, not how to write it. The session repairing the work chooses the
+implementation.
+`,
+};
+
+const LEGACY_INTENT_SNAPSHOT = {
+  "builtin:intent-conformance-judge": INTENT_CONFORMANCE_JUDGE_V16_SNAPSHOT,
+} as const;
+
+/** Earlier versions inherit Persona routing while retaining their original intent guidance. */
+const LEGACY_INTENT_PERSONA_EXECUTION: BuiltinPersonaExecutionRouting = {
+  default: null,
+  snapshotOverrides: LEGACY_INTENT_SNAPSHOT,
+};
 
 /**
  * Version 15's immutable Test Coverage Judge snapshot.
@@ -908,13 +1033,13 @@ const SHIPPED_MANUAL_RESUMPTION = "manual" as const;
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
   builtinWorkflow({
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
-    name: "No-Mistakes Review",
+    name: "No-Mistakes Review (High Rigor)",
     description:
-      "Typecheck and test, then eight review roles: Intent Conformance and Test Coverage; Code "
+      "Typecheck, test, and lint, then eight review roles: Intent Conformance and Test Coverage; Code "
       + "Risk, Quality and Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
       + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
       + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
-      + "the pull request without requiring GitHub Inspector.",
+      + "the pull request before the final GitHub Inspector gate.",
     // Versions 1 and 2 remain addressable exactly as shipped. Version 2 changed only the
     // binding posture; version 3 appends the deterministic gate and retains Live delivery.
     // Version 4 keeps that graph but repairs Inspector findings by repushing, then checking
@@ -926,7 +1051,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     versions: [
       {
         pipeline: NO_MISTAKES_REVIEW_V1,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "restart_workflow",
@@ -939,7 +1064,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V2,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "restart_workflow",
@@ -952,7 +1077,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "restart_workflow",
@@ -965,7 +1090,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -978,7 +1103,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -991,7 +1116,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       },
       {
         pipeline: NO_MISTAKES_REVIEW_V3,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -1013,7 +1138,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // parks in `waiting_for_new_head`, which the observer never touches, because an
         // Inspector repair is resolved by a pushed head the poller observes.
         pipeline: NO_MISTAKES_REVIEW_V3,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -1035,7 +1160,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // handoff into the session would be asking for a pull request the run already has.
         // Waiting is the honest answer, and the operator still has Prepare PR by hand.
         pipeline: NO_MISTAKES_REVIEW_V4,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: {
           kind: "inspector",
           onFindings: "inspector_only",
@@ -1054,7 +1179,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // captured commit. GitHub Inspector remains an optional remote service and still owns
         // its review ledger, public GitHub behavior, and exact-head Shipping proof.
         pipeline: NO_MISTAKES_REVIEW_V5,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -1068,7 +1193,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // verified Pull Request action. The completion posture remains local: GitHub
         // Inspector is optional and Shipping continues to own its remote exact-head proof.
         pipeline: NO_MISTAKES_REVIEW_V6,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -1082,7 +1207,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // posture and the binding defaults are all version 10's, so the only difference an
         // operator rebinding from 10 to 11 gets is a third judgment on the same submission.
         pipeline: NO_MISTAKES_REVIEW_V7,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -1096,7 +1221,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // one repair packet, and nothing changes after it, so the new version adds one focused
         // judgment without adding a serial stage or changing publication behavior.
         pipeline: NO_MISTAKES_REVIEW_V8,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "off",
@@ -1107,7 +1232,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         // Version 13: the version 12 graph now enforces criterion-mapped evidence readiness.
         // Every earlier version remains advisory and behaviorally unchanged.
         pipeline: NO_MISTAKES_REVIEW_V8,
-        personaExecution: null,
+        personaExecution: LEGACY_INTENT_PERSONA_EXECUTION,
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
         evidenceReadinessPolicy: "criterion_mapped_v1",
@@ -1123,6 +1248,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           overrides: {
             "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
           },
+          snapshotOverrides: LEGACY_INTENT_SNAPSHOT,
         },
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
@@ -1141,6 +1267,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
             "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
           },
           snapshotOverrides: {
+            ...LEGACY_INTENT_SNAPSHOT,
             "builtin:test-coverage-judge": TEST_COVERAGE_JUDGE_V15_SNAPSHOT,
           },
         },
@@ -1159,6 +1286,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
           overrides: {
             "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
           },
+          snapshotOverrides: LEGACY_INTENT_SNAPSHOT,
         },
         completionPolicy: { kind: "none" },
         resumptionPolicy: "auto",
@@ -1166,6 +1294,286 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 15,
       },
+      {
+        // Version 17: Intent Conformance prioritizes the requested outcome and explicit
+        // interfaces, allowing plan deviations, extra tests, and accompanying bug fixes.
+        pipeline: NO_MISTAKES_REVIEW_V15,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "none" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 16,
+      },
+      {
+        // Version 18 retains version 17 and adds Inspector after the verified PR.
+        pipeline: NO_MISTAKES_REVIEW_V15,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 17,
+      },
+      {
+        // Version 19 adds lint to the initial checks before any Persona runs.
+        pipeline: NO_MISTAKES_REVIEW_V19,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 18,
+      },
     ],
+  }),
+  builtinWorkflow({
+    slug: GENERAL_REVIEW_WORKFLOW_SLUG,
+    name: "General Review",
+    description: "Typecheck, test, and lint, then balanced review for ordinary changes: Intent, Risk, Quality, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
+    versions: [{
+      pipeline: {
+        sessionId: "gr-session",
+        endId: "gr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "gr-checks-join",
+            members: [check("gr-typecheck", "typecheck"), check("gr-test", "test")],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("gr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-2-join",
+            members: [
+              reviewer("gr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("gr-code-quality-judge", "code-quality-judge"),
+              reviewer("gr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-3-join",
+            members: [
+              reviewer("gr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("gr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("gr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }, {
+      // Version 2 adds lint to the first gate; version 1 stays frozen.
+      pipeline: {
+        sessionId: "gr-session",
+        endId: "gr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "gr-checks-join",
+            members: [
+              check("gr-typecheck", "typecheck"),
+              check("gr-test", "test"),
+              check("gr-lint", "lint"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("gr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-2-join",
+            members: [
+              reviewer("gr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("gr-code-quality-judge", "code-quality-judge"),
+              reviewer("gr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-3-join",
+            members: [
+              reviewer("gr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("gr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("gr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 2,
+    }],
+  }),
+  builtinWorkflow({
+    slug: BUG_FIX_REVIEW_WORKFLOW_SLUG,
+    name: "Bug Fix Review",
+    description: "Typecheck, test, and lint, then focused bug review: Intent, Root Cause & Regression, Risk, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
+    versions: [{
+      pipeline: {
+        sessionId: "bfr-session",
+        endId: "bfr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "bfr-checks-join",
+            members: [check("bfr-typecheck", "typecheck"), check("bfr-test", "test")],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("bfr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-2-join",
+            members: [
+              reviewer("bfr-root-cause-regression-judge", "root-cause-regression-judge"),
+              reviewer("bfr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("bfr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-3-join",
+            members: [
+              reviewer("bfr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("bfr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("bfr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }, {
+      // Version 2 adds lint to the first gate; version 1 stays frozen.
+      pipeline: {
+        sessionId: "bfr-session",
+        endId: "bfr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "bfr-checks-join",
+            members: [
+              check("bfr-typecheck", "typecheck"),
+              check("bfr-test", "test"),
+              check("bfr-lint", "lint"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("bfr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-2-join",
+            members: [
+              reviewer("bfr-root-cause-regression-judge", "root-cause-regression-judge"),
+              reviewer("bfr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("bfr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-3-join",
+            members: [
+              reviewer("bfr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("bfr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("bfr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 2,
+    }],
+  }),
+  builtinWorkflow({
+    slug: PLAN_VALIDATION_WORKFLOW_SLUG,
+    name: "Plan Validation",
+    description: "Reviews intent, consistency across plan files, phase dependencies, and technical feasibility. Validates single-phase and multi-phase plans without code checks or a pull request action.",
+    versions: [{
+      pipeline: {
+        sessionId: "pv-session",
+        endId: "pv-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("pv-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "pv-review-2-join",
+            members: [
+              reviewer("pv-plan-consistency-judge", "plan-consistency-judge"),
+              reviewer("pv-phase-dependencies-judge", "phase-dependencies-judge"),
+              reviewer("pv-plan-feasibility-judge", "plan-feasibility-judge"),
+            ],
+          },
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "off",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 1,
+    }],
   }),
 ];

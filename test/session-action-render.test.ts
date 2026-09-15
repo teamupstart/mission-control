@@ -167,7 +167,7 @@ test("an action stage names itself, says what it needs, and says what proves it 
   assert.match(html, /Pull Request/);
   assert.match(html, /Session action/, "the badge says what this row is, beside reviewers");
   assert.match(html, /Skill · pull-request/);
-  assert.match(html, /Completes when pull request is opened and verified/);
+  assert.match(html, /Completes when pull request is opened/);
   // The one thing an operator most needs to know about the stage below it.
   assert.match(html, /later stages review new evidence/);
   // Its seam says `complete`, not `pass`: everything after it reads new evidence.
@@ -404,7 +404,7 @@ test("the Graph rail lets a selected action be repointed and removed", () => {
   // The capability table's own sentence, lowercased into the rail's prose. Asserted as the
   // derived wording rather than as a hand-written one so a copy change in the table shows up
   // here as a failure instead of as two surfaces quietly disagreeing.
-  assert.match(html, /Completes when pull request is opened and verified/);
+  assert.match(html, /Completes when pull request is opened/);
   assert.match(html, /Every stage after it reviews evidence captured once it has/);
   // The two halves of the authoring loop the previous phase deliberately withheld.
   assert.match(html, /<select[^>]*>[\s\S]*Tidy the workspace[\s\S]*<\/select>/);

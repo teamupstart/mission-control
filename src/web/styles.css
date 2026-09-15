@@ -2308,44 +2308,43 @@ button.wf-run-version:focus-visible {
   text-transform: uppercase;
 }
 
-/* The canonical criteria the reconciliation could not match. Given a frame of its own because
-   the rows in it belong to nothing else on the pane: a criterion with no author claim has no
-   claim row below to sit under, which is the whole reason the reconciliation survived the
-   merge. */
-.wf-evidence-gaps {
-  padding: 4px 12px 10px;
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--danger) 6%, var(--panel-2));
-}
-
-.wf-evidence-gaps h5 {
-  margin: 10px 0 0;
-  font-size: 12.5px;
-}
-
-.wf-evidence-gap-row {
+/* The reconciliation, as the pane's primary ledger rather than a footnote under the claims.
+   No alarm frame around the whole block: it lists every canonical criterion, satisfied ones
+   included, and a danger edge drawn around a healthy submission would cry wolf on every run.
+   The rows carry the tone, and `runEvidenceCriterionRows` sorts the loud ones to the top. */
+.wf-evidence-reconciliation {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border-soft);
+  gap: 4px;
 }
 
-.wf-evidence-gap-row:last-child {
-  border-bottom: 0;
+.wf-evidence-reconciliation h5 {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
-.wf-evidence-gap-text {
-  font-size: 12.5px;
+.wf-evidence-criterion.is-failed {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel-2));
 }
 
-.wf-evidence-gap-codes {
+.wf-evidence-criterion.is-waiting {
+  border-color: color-mix(in srgb, var(--attention) 32%, var(--border));
+}
+
+.wf-evidence-criterion-gaps {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  justify-content: flex-end;
+}
+
+/* One claim's facts read as one unit, so a criterion two claims contested does not print four
+   run-together fragments a reader has to re-split by eye. */
+.wf-evidence-criterion-claim {
+  display: inline-flex;
+  gap: 4px;
 }
 
 .wf-evidence-strip {
@@ -2484,6 +2483,7 @@ button.wf-run-version:focus-visible {
 /* One claim per row rather than per card. Six claims were 621px of cards on the run this was
    measured against, saying what six lines say. */
 .wf-evidence-claim,
+.wf-evidence-criterion,
 .wf-run-rowlist-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2496,6 +2496,7 @@ button.wf-run-version:focus-visible {
 }
 
 .wf-evidence-claim-body,
+.wf-evidence-criterion-body,
 .wf-run-rowlist-body {
   display: grid;
   gap: 3px;
@@ -2503,11 +2504,13 @@ button.wf-run-version:focus-visible {
 }
 
 .wf-evidence-claim-text,
+.wf-evidence-criterion-text,
 .wf-run-rowlist-title {
   font-size: 12.5px;
 }
 
 .wf-evidence-claim-facts,
+.wf-evidence-criterion-facts,
 .wf-run-rowlist-facts {
   display: flex;
   flex-wrap: wrap;
@@ -2518,23 +2521,46 @@ button.wf-run-version:focus-visible {
 }
 
 .wf-evidence-claim-facts code,
+.wf-evidence-criterion-facts code,
 .wf-run-rowlist-facts code {
   font-size: 9.5px;
   overflow-wrap: anywhere;
 }
 
-.wf-evidence-claim-note {
+.wf-evidence-claim-note,
+.wf-evidence-criterion-note {
   color: var(--attention);
 }
 
-.wf-evidence-claim-side {
+.wf-evidence-claim-side,
+.wf-evidence-criterion-side {
   display: flex;
   gap: 5px;
   align-items: center;
 }
 
-/* The picture beside the claim it proves. Small enough that a row stays a row, large enough to
-   tell one screenshot from another and to say "this claim has a picture behind it". */
+/* Every small copy is the control that opens it, so the button carries no box of its own: the
+   frame inside it is the whole visible thing, exactly as it was when it was inert. */
+.wf-evidence-mini-button {
+  display: grid;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.wf-evidence-mini-button:hover .wf-evidence-mini {
+  border-color: var(--working);
+}
+
+.wf-evidence-mini-button:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+/* The picture beside the thing it proves. Small enough that a row stays a row, large enough to
+   tell one screenshot from another and to say "this row has a picture behind it". */
 .wf-evidence-mini {
   display: grid;
   place-items: center;

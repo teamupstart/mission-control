@@ -1350,15 +1350,52 @@ workflow to reconstruct either answer.
 
 Each submission in run detail has its own evidence record, and the run record's **Evidence** tab
 is where it reads. A stat strip carries the readiness verdict, the frozen author claims, every
-canonical criterion left with an unresolved gap, its warnings and the image count. A gap is
-reported once, in the place that can act on it: against a criterion the reconciliation matched to
-an author claim it prints on that claim's row, and against a criterion it matched to nothing it
-gets a named block of its own, because there is no row for it to sit under. The **Gaps** figure
-counts both, so it is not the length of that block. Frozen images are a thumbnail strip above the
-claims, and a claim row that cites one carries a small copy of it, so a screenshot sits beside the
-claim it proves. Clicking a thumbnail opens it full size,
+canonical criterion left with an unresolved gap, its warnings and the image count.
+
+**Canonical reconciliation leads the pane**, because the canonical criteria are what the run is
+measured against and the question the pane is opened to answer is which of them are unmet. It
+lists every canonical criterion worst first, in three tiers: gapped criteria, then a single
+waiting tier holding criteria with a warning, no author claim or a contested one alike, then
+satisfied ones. The sort is stable, so inside a tier the record's own order is kept and a
+warning does not outrank an unclaimed criterion. Each row carries the gap and warning codes
+recorded against that criterion and the author claim that answered it. A gap is stated once, on
+the criterion that owns it, whether or not a claim matched; the **Gaps** figure is therefore the
+number of gapped criteria in that list.
+
+Each criterion carries one word, and a gap outranks the rest: a criterion with any gap reads
+**gaps** whatever else is true of it, because the gap is the fact that stops the packet. Below
+that, a criterion no claim answered reads **no author claim**, one that more than one claim
+answered reads **contested** and names those claims, since the reconciliation accepts neither,
+and one whose single claim drew an advisory note reads **warning**. A criterion with none of
+those reads **satisfied**. So a contested criterion that is also gapped reads **gaps**, and
+**contested** appears only where there is no gap to report.
+
+**Frozen author claims sit behind a disclosure below it**, and they are a different record
+rather than a shorter version of the same one. A claim is what the author *declared* - its own
+wording, its author-selected proof class, its repository scope and the evidence ids it cites -
+frozen immutably at submission, which is the only account of what was asserted and how, and what a
+proof-class disagreement is read against. It is not the pane's verdict, and its status word is
+one of two different kinds of fact. Where the reconciliation matched the claim to a criterion the
+row reads that answer back - **gaps**, **warning** or **linked** - and a claim the reconciliation
+found contested reads **contested** here as well, so the criterion row above and the claim row
+below cannot describe the same claim two different ways. Where a reconciliation ran but matched
+this claim to nothing it reads **not reconciled**. The rest describe the claim's own
+links rather than judging it: a claim citing no evidence reads **no evidence linked** whether or
+not anything reconciled it, and on a submission with no reconciliation at all a claim that cites
+evidence reads **linked**, which there means only that it cites evidence, since nothing has
+judged it. Claims are also unique per submission rather than per criterion, so a criterion
+carried across repair rounds has one row above and one claim row per round below. The closed
+disclosure states its size, including how many claims were carried forward. Where no
+reconciliation ran, there is nothing to lead with and the claims stay in the open as the only
+record of the packet.
+
+Frozen images are a thumbnail strip between the two, and any row citing an image carries a small
+copy of it, so a screenshot sits beside the thing it proves. Every thumbnail of a frozen image
+opens it full size, wherever it is drawn - the strip card and each small copy alike -
 with its caption, item id, repository scope, MIME type, byte size, availability and full sha256
 digest, plus **Use in next review**, which stages a fresh immutable copy in the binding's composer.
+A body that was refused or pruned still opens, because that dialog is where the record says why
+there is no picture.
 Image bodies load lazily through the authenticated dashboard route - one request per image whatever
 draws it - and the browser releases their object URLs when the pane leaves the page. Retention
 cleanup changes the body to **Pruned** without erasing the metadata or digest that explains what

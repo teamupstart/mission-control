@@ -550,30 +550,23 @@ test("criterion readiness waits, repairs in the same round, and records an opera
   await expect(readiness).toContainText(
     "Structural only. Test Evidence Auditor still judges whether the proof is relevant and sufficient.",
   );
-  await expect(readiness).toContainText("The dashboard result is visually correct");
-  /*
-   * The gap is reported ONCE, on the row of the claim it was recorded against.
-   *
-   * The reconciliation matched this author claim to a canonical criterion and still recorded
-   * `missing_rendered_output` against it, because a focused command does not satisfy a visual
-   * requirement. That criterion therefore HAS a row below, so it is not named in the block of
-   * unmatched criteria - whose own sentence tells the reader those have no row to sit under.
-   * The canonical wording is still a disclosure away, under Canonical reconciliation.
-   */
-  // Exactly the claim row's own note: the disclosure below carries the same code prefixed with
-  // "Gaps:", and matching both would not prove which of them the reader actually sees.
-  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
-  await expect(readiness.getByRole("region", { name: "Unmatched canonical criteria" }))
-    .toHaveCount(0);
-  // By its title text: the control is a `<summary>`, which carries no implicit ARIA role for
-  // `getByRole` to select on.
-  const reconciliation = readiness.getByText("Canonical reconciliation", { exact: true });
-  await reconciliation.click();
-  await expect(readiness).toContainText(
+  const reconciliation = readiness.getByRole("region", { name: "Canonical reconciliation" });
+  await expect(reconciliation).toBeVisible();
+  await expect(reconciliation).toContainText(
     "Keep focused execution green and retain inspectable acceptance evidence",
   );
-  await expect(readiness).toContainText("Gaps: missing rendered output");
-  await reconciliation.click();
+  const gapped = reconciliation.locator(".wf-evidence-criterion.is-failed")
+    .filter({ hasText: "Keep focused execution green" });
+  await expect(gapped.getByText("missing rendered output", { exact: true })).toBeVisible();
+  await expect(gapped.locator(".workflow-chip.workflow-failed").last()).toHaveText("gaps");
+
+  // By its title text: the control is a `<summary>`, which carries no implicit ARIA role for
+  // `getByRole` to select on.
+  await expect(readiness.getByText("The dashboard result is visually correct")).toBeHidden();
+  const claims = readiness.getByText("Frozen author claims", { exact: true });
+  await claims.click();
+  await expect(readiness.getByText("The dashboard result is visually correct")).toBeVisible();
+  await claims.click();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toBeVisible();
   const continueButton = readiness.getByRole("button", { name: "Continue to review" });
   await expect(continueButton).toBeEnabled();
@@ -811,7 +804,10 @@ for (const { round, attempts } of [{ round: 1, attempts: 6 }, { round: 2, attemp
   await expect(rounds.getByRole("status")).toContainText(`Evidence ${attempts} of round ${round}`);
   await expect(rounds.getByRole("group", { name: `Select evidence in round ${round}` })
     .getByRole("button")).toHaveCount(attempts);
-  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
+  // Scoped to the reconciliation, which is where a reader sees this gap. The same code also
+  // sits on the author claim's row inside the disclosure below, so the pane holds two copies.
+  await expect(readiness.getByRole("region", { name: "Canonical reconciliation" })
+    .getByText("missing rendered output", { exact: true })).toBeVisible();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toHaveCount(0);
   await expect(readiness.getByRole("button", { name: "Continue to review" })).toHaveCount(0);
   await expect(readiness).not.toContainText("Operator continued despite gaps");
@@ -1230,6 +1226,11 @@ test("the preflight packet names contested claims, and a cited criterion id surv
   await dashboard.reload();
   const contestedPane = await evidencePane(dashboard);
   await expect(contestedPane).toContainText("ambiguous mapping");
+  const contestedRow = contestedPane.locator(".wf-evidence-criterion")
+    .filter({ hasText: "ambiguous mapping" });
+  await expect(contestedRow).toHaveCount(1);
+  await expect(contestedRow).toContainText("contest-primary");
+  await expect(contestedRow).toContainText("contest-rival");
   await capture(dashboard, "17-contested-criterion", contestedPane);
 
   // The packet itself, as the session received it, read through the control a person uses.

@@ -187,6 +187,12 @@ command output can reach reviewers without being committed to the repository.
 Evidence readiness allows six total evidence attempts in workflow round 1 and three in each later
 round, with applicable evidence carried forward between submissions.
 
+A run's **Evidence** tab leads with canonical reconciliation: every criterion the run is measured
+against, worst first, so an unmet one is the first thing read rather than something to find. The
+frozen author claims stay available behind a disclosure under it, as the immutable record of what
+the author declared and with which proof, which is what a disagreement over the proof is read
+against.
+
 When Foreman's **Keep sessions on track with CI** option is selected, newly prepared workflow
 Pull Request instructions also ask the agent to follow CI and repair failures on the same branch.
 

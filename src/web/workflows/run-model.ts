@@ -12,6 +12,7 @@ import type {
   WorkflowEvidenceImage,
   WorkflowEvidenceProofRole,
   WorkflowEvidenceReadinessCriterion,
+  WorkflowEvidenceReadinessLink,
   WorkflowEvidenceReadinessResult,
   WorkflowEvidenceReadinessStatus,
   WorkflowGateSummary,
@@ -1810,35 +1811,98 @@ export function runRecordSummary(
 /**
  * A persisted gap, warning or role code, spelled for a person.
  *
- * One place, because these codes reach three surfaces in the Evidence pane - the gap block's
- * chip, a claim row's inline note and an image card's "cited as" line - and a reader who saw
- * `missing_rendered_output` on one and "missing rendered output" on another would reasonably
+ * One place, because these codes reach three surfaces in the Evidence pane - a reconciliation
+ * row's chip, a claim row's inline note and an image card's "cited as" line - and a reader who
+ * saw `missing_rendered_output` on one and "missing rendered output" on another would reasonably
  * think they were different findings.
  */
 export function evidenceCodeLabel(code: string): string {
   return code.replaceAll("_", " ");
 }
 
+/** Where a criterion row sorts, lowest first. Stable inside a rank, so record order survives. */
+const CRITERION_RANK: Record<RunEvidenceCriterionRow["tone"], number> = {
+  failed: 0,
+  waiting: 1,
+  completed: 2,
+};
+
 /**
- * The gapped canonical criteria with NO author claim to sit a row under, in the record's order.
+ * One CANONICAL criterion, with whatever the author's claims turned out to say about it.
  *
- * These get a block of their own rather than being folded into the claim rows, and that is the
- * whole reason the reconciliation survives this consolidation. A gap belongs to a CANONICAL
- * criterion, and on the submission this was measured against five of the six had
- * `matchedClientCriterionId: null` - no author claim at all to sit a row under. Merging the two
- * lists would have deleted exactly the finding a reader came for.
- *
- * Matched-AND-gapped is the case the filter exists for, and it is not rare: the reconciliation
- * accepts a claim for a criterion and still records a gap against it, which is what happens when
- * the proof class does not satisfy the requirement. `evidenceClaimStatus` already prints that
- * gap on the claim's own row. Listing it here as well would say it twice, the second time under
- * a heading that tells the reader it has no row below - which is false for exactly these.
+ * Only the criterion list is total over the work: a criterion nobody claimed has no claim row
+ * to appear on at all, so a gap on one is invisible in the claims. It is also the deduplicated
+ * list, since claims are unique by `clientCriterionId` rather than by criterion.
  */
-export function readinessGapCriteria(
-  readiness: WorkflowEvidenceReadinessResult | null | undefined,
-): WorkflowEvidenceReadinessCriterion[] {
-  return (readiness?.criteria ?? [])
-    .filter((criterion) => criterion.gaps.length > 0 && criterion.matchedClientCriterionId === null);
+export interface RunEvidenceCriterionRow {
+  criterionId: string;
+  criterion: string;
+  material: boolean;
+  /** The chip's word: `satisfied`, `warning`, `gaps`, `no author claim` or `contested`. */
+  label: string;
+  /** The `workflow-` chip tone this maps onto. */
+  tone: "completed" | "waiting" | "failed";
+  /** Gap codes recorded against this criterion, already spelled. */
+  gaps: string[];
+  /** Warning codes recorded against this criterion, already spelled. */
+  warnings: string[];
+  /**
+   * The frozen author claims this criterion resolved to, contested ones included.
+   *
+   * Plural because `matchedClientCriterionId` is null when MORE than one claim answered, and
+   * the contested ids are the only record of which ones did. A row that printed nothing there
+   * would tell a reader the criterion went unclaimed, which is the opposite of what happened.
+   */
+  claims: WorkflowEvidenceCoverageClaim[];
+  links: readonly WorkflowEvidenceReadinessLink[];
+}
+
+/** What a criterion's chip says, before its claims are attached. */
+function criterionVerdict(
+  criterion: WorkflowEvidenceReadinessCriterion,
+  claimed: boolean,
+): Pick<RunEvidenceCriterionRow, "label" | "tone"> {
+  if (criterion.gaps.length > 0) return { label: "gaps", tone: "failed" };
+  if (!claimed) return { label: "no author claim", tone: "waiting" };
+  if (criterion.matchedClientCriterionId === null) return { label: "contested", tone: "waiting" };
+  if (criterion.warnings.length > 0) return { label: "warning", tone: "waiting" };
+  return { label: "satisfied", tone: "completed" };
+}
+
+/**
+ * The reconciliation as the pane's primary ledger: every canonical criterion, worst first.
+ *
+ * `CRITERION_RANK` is the whole of the ordering and `sort` is stable, so the record's own order
+ * survives inside each rank.
+ */
+export function runEvidenceCriterionRows(input: {
+  coverage: readonly WorkflowEvidenceCoverageClaim[];
+  readiness: WorkflowEvidenceReadinessResult | null | undefined;
+}): RunEvidenceCriterionRow[] {
+  const claimOf = new Map(input.coverage.map((claim) => [claim.clientCriterionId, claim]));
+  const rows = (input.readiness?.criteria ?? []).map((criterion): RunEvidenceCriterionRow => {
+    const ids = criterion.matchedClientCriterionId === null
+      ? (criterion.contestedClientCriterionIds ?? [])
+      : [criterion.matchedClientCriterionId];
+    const claims = ids.flatMap((id) => {
+      const claim = claimOf.get(id);
+      return claim ? [claim] : [];
+    });
+    return {
+      criterionId: criterion.criterionId,
+      criterion: criterion.criterion,
+      material: criterion.material,
+      // `claims`, not `ids`: a readiness row can name a claim this submission's coverage does
+      // not carry, and a row labelled `contested` over an empty claim list would be naming
+      // claims it cannot show.
+      ...criterionVerdict(criterion, claims.length > 0),
+      gaps: criterion.gaps.map(evidenceCodeLabel),
+      warnings: criterion.warnings.map(evidenceCodeLabel),
+      claims,
+      links: criterion.links,
+    };
+  });
+  return rows.sort((a, b) => CRITERION_RANK[a.tone] - CRITERION_RANK[b.tone]);
 }
 
 /** What a frozen author claim's row says about itself, once the reconciliation has spoken. */
@@ -1854,18 +1918,27 @@ export interface RunEvidenceClaimStatus {
  * Match a claim to its canonical criterion BY ID, never by the criterion text.
  *
  * `matchedClientCriterionId` is the reconciliation's own answer to "which author claim did I
- * accept for this criterion". Matching on the wording instead works only where the author's
- * phrasing and the compacted canonical phrasing happen to be identical - which is precisely the
- * submission that has no gaps to report - and silently reports every real mismatch as unlinked.
+ * accept for this criterion", and `contestedClientCriterionIds` is that answer where it accepted
+ * none. Matching on the wording instead works only where the author's phrasing and the compacted
+ * canonical phrasing happen to be identical - which is precisely the submission that has no gaps
+ * to report - and silently reports every real mismatch as unlinked.
  */
 export function evidenceClaimStatus(
   claim: WorkflowEvidenceCoverageClaim,
   readiness: WorkflowEvidenceReadinessResult | null | undefined,
 ): RunEvidenceClaimStatus {
-  const criterion = (readiness?.criteria ?? [])
-    .find((entry) => entry.matchedClientCriterionId === claim.clientCriterionId) ?? null;
+  const criterion = (readiness?.criteria ?? []).find((entry) =>
+    entry.matchedClientCriterionId === claim.clientCriterionId
+    || (entry.contestedClientCriterionIds ?? []).includes(claim.clientCriterionId)) ?? null;
   if (criterion?.gaps.length) {
     return { label: "gaps", tone: "failed", notes: criterion.gaps.map(evidenceCodeLabel) };
+  }
+  // Only reachable through the contested list, since a matched id is never null. Read before
+  // warnings for the reason the criterion row reads it there: the reconciliation accepted no
+  // claim for this criterion, so an advisory note about one claim's proof class is not the
+  // row's answer.
+  if (criterion && criterion.matchedClientCriterionId === null) {
+    return { label: "contested", tone: "waiting", notes: [] };
   }
   if (criterion?.warnings.length) {
     return { label: "warning", tone: "waiting", notes: criterion.warnings.map(evidenceCodeLabel) };

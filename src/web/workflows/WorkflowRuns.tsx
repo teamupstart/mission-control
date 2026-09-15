@@ -2447,8 +2447,12 @@ function EvidencePane({
             {readiness?.evaluatorVersion ? ` Evaluator ${readiness.evaluatorVersion}.` : ""}
           </p>
           {criterionRows.map((row) => {
-            const cited = row.claims.flatMap((claim) =>
-              citations.byClaim.get(claim.clientCriterionId) ?? []);
+            // Deduplicated by image id, because a CONTESTED row carries several claims and two
+            // claims answering one criterion are exactly the ones likely to cite the same
+            // picture. Without this the row renders that image twice under one React key.
+            const cited = [...new Map(row.claims
+              .flatMap((claim) => citations.byClaim.get(claim.clientCriterionId) ?? [])
+              .map((image) => [image.id, image] as const)).values()];
             return (
               <div className={`wf-evidence-criterion is-${row.tone}`} key={row.criterionId}>
                 <div className="wf-evidence-criterion-body">

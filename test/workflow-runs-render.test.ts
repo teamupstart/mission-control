@@ -1356,6 +1356,54 @@ test("a pruned image cited by a criterion keeps its control and says what happen
 });
 
 /**
+ * Two claims contesting one criterion, both citing the same picture.
+ *
+ * The row gathers its thumbnails across every claim it resolved, so a contested criterion can
+ * reach the same image twice. That is not a corner case: two claims answering one criterion are
+ * exactly the ones likely to cite the same evidence, and the pair here is the shape the
+ * reconciliation records when it accepts neither.
+ */
+test("a contested criterion draws one thumbnail per picture, not one per claim citing it", () => {
+  const base = evidenceDetail();
+  const rival = { ...CLAIM, clientCriterionId: "claim-rival" };
+  const html = evidencePane({
+    ...base,
+    submissions: base.submissions.map((entry) => entry.id === "submission-2"
+      ? {
+        ...entry,
+        readiness: {
+          ...READINESS,
+          criteria: [
+            {
+              ...READINESS.criteria[0]!,
+              matchedClientCriterionId: null,
+              contestedClientCriterionIds: ["claim-visual", "claim-rival"],
+              warnings: [],
+            },
+            READINESS.criteria[1]!,
+          ],
+        },
+      }
+      : entry),
+    evidenceCoverage: [{ submissionId: "submission-2", coverage: [CLAIM, rival] }],
+  } as WorkflowRunDetail);
+
+  const ledger = html.slice(
+    html.indexOf('aria-label="Canonical reconciliation"'),
+    html.indexOf("Frozen images"),
+  );
+  assert.match(ledger, /class="workflow-chip workflow-waiting">contested<\/span>/);
+  // Both claims are named on the row, and the picture they both cite is drawn once.
+  assert.match(ledger, /claim-visual/);
+  assert.match(ledger, /claim-rival/);
+  assert.equal(
+    (ledger.match(/class="wf-evidence-mini"/g) ?? []).length,
+    1,
+    "one thumbnail per picture, however many claims cite it",
+  );
+});
+
+/**
  * A round with no submission, where the Evidence tab is not offered at all.
  *
  * The pane reports on ONE submission - its claims, its frozen pictures, its reconciliation - so

@@ -61,6 +61,9 @@ test('migration names both paths, preserves Later, sends explicit acceptance, an
   await dashboard.evaluate((snapshot) => window.migrationFixture.push(snapshot), ready);
   await banner.getByRole('button', {name: 'Install and restart', exact: true}).click();
   expect(await dashboard.evaluate(() => window.migrationFixture.actions)).toEqual(['later', 'install']);
+  await banner.getByRole('button', {name: 'Keep system installation', exact: true}).hover();
+  await expect(dashboard.locator('.tooltip')).toHaveText('Keep installing updates in the shared system folder');
+  await capture(dashboard, 'system-choice-tooltip.png');
   await banner.getByRole('button', {name: 'Keep system installation', exact: true}).click();
   await expect(banner).toContainText('policy could not be saved');
   await expect(banner).toContainText('Nothing was moved');
@@ -96,6 +99,14 @@ test('committed installation distinguishes incomplete integration repair and tar
   const banner = dashboard.getByRole('status', {name: 'Mission Control update'});
   await expect(banner).toContainText('Personal installation committed; integrations need repair');
   await expect(banner).toContainText('Login startup could not be verified');
+  await banner.getByRole('button', {name: 'Retry integration repair'}).hover();
+  await expect(dashboard.locator('.tooltip')).toHaveText('Retry only the integrations that still need repair');
+  await capture(dashboard, 'repair-retry-tooltip.png');
+  await banner.getByRole('button', {name: 'Dismiss'}).hover();
+  await expect(dashboard.locator('.tooltip')).toHaveText('Hide this installation result');
+  await capture(dashboard, 'dismiss-result-tooltip.png');
+  await dashboard.mouse.move(0, 0);
+  await expect(dashboard.locator('.tooltip')).toBeHidden();
   await capture(dashboard, 'repair-required.png');
   await banner.getByRole('button', {name: 'Retry integration repair'}).click();
   await expect(banner).toContainText('Personal installation complete');

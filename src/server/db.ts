@@ -2915,6 +2915,12 @@ export function upgradeDatabaseToCurrentSchema(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_file_comment_messages_thread
       ON file_comment_messages(thread_id, created_at);
 
+    -- Last reported account quota survives restarts, separately from billable usage.
+    CREATE TABLE IF NOT EXISTS claude_rate_limit_cache (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      reading_json TEXT NOT NULL
+    );
+
     -- The walkthrough's run state: one row per session, and a TABLE rather than a derived
     -- value. "Paused" and "never started" are the same set of rows - everything queued,
     -- nothing outstanding - so the walkthrough cannot tell them apart by looking at

@@ -310,6 +310,8 @@ export interface RateLimitWindow {
   id?: string;
   label?: string;
   durationMinutes?: number;
+  /** Epoch ms when this saved Claude reading changed. Omitted by other providers. */
+  recordedAt?: number;
 }
 
 export interface RateLimitSource {
@@ -332,7 +334,7 @@ export interface RateLimitSource {
 export interface RateLimits {
   fiveHour: RateLimitWindow | null;
   sevenDay: RateLimitWindow | null;
-  /** epoch ms the reading was taken (these are live gauges; they are never persisted). */
+  /** Epoch ms when either saved window last changed. */
   updatedAt: number;
 }
 
@@ -361,6 +363,8 @@ export interface FleetCost {
    */
   prsToday: number;
   rateLimits: RateLimits | null;
+  /** Saved Claude windows, including expired readings. Never treat these as current quota. */
+  lastKnownRateLimits?: RateLimits | null;
   /** Quota windows grouped by provider, so account updates remain independent. */
   rateLimitSources?: RateLimitSource[];
   /**

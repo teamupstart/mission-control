@@ -216,7 +216,7 @@ export const WORKFLOW_IMAGE_LIMITS = {
  * of the immutable 2 MB workflow context, whose serialized byte limit is checked separately.
  */
 export const WORKFLOW_TEXT_EVIDENCE_LIMITS = {
-  maxCount: 8,
+  maxCount: 48,
   maxBytesPerArtifact: 64 * 1_024,
   maxAggregateBytes: 384 * 1_024,
   captionChars: 1_000,

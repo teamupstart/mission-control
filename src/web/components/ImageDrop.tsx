@@ -110,11 +110,17 @@ export function useImageDrop({
   // happened to be current at drop time. This is `setState(fn)` for lifted state.
   const listRef = useRef(attachments);
   listRef.current = attachments;
+  const updateAttachments = useCallback((next: PendingAttachment[]) => {
+    // Several uploads can finish before React renders. Each completion must see the previous
+    // one's update immediately, or it restores that attachment's stale "uploading" state.
+    listRef.current = next;
+    onChange(next);
+  }, [onChange]);
   const patch = useCallback(
     (id: string, fields: Partial<PendingAttachment>) => {
-      onChange(listRef.current.map((a) => (a.id === id ? { ...a, ...fields } : a)));
+      updateAttachments(listRef.current.map((a) => (a.id === id ? { ...a, ...fields } : a)));
     },
-    [onChange],
+    [updateAttachments],
   );
 
   const addFiles = useCallback(
@@ -132,7 +138,7 @@ export function useImageDrop({
         status: "uploading",
         mimeType: file.type,
       }));
-      onChange([...listRef.current, ...added]);
+      updateAttachments([...listRef.current, ...added]);
       added.forEach((att, i) => {
         void uploadImage(images[i]!).then((r) => {
           // Dropped again while it uploaded? The patch is keyed by id, so a removed
@@ -149,16 +155,16 @@ export function useImageDrop({
         });
       });
     },
-    [disabled, maxAttachments, onChange, patch],
+    [disabled, maxAttachments, updateAttachments, patch],
   );
 
   const remove = useCallback(
     (id: string) => {
       const gone = listRef.current.find((a) => a.id === id);
       if (gone) URL.revokeObjectURL(gone.previewUrl);
-      onChange(listRef.current.filter((a) => a.id !== id));
+      updateAttachments(listRef.current.filter((a) => a.id !== id));
     },
-    [onChange],
+    [updateAttachments],
   );
 
   /**

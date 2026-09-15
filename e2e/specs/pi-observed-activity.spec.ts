@@ -69,32 +69,33 @@ test("a real Pi session's commands reach the conversation and the Activity rail"
     res.end("data: [DONE]\n\n");
   });
   await new Promise<void>((done) => provider.listen(0, "127.0.0.1", done));
-  const address = provider.address();
-  if (!address || typeof address === "string") throw new Error("provider has no address");
+  let session: string | undefined;
+  try {
+    const address = provider.address();
+    if (!address || typeof address === "string") throw new Error("provider has no address");
 
-  const providerFile = join(dir, "provider.js");
-  writeFileSync(providerFile, `export default function(pi) { pi.registerProvider("mission-test", {
+    const providerFile = join(dir, "provider.js");
+    writeFileSync(providerFile, `export default function(pi) { pi.registerProvider("mission-test", {
     baseUrl: "http://127.0.0.1:${address.port}/v1", apiKey: "local-proof", api: "openai-completions",
     models: [{ id: "pi-probe", name: "Pi Activity Proof", reasoning: false, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }]
   }); }`);
-  const bin = join(dir, "pi");
-  symlinkSync(process.execPath, bin);
-  const env = {
-    HOME: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
-    MISSION_PORT: new URL(daemon.baseURL).port,
-    MISSION_API_TOKEN: readFileSync(join(daemon.home, "token"), "utf8").trim(),
-    MISSION_MCP_SERVER: resolve("dist/mcp/server.mjs"),
-  };
-  const launch = join(dir, "launch.sh");
-  const cli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
-  const command = [bin, cli, "--offline", "--no-extensions", "--no-skills", "--no-context-files",
-    "--no-prompt-templates", "--no-themes", "--no-approve", "-e", resolve("dist/pi-extension/index.js"),
-    "-e", providerFile, "--provider", "mission-test", "--model", "pi-probe"];
-  writeFileSync(launch, `#!/bin/sh\nunset MISSION_SESSION_ID MISSION_AGENT_SESSION_ID CLAUDE_SESSION_ID MISSION_API_TOKEN_FILE FLEET_HOME HARNESS_HOME\n${Object.entries(env).map(([key, value]) => `export ${key}=${quote(value)}`).join("\n")}\nexec ${command.map(quote).join(" ")}\n`);
+    const bin = join(dir, "pi");
+    symlinkSync(process.execPath, bin);
+    const env = {
+      HOME: dir, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", MISSION_HOME: daemon.home,
+      MISSION_PORT: new URL(daemon.baseURL).port,
+      MISSION_API_TOKEN: readFileSync(join(daemon.home, "token"), "utf8").trim(),
+      MISSION_MCP_SERVER: resolve("dist/mcp/server.mjs"),
+    };
+    const launch = join(dir, "launch.sh");
+    const cli = resolve("node_modules/@earendil-works/pi-coding-agent/dist/cli.js");
+    const command = [bin, cli, "--offline", "--no-extensions", "--no-skills", "--no-context-files",
+      "--no-prompt-templates", "--no-themes", "--no-approve", "-e", resolve("dist/pi-extension/index.js"),
+      "-e", providerFile, "--provider", "mission-test", "--model", "pi-probe"];
+    writeFileSync(launch, `#!/bin/sh\nunset MISSION_SESSION_ID MISSION_AGENT_SESSION_ID CLAUDE_SESSION_ID MISSION_API_TOKEN_FILE FLEET_HOME HARNESS_HOME\n${Object.entries(env).map(([key, value]) => `export ${key}=${quote(value)}`).join("\n")}\nexec ${command.map(quote).join(" ")}\n`);
 
-  const session = `mc-pi-activity-${process.pid}-${Date.now()}`;
-  try {
+    session = `mc-pi-activity-${process.pid}-${Date.now()}`;
     execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "130", "-y", "45", "-c", daemon.repo, `/bin/sh ${quote(launch)}`]);
     const row = dashboard.getByRole("navigation", { name: "Sessions" }).locator("button.rail-row").filter({ hasText: session });
     await expect(row).toHaveCount(1);
@@ -145,11 +146,15 @@ test("a real Pi session's commands reach the conversation and the Activity rail"
       await detail.screenshot({ path: join(evidence, "real-pi-activity-rail.png") });
     }
   } catch (error) {
-    console.log(spawnSync("tmux", ["capture-pane", "-p", "-t", session], { encoding: "utf8" }).stdout);
+    if (session) {
+      console.log(spawnSync("tmux", ["capture-pane", "-p", "-t", session], { encoding: "utf8" }).stdout);
+    }
     console.log(daemon.readLog());
     throw error;
   } finally {
-    spawnSync("tmux", ["kill-session", "-t", session]);
+    if (session) {
+      spawnSync("tmux", ["kill-session", "-t", session]);
+    }
     provider.closeAllConnections();
     await new Promise<void>((done) => provider.close(() => done()));
   }

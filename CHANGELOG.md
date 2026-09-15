@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/teamupstart/mission-control/compare/v1.19.0...v1.20.0) (2026-09-15)
+
+
+### Features
+
+* **updates:** enable automatic personal-install migration ([#1069](https://github.com/teamupstart/mission-control/issues/1069)) ([03421fb](https://github.com/teamupstart/mission-control/commit/03421fb706a88803cf9fe91e613e06271349cc9b))
+
 ## [1.19.0](https://github.com/teamupstart/mission-control/compare/v1.18.0...v1.19.0) (2026-09-15)
 
 

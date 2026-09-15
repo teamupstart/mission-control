@@ -12,7 +12,7 @@ Create **one one-shot implementation task**. The risk is concentrated in one lif
 
 | Phase | Outcome | Direct merge prerequisites | Detailed guide | Task |
 | --- | --- | --- | --- | --- |
-| 1 | The complete registry-backed startup picker, preference, manual reopening, and safe walkthrough handoff | This planning session's PR merged to main | [Phase 1: startup picker and walkthrough handoff](phase-1-startup-picker.md) | Pending publication and scheduling |
+| 1 | The complete registry-backed startup picker, preference, manual reopening, and safe walkthrough handoff | This planning session's PR merged to main | [Phase 1: startup picker and walkthrough handoff](phase-1-startup-picker.md) | `3c1dc325-ddf6-402d-9d7c-5176c433e672` (backlog) |
 
 Repository: `teamupstart/mission-control`, canonical local repository `/Users/jordanmance/workspace/mission-control`. No additional repositories and no context-only attachments. One implementation PR completes the phase.
 
@@ -76,3 +76,7 @@ The B layout, every-open upgrade behavior, and opt-out decisions are each implem
 Phase 1's guide contains execution steps and exact verification commands. Completion requires focused unit and browser tests, typecheck, lint, build, smoke, the full browser suite after focused checks, and current product documentation. Runtime screenshots and exact command results must be registered as gitignored evidence. CI/workflow repairs use targeted tests instead of rerunning the full suite before each fix.
 
 Final audit on 2026-09-15: reread the approved root plan and Phase 1; every TP requirement has one owner, each submitted choice is retained, no consumer precedes a prerequisite, and the final state needs no later cleanup phase. The interface-comment discrepancy, legacy preference distinction, missing general focus trap, fixture default, and route-confirmation behavior are reconciled above and in Phase 1. No root behavior was changed during decomposition.
+
+## Publication and scheduling record
+
+The complete plan set was pushed as commit `ecff01eb77c256675f222d328d44d789fb8f0cd4` before task creation. All referenced paths were verified in that commit and the remote branch was confirmed at the same SHA. Mission Control then created task `3c1dc325-ddf6-402d-9d7c-5176c433e672` in backlog, returning the expected canonical repository, no attachments, no task-ID prerequisites, and `dependsOnCurrentSession: true`. This record is a follow-up artifact update; the task remains gated on this planning session's PR merge.

@@ -2346,6 +2346,17 @@ export async function processPromptedWrapup(
     return true;
   }
 
+  // A no-binding claim is only an observation, not a reservation of direct publication.
+  // Re-read after the claim and candidate refresh, immediately before authorizing the
+  // direct handoff, so a newly attached workflow cannot inherit that stale fallback.
+  const directHandoffSessionId = current.session.id;
+  if (plan.kind === "auto-wrapup" && planPublication && !await planPublicationStillCurrent(
+    planPublication, () => client.planPublicationContext(directHandoffSessionId),
+  )) {
+    log(`${session.name}: prompted wrap-up held - plan publication ownership changed before direct handoff`);
+    return false;
+  }
+
   // Consume the generation FIRST - before anything types - for the reason in the header.
   // A failed compare-and-set aborts: proceeding would be typing an instruction that pushes with
   // nothing recording that we did, so the next tick would do it again. It also aborts

@@ -195,7 +195,9 @@ evidence eligibility and discards the verdict if binding identity, version, or t
 changes during verification or before the completion check. The completion claim carries that
 verified ownership as a comparison guard. The daemon checks it again inside the transaction
 that creates the run and consumes completion, so replacing a binding cannot spend the old
-verdict on a new workflow. Unknown ownership holds without
+verdict on a new workflow. An unbound answer does not reserve direct publication: Foreman
+refreshes ownership again immediately before recording and sending the direct handoff, and
+holds if a workflow has since been attached or ownership is unavailable. Unknown ownership holds without
 consuming the work generation. Manual workflow bindings retain manual submission.
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow

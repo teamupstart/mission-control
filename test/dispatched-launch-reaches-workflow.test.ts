@@ -436,6 +436,7 @@ test("the regression: an unrecognized launch echo strands the same session short
 function planWrapupFixture(t: TestContext, slug: string, hooks: {
   duringVerify?: (d: Dispatched) => void;
   beforeRequest?: (path: string, d: Dispatched) => void;
+  afterRequest?: (path: string, d: Dispatched) => void;
 } = {}) {
   const d = dispatch(slug, {
     kind: "plan", workflowId: "w",
@@ -452,7 +453,9 @@ function planWrapupFixture(t: TestContext, slug: string, hooks: {
     if (request.method !== "GET") writes.push(path);
     hooks.beforeRequest?.(path, d);
     request.headers.set("host", "127.0.0.1:7317");
-    return d.app.request(request);
+    const response = await d.app.request(request);
+    hooks.afterRequest?.(path, d);
+    return response;
   });
   t.mock.method(client, "diff", async () => ({
     ok: true, error: null, base: "main", baseSha: "base", headSha: "abc",
@@ -492,7 +495,48 @@ function planWrapupFixture(t: TestContext, slug: string, hooks: {
     assert.equal(session.prUrl, null, "the planning session has no PR");
     return processPromptedWrapup(client, cfg, session, [session], d.registry.getQueue(d.sessionId), new Set());
   };
-  return { d, tick, writes, prompts };
+  return { d, tick, writes, prompts, client };
+}
+
+for (const owner of ["skill", "automatic workflow", "Manual workflow", "unavailable"] as const) {
+  test(`an unbound plan refreshes ${owner} ownership after the no-binding claim`, async (t) => {
+    let claimReturned = false;
+    const { d, tick, writes, prompts, client } = planWrapupFixture(t, `plan-direct-${owner}`, {
+      afterRequest: (path, d) => {
+        if (!path.endsWith("/workflow-completion")) return;
+        claimReturned = true;
+        if (owner === "skill") return;
+        const previous = d.workflows.store.getBinding(d.bindingId)!;
+        const replacement = d.workflows.store.insertBinding({
+          ...previous, id: `${previous.id}-replacement`, sessionId: d.sessionId,
+          triggerMode: owner === "Manual workflow" ? "manual" : "foreman_complete", now: Date.now(),
+        });
+        if (owner === "unavailable") d.workflows.store.updateBinding(replacement.id, { state: "paused" });
+      },
+    });
+    d.workflows.archiveBinding(d.bindingId);
+    const injections: string[] = [];
+    t.mock.method(client, "inject", async (_id: string, payload: string) => { injections.push(payload); });
+    const advanced = await tick();
+    assert.equal(claimReturned, true, "the real daemon already returned its unbound answer");
+    assert.equal(prompts.length, 1);
+    assert.equal(advanced, owner === "skill");
+    const queue = d.registry.getQueue(d.sessionId)!;
+    if (owner === "skill") {
+      assert.equal(injections.length, 1, "stable skill ownership retains direct PR shipping");
+      assert.equal(queue.promptedDecision?.outcome, "direct_handoff");
+      assert.ok(queue.promptedDirectHandoff);
+    } else {
+      assert.deepEqual(injections, [], "a stale no-binding answer never authorizes direct publication");
+      assert.deepEqual(writes, [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`]);
+      assert.equal(queue.promptedConsumedGeneration, null);
+      assert.equal(queue.promptedDecision, null);
+      assert.equal(queue.promptedDirectHandoff, null);
+    }
+    const runs = openDb().prepare(`SELECT r.id FROM workflow_runs r
+      JOIN workflow_bindings b ON b.id = r.binding_id WHERE b.note_key = ?`).all(d.noteKey);
+    assert.equal(runs.length, 0);
+  });
 }
 
 test("Foreman's prompted plan handoff supplies the PR deferral and claims its workflow exactly once", async (t) => {

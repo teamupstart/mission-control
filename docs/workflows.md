@@ -1163,7 +1163,8 @@ Run detail shows both the frozen author claims and canonical reconciliation. Ful
 text does not enter fleet summaries.
 
 Published versions with `evidenceReadinessPolicy: criterion_mapped_v1` enforce the deterministic
-result before the engine creates any Persona or Check attempt. A structural gap parks the run at
+result before the engine creates any Persona or Check attempt, until the round exhausts its
+evidence attempt budget. A structural gap parks the run at
 `waiting_for_evidence_readiness`, delivers an actionable packet to the bound session, and keeps the
 original immutable submission inspectable. That packet carries the whole rubric rather than only
 its holes: the matching rules, every gapped criterion with its id and the claim ids contesting it,
@@ -1196,14 +1197,22 @@ initial submission plus at most two refinements. The first round has more room t
 gaps; later rounds inherit applicable evidence through the existing carry-forward rules. These
 refinements stay within their workflow round and do not spend Persona repair rounds.
 
-The next refinement beyond the round's limit, whether the session staged it or the operator asked
-for it, is refused rather than reserved: the run blocks in
-the `preflight_refinement_exhausted` phase, appends an event of the same name carrying the waiting
-submission, its round, and the refinements it spent, and the automatic readiness sweep leaves it
-alone. The waiting submission stays waiting, so the run record opens on its **Evidence** tab with the
-readiness decision on screen, and the operator can still continue despite gaps from the block; the
-retry control is withdrawn with the loop it would restart. Resubmitting the run opens an ordinary
-new round instead.
+If the final allowed attempt still has structural gaps, the workflow automatically sends that
+immutable packet to the judges. It does not wait for another evidence upload, reserve another
+refinement, or require **Continue to review**. The readiness result remains `gaps`, and an
+`evidence_preflight_exhausted_continued` timeline event records the submission, round, refinement
+budget, and remaining gap codes. This is an engine continuation, not an operator override or a
+claim that the evidence is sufficient.
+
+The judges decide whether the available evidence supports the work. A failing verdict returns
+feedback to the session through the normal repair flow; the next round uses its own evidence
+attempt budget and the workflow's existing resumption policy and repair-round limit.
+
+The automatic readiness sweep also recovers exhausted packets left waiting or blocked in the
+historical `preflight_refinement_exhausted` phase. It needs no newly staged evidence. A prepared
+preflight packet is cancelled before review starts; a sending or uncertain delivery must settle
+first. The handoff is durable, so a restart between continuation and judge activation resumes the
+same submission without creating another refinement or recording an operator decision.
 
 A same-round SessionAction continuation whose reachable downstream graph contains only End is
 outside this gate. It is a verified shipping completion with no evaluator consumer, not another

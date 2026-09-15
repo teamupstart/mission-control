@@ -14,11 +14,11 @@ copyright: Copyright © 2026 Jordan Mance
 
 asar: false
 
-# Automatic moves remain gated until the isolated packaged macOS exercise passes.
+# Eligible legacy system installs offer relocation during accepted updates.
 extraMetadata:
   missionInstallMigration:
     protocol: 1
-    automatic: false
+    automatic: true
 
 directories:
   output: release

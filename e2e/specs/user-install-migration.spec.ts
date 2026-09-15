@@ -1,4 +1,5 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import type { UpdateSnapshot, UpdateMigration } from '../../src/shared/update.ts';
@@ -6,6 +7,7 @@ import { UPDATE_DIALOGS, type UpdateDialogRequest } from '../../src/shared/updat
 import { UpdateController } from '../../src/main/updater.ts';
 import { repairMigrationIntegrations } from '../../src/main/migration-integrations.ts';
 import { migrationPlanFixture } from '../../test/helpers/migration-plan.ts';
+import { MIGRATION_PROTOCOL, migrationBundleIdentity, prepareMigration } from '../../scripts/install-migration.mjs';
 import { expectContentClearsBorder } from '../fixtures/modal-inset.ts';
 import { expect, test } from '../fixtures/test.ts';
 
@@ -19,7 +21,7 @@ declare global {
   }
 }
 
-async function bridge(page: Page): Promise<void> {
+async function bridge(page: Page, initial: UpdateSnapshot = ready): Promise<void> {
   await page.addInitScript((initial: UpdateSnapshot) => {
     let state = initial;
     const listeners = new Set<(state: UpdateSnapshot) => void>();
@@ -41,7 +43,7 @@ async function bridge(page: Page): Promise<void> {
         repairMigration: async () => {actions.push('repair'); push({phase: 'idle', currentVersion: '1.17.1', lastCheckedAt: null, lastOutcome: null, migration: {...initial.migration!, status: 'complete', repairs: []}});},
       },
     }});
-  }, ready);
+  }, initial);
   await page.reload();
 }
 
@@ -51,6 +53,42 @@ async function capture(page: Page, name: string): Promise<void> {
   await mkdir(folder, {recursive: true});
   await page.screenshot({path: join(folder, name), fullPage: true});
 }
+
+test('the packaged migration policy offers the personal destination for an alpha update', async ({dashboard, daemon}) => {
+  // Read the shipped gate: a canned migration snapshot would pass while packaging disabled it.
+  const config = readFileSync(new URL('../../electron-builder.yml', import.meta.url), 'utf8');
+  const metadata = config.match(/^  missionInstallMigration:\n((?: {4}[^\n]*\n)+)/m)?.[1] ?? '';
+  const protocol = metadata.match(/^ {4}protocol: (\d+)$/m)?.[1];
+  const capability = {protocol: protocol === String(MIGRATION_PROTOCOL) ? MIGRATION_PROTOCOL : null, automatic: /^ {4}automatic: true$/m.test(metadata)};
+  const stateDirectory = realpathSync(daemon.home);
+  const home = join(stateDirectory, 'migration-home');
+  const systemDirectory = join(home, 'System Applications');
+  const source = join(systemDirectory, 'Mission Control.app');
+  const stagedBundle = join(home, 'staged.app');
+  for (const [bundle, commit] of [[source, 'a'.repeat(40)], [stagedBundle, 'b'.repeat(40)]] as const) {
+    await mkdir(join(bundle, 'Contents/Resources/app'), {recursive: true});
+    await writeFile(join(bundle, 'Contents/Info.plist'), '<key>CFBundleShortVersionString</key><string>1.19.0</string>');
+    await writeFile(join(bundle, 'Contents/Resources/app/package.json'), JSON.stringify({missionCommit: commit, missionInstallMigration: capability}));
+  }
+  const plan = prepareMigration({
+    receipt: {schema: 1, repo: 'teamupstart/mission-control', releaseTag: null, installedVersion: '1.19.0', installedCommit: 'a'.repeat(40), sourceClone: join(stateDirectory, 'app-src'), appPath: source, installedAt: '2026-09-15T00:00:00.000Z'},
+    stagedBundle, stagedRevision: migrationBundleIdentity(stagedBundle).revision!, stateDirectory, home, systemDirectory,
+  });
+  expect(plan, 'the packaged source must enable the real migration preflight').not.toBeNull();
+  const offered: UpdateMigration = {source: plan!.source, target: plan!.target, status: 'offered', repairs: []};
+  await bridge(dashboard, {...ready, alpha: true, newVersion: 'alpha bbbbbbb', releaseTag: 'b'.repeat(40), migration: offered});
+  const banner = dashboard.getByRole('status', {name: 'Mission Control update'});
+  await expect(banner).toContainText(offered.target);
+  const request = {...UPDATE_DIALOGS.ready('alpha bbbbbbb', offered), id: 'enabled-alpha-migration'};
+  await dashboard.evaluate((request) => window.migrationFixture.dialog(request), request);
+  const modal = dashboard.getByRole('dialog', {name: 'Mission Control update'});
+  await expect(modal).toContainText(offered.source);
+  await expect(modal).toContainText(offered.target);
+  await expectContentClearsBorder(modal);
+  await capture(dashboard, 'enabled-alpha-migration.png');
+  await modal.getByRole('button', {name: 'Install and restart', exact: true}).click();
+  expect(await dashboard.evaluate(() => window.migrationFixture.answers)).toEqual(['confirm']);
+});
 
 test('migration names both paths, preserves Later, sends explicit acceptance, and displays policy-write failure', async ({dashboard, context, daemon}) => {
   await bridge(dashboard);

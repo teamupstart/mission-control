@@ -126,6 +126,38 @@ test('migration cannot take ownership without a recorded source revision', async
   assert.deepEqual(f.events, []);
 });
 
+for (const boundary of ['before commit', 'after commit'] as const) {
+  for (const damage of ['missing', 'truncated', 'directory'] as const) {
+    test(`an unreadable ${damage} receipt ${boundary} records manual recovery without relaunching`, async (t) => {
+      const f = fixture(t);
+      const path = join(f.stateDirectory, 'install-receipt.json');
+      const fail = () => {
+        if (damage === 'truncated') writeFileSync(path, '{');
+        else {
+          rmSync(path);
+          if (damage === 'directory') mkdirSync(path);
+        }
+        throw new Error('injected migration failure');
+      };
+      if (boundary === 'before commit') f.ports.waitForReady = async () => {fail();};
+      else f.ports.checkpoint = (stage) => {if (stage === 'receipt-renamed') fail();};
+      const result = await runMigration(f.plan, f.ports, {policy: f.policy});
+      assert.equal(result.committed, false);
+      assert.match(result.error!, /receipt.*could not be read/i);
+      assert.match(result.error!, /Manual recovery is required/);
+      assert.match(result.diagnostic!, /injected migration failure.*Receipt read failed:/);
+      assert.equal(f.events.includes('stop-target'), false);
+      assert.equal(f.events.includes('launch-source'), false);
+      assert.equal(existsSync(f.source), true);
+      assert.equal(existsSync(f.plan.target), true);
+      const outcome = readUpdateOutcome(join(f.stateDirectory, 'update-outcome.json'));
+      assert.equal(outcome?.result, 'failure');
+      assert.match(outcome!.message, /receipt.*could not be read/i);
+      assert.ok(!outcome!.message.includes(f.stateDirectory));
+    });
+  }
+}
+
 for (const boundary of ['prepared', 'target-reserved', 'target-published', 'target-staged', 'target-ready', 'receipt-renamed', 'receipt-committed']) {
   test(`recovery after helper death at ${boundary} obeys the receipt commit boundary`, async (t) => {
     const f = fixture(t);

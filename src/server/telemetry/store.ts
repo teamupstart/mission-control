@@ -106,6 +106,11 @@ export function pruneTaskOutcomeState(d: DatabaseSync, before: number, limit: nu
   ).run(before, limit).changes);
 }
 
+/** Retained PR polling and capture retries cannot cross a collection-consent boundary. */
+export function retirePrObservationWindows(d: DatabaseSync): void {
+  d.exec("DELETE FROM telemetry_pr_observations");
+}
+
 // ---- resources and contexts ----
 
 /**

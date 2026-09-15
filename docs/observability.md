@@ -327,6 +327,9 @@ Retained PR URLs, frozen context and row metadata count toward the total telemet
 budget, including the cached admission estimate immediately after insertion.
 Expiry removes settled observations without reporting a gap. Only an uncaptured association
 or a missing merge verdict counts as incomplete coverage at the late-outcome horizon.
+Changing collection consent retires retained PR observation windows in the same transaction.
+Re-enabling cannot resume their polling or pending capture across the gap. Previously captured
+facts and operational PR ownership remain intact; a fresh association starts a new window.
 
 ## The local reference stack
 

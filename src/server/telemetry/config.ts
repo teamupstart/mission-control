@@ -34,6 +34,7 @@ import {
   purgeProfileQueue,
   putProjectionState,
   putSecret,
+  retirePrObservationWindows,
   telemetryTransaction,
   updateDestination,
 } from "./store.ts";
@@ -354,7 +355,12 @@ export function setTelemetryConfig(
     // Collection starting or stopping mid-run is a run boundary for the unclean-shutdown
     // detector, exactly as process start and shutdown are. Arming it only at boot meant a
     // daemon that was told to start collecting through the API never armed it at all.
-    if (previous.enabled !== next.enabled) noteTelemetryCollectionChanged(next.enabled);
+    if (previous.enabled !== next.enabled) {
+      noteTelemetryCollectionChanged(next.enabled);
+      // In the consent transaction: neither a late merge nor a pending association from
+      // the old window may be captured after collection resumes. Journal facts stay intact.
+      retirePrObservationWindows(d);
+    }
 
     for (const profile of TELEMETRY_PROFILE_IDS) {
       const wasCapturing = profileIsCapturing(previous, profile);

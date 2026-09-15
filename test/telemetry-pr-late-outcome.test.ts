@@ -32,7 +32,7 @@ const {
   recordWorkEpisodeRepoPr,
   taskWorkEpisodeForTask,
 } = await import("../src/server/db.ts");
-const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
+const { getTelemetryConfig, setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
 const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
 const { runRetentionPass } = await import("../src/server/telemetry/retention.ts");
@@ -541,6 +541,62 @@ test("a secondary repository keeps its own role and its own observation", () => 
 });
 
 // ---- retention and consent ----
+
+test("re-enabling collection cannot capture a retained PR merge from the consent gap", () => {
+  enableLocalOnly();
+  seedTask();
+  seedBinding();
+  retain(1_000);
+  assert.equal(setTelemetryConfig({ enabled: false }, 2_000).ok, true);
+  assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 3_000]]), undefined, 3_000), 0);
+  assert.equal(setTelemetryConfig({ enabled: true }, 4_000).ok, true);
+  closeDb();
+  openDb();
+  assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 3_000]]), undefined, 5_000), 0);
+  assert.deepEqual(telemetryPrPollTargets(5_000), []);
+  assert.equal(prFacts().length, 1, "the previously captured association is preserved without a retrospective merge");
+  assert.ok(taskWorkEpisodeForTask(TASK_ID), "consent retirement does not change operational PR ownership");
+});
+
+test("collection withdrawal retires pending association retries, but rejected and no-op saves do not", () => {
+  enableLocalOnly();
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 1;
+  try {
+    retain(1_000);
+    assert.equal(prFacts().length, 0);
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+  const count = () => openDb().prepare("SELECT COUNT(*) AS n FROM telemetry_pr_observations").get()?.n;
+  assert.equal(setTelemetryConfig({ enabled: false, ifRevision: -1 }, 2_000).ok, false);
+  assert.equal(count(), 1);
+  assert.equal(setTelemetryConfig({ enabled: true }, 2_000).ok, true);
+  assert.equal(count(), 1);
+  assert.equal(setTelemetryConfig({ enabled: false }, 3_000).ok, true);
+  assert.equal(count(), 0);
+  assert.equal(setTelemetryConfig({ enabled: true }, 4_000).ok, true);
+  assert.deepEqual(telemetryPrPollTargets(5_000), []);
+  assert.equal(prFacts().length, 0, "an old pending association does not acquire new consent");
+});
+
+test("consent and retained PR window retirement commit together", () => {
+  enableLocalOnly();
+  retain(1_000);
+  const d = openDb();
+  d.exec(`CREATE TRIGGER refuse_window_retirement BEFORE DELETE ON telemetry_pr_observations
+    BEGIN SELECT RAISE(FAIL, 'fixture retirement unavailable'); END`);
+  try {
+    assert.throws(() => setTelemetryConfig({ enabled: false }, 2_000), /retirement unavailable/);
+    assert.equal(getTelemetryConfig().enabled, true, "failed retirement rolls back the consent write");
+    assert.equal(d.prepare("SELECT COUNT(*) AS n FROM telemetry_pr_observations").get()?.n, 1);
+  } finally {
+    d.exec("DROP TRIGGER refuse_window_retirement");
+  }
+  assert.equal(setTelemetryConfig({ enabled: false }, 3_000).ok, true);
+  assert.equal(d.prepare("SELECT COUNT(*) AS n FROM telemetry_pr_observations").get()?.n, 0);
+});
 
 for (const pendingAssociation of [false, true]) {
   test(`expired merged PR cleanup ${pendingAssociation ? "counts its uncaptured association" : "does not invent a coverage gap"}`, () => {

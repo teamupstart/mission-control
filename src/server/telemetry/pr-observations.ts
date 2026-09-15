@@ -337,23 +337,25 @@ export function telemetryPrCohortInputs(now = Date.now()): RetainedPrObservation
 /**
  * Drop associations past the late-outcome horizon.
  *
- * Run from the ordinary retention pass rather than on a timer of its own. An expired row is a
- * coverage gap by definition - the horizon passed with no verdict - and is recorded as one by
- * the pass that sweeps it.
+ * Run from the ordinary retention pass rather than on a timer of its own. Return only the
+ * incomplete observations: a recorded association and merge need ordinary cleanup, while an
+ * uncaptured association or absent merge verdict is a coverage gap.
  */
 export function expirePrObservations(d: DatabaseSync, now: number, limit = 500): number {
   const rows = d
     .prepare(
-      `SELECT task_id, pr_key FROM telemetry_pr_observations WHERE expires_at <= ? LIMIT ?`,
+      `SELECT task_id, pr_key,
+         (merged_at IS NULL OR json_extract(context_json, '$.associationCaptured') IS NOT 1) AS incomplete
+       FROM telemetry_pr_observations WHERE expires_at <= ? LIMIT ?`,
     )
-    .all(now, limit) as unknown as Array<{ task_id: string; pr_key: string }>;
+    .all(now, limit) as unknown as Array<{ task_id: string; pr_key: string; incomplete: number }>;
   for (const row of rows) {
     d.prepare(`DELETE FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`).run(
       row.task_id,
       row.pr_key,
     );
   }
-  return rows.length;
+  return rows.filter((row) => row.incomplete === 1).length;
 }
 
 /** Register the pull request source. See `SESSION_SOURCE` for why the honesty is required. */

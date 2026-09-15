@@ -63,7 +63,7 @@ export interface RetentionPassResult {
   releasedTerminalBatches: number;
   /** Settled delivery rows dropped once nothing referenced them. */
   prunedDeliveries: number;
-  /** Retained pull request associations swept past the late-outcome horizon. */
+  /** Incomplete retained PR observations swept past the late-outcome horizon. */
   expiredPrObservations: number;
   underPressure: boolean;
 }
@@ -137,9 +137,9 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     result.prunedResources = pruneOrphanedResources(d);
 
     // 6. Phase 3's retained pull request associations, on the SAME long window rather than a
-    //    horizon of their own. An expired row is a delivery nobody ever got a verdict on, and
-    //    it is counted as a gap rather than deleted quietly - "we stopped looking" and "it
-    //    never merged" are different answers and a cohort must be able to tell them apart.
+    //    horizon of their own. Only incomplete observations count as gaps; successfully
+    //    captured associations and merges are ordinary cleanup. "We stopped looking" and
+    //    "it never merged" are different answers and a cohort must tell them apart.
     result.expiredPrObservations = expirePrObservations(d, now, BATCH_LIMIT);
     if (result.expiredPrObservations > 0) {
       recordGap(

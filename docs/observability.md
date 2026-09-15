@@ -321,6 +321,8 @@ time, author and creation evidence, even if the merge has already been captured.
 remain bounded by the same retention horizon and 500-row poll limit.
 Retained PR URLs, frozen context and row metadata count toward the total telemetry byte
 budget, including the cached admission estimate immediately after insertion.
+Expiry removes settled observations without reporting a gap. Only an uncaptured association
+or a missing merge verdict counts as incomplete coverage at the late-outcome horizon.
 
 ## The local reference stack
 

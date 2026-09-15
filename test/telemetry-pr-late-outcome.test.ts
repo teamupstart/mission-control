@@ -542,6 +542,28 @@ test("a secondary repository keeps its own role and its own observation", () => 
 
 // ---- retention and consent ----
 
+for (const pendingAssociation of [false, true]) {
+  test(`expired merged PR cleanup ${pendingAssociation ? "counts its uncaptured association" : "does not invent a coverage gap"}`, () => {
+    enableLocalOnly();
+    const d = openDb();
+    if (pendingAssociation) d.exec(`CREATE TRIGGER refuse_initial_association BEFORE INSERT ON telemetry_journal
+      WHEN json_extract(NEW.facts_json, '$.fact') = 'associated_existing'
+      BEGIN SELECT RAISE(FAIL, 'fixture association unavailable'); END`);
+    try {
+      retain(1_000);
+      assert.equal(recordTelemetryPrMerges(new Map([[PR_URL, 9_000]]), undefined, 10_000), 1);
+      const result = runRetentionPass(1_000 + TELEMETRY_LIMITS.reducerStateRetentionMs + 1);
+      assert.equal(result.expiredPrObservations, pendingAssociation ? 1 : 0);
+      assert.equal((d.prepare("SELECT COUNT(*) AS n FROM telemetry_pr_observations").get())?.n, 0,
+        "settled and incomplete rows are both removed");
+      const gap = d.prepare("SELECT count FROM telemetry_gaps WHERE kind = 'payload_expired'").get();
+      assert.equal(gap?.count ?? 0, pendingAssociation ? 1 : 0);
+    } finally {
+      if (pendingAssociation) d.exec("DROP TRIGGER refuse_initial_association");
+    }
+  });
+}
+
 test("an association past the late-outcome horizon is swept and counted as a gap", () => {
   enableLocalOnly();
   seedTask();

@@ -41,7 +41,10 @@ test("Pi preserves partial prose and tools before a separate interrupt, and acce
   const path = join(dir, "session.jsonl");
   const aborted = { ...capturedAbort, message: { ...capturedAbort.message, content: [
     { type: "text", text: "Partial response" },
-    { type: "tool_call", name: "bash", arguments: { command: "sleep 10" } },
+    // `toolCall`, as pi-ai's content-part union spells it and as `PI_TOOL_SESSION_LINES`
+    // captured it. This case was written against `tool_call` - pi's extension EVENT name -
+    // and so asserted the tool survived an abort while the parser was dropping every one.
+    { type: "toolCall", name: "bash", arguments: { command: "sleep 10" } },
   ] } };
   const next = { type: "message", id: "next", message: { role: "user", content: "continue" } };
   writeFileSync(path, [aborted, next].map((record) => JSON.stringify(record)).join("\n") + "\n");

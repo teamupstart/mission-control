@@ -18,11 +18,10 @@ test("Node incompatibility blocks preparation and Check again recovers after rem
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => null,
-    identityProblem: () => null,
     readAlpha: () => false,
     writeAlpha: () => {},
     latestMainCommit: async () => { throw new Error("Stable mode must not query main"); },
-    readReceipt: () => ({ schema: 1, repo: "teamupstart/mission-control", sourceClone: daemon.home, appPath: "/tmp/update-fixture.app", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-09-09T00:00:00Z" }),
+    installSnapshot: () => ({ receipt: { schema: 1, repo: "teamupstart/mission-control", sourceClone: daemon.home, appPath: "/tmp/update-fixture.app", installedVersion: "1.2.3", releaseTag: "v1.2.3", installedAt: "2026-09-09T00:00:00Z" }, problem: null }),
     runtime: async () => {
       probes++;
       const version = compatible ? process.versions.node : "22.0.0";

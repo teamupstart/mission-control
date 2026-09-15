@@ -50,7 +50,7 @@ const CHILD_PROCESS_BOUNDARIES: Readonly<Record<string, readonly ChildProcessBou
   "src/pi/mcp-client.ts": [
     { operation: "spawn", command: "process.execPath", contract: "current-runtime", reason: "Pi runs the bundled MCP server with its own absolute Node runtime" },
   ],
-  "src/main/index.ts": [
+  "src/main/startup-handover.ts": [
     { operation: "spawnSync", command: "executable", contract: "fixed-os-utility", reason: "Launch Services hands a launch to this account's installed app before the locator snapshot exists" },
   ],
   "src/main/integrations.ts": [

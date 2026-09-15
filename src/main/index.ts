@@ -7,7 +7,6 @@
 // open. The daemon and UI are reused unchanged.
 
 import { app, dialog, ipcMain, session, shell } from "electron";
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -36,16 +35,16 @@ import type { UpdateSnapshot } from "../shared/update.ts";
 import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
 import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
 import { UpdateDialogPresenter } from "./update-dialog.ts";
-import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
 import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
 import { readReceipt } from "../shared/install-receipt.mjs";
+import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
   classifyInstallIdentity,
   identityUpdateBlock,
   type InstallIdentity,
 } from "./install-identity.ts";
-import { decideStartup, runningBundlePath } from "./startup-handover.ts";
+import { runningBundlePath, startPackagedShell } from "./startup-handover.ts";
 
 app.setName("Mission Control");
 
@@ -55,48 +54,41 @@ const runningCommit = appSourceCommit(appRoot);
 const runningBundle = runningBundlePath(appRoot, app.isPackaged);
 
 /**
- * Which installed Mission Control this process is, asked before anything else happens.
+ * What is installed, and what this process is, from ONE read of the receipt.
  *
- * Re-read rather than cached, because every caller after the first wants the answer as it is
- * NOW: the receipt is a file another install can rewrite while this app is open, and the
- * updater checks again before it hands a bundle to the helper.
+ * Re-read on every call rather than cached, because every caller after the first wants the
+ * answer as it is now: the receipt is a file another install can rewrite while this app is
+ * open, and the updater asks again before it hands a bundle to the helper.
+ *
+ * The receipt is read once per call and the classification is made from that same value, so a
+ * caller can never be handed an eligibility verdict about one receipt and the contents of
+ * another. That pairing is the whole reason this returns both.
  */
-function currentIdentity(): InstallIdentity {
-  if (!runningBundle) return { state: "unmanaged" };
-  return classifyInstallIdentity({
-    runningBundle,
-    runningCommit,
-    receipt: readReceipt(),
-    home: homedir(),
-    exists: existsSync,
-    bundleCommit: (path) => appSourceCommit(join(path, "Contents", "Resources", "app")),
-    bundleVersion: bundleShortVersion,
-  });
+function readInstallState(): { identity: InstallIdentity; receipt: InstallReceipt | null } {
+  const receipt = readReceipt();
+  if (!runningBundle) return { identity: { state: "unmanaged" }, receipt };
+  return {
+    identity: classifyInstallIdentity({
+      runningBundle,
+      runningCommit,
+      receipt,
+      home: homedir(),
+      exists: existsSync,
+      bundleCommit: (path) => appSourceCommit(join(path, "Contents", "Resources", "app")),
+      bundleVersion: bundleShortVersion,
+    }),
+    receipt,
+  };
 }
 
-/**
- * `open` against one bundle, which reveals an already-running instance rather than starting a
- * second one - the behavior wanted when someone clicks a stale Dock entry for a live app.
- *
- * The catalog's fixed absolute path, not a bare name: this runs before `app.whenReady()` and
- * therefore before the locator snapshot exists, so there is no resolved PATH to search and
- * nothing to select between.
- */
-function openInstalledApp(target: string): { ok: boolean; detail: string | null } {
-  const executable = FIXED_OS_EXECUTABLES.open;
-  const result = spawnSync(executable, [target], { encoding: "utf8", timeout: 30_000 });
-  const detail = result.error?.message ?? (result.stderr || null);
-  return { ok: !result.error && result.status === 0, detail };
-}
-
-// The one decision taken before anything is started: see `startup-handover.ts` for why a
-// hand-over asks for no lock at all, and why a failed one keeps running.
-const startup = decideStartup({
-  identity: currentIdentity,
-  open: openInstalledApp,
-  requestSingleInstanceLock: () => app.requestSingleInstanceLock(),
-  exit: (code) => app.exit(code),
-  quit: () => app.quit(),
+// The one decision taken before anything is started, wiring and all: see
+// `startup-handover.ts` for why a hand-over asks for no lock at all, and why a failed one
+// keeps running. Everything it needs beyond `app` is built there, so the connection between
+// the decision and the subprocess that carries it out is covered by that module's tests
+// rather than left to this entry point, which no test can import.
+const startup = startPackagedShell({
+  app,
+  identity: () => readInstallState().identity,
   log: (line) => console.error(line),
 });
 const gotLock = startup.proceed;
@@ -323,7 +315,10 @@ app.whenReady().then(async () => {
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
       currentCommit: () => runningCommit,
-      identityProblem: () => identityUpdateBlock(currentIdentity()),
+      installSnapshot: () => {
+        const state = readInstallState();
+        return { receipt: state.receipt, problem: identityUpdateBlock(state.identity) };
+      },
       helperSource: join(appRoot, "scripts", "apply-update.mjs"),
       stateDirectory: stateDir(),
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),

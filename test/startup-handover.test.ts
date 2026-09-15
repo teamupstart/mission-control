@@ -3,10 +3,14 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   decideStartup,
+  openInstalledApp,
   runningBundlePath,
+  startPackagedShell,
   type HandoverAttempt,
+  type OpenResult,
   type StartupPorts,
 } from "../src/main/startup-handover.ts";
+import { FIXED_OS_EXECUTABLES } from "../src/server/executables/catalog.ts";
 import type { InstallIdentity } from "../src/main/install-identity.ts";
 import type { InstallReceipt } from "../src/shared/install-receipt-schema.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
@@ -158,4 +162,99 @@ test("losing the single-instance lock quits and starts nothing, as it always did
   assert.deepEqual(calls, ["identity", "requestSingleInstanceLock", "quit"]);
   assert.equal(decision.handedOver, false);
   assert.equal(decision.proceed, false);
+});
+
+/**
+ * Electron's `app`, recorded rather than performed, plus the one subprocess this path runs.
+ *
+ * Only these two are faked. Everything between them - the ports object, the executable, the
+ * argv, the result mapping - is the production wiring, which is the part the seam tests above
+ * cannot reach: they inject an `open` port and so would pass even if the entry point never
+ * connected one, or connected it to the wrong command.
+ */
+function shell(identity: InstallIdentity, over: { open?: OpenResult; lock?: boolean } = {}) {
+  const calls: string[] = [];
+  const spawned: Array<{ executable: string; args: string[] }> = [];
+  const logs: string[] = [];
+  const decision = startPackagedShell({
+    app: {
+      requestSingleInstanceLock: () => {
+        calls.push("requestSingleInstanceLock");
+        return over.lock ?? true;
+      },
+      exit: (code) => calls.push(`exit(${code})`),
+      quit: () => calls.push("quit"),
+    },
+    identity: () => identity,
+    log: (line) => logs.push(line),
+    run: (executable, args) => {
+      calls.push("run");
+      spawned.push({ executable, args });
+      return over.open ?? { status: 0 };
+    },
+  });
+  return { decision, calls, spawned, logs };
+}
+
+test("the wired shell runs /usr/bin/open with exactly the validated bundle, and nothing else", () => {
+  // The integration the seam tests cannot make: a production `open` port that was never
+  // connected, or connected to the wrong executable, still satisfies every assertion made
+  // against an injected one. Here only Electron's `app` and the subprocess runner are faked.
+  const { decision, calls, spawned } = shell({ state: "redirect", target: PERSONAL, receipt });
+
+  assert.deepEqual(spawned, [{ executable: "/usr/bin/open", args: [PERSONAL] }]);
+  // The absolute catalog path, not a bare name resolved against a PATH that does not exist yet.
+  assert.equal(spawned[0]!.executable, FIXED_OS_EXECUTABLES.open);
+  assert.equal(decision.handedOver, true);
+  assert.equal(decision.proceed, false);
+  assert.deepEqual(calls, ["run", "exit(0)", "quit"]);
+  assert.ok(!calls.includes("requestSingleInstanceLock"));
+});
+
+test("the wired shell reads a non-zero open as a failed hand-over and carries on", () => {
+  const { decision, calls, logs, spawned } = shell(
+    { state: "redirect", target: PERSONAL, receipt },
+    { open: { status: 1, stderr: "The application cannot be opened.\n" } },
+  );
+
+  assert.deepEqual(spawned, [{ executable: "/usr/bin/open", args: [PERSONAL] }]);
+  assert.equal(decision.handedOver, false);
+  assert.equal(decision.proceed, true, "a failed hand-over must not leave someone with no app");
+  assert.ok(calls.includes("requestSingleInstanceLock"));
+  assert.match(decision.updateBlock ?? "", /Updates are disabled/);
+  // The reason reaches a log rather than being swallowed, trimmed of the trailing newline.
+  assert.match(logs[0]!, /The application cannot be opened\./);
+});
+
+test("the wired shell reads a spawn error as a failed hand-over", () => {
+  // `spawnSync` reports a missing binary or a timeout through `error`, not through `status`.
+  const { decision, logs } = shell(
+    { state: "redirect", target: PERSONAL, receipt },
+    { open: { status: null, error: new Error("spawnSync /usr/bin/open ETIMEDOUT") } },
+  );
+
+  assert.equal(decision.handedOver, false);
+  assert.equal(decision.proceed, true);
+  assert.match(logs[0]!, /ETIMEDOUT/);
+});
+
+test("the wired shell launches nothing at all for an ordinary managed app", () => {
+  const { decision, calls, spawned } = shell({ state: "managed", receipt });
+
+  assert.deepEqual(spawned, [], "a matching app must never invoke Launch Services");
+  assert.deepEqual(calls, ["requestSingleInstanceLock"]);
+  assert.equal(decision.proceed, true);
+  assert.equal(decision.updateBlock, null);
+});
+
+test("the real Launch Services call reports a bundle that is not there, without launching it", () => {
+  // The production default runner, against the real `/usr/bin/open`. Nothing is launched: the
+  // path does not exist, which is exactly why it is safe to run here and still proves the
+  // executable, the argument, and the failure mapping are what the rest of this file assumes.
+  const missing = "/private/tmp/mission-control-absent-fixture/Nowhere.app";
+  const attempt = openInstalledApp(missing);
+
+  assert.equal(attempt.ok, false);
+  assert.ok(attempt.detail, "a failure has to carry something a person can act on");
+  assert.match(String(attempt.detail), /Nowhere\.app|does not exist|Unable to find/i);
 });

@@ -11,13 +11,32 @@
 // installed app this process is; this decides what the shell does about it, over injected
 // ports, and `index.ts` supplies the real ones.
 
+import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
+import { FIXED_OS_EXECUTABLES } from "../server/executables/catalog.ts";
 import { identityUpdateBlock, type InstallIdentity } from "./install-identity.ts";
 
 /** What a hand-over attempt reported, so a failure can be logged rather than guessed at. */
 export interface HandoverAttempt {
   ok: boolean;
   detail: string | null;
+}
+
+/** What `spawnSync` reports, narrowed to what a hand-over reads. */
+export interface OpenResult {
+  error?: Error;
+  status: number | null;
+  stderr?: string | null;
+}
+
+/** The one subprocess this path runs, injectable so a test can watch its exact argv. */
+export type RunOpen = (executable: string, args: string[]) => OpenResult;
+
+/** Electron's `app`, narrowed to the three things startup asks of it. */
+export interface StartupApp {
+  requestSingleInstanceLock(): boolean;
+  exit(code: number): void;
+  quit(): void;
 }
 
 export interface StartupPorts {
@@ -84,4 +103,58 @@ export function decideStartup(ports: StartupPorts): StartupDecision {
   const gotLock = handedOver ? false : ports.requestSingleInstanceLock();
   if (!gotLock) ports.quit();
   return { handedOver, proceed: gotLock, updateBlock: identityUpdateBlock(identity) };
+}
+
+/**
+ * The real Launch Services call, and the only direct subprocess on this path.
+ *
+ * Its own function so the executable and argv are built in exactly one place and a test can
+ * replace the runner without replacing the construction. `spawnSync` is called directly here
+ * rather than through the injected port, which is what keeps this an executable boundary the
+ * contract test can see and hold.
+ */
+function runOpen(executable: string, args: string[]): OpenResult {
+  return spawnSync(executable, args, { encoding: "utf8", timeout: 30_000 });
+}
+
+/**
+ * Ask Launch Services to bring up one bundle.
+ *
+ * `open` reveals an already-running instance rather than starting a second one, which is the
+ * behavior wanted when someone clicks a stale Dock entry for an app that is already up.
+ *
+ * The catalog's fixed absolute path, not a bare name: this runs before `app.whenReady()` and
+ * therefore before the locator snapshot exists, so there is no resolved PATH to search and
+ * nothing to select between.
+ */
+export function openInstalledApp(target: string, run: RunOpen = runOpen): HandoverAttempt {
+  const executable = FIXED_OS_EXECUTABLES.open;
+  const result = run(executable, [target]);
+  const detail = result.error?.message ?? (result.stderr?.trim() || null);
+  return { ok: !result.error && result.status === 0, detail };
+}
+
+/**
+ * The packaged shell's startup decision, wired to the real world.
+ *
+ * One function rather than a ports literal at the entry point, because the wiring is the part
+ * a test could not otherwise reach: `index.ts` starts a window, a daemon and an updater as a
+ * side effect of being imported, so an `open` port left unconnected, or connected to the wrong
+ * executable, would be invisible to every test of the pieces. Here `app` and the subprocess
+ * runner are the only seams, and everything between them is the production path.
+ */
+export function startPackagedShell(options: {
+  app: StartupApp;
+  identity: () => InstallIdentity;
+  log: (line: string) => void;
+  run?: RunOpen;
+}): StartupDecision {
+  return decideStartup({
+    identity: options.identity,
+    open: (target) => openInstalledApp(target, options.run),
+    requestSingleInstanceLock: () => options.app.requestSingleInstanceLock(),
+    exit: (code) => options.app.exit(code),
+    quit: () => options.app.quit(),
+    log: options.log,
+  });
 }

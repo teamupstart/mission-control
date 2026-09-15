@@ -217,11 +217,10 @@ function fixture(over: Partial<UpdaterPort> = {}) {
     arch: "arm64",
     currentVersion: () => "1.2.3",
     currentCommit: () => null,
-    identityProblem: () => null,
+    installSnapshot: () => ({ receipt, problem: null }),
     readAlpha: () => false,
     writeAlpha: () => {},
     latestMainCommit: async () => ({ sha: "b".repeat(40), message: "New main commit", committedAt: "2026-08-19T13:00:00.000Z" }),
-    readReceipt: () => receipt,
     latestRelease: async () => release(),
     runtime: async () => ({ ok: true, node: "/opt/homebrew/bin/node", env: { PATH: "/opt/homebrew/bin:/usr/bin:/bin" } }),
     helperSource: () => "/Applications/Mission Control.app/Contents/Resources/scripts/apply-update.mjs",
@@ -310,13 +309,21 @@ test("ineligible installations disable before any release query", async () => {
   const cases: Array<[Partial<UpdaterPort>, RegExp]> = [
     [{ packaged: false }, /packaged app/],
     [{ arch: "x64" }, /Apple silicon/],
-    [{ readReceipt: () => null }, /managed install/],
-    [{ readReceipt: () => ({ ...receipt, repo: "someone/fork" }) }, /someone\/fork/],
+    [{ installSnapshot: () => ({ receipt: null, problem: null }) }, /managed install/],
+    [
+      { installSnapshot: () => ({ receipt: { ...receipt, repo: "someone/fork" }, problem: null }) },
+      /someone\/fork/,
+    ],
     // A running bundle that is not the one the receipt describes. Personal installs make two
     // Mission Controls on one Mac ordinary, and the only bundle this app could update is not
     // itself - so it stands down rather than swapping somebody else's app.
     [
-      { identityProblem: () => "Updates are disabled because this copy of Mission Control is at /Applications/Mission Control.app." },
+      {
+        installSnapshot: () => ({
+          receipt,
+          problem: "Updates are disabled because this copy of Mission Control is at /Applications/Mission Control.app.",
+        }),
+      },
       /this copy of Mission Control is at/,
     ],
   ];
@@ -336,7 +343,7 @@ test("a receipt that stops describing this app stops the install that was alread
   // off to swaps whatever the receipt names - so another install rewriting that receipt in
   // between would otherwise send this app off to replace a bundle it is not.
   let problem: string | null = null;
-  const f = fixture({ identityProblem: () => problem });
+  const f = fixture({ installSnapshot: () => ({ receipt, problem }) });
   await f.controller.start();
   await f.controller.check(false);
   assert.equal((await f.controller.apply()), true);
@@ -350,6 +357,46 @@ test("a receipt that stops describing this app stops the install that was alread
   // Nothing was handed to a helper, which is the whole point: no bundle was swapped anywhere.
   assert.deepEqual(f.handoffs, []);
   f.controller.stop();
+});
+
+test("the receipt handed to the helper is the one that was just validated", async () => {
+  // The incoherence this seam exists to remove. Identity and the receipt used to be two port
+  // calls, so a receipt rewritten between them meant one installation was checked and a
+  // different one acted on. One snapshot per read makes that impossible: whatever `install()`
+  // validates is what the handoff carries, even when the receipt moves after startup.
+  const moved: InstallReceipt = {
+    ...receipt,
+    sourceClone: "/tmp/relocated-clone",
+    appPath: "/Users/someone/Applications/Mission Control.app",
+  };
+  let current = receipt;
+  const f = fixture({ installSnapshot: () => ({ receipt: current, problem: null }) });
+  await f.controller.start();
+  await f.controller.check(false);
+  assert.equal(await f.controller.apply(), true);
+  assert.equal(f.controller.getSnapshot().phase, "ready");
+
+  // Another install rewrites the receipt while the update sits prepared.
+  current = moved;
+  assert.equal(await f.controller.install(), true);
+  assert.equal(f.handoffs.length, 1);
+  assert.equal(f.handoffs[0]!.appPath, moved.appPath);
+  assert.equal(f.handoffs[0]!.sourceClone, moved.sourceClone);
+});
+
+test("a receipt that becomes untrusted after startup stops the prepared install", async () => {
+  // Trust used to be checked only at startup while `install()` re-checked only identity, so a
+  // receipt rewritten to a fork after launch was never refused at the moment it mattered.
+  let current = receipt;
+  const f = fixture({ installSnapshot: () => ({ receipt: current, problem: null }) });
+  await f.controller.start();
+  await f.controller.check(false);
+  assert.equal(await f.controller.apply(), true);
+
+  current = { ...receipt, repo: "someone/fork" };
+  assert.equal(await f.controller.install(), false);
+  assert.deepEqual(f.handoffs, []);
+  assert.match((f.controller.getSnapshot() as { message: string }).message, /someone\/fork/);
 });
 
 test("Node preflight prevents incompatible build attempts", async () => {
@@ -482,7 +529,9 @@ test("cancelling during runtime preflight prevents a late build", async () => {
 });
 
 test("an existing managed install remains eligible during the repository migration", async () => {
-  const f = fixture({ readReceipt: () => ({ ...receipt, repo: "mancej-cyc/ai-harness" }) });
+  const f = fixture({
+    installSnapshot: () => ({ receipt: { ...receipt, repo: "mancej-cyc/ai-harness" }, problem: null }),
+  });
   await f.controller.start();
   assert.equal(f.controller.getSnapshot().phase, "idle");
   f.controller.stop();

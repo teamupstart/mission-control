@@ -1097,7 +1097,10 @@ export class WorkflowManager {
   }
 
   /** Add current recovery facts at the response boundary, never to persisted run rows. */
-  presentRun(run: WorkflowRun): WorkflowRun {
+  presentRun(run: WorkflowRun): WorkflowRun;
+  presentRun(run: WorkflowRun | null): WorkflowRun | null;
+  presentRun(run: WorkflowRun | null): WorkflowRun | null {
+    if (!run) return null;
     const current = this.store.getRun(run.id) ?? run;
     return { ...current, recovery: this.store.runSummary(run.id)?.recovery ?? {
       operations: [], primary: null, triage: null, phaseKnown: false, resubmit: null, grantRounds: 0,
@@ -1904,7 +1907,7 @@ export class WorkflowManager {
         ok: false,
         reason: "run_active",
         message: "This binding already has an active run",
-        current: alreadyRunning,
+        current: this.presentRun(alreadyRunning),
       };
     }
     return leadWasIdempotent
@@ -3965,7 +3968,7 @@ export class WorkflowManager {
         ok: false,
         reason: "run_active",
         message: "This binding already has an active run",
-        current: active,
+        current: this.presentRun(active),
       };
     }
     // The external source kind IS the trigger source. Assigning rather than restating it
@@ -6296,7 +6299,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped before evidence capture began",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       // The row, not the caller's copy. A repair round is captured from a run object the
@@ -6329,7 +6332,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The run's frozen review intent could not be read; start a new run",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       const frozenIntent = runRow.intent ?? null;
@@ -6357,7 +6360,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped during evidence capture",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       if (!captured) {
@@ -6727,7 +6730,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped while evidence was being compacted",
-          current: currentRun,
+          current: this.presentRun(currentRun),
         };
       }
       const selectionSource = previousEvidenceSubmission(this.store, submission);
@@ -6859,7 +6862,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The captured evidence did not satisfy this submission's activation guard",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       if (version && !shippingOnlyContinuation) {
@@ -6951,7 +6954,7 @@ export class WorkflowManager {
           ok: false,
           reason: "conflict",
           message: "The workflow submission stopped during evidence capture",
-          current: this.store.getRun(run.id),
+          current: this.presentRun(this.store.getRun(run.id)),
         };
       }
       return {

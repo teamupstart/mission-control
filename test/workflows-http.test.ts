@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { FIXTURE_RUN_INTENT } from "./helpers/workflow-run-intent.ts";
 import type { WorkflowRun, WorkflowRunDetail, WorkflowRunPage } from "../src/shared/workflow.ts";
 import { runNextMove } from "../src/web/workflows/run-actions.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-workflows-http-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
-const { Registry } = await import("../src/server/registry.ts");
+const { Registry, noteKeyFor } = await import("../src/server/registry.ts");
 const { WorkflowStore, clearWorkflowTables } = await import("../src/server/workflows/store.ts");
 const { PersonaManager } = await import("../src/server/workflows/personas.ts");
 const { WorkflowManager } = await import("../src/server/workflows/manager.ts");
@@ -71,13 +72,19 @@ test("every workflow mutation uses shared parseBody schemas", async () => {
 });
 
 test("HTTP recovery capabilities track accepted retries, grants and cancellations", async () => {
-  const { request, store } = fixture();
+  const { request, store, registry } = fixture();
+  registry.applyDiscovery([{
+    syntheticId: "recovery-session", agent: "codex", name: "Recovery", nameSource: "process",
+    cwd: "/repo", gitBranch: "feature", gitRoot: "/repo", repoRoot: "/repo",
+    pid: 1, tty: "ttys-recovery", terminals: [], startedAt: 1,
+  } as DiscoveredSession]);
   const valid = await seedValid(request);
   const published = await (await request(`/api/workflows/${valid.workflow.id}/publish`, {
     method: "POST", body: JSON.stringify({ expectedDraftRevision: 1 }),
   })).json() as { version: { id: string } };
   const binding = store.insertBinding({
-    id: "recovery-binding", workflowVersionId: published.version.id, noteKey: "recovery-note",
+    id: "recovery-binding", workflowVersionId: published.version.id,
+    noteKey: noteKeyFor(registry.getSession("recovery-session")!),
     sessionId: "recovery-session", sessionAgent: "codex", sessionName: "Recovery",
     sessionCwd: "/repo", sessionRepoRoot: "/repo", triggerMode: "manual", deliveryMode: "preview",
     maxRepairRounds: 5, now: 1,
@@ -122,6 +129,14 @@ test("HTTP recovery capabilities track accepted retries, grants and cancellation
   assert.deepEqual(page.items[0]!.recovery, detail.summary.recovery);
   const exported = await (await request("/api/workflow-runs/recovery-run/export")).json() as { data: WorkflowRunDetail };
   assert.deepEqual(exported.data.run.recovery, detail.summary.recovery);
+  const activeRefusal = await request("/api/workflow-bindings/recovery-binding/submit", {
+    method: "POST", body: JSON.stringify({ requestId: "active-recovery" }),
+  });
+  assert.equal(activeRefusal.status, 409);
+  const refused = await activeRefusal.json() as { code: string; current: WorkflowRun };
+  assert.equal(refused.code, "workflow_run_active");
+  assert.equal(refused.current.id, detail.run.id);
+  assert.deepEqual(refused.current.recovery, detail.summary.recovery);
   for (const nodeAttemptId of ["resolved-error", "superseded-error"]) {
     const staleRetry = await request("/api/workflow-runs/recovery-run/retry", {
       method: "POST", body: JSON.stringify({ requestId: `retry-${nodeAttemptId}`, nodeAttemptId }),

@@ -41,28 +41,42 @@ const CONFIG_ENTRY = APP_CONFIG_ENTRIES.telemetry;
 const IDENTITY_ENTRY = APP_CONFIG_ENTRIES.telemetryIdentity;
 
 /**
- * Whether the public product audience can be enabled at all.
+ * Whether the minimized product audience can be enabled.
  *
- * Hard-coded unavailable, and deliberately not a setting. The public ingest service is
- * separately scoped in the approved design and does not exist: no enrollment, no
- * authentication, no quota, no retention policy. A build that let an operator switch it on
- * would be queueing data for an address that will never answer while telling them they were
- * sharing - which is worse than not offering it.
+ * Two things are being kept apart here, and conflating them was this facility's first mistake.
+ *
+ * **A hosted public analytics service** is separately scoped in the approved design and does not
+ * exist: no enrollment, no authentication, no quota, no retention policy. This build ships no
+ * endpoint for one, invents no hosting account, and enables no public sharing by default. That
+ * has not changed and is not what this function decides.
+ *
+ * **The product EXPORT PROFILE** is a different thing: a second, independent destination whose
+ * audience policy is narrower than the operator's own. It carries only the facts declared
+ * `AUDIENCE_ALL` - diagnostics that mean something off this machine - and excludes everything
+ * marked operator-only, which is what makes it "product" rather than a second copy of the
+ * personal stream. An organization running Mission Control internally has a real use for that,
+ * and nothing about it requires a service we host.
+ *
+ * So enrollment is a fact about whether there is somewhere to send it: available once the
+ * operator has configured a product endpoint of their own, unavailable while there is none. The
+ * original rule - that this cannot be switched on with nothing behind it - is preserved exactly,
+ * because an empty endpoint still reports unavailable and the write is still refused. What
+ * changed is that an operator who runs a collector is no longer refused along with it.
  */
-export function telemetryProductEnrollment(): TelemetryProductEnrollment {
-  return productIngestDescriptor === null ? "unavailable" : "available";
+export function telemetryProductEnrollment(
+  config: TelemetryConfig = getTelemetryConfig(),
+): TelemetryProductEnrollment {
+  if (productIngestDescriptor !== null) return "available";
+  return config.product.endpoint.trim().length > 0 ? "available" : "unavailable";
 }
 
 /**
- * The product ingest descriptor. `null` in every shipped build, and there is no configuration,
- * environment variable or API that can change that - only the function below, which refuses
- * outside the test runner.
+ * An isolated local product receiver, installed by tests.
  *
- * The seam exists because the two audiences must be provably INDEPENDENT - separate queues,
- * separate identities, separate consent epochs, separate failure handling - and a property
- * about two destinations cannot be demonstrated against one. The approved plan calls for
- * exactly this: product policy verified against an isolated local receiver, with enrollment
- * reported honestly to real operators.
+ * Kept after the enrollment rule above stopped depending on it, because it still buys the one
+ * thing configuration cannot: it makes the product audience available WITHOUT an endpoint, so a
+ * test can demonstrate audience independence - separate queues, identities, consent epochs and
+ * failure handling - without also asserting the endpoint rules in the same breath.
  */
 let productIngestDescriptor: string | null = null;
 
@@ -183,7 +197,9 @@ export function profileIsCapturing(config: TelemetryConfig, profile: TelemetryPr
   // `local` has no endpoint by definition: collection on with nothing configured is exactly
   // what local-only means, and it is the state the walking slice starts in.
   if (profile === "local") return true;
-  if (profile === "product" && telemetryProductEnrollment() === "unavailable") return false;
+  // Against THIS config, not the stored one. The caller may be evaluating a patch that has not
+  // been written yet, and reading the store here would answer about the wrong configuration.
+  if (profile === "product" && telemetryProductEnrollment(config) === "unavailable") return false;
   return destinationFor(config, profile)?.enabled === true;
 }
 
@@ -211,8 +227,8 @@ export function capturingProfiles(config: TelemetryConfig): TelemetryProfileId[]
   return TELEMETRY_PROFILE_IDS.filter((p) => profileIsCapturing(config, p));
 }
 
-export type TelemetryConfigRefusal = { ok: false; error: string };
-export type TelemetryConfigApplied = { ok: true; config: TelemetryConfig };
+export type TelemetryConfigRefusal = { ok: false; error: string; conflict?: true };
+export type TelemetryConfigApplied = { ok: true; config: TelemetryConfig; changed: boolean };
 
 /**
  * Apply a patch, and take every consent and endpoint consequence with it, in one transaction.
@@ -228,6 +244,20 @@ export function setTelemetryConfig(
   now = Date.now(),
 ): TelemetryConfigApplied | TelemetryConfigRefusal {
   const previous = getTelemetryConfig();
+
+  // The concurrency guard, BEFORE any validation or write. Two Settings tabs on one daemon is
+  // ordinary - a second window, a phone - and consent is the setting where the loser of a
+  // last-writer-wins race is somebody who believes they turned sharing off. A caller that does
+  // not supply a revision keeps Phase 1's behavior exactly.
+  if (patch.ifRevision !== undefined && patch.ifRevision !== previous.revision) {
+    return {
+      ok: false,
+      conflict: true,
+      error:
+        "These telemetry settings changed somewhere else while this form was open. Reload the panel and make the change again.",
+    };
+  }
+
   const next = TelemetryConfigSchema.parse({
     ...previous,
     ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
@@ -235,13 +265,28 @@ export function setTelemetryConfig(
     ...(patch.product ? { product: { ...previous.product, ...patch.product } } : {}),
   });
 
-  if (next.product.enabled && telemetryProductEnrollment() === "unavailable") {
+  // Asking to switch product sharing ON with nowhere to send it is refused, and the refusal is
+  // keyed on the PATCH rather than on the resulting state: this is the operator explicitly
+  // asking for something that cannot be honoured, and answering it silently would be worse than
+  // the error. Evaluated against `next`, so one write may supply the endpoint and flip the
+  // switch as a unit - against the stored config that write would refuse itself, because the
+  // address it is in the middle of saving is not visible yet.
+  if (patch.product?.enabled === true && telemetryProductEnrollment(next) === "unavailable") {
     return {
       ok: false,
       error:
-        "Product analytics has no ingest service in this build. Enabling it would queue data for an endpoint that cannot exist.",
+        "Product analytics has no ingest service configured. Mission Control does not run a public analytics service, so this audience needs the address of a collector you run before it can be switched on.",
     };
   }
+
+  // Clearing the address is a WITHDRAWAL, not a half-configured state, and the switch goes with
+  // it. Two worse alternatives were available and both were rejected: refusing the write leaves
+  // an operator who emptied the field staring at an error telling them to fill in the field,
+  // and storing `enabled: true` with no address leaves a switch reading "on" over a destination
+  // that is not sending - which would silently resume sharing the moment an address was typed
+  // back in. Forcing it off is the only one of the three where the stored state and the screen
+  // agree, and it errs toward not sharing.
+  if (next.product.endpoint.trim().length === 0) next.product.enabled = false;
 
   // Validate against the credential that WILL be in place after this patch, not the one that
   // is now: turning HTTPS off in the same write that adds a token has to be refused as a unit.
@@ -270,17 +315,38 @@ export function setTelemetryConfig(
   }
 
   return telemetryTransaction((d) => {
+    // Did the STORED credential actually move? A PUT that echoes the same secret back - which
+    // is what a form re-submit does - must not count as a change, or a second tab's open edit
+    // is invalidated by somebody pressing Save twice.
+    let credentialChanged = false;
     if (patch.userCredential !== undefined) {
+      const existing = getSecret(d, "user");
       if (patch.userCredential.length > 0) {
+        credentialChanged =
+          existing?.headerValue !== patch.userCredential ||
+          existing?.headerName !== next.user.headerName;
         putSecret(d, "user", next.user.headerName, patch.userCredential, now);
       } else {
+        credentialChanged = existing !== null;
         clearSecret(d, "user");
       }
     } else if (patch.user?.headerName && getSecret(d, "user")) {
       // Renaming the header must move the existing secret, not orphan it under the old name.
       const existing = getSecret(d, "user");
-      if (existing) putSecret(d, "user", next.user.headerName, existing.headerValue, now);
+      if (existing) {
+        credentialChanged = existing.headerName !== next.user.headerName;
+        putSecret(d, "user", next.user.headerName, existing.headerValue, now);
+      }
     }
+
+    // The revision moves only on a real change, so a duplicate save is idempotent all the way
+    // down: same stored value, same revision, no generation bump, no epoch bump, and any other
+    // tab's in-flight edit still applies. Compared on the configuration WITHOUT the revision
+    // itself, which would otherwise always differ from what we are about to write.
+    const changed =
+      credentialChanged ||
+      JSON.stringify({ ...previous, revision: 0 }) !== JSON.stringify({ ...next, revision: 0 });
+    if (changed) next.revision = previous.revision + 1;
 
     setAppConfig(CONFIG_ENTRY, next);
 
@@ -352,7 +418,7 @@ export function setTelemetryConfig(
       }
     }
 
-    return { ok: true, config: next } satisfies TelemetryConfigApplied;
+    return { ok: true, config: next, changed } satisfies TelemetryConfigApplied;
   });
 }
 
@@ -379,7 +445,7 @@ export function telemetryStatus(): TelemetryStatus {
       : validateEndpoint(config.user.endpoint, { hasCredential });
   return {
     config,
-    productEnrollment: telemetryProductEnrollment(),
+    productEnrollment: telemetryProductEnrollment(config),
     userCredentialConfigured: hasCredential,
     endpoint: endpoint
       ? { ok: endpoint.ok, detail: endpoint.detail, warning: endpoint.warning }

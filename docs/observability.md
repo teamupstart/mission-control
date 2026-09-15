@@ -14,11 +14,13 @@ points back at its own address.
 
 ## What state it is in
 
-Phase 1 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) is implemented: the
-durable path, the export protocol, the consent model, the local reference stack and one working
-diagnostic dashboard. Two events are captured today - the daemon's own start and the synthetic
-connection probe. Session, workflow, action and error coverage arrive in later phases through the
-registration seams described below.
+Phases 1 and 2 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) are
+implemented: the durable path, the export protocol, the consent model, the local reference stack,
+one working diagnostic dashboard, and the **Settings > Telemetry** panel that drives all of it.
+Four events are captured today - the daemon's own start, the synthetic connection probe, telemetry
+control actions, and the one browser-originated fact the daemon cannot observe for itself. Session,
+workflow, action and error coverage arrive in later phases through the registration seams described
+below.
 
 ## Turning it on
 
@@ -29,9 +31,15 @@ Collection and export are separate decisions, and so are the two audiences.
 | Off | The default. No journal row is written. |
 | Local only | Collection on with no endpoint. Facts are captured, projected into local aggregates, retained and visible through the health API. Nothing leaves the machine. |
 | Your own backend | Local only, plus export to an OTLP/HTTP endpoint you choose. |
-| Product analytics | Reported as `unavailable` and refused. There is no public ingest service in any shipped build, and offering the switch anyway would queue data for an address that cannot exist. |
+| Product analytics | A second, independent destination carrying a narrower set of facts - only those that mean something off this machine, never the diagnostics that are only about your installation. Mission Control hosts no public analytics service, so no address is baked in: point it at a collector you run. Until an address is configured it reports `unavailable` and the daemon refuses to enable it, because switching it on with nowhere to send would claim to be sharing while queueing for an address that cannot answer. |
 
-Phase 2 adds the Settings panel. Until then the loopback API is the control surface:
+**Settings > Telemetry** is the control surface. It carries the master collection switch, the
+per-destination opt-ins, the endpoint and credential fields, a connection test, per-destination
+queue health, and the two irreversible operations (discard a queue, reset the installation
+pseudonym). Both consent switches always open the panel rather than flipping from a search result,
+because the copy beside them is the substance of the decision.
+
+Everything the panel does is also reachable over the loopback API:
 
 ```sh
 # Local-only collection.
@@ -47,11 +55,73 @@ curl localhost:7317/api/telemetry/health          # queue depth, bytes, gaps, pa
 curl -X POST localhost:7317/api/telemetry/probe -d '{"profile":"user"}' \
   -H 'content-type: application/json'             # a real OTLP request, plus a captured fact
 curl -X POST localhost:7317/api/telemetry/drain   # run one cycle now instead of waiting 30s
+
+# The three maintenance operations. `purge` and `retry` need a profile; the identity reset is
+# installation-wide by definition.
+curl -X POST localhost:7317/api/telemetry/operation \
+  -H 'content-type: application/json' -d '{"action":"retry","profile":"user"}'
+curl -X POST localhost:7317/api/telemetry/operation \
+  -H 'content-type: application/json' -d '{"action":"purge","profile":"user"}'
+curl -X POST localhost:7317/api/telemetry/operation \
+  -H 'content-type: application/json' -d '{"action":"reset_identity"}'
 ```
+
+A `PUT /api/telemetry/config` may carry `ifRevision`, the `config.revision` the edit was composed
+against. When it is supplied and no longer matches, the write is refused with a 409 and
+`{"conflict": true}` rather than merged - two dashboards on one daemon is ordinary, and the loser
+of a last-writer-wins race on consent is somebody who believes they turned sharing off. A save that
+stores an identical configuration is not a change: it does not move the revision, does not bump a
+destination generation and does not invalidate another tab's open edit.
+
+`retry` clears a pause the daemon applied to itself and brings every backed-off batch forward to
+now. It does not reset the attempt count, so holding the button cannot turn a dead endpoint into a
+tight retry loop. `purge` drops one destination's undelivered batches and its projections and
+touches nothing else - not the other destinations, and nothing outside telemetry. `reset_identity`
+mints a new pseudonym and discards every queue with it, because a batch already built carries the
+old pseudonym inside its serialized resource and cannot be rewritten.
 
 Disabling is not pausing. Pausing stops sending and keeps the backlog; disabling stops capture and
 purges that profile's unsent batches and projections. Withdrawing consent cannot recall data a
 backend already accepted, and the app does not pretend otherwise.
+
+Clearing a product address is a withdrawal rather than a half-configured state: the switch goes off
+with it, and re-entering an address does not resume sharing until somebody switches it back on. The
+two alternatives were both worse - refusing the write leaves an operator who emptied the field
+staring at an error telling them to fill in the field, and keeping `enabled` over an empty address
+leaves a switch reading "on" that would silently resume the moment an address was typed back in.
+
+Queue health reaches the dashboard on the settings-status channel every browser already holds open,
+not through a poll: a destination that pauses itself has no other symptom anywhere in the app, and
+a panel polling for it would be a second store of the same facts drifting by up to one interval.
+The rail's Telemetry dot turns red when a destination stopped or is not getting through, green when
+something is actually being exported, and stays dark for local-only - which is a complete state, not
+a half-finished setup.
+
+### The browser telemetry ingress
+
+`POST /api/telemetry/ingress` is the one endpoint that accepts a fact from the dashboard, and it is
+deliberately narrow, because a page is not a trusted subsystem:
+
+- only catalog entries declared `ingress: "browser"` - a property of the catalog, so no call site
+  can widen it, and a console cannot forge a daemon start or a workflow verdict by naming one;
+- only inside that entry's own strict fact schema;
+- at most 8 records per request, 8 KiB per body and 120 records per rolling minute across every
+  browser talking to the daemon. The byte ceiling is measured off the request stream and the
+  connection is dropped the moment the running total passes it, rather than being read off
+  `Content-Length` - that header is caller-supplied, absent on a chunked request and free to
+  understate, so enforcing against it would bound only the callers who were going to behave;
+- attribution from the request's operation context, never from the body.
+
+It always answers 200 with a per-record result, even when everything was refused: the application
+action that produced the record already succeeded, and a telemetry refusal must not surface as a
+failed action. An oversized or malformed body is the exception, and is a 4xx.
+
+Requests may carry `x-mission-operation-id`, `x-mission-operation-surface` and
+`x-mission-operation-actor`. Together they identify one logical thing a person asked for, so an
+HTTP retry or a replayed submission collapses into one fact instead of two. They are attribution
+and never authority: the daemon records an `actor.basis` of `app_context`, `declared` or `unknown`
+alongside them, no header can mint the daemon's own `owner` basis, and no authorization decision
+anywhere reads them.
 
 ### What travels, and what never does
 
@@ -180,6 +250,21 @@ Point Mission Control at `http://127.0.0.1:14318` and open
 `http://127.0.0.1:13000/d/mission-telemetry-diagnostics`. Both data sources and the dashboard are
 provisioned from files; nothing is imported by hand, and dashboards are not editable in place so a
 browser edit cannot silently diverge from the repository.
+
+From the app, that is four steps in **Settings > Telemetry**:
+
+1. Switch on **Collect telemetry on this machine**. Nothing leaves yet.
+2. Put `http://127.0.0.1:14318` in **Endpoint** and press **Save destination**. A loopback
+   Collector over plain HTTP is the supported case, credential or not.
+3. Switch on **Send to your own backend**.
+4. Press **Test connection**. It sends a real, empty OTLP request and captures its own result
+   through the durable path, so a green answer is evidence about the whole pipeline rather than
+   about a separate code path that happens to speak HTTP. The trace id it hands back is the one
+   Tempo will store, so it is searchable once the next export lands.
+
+The probe is synthetic, and the panel says so where it reports the result: it is a connection
+check, not a record of anything the app did. The daemon does not capture telemetry about its own
+export attempts either, so a failing backend does not fill the queue it cannot drain.
 
 Container-to-container traffic uses service names (`http://collector:4318`); the host uses the
 published ports above. Mixing the two up is the most common way this stack appears broken.

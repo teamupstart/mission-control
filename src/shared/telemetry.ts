@@ -342,11 +342,29 @@ export const TelemetryConfigSchema = z.object({
   /**
    * The minimized product audience.
    *
-   * Shipped unavailable rather than merely off: the public ingest service is separately
-   * scoped and does not exist, so `productEnrollment` reports `unavailable` and the daemon
-   * refuses to enable it. Presenting it as ready would be the dishonest option.
+   * A second, fully independent destination with a narrower audience policy than the
+   * operator's own: it carries only the facts declared `AUDIENCE_ALL` and excludes everything
+   * operator-only, which is what makes it product telemetry rather than a second copy of the
+   * personal stream.
+   *
+   * It has no endpoint by default and no endpoint is baked in, because Mission Control hosts
+   * no public analytics service - that remains separately scoped. An operator who runs their
+   * own minimized collector points this at it; until then `productEnrollment` reports
+   * `unavailable` and the daemon refuses to enable it, because switching on a destination with
+   * nothing behind it would claim to be sharing while queueing for an address that cannot
+   * answer.
    */
   product: TelemetryDestinationSchema.default({}),
+  /**
+   * How many times this configuration has actually CHANGED.
+   *
+   * The concurrency token two Settings tabs race on, and deliberately a change counter rather
+   * than a write counter: a PUT that stores the identical configuration leaves it alone, so a
+   * duplicate save - a double click, a second tab echoing what it already had - cannot
+   * invalidate an edit somebody else is in the middle of. Defaulted, so a database written
+   * before this field existed opens at `0` and the first real change moves it to `1`.
+   */
+  revision: z.number().int().min(0).default(0),
 });
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>;
 
@@ -363,17 +381,30 @@ export const TelemetryConfigPatchSchema = z
      * it cannot silently erase one.
      */
     userCredential: z.string().optional(),
+    /**
+     * The `revision` this edit was composed against.
+     *
+     * Optional, because the daemon's own callers and the Phase 1 route contract do not carry
+     * one. When it IS supplied and does not match, the write is refused rather than merged:
+     * consent is the one setting where last-writer-wins is unacceptable, since the loser of
+     * that race is an operator who thinks they turned sharing off.
+     */
+    ifRevision: z.number().int().min(0).optional(),
   })
-  .refine((o) => Object.keys(o).length > 0, { message: "empty telemetry config update" });
+  // `ifRevision` alone is not an update. Without this the guard would satisfy the
+  // non-empty check on its own and store a no-op that still had to be answered as success.
+  .refine((o) => Object.keys(o).some((k) => k !== "ifRevision"), {
+    message: "empty telemetry config update",
+  });
 export type TelemetryConfigPatch = z.infer<typeof TelemetryConfigPatchSchema>;
 
 /**
- * Whether this installation can enable the product audience at all.
+ * Whether this installation can enable the product audience right now.
  *
- * `unavailable` in every shipped build, because the public ingest service is separately scoped
- * and does not exist. A union rather than a boolean because Phase 2 renders the reason, and
- * because a later enrollment service adds its own states here without changing what this field
- * means.
+ * `unavailable` until a product endpoint is configured, since there is nowhere to send it and
+ * no hosted service to fall back on. A union rather than a boolean because Phase 2 renders the
+ * reason, and because a later hosted enrollment service adds its own states here without
+ * changing what this field means.
  */
 export const TELEMETRY_PRODUCT_ENROLLMENTS = ["unavailable", "available"] as const;
 export type TelemetryProductEnrollment = (typeof TELEMETRY_PRODUCT_ENROLLMENTS)[number];
@@ -492,4 +523,97 @@ export interface TelemetryProbeResult {
   detail: string;
   /** The trace this probe produced, so an operator can search for it in the backend. */
   traceId: string | null;
+}
+
+// ---- maintenance operations ----
+//
+// The three things an operator can do to a queue that are not a configuration change. They
+// are operations rather than settings because none of them has a stored value: they act once,
+// on state the daemon already holds, and the honest record of them is a captured fact rather
+// than a row in `app_config`.
+
+export const TELEMETRY_OPERATIONS = ["retry", "purge", "reset_identity"] as const;
+export type TelemetryOperation = (typeof TELEMETRY_OPERATIONS)[number];
+
+/**
+ * One maintenance operation.
+ *
+ * `profile` is required for the two that act on a queue and ignored by the identity reset,
+ * which is installation-wide by definition. `local` is accepted: local-only capture has a
+ * projection and a series table of its own, and an operator who wants to clear what was
+ * collected on this machine has no other way to say so.
+ */
+export const TelemetryOperationRequestSchema = z
+  .object({
+    action: z.enum(TELEMETRY_OPERATIONS),
+    profile: z.enum(TELEMETRY_PROFILE_IDS).optional(),
+  })
+  .strict()
+  .refine((o) => o.action === "reset_identity" || o.profile !== undefined, {
+    message: "this telemetry operation needs a profile",
+  });
+export type TelemetryOperationRequest = z.infer<typeof TelemetryOperationRequestSchema>;
+
+/**
+ * What an operation did, in counts rather than prose.
+ *
+ * Small and closed for the same reason `TelemetryHealth` is: it is served over HTTP and
+ * rendered in a panel, so it carries no endpoint, no credential and no payload.
+ */
+export interface TelemetryOperationResult {
+  action: TelemetryOperation;
+  /** Null only for the identity reset, which is not per-profile. */
+  profile: TelemetryProfileId | null;
+  /** Undelivered batches dropped. Always zero for a retry. */
+  purged: number;
+  /** True when this cleared a daemon-initiated pause. */
+  resumed: boolean;
+  /** The identity AFTER a reset, so a panel can show the new pseudonym without a second read. */
+  identity: { installationId: string; epoch: number } | null;
+  /** One bounded sentence for the panel. Never a URL and never a stored value. */
+  detail: string;
+}
+
+// ---- the bounded summary that rides the settings-status channel ----
+
+/**
+ * What every open dashboard is told about telemetry, without asking.
+ *
+ * A strict subset of `TelemetryHealth`: the counts a panel needs to draw queued, stuck and
+ * delivered, and nothing else. It exists as its own type rather than as "the health object"
+ * because `SettingsStatus` is compared field by field before it is emitted, and a shape that
+ * can grow silently is a shape whose new field stops being emitted.
+ */
+export interface TelemetryProfileSummary {
+  profile: TelemetryProfileId;
+  capturing: boolean;
+  exporting: boolean;
+  paused: boolean;
+  pausedReason: TelemetryPauseReason | null;
+  pending: number;
+  pendingBytes: number;
+  oldestPendingAgeMs: number | null;
+  lastAcceptedAt: number | null;
+  /** True when the last attempt for this destination failed. The text stays off this channel. */
+  failing: boolean;
+}
+
+export interface TelemetrySettingsSummary {
+  enabled: boolean;
+  /**
+   * The configuration's change counter, carried so an open panel knows its stored copy is
+   * stale without polling for it.
+   *
+   * The alternative was a config poll beside the live channel, which is the second store of
+   * settings state this whole design exists to avoid: two tabs would then disagree about the
+   * endpoint for as long as the poll interval, and the one editing would save over the other.
+   */
+  configRevision: number;
+  productEnrollment: TelemetryProductEnrollment;
+  /** Total bytes charged against the budget, so the panel can draw a meter without a poll. */
+  usedBytes: number;
+  maxBytes: number;
+  /** How many bounded gap records exist. The records themselves stay on the health route. */
+  gaps: number;
+  profiles: TelemetryProfileSummary[];
 }

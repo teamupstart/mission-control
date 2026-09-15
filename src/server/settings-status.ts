@@ -10,6 +10,7 @@ import {
   pipelinesObserving,
   pipelinesPresent,
 } from "./pipelines/index.ts";
+import { telemetrySettingsSummary } from "./telemetry/health.ts";
 
 // The one place the Settings status tuple is composed, and the one helper that emits it.
 //
@@ -67,6 +68,15 @@ export function settingsStatus(): SettingsStatus {
       observedRepoKeys: pipelineObservedRepoKeys(),
       launchRuntime: pipelines.launchRuntime,
     },
+    // The one fact in this tuple that moves without anybody writing a config: a queue drains, a
+    // destination pauses itself, a backlog ages. It is here rather than behind a panel poll so
+    // there is one store of queue state, and the export cycle republishes the tuple when it
+    // changes anything - see `startTelemetry`'s `onHealthChanged`.
+    //
+    // An installation that never opted in answers this from `app_config` alone, without
+    // touching a telemetry table. That is nearly every installation, and it is what keeps this
+    // read as cheap as the four above it.
+    telemetry: telemetrySettingsSummary(),
   };
 }
 

@@ -5,6 +5,8 @@ import { useSkills } from "../useSkills.ts";
 import { useInspector } from "../useInspector.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
+import { TelemetrySettingsPanel } from "./TelemetrySettingsPanel.tsx";
+import { useTelemetry } from "../useTelemetry.ts";
 import { RestoreSettingsPanel } from "./RestoreSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
 import { LlmSettingsPanel } from "./LlmSettingsPanel.tsx";
@@ -112,6 +114,11 @@ function dotLabel(
         const n = status?.pipelines.observing ?? 0;
         return `Conductor pipelines are being read in ${n} ${n === 1 ? "repository" : "repositories"}`;
       }
+      // Three rows now. The same reason as Conductor's: a screen reader announcing the
+      // Inspector's sentence on the Telemetry row is a reading a sighted operator never gets.
+      if (category === "telemetry") {
+        return "Telemetry is being exported to a configured destination";
+      }
       return "GitHub Inspector is live - reviews post to GitHub";
     }
     case "armed":
@@ -119,6 +126,9 @@ function dotLabel(
         ? "Trust needs a look - a repository grant is armed"
         : "YOLO mode is armed - clean pull requests may merge themselves";
     case "failing": {
+      if (category === "telemetry") {
+        return "A telemetry destination stopped or is not getting through";
+      }
       const n = status?.taskSources.failing ?? 0;
       return `${n} task source${n === 1 ? "" : "s"} failed their last sweep`;
     }
@@ -321,6 +331,11 @@ export function SettingsPage({
   // rather than tidy - the health strip, retention readout and health card are what it
   // keeps moving, which is what let the drawer's Refresh health button go.
   const workflowSettings = useWorkflowSettings();
+  // Owned here, and unlike every hook above it this one does NOT poll. Its live input is the
+  // telemetry summary already riding the settings-status channel this page is handed, and its
+  // two reads are triggered by that summary changing. A poll beside it would be a second store
+  // of queue state, disagreeing with the live one by up to one interval.
+  const telemetry = useTelemetry(settingsStatus?.telemetry ?? null, shown === "telemetry");
   // The resolved chord for the palette, shown as the rail box's hint so the box and the
   // shortcut always agree even after a rebind.
   const { bindings: keyBindings } = useKeybindings();
@@ -624,6 +639,8 @@ export function SettingsPage({
         );
       case "cost":
         return <CostSettingsPanel state={cost} />;
+      case "telemetry":
+        return <TelemetrySettingsPanel state={telemetry} />;
       case "restore":
         return <RestoreSettingsPanel />;
       case "inspector":

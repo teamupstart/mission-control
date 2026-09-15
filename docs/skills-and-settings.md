@@ -225,13 +225,21 @@ these stays in this browser, and which of them acts publicly under your account.
 | Group | Reach | Categories |
 |-------|-------|-----------|
 | **This screen** | This browser | **Display** (layout, the Line's density, conversation rendering, message formatting, board card), **Keyboard**, **Dispatch** |
-| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Restore** (reads and writes the owner-only state library) |
+| **Sessions** | This machine | **Setup** (`This installation`), **Harnesses**, **Worktrees**, **Repositories**, **Skills** (`Writes ~/`), **Standing instructions**, **Cost** (`Writes ~/`), **Telemetry**, **Restore** (reads and writes the owner-only state library) |
 | **Background work** | This machine | **Foreman**, **Workflows**, **Task sources**, **Conductor** (only when an engine is installed), **Models** |
 | **Leaves the machine** | Acts on GitHub | **GitHub Inspector**, **Shipping**, **Trust** |
 
 The badge on a group is the general case; the badge in a panel's own header is that
 category's precise claim, which can be stronger - Skills sits under *This machine* and
 symlinks into `~/.claude/skills` and `~/.agents/skills`, so its own badge says `Writes ~/`.
+
+**Cost** and **Telemetry** sit next to each other because they are the pair people confuse, and
+reading them side by side is what separates them. Cost configures Claude Code reporting its usage
+*into* this daemon. Telemetry configures Mission Control exporting *its own* activity out, with a
+master collection switch, independent per-destination opt-ins, and live queue health. Nothing on
+the Telemetry page is carried by a settings snapshot: restoring settings cannot switch collection
+on, point an export somewhere it was never pointed, or restore a credential or the installation
+pseudonym. See [Observability and telemetry](observability.md).
 
 **Setup** checks external tools and configures this installation. It groups agent CLIs,
 terminal backends, GitHub CLI and authentication, agent extensions, pipelines, and the runtime.

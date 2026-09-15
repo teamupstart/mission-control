@@ -168,6 +168,19 @@ export interface TelemetryEventDefinition<Facts extends z.ZodTypeAny = z.ZodType
   /** Allowed `refs` keys. A ref outside this list is dropped before the journal. */
   refKeys: readonly string[];
   span: TelemetrySpanDefinition | null;
+  /**
+   * Whether the browser may submit this event through the typed ingress, and nothing more.
+   *
+   * `null` is the default and the safe answer: an event the daemon owns is not reachable from
+   * a page, so a console cannot forge a daemon start or a workflow verdict. `"browser"` marks
+   * the entries whose ONLY possible observer is the client - what a person was shown, how long
+   * a render took - which the daemon genuinely cannot see.
+   *
+   * Declared here rather than checked at the ingress, so the allowlist is a property of the
+   * catalog the same way `audience` is: a Phase 5 author adds a browser signal by declaring one,
+   * and cannot widen the boundary from a call site.
+   */
+  ingress: "browser" | null;
 }
 
 // ---- metric definitions ----
@@ -261,6 +274,8 @@ export const DAEMON_STARTED_EVENT = defineEvent({
     })
     .strict(),
   refKeys: [],
+  // Daemon-owned: the browser has no business asserting that a daemon started.
+  ingress: null,
   span: {
     name: "mission.daemon.start",
     kind: "internal",
@@ -300,6 +315,7 @@ export const TELEMETRY_PROBE_EVENT = defineEvent({
     })
     .strict(),
   refKeys: [],
+  ingress: null,
   span: {
     name: "mission.telemetry.probe",
     kind: "client",
@@ -312,10 +328,112 @@ export const TELEMETRY_PROBE_EVENT = defineEvent({
   },
 });
 
+// ---- Phase 2 events ----
+
+/**
+ * An operator changed something about collection or export, and it took effect.
+ *
+ * The one record of a telemetry control action, captured by the daemon that APPLIED it rather
+ * than by the surface that asked for it - which is why there is no browser twin of this event.
+ * A control can arrive from the dashboard, from a script against the route, or later from
+ * another surface entirely, and all three are the same fact.
+ *
+ * Captured AFTER the change, which decides its own edge cases honestly rather than by
+ * accident: switching collection ON is recorded (capture is now permitted), and switching it
+ * OFF is not (it is not, and consent withdrawn is not consent to record the withdrawal).
+ *
+ * Operator audience only. Which destinations somebody configured is a fact about that person's
+ * infrastructure, and P5 keeps it out of product adoption for the same reason it keeps probes
+ * out: it measures the operator, not the product.
+ */
+export const TELEMETRY_CONTROL_EVENT = defineEvent({
+  name: "mission.telemetry.control.applied",
+  version: 1,
+  group: "telemetry_control",
+  priority: "diagnostic",
+  question: "Which telemetry controls does an operator use, and do those changes succeed?",
+  owner: "src/server/telemetry/controls.ts",
+  audience: AUDIENCE_OPERATOR,
+  facts: z
+    .object({
+      /**
+       * What was done. `configure` covers every stored-value change - enabling, disabling,
+       * pausing, resuming, an endpoint, a credential - because the VALUE is not recordable
+       * (it is the operator's infrastructure) and the distinctions that are recordable are
+       * already in `profile` and in the health the panel shows.
+       */
+      action: z.enum(["configure", "retry", "purge", "reset_identity"]),
+      profile: z.enum(["local", "user", "product", "all"]),
+      outcome: z.enum(["applied", "refused"]),
+      /** How the request was attributed. Repeated as a fact so it survives as a dimension. */
+      actor_basis: z.enum(["owner", "app_context", "declared", "inferred", "unknown"]),
+    })
+    .strict(),
+  /**
+   * The app-issued logical operation, so a browser fact and this server fact can be joined.
+   * A ref, never a dimension: `operation_id` is on the forbidden-dimension list precisely
+   * because one series per operation is unbounded.
+   */
+  refKeys: ["operation_id"],
+  ingress: null,
+  span: {
+    name: "mission.telemetry.control",
+    kind: "internal",
+    durationFactKey: null,
+    attributes: ["action", "profile", "outcome", "actor_basis"],
+    refAttributes: ["operation_id"],
+    errorWhen: { factKey: "outcome", values: ["refused"] },
+  },
+});
+
+/**
+ * An operator opened the telemetry controls, and what state they were shown.
+ *
+ * The Phase 2 event the daemon genuinely cannot observe: whether anyone ever LOOKED. It
+ * answers a question the control event cannot - how many operators find these controls, see
+ * that collection is off, and leave it off - which is the difference between a feature nobody
+ * wants and one nobody can find.
+ *
+ * Deliberately narrow. This is not "the dashboard navigated somewhere": general navigation is
+ * `navigation`, which Phase 5 owns and which this event must not become a bridgehead for. It
+ * is scoped to the telemetry controls, which are Phase 2's own surface.
+ */
+export const TELEMETRY_SETTINGS_OPENED_EVENT = defineEvent({
+  name: "mission.telemetry.settings.opened",
+  version: 1,
+  group: "telemetry_control",
+  priority: "diagnostic",
+  question: "Do operators find the telemetry controls, and what state do they find them in?",
+  owner: "src/web/components/TelemetrySettingsPanel.tsx",
+  audience: AUDIENCE_OPERATOR,
+  facts: z
+    .object({
+      /** Whether collection was on at the moment the panel rendered. */
+      collection_enabled: z.boolean(),
+      /** How many export destinations were switched on. Bounded by the profile count. */
+      destinations_enabled: z.number().int().min(0).max(2),
+    })
+    .strict(),
+  refKeys: ["operation_id"],
+  // The one Phase 2 entry the browser may submit, and the reason the ingress exists.
+  ingress: "browser",
+  span: null,
+});
+
 /** Every registered event, by name. */
 export const TELEMETRY_EVENTS: Record<string, TelemetryEventDefinition> = Object.fromEntries(
-  [DAEMON_STARTED_EVENT, TELEMETRY_PROBE_EVENT].map((e) => [e.name, e as TelemetryEventDefinition]),
+  [
+    DAEMON_STARTED_EVENT,
+    TELEMETRY_PROBE_EVENT,
+    TELEMETRY_CONTROL_EVENT,
+    TELEMETRY_SETTINGS_OPENED_EVENT,
+  ].map((e) => [e.name, e as TelemetryEventDefinition]),
 );
+
+/** Every event the typed browser ingress may admit, by name. */
+export function browserIngressEvents(): TelemetryEventDefinition[] {
+  return Object.values(TELEMETRY_EVENTS).filter((e) => e.ingress === "browser");
+}
 
 // ---- Phase 1 instruments ----
 
@@ -385,12 +503,62 @@ export const TELEMETRY_PROBES_METRIC = defineMetric({
   }),
 });
 
+// ---- Phase 2 instruments ----
+
+export const TELEMETRY_CONTROLS_METRIC = defineMetric({
+  name: "mission.telemetry.controls",
+  description: "Telemetry control actions applied, by action, profile and outcome.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: TELEMETRY_CONTROL_EVENT.name,
+  audience: AUDIENCE_OPERATOR,
+  // `actor_basis` is a dimension rather than an attribute-only fact because "who is changing
+  // consent" is one of the few questions this facility must be able to answer about ITSELF.
+  dimensions: ["action", "profile", "outcome", "actor_basis"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: {
+      action: String(facts.action ?? "unknown"),
+      profile: String(facts.profile ?? "unknown"),
+      outcome: String(facts.outcome ?? "unknown"),
+      actor_basis: String(facts.actor_basis ?? "unknown"),
+    },
+    value: 1,
+  }),
+});
+
+export const TELEMETRY_SETTINGS_OPENS_METRIC = defineMetric({
+  name: "mission.telemetry.settings.opens",
+  description: "Times the telemetry controls were opened, by the collection state shown.",
+  unit: "1",
+  kind: "counter",
+  valueType: "int",
+  event: TELEMETRY_SETTINGS_OPENED_EVENT.name,
+  audience: AUDIENCE_OPERATOR,
+  dimensions: ["collection_enabled"],
+  boundaries: null,
+  unknownPolicy: "explicit_unknown",
+  since: TELEMETRY_CATALOG_VERSION,
+  owner: "src/shared/telemetry-catalog.ts",
+  contribution: (facts) => ({
+    dimensions: { collection_enabled: String(facts.collection_enabled === true) },
+    value: 1,
+  }),
+});
+
 /** Every registered instrument, by name. */
 export const TELEMETRY_METRICS: Record<string, TelemetryMetricDefinition> = Object.fromEntries(
-  [DAEMON_STARTS_METRIC, DAEMON_STARTUP_DURATION_METRIC, TELEMETRY_PROBES_METRIC].map((m) => [
-    m.name,
-    m,
-  ]),
+  [
+    DAEMON_STARTS_METRIC,
+    DAEMON_STARTUP_DURATION_METRIC,
+    TELEMETRY_PROBES_METRIC,
+    TELEMETRY_CONTROLS_METRIC,
+    TELEMETRY_SETTINGS_OPENS_METRIC,
+  ].map((m) => [m.name, m]),
 );
 
 /** The instruments one event contributes to, in a stable order. */
@@ -445,6 +613,26 @@ export function telemetryCatalogProblems(): string[] {
     const def = (event.facts as unknown as { _def?: { unknownKeys?: string } })._def;
     if (def?.unknownKeys !== "strict") {
       problems.push(`event ${event.name} facts schema is not strict`);
+    }
+    if (event.ingress === "browser") {
+      // A browser-eligible event is one the daemon cannot observe, which means it is one a
+      // page can ASSERT. Two rules follow from that and are checked rather than remembered.
+      //
+      // It may not carry a span. A span is a timing claim, and an unauthenticated page
+      // supplying its own start and end would put fabricated intervals into the trace backend
+      // that a reviewer has no way to tell from measured ones.
+      if (event.span) {
+        problems.push(`browser event ${event.name} declares a span, which a page may not assert`);
+      }
+      // And it must stay out of the product audience. A self-reported fact is a weaker
+      // observation than a daemon-observed one, and the minimized public audience is exactly
+      // where the difference would be invisible. Phase 5 may revisit this deliberately; it may
+      // not happen by a copied definition.
+      if (event.audience.includes("product")) {
+        problems.push(
+          `browser event ${event.name} claims the product audience; self-reported facts stay operator-only`,
+        );
+      }
     }
     if (event.span) {
       const factShape = Object.keys(

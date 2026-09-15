@@ -672,6 +672,30 @@ export function recoverLeases(d: DatabaseSync, now: number): number {
   return Number(result.changes);
 }
 
+/**
+ * Bring every backed-off batch for one destination forward to now.
+ *
+ * What "Try again" means, and the reason it is a store operation rather than a cycle argument:
+ * a destination that has been unreachable for an hour is sitting on a sixty-second ceiling with
+ * jitter on top, so simply running a cycle would drain nothing and the operator would be told
+ * their retry did nothing. Attempts are NOT reset - the backoff resumes from where it was if
+ * this attempt fails too, so a person holding the button cannot turn a dead endpoint into a
+ * tight retry loop.
+ *
+ * Leased rows are left alone: a request carrying one is in flight, and moving its schedule
+ * would let a second pass take it.
+ */
+export function releaseBackoff(d: DatabaseSync, profile: TelemetryProfileId, now: number): number {
+  const result = d
+    .prepare(
+      `UPDATE telemetry_delivery
+          SET next_attempt_at = ?, updated_at = ?
+        WHERE profile = ? AND state IN ('pending','retry') AND next_attempt_at > ?`,
+    )
+    .run(now, now, profile, now);
+  return Number(result.changes);
+}
+
 /** Drop the payload of a settled batch while keeping its delivery accounting. */
 export function releaseBatchPayload(d: DatabaseSync, batchId: string): void {
   d.prepare(`DELETE FROM telemetry_batches WHERE id = ?`).run(batchId);

@@ -369,10 +369,19 @@ import { createSetupSnapshotTracker } from "./setup/snapshots.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import {
   TelemetryConfigPatchSchema,
+  TelemetryOperationRequestSchema,
   TelemetryProbeRequestSchema,
 } from "@shared/telemetry.ts";
 import {
+  TELEMETRY_INGRESS_LIMITS,
+  TelemetryIngressRequestSchema,
+  resolveOperationContext,
+} from "@shared/telemetry-ingress.ts";
+import {
+  admitBrowserTelemetry,
   telemetryCycle,
+  recordTelemetryControl,
+  runTelemetryOperation,
   runTelemetryProbe,
   setTelemetryConfig,
   telemetryHealth,
@@ -700,6 +709,68 @@ async function parseBody<S extends ZodTypeAny>(
   const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
   if (!parsed.success) {
     return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
+  }
+  return { ok: true, data: parsed.data };
+}
+
+/**
+ * The same, for a body whose SIZE is part of the contract.
+ *
+ * `parseBody` above buffers whatever arrives and hands it to Zod. That is right for every
+ * authenticated route in this file, where an oversized body is a client defect. It is not right
+ * for a route that publishes a byte ceiling to an untrusted caller, because the ceiling has to
+ * be measured rather than declared: `Content-Length` is supplied by the caller, is absent
+ * altogether on a chunked request, and may simply be a lie. A check against that header refuses
+ * only the honest.
+ *
+ * So this reads the body stream itself and stops the moment the running total passes the limit,
+ * without buffering the rest. Returning from inside the `for await` cancels the stream, so a
+ * caller streaming gigabytes is disconnected after the first few kilobytes instead of being
+ * counted after the fact.
+ *
+ * 413 for a body over the limit and 400 for one that is malformed or off-schema: they are
+ * different failures, and the first is the one whose number a caller can act on.
+ */
+async function parseBoundedBody<S extends ZodTypeAny>(
+  c: Context,
+  schema: S,
+  maxBytes: number,
+): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; res: Response }> {
+  const body = c.req.raw.body;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (body !== null) {
+    try {
+      for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+        total += chunk.byteLength;
+        if (total > maxBytes) {
+          return { ok: false, res: c.json({ error: "request body too large" }, 413) };
+        }
+        chunks.push(chunk);
+      }
+    } catch {
+      // A body that died mid-flight is a malformed request, not a server fault.
+      return { ok: false, res: c.json({ error: "could not read the request body" }, 400) };
+    }
+  }
+
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, at);
+    at += chunk.byteLength;
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(joined));
+  } catch {
+    return { ok: false, res: c.json({ error: "request body is not JSON" }, 400) };
+  }
+
+  const parsed = schema.safeParse(decoded);
+  if (!parsed.success) {
+    return { ok: false, res: c.json({ error: parsed.error.message }, 400) };
   }
   return { ok: true, data: parsed.data };
 }
@@ -6660,18 +6731,53 @@ export function buildApp(
   // configuration and no queue. Folding them together would put one switch on two unrelated
   // consents.
   //
-  // Phase 2 owns the Settings UI over these routes. Phase 1 exposes them so the walking slice
-  // is operable and so a browser test has something to drive.
+  // Phase 2 adds the operations and the ingress the Settings panel drives. What is deliberately
+  // NOT here: any route that returns a stored credential, a queued payload or an endpoint an
+  // operator did not just send us. `telemetryStatus()` reports whether a secret exists; there
+  // is no read path for its value, here or anywhere.
   app.get("/api/telemetry/config", (c) => c.json(telemetryStatus()));
   app.put("/api/telemetry/config", async (c) => {
     const parsed = await parseBody(c, TelemetryConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
+    // Attribution, never authorization. Nothing below branches on it, and nothing anywhere in
+    // the daemon reads it to decide whether this request is allowed: the headers say who the
+    // app THINKS asked, and `basis` says how much that is worth.
+    const context = resolveOperationContext(c.req.raw.headers);
     const applied = setTelemetryConfig(parsed.data);
     // 409 rather than 500: every refusal here is a configuration the operator can see and
-    // fix - an unencrypted remote endpoint carrying a credential, our own address, or the
-    // product audience that has no service behind it.
-    if (!applied.ok) return c.json({ error: applied.error }, 409);
+    // fix - an unencrypted remote endpoint carrying a credential, our own address, the
+    // product audience that has no service behind it, or a revision that moved underneath.
+    if (!applied.ok) {
+      recordTelemetryControl({ action: "configure", profile: "all", outcome: "refused", context });
+      return c.json({ error: applied.error, conflict: applied.conflict === true }, 409);
+    }
+    // Only a real change is recorded and republished. A duplicate save stores nothing, so
+    // capturing a fact for it would report activity that did not happen, and pushing a frame
+    // for it would wake every open dashboard over an unchanged tuple.
+    if (applied.changed) {
+      recordTelemetryControl({ action: "configure", profile: "all", outcome: "applied", context });
+      publishSettingsStatus(registry);
+    }
     return c.json(telemetryStatus());
+  });
+
+  // The three maintenance operations. Not settings - none of them has a stored value - so they
+  // are one POST with a closed action vocabulary rather than three shapes of config write.
+  app.post("/api/telemetry/operation", async (c) => {
+    const parsed = await parseBody(c, TelemetryOperationRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const context = resolveOperationContext(c.req.raw.headers);
+    const result = runTelemetryOperation(parsed.data.action, parsed.data.profile);
+    recordTelemetryControl({
+      action: parsed.data.action,
+      profile: result.profile ?? "all",
+      outcome: "applied",
+      context,
+    });
+    // Every one of these moves the queue the settings tuple reports, so the tuple is
+    // republished rather than left for the next thirty-second cycle to notice.
+    publishSettingsStatus(registry);
+    return c.json(result);
   });
 
   app.get("/api/telemetry/health", (c) => c.json(telemetryHealth()));
@@ -6703,7 +6809,42 @@ export function buildApp(
     // 500 on a failed cycle. An all-zero result is what both "nothing to do" and "it threw"
     // look like, so returning 200 for the second would tell an operator who pressed drain that
     // an empty queue was drained successfully.
+    // The drain moved delivery state, so the tuple every open dashboard holds is stale.
+    publishSettingsStatus(registry);
     return result.ok ? c.json(result) : c.json(result, 500);
+  });
+
+  /**
+   * The typed browser ingress.
+   *
+   * The one way a fact the daemon cannot observe gets in, and the reason it is narrow: the
+   * dashboard is a page, not a trusted subsystem. Only catalog entries declared browser-eligible
+   * are admitted, only inside their own strict fact schema, only at a bounded rate, and only
+   * with the attribution the request's operation context earns - never one the body claims.
+   *
+   * Always 200, even when every record was refused. The application action that produced the
+   * record already succeeded, and a telemetry refusal surfacing as an HTTP error would turn a
+   * fact nobody asked for into a failure somebody has to look at. The body says what happened
+   * per record for the caller that does check.
+   *
+   * The exceptions are a body that is too big to be worth parsing and one that is not the
+   * declared shape at all. Both are 4xx, because neither is a telemetry outcome - they are a
+   * malformed request, and answering them with a cheerful 200 would make a client bug invisible.
+   */
+  app.post("/api/telemetry/ingress", async (c) => {
+    // `parseBoundedBody`, not `parseBody`: the byte ceiling this endpoint publishes is MEASURED
+    // off the stream rather than read off `Content-Length`. The header is caller-supplied, is
+    // absent entirely on a chunked request, and can be understated, so a check against it
+    // refuses only a caller who was going to behave anyway - which is the whole population this
+    // limit does not exist for.
+    const parsed = await parseBoundedBody(
+      c,
+      TelemetryIngressRequestSchema,
+      TELEMETRY_INGRESS_LIMITS.maxRequestBytes,
+    );
+    if (!parsed.ok) return parsed.res;
+    const context = resolveOperationContext(c.req.raw.headers);
+    return c.json(admitBrowserTelemetry(parsed.data.records, context));
   });
 
   // --- Terminals: which terminal app each multiplexer's sessions are focused into ---

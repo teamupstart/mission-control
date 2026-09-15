@@ -616,8 +616,8 @@ export function insertBatch(d: DatabaseSync, batch: StoredBatch, now: number): v
        (batch_id, profile, signal, state, attempts, next_attempt_at, updated_at)
      VALUES (?,?,?,'pending',0,?,?)`,
   ).run(batch.id, batch.profile, batch.signal, now, now);
-  // The one writer outside capture that adds a meaningful number of bytes. Reported so the
-  // admission estimate tracks a projection pass without another full scan.
+  // Report bytes written outside capture so the admission estimate tracks a projection
+  // pass without another full scan.
   noteBytesAdded(batch.bytes);
 }
 
@@ -993,6 +993,18 @@ export function listGaps(
 
 // ---- capacity ----
 
+const PR_OBSERVATION_BYTES_SQL = `LENGTH(task_id) + LENGTH(pr_key) + LENGTH(pr_url)
+  + LENGTH(repo_key) + LENGTH(repo_role) + LENGTH(task_kind) + LENGTH(context_json)
+  + LENGTH(COALESCE(session_id,'')) + 24`;
+
+/** Charge a newly retained PR row to the same estimate used by capture admission. */
+export function notePrObservationBytesAdded(d: DatabaseSync, taskId: string, prKey: string): void {
+  const row = d.prepare(
+    `SELECT ${PR_OBSERVATION_BYTES_SQL} AS bytes FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`,
+  ).get(taskId, prKey) as { bytes: number } | undefined;
+  if (row) noteBytesAdded(row.bytes);
+}
+
 /**
  * The logical bytes charged against the total budget.
  *
@@ -1008,6 +1020,7 @@ export function usedBytes(d: DatabaseSync): number {
          + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_batches)
          + (SELECT COALESCE(SUM(LENGTH(state_json)),0) FROM telemetry_projection_state)
          + (SELECT COALESCE(SUM(LENGTH(task_id) + LENGTH(interval_id) + 24),0) FROM telemetry_task_outcome_state)
+         + (SELECT COALESCE(SUM(${PR_OBSERVATION_BYTES_SQL}),0) FROM telemetry_pr_observations)
          -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and
          -- docs/observability.md charges "both destination queues" to this budget.
          + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)
@@ -1030,7 +1043,7 @@ export function usedBytes(d: DatabaseSync): number {
 /**
  * The admission-control read of the same number, which is the one on the hot path.
  *
- * `usedBytes` is seven unindexed aggregates, and no index can help: summing `LENGTH(...)` over
+ * `usedBytes` combines unindexed aggregates, and no index can help: summing `LENGTH(...)` over
  * every live row is the question being asked. Running it inside the capture transaction meant
  * every accepted fact scanned tables the budget lets grow to hundreds of thousands of rows -
  * while holding the single writer lock that serializes every OTHER write in `harness.db`.
@@ -1044,7 +1057,7 @@ export function usedBytes(d: DatabaseSync): number {
  *     remembered one. Approaching the cap costs a scan again, which is when it is worth paying.
  *   - Deletions are not subtracted, so retention and payload release leave it over-stating.
  *     Over-stating only ever buys an earlier recompute.
- *   - Writers that add bytes outside capture - a projection writing a batch - report what they
+ *   - Writers that add bytes outside capture, including retained source rows, report what they
  *     added, and `MAX_CACHE_AGE_MS` bounds whatever is left (series, context and resource rows,
  *     each tens of bytes) to one interval's worth of drift.
  */

@@ -44,6 +44,7 @@ const {
   telemetryPrPollTargets,
 } = await import("../src/server/telemetry/pr-observations.ts");
 const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
+const { usedBytes, usedBytesForAdmission, resetUsedBytesCache } = await import("../src/server/telemetry/store.ts");
 const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 registerBuiltinTelemetry();
@@ -86,6 +87,59 @@ function enableLocalOnly(): void {
   const applied = setTelemetryConfig({ enabled: true });
   assert.equal(applied.ok, true);
 }
+
+test("retained PR bytes reach the warm admission cache and survive restart accounting", (t) => {
+  enableLocalOnly();
+  t.mock.method(Date, "now", () => 2_000);
+  const d = openDb();
+  d.exec(`CREATE TRIGGER refuse_association_for_budget BEFORE INSERT ON telemetry_journal
+    BEGIN SELECT RAISE(FAIL, 'fixture capture unavailable'); END`);
+  resetUsedBytesCache();
+  const before = usedBytesForAdmission(d, 0);
+  let retainedBytes = 0;
+  try {
+    retain();
+    const row = d.prepare("SELECT * FROM telemetry_pr_observations").get()!;
+    retainedBytes = Object.values(row).reduce<number>((sum, value) =>
+      sum + (typeof value === "string" ? value.length : 8), 0);
+    assert.equal(usedBytes(d) - before, retainedBytes, "all retained strings and timestamps count");
+    assert.equal(usedBytesForAdmission(d, 0) - before, retainedBytes, "the warm estimate sees insertion immediately");
+    assert.equal(retainPrObservation({
+      taskId: TASK_ID, taskKind: "ship", repoRoot: REPO, primaryRepoRoot: REPO,
+      prUrl: PR_URL, sessionId: SESSION_ID, creationVerified: false, now: 2_000,
+    }).retained, false);
+    assert.equal(usedBytesForAdmission(d, 0) - before, retainedBytes, "a duplicate sighting adds no bytes");
+  } finally {
+    d.exec("DROP TRIGGER refuse_association_for_budget");
+  }
+  closeDb();
+  resetUsedBytesCache();
+  assert.equal(usedBytesForAdmission(openDb(), 0) - before, retainedBytes, "restart recomputes the same retained charge");
+  runRetentionPass(2_000 + TELEMETRY_LIMITS.reducerStateRetentionMs + 1);
+  assert.equal(usedBytes(openDb()), before, "expiry releases the retained charge");
+});
+
+test("retained PR metadata can fill the budget and refuse another captured fact", () => {
+  enableLocalOnly();
+  const longUrl = `https://github.com/acme/${"x".repeat(12_000)}/pull/17`;
+  retainPrObservation({
+    taskId: TASK_ID, taskKind: "ship", repoRoot: REPO, primaryRepoRoot: REPO,
+    prUrl: longUrl, sessionId: SESSION_ID, creationVerified: false, now: 2_000,
+  });
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 10_000;
+  resetUsedBytesCache();
+  try {
+    assert.equal(recordTelemetryPrMerges(new Map([[longUrl, 9_000]]), undefined, 10_000), 0);
+    assert.equal(prFacts().filter((fact) => fact.fact === "merged").length, 0);
+    const gap = openDb().prepare("SELECT count FROM telemetry_gaps WHERE kind = 'capture_refused'").get();
+    assert.ok(Number(gap?.count) > 0);
+  } finally {
+    limits.maxTotalBytes = original;
+    resetUsedBytesCache();
+  }
+});
 
 test("unknown PR task attribution survives retention, restart and late merge", () => {
   enableLocalOnly();

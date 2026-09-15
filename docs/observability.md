@@ -319,6 +319,8 @@ The retained context also freezes the initial association fact and its capture s
 later sighting or the shared poll cadence retries a pending association using its original
 time, author and creation evidence, even if the merge has already been captured. Retries
 remain bounded by the same retention horizon and 500-row poll limit.
+Retained PR URLs, frozen context and row metadata count toward the total telemetry byte
+budget, including the cached admission estimate immediately after insertion.
 
 ## The local reference stack
 

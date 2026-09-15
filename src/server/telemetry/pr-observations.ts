@@ -31,7 +31,7 @@ import { captureTelemetry } from "./capture.ts";
 import { getTelemetryConfig } from "./config.ts";
 import { digest } from "./identity.ts";
 import { registerTelemetrySource } from "./registration.ts";
-import { findSourceIdentity, telemetryTransaction } from "./store.ts";
+import { findSourceIdentity, notePrObservationBytesAdded, telemetryTransaction } from "./store.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
 
 const SOURCE_KIND = "mission.pr";
@@ -148,6 +148,7 @@ export function retainPrObservation(input: {
       observation = d.prepare(
         `SELECT * FROM telemetry_pr_observations WHERE task_id = ? AND pr_key = ?`,
       ).get(input.taskId, prKey) as unknown as ObservationRow;
+      notePrObservationBytesAdded(d, input.taskId, prKey);
       return true;
     });
   } catch (error) {

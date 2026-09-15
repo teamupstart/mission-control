@@ -166,30 +166,30 @@
   </header>
 
   <main>
-    <h2>What the live machine reported before the change</h2>
-    <p class="sub">A read-only request to the running local daemon on 14 September 2026 reproduced the pre-change operator-facing Setup data.</p>
+    <h2>Reproducing the pre-change behavior with an anonymized fixture</h2>
+    <p class="sub">An isolated fixture modeled a readable Claude plugin registry, a detected UpstartClaw core plugin, and a completed setup sentinel. It reproduced the pre-change Setup behavior without retaining operator inventory or filesystem data.</p>
 
     <div class="grid">
       <div class="card">
         <div class="label">Claude plugins</div>
-        <div class="value">6 installed</div>
-        <p>The generic plugin inventory is ready and reads Claude Code's installation record.</p>
+        <div class="value">Registry readable</div>
+        <p>The generic plugin inventory has at least one usable entry.</p>
       </div>
       <div class="card">
         <div class="label">UpstartClaw core</div>
         <div class="value">Installed</div>
-        <p><code>upstartclaw-core</code> is named in that record.</p>
+        <p>The fixture includes the core plugin entry.</p>
       </div>
       <div class="card">
         <div class="label">Setup state</div>
-        <div class="value">Completed</div>
-        <p><code>~/.claude/upstartclaw-core-setup</code> contains the accepted completed state.</p>
+        <div class="value"><code>completed</code></div>
+        <p>The fixture provides the setup sentinel's accepted completed state.</p>
       </div>
     </div>
 
     <p><span class="pill good">Pre-change result</span> The daemon returned <strong>Claude Code plugins</strong> and <strong>Mission Control skills</strong> in the Agent extensions family, but no <strong>UpstartClaw core setup</strong> row. That exactly matched the filtering rules at the investigated baseline.</p>
 
-    <p class="source">Evidence: live <code>GET /api/setup/checks</code> response; bounded checks of <code>~/.claude/plugins/installed_plugins.json</code> and <code>~/.claude/upstartclaw-core-setup</code>. No credential values or plugin configuration were read into this report.</p>
+    <p class="source">Evidence: isolated setup-route and environment-check fixtures in <code>test/setup-checks-route.test.ts</code> and <code>test/environment-checks.test.ts</code>, plus browser fixtures in <code>e2e/specs/setup-panel.spec.ts</code>.</p>
 
     <h2>Why the row disappeared before the change</h2>
     <p>At the investigated baseline, Setup had two different sources of rows. The dependency catalog produced permanent rows such as Claude Code, GitHub CLI, Claude Code plugins, and Node.js. UpstartClaw was absent from that catalog. Instead, it was one of the environment checks that produced a row only when it had a warning.</p>
@@ -220,7 +220,7 @@
         <path class="arrow" d="M 440 123 L 440 173 L 666 173"/>
         <rect class="box" x="666" y="136" rx="9" width="232" height="74"/>
         <text class="title" x="685" y="165">No: omit the row</text>
-        <text class="small" x="685" y="188">The baseline machine followed this path</text>
+        <text class="small" x="685" y="188">The completed-state fixture followed this path</text>
 
         <text class="small" x="576" y="48">yes</text>
         <text class="small" x="453" y="153">no</text>
@@ -247,7 +247,7 @@
     <p><strong>It is not another name for UpstartClaw.</strong> It is a vendor-neutral health check for Claude Code's whole plugin registry. The probe reads <code>installed_plugins.json</code>, reports Missing when it has no usable entries, Unknown when the record cannot be parsed, and Ready with the total installed count when at least one plugin exists.</p>
 
     <div class="note">
-      <p><strong>What it proves:</strong> Claude Code has a readable plugin record with six entries.</p>
+      <p><strong>What it proves:</strong> Claude Code has a readable plugin record with one or more usable entries.</p>
       <p><strong>What it does not prove:</strong> that UpstartClaw is installed, that its OAuth and VPN setup is complete, or that any individual MCP server can authenticate.</p>
     </div>
 
@@ -292,13 +292,13 @@
     <ul>
       <li>It did not run Glean, Slack, Jira, Guru, or Atlassian authentication probes. A completed state is the plugin's readiness signal, not proof that every credential is currently valid.</li>
       <li>The initial Scout observation described the pre-change product. This revised report also records the UI and documentation delivered afterward.</li>
-      <li>It did not test a relocated <code>CLAUDE_CONFIG_DIR</code>. The current machine uses the default Claude directory. Source inspection shows the generic plugin reader honors that variable while the UpstartClaw environment check uses <code>~/.claude</code> directly, so relocated configurations deserve a focused follow-up test before any implementation.</li>
-      <li>The live daemon response establishes the current local state only. Other operators can legitimately see a different row set.</li>
+      <li>It did not test a relocated <code>CLAUDE_CONFIG_DIR</code>. Source inspection shows the generic plugin reader honors that variable while the UpstartClaw environment check uses the default Claude directory directly, so relocated configurations deserve a focused follow-up test before any implementation.</li>
+      <li>The report establishes state transitions with anonymized fixtures, not any operator's current environment. Operators can legitimately see different rows based on their local installation and setup state.</li>
     </ul>
   </main>
 
   <footer>
-    Scope: Mission Control baseline commit <code>85a8b07081d0b4f92ffb85475d539b271618bf50</code>, the pre-change live local Setup snapshot, the delivered working-tree implementation, and the current local UpstartClaw source checkout. Report contains no external requests, scripts, frames, or linked files.
+    Scope: Mission Control baseline commit <code>85a8b07081d0b4f92ffb85475d539b271618bf50</code>, anonymized pre-change fixtures, the delivered implementation, and UpstartClaw source documentation. Report contains no external requests, scripts, frames, linked files, or operator-specific state.
   </footer>
 </div>
 </body>

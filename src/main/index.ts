@@ -1,3 +1,7 @@
+import { removeMigrationSourceLogin } from "./migration-integration-ports.ts";
+import { migrationStartupGate } from "../../scripts/migration-runtime.mjs";
+import { repairMigration } from "../../scripts/install-migration.mjs";
+import { inspectMigrationIntegrations, repairMigrationIntegrations } from "./migration-integrations.ts";
 // Mission Control - macOS desktop shell.
 //
 // Wraps the existing loopback daemon + React UI in a native app: packaged builds
@@ -8,10 +12,10 @@
 
 import { app, dialog, ipcMain, session, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { stateDir } from "@shared/harness-runtime.mjs";
+import { stateDir, PORT } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
 import {
@@ -22,7 +26,7 @@ import { startForeman, type ForemanController } from "./foreman.ts";
 import { createWindow, getMainWindow, onMainWindowClosed, showWindow } from "./window.ts";
 import { installAppMenu, setRendererOwnsNumberRow } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
-import { installIntegrations, removeIntegrations } from "./integrations.ts";
+import { installIntegrations, removeIntegrations, migrationIntegrationPorts } from "./integrations.ts";
 import { armProductIssueAuthorization } from "./product-issue-authorization.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
 import {
@@ -86,12 +90,14 @@ function readInstallState(): { identity: InstallIdentity; receipt: InstallReceip
 // keeps running. Everything it needs beyond `app` is built there, so the connection between
 // the decision and the subprocess that carries it out is covered by that module's tests
 // rather than left to this entry point, which no test can import.
-const startup = startPackagedShell({
-  app,
-  identity: () => readInstallState().identity,
-  log: (line) => console.error(line),
-});
-const gotLock = startup.proceed;
+let runtimeReady = false;
+let migratedStartup = false;
+let requireFreshDaemon = false;
+const startupGate = () => runningBundle
+  ? migrationStartupGate({stateDirectory: existsSync(stateDir()) ? realpathSync(stateDir()) : stateDir(), runningBundle,
+      nonce: process.argv.includes("--mission-migration") ? process.argv[process.argv.indexOf("--mission-migration") + 1] : undefined, port: PORT})
+  : Promise.resolve({proceed: true, committed: false, fresh: false});
+
 const paths = {
   serverEntry: join(appRoot, "dist", "server", "index.mjs"),
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
@@ -165,8 +171,9 @@ const updateDialogs: UpdateDialogs = {
     showWindow(paths.preload);
     await askUpdate(UPDATE_DIALOGS.preparing(version, stage));
   },
-  async ready(version) {
-    return (await askUpdate(UPDATE_DIALOGS.ready(version))) === "confirm" ? "install" : "defer";
+  async ready(version, migration) {
+    const choice = await askUpdate(UPDATE_DIALOGS.ready(version, migration));
+    return choice === "confirm" ? "install" : choice === "system" ? "system" : "defer";
   },
   async applying(version) {
     await askUpdate(UPDATE_DIALOGS.applying(version));
@@ -231,6 +238,8 @@ function registerIpc(updateController: UpdateController): void {
   });
   ipcMain.handle("mission:update-apply", () => updateController.apply());
   ipcMain.handle("mission:update-install", () => updateController.install());
+  ipcMain.handle("mission:update-keep-system", (event) => event.sender === getMainWindow()?.webContents ? updateController.keepSystem() : false);
+  ipcMain.handle("mission:update-repair-migration", (event) => event.sender === getMainWindow()?.webContents ? updateController.retryMigrationRepair() : undefined);
   ipcMain.handle("mission:update-cancel", () => updateController.cancel());
   ipcMain.handle("mission:update-defer", () => updateController.defer());
   // The dialog channels are `on`, not `handle`: main is the one asking, so the renderer
@@ -255,9 +264,10 @@ function registerIpc(updateController: UpdateController): void {
   });
 }
 
-app.on("second-instance", () => showWindow(paths.preload));
+app.on("second-instance", () => { if (runtimeReady) showWindow(paths.preload); });
 
 app.on("activate", () => {
+  if (!runtimeReady) return;
   showWindow(paths.preload);
   updater?.onActivate();
 });
@@ -269,16 +279,42 @@ app.on("window-all-closed", () => {
   /* keep running for the tray */
 });
 
-app.on("before-quit", () => {
+function stopShell(): void {
   setQuitting(true);
   stopUpdateSubscription?.();
   stopUpdateSubscription = null;
   updater?.stop();
   destroyTray();
   backgroundStart?.stop();
-});
+}
+app.on("before-quit", stopShell);
 
 app.whenReady().then(async () => {
+  if (process.argv.includes("--mission-migration-remove-login")) {
+    try {
+      if (!runningBundle) throw new Error("Login cleanup requires a packaged source app.");
+      removeMigrationSourceLogin({stateDirectory: stateDir(), runningBundle,
+        nonce: process.argv[process.argv.indexOf("--mission-migration-remove-login") + 1] ?? "", app});
+      app.exit(0);
+    } catch (error) { console.error("Migration login cleanup failed:", error); app.exit(1); }
+    return;
+  }
+  try {
+    const gate = await startupGate();
+    if (!gate.proceed) { app.exit(0); return; }
+    migratedStartup = gate.committed;
+    requireFreshDaemon = gate.fresh;
+    const startup = startPackagedShell({app, identity: () => readInstallState().identity, log: (line) => console.error(line)});
+    if (!startup.proceed) return;
+    if (gate.committed && readInstallState().receipt?.appPath !== runningBundle) {
+      throw new Error("The committed personal app could not be opened. Reinstall or reopen that app; the older system runtime will not be started.");
+    }
+  } catch (error) {
+    dialog.showErrorBox("Mission Control installation needs recovery", error instanceof Error ? error.message : String(error));
+    app.exit(1);
+    return;
+  }
+  runtimeReady = true;
   // Finder, Dock, and LaunchAgent environments are routinely minimal. Build the same
   // bounded executable snapshot the daemon owns before the shell starts any child process.
   await initializeExecutableEnvironment();
@@ -298,6 +334,7 @@ app.whenReady().then(async () => {
         // Logs live beside the daemon's own state (honors MISSION_HOME), matching where
         // it keeps its db + token.
         logPath: join(stateDir(), "daemon.log"),
+        requireFresh: requireFreshDaemon,
       }),
     async () =>
       startForeman({
@@ -323,6 +360,8 @@ app.whenReady().then(async () => {
       stateDirectory: stateDir(),
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),
       dialogs: updateDialogs,
+      migrationInventory: (plan) => inspectMigrationIntegrations(plan, migrationIntegrationPorts()),
+      repairMigration: async () => { await repairMigration(stateDir(), (journal) => repairMigrationIntegrations(journal, migrationIntegrationPorts())); },
     }),
   );
   registerIpc(updater);
@@ -352,5 +391,19 @@ app.whenReady().then(async () => {
   // The window retries while the daemon starts. In development, `dev:server` owns the daemon
   // and its hot-reload lifecycle, so this resolves to null.
   const background = await backgroundStart.ready;
-  if (background) await waitForHealthy(15000);
+  if (background) {
+    const healthy = await waitForHealthy(15000);
+    if (healthy && migratedStartup) await updater.retryMigrationRepair();
+  }
+}).catch((error: unknown) => {
+  console.error(error);
+  if (migratedStartup) {
+    try {
+      dialog.showErrorBox("Personal installation needs recovery", "The personal installation committed, but its runtime could not start. Stop any older background daemon, then reopen the personal app. The retained system app will not be started against the upgraded state.");
+    } finally {
+      // exit releases the single-instance lock without emitting before-quit.
+      // Stop owned workers explicitly so reopening can attempt a fresh startup.
+      try { stopShell(); } finally { app.exit(1); }
+    }
+  }
 });

@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld("missionDesktop", {
     setAlpha: (alpha: boolean): Promise<UpdateSnapshot> => ipcRenderer.invoke("mission:update-set-alpha", alpha),
     apply: (): Promise<boolean> => ipcRenderer.invoke("mission:update-apply"),
     install: (): Promise<boolean> => ipcRenderer.invoke("mission:update-install"),
+    keepSystem: (): Promise<boolean> => ipcRenderer.invoke("mission:update-keep-system"),
+    repairMigration: (): Promise<void> => ipcRenderer.invoke("mission:update-repair-migration"),
     cancel: (): Promise<void> => ipcRenderer.invoke("mission:update-cancel"),
     defer: (): Promise<void> => ipcRenderer.invoke("mission:update-defer"),
     onState: (cb: (snapshot: UpdateSnapshot) => void): (() => void) => {

@@ -57,6 +57,29 @@ beforeEach(() => {
 
 const links = (): string[] => readdirSync(claudeSkills).sort();
 
+test("migration's daemon request passes the real patch schema and preserves disabled skill configuration", async () => {
+  const {createMigrationIntegrationPorts} = await import('../src/main/migration-integration-ports.ts');
+  const {SkillsConfigPatchSchema} = await import('../src/shared/protocol.ts');
+  setSkillsConfigForTest();
+  const before = getSkillsConfig();
+  let requests = 0;
+  const ports = createMigrationIntegrationPorts({} as Parameters<typeof createMigrationIntegrationPorts>[0], {fetch: async (_url, init) => {
+    requests++;
+    assert.equal(init?.method, 'PUT');
+    const patch = SkillsConfigPatchSchema.parse(JSON.parse(String(init?.body)));
+    const result = applySkillsConfig(patch, NOW);
+    assert.deepEqual(result.refused, []);
+    assert.deepEqual(getSkillsConfig(), before);
+    return Response.json({blocked: [], problems: result.problems});
+  }});
+  assert.deepEqual(await ports.skills(), []);
+  assert.equal(requests, 1);
+  assert.deepEqual(links(), []);
+  function setSkillsConfigForTest(): void {
+    setAppConfig(APP_CONFIG_ENTRIES.skills, {enabled: false, skills: {alpha: true, beta: false}, generation: 7, generationAt: 123});
+  }
+});
+
 test("ships off, with nothing enabled and nothing owed", () => {
   const cfg = getSkillsConfig();
   // Never on by default: this writes into the operator's global claude config and

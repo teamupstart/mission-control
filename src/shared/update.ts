@@ -34,10 +34,18 @@ export type UpdateApplyOutcome =
   | { result: "success"; targetVersion: string; recordedAt: string }
   | { result: "failure"; targetVersion: string; recordedAt: string; message: string };
 
+export interface UpdateMigration {
+  source: string;
+  target: string;
+  status: "offered" | "repair-required" | "complete";
+  repairs: {id: string; message: string}[];
+}
+
 interface SnapshotBase {
   lastOutcome: UpdateApplyOutcome | null;
   /** Absent on older desktop bridges; alpha is opt-in. */
   alpha?: boolean;
+  migration?: UpdateMigration;
 }
 
 export type UpdateSnapshot =

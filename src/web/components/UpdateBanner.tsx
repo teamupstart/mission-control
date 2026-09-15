@@ -1,11 +1,13 @@
 import { updatePrepareProgress, type UpdateSnapshot } from "@shared/update.ts";
-import { UPDATE_COPY } from "@shared/update-copy.ts";
+import { UPDATE_COPY, migrationReadyDetail, migrationCompleteDetail } from "@shared/update-copy.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
 interface UpdateBannerProps {
   snapshot: UpdateSnapshot | null;
   onApply: () => void;
   onInstall: () => void;
+  onKeepSystem?: () => void;
+  onRepairMigration?: () => void;
   onCancel: () => void;
   onDefer: () => void;
   onCheck: () => void;
@@ -23,6 +25,28 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
   const { snapshot } = props;
 
   if (!snapshot) return null;
+
+  if (snapshot.migration && snapshot.migration.status !== "offered") {
+    const migration = snapshot.migration;
+    const pending = migration.status === "repair-required";
+    return (
+      <section className={`app-banner ${pending ? "app-banner-error" : "app-banner-success"}`} role="status" aria-label="Mission Control update">
+        <div className="app-banner-copy">
+          <strong>{pending ? "Personal installation committed; integrations need repair" : "Personal installation complete"}</strong>
+          <p>{migrationCompleteDetail(migration.target)}</p>
+          {pending && <p>{migration.repairs.map((item) => item.message).join(" ") || "Reopen the personal app to finish startup and integration repair."}</p>}
+        </div>
+        <div className="app-banner-actions">
+          {pending && <Tooltip label="Retry only the integrations that still need repair">
+            <button type="button" className="btn btn-primary" onClick={props.onRepairMigration}>Retry integration repair</button>
+          </Tooltip>}
+          <Tooltip label="Hide this installation result">
+            <button type="button" className="btn btn-ghost" onClick={props.onDismiss}>Dismiss</button>
+          </Tooltip>
+        </div>
+      </section>
+    );
+  }
 
   if (snapshot.phase === "preparing" && snapshot.cancelling) {
     return (
@@ -76,12 +100,15 @@ export function UpdateBanner(props: UpdateBannerProps): React.JSX.Element | null
       <section className="app-banner app-banner-success" role="status" aria-label="Mission Control update">
         <div className="app-banner-copy">
           <strong>{UPDATE_COPY.ready.title(snapshot.newVersion)}</strong>
-          <p>{UPDATE_COPY.ready.detail}</p>
+          <p>{snapshot.migration ? migrationReadyDetail(snapshot.migration.source, snapshot.migration.target) : UPDATE_COPY.ready.detail}</p>
         </div>
         <div className="app-banner-actions">
           <Tooltip label={`Restart into Mission Control ${snapshot.newVersion}`}>
-            <button type="button" className="btn btn-primary" onClick={props.onInstall}>Restart and Install</button>
+            <button type="button" className="btn btn-primary" onClick={props.onInstall}>{snapshot.migration ? "Install and restart" : "Restart and Install"}</button>
           </Tooltip>
+          {snapshot.migration && <Tooltip label="Keep installing updates in the shared system folder">
+            <button type="button" className="btn btn-ghost" onClick={props.onKeepSystem}>Keep system installation</button>
+          </Tooltip>}
           <Tooltip label="Keep the prepared update and install it later">
             <button type="button" className="btn btn-ghost" onClick={props.onDefer}>Later</button>
           </Tooltip>

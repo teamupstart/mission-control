@@ -11,7 +11,8 @@
 // port. We only supervise/stop a daemon we started. Development does not call
 // this supervisor; `dev:server` owns that daemon lifecycle.
 
-import { BASE_URL } from "@shared/harness-runtime.mjs";
+import { BASE_URL, PORT } from "@shared/harness-runtime.mjs";
+import { migrationPortOccupied } from "../../scripts/migration-runtime.mjs";
 import {
   DAEMON_PROTOCOL_CAPABILITIES,
   daemonHealthCompatibility,
@@ -69,6 +70,8 @@ export async function waitForHealthy(totalMs: number): Promise<boolean> {
 export interface StartDaemonOptions {
   /** Absolute path to the bundled server entry (dist/server/index.mjs). */
   serverEntry: string;
+  /** A committed relocation must start its own assets, never adopt the old daemon. */
+  requireFresh?: boolean;
   /** Absolute path to the built web UI the daemon should serve. */
   webDir: string;
   /** Where to append the daemon's stdout/stderr. */
@@ -83,6 +86,7 @@ export interface StartDaemonOptions {
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonController> {
   const compatibility = await daemonCompatibility();
+  if (opts.requireFresh && (compatibility !== "unreachable" || await migrationPortOccupied(PORT))) throw new Error("A previous daemon is still running. Stop it, then reopen the personal app.");
   if (compatibility === "compatible") {
     return { adopted: true, stop: () => {} };
   }

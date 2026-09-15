@@ -30,6 +30,8 @@ declare global {
       apply(): Promise<boolean>;
       /** Restart into the prepared build. */
       install(): Promise<boolean>;
+      keepSystem?(): Promise<boolean>;
+      repairMigration?(): Promise<void>;
       cancel(): Promise<void>;
       defer(): Promise<void>;
       onState(cb: (snapshot: UpdateSnapshot) => void): () => void;

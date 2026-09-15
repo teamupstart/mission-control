@@ -3574,6 +3574,8 @@ export function App(): React.JSX.Element {
           snapshot={desktopUpdates.snapshot}
           onApply={desktopUpdates.apply}
           onInstall={desktopUpdates.install}
+          onKeepSystem={desktopUpdates.keepSystem}
+          onRepairMigration={desktopUpdates.repairMigration}
           onCancel={desktopUpdates.cancel}
           onDefer={desktopUpdates.defer}
           onCheck={desktopUpdates.check}

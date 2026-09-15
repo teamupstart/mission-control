@@ -173,6 +173,7 @@ import { homeAlive, killHome } from "./terminal/home.ts";
 import type { SdkSupervisor } from "./sdk/supervisor.ts";
 import { stopSession } from "./sdk/control.ts";
 import { renameDriverSession } from "./sdk/rename.ts";
+import { noteTaskDeparture } from "./telemetry/index.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 import { resolveTaskWorkflowId } from "./workflows/config.ts";
 import { canonicalWorktreePath } from "./worktrees/path.ts";
@@ -2358,6 +2359,13 @@ export class TaskManager {
     const t = this.registry.getTask(taskId);
     if (!t) return;
     if (t.status !== "running" && t.status !== "dispatching") return;
+    // The one telemetry call in this file, and it records a LIMIT rather than a result: this
+    // row is about to be written `failed` because the agent went away, and a clean exit
+    // cannot be distinguished from a crash. The marker is what makes the exported fact carry
+    // `completion_evidence: missing` beside that status, so nothing downstream can present an
+    // unknown ending as a measured correctness failure. Marked here, not in the observer,
+    // because this is the only place that knows which of the two happened.
+    noteTaskDeparture(taskId);
     const holdsResources = Boolean(t.worktreePath) || Boolean(t.homeName);
     const now = Date.now();
     const kept = holdsResources

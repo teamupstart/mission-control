@@ -204,6 +204,42 @@ export function createTelemetryTables(d: DatabaseSync): void {
       updated_at   INTEGER NOT NULL
     );
 
+    -- Phase 3's observation-only pull request associations: the ONE place a verified
+    -- delivery fact can survive its source ownership disappearing.
+    --
+    -- Why a telemetry table and not an archived operational binding:
+    -- invalidateTaskOwnershipInTransaction deletes a task's current work-episode binding
+    -- without archiving it, so mergedPrFor and taskPrPollTargets both lose the
+    -- association and a merge landing afterwards is observed by nothing. Copying the
+    -- invalidated binding into historical_task_work_episode_bindings would restore the
+    -- observation AND make it eligible for operational task completion and dependency
+    -- release, which is a policy change this phase has no business making. So the
+    -- observation is kept over here instead, with no authority over anything.
+    --
+    -- pr_url is LOCAL POLLING METADATA and never leaves this table. Every exported record
+    -- identifies the pull request by pr_key, a digest, which is what lets an operator
+    -- count deliveries without publishing a repository's branch names.
+    CREATE TABLE IF NOT EXISTS telemetry_pr_observations (
+      task_id       TEXT NOT NULL,
+      pr_key        TEXT NOT NULL,
+      pr_url        TEXT NOT NULL,
+      repo_key      TEXT NOT NULL,
+      repo_role     TEXT NOT NULL,           -- primary | secondary
+      task_kind     TEXT NOT NULL,
+      -- The attribution FROZEN at first association, so a late merge is reported against the
+      -- session and context that produced it rather than against whatever exists today.
+      context_json  TEXT NOT NULL,
+      session_id    TEXT,
+      associated_at INTEGER NOT NULL,
+      merged_at     INTEGER,
+      -- When this observation stops being polled for and is swept. The late-outcome horizon,
+      -- shared with the reducer-state window so the two cannot drift apart.
+      expires_at    INTEGER NOT NULL,
+      PRIMARY KEY (task_id, pr_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_pr_observations_open
+      ON telemetry_pr_observations(merged_at, expires_at);
+
     -- What could NOT be recorded, aggregated by kind so it is bounded by the vocabulary rather
     -- than by how bad the day was.
     CREATE TABLE IF NOT EXISTS telemetry_gaps (

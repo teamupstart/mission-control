@@ -14,12 +14,17 @@ points back at its own address.
 
 ## What state it is in
 
-Phases 1 and 2 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) are
+Phases 1, 2 and 3 of the [OpenTelemetry plan](plans/opentelemetry-integration/plan.md) are
 implemented: the durable path, the export protocol, the consent model, the local reference stack,
-one working diagnostic dashboard, and the **Settings > Telemetry** panel that drives all of it.
-Four events are captured today - the daemon's own start, the synthetic connection probe, telemetry
-control actions, and the one browser-originated fact the daemon cannot observe for itself. Session,
-workflow, action and error coverage arrive in later phases through the registration seams described
+one working diagnostic dashboard, the **Settings > Telemetry** panel that drives all of it, and
+session attribution - how sessions start, the model and effort known for each turn with explicit
+attribution quality, what they spend, how they end, and which pull requests verifiably landed.
+When execution metadata is unavailable, attribution can be launch-resolved or unknown.
+
+Sixteen events are captured today: the daemon's own start, the synthetic connection probe,
+telemetry control actions, the one browser-originated fact the daemon cannot observe for itself,
+and [the twelve session, model, task and pull request facts below](#session-model-and-outcome-sources).
+Workflow, action and error coverage arrive in later phases through the registration seams described
 below.
 
 ## Turning it on
@@ -125,12 +130,28 @@ anywhere reads them.
 
 ### What travels, and what never does
 
-Captured: app version, launch mode, bounded outcome enums, durations, and an installation
-pseudonym. Every event is validated against a strict schema that rejects undeclared fields, so an
-internal object cannot be spread into a record by accident.
+Captured: app version, launch mode, bounded outcome enums, durations, token counts, an
+installation pseudonym, and - from Phase 3 - the harness, runtime, task kind, multiplexer and
+emulator TYPES a session ran on, plus reported model ids. Every event is validated against a
+strict schema that rejects undeclared fields, so an internal object cannot be spread into a record
+by accident.
+
+Usage metrics retain separate model labels only for ids in the shipped model catalog.
+Off-catalog ids share `model_id=other`; missing ids use `model_id=unknown`. Each metric's model
+dimension therefore has at most the number of shipped ids plus two values, regardless of
+stored defaults or live model discovery. Token and cost totals stay intact. Source facts and
+session/dispatch traces retain the reported ids for detailed attribution.
+
+Missing or unrecognized harness, runtime, task-kind and effort values are `unknown`. Explicit
+`unsupported` capability evidence stays distinct; neither value is replaced with a real harness,
+runtime, task kind or effort level. A personal session with no task remains `none`.
 
 Never captured: prompts, code, file paths, branches, repository or PR URLs, terminal output,
-rationale text, headers or free-text error detail.
+rationale text, headers or free-text error detail. Nor, specifically: tty, process id, pane token,
+multiplexer session name, window or tab title, or session and task names. Sessions, tasks,
+conversations, repositories and pull requests are correlatable on traces through opaque
+per-destination identifiers derived with a profile salt, so the same session reaches two audiences
+under two unrelated ids and neither can be turned back into the thing it came from.
 
 Every record carries a `deployment.environment.name` resource attribute, `local` by default and
 overridable with `MISSION_TELEMETRY_ENVIRONMENT`. It exists so demo, development and test signals
@@ -220,6 +241,59 @@ across all six design areas is already declared there with its owning phase, so 
 entries to an existing group rather than coining a parallel taxonomy. Instruments declare an exact
 dimension allowlist; unbounded identities and content-bearing keys are refused by a catalog test
 rather than by review.
+
+### Session, model and outcome sources
+
+Phase 3's owner map. Every row states three things a later phase needs and cannot infer: which
+code owns the observation, what identity it deduplicates on, and what a restart cannot rebuild.
+The last column is the one worth reading before building anything on top of these: a post-restart
+scan of a live session reports the model it is running NOW, and nothing durable records what it
+was running an hour ago.
+
+| Event | Owner | Deduplicates on | What a restart cannot rebuild |
+| --- | --- | --- | --- |
+| `mission.session.started` | `telemetry/sessions.ts` observer | `start:<session id>` | A session that started and ended while capture was off. Re-adopting a live session after a restart updates continuity rather than counting a second session, because the identity is durable. |
+| `mission.session.restore.finished` | `sdk/supervisor.ts` | `restore:<session id>:<at>` | A restoration whose result was never captured. |
+| `mission.dispatch.finished` | `dispatcher.ts` | `<task id>:<attempt start>` | The resolved model and effort. They are computed in memory at launch and persisted nowhere a scan could read. |
+| `mission.session.segment.opened` | `telemetry/sessions.ts` observer | `segment:<session id>:<observation id>:<sequence>` | Segments during a gap. Each adoption opens a new observation interval with a random id, so its first segment cannot collide with one captured before restart. Repeated metadata within that interval opens no segment. |
+| `mission.session.effort.selected` | `routes.ts` `POST /api/sessions/:id/effort` | `effort:<session id>:<at>:<level>` | A selection that was never captured. It is an operator action, not a durable record. |
+| `mission.session.operation` | `routes.ts` send, interrupt and the two option routes | `op:<session id>:<operation>:<at>:<n>` | The same. |
+| `mission.session.turn.finished` | `telemetry/sessions.ts` observer | `turn:<session id>:<observation id>:<n>` | A turn spanning a gap is reported with `observation_bounded`, which makes its duration a lower bound rather than a measurement. The observation id prevents post-restart turns from colliding with earlier turns. |
+| `mission.session.ended` | `telemetry/sessions.ts` observer, on `session_remove` | `end:<session id>` | A departure during a gap. |
+| `mission.session.kill.requested` | `routes.ts` `POST /api/sessions/:id/kill` | `kill:<session id>:<at>` | An uncaptured request. |
+| `mission.usage.recorded` | `usage.ts`, `spend-ledger.ts`, `registry.ts` - the three ledger writers | The ledger's own conflict target | Rows committed while capture was off. They are deliberately not re-read: a later opt-in may not widen the audience of facts captured before it. |
+| `mission.task.outcome` | `telemetry/sessions.ts` observer, on `task_upsert` | `<task id>:<dispatched at>` | Which intermediate statuses a task passed through. The terminal row is recovered on its next publication. |
+| `mission.pr.observed` | `telemetry/pr-observations.ts` | `<task id>:<pr key>:<fact>` | An association made while capture was off. A retained association itself survives restarts in its own table until the late-outcome horizon. |
+
+Three rules hold this together and are worth stating separately, because each of them is a
+number a dashboard would otherwise get confidently wrong.
+
+**Effective is not requested.** A level the driver accepted for the NEXT turn does not move the
+running turn's attribution. Each turn freezes its effort, quality, segment and conversation
+when it first enters `working`; later metadata updates apply to subsequent turns. Segments
+open on an OBSERVED change only, `quality` says how strongly the value is known, and `unknown`
+and `unsupported` are never narrowed into a level - a harness with no effort knob and a
+session nobody has read yet are different answers. Dispatch model and resolution source
+come from one evaluation of the shared model ladder.
+
+**A session ending is not a task outcome.** They are separate events with separate owners.
+`TaskManager` settles a departed task as `failed` while documenting that a clean exit cannot be
+told from a crash, so that row exports `status=failed` with `completion_evidence=missing`, and a
+product dashboard must not turn the pair into a measured correctness failure.
+For terminal handoffs, `sdk/handoff.ts` marks the departure after preflight and before stopping
+the driver, so removal during that stop still records `reason=handoff`. A failed stop with a
+surviving driver clears the marker. A stopped driver retains its handoff reason even if the
+terminal fails to open; the task outcome describes that failure separately.
+
+**Late delivery survives ownership invalidation, and gains no authority by doing so.**
+`invalidateTaskOwnershipInTransaction` deletes a task's work-episode binding without archiving it,
+so after a rotation `mergedPrFor` reads nothing and `taskPrPollTargets` stops harvesting the URL.
+Telemetry retains its own bounded observation of each verified association, keyed by a digest, and
+the daemon's existing pull request poller asks about those URLs on the same cadence -
+deduplicated, so a pull request wanted by both harvests still costs one `gh` call. An
+observation-only result emits the late-delivery fact and nothing else: it does not enter
+`mergedPrFor`, complete a task, or satisfy a dependency edge. The URL never leaves the daemon;
+`test/telemetry-pr-late-outcome.test.ts` pins both halves.
 
 ## The local reference stack
 

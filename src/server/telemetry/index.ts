@@ -27,6 +27,35 @@ export type { DaemonLaunchMode } from "./diagnostics.ts";
 export { telemetryHealth, telemetrySettingsSummary } from "./health.ts";
 export { admitBrowserTelemetry, resetIngressRateLimitForTesting } from "./ingress.ts";
 export {
+  expirePrObservations,
+  prKeyFor,
+  recordTelemetryPrMerges,
+  registerPrTelemetrySource,
+  repoKeyFor,
+  retainPrObservation,
+  telemetryPrCohortInputs,
+  telemetryPrPollTargets,
+} from "./pr-observations.ts";
+export type { RetainedPrObservation } from "./pr-observations.ts";
+export {
+  attachSessionTelemetry,
+  noteDaemonShuttingDown,
+  noteDispatchLaunch,
+  noteDispatchStarted,
+  noteSessionHandoff,
+  noteSessionRestoring,
+  noteTaskDeparture,
+  observeDispatchFinished,
+  observeEffortSelected,
+  observeKillRequested,
+  observeSessionOperation,
+  observeSessionRestore,
+  observeUsageRecorded,
+  registerSessionTelemetrySource,
+  resetSessionTelemetryForTesting,
+} from "./sessions.ts";
+export type { SessionTelemetryHost } from "./sessions.ts";
+export {
   registerTelemetryProjection,
   registerTelemetrySource,
   registeredProjections,

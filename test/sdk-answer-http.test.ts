@@ -1,4 +1,4 @@
-import { test, after } from "node:test";
+import { test, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +31,10 @@ const { mkTask } = await import("./helpers/session-fixture.ts");
 const { launchedArgv, launchedCommand } = await import("./helpers/isolated-launch.ts");
 const { getSdkSession, upsertSdkSession } = await import("../src/server/sdk/store.ts");
 const { TaskManager: RealTaskManager } = await import("../src/server/tasks.ts");
+const { openDb } = await import("../src/server/db.ts");
+const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
+const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
+const { attachSessionTelemetry, resetSessionTelemetryForTesting } = await import("../src/server/telemetry/sessions.ts");
 
 type Registry_ = InstanceType<typeof Registry>;
 type SessionRequest = import("../src/server/harness/types.ts").SessionRequest;
@@ -48,6 +52,48 @@ after(() => {
 });
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
+
+/** Capture the actual route output locally, with no exporter or synthetic observer call. */
+function captureEffortTelemetry(t: TestContext): void {
+  registerBuiltinTelemetry();
+  assert.equal(setTelemetryConfig({ enabled: true }).ok, true);
+  t.after(() => { assert.equal(setTelemetryConfig({ enabled: false }).ok, true); });
+}
+
+function effortSelections(sessionId: string) {
+  const rows = openDb().prepare(
+    `SELECT facts_json FROM telemetry_journal
+     WHERE name = 'mission.session.effort.selected'
+       AND json_extract(refs_json, '$.session_id') = ? ORDER BY seq`,
+  ).all(sessionId) as Array<{ facts_json: string }>;
+  return rows.map((row) => {
+    const facts = JSON.parse(row.facts_json) as Record<string, unknown>;
+    return { requested: facts.requested_effort, outcome: facts.outcome, applies: facts.applies };
+  });
+}
+
+function captureSessionTelemetry(t: TestContext, registry: Registry_): void {
+  captureEffortTelemetry(t);
+  resetSessionTelemetryForTesting();
+  t.after(attachSessionTelemetry(registry));
+  t.after(resetSessionTelemetryForTesting);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+}
+
+function sessionEndingReasons(sessionId: string): unknown[] {
+  const rows = openDb().prepare(
+    `SELECT facts_json FROM telemetry_journal
+     WHERE name = 'mission.session.ended'
+       AND json_extract(refs_json, '$.session_id') = ? ORDER BY seq`,
+  ).all(sessionId) as Array<{ facts_json: string }>;
+  return rows.map((row) => (JSON.parse(row.facts_json) as Record<string, unknown>).reason);
+}
+
+function finishEviction(t: TestContext, registry: Registry_, sessionId: string): void {
+  registry.applyDriverEvent(sessionId, { kind: "exited", reason: "stopped", resumable: true });
+  t.mock.timers.tick(9_000);
+  assert.equal(registry.getSession(sessionId), undefined, "the real Registry emitted session_remove");
+}
 
 const PERMISSION: SessionRequest = {
   id: "req-1",
@@ -333,8 +379,9 @@ test("parallel driver requests stay ordered and promote the next unanswered ask"
   assert.equal(registry.getSession("sdk:one")?.paneDialog, null);
 });
 
-test("the handoff clears the task binding BEFORE stopping the driver, so nothing settles", async () => {
+test("the handoff clears the task binding and marks telemetry BEFORE stopping the driver", async (t) => {
   const registry = new Registry();
+  captureSessionTelemetry(t, registry);
   const session = seed(registry, null, "sdk:hand");
   registry.upsertTask(
     mkTask({
@@ -346,6 +393,7 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
     }),
   );
   const order: string[] = [];
+  let reasonsDuringStop: unknown[] = [];
   const supervisor = fakeSupervisor();
   upsertSdkSession({
     id: "sdk:hand",
@@ -366,6 +414,10 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
     // as an agent that went away - `failed`, with a merged PR sometimes sitting in the row.
     order.push(`stop:${registry.getTask("task-h")?.sessionId ?? "null"}`);
     await realStop(id);
+    supervisor.killDriver();
+    // Removal lands before stop resolves, not after the route reports success.
+    finishEviction(t, registry, id);
+    reasonsDuringStop = sessionEndingReasons(id);
   };
 
   const app = mkApp(registry, supervisor, {
@@ -390,6 +442,8 @@ test("the handoff clears the task binding BEFORE stopping the driver, so nothing
   assert.equal(task.sessionId, "proc:tty:1:2");
   assert.equal(task.homeName, body.homeName);
   assert.equal(getSdkSession("sdk:hand")?.taskId, null);
+  assert.deepEqual(reasonsDuringStop, ["handoff"], "handoff is recorded before stop resolves");
+  assert.deepEqual(sessionEndingReasons("sdk:hand"), ["handoff"]);
 });
 
 test("the embedded agent launcher delegates to handoff instead of launching beside the driver", async () => {
@@ -673,7 +727,8 @@ test("a Codex SDK mode change updates the card after the driver accepts it", asy
  */
 const nextTurnRevision = (): string => new Date(Date.now() + 60_000).toISOString();
 
-test("a Codex SDK session's pending effort outlives the running turn's own metadata", async () => {
+test("a Codex SDK session's pending effort outlives the running turn's own metadata", async (t) => {
+  captureEffortTelemetry(t);
   const rolloutPath = join(home, "codex-pending-rollout.jsonl");
   const rollout = (records: string[]) => writeFileSync(rolloutPath, `${records.join("\n")}\n`);
   const head = JSON.stringify({
@@ -723,6 +778,9 @@ test("a Codex SDK session's pending effort outlives the running turn's own metad
   });
   assert.equal(res.status, 200);
   assert.equal(registry.getSession("sdk:codex-pending")?.pendingEffort, "max");
+  assert.deepEqual(effortSelections("sdk:codex-pending"), [
+    { requested: "max", outcome: "accepted", applies: "next_turn" },
+  ]);
 
   // THE REGRESSION. The active turn goes on appending `token_count` records, so the poller
   // keeps producing reads with a newer `SessionMeta.updatedAt` and the SAME `turn_context`
@@ -749,9 +807,13 @@ test("a Codex SDK session's pending effort outlives the running turn's own metad
   registry.applyRuntimeMeta("sdk:codex-pending", read("max", settles, 31), "transcript");
   assert.equal(registry.getSession("sdk:codex-pending")?.meta?.thinkingLevel, "max");
   assert.equal(registry.getSession("sdk:codex-pending")?.pendingEffort, null);
+  assert.deepEqual(effortSelections("sdk:codex-pending"), [
+    { requested: "max", outcome: "accepted", applies: "next_turn" },
+  ], "later metadata cannot restate the route's original selection attribution");
 });
 
-test("changing back to the running level while another is pending still reaches the driver", async () => {
+test("changing back to the running level while another is pending still reaches the driver", async (t) => {
+  captureEffortTelemetry(t);
   const rolloutPath = join(home, "codex-pending-undo.jsonl");
   writeFileSync(
     rolloutPath,
@@ -817,6 +879,10 @@ test("changing back to the running level while another is pending still reaches 
   assert.deepEqual(supervisor.efforts, ["sdk:codex-undo:max", "sdk:codex-undo:high"]);
   assert.equal(registry.getSession("sdk:codex-undo")?.pendingEffort, null);
   assert.equal(((await undo.json()) as { pending?: boolean }).pending, false);
+  assert.deepEqual(effortSelections("sdk:codex-undo"), [
+    { requested: "max", outcome: "accepted", applies: "next_turn" },
+    { requested: "high", outcome: "accepted", applies: "current_turn" },
+  ], "undo is current-turn attribution even for a harness that normally defers effort");
 
   // With nothing pending, the same request IS a no-op and does not spend a driver call.
   assert.equal((await set("high")).status, 200);
@@ -885,7 +951,8 @@ test("a next turn that did NOT take the pending effort retires it rather than ho
   assert.equal(registry.getSession("sdk:codex-refused")?.pendingEffort, null);
 });
 
-test("a Claude SDK session still publishes its effort immediately and pends nothing", async () => {
+test("a Claude SDK session publishes accepted effort immediately and records refusals without applying them", async (t) => {
+  captureEffortTelemetry(t);
   const registry = new Registry();
   registry.registerSdkSession({ id: "sdk:claude-effort", agent: "claude", name: "Claude", cwd: "/wt/c" });
   const transcript = join(home, "claude-effort.jsonl");
@@ -931,10 +998,27 @@ test("a Claude SDK session still publishes its effort immediately and pends noth
   // and "applied" are the same event and there is nothing to pend.
   assert.equal(registry.getSession("sdk:claude-effort")?.meta?.thinkingLevel, "max");
   assert.equal(registry.getSession("sdk:claude-effort")?.pendingEffort, null);
+  assert.deepEqual(effortSelections("sdk:claude-effort"), [
+    { requested: "max", outcome: "accepted", applies: "current_turn" },
+  ]);
+
+  t.mock.method(supervisor, "setEffort", async () => { throw new Error("driver refused effort"); });
+  const refused = await mkApp(registry, supervisor).request("/api/sessions/sdk:claude-effort/effort", {
+    method: "POST", headers: HEADERS, body: JSON.stringify({ effort: "high" }),
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { ok: false, error: "driver refused effort", effort: null });
+  assert.equal(registry.getSession("sdk:claude-effort")?.meta?.thinkingLevel, "max");
+  assert.equal(registry.getSession("sdk:claude-effort")?.pendingEffort, null);
+  assert.deepEqual(effortSelections("sdk:claude-effort"), [
+    { requested: "max", outcome: "accepted", applies: "current_turn" },
+    { requested: "high", outcome: "refused", applies: "unknown" },
+  ]);
 });
 
-test("a handoff with no identity to resume from is refused before anything is stopped", async () => {
+test("a handoff with no identity to resume from is refused before anything is stopped", async (t) => {
   const registry = new Registry();
+  captureSessionTelemetry(t, registry);
   registry.registerSdkSession({ id: "sdk:new", agent: "claude", name: "n", cwd: "/wt" });
   const supervisor = fakeSupervisor();
   const res = await mkApp(registry, supervisor, {
@@ -948,6 +1032,8 @@ test("a handoff with no identity to resume from is refused before anything is st
   // Launching anyway would start a FRESH agent wearing the card of the one we just killed.
   assert.equal(res.status, 409);
   assert.deepEqual(supervisor.stopped, []);
+  finishEviction(t, registry, "sdk:new");
+  assert.deepEqual(sessionEndingReasons("sdk:new"), ["unknown"], "a refusal cannot mark a later departure");
 });
 
 test("a missing resume executable is refused before the embedded driver is stopped", async () => {
@@ -1133,8 +1219,9 @@ test("settling after a failed handoff keeps the worktree and reads a merge as do
   tasks.settleAfterFailedHandoff("no-such-task");
 });
 
-test("a stop that fails with the driver still alive puts the binding back", async () => {
+test("a stop that fails with the driver still alive puts the binding back", async (t) => {
   const registry = new Registry();
+  captureSessionTelemetry(t, registry);
   seed(registry, null, "sdk:stopfail");
   registry.upsertTask(
     mkTask({
@@ -1184,6 +1271,8 @@ test("a stop that fails with the driver still alive puts the binding back", asyn
   // live agent whose worktree a restart reclaims.
   assert.equal(getSdkSession("sdk:stopfail")?.taskId, "task-stopfail");
   assert.match(((await res.json()) as { error: string }).error, /still bound to it/);
+  finishEviction(t, registry, "sdk:stopfail");
+  assert.deepEqual(sessionEndingReasons("sdk:stopfail"), ["unknown"], "a failed stop must undo handoff attribution");
 });
 
 test("a stop that fails with the driver already gone settles instead", async () => {

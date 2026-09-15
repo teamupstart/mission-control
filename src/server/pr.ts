@@ -2,6 +2,7 @@ import { PR_POLL_MS, ghBin } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
 import type { PrChecks, PrState } from "@shared/types.ts";
 import { unref } from "./util/timers.ts";
+import { recordTelemetryPrMerges, telemetryPrPollTargets } from "./telemetry/index.ts";
 import { run } from "./util/exec.ts";
 
 // Keeps each session's PR chip honest by asking `gh` for the pull request on the
@@ -259,6 +260,8 @@ export async function pollAndReconcilePrs(
   urlState = new PrUrlPollState(),
   now = Date.now(),
   lookupHead: (dir: string) => Promise<string | null> = queryHead,
+  /** Seam for the telemetry harvest, so a focused test can drive it without a real store. */
+  telemetryTargets: (() => string[]) | null = null,
 ): Promise<void> {
   const targets = registry.prPollTargets();
   // The SECONDARY repositories of every live multi-repo task, each with its own worktree and
@@ -274,8 +277,22 @@ export async function pollAndReconcilePrs(
   // Both harvests, deduplicated: a task waiting on its own merge is very often also the
   // task something else declared a dependency on, and asking twice would spend two `gh`
   // calls and two backoffs on one pull request.
+  //
+  // The OPERATIONAL set, kept as its own value rather than folded into `linkedUrls` below.
+  // These are the URLs whose merge may complete a task and release its dependents, and only
+  // these reach `reconcilePrMerges`. A telemetry-only URL - one whose task binding was
+  // invalidated, so `taskPrPollTargets` no longer harvests it - must not acquire that
+  // authority by riding along in the same map.
+  const operationalUrls = new Set([
+    ...registry.dependencyPrPollTargets(),
+    ...registry.taskPrPollTargets(),
+  ]);
+  // The THIRD harvest: pull requests telemetry retained an observation of, whose operational
+  // binding may be long gone. A third cadence would spend a second `gh` call and a second
+  // backoff on a pull request the first two are usually already asking about, so it shares
+  // this one and is deduplicated into it.
   const linkedUrls = [
-    ...new Set([...registry.dependencyPrPollTargets(), ...registry.taskPrPollTargets()]),
+    ...new Set([...operationalUrls, ...(telemetryTargets?.() ?? telemetryPrPollTargets(now))]),
   ];
   const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
@@ -367,7 +384,26 @@ export async function pollAndReconcilePrs(
   // After the session pass, and deliberately: `reconcilePrs` can settle a task through the
   // primary's merge, and the per-repo pass then has the task's own row already up to date.
   registry.reconcileRepoPrs(repoFound, repoSkip);
-  registry.reconcilePrMerges(mergedUrls);
+  // FILTERED to the operational harvest. Existing behaviour is byte-identical for every URL
+  // that was already eligible, and a telemetry-only URL cannot enter `mergedPrFor`, complete
+  // a task or satisfy a dependency edge by having been polled on the same tick. A URL that
+  // carries BOTH reasons is in this set, so its operational reconciliation runs exactly as
+  // it did before, under its own eligibility and selection-time rules.
+  const operationalMerges = new Map(
+    [...mergedUrls].filter(([url]) => operationalUrls.has(url)),
+  );
+  registry.reconcilePrMerges(operationalMerges);
+  // And the observation-only half, which has authority over nothing. It emits the verified
+  // late-delivery fact and stamps the retained row, carrying the attribution frozen when the
+  // pull request was first associated rather than whatever the task is bound to today.
+  recordTelemetryPrMerges(
+    mergedUrls,
+    // "Live" means the producing session still owns the operational binding, which is
+    // exactly what `taskPrPollTargets` harvesting the URL proves. Everything else is late -
+    // including the ownership-invalidation case this whole path exists for.
+    (observation) => operationalUrls.has(observation.prUrl),
+    now,
+  );
 }
 
 /**

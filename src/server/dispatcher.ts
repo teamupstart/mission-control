@@ -5,7 +5,9 @@ import type {
   AgentType,
   PermissionMode,
   Session,
+  SessionRuntime,
   Task,
+  TaskKind,
   TaskRepoEntry,
   ThinkingLevel,
   WorktreeProvider,
@@ -37,10 +39,15 @@ import { hooksFor } from "./harness/index.ts";
 import {
   getHarnessesConfig,
   resolveDispatchEffort,
-  resolveDispatchModel,
+  resolveDispatchModelWithTier,
   resolveDispatchRuntime,
   resolveDispatchTerminalBackend,
 } from "./harnesses.ts";
+import {
+  noteDispatchLaunch,
+  noteDispatchStarted,
+  observeDispatchFinished,
+} from "./telemetry/index.ts";
 import { harnessFor } from "./harness/index.ts";
 import { newSdkSessionId, type SdkSupervisor } from "./sdk/supervisor.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
@@ -168,6 +175,62 @@ export function dispatchPermissionModeArgs(agent: AgentType): string[] {
 }
 
 /**
+ * The resolved facts a dispatch observation carries, or the honest blanks for an attempt that
+ * failed before anything was resolved.
+ *
+ * A refusal in the preflight - no binary, no Mission tools, no pinned base - never reached a
+ * model ladder, and reporting the harness default as though it had been chosen would put a
+ * model in the "fails to launch" column for a failure that had nothing to do with it. `task`
+ * is handed in only so the agent and kind are still reportable in that case; they are known
+ * from the row itself and are not a resolution.
+ */
+function dispatchFacts(
+  resolution: DispatchResolution | null,
+  task?: Task,
+): {
+  agent: AgentType;
+  runtime: SessionRuntime;
+  taskKind: TaskKind;
+  resolvedModel: string | null;
+  resolvedEffort: ThinkingLevel | null;
+  resolutionSource: DispatchResolution["source"];
+  repoCount: number;
+} {
+  if (resolution) {
+    return {
+      agent: resolution.agent,
+      runtime: resolution.runtime,
+      taskKind: resolution.kind,
+      resolvedModel: resolution.model,
+      resolvedEffort: resolution.effort,
+      resolutionSource: resolution.source,
+      repoCount: resolution.repoCount,
+    };
+  }
+  return {
+    agent: task?.agent ?? "claude",
+    runtime: "terminal",
+    taskKind: task?.kind ?? "ship",
+    resolvedModel: null,
+    resolvedEffort: null,
+    // Nothing resolved, which is a different answer from "the panel default was used".
+    resolutionSource: "harness",
+    repoCount: task ? 1 + task.extraRepos.length : 1,
+  };
+}
+
+/** What one dispatch attempt resolved, frozen at the resolver's own boundary. */
+interface DispatchResolution {
+  agent: AgentType;
+  runtime: SessionRuntime;
+  kind: TaskKind;
+  model: string | null;
+  effort: ThinkingLevel | null;
+  source: ReturnType<typeof resolveDispatchModelWithTier>["tier"];
+  repoCount: number;
+}
+
+/**
  * Turns a task into a live agent: provision an isolated worktree, launch the agent through
  * its selected runtime, bind that exact live session, then deliver the task as turn one
  * through the harness's native launch or pane-input path.
@@ -288,6 +351,14 @@ export class Dispatcher {
     // while anything after this phase may have crossed into an agent runtime.
     let backlogRecoveryEligible = false;
     let pendingAgentStateHome: string | null = null;
+    // What this launch RESOLVED, frozen at the resolver's own boundary and carried to
+    // whichever exit this attempt takes. Held out here rather than read back at the end,
+    // because the interesting row is the one that never reaches a running agent - and by then
+    // the locals that produced it are three scopes away. Null until resolution, which is how
+    // a refusal BEFORE it (a missing binary, an unavailable tool bundle) stays distinguishable
+    // from a launch that resolved a model and then failed.
+    let resolution: DispatchResolution | null = null;
+    noteDispatchStarted(taskId);
     // Clear any stale error from a prior failed attempt so a retry starts honest.
     this.patch(taskId, {
       status: "dispatching",
@@ -303,6 +374,17 @@ export class Dispatcher {
     try {
       if (task.kind === "pipeline") {
         await this.dispatchPipeline(taskId, task);
+        // Symmetric with the failure arm below, which would otherwise be the ONLY pipeline
+        // dispatch this facility ever recorded - and a launch-success rate computed from
+        // failures alone is worse than no rate at all. Nothing is resolved on this path: the
+        // Engineer host's model is Conductor's to choose, so `dispatchFacts` reports blanks
+        // rather than inventing a ladder that never ran.
+        observeDispatchFinished({
+          taskId,
+          ...dispatchFacts(null, task),
+          outcome: "launched",
+          sessionId: this.registry.getTask(taskId)?.sessionId ?? null,
+        });
         return;
       }
       const workflowEvidence = this.deps.workflowEvidenceEnabled?.(task) ?? false;
@@ -558,13 +640,27 @@ export class Dispatcher {
       // adjacent: a kind's effort is checked against the model THIS launch resolved, because
       // `levelsFor` narrows per model. Passing `task.model` here instead would ask the
       // question about a pin the task may not even carry.
-      const model = resolveDispatchModel(
+      const { model, tier } = resolveDispatchModelWithTier(
         task.agent,
         task.model,
         options.defaultModel ?? null,
         task.kind,
       );
       const effort = resolveDispatchEffort(task.agent, task.effort, task.kind, model);
+      resolution = {
+        agent: task.agent,
+        runtime,
+        kind: task.kind,
+        model,
+        effort,
+        source: tier,
+        repoCount: 1 + task.extraRepos.length,
+      };
+      // The launch intent, recorded BEFORE anything is spawned on either arm. The session
+      // appears - and is announced - before this function gets control back, so an intent
+      // recorded afterwards would always lose that race and every app-owned launch would be
+      // reported as a session somebody else started.
+      noteDispatchLaunch(taskId, wt.path, { model, effort });
       // The fork. `runtime` was resolved before provisioning (see the multi-repo guard up
       // there) but nothing between here and there depends on it: provisioning a worktree is
       // not a runtime question, and everything above this line is identical on both paths.
@@ -584,6 +680,12 @@ export class Dispatcher {
           standing,
           standingFallbackTurnOne,
         );
+        observeDispatchFinished({
+          taskId,
+          ...dispatchFacts(resolution),
+          outcome: "launched",
+          sessionId: this.registry.getTask(taskId)?.sessionId ?? null,
+        });
         return;
       }
       const stateHome = createDisposableAgentStateHome();
@@ -844,6 +946,12 @@ export class Dispatcher {
       // `bindTaskToWorkEpisode` and `mergedPrFor`.
       this.patch(taskId, { status: "running", sessionId: deliverySession.id });
       this.registry.bindTaskToWorkEpisode(taskId, deliverySession.id);
+      observeDispatchFinished({
+        taskId,
+        ...dispatchFacts(resolution),
+        outcome: "launched",
+        sessionId: deliverySession.id,
+      });
     } catch (err) {
       cleanupDisposableAgentStateHome(pendingAgentStateHome ?? undefined);
       pendingAgentStateHome = null;
@@ -854,11 +962,24 @@ export class Dispatcher {
       // a mid-flight complete keeps its worktree (Mark done must not discard work),
       // leaving it as a reclaimable done-with-worktree task.
       if (cur.status !== "dispatching") {
+        // The operator settled this task underneath the launch. Not a failure of the
+        // dispatch, and reporting it as one would make every cancel look like a broken
+        // launch on the only chart that answers "do dispatches work".
+        observeDispatchFinished({
+          taskId,
+          ...dispatchFacts(resolution, task),
+          outcome: "superseded",
+        });
         if (cur.status === "cancelled") {
           await this.teardownTaskResources(taskId, cur, cur.error);
         }
         return;
       }
+      observeDispatchFinished({
+        taskId,
+        ...dispatchFacts(resolution, task),
+        outcome: "failed",
+      });
       const message = err instanceof Error ? err.message : String(err);
       // The same resource proof startup reconciliation uses, restricted to the base-freeze
       // and all-or-nothing worktree phase. A fetch or provisioning failure can leave no

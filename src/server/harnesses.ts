@@ -6,7 +6,8 @@ import {
 import { resolveSessionRuntime } from "@shared/harness-capabilities.ts";
 import {
   launchEffortFor,
-  launchModelFor,
+  resolveLaunchModel,
+  type LaunchModelResolution,
   taskKindAgent,
   taskKindDefaultFor,
 } from "@shared/kind-defaults.ts";
@@ -185,7 +186,17 @@ export function resolveDispatchModel(
   launchModel: string | null = null,
   kind: TaskKind | null = null,
 ): string | null {
-  return launchModelFor(getHarnessesConfig(), agent, kind, taskModel, launchModel);
+  return resolveDispatchModelWithTier(agent, taskModel, launchModel, kind).model;
+}
+
+/** Resolve the model and its source together, from one reading of the current config. */
+export function resolveDispatchModelWithTier(
+  agent: AgentType,
+  taskModel: string | null,
+  launchModel: string | null = null,
+  kind: TaskKind | null = null,
+): LaunchModelResolution {
+  return resolveLaunchModel(getHarnessesConfig(), agent, kind, taskModel, launchModel);
 }
 
 /**
@@ -204,6 +215,16 @@ export function resolveDispatchEffort(
   model: string | null = null,
 ): ThinkingLevel | null {
   return launchEffortFor(getHarnessesConfig(), agent, kind, taskEffort, model);
+}
+
+/** Which tier of the shared model resolution answered. */
+export function resolveDispatchModelTier(
+  agent: AgentType,
+  taskModel: string | null,
+  launchModel: string | null = null,
+  kind: TaskKind | null = null,
+): LaunchModelResolution["tier"] {
+  return resolveDispatchModelWithTier(agent, taskModel, launchModel, kind).tier;
 }
 
 /**

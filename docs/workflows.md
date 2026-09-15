@@ -173,7 +173,8 @@ Four ready-made workflows ship already published in the Library:
 
 General suits ordinary changes. Bug Fix trades general quality review for causal and regression
 proof. High Rigor adds design and documentation review plus remote Inspector follow-through for
-complex work. The three implementation workflows begin with configured typecheck and test Commands.
+complex work. The three implementation workflows begin with configured typecheck, test, and lint
+Commands in parallel.
 Unconfigured slots skip and pass. All presets use Foreman complete, live repair delivery, automatic
 resumption, and up to five repair rounds, subject to the existing trust and execution settings.
 General and Bug Fix pin their judges to Codex Terra, as does Plan Validation. High Rigor retains
@@ -187,8 +188,9 @@ material is reported as a gap. Plan tasks with Persona review receive instructio
 frozen text artifact containing the root plan, phase files, relevant unchanged references, and
 recorded decisions. Its evidence preflight is advisory; plan judges own document completeness.
 
-No-Mistakes version 18 is current. Versions 1 through 17 remain available with their original
-review graphs and completion policies. The durable workflow ID remains
+General Review and Bug Fix Review version 2 and No-Mistakes version 19 add lint to Stage 1.
+Their earlier versions remain available with their original review graphs and completion policies.
+The durable No-Mistakes workflow ID remains
 `builtin-workflow:no-mistakes-review`; existing bindings are not silently upgraded.
 
 The **Author what runs** guided tour walks this workflow - its five stages, its disabled
@@ -197,16 +199,15 @@ follows one already-ended run of it - completed, cancelled or failed - into the 
 its session's Workflows tab. Start it from the Settings rail's **Help & tours** footer or the
 ⌘K palette. See [guided tours](ui.md#guided-tours).
 
-Stage 1 is a deterministic gate: the [`typecheck` and `test` Commands](#command-nodes), placed
-ahead of every reviewer so that a change which does not compile costs no model calls at all.
-Both are evaluated on the same submission and both must pass at their All-pass Join before
+Stage 1 is a deterministic gate: the [`typecheck`, `test`, and `lint` Commands](#command-nodes),
+placed ahead of every reviewer so that a failing check costs no model calls at all.
+All three are evaluated on the same submission and must pass at their All-pass Join before
 anything behind them starts, so one failing gate returns the submission to the session with the
 command's own output and **no Persona runs**.
 
-Those checks are live from version 3 onward, on a machine where you have switched checks on and
-configured a command - the graph did not change, the runtime behind it arrived. Where you have
-not, the gates report Not run and pass, and versions 3 onward follow the same Persona review
-path version 2 does while preserving the deterministic stage in the graph. The
+No-Mistakes has typecheck and test from version 3 onward, with lint added in version 19.
+Checks run when enabled and configured on the machine. Unconfigured slots report Not run and
+pass while preserving the deterministic stage in the graph. The
 [Command nodes](#command-nodes) section owns the rules for configured, unconfigured and unauthorized
 slots.
 
@@ -257,17 +258,17 @@ tree. End still means the authored graph succeeded - and by the time the
 GitHub Inspector claims that success there is provably something for it to review. Because the graph
 cannot reach End without one, version 8's missing-PR policy is **wait**: a gate that found no
 pull request has met a state its own preparation would not fix, and typing a second handoff
-would ask for one the run already has. Versions 9 through 18 preserve that verified publication
-contract. Versions 10 through 18 place the Test Evidence Auditor and Documentation Steward stage
-immediately before the action, with Slop Filter joining it in versions 12 through 18.
+would ask for one the run already has. Versions 9 through 19 preserve that verified publication
+contract. Versions 10 through 19 place the Test Evidence Auditor and Documentation Steward stage
+immediately before the action, with Slop Filter joining it in versions 12 through 19.
 
-A passed review in versions 1 through 8 and version 18 is then gated on the
+A passed review in versions 1 through 8 and versions 18 onward is then gated on the
 [GitHub Inspector final gate](#github-inspector-final-gate) finding nothing on the pull request.
-Versions 9 through 17 complete when their Pull Request action reaches End. Version 18 waits
+Versions 9 through 17 complete when their Pull Request action reaches End. Versions 18 onward wait
 for Inspector after that action. GitHub Inspector remains independently available for
 reviewing pushed heads on GitHub and remains the source of exact-head proof used by Shipping.
 
-In versions 4 through 8 and version 18, findings require the session to fix, verify, commit and push, then
+In versions 4 through 8 and versions 18 onward, findings require the session to fix, verify, commit and push, then
 GitHub Inspector reviews the new head without rerunning the already-passed Personas. Versions 1
 through 3 retain their original whole-workflow restart behavior. Versions 5 through 7
 automatically return a passed, PR-less review to the session to prepare the pull request;
@@ -329,7 +330,7 @@ and versions 1 through 7, none of which carries an action node or has its post-E
 changed. Version 8 retains its GitHub Inspector gate unchanged. Version 9 retains its singleton
 Code Quality Judge stage unchanged, version 10 its two-member stage 3, version 11 its
 two-member stage 4, and version 12 its Slop Filter stage without enforced preflight. New bindings
-take version 18 because it is current. Adopting the newer version on an
+take version 19 because it is current. Adopting the newer version on an
 existing binding means creating a new binding, which is the same gesture adopting any newly
 published version already requires.
 

@@ -318,6 +318,7 @@ const NO_MISTAKES_REVIEW_NODES = {
   session: "nmr-session",
   typecheck: "nmr-check-typecheck",
   test: "nmr-check-test",
+  lint: "nmr-check-lint",
   build: "nmr-build-join",
   intent: "nmr-intent-conformance",
   coverage: "nmr-test-coverage-judge",
@@ -748,6 +749,51 @@ const NO_MISTAKES_REVIEW_V15: StagePipeline = {
   ],
 };
 
+/** Version 19 adds lint to the first gate, keeping every earlier pipeline immutable. */
+const NO_MISTAKES_REVIEW_V19: StagePipeline = {
+  sessionId: NO_MISTAKES_REVIEW_NODES.session,
+  endId: NO_MISTAKES_REVIEW_NODES.end,
+  endOutcome: "Complete",
+  stages: [
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.build,
+      members: [
+        check(NO_MISTAKES_REVIEW_NODES.typecheck, "typecheck"),
+        check(NO_MISTAKES_REVIEW_NODES.test, "test"),
+        check(NO_MISTAKES_REVIEW_NODES.lint, "lint"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.intentCoverage,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.intent, "intent-conformance-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.coverage, "test-coverage-judge"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.depth,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.risk, "code-risk-reviewer"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.quality, "code-quality-judge"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.design, "code-design-reviewer"),
+      ],
+    },
+    {
+      kind: "evaluation",
+      joinId: NO_MISTAKES_REVIEW_NODES.evidenceDocumentation,
+      members: [
+        reviewer(NO_MISTAKES_REVIEW_NODES.evidence, "test-evidence-auditor"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.documentation, "documentation-steward"),
+        reviewer(NO_MISTAKES_REVIEW_NODES.slop, "slop-filter"),
+      ],
+    },
+    action(NO_MISTAKES_REVIEW_NODES.pullRequest, PULL_REQUEST_SESSION_ACTION_ID),
+  ],
+};
+
 
 /** Versions 1-16 keep the exact intent policy they shipped with. */
 const INTENT_CONFORMANCE_JUDGE_V16_SNAPSHOT: BuiltinPersonaSnapshotOverride = {
@@ -989,7 +1035,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
     slug: NO_MISTAKES_REVIEW_WORKFLOW_SLUG,
     name: "No-Mistakes Review (High Rigor)",
     description:
-      "Typecheck and test, then eight review roles: Intent Conformance and Test Coverage; Code "
+      "Typecheck, test, and lint, then eight review roles: Intent Conformance and Test Coverage; Code "
       + "Risk, Quality and Design; then Test Evidence, Documentation and Slop Filter. Configured checks run; "
       + "unconfigured slots skip and pass. Failures return for repair. The current version runs "
       + "every reviewer with Codex, using Sol for Code Design and Terra for the others, then opens and verifies "
@@ -1279,12 +1325,27 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
         bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
         sourceDraftRevision: 17,
       },
+      {
+        // Version 19 adds lint to the initial checks before any Persona runs.
+        pipeline: NO_MISTAKES_REVIEW_V19,
+        personaExecution: {
+          default: { runner: "codex", model: "gpt-5.6-terra" },
+          overrides: {
+            "builtin:code-design-reviewer": { runner: "codex", model: "gpt-5.6-sol" },
+          },
+        },
+        completionPolicy: { kind: "inspector", onFindings: "inspector_only", missingPrAction: "wait" },
+        resumptionPolicy: "auto",
+        evidenceReadinessPolicy: "criterion_mapped_v1",
+        bindingDefaults: NO_MISTAKES_REVIEW_LIVE_DEFAULTS,
+        sourceDraftRevision: 18,
+      },
     ],
   }),
   builtinWorkflow({
     slug: GENERAL_REVIEW_WORKFLOW_SLUG,
     name: "General Review",
-    description: "Balanced review for ordinary changes: Intent, Risk, Quality, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
+    description: "Typecheck, test, and lint, then balanced review for ordinary changes: Intent, Risk, Quality, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
     versions: [{
       pipeline: {
         sessionId: "gr-session",
@@ -1329,12 +1390,61 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 1,
+    }, {
+      // Version 2 adds lint to the first gate; version 1 stays frozen.
+      pipeline: {
+        sessionId: "gr-session",
+        endId: "gr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "gr-checks-join",
+            members: [
+              check("gr-typecheck", "typecheck"),
+              check("gr-test", "test"),
+              check("gr-lint", "lint"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("gr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-2-join",
+            members: [
+              reviewer("gr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("gr-code-quality-judge", "code-quality-judge"),
+              reviewer("gr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "gr-review-3-join",
+            members: [
+              reviewer("gr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("gr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("gr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 2,
     }],
   }),
   builtinWorkflow({
     slug: BUG_FIX_REVIEW_WORKFLOW_SLUG,
     name: "Bug Fix Review",
-    description: "Focused bug review: Intent, Root Cause & Regression, Risk, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
+    description: "Typecheck, test, and lint, then focused bug review: Intent, Root Cause & Regression, Risk, Coverage, Evidence, and Slop Filter, followed by a verified pull request.",
     versions: [{
       pipeline: {
         sessionId: "bfr-session",
@@ -1379,6 +1489,55 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflow[] = [
       evidenceReadinessPolicy: "criterion_mapped_v1",
       bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
       sourceDraftRevision: 1,
+    }, {
+      // Version 2 adds lint to the first gate; version 1 stays frozen.
+      pipeline: {
+        sessionId: "bfr-session",
+        endId: "bfr-end",
+        endOutcome: "Complete",
+        stages: [
+          {
+            kind: "evaluation",
+            joinId: "bfr-checks-join",
+            members: [
+              check("bfr-typecheck", "typecheck"),
+              check("bfr-test", "test"),
+              check("bfr-lint", "lint"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: null,
+            members: [
+              reviewer("bfr-intent-conformance-judge", "intent-conformance-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-2-join",
+            members: [
+              reviewer("bfr-root-cause-regression-judge", "root-cause-regression-judge"),
+              reviewer("bfr-code-risk-reviewer", "code-risk-reviewer"),
+              reviewer("bfr-test-coverage-judge", "test-coverage-judge"),
+            ],
+          },
+          {
+            kind: "evaluation",
+            joinId: "bfr-review-3-join",
+            members: [
+              reviewer("bfr-test-evidence-auditor", "test-evidence-auditor"),
+              reviewer("bfr-slop-filter", "slop-filter"),
+            ],
+          },
+          action("bfr-pull-request", PULL_REQUEST_SESSION_ACTION_ID),
+        ],
+      },
+      personaExecution: { default: { runner: "codex", model: "gpt-5.6-terra" } },
+      completionPolicy: { kind: "none" },
+      resumptionPolicy: "auto",
+      evidenceReadinessPolicy: "criterion_mapped_v1",
+      bindingDefaults: { triggerMode: "foreman_complete", deliveryMode: "live", maxRepairRounds: 5 },
+      sourceDraftRevision: 2,
     }],
   }),
   builtinWorkflow({

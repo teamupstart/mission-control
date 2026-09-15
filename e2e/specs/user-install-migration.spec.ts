@@ -7,7 +7,7 @@ import { UPDATE_DIALOGS, type UpdateDialogRequest } from '../../src/shared/updat
 import { UpdateController } from '../../src/main/updater.ts';
 import { repairMigrationIntegrations } from '../../src/main/migration-integrations.ts';
 import { migrationPlanFixture } from '../../test/helpers/migration-plan.ts';
-import { migrationBundleIdentity, prepareMigration } from '../../scripts/install-migration.mjs';
+import { MIGRATION_PROTOCOL, migrationBundleIdentity, prepareMigration } from '../../scripts/install-migration.mjs';
 import { expectContentClearsBorder } from '../fixtures/modal-inset.ts';
 import { expect, test } from '../fixtures/test.ts';
 
@@ -58,7 +58,8 @@ test('the packaged migration policy offers the personal destination for an alpha
   // Read the shipped gate: a canned migration snapshot would pass while packaging disabled it.
   const config = readFileSync(new URL('../../electron-builder.yml', import.meta.url), 'utf8');
   const metadata = config.match(/^  missionInstallMigration:\n((?: {4}[^\n]*\n)+)/m)?.[1] ?? '';
-  const capability = {protocol: 1, automatic: /^ {4}automatic: true$/m.test(metadata)};
+  const protocol = metadata.match(/^ {4}protocol: (\d+)$/m)?.[1];
+  const capability = {protocol: protocol === String(MIGRATION_PROTOCOL) ? MIGRATION_PROTOCOL : null, automatic: /^ {4}automatic: true$/m.test(metadata)};
   const stateDirectory = realpathSync(daemon.home);
   const home = join(stateDirectory, 'migration-home');
   const systemDirectory = join(home, 'System Applications');

@@ -1892,7 +1892,10 @@ export function runEvidenceCriterionRows(input: {
       criterionId: criterion.criterionId,
       criterion: criterion.criterion,
       material: criterion.material,
-      ...criterionVerdict(criterion, ids.length > 0),
+      // `claims`, not `ids`: a readiness row can name a claim this submission's coverage does
+      // not carry, and a row labelled `contested` over an empty claim list would be naming
+      // claims it cannot show.
+      ...criterionVerdict(criterion, claims.length > 0),
       gaps: criterion.gaps.map(evidenceCodeLabel),
       warnings: criterion.warnings.map(evidenceCodeLabel),
       claims,
@@ -1915,18 +1918,27 @@ export interface RunEvidenceClaimStatus {
  * Match a claim to its canonical criterion BY ID, never by the criterion text.
  *
  * `matchedClientCriterionId` is the reconciliation's own answer to "which author claim did I
- * accept for this criterion". Matching on the wording instead works only where the author's
- * phrasing and the compacted canonical phrasing happen to be identical - which is precisely the
- * submission that has no gaps to report - and silently reports every real mismatch as unlinked.
+ * accept for this criterion", and `contestedClientCriterionIds` is that answer where it accepted
+ * none. Matching on the wording instead works only where the author's phrasing and the compacted
+ * canonical phrasing happen to be identical - which is precisely the submission that has no gaps
+ * to report - and silently reports every real mismatch as unlinked.
  */
 export function evidenceClaimStatus(
   claim: WorkflowEvidenceCoverageClaim,
   readiness: WorkflowEvidenceReadinessResult | null | undefined,
 ): RunEvidenceClaimStatus {
-  const criterion = (readiness?.criteria ?? [])
-    .find((entry) => entry.matchedClientCriterionId === claim.clientCriterionId) ?? null;
+  const criterion = (readiness?.criteria ?? []).find((entry) =>
+    entry.matchedClientCriterionId === claim.clientCriterionId
+    || (entry.contestedClientCriterionIds ?? []).includes(claim.clientCriterionId)) ?? null;
   if (criterion?.gaps.length) {
     return { label: "gaps", tone: "failed", notes: criterion.gaps.map(evidenceCodeLabel) };
+  }
+  // Only reachable through the contested list, since a matched id is never null. Read before
+  // warnings for the reason the criterion row reads it there: the reconciliation accepted no
+  // claim for this criterion, so an advisory note about one claim's proof class is not the
+  // row's answer.
+  if (criterion && criterion.matchedClientCriterionId === null) {
+    return { label: "contested", tone: "waiting", notes: [] };
   }
   if (criterion?.warnings.length) {
     return { label: "warning", tone: "waiting", notes: criterion.warnings.map(evidenceCodeLabel) };

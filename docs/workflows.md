@@ -1376,8 +1376,10 @@ wording, its author-selected proof class, its repository scope and the evidence 
 frozen immutably at submission, which is the only account of what was asserted and how, and what a
 proof-class disagreement is read against. It is not the pane's verdict, and its status word is
 one of two different kinds of fact. Where the reconciliation matched the claim to a criterion the
-row reads that answer back - **gaps**, **warning** or **linked** - and where a reconciliation ran
-but matched this claim to nothing it reads **not reconciled**. The rest describe the claim's own
+row reads that answer back - **gaps**, **warning** or **linked** - and a claim the reconciliation
+found contested reads **contested** here as well, so the criterion row above and the claim row
+below cannot describe the same claim two different ways. Where a reconciliation ran but matched
+this claim to nothing it reads **not reconciled**. The rest describe the claim's own
 links rather than judging it: a claim citing no evidence reads **no evidence linked** whether or
 not anything reconciled it, and on a submission with no reconciliation at all a claim that cites
 evidence reads **linked**, which there means only that it cites evidence, since nothing has

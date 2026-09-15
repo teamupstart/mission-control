@@ -1770,6 +1770,43 @@ test("the criterion ledger is total over the canonical criteria and sorts the lo
   assert.equal(contested[0]!.label, "contested");
   assert.deepEqual(contested[0]!.claims.map((entry) => entry.clientCriterionId), ["c1", "c2"]);
 
+  // A claim named by the contested list carries that word on its OWN row too, so the ledger row
+  // and the claim row below cannot describe the same claim two different ways.
+  const contestedReadiness = readinessOf([criterion("canon-two", {
+    matchedClientCriterionId: null,
+    contestedClientCriterionIds: ["c1", "c2"],
+  })]);
+  assert.equal(evidenceClaimStatus(claim("c1"), contestedReadiness).label, "contested");
+  assert.equal(evidenceClaimStatus(claim("c2"), contestedReadiness).label, "contested");
+  // A claim nothing named still reads `not reconciled` rather than borrowing the word.
+  assert.equal(
+    evidenceClaimStatus(claim("c9", { links: [{ clientItemId: "item-a", role: "execution" }] }), contestedReadiness).label,
+    "not reconciled",
+  );
+
+  /*
+   * A readiness row naming a claim this submission's coverage does not carry.
+   *
+   * The ids survive in the readiness record, so `contestedClientCriterionIds` is non-empty while
+   * the claims it names resolve to nothing. Reading the verdict off the ids would label the row
+   * `contested` above an empty claim list, naming claims it cannot show.
+   */
+  const unresolved = runEvidenceCriterionRows({
+    coverage: [],
+    readiness: readinessOf([criterion("canon-two", {
+      matchedClientCriterionId: null,
+      contestedClientCriterionIds: ["c1", "c2"],
+    })]),
+  });
+  assert.deepEqual(unresolved[0]!.claims, []);
+  assert.equal(unresolved[0]!.label, "no author claim");
+  // The same rule for a MATCHED id the coverage does not carry.
+  const orphanMatch = runEvidenceCriterionRows({
+    coverage: [],
+    readiness: readinessOf([criterion("canon-one", { matchedClientCriterionId: "c1" })]),
+  });
+  assert.equal(orphanMatch[0]!.label, "no author claim");
+
   // A gap outranks everything: the criterion is contested AND gapped, and the gap is the fact
   // that stops the packet.
   const gappedContest = runEvidenceCriterionRows({

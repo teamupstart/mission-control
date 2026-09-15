@@ -804,7 +804,10 @@ for (const { round, attempts } of [{ round: 1, attempts: 6 }, { round: 2, attemp
   await expect(rounds.getByRole("status")).toContainText(`Evidence ${attempts} of round ${round}`);
   await expect(rounds.getByRole("group", { name: `Select evidence in round ${round}` })
     .getByRole("button")).toHaveCount(attempts);
-  await expect(readiness.getByText("missing rendered output", { exact: true })).toBeVisible();
+  // Scoped to the reconciliation, which is where a reader sees this gap. The same code also
+  // sits on the author claim's row inside the disclosure below, so the pane holds two copies.
+  await expect(readiness.getByRole("region", { name: "Canonical reconciliation" })
+    .getByText("missing rendered output", { exact: true })).toBeVisible();
   await expect(readiness.getByRole("button", { name: "Retry evidence preflight" })).toHaveCount(0);
   await expect(readiness.getByRole("button", { name: "Continue to review" })).toHaveCount(0);
   await expect(readiness).not.toContainText("Operator continued despite gaps");

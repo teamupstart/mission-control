@@ -168,34 +168,21 @@ const walkthrough = new FileCommentWalkthrough({
   agentTurnsSince: () => [],
   appendAgentReply: () => null,
 });
-const app = buildApp(
+const app = buildApp({
   registry,
-  stub<ReviewManager>(),
-  stub<TaskManager>(),
-  stub<QueueManager>(),
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  undefined,
-  new FileCommentManager(registry),
-  walkthrough,
-);
+  reviews: stub<ReviewManager>(),
+  tasks: stub<TaskManager>(),
+  queues: stub<QueueManager>(),
+  fileComments: new FileCommentManager(registry),
+  fileCommentWalkthrough: walkthrough,
+});
 // The same construction with the manager LEFT OFF, which is what ~50 focused route tests do.
-const without = buildApp(registry, stub<ReviewManager>(), stub<TaskManager>(), stub<QueueManager>());
+const without = buildApp({
+  registry,
+  reviews: stub<ReviewManager>(),
+  tasks: stub<TaskManager>(),
+  queues: stub<QueueManager>(),
+});
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 

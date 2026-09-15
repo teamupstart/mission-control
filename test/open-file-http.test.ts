@@ -30,12 +30,12 @@ test.after(() => rm(checkout, { recursive: true, force: true }));
 const registry = {
   getSession: (id: string) => (id === "live" ? { id, cwd: checkout } : id === "homeless" ? { id, cwd: "" } : undefined),
 } as unknown as Registry;
-const app = buildApp(
+const app = buildApp({
   registry,
-  {} as unknown as ReviewManager,
-  {} as unknown as TaskManager,
-  {} as unknown as QueueManager,
-);
+  reviews: {} as unknown as ReviewManager,
+  tasks: {} as unknown as TaskManager,
+  queues: {} as unknown as QueueManager,
+});
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 

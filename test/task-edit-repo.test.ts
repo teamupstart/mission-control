@@ -47,7 +47,12 @@ function setup(over: Partial<Task> = {}) {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   registry.upsertTask(mkTask({ id: "t1", status: "backlog", ...over }));
-  const app = buildApp(registry, {} as unknown as ReviewManager, tasks, {} as unknown as QueueManager);
+  const app = buildApp({
+    registry,
+    reviews: {} as unknown as ReviewManager,
+    tasks,
+    queues: {} as unknown as QueueManager,
+  });
   const patch = async (body: unknown): Promise<Response> =>
     app.request("/api/tasks/t1/update", {
       method: "POST",

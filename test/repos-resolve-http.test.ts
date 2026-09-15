@@ -14,7 +14,7 @@ const registry = {} as unknown as Registry;
 const reviews = {} as unknown as ReviewManager;
 const tasks = {} as unknown as TaskManager;
 const queues = {} as unknown as QueueManager;
-const app = buildApp(registry, reviews, tasks, queues);
+const app = buildApp({ registry, reviews, tasks, queues });
 
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 

@@ -29,11 +29,13 @@ function fixture() {
   clearWorkflowTables(db);
   const registry = new Registry();
   const sessionActions = new SessionActionManager(registry, new WorkflowStore(db));
-  const app = buildApp(
-    registry, null as never, null as never, null as never,
-    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+  const app = buildApp({
+    registry,
+    reviews: null as never,
+    tasks: null as never,
+    queues: null as never,
     sessionActions,
-  );
+  });
   const request = (path: string, init?: RequestInit) =>
     app.request(path, {
       ...init,
@@ -244,7 +246,7 @@ test("the capabilities route serves the daemon's OWN registry, before the id rou
 
 test("the routes answer honestly when the daemon supplied no manager", async () => {
   const registry = new Registry();
-  const app = buildApp(registry, null as never, null as never, null as never);
+  const app = buildApp({ registry, reviews: null as never, tasks: null as never, queues: null as never });
   const response = await app.request("/api/session-actions", {
     headers: { host: "127.0.0.1:7317" },
   });

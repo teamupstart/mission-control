@@ -107,9 +107,10 @@ build: $(NPM_STAMP) ## Build everything (web UI, daemon, Electron main, MCP + ho
 app: ## Build and package the macOS app (.app + .dmg) into release/
 	npm run package
 
-install-app: app ## Build, package, and copy Mission Control.app into /Applications
-	@rm -rf "/Applications/Mission Control.app"
-	@cp -R "release/mac-arm64/Mission Control.app" /Applications/ && echo "installed to /Applications/Mission Control.app"
+# APPS_DIR overrides the destination; it must already exist. The default is this account's own
+# ~/Applications, created when missing, matching what `make install` now uses.
+install-app: app ## Build, package, and install THIS worktree's app into ~/Applications (no receipt)
+	@node scripts/install-dev-app.mjs $(if $(APPS_DIR),--apps-dir "$(APPS_DIR)",)
 
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs

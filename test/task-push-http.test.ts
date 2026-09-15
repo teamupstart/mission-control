@@ -98,12 +98,12 @@ function setup(over: Partial<Task> = {}) {
     ...over,
   });
   registry.upsertTask(task);
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as unknown as ReviewManager,
+    reviews: {} as unknown as ReviewManager,
     tasks,
-    {} as unknown as QueueManager,
-  );
+    queues: {} as unknown as QueueManager,
+  });
   const push = async (id: string, body: unknown): Promise<Response> =>
     app.request(`/api/tasks/${id}/push`, {
       method: "POST",

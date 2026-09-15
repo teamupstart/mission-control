@@ -290,7 +290,7 @@ test("the planning PR merge both publishes the plan files and releases the phase
   const episode = registry.workEpisodeForSession(planningSession.id);
   assert.ok(episode);
 
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const response = await app.request("/mcp/v2/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },
@@ -417,7 +417,7 @@ test("publishing a phase plan as the task text violates the contract", async () 
     "filler detail that a plan document is full of. ".repeat(120),
   ].join("\n");
 
-  const app = buildApp(registry, {} as ReviewManager, tasks, {} as QueueManager);
+  const app = buildApp({ registry, reviews: {} as ReviewManager, tasks, queues: {} as QueueManager });
   const response = await app.request("/mcp/tasks", {
     method: "POST",
     headers: { "content-type": "application/json", "x-harness-token": ensureToken() },

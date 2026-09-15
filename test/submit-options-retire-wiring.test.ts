@@ -129,23 +129,13 @@ function seed(id: string, deps: PaneDeps): { registry: Registry_; app: ReturnTyp
     },
     1000,
   );
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as unknown as ReviewManager,
-    {} as unknown as TaskManager,
-    {} as unknown as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    deps,
-  );
+    reviews: {} as unknown as ReviewManager,
+    tasks: {} as unknown as TaskManager,
+    queues: {} as unknown as QueueManager,
+    paneDeps: deps,
+  });
   return { registry, app };
 }
 

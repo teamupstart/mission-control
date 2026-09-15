@@ -17,29 +17,7 @@ const tasks = {} as TaskManager;
 const queues = {} as QueueManager;
 
 function appWith(service?: HarnessModelCatalogService) {
-  return buildApp(
-    registry,
-    reviews,
-    tasks,
-    queues,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    service,
-  );
+  return buildApp({ registry, reviews, tasks, queues, modelCatalogs: service });
 }
 
 function serviceWith(discover: () => Promise<

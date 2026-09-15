@@ -17,7 +17,16 @@ import {
 import { join, resolve } from "node:path";
 
 export const APP_BUNDLE_NAME = "Mission Control.app";
-export const DEFAULT_APPS_DIR = "/Applications";
+/**
+ * The one directory an administrator prompt may ever install into.
+ *
+ * Named for what it authorizes rather than for what an install defaults to, because it is no
+ * longer both. A personal install now defaults to the signed-in account's own `~/Applications`
+ * (see `install-destination.mjs`), which needs no elevation at all; this constant stays fixed
+ * at the shared system folder so that widening the default cannot widen the privilege
+ * boundary. `privilegedBundleSwapCommand` is its only consumer here.
+ */
+export const SYSTEM_APPS_DIR = "/Applications";
 export const ADMINISTRATOR_AUTHORIZATION_PROMPT =
   "Mission Control needs administrator permission to install this update in /Applications.";
 /**
@@ -156,8 +165,8 @@ export function privilegedBundleSwapCommand({
   }
   const exactAppsDir = resolve(appsDir);
   const exactAppPath = resolve(appPath);
-  const expectedAppPath = join(DEFAULT_APPS_DIR, APP_BUNDLE_NAME);
-  if (exactAppsDir !== DEFAULT_APPS_DIR || exactAppPath !== expectedAppPath) {
+  const expectedAppPath = join(SYSTEM_APPS_DIR, APP_BUNDLE_NAME);
+  if (exactAppsDir !== SYSTEM_APPS_DIR || exactAppPath !== expectedAppPath) {
     return {
       command: null,
       problem: `administrator authorization is restricted to ${expectedAppPath}`,

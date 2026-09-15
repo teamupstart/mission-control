@@ -7,7 +7,6 @@ import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
 } from "../shared/install-receipt-schema.mjs";
-import { readReceipt } from "../shared/install-receipt.mjs";
 import { stagedBuildAcceptance, stagedBundleRevision } from "../shared/staged-bundle.mjs";
 import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
 import {
@@ -80,6 +79,13 @@ export interface UpdateDialogs {
   outcome(outcome: UpdateApplyOutcome): Promise<void>;
 }
 
+/** One coherent reading of what is installed and whether this process may update it. */
+export interface InstallSnapshot {
+  receipt: InstallReceipt | null;
+  /** Why this bundle may not update anything, or null when it may. */
+  problem: string | null;
+}
+
 export interface HelperHandoff {
   node: string;
   env?: NodeJS.ProcessEnv;
@@ -139,7 +145,19 @@ export interface UpdaterPort {
   currentCommit(): string | null;
   readAlpha(): boolean;
   writeAlpha(alpha: boolean): void;
-  readReceipt(): InstallReceipt | null;
+  /**
+   * The receipt and this bundle's right to act on it, read together.
+   *
+   * ONE call, deliberately, and never two. The receipt names an absolute app path, and until
+   * personal installs existed nothing compared it to the bundle the process came out of - so a
+   * retained copy at the old location would happily build an update and swap it into the app
+   * somebody else is running. Answering that needs the receipt AND the classification, and
+   * splitting them across two port calls meant the two could describe different installations:
+   * a receipt rewritten in between would be validated in one call and acted on in the other.
+   * Returning both from one read makes that impossible rather than unlikely, and leaves the
+   * caller nothing to coordinate. See `install-identity.ts` for how `problem` is reached.
+   */
+  installSnapshot(): InstallSnapshot;
   latestRelease(): Promise<ReleaseInfo | null>;
   latestMainCommit(): Promise<MainCommitInfo>;
   runtime(sourceClone: string, needsBuildTools?: boolean): Promise<UpdateRuntime>;
@@ -463,6 +481,22 @@ function safeUpdateError(error: unknown): {
       };
 }
 
+/**
+ * Why a snapshot cannot drive an update, or null when it can.
+ *
+ * One reading rather than two: startup used to apply the receipt and trust checks while
+ * `install()` re-checked only the identity, so a receipt rewritten to an untrusted repository
+ * after launch was refused at the wrong moment or not at all. Every caller now asks the same
+ * question of the same snapshot.
+ */
+export function updateIneligibility(snapshot: InstallSnapshot): string | null {
+  if (!snapshot.receipt) return "This app was not installed with the managed install command.";
+  if (!isTrustedInstallRepo(snapshot.receipt.repo)) {
+    return `Updates are disabled because this app was installed from ${snapshot.receipt.repo}.`;
+  }
+  return snapshot.problem;
+}
+
 export class UpdateController {
   private alpha: boolean;
   private snapshot: UpdateSnapshot;
@@ -561,11 +595,11 @@ export class UpdateController {
     const disable = (reason: string) => this.publish({ phase: "disabled", reason, lastOutcome });
     if (this.port.arch !== "arm64") disable("Updates require an Apple silicon Mac.");
     else {
-      this.receipt = this.port.readReceipt();
-      if (!this.receipt) disable("This app was not installed with the managed install command.");
-      else if (!isTrustedInstallRepo(this.receipt.repo)) {
-        disable(`Updates are disabled because this app was installed from ${this.receipt.repo}.`);
-      } else {
+      const installed = this.port.installSnapshot();
+      this.receipt = installed.receipt;
+      const reason = updateIneligibility(installed);
+      if (reason) disable(reason);
+      else {
         this.lastBackgroundAttempt = this.port.now();
         this.publish(idleSnapshot(this.currentLabel(), lastOutcome, null));
       }
@@ -940,6 +974,28 @@ export class UpdateController {
     if (this.installPromise) return this.installPromise;
     if (this.snapshot.phase !== "ready" || !this.receipt) return Promise.resolve(false);
     const target = this.snapshot;
+    // Read again here, and not only at startup. An update prepared hours ago is installed by a
+    // helper that swaps whatever `receipt.appPath` names, and between those two moments another
+    // install can rewrite the receipt or replace a bundle. A stale answer would send the helper
+    // to swap a bundle this process is not.
+    //
+    // The receipt the handoff uses is taken FROM this reading rather than left at the value
+    // startup stored. Validating one receipt and then handing the helper another is the exact
+    // incoherence the single snapshot exists to remove.
+    const installed = this.port.installSnapshot();
+    const reason = updateIneligibility(installed);
+    if (reason) {
+      this.publish({
+        phase: "error",
+        currentVersion: target.currentVersion,
+        message: reason,
+        manual: true,
+        retryable: false,
+        lastOutcome: target.lastOutcome,
+      });
+      return Promise.resolve(false);
+    }
+    this.receipt = installed.receipt;
     const staged = this.staged;
     if (!staged || staged.releaseTag !== target.releaseTag) return Promise.resolve(false);
     // Checked again here, not only when it was built. A person can leave an update ready for
@@ -1160,6 +1216,8 @@ export function createDefaultUpdaterPort(options: {
   packaged: boolean;
   currentVersion: () => string;
   currentCommit: () => string | null;
+  /** Re-read on every call: the receipt and both bundles can change while the app is open. */
+  installSnapshot: () => InstallSnapshot;
   arch?: string;
   helperSource: string;
   stateDirectory: string;
@@ -1173,9 +1231,9 @@ export function createDefaultUpdaterPort(options: {
     arch: options.arch ?? process.arch,
     currentVersion: options.currentVersion,
     currentCommit: options.currentCommit,
+    installSnapshot: options.installSnapshot,
     readAlpha: () => readUpdatePreferences(join(options.stateDirectory, "update-preferences.json")).alpha,
     writeAlpha: (alpha) => { writeUpdatePreferences(join(options.stateDirectory, "update-preferences.json"), { alpha }); },
-    readReceipt,
     latestRelease: () => latestStableRelease(runGh),
     latestMainCommit: () => latestMainCommit(runGh),
     runtime: checkUpdateRuntime,

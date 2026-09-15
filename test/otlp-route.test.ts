@@ -30,12 +30,12 @@ after(() => rmSync(home, { recursive: true, force: true }));
 const db = openDb();
 const TOKEN = ensureToken();
 const registry = new Registry();
-const app = buildApp(
+const app = buildApp({
   registry,
-  new ReviewManager(registry),
-  new TaskManager(registry),
-  new QueueManager(registry),
-);
+  reviews: new ReviewManager(registry),
+  tasks: new TaskManager(registry),
+  queues: new QueueManager(registry),
+});
 
 // Anchored to now, not to the day this was written: `estimatedCostToday` starts at LOCAL
 // midnight, so a hard-coded export window silently stops counting toward it the following

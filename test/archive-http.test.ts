@@ -100,25 +100,13 @@ function harness(
     },
   });
   after(() => manager.stop());
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as ReviewManager,
-    {} as TaskManager,
-    {} as QueueManager,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    manager,
-  );
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+    archives: manager,
+  });
   return { app, root, manager, events, opened };
 }
 
@@ -839,7 +827,12 @@ test("a reconciled batch raises exactly one invalidation, and history stays out 
 
 test("every scout route answers 503 when the daemon has no library, rather than building one", async () => {
   const registry = new Registry();
-  const app = buildApp(registry, {} as ReviewManager, {} as TaskManager, {} as QueueManager);
+  const app = buildApp({
+    registry,
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
   for (const [method, path] of [
     ["GET", "/api/archives"],
     ["GET", "/api/archives/a"],
@@ -1079,12 +1072,12 @@ test("a submission cannot name its own task, destination, or archive", async () 
 
 test("the submission route answers 503 when this build has no scout library", async () => {
   const registry = new Registry();
-  const app = buildApp(
+  const app = buildApp({
     registry,
-    {} as ReviewManager,
-    {} as TaskManager,
-    {} as QueueManager,
-  );
+    reviews: {} as ReviewManager,
+    tasks: {} as TaskManager,
+    queues: {} as QueueManager,
+  });
   const res = await app.request(SUBMIT, {
     method: "POST",
     headers: { ...JSON_HEADERS, "x-harness-token": ensureToken() },

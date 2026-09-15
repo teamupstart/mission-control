@@ -32,6 +32,7 @@ process.env.CODEX_HOME = join(home, "codex");
 const { HARNESSES, harnessFor, sessionMessages } = await import("../src/server/harness/index.ts");
 const { codexTranscript, joinCodexBatches, latestCodexNarration, parseCodexMessages } =
   await import("../src/server/harness/codex/transcript.ts");
+import type { RouteDeps } from "../src/server/routes.ts";
 const { buildApp } = await import("../src/server/routes.ts");
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { GOAL_UNSUPPORTED } = await import("../src/shared/goal.ts");
@@ -350,8 +351,8 @@ test("an agent that can never carry a goal is one whose harness reads no message
 
 const registry = {
   getSession: (id: string) => SESSIONS.get(id),
-} as unknown as Parameters<typeof buildApp>[0];
-const app = buildApp(registry, {} as never, {} as never, {} as never);
+} as unknown as RouteDeps["registry"];
+const app = buildApp({ registry, reviews: {} as never, tasks: {} as never, queues: {} as never });
 const HEADERS = { host: "127.0.0.1:7317" };
 const SESSIONS = new Map<string, Session>();
 

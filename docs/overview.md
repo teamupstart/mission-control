@@ -184,24 +184,38 @@ costs seconds rather than failing at the end of a full build. From a fresh clone
   that selects it - or the default branch tip while no release exists yet.
   `make install ARGS="--ref v1.2.3"` installs a specific ref instead;
 - builds and packages there, then verifies the packaged app's version equals the source tree's
-  before it touches `/Applications`;
-- replaces `/Applications/Mission Control.app`;
+  before it replaces anything;
+- installs **`~/Applications/Mission Control.app`**, your own account's Applications folder,
+  creating it when it is not there yet. Nothing about that destination needs an administrator
+  password;
 - writes an install **receipt** at `~/.mission-control/install-receipt.json` recording the
-  repository, release tag, version, source clone, and app path. See
-  [Desktop shell and packaging](desktop-and-packaging.md#managed-install-and-the-receipt).
+  repository, release tag, version, source clone, app path, and which destination was chosen.
+  See [Desktop shell and packaging](desktop-and-packaging.md#managed-install-and-the-receipt).
+
+A Mac that already has a managed install keeps it exactly where it is, including the shared
+`/Applications` copy every install before this one used. To install for every account on this
+Mac deliberately, run `make install ARGS="--scope system"`; macOS asks for an administrator
+password for that folder and only that folder.
 
 Re-running it is safe - every step detects its own completion - and
 `make install ARGS="--dry-run"` prints what it would do without changing anything.
 
-The developer path is unchanged, and deliberately separate:
+The developer path is deliberately separate:
 
 ```sh
 make app            # build + package → release/Mission Control-<version>-arm64.dmg
-make install-app    # …and copy THIS worktree's build into /Applications
+make install-app    # …and install THIS worktree's build into ~/Applications
 ```
 
 `make install-app` writes no receipt, so a work-in-progress build is never mistaken for a
-managed install.
+managed install. `make install-app APPS_DIR=/some/existing/dir` installs somewhere else. It
+stages the new bundle beside the old one and swaps, so an interrupted copy never leaves the
+account without a working app.
+
+The `.dmg` that `make app` produces is an unmanaged offline artifact: dragging the app out of
+it records no receipt, so that copy cannot update itself. It carries a Read Me saying so, and
+deliberately carries no `/Applications` shortcut - a disk image is opened on somebody else's
+Mac, where no fixed link can name the right Applications folder.
 
 A managed installed app keeps itself current from stable GitHub Releases. Choose **Check for
 Updates…** from the app menu or tray; the app uses the existing authenticated `gh` CLI and asks

@@ -9,6 +9,10 @@ export interface InstallReceipt {
   installedVersion: string;
   /** Full commit embedded in the installed bundle. Absent on older installs. */
   installedCommit?: string;
+  /**
+   * The destination someone deliberately chose. Absent means legacy, not system consent.
+   */
+  installScope?: InstallScope;
   /** Absolute path to the updater-owned clone the app was built in. */
   sourceClone: string;
   /** Absolute path to the installed app bundle. */
@@ -20,5 +24,7 @@ export interface InstallReceipt {
 export const CANONICAL_REPO: string;
 export const FORMER_CANONICAL_REPO: string;
 export function isTrustedInstallRepo(repo: string): boolean;
+export type InstallScope = "user" | "system" | "custom";
+export const INSTALL_SCOPES: readonly InstallScope[];
 export const INSTALL_RECEIPT_SCHEMA: number;
 export function validateReceipt(value: unknown): string | null;

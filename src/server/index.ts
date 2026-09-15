@@ -583,7 +583,15 @@ fileComments.start();
 // outbox already raises. Constructed after `pendingTurns` so it can subscribe to that signal.
 const fileCommentWalkthrough = createFileCommentWalkthrough(registry, pendingTurns);
 
-const app = buildApp(
+// Named rather than positional. Every service below reaches its route domain by field name,
+// so adding one here cannot re-point another domain's dependency, and a misspelled field is
+// rejected by `buildApp` naming the offending key instead of arriving as a silent `undefined`.
+//
+// A `RouteDeps` field this omits is a seam with a production default, and the default is named
+// at that field's own declaration in `routes.ts` rather than listed here - an inventory kept in
+// this comment goes stale the next time a dependency is added, which is exactly how
+// `focusTerminals` came to be missing from it.
+const app = buildApp({
   registry,
   reviews,
   tasks,
@@ -594,11 +602,8 @@ const app = buildApp(
   schedules,
   ensembles,
   sdkSessions,
-  undefined,
-  undefined,
   sessionActions,
   pendingTurns,
-  undefined,
   keepAwake,
   archives,
   workflowCommands,
@@ -609,7 +614,7 @@ const app = buildApp(
   fileComments,
   fileCommentWalkthrough,
   settingsBackups,
-);
+});
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

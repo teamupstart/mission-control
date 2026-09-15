@@ -25,7 +25,14 @@ function fixture() {
   const store = new WorkflowStore(db);
   const personas = new PersonaManager(registry, store);
   const workflows = new WorkflowManager(registry, store);
-  const app = buildApp(registry, null as never, null as never, null as never, undefined, personas, workflows);
+  const app = buildApp({
+    registry,
+    reviews: null as never,
+    tasks: null as never,
+    queues: null as never,
+    personas,
+    workflows,
+  });
   const request = (path: string, init?: RequestInit) => app.request(path, {
     ...init,
     headers: { host: "127.0.0.1:7317", "content-type": "application/json", ...init?.headers },

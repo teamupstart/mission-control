@@ -13,7 +13,8 @@ import { Tooltip } from "./Tooltip.tsx";
  * buttons, no panel, no border, no type ramp. It was the only confirm in Mission Control
  * that did not look like Mission Control, and it was the one shown for the job where
  * recognising who is asking matters most - an app proposing to close itself, install
- * something in `/Applications`, and ask for an administrator password on the way.
+ * the installed app, and ask for an administrator password on the way when that app lives in a
+ * shared system folder.
  *
  * There is no per-phase branch here. The seven conversations differ only in words, tone and
  * which buttons they offer, and `shared/update-dialog.ts` owns all three - so this renders

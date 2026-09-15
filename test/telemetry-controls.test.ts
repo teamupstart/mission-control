@@ -731,7 +731,7 @@ const registries = new WeakMap<object, InstanceType<typeof Registry>>();
 function routes() {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
-  const app = buildApp(registry, {} as never, tasks, {} as never);
+  const app = buildApp({ registry, reviews: {} as never, tasks, queues: {} as never });
   const statuses: ServerEvent[] = [];
   registry.subscribe((e) => {
     if (e.type === "settings_status") statuses.push(e);

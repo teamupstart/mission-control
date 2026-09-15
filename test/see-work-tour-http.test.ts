@@ -70,7 +70,7 @@ test("the tour route fixes Terra, the harmless prompt, and request_input at the 
     },
     get() { return current; },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   const response = await app.request("/api/tours/see-work/dispatch", {
     method: "POST",
@@ -111,7 +111,7 @@ test("an empty-fleet preview launches one fixed manual Chat conversation", async
       return current;
     },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   const response = await app.request("/api/tours/see-work/preview", {
     method: "POST",
@@ -146,7 +146,7 @@ test("an early tour exit cancels provisioning before recording Tour demo", async
       return current;
     },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   const response = await app.request(`/api/tours/see-work/tasks/${current.id}/complete`, {
     method: "POST",
@@ -180,7 +180,7 @@ test("a cancel that left resources behind still records the tour's outcome", asy
       return current;
     },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   const response = await app.request(`/api/tours/see-work/tasks/${current.id}/complete`, {
     method: "POST",
@@ -219,7 +219,7 @@ test("the same cleanup doorway recognizes and closes the Chat preview", async ()
       return current;
     },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   const response = await app.request(`/api/tours/see-work/tasks/${current.id}/complete`, {
     method: "POST",
@@ -249,18 +249,7 @@ test("tour cleanup reconciles a registered SDK session after its driver is alrea
   const supervisor = {
     handleFor: () => null,
   } as unknown as SdkSupervisor;
-  const app = buildApp(
-    registry,
-    {} as never,
-    tasks,
-    {} as never,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    supervisor,
-  );
+  const app = buildApp({ registry, reviews: {} as never, tasks, queues: {} as never, sdkSessions: supervisor });
 
   const response = await app.request(`/api/tours/see-work/tasks/${current.id}/complete`, {
     method: "POST",
@@ -280,7 +269,7 @@ test("an unknown tour id is refused before any task is created", async () => {
     },
     get() { return tourTask(); },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   for (const path of [
     "/api/tours/nope/dispatch",
@@ -309,7 +298,7 @@ test("the Library tour has no server recipe, so every tour route refuses it", as
     },
     get() { return tourTask(); },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   // A registered BROWSER tour is not a registered server tour. The Library tour creates
   // nothing - no task, no session, no binding - so it declares no operation, and asking for
@@ -345,7 +334,7 @@ test("cleanup refuses a task the named tour did not create", async () => {
     async cancel() { calls.push("cancel"); return { ok: true as const }; },
     async complete() { calls.push("complete"); return stranger; },
   } as unknown as TaskManager;
-  const app = buildApp(new Registry(), {} as never, tasks, {} as never);
+  const app = buildApp({ registry: new Registry(), reviews: {} as never, tasks, queues: {} as never });
 
   const response = await app.request(`/api/tours/see-work/tasks/${stranger.id}/complete`, {
     method: "POST",

@@ -45,12 +45,12 @@ const { openDb } = await import("../src/server/db.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { invalidateReposCache } = await import("../src/server/repos.ts");
 
-const app = buildApp(
-  {} as Registry,
-  {} as ReviewManager,
-  {} as TaskManager,
-  {} as QueueManager,
-);
+const app = buildApp({
+  registry: {} as Registry,
+  reviews: {} as ReviewManager,
+  tasks: {} as TaskManager,
+  queues: {} as QueueManager,
+});
 const HEADERS = { host: "127.0.0.1:7317", "content-type": "application/json" };
 
 function makeRepo(dir: string): void {

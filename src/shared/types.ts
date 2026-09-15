@@ -36,6 +36,7 @@ import type {
 import type { ForemanInstructionsSource, HtmlBlockPathStep } from "./protocol.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
+import type { TelemetrySettingsSummary } from "./telemetry.ts";
 import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
 import type {
   PersonaId,
@@ -2900,6 +2901,23 @@ export interface SettingsStatus {
     /** Engineer host choice, appended so an open Dispatch dialog can invalidate its copy. */
     launchRuntime?: PipelineLaunchRuntime;
   };
+  /**
+   * General telemetry collection and export, as counts and closed enums.
+   *
+   * On this channel rather than behind a poll because it is the one Settings fact that MOVES on
+   * its own: a queue drains, a destination pauses itself, a backlog ages. A panel polling for
+   * that would be a second store of queue state, and the two would disagree the moment an
+   * export cycle landed between two polls.
+   *
+   * Optional so a dashboard connected to an older daemon during a rolling update reads "not
+   * reported" rather than "off" - the same treatment `observedRepoKeys` gets, and the same
+   * reason: a telemetry panel drawing a confident all-clear from a field that was never sent
+   * would be the one lie this surface cannot afford.
+   *
+   * It carries no endpoint, no credential, no payload and no error text. What it does carry is
+   * exactly what a person needs to decide whether to open the panel.
+   */
+  telemetry?: TelemetrySettingsSummary;
 }
 
 // ---- Keep Awake (transient idle-sleep inhibition) ----

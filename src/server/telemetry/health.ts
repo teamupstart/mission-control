@@ -15,6 +15,8 @@ import {
   TELEMETRY_PROFILE_IDS,
   type TelemetryHealth,
   type TelemetryProfileHealth,
+  type TelemetryProfileSummary,
+  type TelemetrySettingsSummary,
 } from "@shared/telemetry.ts";
 import {
   getTelemetryConfig,
@@ -87,6 +89,88 @@ export function telemetryHealth(now = Date.now()): TelemetryHealth {
       usedBytes: usedBytes(d),
       maxBytes: TELEMETRY_LIMITS.maxTotalBytes,
       gaps: listGaps(d),
+      profiles,
+    };
+  });
+}
+
+/**
+ * The bounded summary that rides the settings-status channel.
+ *
+ * A strict subset of `telemetryHealth`, computed separately rather than by trimming it, for one
+ * reason that matters: this runs on EVERY settings-status recompose - every config write, every
+ * task-source sweep, every dashboard connect - while the full health view runs only when a
+ * panel asks for it. The two have different budgets and should not share a query plan.
+ *
+ * An installation that never opted in short-circuits before touching a telemetry table at all.
+ * That is the state almost every installation is in, and the check is exact rather than a
+ * guess: no identity has been minted means nothing has ever been captured, projected or queued,
+ * because minting is what capture does first.
+ */
+export function telemetrySettingsSummary(now = Date.now()): TelemetrySettingsSummary {
+  const config = getTelemetryConfig();
+  const productEnrollment = telemetryProductEnrollment();
+  if (peekTelemetryIdentity() === null) {
+    return {
+      enabled: config.enabled,
+      configRevision: config.revision,
+      productEnrollment,
+      usedBytes: 0,
+      maxBytes: TELEMETRY_LIMITS.maxTotalBytes,
+      gaps: 0,
+      profiles: TELEMETRY_PROFILE_IDS.map((profile) => ({
+        profile,
+        capturing: profileIsCapturing(config, profile),
+        exporting: profileIsExporting(config, profile),
+        paused: false,
+        pausedReason: null,
+        pending: 0,
+        pendingBytes: 0,
+        oldestPendingAgeMs: null,
+        lastAcceptedAt: null,
+        failing: false,
+      })),
+    };
+  }
+
+  return telemetryTransaction((d) => {
+    const profiles: TelemetryProfileSummary[] = TELEMETRY_PROFILE_IDS.map((profile) => {
+      const destination = getDestination(d, profile);
+      const counts = deliveryCounts(d, profile);
+      return {
+        profile,
+        capturing: profileIsCapturing(config, profile),
+        exporting: profileIsExporting(config, profile),
+        // The OPERATOR's pause, which is a configuration value, kept separate from the
+        // daemon's own - `pausedReason` beside it. A panel has to be able to say "you paused
+        // this" and "it stopped itself, and why" as different sentences.
+        paused:
+          profile === "user"
+            ? config.user.paused
+            : profile === "product"
+              ? config.product.paused
+              : false,
+        pausedReason: destination.pausedReason,
+        // Pending plus retrying: both are undelivered work an operator is waiting on, and a
+        // figure that hid the retrying half would read as an empty queue during an outage -
+        // exactly when somebody is looking at it.
+        pending: counts.pending + counts.retrying,
+        pendingBytes: counts.pendingBytes,
+        oldestPendingAgeMs: counts.oldestPendingAt === null ? null : now - counts.oldestPendingAt,
+        lastAcceptedAt: destination.lastAcceptedAt,
+        // The FACT of a failure, never its text. The sanitized message is already bounded, but
+        // this frame reaches every open dashboard on every recompose and the health route is
+        // where a person who wants the reason goes.
+        failing: destination.lastError !== null,
+      };
+    });
+    return {
+      enabled: config.enabled,
+      configRevision: config.revision,
+      productEnrollment,
+      usedBytes: usedBytes(d),
+      maxBytes: TELEMETRY_LIMITS.maxTotalBytes,
+      gaps: listGaps(d).length,
       profiles,
     };
   });

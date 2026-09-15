@@ -674,6 +674,64 @@ interface PassiveState {
 }
 
 /**
+ * Whether two telemetry summaries say the same thing.
+ *
+ * Its own function rather than another dozen lines inside `emitSettingsStatus`, because it has
+ * a list to walk and the surrounding compare is a flat field sweep. The rule it inherits is the
+ * same and matters more here, since this sub-tuple is the one that moves on its own: **every
+ * field has to appear below**, or a change that moves only that field compares equal and no
+ * frame is sent - which for this payload means a queue that started failing, or a destination
+ * that paused itself, silently never reaching the panel drawing it.
+ *
+ * `undefined` is compared as a value rather than coalesced to a default: a daemon that stopped
+ * reporting the summary is a real transition the dashboard has to see.
+ */
+function sameTelemetrySummary(
+  a: SettingsStatus["telemetry"],
+  b: SettingsStatus["telemetry"],
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (
+    a.enabled !== b.enabled ||
+    a.configRevision !== b.configRevision ||
+    a.productEnrollment !== b.productEnrollment ||
+    a.usedBytes !== b.usedBytes ||
+    a.maxBytes !== b.maxBytes ||
+    a.gaps !== b.gaps ||
+    a.profiles.length !== b.profiles.length
+  ) {
+    return false;
+  }
+  return a.profiles.every((profile, index) => {
+    const other = b.profiles[index];
+    return (
+      other !== undefined &&
+      profile.profile === other.profile &&
+      profile.capturing === other.capturing &&
+      profile.exporting === other.exporting &&
+      profile.paused === other.paused &&
+      profile.pausedReason === other.pausedReason &&
+      profile.pending === other.pending &&
+      profile.pendingBytes === other.pendingBytes &&
+      profile.lastAcceptedAt === other.lastAcceptedAt &&
+      profile.failing === other.failing &&
+      // The oldest-pending AGE is derived from the clock, so it differs on every recompose for
+      // as long as anything is queued - comparing it exactly would push a frame to every open
+      // dashboard on every task-source sweep. Compared at ten-second granularity instead, which
+      // is finer than the thirty-second export cadence that can actually change the figure and
+      // coarse enough that an idle recompose is still free. Null and non-null always differ,
+      // which is the transition that matters: a queue emptying or a first batch arriving.
+      bucketedAge(profile.oldestPendingAgeMs) === bucketedAge(other.oldestPendingAgeMs)
+    );
+  });
+}
+
+/** Ten-second buckets, so a clock-derived age does not make every recompose a change. */
+function bucketedAge(ms: number | null): number | null {
+  return ms === null ? null : Math.floor(ms / 10_000);
+}
+
+/**
  * In-memory source of truth for live sessions and pending reviews. Emits a
  * `ServerEvent` on every change; the SSE layer forwards those to browsers.
  *
@@ -1168,7 +1226,8 @@ export class Registry extends EventEmitter {
         (status.pipelines.observedRepoKeys?.length ?? 0) &&
       (prev.pipelines.observedRepoKeys ?? []).every(
         (key, index) => key === status.pipelines.observedRepoKeys?.[index],
-      );
+      ) &&
+      sameTelemetrySummary(prev.telemetry, status.telemetry);
     this.lastSettingsStatus = status;
     if (same) return;
     this.emitEvent({ type: "settings_status", status });

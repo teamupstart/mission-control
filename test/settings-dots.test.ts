@@ -2,6 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { settingsGearDot, settingsRailDot } from "../src/web/lib/settings-dots.ts";
 import type { SettingsStatus } from "../src/shared/types.ts";
+import type {
+  TelemetryProfileSummary,
+  TelemetrySettingsSummary,
+} from "../src/shared/telemetry.ts";
 
 // What is at stake: the rail dots and the topbar gear are the only place a subsystem's live
 // posture shows WITHOUT opening its panel, and the gear is meant to inherit the worst of
@@ -55,6 +59,78 @@ test("the Shipping dot is amber exactly when YOLO is armed", () => {
 test("the Task sources dot is red exactly when a source is failing", () => {
   assert.equal(settingsRailDot("task-sources", { status: status({ taskSources: { failing: 1 } }), ...OFF }), "failing");
   assert.equal(settingsRailDot("task-sources", { status: status({ taskSources: { failing: 0 } }), ...OFF }), null);
+});
+
+/** A telemetry summary with everything off, plus whatever the case under test moves. */
+function telemetry(
+  profiles: Partial<TelemetryProfileSummary>[] = [],
+  over: Partial<TelemetrySettingsSummary> = {},
+): TelemetrySettingsSummary {
+  return {
+    enabled: true,
+    configRevision: 1,
+    productEnrollment: "unavailable",
+    usedBytes: 0,
+    maxBytes: 1,
+    gaps: 0,
+    profiles: profiles.map((p, i) => ({
+      profile: (["local", "user", "product"] as const)[i] ?? "local",
+      capturing: false,
+      exporting: false,
+      paused: false,
+      pausedReason: null,
+      pending: 0,
+      pendingBytes: 0,
+      oldestPendingAgeMs: null,
+      lastAcceptedAt: null,
+      failing: false,
+      ...p,
+    })),
+    ...over,
+  };
+}
+
+test("the Telemetry dot is red when a destination stopped or is not getting through", () => {
+  // A daemon-applied pause: nothing else in the app would ever mention this, which is the
+  // whole reason the dot exists.
+  const stopped = status({ telemetry: telemetry([{ capturing: true }, { pausedReason: "auth" }]) });
+  assert.equal(settingsRailDot("telemetry", { status: stopped, ...OFF }), "failing");
+
+  // A failed attempt with work still queued behind it is the same alarm by a different route.
+  const behind = status({
+    telemetry: telemetry([{}, { exporting: true, failing: true, pending: 3 }]),
+  });
+  assert.equal(settingsRailDot("telemetry", { status: behind, ...OFF }), "failing");
+
+  // A failure with an EMPTY queue is not: the last attempt lost a race that has since drained,
+  // and a permanent red over nothing left to send is a dot nobody would keep trusting.
+  const drained = status({
+    telemetry: telemetry([{}, { exporting: true, failing: true, pending: 0 }]),
+  });
+  assert.equal(settingsRailDot("telemetry", { status: drained, ...OFF }), "live");
+});
+
+test("the Telemetry dot is green when something is actually being exported", () => {
+  const exporting = status({ telemetry: telemetry([{ capturing: true }, { exporting: true }]) });
+  assert.equal(settingsRailDot("telemetry", { status: exporting, ...OFF }), "live");
+});
+
+test("local-only collection lights nothing, because it is a complete state", () => {
+  // The dot's job is to say the panel is worth opening. Local-only is not a half-finished
+  // setup, and nagging about it would be this surface arguing for its own feature.
+  const local = status({ telemetry: telemetry([{ capturing: true }, {}, {}]) });
+  assert.equal(settingsRailDot("telemetry", { status: local, ...OFF }), null);
+  // Collection off, likewise.
+  assert.equal(
+    settingsRailDot("telemetry", { status: status({ telemetry: telemetry([], { enabled: false }) }), ...OFF }),
+    null,
+  );
+});
+
+test("a daemon that does not report telemetry lights nothing rather than an all-clear", () => {
+  // The optional-field case, which is a rolling update rather than a hypothetical: a dashboard
+  // talking to an older daemon knows nothing, and "nothing" is not "fine".
+  assert.equal(settingsRailDot("telemetry", { status: status(), ...OFF }), null);
 });
 
 test("the Foreman dot rides App-owned state, not the status payload", () => {

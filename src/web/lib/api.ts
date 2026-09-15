@@ -105,6 +105,19 @@ import type {
   EnsembleRun,
   EnsembleSummary,
 } from "@shared/ensemble.ts";
+import type {
+  TelemetryConfigPatch,
+  TelemetryHealth,
+  TelemetryOperationRequest,
+  TelemetryOperationResult,
+  TelemetryProbeResult,
+  TelemetryStatus,
+} from "@shared/telemetry.ts";
+import type {
+  TelemetryIngressRecord,
+  TelemetryIngressResult,
+} from "@shared/telemetry-ingress.ts";
+import type { AppOperation } from "./operation-context.ts";
 import type { TourId } from "../tour/contracts.ts";
 import type {
   EnsembleArtifactPatch,
@@ -2364,5 +2377,106 @@ export async function deleteFileComment(
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// ---- general telemetry: collection, export destinations, queue operations ----
+//
+// Its own small family rather than entries on the `api` object above, for one reason worth
+// stating: every WRITE here carries an app-issued operation context, and the shared `request`
+// helper has no place to put one. Making that explicit at each call site is the point - a
+// telemetry control action is exactly the kind of thing whose provenance has to be deliberate.
+//
+// Nothing here reads a credential, because no such route exists. `TelemetryStatus` reports
+// whether one is stored; the value has no read path anywhere in the daemon.
+
+/** The stored intent, plus whether a credential exists and whether the endpoint is usable. */
+export const fetchTelemetryConfig = () => fetchJson<TelemetryStatus>("/api/telemetry/config");
+
+/** The full health view: per-profile counts, ages, gap records and the byte budget. */
+export const fetchTelemetryHealth = () => fetchJson<TelemetryHealth>("/api/telemetry/health");
+
+/**
+ * One JSON write carrying an operation context.
+ *
+ * Returns the daemon's own sentence on a refusal rather than an HTTP status: every refusal
+ * these routes produce is something the operator can act on - an unencrypted remote endpoint,
+ * this daemon's own address, a revision that moved - and replacing that with "HTTP 409" would
+ * throw away the only part a person can use.
+ */
+async function telemetryWrite<T>(
+  path: string,
+  method: "PUT" | "POST",
+  body: unknown,
+  operation: AppOperation,
+): Promise<{ ok: true; data: T } | { ok: false; error: string; conflict: boolean }> {
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { "content-type": "application/json", ...operation.headers },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as T & { error?: string; conflict?: boolean };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: data.error ?? `HTTP ${res.status}`,
+        conflict: data.conflict === true,
+      };
+    }
+    return { ok: true, data: data as T };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      conflict: false,
+    };
+  }
+}
+
+export const setTelemetryConfig = (patch: TelemetryConfigPatch, operation: AppOperation) =>
+  telemetryWrite<TelemetryStatus>("/api/telemetry/config", "PUT", patch, operation);
+
+export const runTelemetryOperation = (
+  body: TelemetryOperationRequest,
+  operation: AppOperation,
+) => telemetryWrite<TelemetryOperationResult>("/api/telemetry/operation", "POST", body, operation);
+
+export const probeTelemetryEndpoint = (
+  profile: "user" | "product",
+  operation: AppOperation,
+) => telemetryWrite<TelemetryProbeResult>("/api/telemetry/probe", "POST", { profile }, operation);
+
+/** Run one projection and delivery cycle now, instead of waiting out the export cadence. */
+export const drainTelemetry = (operation: AppOperation) =>
+  telemetryWrite<{ consumed: number; batches: number; sent: number; accepted: number }>(
+    "/api/telemetry/drain",
+    "POST",
+    {},
+    operation,
+  );
+
+/**
+ * Submit browser-originated telemetry.
+ *
+ * Fire and forget by construction: the result is returned for the tests that assert on it, and
+ * every caller in the app ignores it. That is the contract the endpoint promises from its side
+ * too - a refused record answers 200 with a reason, because the application action that
+ * produced it already succeeded and a telemetry refusal must not surface as a failure.
+ */
+export async function submitBrowserTelemetry(
+  records: TelemetryIngressRecord[],
+  operation: AppOperation,
+): Promise<TelemetryIngressResult | null> {
+  try {
+    const res = await fetch("/api/telemetry/ingress", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...operation.headers },
+      body: JSON.stringify({ records }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as TelemetryIngressResult;
+  } catch {
+    return null;
   }
 }

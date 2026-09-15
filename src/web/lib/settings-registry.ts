@@ -215,6 +215,41 @@ export const SETTINGS_CATEGORIES = [
     keywords: ["telemetry", "otel", "usage", "spend", "estimate", "interval"],
   },
   {
+    id: "telemetry",
+    label: "Telemetry",
+    icon: "◎",
+    blurb: "What this app records about itself, and where any of it is sent",
+    // `sessions` / `machine`, immediately after Cost, because the two are the pair people
+    // confuse and reading them side by side is what separates them: Cost is Claude Code
+    // reporting usage INTO this daemon, and this is the daemon exporting its own facts OUT.
+    //
+    // `machine` rather than `github` even though a configured destination genuinely leaves the
+    // machine, and the reason is what the badges promise. `github` means "can publish or merge
+    // under your GitHub account", which this never does. The panel's own copy carries the
+    // sharper claim - which destination, on whose infrastructure, under which opt-in - because
+    // that claim is per-destination and a single rail badge cannot make it.
+    group: "sessions",
+    scope: "machine",
+    keywords: [
+      "telemetry",
+      "opentelemetry",
+      "otel",
+      "otlp",
+      "metrics",
+      "traces",
+      "analytics",
+      "privacy",
+      "consent",
+      "opt in",
+      "opt out",
+      "export",
+      "collector",
+      "grafana",
+      "prometheus",
+      "anonymous",
+    ],
+  },
+  {
     id: "restore",
     label: "Restore",
     icon: "↶",

@@ -401,8 +401,16 @@ cd mission-control
 make install</code></pre>
       <p>
         That is the whole install. Run it as yourself, never with <code>sudo</code>. It checks the
-        prerequisites first, builds the app, and puts <strong>Mission Control.app</strong> in your
-        Applications folder. Re-running it is safe.
+        prerequisites first, builds the app, and puts <strong>Mission Control.app</strong> in
+        <strong>your own Applications folder</strong>, the one inside your home folder, which it
+        creates if you have never had one. No administrator password is needed for any of it.
+        Re-running it is safe.
+      </p>
+      <p>
+        Already have Mission Control in the shared <code>/Applications</code> folder? It stays
+        exactly where it is. To install there deliberately, for every account on this Mac, run
+        <code>make install ARGS="--scope system"</code> instead; macOS asks for an administrator
+        password for that folder only.
       </p>
       <p>
         The desktop app is worth preferring for one reason: it keeps delivering alerts when the

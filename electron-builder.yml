@@ -70,3 +70,20 @@ mac:
 
 dmg:
   title: Mission Control
+  # Stated rather than defaulted, and the default is what had to go: electron-builder's built-in
+  # layout puts an alias to /Applications beside the app, which teaches every recipient to
+  # install system-wide - the one destination that needs an administrator password and the one
+  # this product no longer defaults to. There is deliberately no replacement alias: a dmg is
+  # built once and opened on somebody else's Mac, so a link can only ever name a fixed path, and
+  # neither this build account's home nor a literal `~` is that person's Applications folder.
+  # The Read Me says in words what a link cannot say correctly, including that a dmg install is
+  # unmanaged and how to turn updates on.
+  contents:
+    - x: 150
+      y: 180
+      type: file
+    - x: 390
+      y: 180
+      type: file
+      path: build/dmg/readme.txt
+      name: Read Me.txt

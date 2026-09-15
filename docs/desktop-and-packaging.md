@@ -42,10 +42,46 @@ forced checkout in that one location and nowhere else. The clone is a full check
 `node_modules` and `release/` output, so budget roughly 1-2 GB of disk for it. It is disposable:
 deleting it costs the next install a fresh clone and nothing else.
 
+### Where the app is installed
+
+A fresh managed install puts the app in **`~/Applications/Mission Control.app`**, the signed-in
+account's own Applications folder, and creates that folder if the Mac has never had one. That
+destination needs no administrator password at any point.
+
+| What you run | Destination | Recorded `installScope` |
+| --- | --- | --- |
+| `make install`, no managed receipt yet | `~/Applications` | `user` |
+| `make install`, receipt already present | wherever the receipt says | whatever the receipt says, unchanged |
+| `make install ARGS="--scope user"` | `~/Applications` | `user` |
+| `make install ARGS="--scope system"` | `/Applications` | `system` |
+| `make install ARGS="--apps-dir <dir>"` | `<dir>`, which must already exist | `custom`, or preserved when it is the receipt's own directory |
+
+`installScope` is an optional receipt field, added under schema 1. **Its absence means legacy,
+not a preference for the system folder.** That distinction is load-bearing: every update helper
+ever shipped forwards the receipt's own directory to the installer as `--apps-dir`, so reading
+that argument as system consent would quietly convert every pre-existing install into a
+deliberate one. Only `--scope system` records system consent.
+
+The personal default and the administrator boundary are two different things and now live in two
+different modules. [`install-destination.mjs`](../scripts/install-destination.mjs) resolves and
+validates the destination; `SYSTEM_APPS_DIR` in
+[`app-bundle-swap.mjs`](../scripts/app-bundle-swap.mjs) stays pinned to the exact
+`/Applications/Mission Control.app` an administrator prompt may write to, so widening the default
+cannot widen the privilege boundary. A personal or custom destination that cannot be written is
+an actionable error - it never elevates, and it never silently falls back to `/Applications`.
+
+Only the canonical personal folder is created automatically. A `--apps-dir` destination must
+already exist, because `cp -R app dir` creates `dir` AS the bundle when it is missing, which
+would turn a typo into an app named after the typo. A personal folder that is a file, is owned by
+another account, is unwritable, or resolves through a symlink to somewhere outside this home -
+`/Applications` above all - stops the install with the reason. Neither `--dry-run` nor
+`--stage-only` creates a directory or writes a receipt.
+
 Run `make install` as the signed-in account, never with `sudo`. Checkout, dependency installation,
-packaging, and the receipt all stay unprivileged. If `/Applications` is not writable, macOS asks
-for administrator authorization only when the complete, verified bundle is ready for its atomic
-swap. The detached updater uses the same narrow prompt for installation and rollback.
+packaging, and the receipt all stay unprivileged. For an install in `/Applications` that the
+account cannot write, macOS asks for administrator authorization only when the complete, verified
+bundle is ready for its atomic swap. The detached updater uses the same narrow prompt for
+installation and rollback.
 
 The clone is also self-repairing after a historical privileged install. If `sudo make install`
 left nested directories that the signed-in account cannot rewrite, the installer first creates a
@@ -90,7 +126,8 @@ The install ends by writing a **receipt** to `install-receipt.json` in the state
   "installedVersion": "0.1.0",
   "installedCommit": "0123456789abcdef0123456789abcdef01234567",
   "sourceClone": "/Users/you/.mission-control/app-src",
-  "appPath": "/Applications/Mission Control.app",
+  "appPath": "/Users/you/Applications/Mission Control.app",
+  "installScope": "user",
   "installedAt": "2026-08-18T00:00:00.000Z"
 }
 ```
@@ -112,8 +149,34 @@ Three contracts hold for readers:
   keep accepting every earlier number.
 - **`installedVersion` equals the packaged app's version.** The install verifies the packaged
   bundle's `CFBundleShortVersionString` against the source tree's `package.json` before it
-  replaces anything in `/Applications`, so a build that did not come from the checked-out ref
-  fails while the previous app is still in place.
+  replaces the installed app, so a build that did not come from the checked-out ref fails while
+  the previous app is still in place.
+- **`installScope` is optional, and absent means legacy.** A reader may not treat a missing
+  scope as an explicit choice of any destination.
+
+### The running app checks that it is the app in the receipt
+
+The receipt names an absolute `appPath`, and until personal installs existed nothing compared it
+to the bundle the running process came out of. One Mac can now hold two Mission Controls - a
+retained shared copy and a personal one - so the packaged app classifies itself at startup
+through [`install-identity.ts`](../src/main/install-identity.ts):
+
+- **managed**: the running bundle is the one the receipt describes. Commit equality when the
+  receipt carries `installedCommit`, version equality when it does not, so legacy receipts stay
+  valid. Everything proceeds as before.
+- **unmanaged**: no usable receipt, which is what the updater already reported.
+- **mismatched**: a receipt describing some other bundle, or a different build at the receipt's
+  own path. The app runs; the updater stands down and says why in **Settings → Setup →
+  Application updates**, because the only bundle it could update is not this one.
+- **redirect**: the one validated exception. The exact `/Applications/Mission Control.app`, whose
+  trusted receipt names this account's own `~/Applications/Mission Control.app` and matches that
+  bundle's identity, opens it and exits. This happens before the single-instance lock is taken,
+  so the app being opened does not lose the lock to the copy handing over to it, and `open`
+  reveals an already-running instance rather than starting a second daemon. A failed hand-over is
+  not fatal: the old copy keeps running with the updater off.
+
+The updater asks the same question again before it hands a bundle to the detached helper, since
+another install can rewrite the receipt while the app sits with an update prepared.
 
 New managed builds also embed the full Git SHA as `missionCommit` in the packaged app's
 `package.json`, using electron-builder's extra metadata before signing. The installer checks
@@ -126,9 +189,24 @@ copied to a hidden sibling of the destination first; only then is the existing a
 and the new one renamed into place, both renames within one directory and therefore atomic. A
 failed copy leaves the installed app untouched, and a failed final rename puts the previous app
 back. A user whose disk filled mid-install ends up with the app they already had, not with
-none. On an account that cannot write `/Applications`, this transaction is the only command run
-with administrator authorization. The updater source clone and state files remain owned by the
-signed-in account.
+none. `make install-app` uses the same transaction, so a developer install cannot destroy a
+working app either. On an account that cannot write `/Applications`, this transaction is the only
+command run with administrator authorization, and it is restricted to that exact product bundle.
+The updater source clone and state files remain owned by the signed-in account.
+
+## The disk image is an unmanaged artifact
+
+`make app` produces `release/Mission Control-<version>-arm64.dmg`. Its contents are stated in
+[`electron-builder.yml`](../electron-builder.yml) rather than defaulted: the application and a
+checked-in offline Read Me ([`build/dmg/readme.txt`](../build/dmg/readme.txt), which mounts as `Read Me.txt`), and no
+`/Applications` alias. electron-builder's default layout supplies that alias, and it is wrong
+here twice over - it points every recipient at the destination that needs an administrator
+password, and a disk image is opened on somebody else's Mac, where no fixed link can name their
+own Applications folder and nothing expands a literal `~`.
+
+Dragging the app out of a disk image records no receipt, so that copy never updates itself. The
+Read Me says so, names both destinations in words, and gives `make install` as the way to get
+managed updates.
 
 ## Updates from the installed app
 

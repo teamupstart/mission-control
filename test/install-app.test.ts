@@ -33,7 +33,6 @@ import test from "node:test";
 import {
   GH_ARGS,
   REQUIRED_REMOTE_HOST,
-  appsDirProblem,
   canonicalRemoteUrl,
   existingCloneCommands,
   firstUnwritableCloneDirectory,
@@ -52,6 +51,7 @@ import {
   resolveInstallRepo,
   resolveTargetRef,
 } from "../scripts/install-app.mjs";
+import { installDirectoryProblem, userAppsDir } from "../scripts/install-destination.mjs";
 import { CANONICAL_REPO } from "../src/shared/install-receipt-schema.mjs";
 import { stagedBundleRevision } from "../src/shared/staged-bundle.mjs";
 
@@ -372,12 +372,15 @@ test("the packaged app is verified against the source tree before the swap", () 
 });
 
 test("install arguments parse, and an unknown one stops the install", () => {
+  // `appsDir` is null until a destination is resolved, because the default now depends on the
+  // receipt and on this account's home rather than being one constant.
   assert.deepEqual(parseArgs(["--dry-run", "--ref", "v1.2.3", "--from-origin"]), {
     options: {
       ref: "v1.2.3",
       fromOrigin: true,
       dryRun: true,
-      appsDir: "/Applications",
+      appsDir: null,
+      scope: null,
       progress: false,
       stageOnly: false,
       fromStaged: null,
@@ -390,6 +393,35 @@ test("install arguments parse, and an unknown one stops the install", () => {
   assert.equal(parseArgs(["--wat"]).problem, "unknown argument: --wat");
   assert.equal(parseArgs(["--help"]).help, true);
   assert.equal(parseArgs(["--apps-dir", "/tmp/apps"]).options.appsDir, "/tmp/apps");
+  assert.equal(parseArgs(["--scope", "system"]).options.scope, "system");
+  assert.equal(parseArgs(["--scope"]).problem, "--scope needs a value");
+});
+
+test("a destination argued for two ways is refused before anything is built", () => {
+  // Both name a destination, independently, and preferring one silently would install
+  // somewhere nobody asked for. Refused at parse time, so no clone is fetched and no package
+  // runs first.
+  assert.match(
+    String(parseArgs(["--scope", "user", "--apps-dir", "/tmp/apps"]).problem),
+    /--scope and --apps-dir cannot be combined/,
+  );
+  assert.match(String(parseArgs(["--scope", "everyone"]).problem), /--scope must be user or system/);
+  // The transport argument on its own stays exactly what it was: every update helper ever
+  // shipped passes it, so it can never become a second way of spelling a scope.
+  assert.equal(parseArgs(["--apps-dir", "/Applications"]).problem, null);
+});
+
+test("the usage text names the personal default rather than the system folder", () => {
+  // The words an operator reads before choosing. `make install` with no arguments now puts the
+  // app in their own Applications folder, and the help has to say which one that is.
+  const { options } = parseArgs([]);
+  assert.equal(options.appsDir, null);
+  const help = spawnSync(process.execPath, ["scripts/install-app.mjs", "--help"], {
+    encoding: "utf8",
+  });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--scope user\|system/);
+  assert.ok(help.stdout.includes(userAppsDir()));
 });
 
 test("the two halves of an update are selected by flags, and never both at once", () => {
@@ -688,17 +720,37 @@ test("isolating a verified bundle never damages a build that is not ours", () =>
 
 test("a missing install directory stops the install before the copy invents one", () => {
   // `cp -R app dir` creates `dir` as the bundle when it does not exist, so a mistyped
-  // --apps-dir would otherwise produce an app named after the typo.
+  // --apps-dir would otherwise produce an app named after the typo. The personal folder is the
+  // one exception and is covered in install-destination.test.ts, where it is created instead.
   assert.equal(
-    appsDirProblem({ appsDir: "/Applications", exists: true, isDirectory: true }),
+    installDirectoryProblem({
+      appsDir: "/Applications",
+      home: "/Users/someone",
+      exists: true,
+      isDirectory: true,
+    }),
     null,
   );
   assert.match(
-    String(appsDirProblem({ appsDir: "/tmp/nope", exists: false, isDirectory: false })),
+    String(
+      installDirectoryProblem({
+        appsDir: "/tmp/nope",
+        home: "/Users/someone",
+        exists: false,
+        isDirectory: false,
+      }),
+    ),
     /does not exist/,
   );
   assert.match(
-    String(appsDirProblem({ appsDir: "/tmp/file", exists: true, isDirectory: false })),
+    String(
+      installDirectoryProblem({
+        appsDir: "/tmp/file",
+        home: "/Users/someone",
+        exists: true,
+        isDirectory: false,
+      }),
+    ),
     /not a directory/,
   );
 });

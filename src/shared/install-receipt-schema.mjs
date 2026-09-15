@@ -35,6 +35,20 @@ export function isTrustedInstallRepo(repo) {
  */
 export const INSTALL_RECEIPT_SCHEMA = 1;
 
+/**
+ * Where a managed install was deliberately put, when anyone deliberately chose.
+ *
+ * `user` is the personal default under the signed-in account's home, `system` is the shared
+ * `/Applications` copy someone explicitly opted into, and `custom` is a destination that is
+ * neither. The field is OPTIONAL and additive under schema 1: every receipt written before it
+ * existed has no scope at all, and that absence means legacy - an install that predates the
+ * choice - never an explicit preference for the system folder. The distinction is load-bearing
+ * for the update relocation that follows this change, because an old update helper always
+ * forwards the receipt's own directory as `--apps-dir`, so the transport argument alone can
+ * never stand in for consent.
+ */
+export const INSTALL_SCOPES = ["user", "system", "custom"];
+
 /** Absolute-path check that does not need `node:path`. */
 function isAbsolutePosixPath(value) {
   return typeof value === "string" && value.startsWith("/");
@@ -82,6 +96,12 @@ export function validateReceipt(value) {
   }
   if (receipt.installedCommit !== undefined && !isCommitSha(receipt.installedCommit)) {
     return "receipt installedCommit is not a full commit SHA";
+  }
+  if (
+    receipt.installScope !== undefined &&
+    !INSTALL_SCOPES.includes(/** @type {string} */ (receipt.installScope))
+  ) {
+    return `receipt installScope is not one of ${INSTALL_SCOPES.join(", ")}`;
   }
   if (!isAbsolutePosixPath(receipt.sourceClone)) {
     return "receipt sourceClone is not an absolute path";

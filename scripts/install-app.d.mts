@@ -28,7 +28,7 @@ export interface CloneReplaceOps {
 export type TargetRefSource = "flag" | "release" | "default-branch";
 
 export const APP_BUNDLE_NAME: string;
-export const DEFAULT_APPS_DIR: string;
+export const SYSTEM_APPS_DIR: string;
 export const SOURCE_CLONE_DIR_NAME: string;
 export const PACKAGED_APP_RELATIVE_PATH: string;
 
@@ -118,11 +118,7 @@ export function stagedVersionProblem(input: {
   stagedVersion: string | null;
   ref: string | null;
 }): string | null;
-export function appsDirProblem(input: {
-  appsDir: string;
-  exists: boolean;
-  isDirectory: boolean;
-}): string | null;
+export { inspectInstallDirectory } from "./install-destination.mjs";
 export function packagedVersionProblem(input: {
   packagedVersion: string | null;
   sourceVersion: string;
@@ -133,7 +129,10 @@ export function parseArgs(argv: string[]): {
     ref: string | null;
     fromOrigin: boolean;
     dryRun: boolean;
-    appsDir: string;
+    /** Null until `resolveInstallDestination` picks one; `--apps-dir` sets it explicitly. */
+    appsDir: string | null;
+    /** The proposed `--scope`, unvalidated here and decided by the destination policy. */
+    scope: string | null;
     /** Emit machine-readable stage markers for the app that is watching. */
     progress: boolean;
     /** Build and verify, then stop before touching the installed app. */

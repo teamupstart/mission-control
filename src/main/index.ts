@@ -8,6 +8,8 @@
 
 import { app, dialog, ipcMain, session, shell } from "electron";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
@@ -34,19 +36,62 @@ import { UPDATE_DIALOGS } from "../shared/update-dialog.ts";
 import type { UpdateDialogChoice, UpdateDialogContent } from "../shared/update-dialog.ts";
 import { UpdateDialogPresenter } from "./update-dialog.ts";
 import { initializeExecutableEnvironment } from "../server/executables/locator.ts";
-import { appSourceCommit } from "./bundle-version.ts";
+import { appSourceCommit, bundleShortVersion } from "./bundle-version.ts";
+import { readReceipt } from "../shared/install-receipt.mjs";
+import type { InstallReceipt } from "../shared/install-receipt-schema.mjs";
+import {
+  classifyInstallIdentity,
+  identityUpdateBlock,
+  type InstallIdentity,
+} from "./install-identity.ts";
+import { runningBundlePath, startPackagedShell } from "./startup-handover.ts";
 
 app.setName("Mission Control");
-
-// One app instance only; a second launch just reveals the running window (see the
-// "second-instance" handler). Quitting before `ready` fires means whenReady()
-// below never runs in the losing instance, so no second daemon is started.
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
 
 const appRoot = app.getAppPath();
 // Keep the identity of this running process if another installer replaces its path on disk.
 const runningCommit = appSourceCommit(appRoot);
+const runningBundle = runningBundlePath(appRoot, app.isPackaged);
+
+/**
+ * What is installed, and what this process is, from ONE read of the receipt.
+ *
+ * Re-read on every call rather than cached, because every caller after the first wants the
+ * answer as it is now: the receipt is a file another install can rewrite while this app is
+ * open, and the updater asks again before it hands a bundle to the helper.
+ *
+ * The receipt is read once per call and the classification is made from that same value, so a
+ * caller can never be handed an eligibility verdict about one receipt and the contents of
+ * another. That pairing is the whole reason this returns both.
+ */
+function readInstallState(): { identity: InstallIdentity; receipt: InstallReceipt | null } {
+  const receipt = readReceipt();
+  if (!runningBundle) return { identity: { state: "unmanaged" }, receipt };
+  return {
+    identity: classifyInstallIdentity({
+      runningBundle,
+      runningCommit,
+      receipt,
+      home: homedir(),
+      exists: existsSync,
+      bundleCommit: (path) => appSourceCommit(join(path, "Contents", "Resources", "app")),
+      bundleVersion: bundleShortVersion,
+    }),
+    receipt,
+  };
+}
+
+// The one decision taken before anything is started, wiring and all: see
+// `startup-handover.ts` for why a hand-over asks for no lock at all, and why a failed one
+// keeps running. Everything it needs beyond `app` is built there, so the connection between
+// the decision and the subprocess that carries it out is covered by that module's tests
+// rather than left to this entry point, which no test can import.
+const startup = startPackagedShell({
+  app,
+  identity: () => readInstallState().identity,
+  log: (line) => console.error(line),
+});
+const gotLock = startup.proceed;
 const paths = {
   serverEntry: join(appRoot, "dist", "server", "index.mjs"),
   foremanEntry: join(appRoot, "dist", "server", "foreman-worker.mjs"),
@@ -270,6 +315,10 @@ app.whenReady().then(async () => {
       packaged: app.isPackaged,
       currentVersion: () => app.getVersion(),
       currentCommit: () => runningCommit,
+      installSnapshot: () => {
+        const state = readInstallState();
+        return { receipt: state.receipt, problem: identityUpdateBlock(state.identity) };
+      },
       helperSource: join(appRoot, "scripts", "apply-update.mjs"),
       stateDirectory: stateDir(),
       requestQuit: () => requestUpdateQuit(() => setQuitting(true), () => app.quit()),

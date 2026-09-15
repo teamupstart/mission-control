@@ -7,12 +7,13 @@
 // so the updater stays off for a work-in-progress build.
 //
 // Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-origin] [--dry-run]
-//                                     [--apps-dir <dir>] [--progress]
+//                                     [--scope user|system] [--apps-dir <dir>] [--progress]
 //                                     [--stage-only | --from-staged <bundle>]
 //   --ref <git-ref>       install that ref instead of the newest stable release
 //   --from-origin         install this checkout's own origin rather than the canonical repository
 //   --dry-run             print what each step would do, change nothing
-//   --apps-dir <dir>      install into <dir> instead of /Applications (verification aid)
+//   --scope user|system   install into ~/Applications (the default) or /Applications
+//   --apps-dir <dir>      install into <dir> instead (verification aid)
 //   --progress            also emit machine-readable stage markers for the app to render
 //   --stage-only          build and verify, then stop before touching the installed app
 //   --from-staged <path>  install an already-staged bundle: swap and receipt only
@@ -29,6 +30,18 @@
 //
 // Idempotent by construction: every step detects its own completion, so re-running with the
 // same ref changes nothing except rebuilding.
+//
+// ## Where the app goes, and who decided
+//
+// A fresh install goes to this account's own `~/Applications`, which needs no administrator
+// anything, and records `installScope: "user"` in the receipt. An install this machine already
+// has stays exactly where its receipt says, with its recorded scope - including no scope at
+// all, which is what every install made before this existed carries. `--scope system` is the
+// only way to record system consent, and `--apps-dir` is never that: every update helper ever
+// shipped forwards the receipt's own directory through it, so reading it as an opt-out would
+// convert legacy installs into deliberate ones by accident. `scripts/install-destination.mjs`
+// owns those rules; the fixed `/Applications` an administrator prompt may write to stays in
+// `app-bundle-swap.mjs`, separate from the default, so widening one cannot widen the other.
 //
 // ## Two trust rules that are load-bearing rather than tidy
 //
@@ -65,16 +78,25 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   APP_BUNDLE_NAME,
-  DEFAULT_APPS_DIR,
+  SYSTEM_APPS_DIR,
   plistVersion,
   replaceAppBundle,
   stagingPaths,
   swapAppBundle,
 } from "./app-bundle-swap.mjs";
+import {
+  describeInstallScope,
+  inspectInstallDirectory,
+  installDirectoryProblem,
+  mayCreateAppsDir,
+  resolveInstallDestination,
+  userAppsDir,
+} from "./install-destination.mjs";
 import { envVar, stateDir } from "../src/shared/harness-runtime.mjs";
 import {
   UPDATE_PROGRESS_MARKER,
@@ -88,7 +110,7 @@ import {
   CANONICAL_REPO,
   isTrustedInstallRepo,
 } from "../src/shared/install-receipt-schema.mjs";
-import { receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
+import { readReceipt, receiptPath, writeReceipt } from "../src/shared/install-receipt.mjs";
 import { isCommitSha, sourceCommitProblem } from "../src/shared/update-source.mjs";
 import {
   archPrerequisiteMessage,
@@ -98,7 +120,8 @@ import {
   xcodeToolsPrerequisiteMessage,
 } from "./init-prerequisites.mjs";
 
-export { APP_BUNDLE_NAME, DEFAULT_APPS_DIR, plistVersion, stagingPaths, swapAppBundle };
+export { APP_BUNDLE_NAME, SYSTEM_APPS_DIR, plistVersion, stagingPaths, swapAppBundle };
+export { inspectInstallDirectory };
 
 /** The updater-owned clone, inside the existing state directory. */
 export const SOURCE_CLONE_DIR_NAME = "app-src";
@@ -432,19 +455,6 @@ export function stagedVersionProblem({ stagedVersion, ref }) {
 }
 
 /**
- * Why the app cannot be installed into this directory, or `null` when it can.
- *
- * `cp -R app dir` creates `dir` AS the bundle when `dir` does not exist, so a mistyped
- * `--apps-dir` would silently produce an app named after the typo. `/Applications` always
- * exists, which is exactly why this needs asserting rather than assuming.
- */
-export function appsDirProblem({ appsDir, exists, isDirectory }) {
-  if (!exists) return `${appsDir} does not exist - create it, or leave --apps-dir unset to install into ${DEFAULT_APPS_DIR}`;
-  if (!isDirectory) return `${appsDir} is not a directory`;
-  return null;
-}
-
-/**
  * The two hidden paths beside the destination that the swap uses.
  *
  * Both live in the SAME directory as the installed app, so the moves below are renames within
@@ -476,13 +486,15 @@ export function packagedSourceCommit(bundle) {
 // ---------------------------------------------------------------------------------------
 
 const USAGE = `Usage: node scripts/install-app.mjs [--ref <git-ref>] [--from-origin] [--dry-run]
-                                    [--apps-dir <dir>] [--progress]
+                                    [--scope user|system] [--apps-dir <dir>] [--progress]
                                     [--stage-only | --from-staged <bundle>]
 
   --ref <git-ref>       install that ref instead of the newest stable release
   --from-origin         install this checkout's own origin rather than ${CANONICAL_REPO}
   --dry-run             print what each step would do, change nothing
-  --apps-dir <dir>      install into <dir> instead of ${DEFAULT_APPS_DIR}
+  --scope user|system   install into ${userAppsDir()} (the default for a new install)
+                        or ${SYSTEM_APPS_DIR} for every account on this Mac
+  --apps-dir <dir>      install into <dir> instead (verification aid; the directory must exist)
   --progress            emit machine-readable stage markers alongside the human output
   --stage-only          build and verify, then stop before touching the installed app
   --from-staged <path>  install an already-staged bundle: swap and receipt only
@@ -493,7 +505,9 @@ export function parseArgs(argv) {
     ref: null,
     fromOrigin: false,
     dryRun: false,
-    appsDir: DEFAULT_APPS_DIR,
+    /** Null until a destination is resolved: the default now depends on the receipt and home. */
+    appsDir: null,
+    scope: null,
     progress: false,
     stageOnly: false,
     fromStaged: null,
@@ -508,6 +522,7 @@ export function parseArgs(argv) {
     else if (arg === "--help" || arg === "-h") return { options, help: true, problem: null };
     else if (
       arg === "--ref" ||
+      arg === "--scope" ||
       arg === "--apps-dir" ||
       arg === "--from-staged" ||
       arg === "--staged-revision"
@@ -517,6 +532,7 @@ export function parseArgs(argv) {
         return { options, help: false, problem: `${arg} needs a value` };
       }
       if (arg === "--ref") options.ref = value;
+      else if (arg === "--scope") options.scope = value;
       else if (arg === "--from-staged") options.fromStaged = resolve(value);
       else if (arg === "--staged-revision") options.stagedRevision = value;
       else options.appsDir = resolve(value);
@@ -528,6 +544,12 @@ export function parseArgs(argv) {
   if (options.stageOnly && options.fromStaged) {
     return { options, help: false, problem: "--stage-only and --from-staged cannot be combined" };
   }
+  // The destination is settled here, before a clone is fetched or a build starts, because a
+  // conflicting pair of destination arguments has no safe fallback and a long build is an
+  // expensive way to find that out. Only the argument conflict is decided at parse time; what
+  // is actually on disk at the destination is checked later, against the filesystem.
+  const destination = resolveInstallDestination({ scope: options.scope, appsDir: options.appsDir });
+  if (destination.problem) return { options, help: false, problem: destination.problem };
   return { options, help: false, problem: null };
 }
 
@@ -676,6 +698,8 @@ function swapAndRecord({
   dryRun,
   bundle,
   appsDir,
+  installScope,
+  home,
   repo,
   ref,
   source,
@@ -692,15 +716,25 @@ function swapAndRecord({
   progress("install");
   heading("Install");
   const appPath = join(appsDir, APP_BUNDLE_NAME);
-  const appsDirIssue = appsDirProblem({
-    appsDir,
-    exists: existsSync(appsDir),
-    isDirectory: existsSync(appsDir) && statSync(appsDir).isDirectory(),
-  });
-  if (appsDirIssue) fail(appsDirIssue);
+  // Checked again here, not only before the build. A full install spends minutes fetching and
+  // packaging, and in that time the destination can be removed, replaced by a file, or pointed
+  // somewhere else entirely. This is the last look anything takes before a copy starts.
+  const destinationIssue = installDirectoryProblem(inspectInstallDirectory(appsDir, home));
+  if (destinationIssue) fail(destinationIssue);
   if (dryRun) {
+    // A dry run creates nothing, including the personal folder. `--stage-only` never reaches
+    // this function at all, so both preparation modes leave the destination and the receipt
+    // exactly as they found them.
     doing(`[dry-run] would stage the new bundle beside ${appPath} and swap it in`);
   } else {
+    // The one directory this script creates for itself. A Mac that has never held a personal
+    // app has no `~/Applications`, and making a first-time install fail on that is the entire
+    // friction the personal default exists to remove. Every other destination keeps the rule
+    // that it must already exist - see `mayCreateAppsDir`.
+    if (!existsSync(appsDir) && mayCreateAppsDir({ appsDir, home })) {
+      mkdirSync(appsDir, { recursive: true, mode: 0o755 });
+      ok(`created ${appsDir}`);
+    }
     // Refuse first, isolate second, check again - and never delete what turns out to belong to
     // somebody else. See `isolateStagedBundle`.
     const isolated = join(stateDir(), `staged-install-${process.pid}`);
@@ -772,6 +806,9 @@ function swapAndRecord({
       releaseTag: receiptReleaseTag({ ref, source }),
       installedVersion: sourceVersion,
       ...(sourceCommit ? { installedCommit: sourceCommit } : {}),
+      // Written only when someone actually chose. Absent means legacy, and the relocation that
+      // follows this change reads that absence as eligibility rather than as consent.
+      ...(installScope ? { installScope } : {}),
       sourceClone: clone,
       appPath,
       installedAt: new Date().toISOString(),
@@ -815,6 +852,33 @@ function installApp(options) {
 
   const mode = options.stageOnly ? "  (stage only)" : swapOnly ? "  (staged bundle)" : "";
   console.log(`\x1b[1mMission Control · install\x1b[0m${mode}${dryRun ? "  (dry-run)" : ""}`);
+
+  // 0. Destination -----------------------------------------------------------------------
+  // Resolved before the clone and the build, from three inputs and in one place: the proposed
+  // `--scope`, the long-standing `--apps-dir` transport override, and whatever managed receipt
+  // this machine already has. A machine with no receipt and no arguments gets its own
+  // `~/Applications`; a machine with one stays exactly where it is, carrying its recorded scope
+  // - including the absence of one, which is every install made before this existed.
+  const home = homedir();
+  const destination = resolveInstallDestination({
+    scope: options.scope,
+    appsDir: options.appsDir,
+    receipt: readReceipt(),
+    home,
+  });
+  if (destination.problem) fail(destination.problem);
+  const appsDir = destination.appsDir;
+  const installScope = destination.installScope;
+  if (!options.stageOnly) {
+    console.log(
+      `   destination: ${join(appsDir, APP_BUNDLE_NAME)}  (${describeInstallScope(installScope)})`,
+    );
+    // Read-only, and deliberately before the minutes of work: a destination this account cannot
+    // use is not worth a fetch and a package to discover. `swapAndRecord` looks again, because
+    // the answer can change while the build runs.
+    const destinationIssue = installDirectoryProblem(inspectInstallDirectory(appsDir, home));
+    if (destinationIssue) fail(destinationIssue);
+  }
 
   // 1. Prerequisites ---------------------------------------------------------------------
   progress("prerequisites");
@@ -860,7 +924,9 @@ function installApp(options) {
     const stagedApp = swapAndRecord({
       dryRun,
       bundle: stagedBundle,
-      appsDir: options.appsDir,
+      appsDir,
+      installScope,
+      home,
       repo,
       // The bundle's own version is what is being installed, so the receipt records that
       // rather than the clone's `package.json`, which a later checkout could already have
@@ -878,7 +944,7 @@ function installApp(options) {
       return 0;
     }
     console.log(`\x1b[32mMission Control ${stagedVersion} installed from the staged build.\x1b[0m`);
-    console.log(`  app:    ${stagedApp}`);
+    console.log(`  app:    ${stagedApp}  (${describeInstallScope(installScope)})`);
     return 0;
   }
 
@@ -1030,7 +1096,9 @@ function installApp(options) {
   const appPath = swapAndRecord({
     dryRun,
     bundle: packagedApp,
-    appsDir: options.appsDir,
+    appsDir,
+    installScope,
+    home,
     repo,
     ref,
     source,
@@ -1045,7 +1113,7 @@ function installApp(options) {
     return 0;
   }
   console.log(`\x1b[32mMission Control ${sourceVersion} installed.\x1b[0m`);
-  console.log(`  app:    ${appPath}`);
+  console.log(`  app:    ${appPath}  (${describeInstallScope(installScope)})`);
   console.log(`  source: ${clone}  (the updater owns this clone; your own worktree is untouched)`);
   console.log("\nNext:");
   console.log(`  open "${appPath}"`);

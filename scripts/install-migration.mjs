@@ -67,6 +67,19 @@ function sameBuild(found, expected) {
   return found.commit === expected.commit && found.version === expected.version && found.protocol === expected.protocol && found.automatic === expected.automatic;
 }
 
+// The retained source keeps its directory identity; a copied target necessarily
+// gets a different revision and continues to use the build-only comparison.
+function sameSourceBundle(plan) {
+  try {
+    const found = migrationBundleIdentity(plan.source);
+    return sameBuild(found, plan.sourceIdentity) && found.revision === plan.sourceIdentity.revision;
+  } catch { return false; }
+}
+
+function requireUnchangedSource(plan) {
+  if (!sameSourceBundle(plan)) throw new Error("The retained system app changed. Recovery will not launch it.");
+}
+
 function canonicalDirectory(path) {
   const real = realpathSync(path);
   const stat = statSync(real);
@@ -139,6 +152,7 @@ export function validateMigrationPlan(plan, policy) {
   if (validateReceipt(plan.oldReceipt) || validateReceipt(plan.intendedReceipt) || !isTrustedInstallRepo(plan.oldReceipt.repo)) throw new Error("Invalid migration receipts.");
   if (plan.oldReceipt.installScope !== undefined || plan.oldReceipt.appPath !== plan.source || plan.intendedReceipt.appPath !== plan.target || plan.intendedReceipt.installScope !== "user") throw new Error("Invalid migration installation policy.");
   if (!SHA.test(plan.sourceIdentity?.commit ?? "") || !SHA.test(plan.targetIdentity?.commit ?? "") || plan.targetIdentity.protocol !== MIGRATION_PROTOCOL || plan.sourceIdentity.protocol !== MIGRATION_PROTOCOL) throw new Error("Invalid migration build identities.");
+  if (typeof plan.sourceIdentity.revision !== "string" || !plan.sourceIdentity.revision || plan.sourceIdentity.revision.length > 512) throw new Error("Invalid migration source revision.");
   if (plan.sourceIdentity.automatic !== true || typeof plan.targetIdentity.automatic !== "boolean" || (plan.oldReceipt.installedCommit ? plan.oldReceipt.installedCommit !== plan.sourceIdentity.commit : plan.oldReceipt.installedVersion !== plan.sourceIdentity.version)) throw new Error("The source identity does not match the eligible legacy receipt.");
   if (plan.intendedReceipt.installedCommit !== plan.targetIdentity.commit || plan.intendedReceipt.installedVersion !== plan.targetIdentity.version || plan.intendedReceipt.repo !== plan.oldReceipt.repo || plan.intendedReceipt.sourceClone !== plan.oldReceipt.sourceClone) throw new Error("The intended receipt does not match the prepared build.");
   if (typeof plan.stagedBundle !== "string" || resolve(plan.stagedBundle) !== plan.stagedBundle || typeof plan.stagedRevision !== "string") throw new Error("Invalid staged migration bundle.");
@@ -281,7 +295,7 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
   return withMigrationLock(plan.stateDirectory, async (owner) => {
     validateMigrationPlan(plan, policy);
     if (!owner.identity) throw new Error("Could not identify the migration helper.");
-    if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt) || !sameBuild(migrationBundleIdentity(plan.source), plan.sourceIdentity)) throw new Error("The system installation changed before the migration took ownership.");
+    if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt) || !sameSourceBundle(plan)) throw new Error("The system installation changed before the migration took ownership.");
     const previous = readMigrationJournal(plan.stateDirectory, policy);
     if (previous && previous.stage !== "restored" && previous.stage !== "complete") throw new Error("An earlier migration needs recovery before another update.");
     if (lstatSync(plan.target, { throwIfNoEntry: false })) throw new Error("The personal migration destination is occupied.");
@@ -348,9 +362,10 @@ export async function restoreMigration(journal, ports, policy) {
   const { plan } = journal;
   validateMigrationPlan(plan, policy);
   if (receiptDigest(migrationReceipt(plan.stateDirectory)) !== receiptDigest(plan.oldReceipt)) throw new Error("The receipt changed. Recovery left both bundles untouched; inspect the installation before retrying.");
-  if (!sameBuild(migrationBundleIdentity(plan.source), plan.sourceIdentity)) throw new Error("The retained system app changed. Recovery will not launch it.");
+  requireUnchangedSource(plan);
   // The port must prove PID plus start/command identity before signalling anything.
   await ports.stopTarget(journal);
+  requireUnchangedSource(plan);
   if (ownsMigrationTarget(plan)) rmSync(plan.target, { recursive: true, force: true });
   journal.stage = "restored";
   journal.repairs = [];
@@ -361,6 +376,7 @@ export async function restoreMigration(journal, ports, policy) {
     recordedAt: new Date().toISOString(),
     message: "The personal installation did not commit. The retained system app and previous receipt are unchanged. Check the update log, then prepare the update again.",
   });
+  requireUnchangedSource(plan);
   await ports.launchSource(plan.source);
 }
 

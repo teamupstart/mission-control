@@ -83,6 +83,49 @@ test('relocation stages beside the personal destination, retains the system app,
   assert.equal(repeats, 0);
 });
 
+test('ownership refuses a replaced source even when its commit and version still match', async (t) => {
+  const f = fixture(t);
+  renameSync(f.source, `${f.source}.recorded`);
+  f.bundle(f.source, f.plan.sourceIdentity.commit!);
+  const replacement = migrationBundleIdentity(f.source);
+  assert.equal(replacement.commit, f.plan.sourceIdentity.commit);
+  assert.equal(replacement.version, f.plan.sourceIdentity.version);
+  assert.notEqual(replacement.revision, f.plan.sourceIdentity.revision);
+  await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /changed before.*ownership/);
+  assert.deepEqual(f.events, []);
+  assert.equal(existsSync(f.plan.target), false);
+  assert.equal(existsSync(join(f.stateDirectory, MIGRATION_JOURNAL)), false);
+  assert.deepEqual(migrationReceipt(f.stateDirectory), f.receipt);
+});
+
+for (const when of ['before recovery', 'while stopping the target'] as const) {
+  test(`recovery refuses a source revision changed ${when}`, async (t) => {
+    const f = fixture(t);
+    f.ports.checkpoint = (stage) => {if (stage === 'target-staged') throw Object.assign(new Error('crash'), {migrationCrash: true});};
+    await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /crash/);
+    const replace = () => {
+      renameSync(f.source, `${f.source}.recorded`);
+      f.bundle(f.source, f.plan.sourceIdentity.commit!);
+      assert.equal(migrationBundleIdentity(f.source).version, f.plan.sourceIdentity.version);
+      assert.notEqual(migrationBundleIdentity(f.source).revision, f.plan.sourceIdentity.revision);
+    };
+    if (when === 'before recovery') replace();
+    else f.ports.stopTarget = async () => {replace();};
+    await assert.rejects(recoverMigration(f.stateDirectory, f.ports, {policy: f.policy}), /retained system app changed/);
+    assert.equal(f.events.includes('launch-source'), false);
+    assert.equal(existsSync(f.plan.target), true);
+    assert.equal(readMigrationJournal(f.stateDirectory, f.policy)?.stage, 'target-staged');
+    assert.deepEqual(migrationReceipt(f.stateDirectory), f.receipt);
+  });
+}
+
+test('migration cannot take ownership without a recorded source revision', async (t) => {
+  const f = fixture(t);
+  f.plan.sourceIdentity.revision = null;
+  await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /source.*revision/);
+  assert.deepEqual(f.events, []);
+});
+
 for (const boundary of ['prepared', 'target-reserved', 'target-published', 'target-staged', 'target-ready', 'receipt-renamed', 'receipt-committed']) {
   test(`recovery after helper death at ${boundary} obeys the receipt commit boundary`, async (t) => {
     const f = fixture(t);

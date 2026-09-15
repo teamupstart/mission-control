@@ -1,5 +1,6 @@
 import type { ProcessRecord } from './update-lock.mjs';
-import type { MigrationPorts, MigrationPolicy } from './install-migration.mjs';
+import type { MigrationPlan, MigrationPorts, MigrationPolicy } from './install-migration.mjs';
+export function recordMigrationLaunch(plan: MigrationPlan): void;
 export function migrationDelay(ms: number): Promise<void>;
 export function boundedMigrationWait(predicate: () => boolean | Promise<boolean>, message: string, options?: {timeout?: number; delay?: (ms: number) => Promise<void>}): Promise<void>;
 export function sameMigrationProcess(record: ProcessRecord | null): boolean;

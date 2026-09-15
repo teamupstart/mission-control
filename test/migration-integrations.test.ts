@@ -1,5 +1,6 @@
 // Real JSONC/TOML files plus a read-only CLI port prove owned-path edits preserve
 // comments, custom options, disabled registrations and concurrent human changes.
+import { randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
@@ -12,7 +13,7 @@ import type { MigrationPlan, MigrationJournal } from '../scripts/install-migrati
 function fixture(t: test.TestContext) {
   const home = mkdtempSync(join(tmpdir(), 'mission-integrations-'));
   t.after(() => rmSync(home, {recursive: true, force: true}));
-  const plan = {source: '/Applications/Mission Control.app', target: join(home, 'Applications/Mission Control.app')} as MigrationPlan;
+  const plan = {nonce: randomBytes(32).toString('hex'), source: '/Applications/Mission Control.app', target: join(home, 'Applications/Mission Control.app')} as MigrationPlan;
   const oldHook = `${plan.source}/Contents/Resources/app/dist/satellites/hook.mjs`;
   const oldMcp = `${plan.source}/Contents/Resources/app/dist/mcp/server.mjs`;
   const oldExe = `${plan.source}/Contents/MacOS/Mission Control`;
@@ -26,7 +27,7 @@ function fixture(t: test.TestContext) {
     home,
     command: () => { throw new Error('No CLI should be queried without its configuration'); },
     login: () => ({openAtLogin: login, executableWillLaunchAtLogin: login}),
-    setLogin: (value) => { login = value; calls.push(`login:${value}`); },
+    retargetLogin: async (_plan, value) => { login = value; calls.push(`login:${value}`); },
     skills: async () => { calls.push('skills'); return []; },
   };
   const journal = (): MigrationJournal => ({plan, owner: {pid: 1, identity: 'fixture'}, ownerRole: 'recovery', stage: 'receipt-committed', repairs: [], targetProcess: null, inventory: inspectMigrationIntegrations(plan, ports)});
@@ -52,7 +53,7 @@ test('repairs existing hooks and MCP, preserves JSONC/custom values, Electron fa
   const before = text;
   await repairMigrationIntegrations({...journal, repairs: results}, f.ports);
   assert.equal(readFileSync(join(f.home, '.claude/settings.json'), 'utf8'), before);
-  assert.deepEqual(f.calls, ['skills', 'login:false'], 'completed surfaces are not repaired again');
+  assert.deepEqual(f.calls, ['skills', 'login:false', 'skills', 'login:false'], 'every retry verifies current surfaces');
 });
 
 test('absent and custom registrations remain absent/custom and concurrent hook edits are preserved', async (t) => {
@@ -66,6 +67,26 @@ test('absent and custom registrations remain absent/custom and concurrent hook e
   assert.equal(results.find((r) => r.id === 'hooks')?.status, 'pending');
   assert.equal(readFileSync(path, 'utf8'), edited);
   assert.equal(JSON.parse(readFileSync(join(f.home, '.claude.json'), 'utf8')).mcpServers['mission-control'].command, 'custom');
+});
+
+test('retry revalidates completed hooks and MCP after another surface failed', async (t) => {
+  const f = fixture(t);
+  const journal = f.journal();
+  f.ports.skills = async () => ['conflict'];
+  journal.repairs = await repairMigrationIntegrations(journal, f.ports);
+  assert.equal(journal.repairs.find((r) => r.id === 'hooks')?.status, 'complete');
+  const path = join(f.home, '.claude/settings.json');
+  const custom = readFileSync(path, 'utf8').replace(' Stop', ' Start');
+  writeFileSync(path, custom);
+  const mcpPath = join(f.home, '.claude.json');
+  const mcp = JSON.parse(readFileSync(mcpPath, 'utf8'));
+  mcp.mcpServers['mission-control'].args = ['custom.mjs'];
+  writeFileSync(mcpPath, JSON.stringify(mcp));
+  f.ports.skills = async () => [];
+  const retried = await repairMigrationIntegrations(journal, f.ports);
+  assert.deepEqual(retried.filter((r) => r.status === 'pending').map((r) => r.id), ['hooks', 'mcp:claude']);
+  assert.equal(readFileSync(path, 'utf8'), custom);
+  assert.deepEqual(JSON.parse(readFileSync(mcpPath, 'utf8')), mcp);
 });
 
 test('the CLI-backed TOML adapter preserves registration options and reads back changed paths', async (t) => {
@@ -137,6 +158,7 @@ test('inventory failures block before the move; skill conflicts and unverifiable
   writeFileSync(join(f.home, '.claude.json'), '{}');
   f.ports.login = () => ({openAtLogin: true, executableWillLaunchAtLogin: false});
   f.ports.skills = async () => ['owned link conflicts'];
+  f.ports.retargetLogin = async () => { throw new Error('login could not be verified'); };
   const results = await repairMigrationIntegrations(f.journal(), f.ports);
   assert.deepEqual(results.filter((r) => r.status === 'pending').map((r) => r.id), ['skills', 'login']);
 });

@@ -532,6 +532,12 @@ Before the receipt commits, the target checks its packaged modules and native lo
 starting a daemon or agents. A failure stops the verified attempt-owned process, removes only
 its owned target, and reopens the unchanged system app. Reopen the system app after an interrupted
 pre-commit attempt to run recovery. Invalid records stop startup with a recovery message.
+Launch intent is durable before spawning, and the target records its own process identity
+before readiness checks. If neither process record is available after an interruption,
+recovery preserves both bundles and refuses to relaunch the system app. Close the personal
+app and reopen the system app after its launch record appears; if it never appears, inspect
+the interrupted installation manually. A failed recovery records the original failure and
+the recovery failure together when the state directory remains writable.
 
 Receipt commitment is the recovery boundary. After that, open or reinstall the personal app;
 Mission Control will not automatically start an older system runtime against potentially upgraded
@@ -539,16 +545,24 @@ state. A receipt renamed just before helper failure is recognized and completed 
 old standalone daemon if the personal app reports that it still owns the runtime port.
 
 **Personal installation committed; integrations need repair** means the bundle and receipt
-are already at the personal location. **Retry integration repair** retries unresolved surfaces
-without moving the app again. Only inventoried Mission-owned hook/MCP paths change. JSONC
+are already at the personal location. **Retry integration repair** rechecks every surface,
+including prior successes, and repairs unresolved owned entries without moving the app again. Only inventoried Mission-owned hook/MCP paths change. JSONC
 comments, unrelated hooks, custom runtimes, environment settings, disabled registrations and
 other MCP options are preserved. Custom configuration syntax and concurrent edits are left for
-manual attention. A custom CLI configuration home blocks automatic inventory so the CLI cannot
+manual attention. Each edited file retains its original inode in a private sibling directory
+named `<config>.mission-migration-<attempt nonce>`. Publication never replaces a file created
+concurrently, and retries detect late edits to those originals. If a conflict is reported,
+merge the preserved edit into the active configuration before removing that recovery directory
+and retrying. After verifying the migration, those private recovery directories can be removed.
+A custom CLI configuration home blocks automatic inventory so the CLI cannot
 read one file while migration changes another. MCP paths are read back through the configured
 harness adapter. Skills stay
 with the daemon's existing enabled/disabled configuration and reconciler; resolve reported
 conflicts in **Settings > Skills**. Login startup preserves its prior on/off setting and is
-reported as pending when the platform cannot verify it. Existing external sessions keep using
+reported as pending when the platform cannot verify it. On macOS a nonce-bound cleanup launch
+of the verified retained app removes its own login registration and exits before normal startup;
+the personal app then restores the saved preference. It does not use Windows-only path/status
+fields to claim macOS verification. Existing external sessions keep using
 the retained satellites until new sessions are started.
 
 ### Transaction ownership and release verification

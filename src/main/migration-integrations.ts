@@ -1,7 +1,8 @@
 // Migration only edits inventoried Mission-owned paths. The ordinary Install
 // integrations action still owns enabling integrations that are absent.
+import { publishIntegrationText, verifyIntegrationBackups } from "./migration-integration-file.ts";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
 import { AGENT_TYPES } from "@shared/types.ts";
@@ -20,7 +21,7 @@ export interface MigrationIntegrationPorts {
   environment?: NodeJS.ProcessEnv;
   command(spec: McpSpec, args: string[]): string;
   login(): { openAtLogin: boolean; executableWillLaunchAtLogin?: boolean };
-  setLogin(openAtLogin: boolean): void;
+  retargetLogin(plan: MigrationPlan, openAtLogin: boolean): Promise<void>;
   skills(): Promise<string[]>;
 }
 
@@ -50,11 +51,11 @@ function jsonc(path: string): { text: string; value: Record<string, unknown> } {
 }
 
 /** Compare the full current file before atomic publication, then read it back. */
-function editJsonc(path: string, original: string, edits: {path: (string | number)[]; value: unknown}[]): void {
+function editJsonc(path: string, nonce: string, original: string, edits: {path: (string | number)[]; value: unknown}[]): void {
   let text = original;
   for (const edit of edits) text = applyEdits(text, modify(text, edit.path, edit.value, {formattingOptions: {insertSpaces: !/^\t/m.test(original), tabSize: 2, eol: original.includes("\r\n") ? "\r\n" : "\n"}}));
   if (text === original) return;
-  publishIntegrationText(path, original, text);
+  publishIntegrationText(path, nonce, original, text);
 }
 
 function registration(value: unknown): Registration | null {
@@ -146,6 +147,7 @@ function valueAt(value: unknown, path: (string | number)[]): unknown {
 function repairHooks(inventory: MigrationIntegrationInventory, plan: MigrationPlan, ports: MigrationIntegrationPorts): void {
   if (inventory.hooks.length === 0) return;
   const path = integrationFile(ports.home, ".claude/settings.json");
+  verifyIntegrationBackups(path, plan.nonce);
   const current = jsonc(path);
   const edits = inventory.hooks.map((item) => {
     const desired = movedHook(item.command, plan);
@@ -153,12 +155,12 @@ function repairHooks(inventory: MigrationIntegrationInventory, plan: MigrationPl
     if (found !== item.command && found !== desired) throw new Error("A hook changed after inventory. Your edit was preserved; retarget that hook manually.");
     return {path: item.path, value: desired};
   });
-  editJsonc(path, current.text, edits);
+  editJsonc(path, plan.nonce, current.text, edits);
 }
 
 /** The supported CLI writes ordinary TOML tables. Edit just its named table and env
  * subtable, preserving options/comments. A custom TOML spelling is left for the user. */
-function retargetMcpToml(path: string, name: string, before: Registration, desired: Registration): void {
+function retargetMcpToml(path: string, nonce: string, name: string, before: Registration, desired: Registration): void {
   const original = readFileSync(path, "utf8");
   const names = new Set([name, JSON.stringify(name), "'" + name + "'"]);
   let tableKind: "main" | "env" | null = null;
@@ -195,35 +197,28 @@ function retargetMcpToml(path: string, name: string, before: Registration, desir
   });
   const text = lines.join("");
   if (changed.size !== changes.size || text === original) throw new Error("This MCP registration uses custom TOML syntax. Retarget its Mission Control paths manually; its settings were preserved.");
-  publishIntegrationText(path, original, text);
-}
-
-function publishIntegrationText(path: string, original: string, text: string): void {
-  const temporary = `${path}.mission-migration-${process.pid}`;
-  try {
-    writeFileSync(temporary, text, {mode: 0o600, flag: "wx"});
-    if (readFileSync(path, "utf8") !== original) throw new Error("The integration changed while it was being repaired. Your edit was preserved.");
-    renameSync(temporary, path);
-  } finally { rmSync(temporary, {force: true}); }
-  if (readFileSync(path, "utf8") !== text) throw new Error("The integration could not be verified after writing it.");
+  publishIntegrationText(path, nonce, original, text);
 }
 
 function repairMcp(item: McpInventory, plan: MigrationPlan, ports: MigrationIntegrationPorts): void {
   const agent = AGENT_TYPES.find((agent) => item.id === `mcp:${agent}`);
   const spec = agent ? capabilitiesFor(agent).mcp : null;
   if (!spec || !registration(item.registration)) throw new Error("The inventoried MCP registration is no longer supported.");
+  const path = integrationFile(ports.home, spec.migration.homeFile);
+  verifyIntegrationBackups(path, plan.nonce);
   const desired = movedRegistration(item.registration, plan);
   const found = readMcp(spec, ports);
   if (digest(found.registration) === digest(desired)) return;
   if (found.digest !== item.digest) throw new Error("The MCP registration changed after inventory. Your edit was preserved; retarget it manually.");
   if (spec.migration.kind === "jsonc") {
-    const path = integrationFile(ports.home, spec.migration.homeFile);
     const config = jsonc(path);
+    const servers = config.value[spec.migration.key] as Record<string, unknown> | undefined;
+    if (digest(servers?.[spec.serverName]) !== item.digest) throw new Error("The MCP registration changed during repair. Your edit was preserved.");
     // Update only paths, preserving all other registration fields, including env.
     const base = [spec.migration.key, spec.serverName];
-    editJsonc(path, config.text, Object.entries(desired).map(([key, value]) => ({path: [...base, key], value})));
+    editJsonc(path, plan.nonce, config.text, Object.entries(desired).map(([key, value]) => ({path: [...base, key], value})));
   } else {
-    retargetMcpToml(integrationFile(ports.home, spec.migration.homeFile), spec.serverName, item.registration, desired);
+    retargetMcpToml(path, plan.nonce, spec.serverName, item.registration, desired);
   }
   if (digest(readMcp(spec, ports).registration) !== digest(desired)) throw new Error("MCP replacement could not be verified. Retry repair.");
 }
@@ -235,8 +230,6 @@ export async function repairMigrationIntegrations(journal: MigrationJournal, por
     inventory.mcp.some((item) => !item || typeof item.id !== "string" || typeof item.digest !== "string" || !registration(item.registration))) throw new Error("The integration inventory is invalid. Recover the personal installation manually.");
   const results: MigrationRepair[] = [];
   const run = async (id: string, action: () => void | Promise<void>): Promise<void> => {
-    const previous = journal.repairs.find((item) => item.id === id && item.status === "complete");
-    if (previous) { results.push(previous); return; }
     try { await action(); results.push({id, status: "complete", message: `${id}: verified`}); }
     catch (error) { results.push({id, status: "pending", message: `${id}: ${error instanceof Error ? error.message.slice(0, 300) : "repair failed"}`}); }
   };
@@ -246,10 +239,6 @@ export async function repairMigrationIntegrations(journal: MigrationJournal, por
     const problems = await ports.skills();
     if (problems.length) throw new Error("Enabled skill links need attention in Settings > Skills. Resolve their conflicts, then retry.");
   });
-  await run("login", () => {
-    ports.setLogin(inventory.login);
-    const settings = ports.login();
-    if (settings.openAtLogin !== inventory.login || (inventory.login && settings.executableWillLaunchAtLogin !== true)) throw new Error("Login startup could not be verified for the personal app. Toggle Open at Login in the personal app, then retry.");
-  });
+  await run("login", () => ports.retargetLogin(journal.plan, inventory.login));
   return results;
 }

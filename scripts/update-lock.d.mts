@@ -6,6 +6,7 @@ export interface LockOperations {
   readEntry(dir: string, name: string): ProcessRecord | null; removeEntry(dir: string, name: string): void;
 }
 export const HELPER_LOCK_DIR_NAME: string;
+export function claimEntryName(entry: {createdAtMs: number; pid: number}): string;
 export function processIdentity(pid: number): string | null;
 export function processIsAlive(pid: number): boolean;
 export function realHelperLockOperations(): LockOperations;

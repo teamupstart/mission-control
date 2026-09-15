@@ -1,3 +1,4 @@
+import { removeMigrationSourceLogin } from "./migration-integration-ports.ts";
 import { migrationStartupGate } from "../../scripts/migration-runtime.mjs";
 import { repairMigration } from "../../scripts/install-migration.mjs";
 import { inspectMigrationIntegrations, repairMigrationIntegrations } from "./migration-integrations.ts";
@@ -288,6 +289,15 @@ app.on("before-quit", () => {
 });
 
 app.whenReady().then(async () => {
+  if (process.argv.includes("--mission-migration-remove-login")) {
+    try {
+      if (!runningBundle) throw new Error("Login cleanup requires a packaged source app.");
+      removeMigrationSourceLogin({stateDirectory: stateDir(), runningBundle,
+        nonce: process.argv[process.argv.indexOf("--mission-migration-remove-login") + 1] ?? "", app});
+      app.exit(0);
+    } catch (error) { console.error("Migration login cleanup failed:", error); app.exit(1); }
+    return;
+  }
   try {
     const gate = await startupGate();
     if (!gate.proceed) { app.exit(0); return; }

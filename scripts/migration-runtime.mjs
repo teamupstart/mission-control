@@ -1,14 +1,14 @@
 // OS ports for the relocation protocol. All waits have deadlines; all signals require
 // the recorded process identity, never just a PID that macOS may have reused.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { APP_BUNDLE_NAME } from "./app-bundle-swap.mjs";
 import { processIdentity, processIsAlive } from "./update-lock.mjs";
 import {
-  MIGRATION_ACK, MIGRATION_JOURNAL, MIGRATION_TIMEOUT_MS, atomicMigrationJson,
+  MIGRATION_ACK, MIGRATION_LAUNCH, MIGRATION_JOURNAL, MIGRATION_TIMEOUT_MS, atomicMigrationJson,
   readMigrationJson, readMigrationJournal, migrationIsCommitted, migrationReceipt,
   validateMigrationTarget, recoverMigration,
 } from "./install-migration.mjs";
@@ -73,8 +73,18 @@ export function migrationRuntimePorts({ parent, port, inventory, checkpoint, tim
         ack.stateDirectory === journal.plan.stateDirectory && ack.bundle === journal.plan.target;
     }, "The personal app did not confirm readiness before the migration timeout.", {timeout}),
     stopTarget: async (journal) => {
-      const record = journal.targetProcess;
-      if (!record || !record.identity || processIdentity(record.pid) !== record.identity || !sameMigrationProcess(record) || record.pid === process.pid) return;
+      let record = journal.targetProcess;
+      if (!record && journal.stage === "target-launching") {
+        const path = join(journal.plan.stateDirectory, MIGRATION_LAUNCH);
+        if (!existsSync(path)) throw new Error("The personal app launch has no recorded process identity yet. Close the personal app, then reopen the retained system app to recover.");
+        record = readMigrationJson(path);
+        if (record.nonce !== journal.plan.nonce || record.bundle !== journal.plan.target || record.commit !== journal.plan.targetIdentity.commit || record.stateDirectory !== journal.plan.stateDirectory || !Number.isInteger(record.pid) || record.pid < 1 || typeof record.identity !== "string" || !record.identity) throw new Error("The personal app launch identity does not match this attempt.");
+      }
+      if (!record || !processIsAlive(record.pid)) return;
+      const identity = processIdentity(record.pid);
+      if (!identity || !record.identity) throw new Error("The personal app process identity could not be verified for recovery.");
+      if (identity !== record.identity) return;
+      if (record.pid === process.pid) throw new Error("Close the personal app, then reopen the retained system app to recover.");
       process.kill(record.pid, "SIGTERM");
       try {
         await boundedMigrationWait(() => !sameMigrationProcess(record), "The migration target did not stop.", { timeout: 5000 });
@@ -87,6 +97,17 @@ export function migrationRuntimePorts({ parent, port, inventory, checkpoint, tim
       await spawnMigrationApp(join(source, "Contents", "MacOS", "Mission Control"), []);
     },
   };
+}
+
+/** The child records itself before asset checks, even if its helper just died.
+ * Exclusive creation prevents another launch from replacing this attempt's owner. */
+export function recordMigrationLaunch(plan) {
+  const identity = processIdentity(process.pid);
+  if (!identity) throw new Error("The personal app could not prove its process identity.");
+  writeFileSync(join(plan.stateDirectory, MIGRATION_LAUNCH), JSON.stringify({
+    nonce: plan.nonce, pid: process.pid, identity, bundle: plan.target,
+    commit: plan.targetIdentity.commit, stateDirectory: plan.stateDirectory,
+  }), {flag: "wx", mode: 0o600});
 }
 
 /** Read-only asset check, before a daemon, SQLite, session restore or an agent starts. */
@@ -122,9 +143,11 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     return {proceed: true, committed: true, fresh: false};
   }
   if (target && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
-    if (!nonce || !sameMigrationProcess(journal.owner)) throw new Error("An uncommitted personal app cannot start. Reopen the system app to recover the interrupted update.");
+    if (!nonce) throw new Error("An uncommitted personal app cannot start. Reopen the system app to recover the interrupted update.");
     validateMigrationTarget(plan);
     if (realpathSync(runningBundle) !== join(realpathSync(dirname(plan.target)), APP_BUNDLE_NAME)) throw new Error("The migration target resolves to another app.");
+    recordMigrationLaunch(plan);
+    if (!sameMigrationProcess(journal.owner)) throw new Error("The migration helper exited. Reopen the system app to recover the interrupted update.");
     verifyMigrationAssets(plan.target);
     if (await migrationPortOccupied(port)) throw new Error("A previous daemon still owns the runtime port. Migration readiness was refused.");
     const identity = processIdentity(process.pid);
@@ -135,6 +158,7 @@ export async function migrationStartupGate({ stateDirectory, runningBundle, nonc
     });
   }
   await boundedMigrationWait(() => !sameMigrationProcess(journal.owner), "An update helper is still running. Reopen Mission Control after it finishes.", { timeout });
+  if (target && !migrationIsCommitted(journal, migrationReceipt(stateDirectory))) throw new Error("The migration did not commit. Close the personal app and reopen the retained system app to recover.");
   journal = await recoverMigration(stateDirectory, ports, { policy });
   if (journal?.stage === "restored") return { proceed: runningBundle === plan.source, committed: false, fresh: false };
   // A committed target starts only after forward recovery published its marker. The

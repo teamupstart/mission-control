@@ -16,7 +16,8 @@ import { acquireHelperLock, releaseHelperLock, realHelperLockOperations, parseCl
 export const MIGRATION_PROTOCOL = 1;
 export const MIGRATION_JOURNAL = "install-migration.json";
 export const MIGRATION_ACK = "install-migration-ready.json";
-export const MIGRATION_STAGES = ["prepared", "target-staged", "target-ready", "receipt-committed", "repair-required", "complete", "restored"];
+export const MIGRATION_LAUNCH = "install-migration-launch.json";
+export const MIGRATION_STAGES = ["prepared", "target-staged", "target-ready", "receipt-committed", "repair-required", "complete", "restored", "target-launching"];
 export const MIGRATION_TIMEOUT_MS = 120_000;
 const NONCE = /^[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
@@ -252,6 +253,7 @@ export function claimInstallReceiptWriter(stateDirectory) {
     if (pending) {
       rmSync(join(stateDirectory, MIGRATION_JOURNAL), { force: true });
       rmSync(join(stateDirectory, MIGRATION_ACK), { force: true });
+      rmSync(join(stateDirectory, MIGRATION_LAUNCH), { force: true });
     }
     return release;
   } catch (error) {
@@ -283,6 +285,7 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
     const previous = readMigrationJournal(plan.stateDirectory, policy);
     if (previous && previous.stage !== "restored" && previous.stage !== "complete") throw new Error("An earlier migration needs recovery before another update.");
     if (lstatSync(plan.target, { throwIfNoEntry: false })) throw new Error("The personal migration destination is occupied.");
+    rmSync(join(plan.stateDirectory, MIGRATION_LAUNCH), {force: true});
     const journal = { plan, owner, ownerRole: "helper", stage: "prepared", repairs: [], inventory: ports.inventory, targetProcess: null };
     const publish = (stage) => {
       journal.stage = stage;
@@ -295,7 +298,11 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
       await ports.waitForDaemonExit();
       stageMigrationTarget(plan, { policy, checkpoint: ports.checkpoint });
       publish("target-staged");
+      // A crash after spawning but before recording the PID must never look like
+      // an attempt that did not launch. The target also publishes its own identity.
+      publish("target-launching");
       journal.targetProcess = await ports.launchTarget(plan);
+      ports.checkpoint?.("target-launched");
       publish("target-staged");
       await ports.waitForReady(journal);
       validateMigrationTarget(plan);
@@ -314,10 +321,27 @@ export async function runMigration(plan, ports, { policy, lock } = {}) {
         publish("repair-required");
         return { committed: true, journal, error: String(error.message ?? error) };
       }
-      await restoreMigration(journal, ports, policy);
+      try { await restoreMigration(journal, ports, policy); }
+      catch (recoveryError) {
+        const message = recordMigrationRecoveryFailure(journal, `${String(error.message ?? error)} Recovery failed: ${String(recoveryError.message ?? recoveryError)}`);
+        return {committed: false, journal, error: message};
+      }
       return { committed: false, journal, error: String(error.message ?? error) };
     }
   }, lock);
+}
+
+function recordMigrationRecoveryFailure(journal, message) {
+  message = `${message} Manual recovery is required; inspect both installations before retrying.`.slice(0, 2000);
+  try {
+    atomicMigrationJson(join(journal.plan.stateDirectory, "update-outcome.json"), {
+      schema: 1, result: "failure", targetVersion: journal.plan.targetIdentity.version,
+      recordedAt: new Date().toISOString(), message,
+    });
+  } catch (error) {
+    message += ` The failure outcome could not be saved: ${String(error.message ?? error)}`;
+  }
+  return message;
 }
 
 export async function restoreMigration(journal, ports, policy) {
@@ -348,7 +372,8 @@ export async function recoverMigration(stateDirectory, ports, { policy, lock } =
     if (!owner.identity) throw new Error("Could not identify the recovery owner.");
     if (!migrationIsCommitted(journal, migrationReceipt(stateDirectory))) {
       if (["receipt-committed", "repair-required"].includes(journal.stage)) throw new Error("The committed personal receipt changed. Reinstall the personal app; do not restore the older system runtime.");
-      await restoreMigration(journal, ports, policy);
+      try { await restoreMigration(journal, ports, policy); }
+      catch (error) { throw new Error(recordMigrationRecoveryFailure(journal, `Recovery failed: ${String(error.message ?? error)}`)); }
       return journal;
     }
     validateMigrationTarget(journal.plan);

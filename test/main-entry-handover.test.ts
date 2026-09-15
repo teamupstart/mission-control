@@ -88,9 +88,10 @@ function fixture(): { home: string; state: string; personal: string } {
 function runEntry(
   runningBundle: string,
   env: Record<string, string> = {},
+  args: string[] = [],
 ): { observed: Observed; fixture: ReturnType<typeof fixture> } {
   const paths = fixture();
-  const result = spawnSync(process.execPath, [HARNESS], {
+  const result = spawnSync(process.execPath, [HARNESS, ...args], {
     encoding: "utf8",
     timeout: 120_000,
     env: {
@@ -122,6 +123,14 @@ test("the entry point hands a system launch to the personal app before taking an
   // straight back to the copy they were being moved off.
   assert.ok(!observed.app.includes("requestSingleInstanceLock"));
   assert.deepEqual(observed.app, ["exit(0)", "quit"]);
+});
+
+test("login cleanup with no matching transaction exits before redirect or runtime startup", () => {
+  const { observed } = runEntry(SYSTEM_BUNDLE, {}, ['--mission-migration-remove-login', 'stale']);
+  assert.deepEqual(observed.app, ['exit(1)']);
+  assert.deepEqual(observed.spawn, []);
+  assert.equal(observed.logged.length, 1);
+  assert.match(observed.logged[0]!, /Migration login cleanup failed/);
 });
 
 test("a failed hand-over leaves the entry point running and asking for the lock", () => {

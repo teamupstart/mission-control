@@ -1274,6 +1274,7 @@ export class UpdateController {
    * A deferred build is kept rather than thrown away, so accepting it later is immediate.
    */
   defer(): void {
+    if (this.policyPending) return;
     if (this.snapshot.phase === "available") {
       this.publish(
         idleSnapshot(this.snapshot.currentVersion, this.snapshot.lastOutcome, this.snapshot.checkedAt),

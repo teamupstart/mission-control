@@ -15,6 +15,7 @@ export interface MigrationPolicy { home?: string; systemDirectory?: string }
 export const MIGRATION_PROTOCOL: number;
 export const MIGRATION_JOURNAL: string;
 export const MIGRATION_ACK: string;
+export const MIGRATION_LAUNCH: string;
 export const MIGRATION_STAGES: string[];
 export const MIGRATION_TIMEOUT_MS: number;
 export function readMigrationJson(path: string): any;

@@ -5,13 +5,16 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { processIdentity, processIsAlive } from '../scripts/update-lock.mjs';
+import { removeMigrationSourceLogin } from '../src/main/migration-integration-ports.ts';
 import { CANONICAL_REPO } from '../src/shared/install-receipt-schema.mjs';
-import { migrationStartupGate } from '../scripts/migration-runtime.mjs';
+import { migrationStartupGate, migrationRuntimePorts, boundedMigrationWait } from '../scripts/migration-runtime.mjs';
 import { readUpdateOutcome } from '../src/main/update-outcome.ts';
 import {
   prepareMigration, migrationBundleIdentity, atomicMigrationJson, runMigration,
   readMigrationJournal, migrationReceipt, recoverMigration, repairMigration,
-  MIGRATION_JOURNAL, migrationIsCommitted, type MigrationPorts,
+  MIGRATION_JOURNAL, type MigrationPorts,
 } from '../scripts/install-migration.mjs';
 
 function fixture(t: test.TestContext) {
@@ -110,6 +113,83 @@ test('pre-commit launch failure restores the original receipt and stops only the
   assert.equal(readMigrationJournal(f.stateDirectory, f.policy)?.inventory, null, 'restoration discards sensitive inventory');
 });
 
+test('a launch not yet recorded cannot delete its bundle or relaunch the source during recovery', async (t) => {
+  const f = fixture(t);
+  f.ports.launchTarget = async () => { throw Object.assign(new Error('died after spawn'), {migrationCrash: true}); };
+  await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /died after spawn/);
+  await assert.rejects(recoverMigration(f.stateDirectory, {...f.ports, stopTarget: migrationRuntimePorts({port: 1}).stopTarget}, {policy: f.policy}), /launch.*identity/);
+  assert.equal(existsSync(f.plan.target), true);
+  assert.equal(f.events.includes('launch-source'), false);
+  assert.deepEqual(migrationReceipt(f.stateDirectory), f.receipt);
+});
+
+test('the target-owned launch record recovers a real child after the helper dies before journal publication', async (t) => {
+  const f = fixture(t);
+  let pid = 0;
+  const modulePath = new URL('../scripts/migration-runtime.mjs', import.meta.url).href;
+  f.ports.launchTarget = async () => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `import {recordMigrationLaunch} from ${JSON.stringify(modulePath)}; recordMigrationLaunch(${JSON.stringify(f.plan)}); process.send('recorded'); setInterval(()=>{},1000);`], {stdio: ['ignore', 'ignore', 'inherit', 'ipc']});
+    t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+    await new Promise<void>((resolve, reject) => { child.once('message', () => resolve()); child.once('error', reject); child.once('exit', () => reject(new Error('fixture child exited'))); });
+    pid = child.pid!;
+    return {pid, identity: processIdentity(pid)!};
+  };
+  f.ports.checkpoint = (stage) => { if (stage === 'target-launched') throw Object.assign(new Error('helper died'), {migrationCrash: true}); };
+  await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy}), /helper died/);
+  assert.equal(readMigrationJournal(f.stateDirectory, f.policy)?.targetProcess, null);
+  assert.equal(processIsAlive(pid), true);
+  const recovered = await recoverMigration(f.stateDirectory, {...f.ports, stopTarget: migrationRuntimePorts({port: 1}).stopTarget}, {policy: f.policy});
+  assert.equal(recovered?.stage, 'restored');
+  await boundedMigrationWait(() => !processIsAlive(pid), 'fixture child was not reaped', {timeout: 2000});
+  assert.equal(processIsAlive(pid), false);
+  assert.equal(existsSync(f.plan.target), false);
+  assert.equal(f.events.includes('launch-source'), true);
+});
+
+test('login cleanup requires the committed recovery parent, exact source and nonce', async (t) => {
+  const f = fixture(t);
+  let enabled = true;
+  let writes = 0;
+  const app = {getLoginItemSettings: () => ({openAtLogin: enabled}), setLoginItemSettings: () => {enabled = false; writes++;}} as unknown as Parameters<typeof removeMigrationSourceLogin>[0]['app'];
+  const options = {stateDirectory: f.stateDirectory, runningBundle: f.source, nonce: f.plan.nonce, policy: f.policy, app, parentPid: process.pid};
+  assert.throws(() => removeMigrationSourceLogin(options), /matching committed/);
+  await runMigration(f.plan, f.ports, {policy: f.policy});
+  assert.throws(() => removeMigrationSourceLogin(options), /matching committed/);
+  await repairMigration(f.stateDirectory, async () => {
+    assert.throws(() => removeMigrationSourceLogin({...options, nonce: 'stale'}), /matching committed/);
+    assert.throws(() => removeMigrationSourceLogin({...options, parentPid: process.pid + 1}), /matching committed/);
+    assert.throws(() => removeMigrationSourceLogin({...options, runningBundle: f.plan.target}), /matching committed/);
+    assert.equal(writes, 0);
+    removeMigrationSourceLogin(options);
+    removeMigrationSourceLogin(options);
+    assert.equal(writes, 1);
+    assert.equal(enabled, false);
+    f.bundle(f.source, 'c'.repeat(40));
+    assert.throws(() => removeMigrationSourceLogin(options), /source changed/);
+    return [];
+  }, {policy: f.policy});
+});
+
+for (const failure of ['stop', 'source', 'receipt'] as const) {
+  test(`failed ${failure} recovery records both errors without escaping or launching an unverified source`, async (t) => {
+    const f = fixture(t);
+    f.ports.waitForReady = async () => {
+      if (failure === 'source') f.bundle(f.source, 'c'.repeat(40));
+      if (failure === 'receipt') atomicMigrationJson(join(f.stateDirectory, 'install-receipt.json'), {...f.receipt, installScope: 'system'});
+      throw new Error('readiness failed');
+    };
+    if (failure === 'stop') f.ports.stopTarget = async () => { throw new Error('stop refused'); };
+    const result = await runMigration(f.plan, f.ports, {policy: f.policy});
+    assert.equal(result.committed, false);
+    assert.match(result.error!, /readiness failed.*recovery failed/i);
+    const outcome = readUpdateOutcome(join(f.stateDirectory, 'update-outcome.json'));
+    assert.equal(outcome?.result, 'failure');
+    assert.match(outcome!.message, /readiness failed.*recovery failed/i);
+    assert.equal(f.events.includes('launch-source'), false);
+    assert.equal(existsSync(f.plan.target), true);
+  });
+}
+
 test('post-helper repair ownership permits old-copy redirect without waiting for the live personal process', async (t) => {
   const f = fixture(t);
   await runMigration(f.plan, f.ports, {policy: f.policy});
@@ -178,20 +258,20 @@ test('corrupt or unsupported journals fail closed and a competing helper writes 
   atomicMigrationJson(join(f.stateDirectory, MIGRATION_JOURNAL), {plan: {...f.plan, protocol: 999}});
   assert.throws(() => readMigrationJournal(f.stateDirectory, f.policy), /Unsupported/);
   rmSync(join(f.stateDirectory, MIGRATION_JOURNAL));
-  let release!: () => void;
-  const barrier = new Promise<void>((resolve) => { release = resolve; });
-  f.ports.waitForParent = () => barrier;
-  const first = runMigration(f.plan, f.ports, {policy: f.policy});
   // A second process is represented by its distinct, live claim. Files and lock election
   // remain real; same-process reentrancy is tested separately by the controller.
-  const {realHelperLockOperations} = await import('../scripts/update-lock.mjs');
+  const {realHelperLockOperations, claimEntryName, HELPER_LOCK_DIR_NAME} = await import('../scripts/update-lock.mjs');
   const lock = realHelperLockOperations();
-  lock.pid = process.pid + 1;
-  lock.identity = () => 'other';
+  const directory = join(f.stateDirectory, HELPER_LOCK_DIR_NAME);
+  const foreign = {pid: process.pid + 1, identity: 'other', createdAtMs: 1};
+  mkdirSync(directory);
+  writeFileSync(join(directory, claimEntryName(foreign)), JSON.stringify(foreign));
   lock.isLive = () => true;
   await assert.rejects(runMigration(f.plan, f.ports, {policy: f.policy, lock}), /Another update/);
   assert.deepEqual(migrationReceipt(f.stateDirectory), f.receipt);
-  release();
-  assert.equal((await first).committed, true);
-  assert.equal(migrationIsCommitted(readMigrationJournal(f.stateDirectory, f.policy)!, migrationReceipt(f.stateDirectory)), true);
+  assert.deepEqual(f.events, []);
+  assert.equal(existsSync(f.plan.target), false);
+  assert.equal(existsSync(join(f.stateDirectory, 'update-outcome.json')), false);
+  assert.equal(existsSync(join(f.stateDirectory, MIGRATION_JOURNAL)), false);
+  assert.equal(existsSync(join(directory, claimEntryName(foreign))), true);
 });

@@ -1646,6 +1646,31 @@ test('a failed system preference write cannot quit or relocate, and accepted mig
   assert.deepEqual(f.handoffs[0]?.migrationInventory, {login: false});
 });
 
+test('Later cannot dismiss an accepted system choice while its receipt write is pending', async (t) => {
+  const { migrationPlanFixture } = await import('./helpers/migration-plan.ts');
+  let save!: () => void;
+  const pending = new Promise<void>((resolve) => { save = resolve; });
+  let current = receipt;
+  const f = fixture({installSnapshot: () => ({receipt: current, problem: null}),
+    migrationPlan: () => current.installScope ? null : migrationPlanFixture(receipt), keepSystem: async () => {
+      await pending;
+      current = {...receipt, installScope: 'system'};
+      return current;
+    }});
+  t.after(() => f.controller.stop());
+  await f.controller.start();
+  await f.controller.check(true);
+  await f.controller.apply();
+  const accepted = f.controller.keepSystem();
+  f.controller.defer();
+  assert.equal(f.controller.getSnapshot().phase, 'ready');
+  assert.equal(f.handoffs.length, 0);
+  save();
+  assert.equal(await accepted, true);
+  assert.equal(f.handoffs.length, 1);
+  assert.equal(f.handoffs[0]?.migration, undefined);
+});
+
 test('completed migration does not hide the next ordinary update offer or ready action', async (t) => {
   const f = fixture({migrationStatus: () => ({source: '/Applications/Mission Control.app', target: '/Users/Fixture/Applications/Mission Control.app', status: 'complete', repairs: []})});
   t.after(() => f.controller.stop());

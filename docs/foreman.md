@@ -192,7 +192,10 @@ review follow-through, CI waiting, and merge belong to the workflow. Commit and 
 part of planning when needed to make scheduled task paths durable. An unbound plan retains the
 skill's direct PR path. Foreman reads live publication ownership independently of Persona
 evidence eligibility and discards the verdict if binding identity, version, or trigger mode
-changes during verification or before the completion check. Unknown ownership holds without
+changes during verification or before the completion check. The completion claim carries that
+verified ownership as a comparison guard. The daemon checks it again inside the transaction
+that creates the run and consumes completion, so replacing a binding cannot spend the old
+verdict on a new workflow. Unknown ownership holds without
 consuming the work generation. Manual workflow bindings retain manual submission.
 
 For a dispatched `ship` task, that verifier also receives the session's registered Workflow

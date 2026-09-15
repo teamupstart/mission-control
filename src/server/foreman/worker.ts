@@ -2283,6 +2283,7 @@ export async function processPromptedWrapup(
         headSha: diff.headSha,
         transcriptAnchor,
         summary: claimSummary,
+        ...(planPublication ? { expectedPlanPublication: planPublication } : {}),
       }),
     );
     if (claim.kind === "failed") {

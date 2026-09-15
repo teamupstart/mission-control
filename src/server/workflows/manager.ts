@@ -6,7 +6,7 @@ import { paneToken } from "@shared/pane.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { PULL_REQUEST_SKILL } from "@shared/skills.ts";
 import type { WorkflowGateStanding } from "@shared/shipping.ts";
-import type { PlanPublicationContext } from "@shared/plan-publication.ts";
+import { samePlanPublicationContext, type PlanPublicationContext } from "@shared/plan-publication.ts";
 import { NO_MISTAKES_REVIEW_WORKFLOW_ID } from "@shared/builtin-workflow.ts";
 import { resolvedSessionIntent, sessionIntentMatches } from "@shared/goal.ts";
 import type { AgentType, Session, Task } from "@shared/types.ts";
@@ -3549,6 +3549,11 @@ export class WorkflowManager {
         throw new Error("Foreman completion work cycle is no longer current");
       }
     }
+    // Reject changed ownership even when the new owner is Manual or the skill, before
+    // returning an unclaimed answer that could authorize the worker's fallback.
+    if (claim.expectedPlanPublication && !samePlanPublicationContext(
+      claim.expectedPlanPublication, this.planPublicationContext(sessionId),
+    )) throw new Error("Foreman plan publication ownership is no longer current");
     // Resolve a matching historical prompted guard before entering the claim
     // transaction. A rejected legacy replay must persist its compatibility consume;
     // doing this inside the transaction would roll that migration back with the claim.
@@ -3688,6 +3693,7 @@ export class WorkflowManager {
         evidenceFingerprint: claim.evidenceFingerprint,
         evidenceGroupKey: `foreman:${binding.noteKey}:${claim.completionKind}:${claim.marker}`,
         expectedIntent: claim.expectedIntent,
+        expectedPlanPublication: claim.expectedPlanPublication,
         runId: randomUUID(),
         submissionId: randomUUID(),
         retireGuard,

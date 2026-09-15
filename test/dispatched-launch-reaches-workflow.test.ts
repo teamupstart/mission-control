@@ -564,3 +564,58 @@ for (const scenario of ["unavailable", "during verification", "before completion
     assert.equal(d.registry.getQueue(d.sessionId)?.promptedDecision, null, "no consumed generation or direct PR fallback");
   });
 }
+
+for (const boundary of ["HTTP claim", "store transaction"] as const) {
+  for (const change of ["binding", "version", "trigger mode"] as const) {
+    test(`Foreman's plan verdict cannot cross a changed ${change} at the ${boundary}`, async (t) => {
+      const replaceOwnership = (d: Dispatched) => {
+        const binding = d.workflows.store.getBinding(d.bindingId)!;
+        if (change === "binding") {
+          d.workflows.archiveBinding(binding.id);
+          d.workflows.store.insertBinding({
+            ...binding, id: `${binding.id}-replacement`, sessionId: d.sessionId, now: Date.now(),
+          });
+        } else if (change === "version") {
+          const db = openDb();
+          const versionId = `v-${d.bindingId}`;
+          const revision = boundary === "HTTP claim" ? 2 : 3;
+          db.prepare(`INSERT INTO workflow_versions (
+            id, workflow_id, version, source_draft_revision, graph_json,
+            completion_policy_json, binding_defaults_json, published_at
+          ) SELECT ?, workflow_id, ?, ?, graph_json,
+            completion_policy_json, binding_defaults_json, published_at
+            FROM workflow_versions WHERE id = 'v'`).run(versionId, revision, revision);
+          db.prepare("UPDATE workflow_bindings SET workflow_version_id = ? WHERE id = ?")
+            .run(versionId, binding.id);
+        } else {
+          d.workflows.store.updateBinding(binding.id, { triggerMode: "manual" });
+        }
+      };
+      const { d, tick, writes, prompts } = planWrapupFixture(t, `plan-race-${boundary}-${change}`, {
+        beforeRequest: (path, d) => {
+          if (boundary === "HTTP claim" && path.endsWith("/workflow-completion")) replaceOwnership(d);
+        },
+      });
+      if (boundary === "store transaction") {
+        // The manager has selected its binding. Change durable ownership immediately before
+        // the transaction starts, proving that a manager-only comparison is insufficient.
+        const store = d.workflows.store;
+        const claim = store.claimForemanCompletion.bind(store);
+        t.mock.method(store, "claimForemanCompletion", (input: Parameters<typeof claim>[0]) => {
+          replaceOwnership(d);
+          return claim(input);
+        });
+      }
+      assert.equal(await tick(), false, "stale ownership must hold instead of claiming or asking");
+      assert.equal(prompts.length, 1, "verification finished before the binding changed");
+      assert.deepEqual(writes, [`/api/sessions/${encodeURIComponent(d.sessionId)}/workflow-completion`]);
+      const runs = openDb().prepare(`SELECT r.id FROM workflow_runs r
+        JOIN workflow_bindings b ON b.id = r.binding_id WHERE b.note_key = ?`).all(d.noteKey);
+      assert.equal(runs.length, 0, "neither the old nor the replacement binding received the stale verdict");
+      const queue = d.registry.getQueue(d.sessionId)!;
+      assert.equal(queue.promptedConsumedGeneration, null);
+      assert.equal(queue.promptedDecision, null);
+      assert.equal(queue.promptedDirectHandoff, null);
+    });
+  }
+}

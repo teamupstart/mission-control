@@ -144,7 +144,8 @@ export const MODEL_CATALOG: Record<AgentType, readonly ShippedHarnessModelChoice
     { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
   ],
   codex: [
-    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "most capable", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-6-astra", label: "GPT-6 Astra", hint: "most capable, hardest end-to-end work", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "reliable everyday workhorse", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest", provider: null, contextWindow: null, reasoning: null, inputModes: [] },
     { id: "gpt-5.5", label: "GPT-5.5", hint: "previous generation", provider: null, contextWindow: null, reasoning: null, inputModes: [] },

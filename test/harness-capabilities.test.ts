@@ -135,6 +135,7 @@ test("each shipped harness declares its launch-time effort syntax", () => {
 });
 
 test("the live effort picker follows the selected model, not the launch default", () => {
+  assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-6-astra").includes("max"), true);
   assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-sol").includes("max"), true);
   assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-luna").includes("max"), false);
   assert.deepEqual(sessionEffortLevels("codex", "gpt-5.6-sol", "high"), ["medium", "high", "xhigh"]);

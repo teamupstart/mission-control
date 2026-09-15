@@ -59,6 +59,7 @@ import type {
 import { AGENT_TYPES, SESSION_RUNTIMES, TASK_KINDS, THINKING_LEVELS } from "@shared/types.ts";
 import { captureTelemetry } from "./capture.ts";
 import { getTelemetryConfig } from "./config.ts";
+import { taskOutcomeSourceId } from "./store.ts";
 import { registerTelemetrySource } from "./registration.ts";
 import { attributionValue, type AttributionValue } from "./attribution.ts";
 
@@ -164,13 +165,13 @@ const tracks = new Map<string, SessionTrack>();
 const launchIntents: LaunchIntent[] = [];
 /** Tasks whose agent departed with no outcome recorded. See `noteTaskDeparture`. */
 const departedTasks = new Set<string>();
-/** Task attempts whose outcome has already been captured, keyed `${taskId}:${dispatchedAt}`. */
+/** Task observation intervals whose outcome has already been captured. */
 const settledAttempts = new Set<string>();
 /**
  * Tasks that have reached a terminal row, by id alone.
  *
- * Kept beside `settledAttempts` rather than derived from it: the attempt key carries the
- * dispatch time, which a departing session does not know, so asking the attempt set "is this
+ * Kept beside `settledAttempts` rather than derived from it: the interval identity is something
+ * a departing session does not know, so asking the attempt set "is this
  * task settled" would answer no for every task and report every ending as leaving work open.
  */
 const settledTaskIds = new Set<string>();
@@ -864,34 +865,31 @@ function onSessionRemoved(sessionId: string): void {
   });
 }
 
-/** A task moved. Capture exactly one outcome per dispatch attempt that reaches a terminal row. */
+/** A task moved. Capture one outcome per durable open/settled observation interval. */
 function onTask(task: Task): void {
-  if (task.status !== "done" && task.status !== "failed" && task.status !== "cancelled") {
+  const status = task.status;
+  const terminal = status === "done" || status === "failed" || status === "cancelled";
+  const now = Date.now();
+  const key = taskOutcomeSourceId(task.id, task.dispatchedAt ?? null, terminal, now);
+  if (!terminal) {
     settledTaskIds.delete(task.id);
     return;
   }
-  const key = attemptKey(task.id, task.dispatchedAt ?? null);
   if (settledAttempts.has(key)) return;
-  settledAttempts.add(key);
   settledTaskIds.add(task.id);
   if (settledTaskIds.size > 1024) {
     const oldest = settledTaskIds.values().next();
     if (!oldest.done) settledTaskIds.delete(oldest.value);
   }
-  if (settledAttempts.size > 1024) {
-    const first = settledAttempts.values().next();
-    if (!first.done) settledAttempts.delete(first.value);
-  }
-  const departed = departedTasks.delete(task.id);
-  const now = Date.now();
+  const departed = departedTasks.has(task.id);
   const startedAt = task.dispatchedAt ?? null;
-  captureTelemetry({
+  const result = captureTelemetry({
     event: TASK_OUTCOME_EVENT,
     source: { kind: "mission.task", id: key, revision: 1 },
     actor: SYSTEM_ACTOR,
     facts: {
       task_kind: dispatchKindOf(task.kind),
-      status: task.status,
+      status,
       // The three-way answer, kept three-way on purpose. `failed` with `missing` is an
       // unknown ending, and a dashboard that rendered it as a measured correctness failure
       // would be claiming evidence this daemon explicitly says it does not have.
@@ -909,6 +907,14 @@ function onTask(task: Task): void {
     refs: refsOf({ task_id: task.id, session_id: task.sessionId }),
     now,
   });
+  if (result.kind === "accepted" || result.kind === "duplicate") {
+    settledAttempts.add(key);
+    departedTasks.delete(task.id);
+    if (settledAttempts.size > 1024) {
+      const first = settledAttempts.values().next();
+      if (!first.done) settledAttempts.delete(first.value);
+    }
+  }
 }
 
 // ---- source registration ----
@@ -978,10 +984,6 @@ export function registerSessionTelemetrySource(): void {
 }
 
 // ---- helpers ----
-
-function attemptKey(taskId: string, dispatchedAt?: number | null): string {
-  return `${taskId}:${dispatchedAt ?? 0}`;
-}
 
 function takeLaunchIntent(session: Session, now: number): LaunchIntent | null {
   sweepLaunchIntents(now);

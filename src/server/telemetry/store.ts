@@ -11,6 +11,7 @@
  * committed, which is what lets a crash mid-send be a retry rather than a hole.
  */
 import type { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import {
   TELEMETRY_LIMITS,
   type TelemetryActor,
@@ -66,6 +67,43 @@ export function telemetryTransaction<T>(fn: (d: DatabaseSync) => T): T {
   } finally {
     transactionDepth = 0;
   }
+}
+
+/** Durable source identity for the task's current open/settled observation interval. */
+export function taskOutcomeSourceId(
+  taskId: string,
+  dispatchedAt: number | null,
+  terminal: boolean,
+  now: number,
+): string {
+  return telemetryTransaction((d) => {
+    const previous = d.prepare(
+      `SELECT interval_id, dispatched_at, terminal FROM telemetry_task_outcome_state WHERE task_id = ?`,
+    ).get(taskId) as { interval_id: string; dispatched_at: number | null; terminal: number } | undefined;
+    // Adopt an already captured pre-interval outcome without counting it again on upgrade.
+    const legacyId = !previous && terminal && findSourceIdentity(d, {
+      kind: "mission.task", id: `${taskId}:${dispatchedAt ?? 0}`, revision: 1,
+    }) !== null ? String(dispatchedAt ?? 0) : null;
+    const intervalId = legacyId ?? (!previous || previous.dispatched_at !== dispatchedAt || (previous.terminal === 1 && !terminal)
+      ? randomUUID()
+      : previous.interval_id);
+    d.prepare(
+      `INSERT INTO telemetry_task_outcome_state (task_id, interval_id, dispatched_at, terminal, observed_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(task_id) DO UPDATE SET interval_id = excluded.interval_id,
+         dispatched_at = excluded.dispatched_at, terminal = excluded.terminal, observed_at = excluded.observed_at`,
+    ).run(taskId, intervalId, dispatchedAt, terminal ? 1 : 0, now);
+    if (!previous) noteBytesAdded(taskId.length + intervalId.length + 24);
+    return `${taskId}:${intervalId}`;
+  });
+}
+
+/** Retire inactive source intervals on the same horizon as durable deduplication. */
+export function pruneTaskOutcomeState(d: DatabaseSync, before: number, limit: number): number {
+  return Number(d.prepare(
+    `DELETE FROM telemetry_task_outcome_state WHERE task_id IN
+       (SELECT task_id FROM telemetry_task_outcome_state WHERE observed_at < ? ORDER BY observed_at LIMIT ?)`,
+  ).run(before, limit).changes);
 }
 
 // ---- resources and contexts ----
@@ -969,6 +1007,7 @@ export function usedBytes(d: DatabaseSync): number {
          (SELECT COALESCE(SUM(bytes),0) FROM telemetry_journal WHERE payload_pruned_at IS NULL)
          + (SELECT COALESCE(SUM(bytes),0) FROM telemetry_batches)
          + (SELECT COALESCE(SUM(LENGTH(state_json)),0) FROM telemetry_projection_state)
+         + (SELECT COALESCE(SUM(LENGTH(task_id) + LENGTH(interval_id) + 24),0) FROM telemetry_task_outcome_state)
          -- Delivery bookkeeping. Small per row, but one row per batch ever produced, and
          -- docs/observability.md charges "both destination queues" to this budget.
          + (SELECT COALESCE(SUM(LENGTH(COALESCE(last_error,'')) + 96),0) FROM telemetry_delivery)

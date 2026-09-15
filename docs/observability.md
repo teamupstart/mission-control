@@ -262,7 +262,7 @@ was running an hour ago.
 | `mission.session.ended` | `telemetry/sessions.ts` observer, on `session_remove` | `end:<session id>` | A departure during a gap. |
 | `mission.session.kill.requested` | `routes.ts` `POST /api/sessions/:id/kill` | `kill:<session id>:<at>` | An uncaptured request. |
 | `mission.usage.recorded` | `usage.ts`, `spend-ledger.ts`, `registry.ts` - the three ledger writers | The ledger's own conflict target | Rows committed while capture was off. They are deliberately not re-read: a later opt-in may not widen the audience of facts captured before it. |
-| `mission.task.outcome` | `telemetry/sessions.ts` observer, on `task_upsert` | `<task id>:<dispatched at>` | Which intermediate statuses a task passed through. The terminal row is recovered on its next publication. |
+| `mission.task.outcome` | `telemetry/sessions.ts` observer, on `task_upsert` | `<task id>:<durable observation interval>` | Which intermediate statuses a task passed through while collection was off. The terminal row is recovered on its next publication. |
 | `mission.pr.observed` | `telemetry/pr-observations.ts` | `<task id>:<pr key>:<fact>` | An association made while capture was off. A retained association itself survives restarts in its own table until the late-outcome horizon. |
 
 Three rules hold this together and are worth stating separately, because each of them is a
@@ -294,6 +294,11 @@ correlates removal for at most one minute. Later unexplained departures retain `
 Failed and superseded dispatches discard unused launch intents so a retry cannot inherit
 their model, effort, or task. A non-terminal task publication clears its prior settlement
 marker so a retry's departure can report that work is still open.
+`telemetry_task_outcome_state` preserves each task's current observation interval across
+restarts. Reopening or changing dispatch time rotates it; terminal cleanup updates retain it,
+even if they rewrite completion timestamps. An immediate cancellation after reopening gets
+its own outcome. This source state is charged to the telemetry byte budget and expires after
+the same 30-day inactivity window as deduplication state.
 
 **Late delivery survives ownership invalidation, and gains no authority by doing so.**
 `invalidateTaskOwnershipInTransaction` deletes a task's work-episode binding without archiving it,

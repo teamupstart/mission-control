@@ -28,6 +28,7 @@ import {
   pruneOrphanedContexts,
   pruneOrphanedResources,
   pruneSourceIdentities,
+  pruneTaskOutcomeState,
   pruneTerminalDeliveries,
   releaseTerminalBatchPayloads,
   recordGap,
@@ -131,6 +132,7 @@ export function runRetentionPass(now = Date.now()): RetentionPassResult {
     //    reconciliation cannot resurrect an expired source as new activity in between.
     result.prunedRows = pruneJournalRows(d, stateCutoff, BATCH_LIMIT);
     result.prunedIdentities = pruneSourceIdentities(d, stateCutoff, BATCH_LIMIT);
+    pruneTaskOutcomeState(d, stateCutoff, BATCH_LIMIT);
     result.prunedContexts = pruneOrphanedContexts(d);
     result.prunedResources = pruneOrphanedResources(d);
 

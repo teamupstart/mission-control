@@ -240,6 +240,18 @@ export function createTelemetryTables(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_telemetry_pr_observations_open
       ON telemetry_pr_observations(merged_at, expires_at);
 
+    -- One source observation interval per task. Reopening rotates it even before another
+    -- dispatch; terminal cleanup publications retain it. It has no operational authority.
+    CREATE TABLE IF NOT EXISTS telemetry_task_outcome_state (
+      task_id       TEXT PRIMARY KEY,
+      interval_id   TEXT NOT NULL,
+      dispatched_at INTEGER,
+      terminal      INTEGER NOT NULL,
+      observed_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_task_outcome_state_observed
+      ON telemetry_task_outcome_state(observed_at);
+
     -- What could NOT be recorded, aggregated by kind so it is bounded by the vocabulary rather
     -- than by how bad the day was.
     CREATE TABLE IF NOT EXISTS telemetry_gaps (

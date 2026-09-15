@@ -22,6 +22,9 @@ process.env.HARNESS_HOME = join(home, "state");
 const { closeDb, openDb } = await import("../src/server/db.ts");
 const { setTelemetryConfig } = await import("../src/server/telemetry/config.ts");
 const { runProjectionPass } = await import("../src/server/telemetry/projection.ts");
+const { runRetentionPass } = await import("../src/server/telemetry/retention.ts");
+const { usedBytes } = await import("../src/server/telemetry/store.ts");
+const { TELEMETRY_LIMITS } = await import("../src/shared/telemetry.ts");
 const { registerBuiltinTelemetry } = await import("../src/server/telemetry/service.ts");
 const {
   attachSessionTelemetry,
@@ -62,6 +65,7 @@ const TELEMETRY_TABLES = [
   "telemetry_contexts",
   "telemetry_resources",
   "telemetry_pr_observations",
+  "telemetry_task_outcome_state",
 ];
 
 beforeEach(() => {
@@ -627,6 +631,94 @@ test("a task's prior outcome does not hide open work on a new attempt", () => {
   host().emit({ type: "session_remove", id: session().id });
   assert.equal(journal("mission.session.ended")[0]?.facts.ended_while_work_open, true);
   assert.equal(journal("mission.task.outcome").length, 1, "the previous attempt's outcome stays recorded");
+});
+
+for (const restart of [false, true]) {
+  test(`reopen then cancel before dispatch records a new durable outcome${restart ? " across restart" : ""}`, () => {
+    enableLocalOnly();
+    const task = {
+      id: "task-reopened", kind: "ship", extraRepos: [], sessionId: null,
+      dispatchedAt: 1_000, status: "done", completedAt: 2_000, updatedAt: 2_000, outcome: "shipped",
+    };
+    host().emit({ type: "task_upsert", task });
+    host().emit({ type: "task_upsert", task: { ...task, status: "backlog", completedAt: null, updatedAt: 3_000 } });
+    if (restart) {
+      closeDb();
+      resetSessionTelemetryForTesting();
+      attached = null;
+    }
+    const cancelled = { ...task, status: "cancelled", completedAt: 4_000, updatedAt: 4_000 };
+    host().emit({ type: "task_upsert", task: cancelled });
+    host().emit({ type: "task_upsert", task: { ...cancelled, completedAt: 5_000, updatedAt: 5_000 } });
+    const outcomes = journal("mission.task.outcome");
+    assert.deepEqual(outcomes.map((row) => row.facts.status), ["done", "cancelled"]);
+    assert.notEqual(outcomes[0]?.sourceId, outcomes[1]?.sourceId);
+    closeDb();
+    resetSessionTelemetryForTesting();
+    attached = null;
+    host().emit({ type: "task_upsert", task: { ...cancelled, completedAt: 5_000, updatedAt: 5_000 } });
+    assert.equal(journal("mission.task.outcome").length, 2, "terminal replay remains deduplicated after restart");
+  });
+}
+
+test("task observation state is opt-in, charged to the byte budget and expires with dedupe state", (t) => {
+  const now = 5_000;
+  t.mock.method(Date, "now", () => now);
+  const task = { id: "task-window", status: "running", dispatchedAt: 1_000 };
+  const count = () => (openDb().prepare("SELECT COUNT(*) AS n FROM telemetry_task_outcome_state").get() as { n: number }).n;
+  host().emit({ type: "task_upsert", task });
+  assert.equal(count(), 0);
+  enableLocalOnly();
+  const before = usedBytes(openDb());
+  host().emit({ type: "task_upsert", task });
+  assert.equal(count(), 1);
+  assert.ok(usedBytes(openDb()) > before);
+  closeDb();
+  openDb();
+  assert.equal(count(), 1, "source state survives schema reopening");
+  runRetentionPass(now + TELEMETRY_LIMITS.reducerStateRetentionMs + 1);
+  assert.equal(count(), 0);
+});
+
+test("a refused task outcome retries within its durable interval", () => {
+  enableLocalOnly();
+  const task = { id: "task-refused", kind: "ship", extraRepos: [], sessionId: null, status: "failed", dispatchedAt: 1_000 };
+  noteTaskDeparture(task.id);
+  const limits = TELEMETRY_LIMITS as unknown as { maxTotalBytes: number };
+  const original = limits.maxTotalBytes;
+  limits.maxTotalBytes = 1;
+  try {
+    host().emit({ type: "task_upsert", task });
+    assert.equal(journal("mission.task.outcome").length, 0);
+  } finally {
+    limits.maxTotalBytes = original;
+  }
+  host().emit({ type: "task_upsert", task });
+  host().emit({ type: "task_upsert", task });
+  assert.equal(journal("mission.task.outcome").length, 1);
+  assert.equal(journal("mission.task.outcome")[0]?.facts.completion_evidence, "missing");
+});
+
+test("an already captured legacy task outcome is adopted without counting it again", async () => {
+  enableLocalOnly();
+  const { captureTelemetry } = await import("../src/server/telemetry/capture.ts");
+  const event = TELEMETRY_EVENTS["mission.task.outcome"];
+  assert.ok(event);
+  const captured = captureTelemetry({
+    event,
+    source: { kind: "mission.task", id: "task-legacy:1000", revision: 1 },
+    facts: {
+      task_kind: "ship", status: "done", completion_evidence: "recorded", repo_count: 1,
+      duration_ms: 1_000, observation_bounded: false,
+    },
+    refs: { task_id: "task-legacy" },
+  });
+  assert.equal(captured.kind, "accepted");
+  host().emit({ type: "task_upsert", task: {
+    id: "task-legacy", kind: "ship", extraRepos: [], sessionId: null,
+    status: "done", dispatchedAt: 1_000, completedAt: 2_000, outcome: "shipped",
+  } });
+  assert.equal(journal("mission.task.outcome").length, 1);
 });
 
 // ---- task outcomes ----

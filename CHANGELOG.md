@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.19.0](https://github.com/teamupstart/mission-control/compare/v1.18.0...v1.19.0) (2026-09-15)
+
+
+### Features
+
+* **telemetry:** attribute session activity and verified outcomes ([#1063](https://github.com/teamupstart/mission-control/issues/1063)) ([7706e2b](https://github.com/teamupstart/mission-control/commit/7706e2b90dc87a53080eb7155f1b4bba54394ff1))
+* **updates:** add gated user-install migration and recovery ([#1065](https://github.com/teamupstart/mission-control/issues/1065)) ([9a528c3](https://github.com/teamupstart/mission-control/commit/9a528c3687ed9c0e2cdbeb08f74b94c99f56ba28))
+
+
+### Bug Fixes
+
+* **cost:** preserve Claude utilization across restarts ([#1064](https://github.com/teamupstart/mission-control/issues/1064)) ([fc1d60a](https://github.com/teamupstart/mission-control/commit/fc1d60a234f055177445b4fcba50183394c43490))
+* **plans:** hand PR publication to bound workflows ([#1066](https://github.com/teamupstart/mission-control/issues/1066)) ([2c5f685](https://github.com/teamupstart/mission-control/commit/2c5f685948e62633bd669a9fc5f2e5fb68dc6782))
+
 ## [1.18.0](https://github.com/teamupstart/mission-control/compare/v1.17.0...v1.18.0) (2026-09-15)
 
 
